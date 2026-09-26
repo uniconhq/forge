@@ -1,11 +1,11 @@
 """The migration brings an empty database to the schema the tables declare,
-with exactly the nine names, and a grading row round-trips with its verdict.
+with exactly the tables the package owns, and a grading row round-trips with
+its verdict.
 """
 
 import uuid
 from datetime import UTC, datetime
 
-import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, inspect
@@ -27,10 +27,8 @@ TABLES = {
     "jupyter_sessions",
 }
 
-pytestmark = pytest.mark.usefixtures("migrated_database_url")
 
-
-def test_the_schema_has_exactly_the_nine_tables(migrated_database_url: str) -> None:
+def test_the_schema_has_exactly_the_tables_the_package_owns(migrated_database_url: str) -> None:
     engine = create_engine(migrated_database_url)
     names = set(inspect(engine).get_table_names()) - {"alembic_version"}
     engine.dispose()

@@ -1,5 +1,5 @@
-"""Sign-in through the forge's OpenID Connect provider. `start` builds the
-redirect and what checks the answer; `complete` exchanges the code the forge
+"""Sign-in through the host's OpenID Connect provider. `start` builds the
+redirect and what checks the answer; `complete` exchanges the code the host
 sends back, checks the state and the nonce, and creates the session.
 """
 
@@ -9,15 +9,13 @@ import secrets
 from dataclasses import dataclass
 from hmac import compare_digest
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from forge.context import Context
 from forge.domain.errors import Forbidden, SignInInvalid
 from forge.domain.next_path import safe_next
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.port import Forge
 from forge.services import sessions
-from forge.settings import Settings
 
 log = get_logger(__name__)
 
@@ -52,16 +50,14 @@ def start(forge: Forge, next_candidate: str | None) -> SignInStart:
         nonce=secrets.token_urlsafe(NONCE_BYTES),
         next=safe_next(next_candidate),
     )
-    url = forge.sign_in_url(
+    url = forge.identity.sign_in_url(
         state=attempt.state, code_challenge=_challenge(attempt.verifier), nonce=attempt.nonce
     )
     return SignInStart(url=url, attempt=attempt)
 
 
 async def complete(
-    db: AsyncSession,
-    settings: Settings,
-    forge: Forge,
+    ctx: Context,
     *,
     code: str,
     state: str,
@@ -78,7 +74,7 @@ async def complete(
         log.info("sign_in.refused", reason="state", state=state[:STATE_PREFIX])
         raise SignInInvalid("This sign-in did not start here.")
     try:
-        signed = await forge.complete_sign_in(code=code, verifier=attempt.verifier)
+        signed = await ctx.forge.identity.complete_sign_in(code=code, verifier=attempt.verifier)
     except Forbidden as exc:
         log.info("sign_in.refused", reason="code", state=state[:STATE_PREFIX])
         raise SignInInvalid("This sign-in could not be completed.") from exc
@@ -86,7 +82,7 @@ async def complete(
         log.info("sign_in.refused", reason="nonce", state=state[:STATE_PREFIX])
         raise SignInInvalid("This sign-in did not start here.")
     session = await sessions.create(
-        db, settings, user=signed.user, credential=signed.credential, ip=ip, user_agent=user_agent
+        ctx, user=signed.user, credential=signed.credential, ip=ip, user_agent=user_agent
     )
     log.info("sign_in.completed", user_id=signed.user.id, session=str(session.id))
     return session, attempt.next
