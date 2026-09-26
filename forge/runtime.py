@@ -15,6 +15,7 @@ from forge.db.engine import (
     new_session_factory,
     ping,
 )
+from forge.db.migrations import upgrade_to_head
 from forge.domain.errors import NotFound
 from forge.forges.cached import CachedForge
 from forge.forges.fake import FakeForge
@@ -80,6 +81,11 @@ class Runtime:
 
     async def _sweep_sessions(self, db: AsyncSession) -> None:
         await sessions.sweep(db, self.settings)
+
+
+def migrate(database_url: str) -> None:
+    """Bring a database up to the package's latest migration."""
+    upgrade_to_head(database_url)
 
 
 def _forge_for(settings: Settings) -> Forge:
