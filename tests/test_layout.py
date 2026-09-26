@@ -6,7 +6,6 @@ import importlib
 
 import forge
 from forge.forges.fake import FakeForge
-from forge.forges.forgejo import ForgejoForge
 from forge.port import Forge
 
 LAYERS = [
@@ -31,8 +30,6 @@ def test_the_version_is_a_release_number() -> None:
     assert all(part.isdigit() for part in (major, minor, patch))
 
 
-def test_both_implementations_are_forges() -> None:
-    assert isinstance(ForgejoForge(), Forge)
+def test_the_fake_is_a_forge() -> None:
     assert isinstance(FakeForge(), Forge)
-    assert ForgejoForge().name == "forgejo"
     assert FakeForge().name == "fake"
