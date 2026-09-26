@@ -4,8 +4,9 @@ backend builds one of these at start and calls the services with it.
 """
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from forge.db.engine import (
     SessionFactory,
@@ -19,10 +20,12 @@ from forge.forges.cached import CachedForge
 from forge.forges.fake import FakeForge
 from forge.forges.forgejo import SIGN_IN_CALLBACK_PATH, ForgejoConfig, ForgejoForge
 from forge.port import Forge
-from forge.services.background import Loops
+from forge.services import sessions
+from forge.services.background import Loops, TimedPass
 from forge.settings import Settings
 
 READY_TIMEOUT_SECONDS = 2.0
+SESSION_SWEEP_INTERVAL = timedelta(hours=1)
 
 
 class OrgAccountTokens:
@@ -49,13 +52,17 @@ class Runtime:
     @classmethod
     def build(cls, settings: Settings, *, forge: Forge | None = None) -> Runtime:
         engine = new_engine(str(settings.database_url))
-        return cls(
+        runtime = cls(
             settings=settings,
             forge=CachedForge(forge or _forge_for(settings), enabled=settings.forge_cache),
             engine=engine,
             probe_engine=new_probe_engine(str(settings.database_url)),
             sessions=new_session_factory(engine),
         )
+        runtime.loops.add(
+            TimedPass("sessions.sweep", runtime._sweep_sessions, SESSION_SWEEP_INTERVAL)
+        )
+        return runtime
 
     def start_background(self) -> None:
         self.loops.start(self.sessions)
@@ -70,6 +77,9 @@ class Runtime:
             await closer()
         await self.probe_engine.dispose()
         await self.engine.dispose()
+
+    async def _sweep_sessions(self, db: AsyncSession) -> None:
+        await sessions.sweep(db, self.settings)
 
 
 def _forge_for(settings: Settings) -> Forge:
