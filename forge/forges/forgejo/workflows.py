@@ -90,10 +90,14 @@ class WorkflowOps(ForgejoBase):
                 PLATFORM,
                 "GET",
                 "/api/v1/repos/search",
-                params={"q": query, "topic": "false", "private": "false", "limit": 50},
+                params={"q": WORKFLOW_TOPIC, "topic": "true", "limit": 50},
             )
         )
-        repos = [repo for repo in found.get("data") or [] if _is_workflow(repo)]
+        repos = [
+            repo
+            for repo in found.get("data") or []
+            if _is_workflow(repo) and not repo.get("private") and query in str(repo["name"])
+        ]
         return tuple([await self._workflow(repo) for repo in repos])
 
     async def star_workflow(self, as_: Identity, workflow: WorkflowId) -> None:

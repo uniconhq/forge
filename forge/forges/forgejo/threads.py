@@ -10,7 +10,7 @@ from typing import Any
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import ContestId, TaskId, ThreadId, WorkspaceId
 from forge.domain.threads import Comment, Thread, ThreadKind, ThreadPlace
-from forge.forges.forgejo.base import ForgejoBase, json_of
+from forge.forges.forgejo.base import ForgejoBase, json_of, list_of
 from forge.forges.forgejo.names import (
     is_workspace,
     parse_contest,
@@ -48,8 +48,10 @@ class ThreadOps(ForgejoBase):
         )
         threads = []
         for issue in issues:
-            comments = await self._http.get_all(
-                as_, f"/api/v1/repos/{org}/{repo}/issues/{issue['number']}/comments"
+            comments = list_of(
+                await self._http.call(
+                    as_, "GET", f"/api/v1/repos/{org}/{repo}/issues/{issue['number']}/comments"
+                )
             )
             threads.append(_thread(org, repo, issue, kind, comments))
         return tuple(threads)
