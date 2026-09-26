@@ -26,6 +26,7 @@ SERVER_ERROR = 500
 NOT_FOUND = 404
 FORBIDDEN = (401, 403)
 CONFLICT = 409
+ALREADY_EXISTS = "already exists"
 
 
 class TokenSource(Protocol):
@@ -158,6 +159,6 @@ def _refusal(response: httpx.Response) -> Exception:
         return NotFound(detail or "not found at the forge")
     if response.status_code in FORBIDDEN:
         return Forbidden(detail or "the forge refused this identity")
-    if response.status_code == CONFLICT:
+    if response.status_code == CONFLICT or ALREADY_EXISTS in detail:
         return Conflict(detail or "the forge reports a conflict")
     return Rejected(detail or f"the forge answered {response.status_code}")

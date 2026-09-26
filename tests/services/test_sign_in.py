@@ -1,0 +1,116 @@
+"""Sign-in: the redirect carries the checks, a real answer produces a session
+for the right user, and a tampered state or nonce is refused.
+"""
+
+from dataclasses import replace
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
+
+from forge.db.engine import SessionFactory
+from forge.domain.errors import SignInInvalid
+from forge.forges.fake import FakeForge
+from forge.services import identity, sign_in
+from forge.services.sign_in import SignInAttempt
+from forge.settings import Settings
+
+
+def _answer(fake: FakeForge, started: sign_in.SignInStart) -> tuple[str, str]:
+    query = parse_qs(urlsplit(fake.consent_redirect(started.url)).query)
+    return query["code"][0], query["state"][0]
+
+
+def test_the_redirect_carries_the_challenge_and_state_and_keeps_the_rest(
+    fake: FakeForge,
+) -> None:
+    started = sign_in.start(fake, "/contests/4")
+
+    query = parse_qs(urlsplit(started.url).query)
+    assert query["state"] == [started.attempt.state]
+    assert query["nonce"] == [started.attempt.nonce]
+    assert query["code_challenge"] != [started.attempt.verifier]
+    assert started.attempt.next == "/contests/4"
+    assert sign_in.start(fake, "https://evil.test").attempt.next == "/"
+
+
+async def test_a_real_answer_produces_a_session_for_the_right_user(
+    factory: SessionFactory, settings: Settings, fake: FakeForge
+) -> None:
+    started = sign_in.start(fake, "/contests/4")
+    code, state = _answer(fake, started)
+
+    async with factory() as db:
+        session, landing = await sign_in.complete(
+            db,
+            settings,
+            fake,
+            code=code,
+            state=state,
+            attempt=started.attempt,
+            ip=None,
+            user_agent=None,
+        )
+        me = await identity.whoami(db, settings, fake, session)
+
+    assert landing == "/contests/4"
+    assert session.user_id == 7
+    assert me.user.name == "Ada Lovelace"
+    assert me.degraded is False
+
+
+@pytest.mark.parametrize("tampered", ["state", "nonce", "missing"])
+async def test_a_tampered_answer_is_refused_and_leaves_no_session(
+    factory: SessionFactory, settings: Settings, fake: FakeForge, tampered: str
+) -> None:
+    started = sign_in.start(fake, "/")
+    code, state = _answer(fake, started)
+    attempt: SignInAttempt | None = started.attempt
+    if tampered == "state":
+        state = "not-this-attempt"
+    elif tampered == "nonce":
+        attempt = replace(started.attempt, nonce="other")
+    else:
+        attempt = None
+
+    async with factory() as db:
+        with pytest.raises(SignInInvalid):
+            await sign_in.complete(
+                db,
+                settings,
+                fake,
+                code=code,
+                state=state,
+                attempt=attempt,
+                ip=None,
+                user_agent=None,
+            )
+    assert fake.calls_to("complete_sign_in") == [] or tampered == "nonce"
+
+
+async def test_a_spent_code_is_refused(
+    factory: SessionFactory, settings: Settings, fake: FakeForge
+) -> None:
+    started = sign_in.start(fake, "/")
+    code, state = _answer(fake, started)
+    async with factory() as db:
+        await sign_in.complete(
+            db,
+            settings,
+            fake,
+            code=code,
+            state=state,
+            attempt=started.attempt,
+            ip=None,
+            user_agent=None,
+        )
+        with pytest.raises(SignInInvalid):
+            await sign_in.complete(
+                db,
+                settings,
+                fake,
+                code=code,
+                state=state,
+                attempt=started.attempt,
+                ip=None,
+                user_agent=None,
+            )
