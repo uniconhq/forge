@@ -7,8 +7,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from forge.domain.errors import InvalidName
 from forge.domain.names import (
-    InvalidName,
     TeamOwner,
     UserOwner,
     owner_from_segment,

@@ -7,15 +7,13 @@ import re
 import uuid
 from dataclasses import dataclass
 
+from forge.domain.errors import InvalidName
+
 NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 CONTEST_OR_TASK_MAX = 24
 OTHER_MAX = 40
 
 TEAM_PREFIX = "team."
-
-
-class InvalidName(ValueError):
-    """The name breaks the character or length rule."""
 
 
 def validate_name(value: str, *, max_length: int = OTHER_MAX) -> str:
