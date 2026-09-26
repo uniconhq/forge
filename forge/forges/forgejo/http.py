@@ -1,6 +1,7 @@
-"""One HTTP client for every call to Forgejo. It signs each request for the
-identity the call is made under, retries a forge that is busy, and turns every
-refusal into one of the port's five errors.
+"""One HTTP client for the host and one for the CI, built on the same
+retrying `Http`. It signs each request for the identity the call is made
+under, retries a server that is busy, and turns every refusal into one of the
+port's five errors.
 """
 
 import asyncio
@@ -12,6 +13,7 @@ import httpx
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import AsOrgAccount, AsUser, CiAdmin, Identity, Platform
 from forge.log import get_logger
+from forge.port.tokens import TokenSource
 
 log = get_logger(__name__)
 
@@ -28,28 +30,58 @@ FORBIDDEN = (401, 403)
 CONFLICT = 409
 ALREADY_EXISTS = "already exists"
 
-
-class TokenSource(Protocol):
-    """Where the credentials of the org accounts come from."""
-
-    async def forge_token(self, org: str) -> str: ...
-
-    async def ci_token(self, org: str) -> str: ...
+Params = Mapping[str, str | int]
 
 
-class ForgejoHttp:
+class Auth(Protocol):
+    async def header(self, as_: Identity) -> str:
+        """The `Authorization` value for a call made as `as_`."""
+        ...
+
+
+class ForgejoAuth:
+    def __init__(self, admin_token: str, tokens: TokenSource) -> None:
+        self._admin_token = admin_token
+        self._tokens = tokens
+
+    async def header(self, as_: Identity) -> str:
+        match as_:
+            case Platform():
+                return f"token {self._admin_token}"
+            case AsUser(credential=credential):
+                return f"Bearer {credential.access}"
+            case AsOrgAccount(org=org):
+                return f"token {await self._tokens.forge_token(org)}"
+            case CiAdmin():
+                raise Forbidden("the CI administrator has no access to the forge")
+        raise Forbidden("unknown identity")
+
+
+class WoodpeckerAuth:
+    def __init__(self, admin_token: str, tokens: TokenSource) -> None:
+        self._admin_token = admin_token
+        self._tokens = tokens
+
+    async def header(self, as_: Identity) -> str:
+        match as_:
+            case CiAdmin():
+                return f"Bearer {self._admin_token}"
+            case AsOrgAccount(org=org):
+                return f"Bearer {await self._tokens.ci_token(org)}"
+        raise Forbidden("only the CI administrator and org accounts reach the CI")
+
+
+class Http:
     def __init__(
         self,
         client: httpx.AsyncClient,
+        auth: Auth,
         *,
-        admin_token: str,
-        tokens: TokenSource,
         retries: int = RETRIES,
         backoff_seconds: float = BACKOFF_SECONDS,
     ) -> None:
         self._client = client
-        self._admin_token = admin_token
-        self._tokens = tokens
+        self._auth = auth
         self._retries = retries
         self._backoff = backoff_seconds
         self._in_flight = asyncio.Semaphore(CONCURRENT_CALLS)
@@ -61,48 +93,47 @@ class ForgejoHttp:
         path: str,
         *,
         json: Any = None,
+        params: Params | None = None,
+    ) -> httpx.Response:
+        """One request as `as_`, refused as one of the five errors."""
+        headers = {"Authorization": await self._auth.header(as_)}
+        return await self.request(method, path, json=json, params=params, headers=headers)
+
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
         data: Mapping[str, str] | None = None,
-        params: Mapping[str, str | int] | None = None,
+        params: Params | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
-        """Make one request as `as_`. A 404 is `NotFound`, 401 and 403 are
-        `Forbidden`, 409 is `Conflict`, any other 4xx is `Rejected`, and a forge
-        that does not answer after the retries is `Unavailable`.
+        """One request with the headers given, retried while the server is
+        busy, refused as one of the five errors.
         """
-        sent = dict(headers or {})
-        sent.update(await self._authorization(as_))
-        response = await self._send(method, path, json=json, data=data, params=params, headers=sent)
+        response = await self._send(
+            method, path, json=json, data=data, params=params, headers=headers
+        )
         if response.is_success:
             return response
-        raise _refusal(response)
+        raise refusal(response)
 
     async def get_all(self, as_: Identity, path: str, **params: str | int) -> list[dict[str, Any]]:
-        """Every page of a list endpoint, until a page comes back empty."""
+        """Every page of a list endpoint."""
         collected: list[dict[str, Any]] = []
         for page in range(1, MAX_PAGES + 1):
             response = await self.call(
                 as_, "GET", path, params={**params, "limit": PAGE_SIZE, "page": page}
             )
             batch: list[dict[str, Any]] = response.json()
-            if not batch:
-                return collected
             collected.extend(batch)
+            if len(batch) < PAGE_SIZE:
+                return collected
         raise Unavailable(f"{path} did not end within {MAX_PAGES} pages")
 
     async def aclose(self) -> None:
         await self._client.aclose()
-
-    async def _authorization(self, as_: Identity) -> dict[str, str]:
-        match as_:
-            case Platform():
-                return {"Authorization": f"token {self._admin_token}"}
-            case AsUser(credential=credential):
-                return {"Authorization": f"Bearer {credential.access}"}
-            case AsOrgAccount(org=org):
-                return {"Authorization": f"token {await self._tokens.forge_token(org)}"}
-            case CiAdmin():
-                raise Forbidden("the CI administrator has no access to the forge")
-        raise Forbidden("unknown identity")
 
     async def _send(
         self,
@@ -111,8 +142,8 @@ class ForgejoHttp:
         *,
         json: Any,
         data: Mapping[str, str] | None,
-        params: Mapping[str, str | int] | None,
-        headers: Mapping[str, str],
+        params: Params | None,
+        headers: Mapping[str, str] | None,
     ) -> httpx.Response:
         for attempt in range(self._retries + 1):
             try:
@@ -122,18 +153,18 @@ class ForgejoHttp:
                     )
             except httpx.HTTPError as exc:
                 if attempt == self._retries:
-                    raise Unavailable(f"the forge did not answer: {type(exc).__name__}") from exc
+                    raise Unavailable(f"no answer from {path}: {type(exc).__name__}") from exc
                 await self._pause(attempt)
                 continue
             if response.status_code < SERVER_ERROR:
                 return response
             if attempt == self._retries:
-                raise Unavailable(f"the forge answered {response.status_code}")
+                raise Unavailable(f"{path} answered {response.status_code}")
             await self._pause(attempt)
-        raise Unavailable("the forge did not answer")
+        raise Unavailable(f"no answer from {path}")
 
     async def _pause(self, attempt: int) -> None:
-        log.debug("forge.retry", attempt=attempt + 1)
+        log.debug("http.retry", attempt=attempt + 1)
         await asyncio.sleep(self._backoff * (2**attempt))
 
 
@@ -153,12 +184,35 @@ def message_of(response: httpx.Response) -> str:
     return response.text[:200]
 
 
-def _refusal(response: httpx.Response) -> Exception:
+def refusal(response: httpx.Response) -> Exception:
     detail = message_of(response)
     if response.status_code == NOT_FOUND:
-        return NotFound(detail or "not found at the forge")
+        return NotFound(detail or "not found")
     if response.status_code in FORBIDDEN:
-        return Forbidden(detail or "the forge refused this identity")
+        return Forbidden(detail or "refused for this identity")
     if response.status_code == CONFLICT or ALREADY_EXISTS in detail:
-        return Conflict(detail or "the forge reports a conflict")
-    return Rejected(detail or f"the forge answered {response.status_code}")
+        return Conflict(detail or "conflict")
+    return Rejected(detail or f"answered {response.status_code}", **_oauth_members(response))
+
+
+def _oauth_members(response: httpx.Response) -> dict[str, str]:
+    """The `error` member of an OAuth refusal, carried on the error so the
+    sign-in code can tell a spent grant from a wrong registration.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    if isinstance(body, dict) and isinstance(body.get("error"), str):
+        return {"error": str(body["error"])}
+    return {}
+
+
+def json_of(response: httpx.Response) -> dict[str, Any]:
+    payload: dict[str, Any] = response.json()
+    return payload
+
+
+def list_of(response: httpx.Response) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = response.json()
+    return payload
