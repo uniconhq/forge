@@ -9,11 +9,11 @@ Layers, each a package here, and what each may import:
     services    the actions; composes domain, db and the port
     db          the tables and migrations
     port        the interface a git host is called through
-    forges/     the implementations of the port: forgejo/ and fake/
+    forges/     the implementations of the port: forgejo/, fake/ and cached
 
 `domain`, `services` and `db` never import `forges`; `forges.forgejo` never
 imports `services` or `db`. import-linter contracts in `pyproject.toml` fail
-the build on a leak.
+the build on a leak. `runtime` assembles the package for one process.
 """
 
 __version__ = "0.1.0"
