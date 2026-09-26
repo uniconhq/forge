@@ -77,7 +77,9 @@ class Settings(BaseSettings):
     @classmethod
     def _internal_url_defaults_to_public(cls, data: Any) -> Any:
         if isinstance(data, dict) and not data.get("forge_internal_url"):
-            data["forge_internal_url"] = data.get("forge_public_url")
+            public = data.get("forge_public_url")
+            if public:
+                data["forge_internal_url"] = public
         return data
 
     @field_validator("*")

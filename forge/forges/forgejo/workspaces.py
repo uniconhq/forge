@@ -9,7 +9,7 @@ import base64
 from collections.abc import Sequence
 
 from forge.domain.content import Files
-from forge.domain.errors import Conflict, NotFound
+from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import ContestId, PublicationId, SubmissionId, TaskId, WorkspaceId
 from forge.domain.names import WorkspaceOwner
@@ -131,12 +131,15 @@ class WorkspaceOps(ContentOps, IdentityOps, CiOps):
         if not files:
             return
         existing = await self._existing_paths(as_, org, repo)
+        first_commit = {"new_branch": DEFAULT_BRANCH} if existing is None else {}
+        existing = existing or {}
         await self._http.call(
             as_,
             "POST",
             f"/api/v1/repos/{org}/{repo}/contents",
             json={
                 "branch": DEFAULT_BRANCH,
+                **first_commit,
                 "message": message,
                 "files": [
                     {
@@ -150,16 +153,22 @@ class WorkspaceOps(ContentOps, IdentityOps, CiOps):
             },
         )
 
-    async def _existing_paths(self, as_: Identity, org: str, repo: str) -> dict[str, str]:
+    async def _existing_paths(self, as_: Identity, org: str, repo: str) -> dict[str, str] | None:
+        """The blob of every file on the default branch, or none for a
+        repository with no commit yet.
+        """
         try:
-            tree = await self._http.call(
-                as_,
-                "GET",
-                f"/api/v1/repos/{org}/{repo}/git/trees/{DEFAULT_BRANCH}",
-                params={"recursive": "true", "per_page": 1000},
+            await self._http.call(
+                as_, "GET", f"/api/v1/repos/{org}/{repo}/branches/{DEFAULT_BRANCH}"
             )
-        except NotFound, Conflict:
-            return {}
+        except NotFound:
+            return None
+        tree = await self._http.call(
+            as_,
+            "GET",
+            f"/api/v1/repos/{org}/{repo}/git/trees/{DEFAULT_BRANCH}",
+            params={"recursive": "true", "per_page": 1000},
+        )
         entries = tree.json().get("tree") or []
         return {
             str(entry["path"]): str(entry["sha"])
