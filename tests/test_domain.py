@@ -23,9 +23,10 @@ NOW = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
 IDLE = timedelta(days=14)
 
 
-def test_a_name_is_lower_case_letters_digits_and_hyphens() -> None:
-    assert validate_name("spring-2026") == "spring-2026"
-    for bad in ("Spring", "2026", "-a", "a_b", "a.b"):
+def test_a_name_is_lower_case_letters_digits_hyphens_and_underscores() -> None:
+    for good in ("spring-2026", "2026-spring", "week_1", "42"):
+        assert validate_name(good) == good
+    for bad in ("Spring", "-a", "_a", "a.b", "a b", ""):
         with pytest.raises(InvalidName):
             validate_name(bad)
 
