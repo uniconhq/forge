@@ -1,0 +1,69 @@
+[project]
+name = "unicon-forge"
+version = "0.1.0"
+description = "The Unicon contest API as a Python package: domain, services, tables, and the forge port with its implementations"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.14"
+dependencies = [
+    "pydantic>=2.13.5",
+]
+
+[project.urls]
+Source = "https://github.com/uniconhq/forge"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.7",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "import-linter>=2.15",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["forge"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["forge", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.importlinter]
+root_package = "forge"
+
+# The layers, as rules the build enforces. A leak fails CI the same as a
+# missing import would.
+[[tool.importlinter.contracts]]
+name = "domain, services and db never import a forge implementation"
+type = "forbidden"
+source_modules = ["forge.domain", "forge.services", "forge.db"]
+forbidden_modules = ["forge.forges"]
+
+[[tool.importlinter.contracts]]
+name = "the Forgejo implementation never imports services or db"
+type = "forbidden"
+source_modules = ["forge.forges.forgejo"]
+forbidden_modules = ["forge.services", "forge.db"]
+
+[[tool.importlinter.contracts]]
+name = "domain imports nothing else in the package"
+type = "forbidden"
+source_modules = ["forge.domain"]
+forbidden_modules = ["forge.services", "forge.db", "forge.port", "forge.forges", "forge.log"]

@@ -1,0 +1,63 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The ancestry check below needs main's history, not the tag alone.
+          fetch-depth: 0
+
+      # Whatever depends on this package pins a release, so a release comes
+      # from the reviewed branch only. A tag on any other branch publishes
+      # nothing.
+      - name: Check the tag is on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "$GITHUB_REF_NAME is not on main; release only from main"
+            exit 1
+          fi
+
+      # The version inside the package must equal the tag it was built from.
+      - name: Check the tag matches the package version
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          declared="$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)"
+          in_code="$(grep -m1 '^__version__ = ' forge/__init__.py | cut -d'"' -f2)"
+          if [ "$tagged" != "$declared" ] || [ "$tagged" != "$in_code" ]; then
+            echo "tag $GITHUB_REF_NAME, pyproject $declared, forge/__init__.py $in_code: not the same"
+            exit 1
+          fi
+
+      # The same checks as CI: a tag on a red commit must not become a release.
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          version: 0.12.13
+      - run: uv sync --frozen
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run lint-imports
+      - run: uv run mypy
+      - run: uv run pytest
+
+      - run: uv build
+
+      # The release carries the wheel and the sdist. A dependant pins one
+      # release by its tag and installs the wheel from it.
+      - uses: softprops/action-gh-release@v3
+        with:
+          body: |
+            `unicon-forge` ${{ github.ref_name }}. Install the wheel below, or
+            `pip install https://github.com/uniconhq/forge/releases/download/${{ github.ref_name }}/unicon_forge-${GITHUB_REF_NAME#v}-py3-none-any.whl`.
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
