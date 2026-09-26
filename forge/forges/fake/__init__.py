@@ -1,15 +1,104 @@
-"""The port in memory, for tests. It implements every operation the port
-declares, with no network, and records every call with the identity it was made
-under.
+"""The port in memory, for tests. It implements every area with no network,
+records every call with the identity it was made under, and refuses the three
+things a real forge refuses: a write whose conflict check is stale, a
+protected version created by anything but the platform, and a read the user
+has no access to.
 """
 
-from forge.port import Forge
+from typing import Any
+
+from forge.context import Clock
+from forge.domain.identity import Credential, User
+from forge.forges.fake.content import FakeContent
+from forge.forges.fake.grading import FakeComputes, FakeGrading
+from forge.forges.fake.identity import FakeIdentity
+from forge.forges.fake.orgs import FakeOrgs
+from forge.forges.fake.state import Call, State
+from forge.forges.fake.threads import FakeThreads
+from forge.forges.fake.workflows import FakePrimitives, FakeWorkflows
+from forge.forges.fake.workspaces import FakeWorkspaces
+
+__all__ = ["Call", "FakeForge", "State"]
 
 
 class FakeForge:
+    def __init__(
+        self,
+        *,
+        public_url: str = "http://forge.test",
+        sign_in_redirect_uri: str = "http://app.test/api/v1/auth/callback",
+        clock: Clock | None = None,
+    ) -> None:
+        self.state = State(clock)
+        self.identity = FakeIdentity(
+            self.state, public_url=public_url, redirect_uri=sign_in_redirect_uri
+        )
+        self.orgs = FakeOrgs(self.state)
+        self.content = FakeContent(self.state)
+        self.grading = FakeGrading(self.state)
+        self.workspaces = FakeWorkspaces(self.state, self.grading)
+        self.threads = FakeThreads(self.state)
+        self.workflows = FakeWorkflows(self.state)
+        self.primitives = FakePrimitives(self.state)
+        self.computes = FakeComputes(self.state)
+
     @property
     def name(self) -> str:
         return "fake"
 
+    async def aclose(self) -> None:
+        return None
 
-_is_a_forge: type[Forge] = FakeForge
+    def add_user(self, user_id: int, username: str, **fields: Any) -> User:
+        user = User(id=user_id, username=username, **fields)
+        self.state.users[user_id] = user
+        return user
+
+    def mint(self, user_id: int) -> Credential:
+        """A credential for the user, as a completed sign-in would yield."""
+        return self.state.mint(user_id)
+
+    def consent_redirect(self, sign_in_url: str) -> str:
+        return self.identity.consent_redirect(sign_in_url)
+
+    @property
+    def calls(self) -> list[Call]:
+        return self.state.calls
+
+    def calls_to(self, operation: str) -> list[Call]:
+        return [call for call in self.state.calls if call.operation == operation]
+
+    def reset_calls(self) -> None:
+        self.state.calls.clear()
+
+    @property
+    def users(self) -> dict[int, User]:
+        return self.state.users
+
+    @property
+    def signed_in_user_id(self) -> int:
+        return self.state.signed_in_user_id
+
+    @signed_in_user_id.setter
+    def signed_in_user_id(self, user_id: int) -> None:
+        self.state.signed_in_user_id = user_id
+
+    @property
+    def unavailable(self) -> bool:
+        return self.state.unavailable
+
+    @unavailable.setter
+    def unavailable(self, value: bool) -> None:
+        self.state.unavailable = value
+
+    @property
+    def refuse_refresh(self) -> bool:
+        return self.state.refuse_refresh
+
+    @refuse_refresh.setter
+    def refuse_refresh(self, value: bool) -> None:
+        self.state.refuse_refresh = value
+
+    @property
+    def refreshes(self) -> int:
+        return self.state.refreshes

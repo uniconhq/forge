@@ -1,4 +1,4 @@
-"""The types: what a contest, a task, a contestant and a grading are, as plain
-Python with no database and no forge in them. Imports nothing else in this
-package.
+"""The types: what a user, a session, a role, a file, a thread and a grading
+run are, as plain Python with no database and no forge in them. Imports
+nothing else in this package.
 """
