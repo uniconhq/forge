@@ -1,3 +1,3 @@
-"""The tables and their migrations, applied by `unicon migrate`. Never imports
-`forge.forges`.
+"""The tables, their migrations, and the engine and sessions the services
+read and write through. Never imports `forge.forges`.
 """
