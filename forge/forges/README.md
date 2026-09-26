@@ -1,6 +1,6 @@
 # What a git host must provide
 
-The port in `forge/port.py` is written in the platform's words. Any host that
+The port in `forge/port/` is written in the platform's words. Any host that
 sits behind it has to provide the capabilities below. The list is also what
 fixes the database boundary: anything not on it is platform state, held in the
 package's own tables, and stays there when the host changes.

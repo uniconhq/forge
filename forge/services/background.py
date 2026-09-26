@@ -1,8 +1,8 @@
-"""Work that happens with nobody clicking, in two shapes and with no jobs
-table. A poller takes waiting rows from a table that already carries a status,
-each under `FOR UPDATE SKIP LOCKED`, so two processes never take the same row.
-A timed pass runs on a clock and takes a Postgres advisory lock first, so it
-runs once however many processes are up.
+"""Work that happens with nobody clicking, in two shapes. A poller takes
+waiting rows from a table that already carries a status, each under
+`FOR UPDATE SKIP LOCKED`, so two processes never take the same row. A timed
+pass runs on a clock and takes a Postgres advisory lock first, so it runs once
+however many processes are up. Each tick owns its transaction.
 """
 
 import asyncio
@@ -30,8 +30,9 @@ PassWork = Callable[[AsyncSession], Awaitable[None]]
 @dataclass(frozen=True, slots=True)
 class Poller:
     """Takes rows of `table` whose `status` is one of `waiting`, in batches,
-    and calls `work` on each inside the transaction that holds the row. A
-    failure hands the row to `failed`, which records the error on it.
+    and calls `work` on each under a savepoint of its own. A failure rolls the
+    row's savepoint back and hands the row to `failed`, which records the
+    error on it, so one bad row costs neither the batch nor its own record.
     """
 
     name: str
@@ -59,9 +60,11 @@ class Poller:
             )
             for row in rows:
                 try:
-                    await self.work(db, row)
+                    async with db.begin_nested():
+                        await self.work(db, row)
                 except Exception as exc:
                     log.exception("poller.row_failed", poller=self.name)
+                    await db.refresh(row)
                     self.failed(row, exc)
             await db.commit()
             return len(rows)

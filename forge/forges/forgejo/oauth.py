@@ -1,6 +1,7 @@
-"""Signing a user in through Forgejo's OpenID Connect provider and keeping
-their credential alive. The browser is sent to the public URL; every other
-call goes over the internal one.
+"""Forgejo's OpenID Connect provider: the sign-in redirect, the code exchange,
+the refresh and the identity behind a credential. The browser is sent to the
+public URL; every other call goes over the internal one, through the same
+retrying client as the rest of the implementation.
 """
 
 import base64
@@ -9,12 +10,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
-import httpx
-
 from forge.domain.errors import Forbidden, Misconfigured, Rejected
 from forge.domain.identity import Credential, User
-from forge.forges.forgejo.http import ForgejoHttp, message_of
-from forge.port import SignedIn
+from forge.forges.forgejo.http import Http
+from forge.port.identity import SignedIn
 
 AUTHORIZE_PATH = "/login/oauth/authorize"
 TOKEN_PATH = "/login/oauth/access_token"
@@ -22,20 +21,20 @@ USERINFO_PATH = "/login/oauth/userinfo"
 SCOPES = "openid profile email"
 
 SPENT_GRANT_ERRORS = frozenset({"invalid_grant", "unauthorized_client"})
-INVALID_CLIENT = 400
+INVALID_CLIENT = "invalid_client"
 
 
 class OAuth:
     def __init__(
         self,
-        client: httpx.AsyncClient,
+        http: Http,
         *,
         public_url: str,
         client_id: str,
         client_secret: str,
         redirect_uri: str,
     ) -> None:
-        self._client = client
+        self._http = http
         self._public_url = public_url.rstrip("/")
         self._client_id = client_id
         self._client_secret = client_secret
@@ -56,8 +55,8 @@ class OAuth:
         )
         return f"{self._public_url}{AUTHORIZE_PATH}?{query}"
 
-    async def complete_sign_in(self, http: ForgejoHttp, *, code: str, verifier: str) -> SignedIn:
-        payload = await self._token_request(
+    async def complete_sign_in(self, *, code: str, verifier: str) -> SignedIn:
+        payload = await self._grant(
             {
                 "grant_type": "authorization_code",
                 "code": code,
@@ -66,50 +65,44 @@ class OAuth:
             }
         )
         credential = _credential(payload)
-        user = await self.user_of(credential)
-        return SignedIn(user=user, credential=credential, nonce=_nonce_of(payload))
+        return SignedIn(
+            user=await self.user_of(credential), credential=credential, nonce=_nonce_of(payload)
+        )
 
     async def refresh(self, credential: Credential) -> Credential:
-        payload = await self._token_request(
-            {"grant_type": "refresh_token", "refresh_token": credential.refresh}
+        return _credential(
+            await self._grant({"grant_type": "refresh_token", "refresh_token": credential.refresh})
         )
-        return _credential(payload)
 
     async def user_of(self, credential: Credential) -> User:
-        response = await self._client.get(
-            USERINFO_PATH, headers={"Authorization": f"Bearer {credential.access}"}
+        response = await self._http.request(
+            "GET", USERINFO_PATH, headers={"Authorization": f"Bearer {credential.access}"}
         )
-        if response.is_error:
-            raise Forbidden(message_of(response) or "the forge does not accept this credential")
         return _user(response.json())
 
-    async def _token_request(self, form: dict[str, str]) -> dict[str, Any]:
+    async def _grant(self, form: dict[str, str]) -> dict[str, Any]:
         requested_at = datetime.now(UTC)
-        response = await self._client.post(
-            TOKEN_PATH,
-            data=form | {"client_id": self._client_id, "client_secret": self._client_secret},
-            headers={"Accept": "application/json"},
-        )
-        if response.is_error:
-            raise _grant_refusal(response)
+        try:
+            response = await self._http.request(
+                "POST",
+                TOKEN_PATH,
+                data=form | {"client_id": self._client_id, "client_secret": self._client_secret},
+                headers={"Accept": "application/json"},
+            )
+        except Rejected as exc:
+            raise _grant_refusal(exc) from exc
         payload: dict[str, Any] = response.json()
         payload["_requested_at"] = requested_at
         return payload
 
 
-def _grant_refusal(response: httpx.Response) -> Exception:
-    error = ""
-    try:
-        body = response.json()
-        if isinstance(body, dict):
-            error = str(body.get("error", ""))
-    except ValueError:
-        body = None
+def _grant_refusal(exc: Rejected) -> Exception:
+    error = str(exc.extra.get("error", ""))
     if error in SPENT_GRANT_ERRORS:
         return Forbidden(f"the forge will not renew this credential: {error}")
-    if response.status_code == INVALID_CLIENT and error == "invalid_client":
+    if error == INVALID_CLIENT:
         return Misconfigured("the forge does not recognise this platform's registration")
-    return Rejected(message_of(response) or f"the forge answered {response.status_code}")
+    return exc
 
 
 def _credential(payload: dict[str, Any]) -> Credential:
@@ -122,9 +115,8 @@ def _credential(payload: dict[str, Any]) -> Credential:
 
 
 def _nonce_of(payload: dict[str, Any]) -> str | None:
-    """The nonce claim of the identity token. The token arrived over the
-    back channel with the client secret, so its claims are read without a
-    signature check.
+    """The nonce claim of the identity token, read without a signature check:
+    the token arrived over the back channel with the client secret.
     """
     token = payload.get("id_token")
     if not isinstance(token, str) or token.count(".") != 2:

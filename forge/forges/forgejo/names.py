@@ -18,6 +18,7 @@ the final word.
 
 from dataclasses import dataclass
 
+from forge.domain.errors import NotFound
 from forge.domain.ids import (
     ContestId,
     PrimitiveId,
@@ -30,8 +31,11 @@ from forge.domain.ids import (
 )
 from forge.domain.names import WorkspaceOwner, owner_from_segment
 
+PLATFORM_ACCOUNT = "unicon-backend"
+CI_ADMIN_ACCOUNT = "unicon-ci"
 PLATFORM_ORG = "unicon"
 WORKSPACE_MARK = "@"
+
 CONTEST = "contest"
 TASK = "task"
 DESK = "desk"
@@ -41,14 +45,15 @@ PRIMITIVE = "primitive"
 
 PUBLISHED_PREFIX = "published/"
 SUBMISSION_PREFIX = "submission/"
+PROTECTED_PREFIXES = (PUBLISHED_PREFIX, SUBMISSION_PREFIX)
 DEFAULT_BRANCH = "main"
 
 WORKFLOW_TOPIC = "unicon-workflow"
 PRIMITIVE_TOPIC = "unicon-primitive"
 
 
-class MalformedId(ValueError):
-    """An id that did not come from this implementation."""
+class MalformedId(NotFound):
+    """An id that did not come from this implementation names nothing."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,10 +83,6 @@ class TaskRef:
     @property
     def id(self) -> TaskId:
         return TaskId(f"{self.org}/{self.contest}/{self.task}")
-
-    @property
-    def contest_ref(self) -> ContestRef:
-        return ContestRef(self.org, self.contest)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,7 +130,7 @@ def parse_task(value: TaskId) -> TaskRef:
 def parse_workspace(value: WorkspaceId) -> WorkspaceRef:
     org, contest, owner = _split(value, 3)
     if not owner.startswith(WORKSPACE_MARK):
-        raise MalformedId(value)
+        raise MalformedId(f"{value} is not a workspace")
     return WorkspaceRef(org, contest, owner_from_segment(owner.removeprefix(WORKSPACE_MARK)))
 
 
@@ -152,8 +153,8 @@ def publication_id(task: TaskRef, number: int) -> PublicationId:
 
 
 def parse_publication(value: PublicationId) -> tuple[TaskRef, int]:
-    task, number = value.rsplit("#", 1)
-    return parse_task(TaskId(task)), _number(number)
+    task, number = _numbered(value)
+    return parse_task(TaskId(task)), number
 
 
 def submission_id(workspace: WorkspaceRef, task: str, number: int) -> SubmissionId:
@@ -161,10 +162,9 @@ def submission_id(workspace: WorkspaceRef, task: str, number: int) -> Submission
 
 
 def parse_submission(value: SubmissionId) -> tuple[WorkspaceRef, str, int]:
-    head, number = value.rsplit("#", 1)
+    head, number = _numbered(value)
     org, contest, owner, task = _split(head, 4)
-    workspace = parse_workspace(WorkspaceId(f"{org}/{contest}/{owner}"))
-    return workspace, task, _number(number)
+    return parse_workspace(WorkspaceId(f"{org}/{contest}/{owner}")), task, number
 
 
 def thread_id(owner: str, repo: str, number: int) -> ThreadId:
@@ -172,26 +172,20 @@ def thread_id(owner: str, repo: str, number: int) -> ThreadId:
 
 
 def parse_thread(value: ThreadId) -> tuple[str, str, int]:
-    head, number = value.rsplit("#", 1)
+    head, number = _numbered(value)
     owner, repo = _split(head, 2)
-    return owner, repo, _number(number)
-
-
-def owner_of_submission_repo(repo: str) -> str:
-    """The owner segment of `<contest>.<task>.<owner>.sub`."""
-    body = repo.removesuffix(f".{SUBMISSION}")
-    return body.split(".", 2)[2]
+    return owner, repo, number
 
 
 def _split(value: str, parts: int) -> list[str]:
     pieces = value.split("/")
     if len(pieces) != parts or not all(pieces):
-        raise MalformedId(value)
+        raise MalformedId(f"{value} is not an id of this forge")
     return pieces
 
 
-def _number(text: str) -> int:
-    try:
-        return int(text)
-    except ValueError as exc:
-        raise MalformedId(text) from exc
+def _numbered(value: str) -> tuple[str, int]:
+    head, separator, number = value.rpartition("#")
+    if not separator or not number.isdigit():
+        raise MalformedId(f"{value} is not an id of this forge")
+    return head, int(number)
