@@ -1,11 +1,13 @@
-"""Two pollers over one table never take the same row, and two timed passes
-ticking together do the work once.
+"""Two pollers over one table never take the same row, a row that fails is
+recorded without losing the batch, and two timed passes ticking together do
+the work once.
 """
 
 import asyncio
 from datetime import timedelta
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.db.engine import SessionFactory
@@ -18,6 +20,12 @@ async def _seed(factory: SessionFactory, count: int) -> None:
         for index in range(count):
             db.add(Provisioning(kind="org", target_id=f"org-{index}", status="pending"))
         await db.commit()
+
+
+async def _rows(factory: SessionFactory) -> list[Any]:
+    async with factory() as db:
+        found = await db.execute(Provisioning.__table__.select().order_by(Provisioning.target_id))
+        return list(found)
 
 
 async def test_two_pollers_never_take_the_same_row(factory: SessionFactory) -> None:
@@ -33,8 +41,7 @@ async def test_two_pollers_never_take_the_same_row(factory: SessionFactory) -> N
 
         return Poller(name, Provisioning, Provisioning.status, ["pending"], work, _failed, batch=3)
 
-    first, second = poller("one"), poller("two")
-    ticks = asyncio.gather(first.tick(factory), second.tick(factory))
+    ticks = asyncio.gather(poller("one").tick(factory), poller("two").tick(factory))
     await asyncio.sleep(0.5)
     gate.set()
     counts = await ticks
@@ -43,19 +50,23 @@ async def test_two_pollers_never_take_the_same_row(factory: SessionFactory) -> N
     assert len({target for _, target in taken}) == 6
 
 
-async def test_a_failed_row_goes_back_with_its_error(factory: SessionFactory) -> None:
-    await _seed(factory, 1)
+async def test_a_failed_row_is_recorded_and_the_batch_survives(factory: SessionFactory) -> None:
+    await _seed(factory, 2)
 
     async def work(db: AsyncSession, row: Any) -> None:
-        raise RuntimeError("the forge said no")
+        if row.target_id == "org-0":
+            await db.execute(text("select * from no_such_table"))
+        row.status = "ready"
 
     await Poller("p", Provisioning, Provisioning.status, ["pending"], work, _failed).tick(factory)
 
-    async with factory() as db:
-        row = (await db.execute(Provisioning.__table__.select())).one()
-    assert row.status == "failed"
-    assert row.error == "the forge said no"
-    assert row.attempts == 1
+    rows = await _rows(factory)
+    assert [(row.target_id, row.status) for row in rows] == [
+        ("org-0", "failed"),
+        ("org-1", "ready"),
+    ]
+    assert "no_such_table" in rows[0].error
+    assert rows[0].attempts == 1
 
 
 async def test_two_passes_ticking_together_do_the_work_once(factory: SessionFactory) -> None:

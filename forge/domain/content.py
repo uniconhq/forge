@@ -1,6 +1,7 @@
-"""Files, versions and history as the port hands them out. A version is an
-opaque id; a file carries the version it was read at, which a write presents
-back as its conflict check.
+"""Files, versions and history as the port hands them out. A `VersionId` names
+a point in a place's history. A `ConflictToken` is what a file is read with
+and what a write presents back, so a write over a file that has changed since
+is refused.
 """
 
 from dataclasses import dataclass
@@ -12,11 +13,17 @@ from forge.domain.ids import VersionId
 Files = dict[str, bytes]
 
 
+class ConflictToken(str):
+    """Names the state of one file as it was read. Opaque above the port."""
+
+    __slots__ = ()
+
+
 @dataclass(frozen=True, slots=True)
 class File:
     path: str
     content: bytes
-    version: VersionId
+    token: ConflictToken
 
 
 class EntryKind(StrEnum):
@@ -33,7 +40,7 @@ class TreeEntry:
 
 @dataclass(frozen=True, slots=True)
 class Change:
-    """One entry of a thing's history."""
+    """One entry of a place's history."""
 
     version: VersionId
     author_id: int | None

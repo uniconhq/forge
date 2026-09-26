@@ -1,4 +1,4 @@
-"""Every `UNICON_*` setting the platform reads, loaded once at start. A missing
+"""Every `UNICON_*` setting the package reads, loaded once at start. A missing
 or malformed variable stops the process with the variable named, so a bad
 deployment fails at start rather than on the first request that needs the
 value. Secrets are `SecretStr` and never reach a log.
@@ -18,40 +18,45 @@ KEY_BYTES = 32
 
 ForgeKind = Literal["forgejo", "fake"]
 
+FORGEJO_FIELDS = (
+    "forge_public_url",
+    "forge_admin_token",
+    "forge_oauth_client_id",
+    "forge_oauth_client_secret",
+    "woodpecker_url",
+    "woodpecker_token",
+)
+
 
 class Settings(BaseSettings):
-    """The platform's configuration. `forge` picks the implementation behind the
-    port; `fake` runs the whole stack without a git host.
+    """The package's configuration. `forge` picks the implementation behind
+    the port; the settings of the Forgejo implementation are required only
+    when it is chosen.
     """
 
     model_config = SettingsConfigDict(env_prefix="UNICON_", extra="ignore")
 
     public_url: HttpUrl
     database_url: PostgresDsn
+    token_encryption_key: SecretStr
 
     forge: ForgeKind = "forgejo"
-    forge_public_url: HttpUrl
-    forge_internal_url: HttpUrl
-    forge_admin_token: SecretStr
-    forge_oauth_client_id: str
-    forge_oauth_client_secret: SecretStr
+    forge_public_url: HttpUrl | None = None
+    forge_internal_url: HttpUrl | None = None
+    forge_admin_token: SecretStr | None = None
+    forge_oauth_client_id: str | None = None
+    forge_oauth_client_secret: SecretStr | None = None
     forge_registration_open: bool = False
     forge_cache: bool = False
-
-    org_creation_open: bool = True
-
-    woodpecker_url: HttpUrl
-    woodpecker_token: SecretStr
+    woodpecker_url: HttpUrl | None = None
+    woodpecker_token: SecretStr | None = None
 
     s3_endpoint: HttpUrl
     s3_region: str
     s3_access_key: SecretStr
     s3_secret_key: SecretStr
 
-    session_signing_key: SecretStr
-    token_encryption_key: SecretStr
-    cookie_secure: bool = False
-
+    org_creation_open: bool = True
     log_level: str = "INFO"
 
     session_hard_ttl: timedelta = timedelta(days=30)
@@ -73,14 +78,17 @@ class Settings(BaseSettings):
             raise ValueError("UNICON_SESSION_IDLE_TTL is longer than UNICON_SESSION_HARD_TTL")
         return self
 
-    @model_validator(mode="before")
-    @classmethod
-    def _internal_url_defaults_to_public(cls, data: Any) -> Any:
-        if isinstance(data, dict) and not data.get("forge_internal_url"):
-            public = data.get("forge_public_url")
-            if public:
-                data["forge_internal_url"] = public
-        return data
+    @model_validator(mode="after")
+    def _forgejo_needs_its_settings(self) -> Self:
+        if self.forge != "forgejo":
+            return self
+        missing = [name for name in FORGEJO_FIELDS if getattr(self, name) is None]
+        if missing:
+            names = ", ".join(f"UNICON_{name.upper()}" for name in missing)
+            raise ValueError(f"UNICON_FORGE=forgejo needs {names}")
+        if self.forge_internal_url is None:
+            self.forge_internal_url = self.forge_public_url
+        return self
 
     @field_validator("*")
     @classmethod
@@ -99,76 +107,78 @@ class Settings(BaseSettings):
             return int(value)
         return value
 
-    @field_validator("session_signing_key", "token_encryption_key")
+    @field_validator("token_encryption_key")
     @classmethod
     def _thirty_two_bytes_base64url(cls, value: SecretStr) -> SecretStr:
-        raw = value.get_secret_value()
-        try:
-            decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
-        except (binascii.Error, ValueError) as exc:
-            raise ValueError("not base64url") from exc
-        if len(decoded) != KEY_BYTES:
-            raise ValueError(f"decodes to {len(decoded)} bytes, expected {KEY_BYTES}")
-        return value
-
-    @property
-    def session_signing_key_bytes(self) -> bytes:
-        return _decode_key(self.session_signing_key)
+        return require_key(value)
 
     @property
     def token_encryption_key_bytes(self) -> bytes:
-        return _decode_key(self.token_encryption_key)
+        return decode_key(self.token_encryption_key)
 
     @classmethod
     def for_tests(cls, **overrides: Any) -> Self:
-        """A complete configuration that reads nothing from the environment."""
-        key = base64.urlsafe_b64encode(b"\x00" * KEY_BYTES).decode().rstrip("=")
-        values: dict[str, Any] = {
-            "public_url": "http://localhost:8080",
-            "database_url": "postgresql+psycopg://unicon:unicon@localhost:5432/unicon",
-            "forge": "fake",
-            "forge_public_url": "http://localhost:3300",
-            "forge_internal_url": "http://forgejo:3000",
-            "forge_admin_token": "test-admin-token",
-            "forge_oauth_client_id": "test-client-id",
-            "forge_oauth_client_secret": "test-client-secret",
-            "forge_registration_open": True,
-            "woodpecker_url": "http://woodpecker-server:8000",
-            "woodpecker_token": "test-woodpecker-token",
-            "s3_endpoint": "http://garage:3900",
-            "s3_region": "garage",
-            "s3_access_key": "test-access-key",
-            "s3_secret_key": "test-secret-key",
-            "session_signing_key": key,
-            "token_encryption_key": key,
-        }
+        """A complete configuration against the in-memory forge that reads
+        nothing from the environment.
+        """
+        values: dict[str, Any] = {**TEST_VALUES}
         values.update(overrides)
         return cls(**values)
 
 
 class DatabaseSettings(BaseSettings):
-    """The one setting `unicon migrate` needs."""
+    """The one setting a migration needs."""
 
     model_config = SettingsConfigDict(env_prefix="UNICON_", extra="ignore")
 
     database_url: PostgresDsn
 
 
-def load_settings() -> Settings:
-    """Read the environment, or exit naming every variable that is wrong."""
-    return _loaded(Settings)
+TEST_KEY = base64.urlsafe_b64encode(b"\x00" * KEY_BYTES).decode().rstrip("=")
+
+TEST_VALUES: dict[str, Any] = {
+    "public_url": "http://localhost:8080",
+    "database_url": "postgresql+psycopg://unicon:unicon@localhost:5432/unicon",
+    "token_encryption_key": TEST_KEY,
+    "forge": "fake",
+    "forge_public_url": "http://localhost:3300",
+    "s3_endpoint": "http://garage:3900",
+    "s3_region": "garage",
+    "s3_access_key": "test-access-key",
+    "s3_secret_key": "test-secret-key",
+}
 
 
-def load_database_settings() -> DatabaseSettings:
-    return _loaded(DatabaseSettings)
+def require_key(value: SecretStr) -> SecretStr:
+    """A 32-byte key, base64url without padding."""
+    raw = value.get_secret_value()
+    try:
+        decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("not base64url") from exc
+    if len(decoded) != KEY_BYTES:
+        raise ValueError(f"decodes to {len(decoded)} bytes, expected {KEY_BYTES}")
+    return value
 
 
-def _decode_key(secret: SecretStr) -> bytes:
+def decode_key(secret: SecretStr) -> bytes:
     raw = secret.get_secret_value()
     return base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
 
 
-def _loaded[T: BaseSettings](settings_class: type[T]) -> T:
+def load_settings() -> Settings:
+    """Read the environment, or exit naming every variable that is wrong."""
+    return load(Settings)
+
+
+def load_database_settings() -> DatabaseSettings:
+    return load(DatabaseSettings)
+
+
+def load[T: BaseSettings](settings_class: type[T]) -> T:
+    """Read `settings_class` from the environment, or exit with every problem
+    listed and no traceback.
+    """
     try:
         return settings_class()
     except ValueError as exc:
@@ -184,7 +194,7 @@ def _problems(exc: ValueError) -> list[str]:
     lines = ["configuration error:"]
     for error in errors():
         if not error["loc"]:
-            lines.append(f"  {error['msg']}")
+            lines.append(f"  {error['msg'].removeprefix('Value error, ')}")
             continue
         location = str(error["loc"][0])
         name = location if location.startswith("UNICON_") else f"UNICON_{location.upper()}"
