@@ -7,13 +7,14 @@ create carries a random suffix and is removed afterwards.
 import os
 import secrets
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 import pytest
 
 from forge.domain.errors import Conflict, NotFound
-from forge.domain.identity import PLATFORM
+from forge.domain.identity import PLATFORM, AsUser, Credential
 from forge.domain.ids import OrgName
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
@@ -93,6 +94,26 @@ def user(admin: httpx.Client, stamp: str) -> Iterator[dict[str, Any]]:
 
 
 @pytest.fixture(scope="module")
+def person(admin: httpx.Client, user: dict[str, Any]) -> AsUser:
+    """The user acting as themself. A personal token stands in for the OAuth
+    credential a sign-in would yield: Forgejo takes either as a bearer.
+    """
+    minted = httpx.post(
+        f"{admin.base_url}/api/v1/users/{user['login']}/tokens",
+        auth=(user["login"], "live-password-123"),
+        json={"name": "live-test", "scopes": ["all"]},
+        timeout=30,
+    )
+    assert minted.status_code == 201, minted.text
+    credential = Credential(
+        access=str(minted.json()["sha1"]),
+        refresh="",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    return AsUser(int(user["id"]), credential)
+
+
+@pytest.fixture(scope="module")
 def org(admin: httpx.Client, stamp: str) -> Iterator[str]:
     name = f"live-org-{stamp}"
     yield name
@@ -117,15 +138,19 @@ async def test_a_user_is_found_deactivated_and_reactivated(
 
 
 async def test_an_org_with_its_roles_and_a_contest_with_its_files(
-    forge: ForgejoForge, org: str, user: dict[str, Any]
+    forge: ForgejoForge, org: str, user: dict[str, Any], person: AsUser
 ) -> None:
     await forge.orgs.create_org(OrgName(org), description="Live test org")
     with pytest.raises(Conflict):
         await forge.orgs.create_org(OrgName(org), description="again")
+    await forge.orgs.create_roles(OrgName(org))
+    await forge.orgs.create_roles(OrgName(org))
+    await forge.orgs.create_thread_labels(OrgName(org))
+    await forge.orgs.create_thread_labels(OrgName(org))
 
     user_id = int(user["id"])
     await forge.orgs.grant_role(user_id, Scope(org), Role.ADMIN)
-    assert await forge.orgs.roles_of(user_id) == (RoleGrant(Scope(org), Role.ADMIN),)
+    assert await forge.orgs.roles_of(person) == (RoleGrant(Scope(org), Role.ADMIN),)
     assert [holder.id for holder in await forge.orgs.holders_of(Scope(org), Role.ADMIN)] == [
         user_id
     ]
@@ -162,13 +187,13 @@ async def test_an_org_with_its_roles_and_a_contest_with_its_files(
     assert [entry.path for entry in await forge.content.list_tree(PLATFORM, task)] == ["task.yaml"]
 
     await forge.orgs.grant_role(user_id, Scope(org, "spring"), Role.MANAGER)
-    assert RoleGrant(Scope(org, "spring"), Role.MANAGER) in await forge.orgs.roles_of(user_id)
+    assert RoleGrant(Scope(org, "spring"), Role.MANAGER) in await forge.orgs.roles_of(person)
     await forge.orgs.revoke_role(user_id, Scope(org, "spring"), Role.MANAGER)
-    assert RoleGrant(Scope(org, "spring"), Role.MANAGER) not in await forge.orgs.roles_of(user_id)
+    assert RoleGrant(Scope(org, "spring"), Role.MANAGER) not in await forge.orgs.roles_of(person)
 
 
-async def test_a_workspace_takes_submissions_and_a_task_lists_none_published(
-    forge: ForgejoForge, org: str, user: dict[str, Any]
+async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_commit(
+    forge: ForgejoForge, org: str, user: dict[str, Any], person: AsUser, admin: httpx.Client
 ) -> None:
     contest = await forge.content.create_contest(OrgName(org), "autumn", {"contest.yaml": b"x\n"})
     task = await forge.content.create_task(contest, "sum", {"task.yaml": b"y\n"})
@@ -177,15 +202,56 @@ async def test_a_workspace_takes_submissions_and_a_task_lists_none_published(
     )
 
     first = await forge.workspaces.record_submission(
-        workspace, task, {"main.py": b"print(1)\n"}, submitter_id=int(user["id"])
+        person, workspace, task, {"main.py": b"print(1)\n"}
     )
     second = await forge.workspaces.record_submission(
-        workspace, task, {"main.py": b"print(2)\n"}, submitter_id=int(user["id"])
+        person, workspace, task, {"main.py": b"print(2)\n"}
     )
     assert await forge.workspaces.list_submissions(workspace, task) == (first, second)
 
+    repo = f"/api/v1/repos/{org}/autumn.sum.{user['login'].lower()}.sub"
+    tags = {tag["name"]: tag["commit"]["sha"] for tag in admin.get(f"{repo}/tags").json()}
+    commits = admin.get(f"{repo}/commits", params={"sha": "main"}).json()
+    by_sha = {commit["sha"]: commit for commit in commits}
+    assert by_sha[tags["submission/1"]]["commit"]["message"].startswith("Submit")
+    assert by_sha[tags["submission/1"]]["author"]["login"] == user["login"]
+    assert tags["submission/1"] != tags["submission/2"]
+
     await forge.workspaces.close_workspace(workspace, [int(user["id"])])
     assert await forge.workspaces.list_publications(task) == ()
+
+
+async def test_the_same_person_has_a_workspace_in_each_contest_of_the_org(
+    forge: ForgejoForge, org: str, user: dict[str, Any], person: AsUser
+) -> None:
+    first = await forge.content.create_contest(OrgName(org), "one", {"contest.yaml": b"x\n"})
+    second = await forge.content.create_contest(OrgName(org), "two", {"contest.yaml": b"x\n"})
+    owner = UserOwner(user["login"])
+
+    in_first = await forge.workspaces.open_workspace(first, owner, [int(user["id"])], [])
+    in_second = await forge.workspaces.open_workspace(second, owner, [int(user["id"])], [])
+    await forge.threads.post_thread(
+        person, in_second, ThreadKind.CLARIFICATION, title="Q", body="?"
+    )
+
+    await forge.workspaces.close_workspace(in_first, [int(user["id"])])
+    assert len(await forge.threads.list_threads(person, in_second, ThreadKind.CLARIFICATION)) == 1
+
+
+async def test_a_person_creates_a_workflow_under_their_own_name(
+    forge: ForgejoForge, user: dict[str, Any], person: AsUser, admin: httpx.Client
+) -> None:
+    workflow = await forge.workflows.create_workflow(
+        person, user["login"], "mine", {"workflow.yaml": b"steps: []\n"}, Visibility.PRIVATE
+    )
+    await forge.workflows.create_workflow_version(person, workflow, "v1")
+
+    read = await forge.workflows.read_workflow_file(person, workflow, "v1", "workflow.yaml")
+    assert read.content == b"steps: []\n"
+    owned = await forge.workflows.workflows_owned_by(int(user["id"]))
+    assert [entry.id for entry in owned] == [workflow]
+    commits = admin.get(f"/api/v1/repos/{user['login']}/mine.workflow/commits").json()
+    assert commits[-1]["author"]["login"] == user["login"]
 
 
 async def test_threads_are_posted_answered_and_closed(forge: ForgejoForge, org: str) -> None:

@@ -16,4 +16,4 @@ imports `services` or `db`. import-linter contracts in `pyproject.toml` fail
 the build on a leak. `runtime` assembles the package for one process.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

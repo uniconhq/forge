@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from forge.domain.content import Files
+from forge.domain.identity import Identity
 from forge.domain.ids import ContestId, PublicationId, SubmissionId, TaskId, WorkspaceId
 from forge.domain.names import WorkspaceOwner
 
@@ -37,9 +38,13 @@ class WorkspacePort(Protocol):
         ...
 
     async def record_submission(
-        self, workspace: WorkspaceId, task: TaskId, files: Files, *, submitter_id: int
+        self, as_: Identity, workspace: WorkspaceId, task: TaskId, files: Files
     ) -> SubmissionId:
-        """Record the files as the next protected version, as the platform."""
+        """Write the files as `as_`, the contestant submitting, so the change
+        is theirs, and name that exact change as the next protected version,
+        as the platform. Two submissions at once each get their own number
+        over their own files.
+        """
         ...
 
     async def publish(self, task: TaskId, files: Files) -> PublicationId:

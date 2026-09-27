@@ -49,8 +49,11 @@ used up.
 
 Operations done for a person take the identity the call is made under, so the
 host records the change as theirs and enforces their permissions underneath
-the platform's own. Provisioning and protected versions are done as the
-platform account.
+the platform's own: a submission is committed by the contestant, a person's
+roles are read with their own credential, and the platform's token never
+stands in for anyone. Provisioning, which includes creating every repository
+since the host lets no one else create one, and protected versions are done
+as the platform account.
 
 `UNICON_FORGE=forgejo` runs against Forgejo and Woodpecker; `UNICON_FORGE=fake`
 runs the whole stack against the in-memory forge, which records every call
@@ -64,10 +67,16 @@ A service is a module of functions under `forge/services/`. Each takes a
 `Context`: the database session of the unit of work, a session factory for
 work that needs a transaction of its own, the forge, the settings and the
 clock. The caller owns the transaction on `ctx.db` and commits or rolls it
-back when the call returns; a service never commits it. The one exception is
-session bookkeeping, which runs in short transactions of its own so a refused
-request still records what it learned. `Runtime` assembles all of this for
-one process from the settings and hands out a context per unit of work.
+back when the call returns; a service never commits it. Two things run in
+short transactions of their own so they land whatever the caller does next:
+session bookkeeping, so a refused request still records what it learned, and
+the `provisioning` record. Making something at the forge is several calls
+that can fail halfway, so `provisioning.run` walks the steps of making one
+thing, writes the last completed step to its row as soon as it completes,
+leaves a failure on the row naming the step and the error, and on a rerun
+starts at the step after the last one that completed. `orgs.provision` is
+the first user of it. `Runtime` assembles all of this for one process from
+the settings and hands out a context per unit of work.
 
 ## The tables
 

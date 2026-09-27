@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from forge.context import Context
 from forge.domain.errors import Forbidden, SessionExpired, Unavailable
-from forge.domain.identity import User
+from forge.domain.identity import AsUser, User
 from forge.domain.roles import RoleGrant
 from forge.domain.sessions import Session
 from forge.log import get_logger
@@ -35,12 +35,12 @@ async def whoami(ctx: Context, session: Session) -> Me:
         user = await ctx.forge.identity.user_of(credential)
     except Forbidden as exc:
         log.warning("identity.credential_refused", user_id=session.user_id)
-        await sessions.revoke(ctx, session.id)
+        await sessions.revoke_now(ctx, session.id)
         raise SessionExpired("Sign in again.") from exc
     except Unavailable:
         return Me(user=User(id=session.user_id, username=session.username), roles=(), degraded=True)
     try:
-        roles = await ctx.forge.orgs.roles_of(user.id)
+        roles = await ctx.forge.orgs.roles_of(AsUser(user.id, credential))
     except Unavailable:
         return Me(user=user, roles=(), degraded=True)
     return Me(user=user, roles=roles, degraded=False)

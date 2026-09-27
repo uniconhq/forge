@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from forge.context import Context
-from forge.domain.errors import SignInInvalid
+from forge.domain.errors import SessionExpired, SignInInvalid
 from forge.forges.fake import FakeForge
 from forge.services import identity, sign_in
 from forge.services.sign_in import SignInAttempt
@@ -82,3 +82,26 @@ async def test_a_spent_code_is_refused(ctx: Context, fake: FakeForge) -> None:
         await sign_in.complete(
             ctx, code=code, state=state, attempt=started.attempt, ip=None, user_agent=None
         )
+
+
+async def test_a_credential_the_forge_refuses_ends_the_session_whatever_the_caller_does(
+    ctx: Context, fake: FakeForge
+) -> None:
+    """The revocation is written in a transaction of its own, so the caller
+    rolling its unit of work back, which is what a raise makes it do, does
+    not bring the session back.
+    """
+    started = sign_in.start(fake, "/")
+    code, state = _answer(fake, started)
+    session, _ = await sign_in.complete(
+        ctx, code=code, state=state, attempt=started.attempt, ip=None, user_agent=None
+    )
+    await ctx.db.commit()
+    fake.state.revoke_credentials(7)
+
+    with pytest.raises(SessionExpired):
+        await identity.whoami(ctx, session)
+    await ctx.db.rollback()
+
+    with pytest.raises(SessionExpired):
+        await identity.current(ctx, session.id)

@@ -26,13 +26,18 @@ async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
     task = await fake.content.create_task(contest, "sum", {"task.yaml": b"y"})
     publication = await fake.workspaces.publish(task, {"plans/public.json": b"{}"})
     workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8], [task])
+    bob = _as(fake, 8)
     submission = await fake.workspaces.record_submission(
-        workspace, task, {"main.py": b"print(1)"}, submitter_id=8
+        bob, workspace, task, {"main.py": b"print(1)"}
     )
 
     assert await fake.workspaces.list_publications(task) == (publication,)
     assert await fake.workspaces.list_submissions(workspace, task) == (submission,)
-    assert await fake.orgs.roles_of(7) == (RoleGrant(Scope("acme"), Role.ADMIN),)
+    assert await fake.orgs.roles_of(_as(fake, 7)) == (RoleGrant(Scope("acme"), Role.ADMIN),)
+    assert fake.calls_to("record_submission")[0].identity == bob
+    fake.add_user(9, "eve")
+    with pytest.raises(Forbidden):
+        await fake.workspaces.record_submission(_as(fake, 9), workspace, task, {"a": b"b"})
     assert fake.calls_to("register")[0].identity.org == "acme"  # type: ignore[union-attr]
 
 
@@ -102,6 +107,9 @@ async def test_a_contest_manager_reads_a_clarification_and_a_stranger_does_not(
     workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8], [])
     bob = _as(fake, 8)
     await fake.threads.post_thread(bob, workspace, ThreadKind.CLARIFICATION, title="Q", body="?")
+    autumn = await fake.content.create_contest(OrgName("acme"), "autumn", {})
+    other = await fake.workspaces.open_workspace(autumn, UserOwner("bob"), [8], [])
+    assert await fake.threads.list_threads(bob, other, ThreadKind.CLARIFICATION) == ()
 
     assert len(await fake.threads.list_threads(bob, workspace, ThreadKind.CLARIFICATION)) == 1
     assert (
