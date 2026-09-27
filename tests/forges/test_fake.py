@@ -143,3 +143,22 @@ async def test_deleting_a_user_removes_them_and_what_they_own(fake: FakeForge) -
         await fake.identity.find_user(7)
     assert fake.state.repos == {}
     assert isinstance(fake.calls_to("delete_user")[0].identity, Platform)
+
+
+async def test_a_deleted_users_questions_still_read_as_nobodys(fake: FakeForge) -> None:
+    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    contest = await fake.content.create_contest(OrgName("acme"), "spring", {})
+    workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8], [])
+    bob = _as(fake, 8)
+    thread = await fake.threads.post_thread(
+        bob, workspace, ThreadKind.CLARIFICATION, title="Q", body="?"
+    )
+    await fake.threads.comment(PLATFORM, thread, "A")
+    await fake.threads.comment(bob, thread, "Thanks")
+
+    await fake.identity.delete_user(8)
+
+    (listed,) = await fake.threads.list_threads(PLATFORM, workspace, ThreadKind.CLARIFICATION)
+    assert listed.author_id is None
+    assert [comment.author_id for comment in listed.comments] == [None, None]
+    assert [comment.body for comment in listed.comments] == ["A", "Thanks"]

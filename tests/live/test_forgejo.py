@@ -292,3 +292,54 @@ async def test_workflows_are_created_versioned_searched_and_copied(
     await forge.workflows.set_workflow_visibility(PLATFORM, workflow, Visibility.PRIVATE)
     public = await forge.workflows.search_public_workflows("classic")
     assert workflow not in [entry.id for entry in public]
+
+
+async def test_a_deleted_user_is_gone_and_their_questions_still_read(
+    forge: ForgejoForge, org: str, admin: httpx.Client, stamp: str
+) -> None:
+    created = admin.post(
+        "/api/v1/admin/users",
+        json={
+            "username": f"leaver-{stamp}",
+            "email": f"leaver-{stamp}@unicon.invalid",
+            "password": "live-password-123",
+            "must_change_password": False,
+        },
+    )
+    assert created.status_code == 201, created.text
+    leaver = created.json()
+    token = httpx.post(
+        f"{admin.base_url}/api/v1/users/{leaver['login']}/tokens",
+        auth=(leaver["login"], "live-password-123"),
+        json={"name": "live-test", "scopes": ["all"]},
+        timeout=30,
+    ).json()["sha1"]
+    person = AsUser(
+        int(leaver["id"]),
+        Credential(
+            access=str(token), refresh="", expires_at=datetime.now(UTC) + timedelta(hours=1)
+        ),
+    )
+    contest = await forge.content.create_contest(OrgName(org), "leaving", {"contest.yaml": b"x\n"})
+    workspace = await forge.workspaces.open_workspace(
+        contest, UserOwner(leaver["login"]), [int(leaver["id"])], []
+    )
+    thread = await forge.threads.post_thread(
+        person, workspace, ThreadKind.CLARIFICATION, title="Before I go", body="?"
+    )
+    await forge.threads.comment(PLATFORM, thread, "An answer")
+    await forge.threads.comment(person, thread, "Thanks")
+    await forge.workflows.create_workflow(
+        person, leaver["login"], "private", {"workflow.yaml": b"steps: []\n"}, Visibility.PRIVATE
+    )
+
+    await forge.identity.delete_user(int(leaver["id"]))
+
+    with pytest.raises(NotFound):
+        await forge.identity.find_user(int(leaver["id"]))
+    assert admin.get(f"/api/v1/repos/{leaver['login']}/private.workflow").status_code == 404
+    (listed,) = await forge.threads.list_threads(PLATFORM, workspace, ThreadKind.CLARIFICATION)
+    assert listed.title == "Before I go"
+    assert listed.author_id is None
+    assert [comment.body for comment in listed.comments] == ["An answer", "Thanks"]
+    assert listed.comments[1].author_id is None

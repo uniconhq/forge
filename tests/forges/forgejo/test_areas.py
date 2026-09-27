@@ -357,3 +357,21 @@ async def test_a_run_is_registered_once_and_started_as_the_org_account(
     assert recorder.sent("POST", "/api/repos/5/pipelines") == [
         {"branch": "main", "variables": {"A": "1", "UNICON_COMPUTE": "box"}}
     ]
+
+
+async def test_a_deleted_person_loses_what_they_own_and_keeps_what_others_read(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [USER]}))
+    recorder.on("GET", "/api/v1/users/ada/repos", ok([{"name": "classic.workflow"}]))
+
+    await forgejo.identity.delete_user(7)
+
+    calls = recorder.calls()
+    assert calls.index("DELETE /api/v1/repos/ada/classic.workflow") < calls.index(
+        "DELETE /api/v1/admin/users/ada"
+    )
+    deletion = next(
+        request for request in recorder.seen if request.url.path == "/api/v1/admin/users/ada"
+    )
+    assert "purge" not in str(deletion.url)
