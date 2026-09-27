@@ -2,14 +2,15 @@
 submission repository per task, attached to the contest's role teams so its
 organisers can read them, with the members as write collaborators. A
 submission and a publication are tags under a reserved prefix that only the
-platform account may create.
+platform account may create, each pointing at the exact commit the files
+went in with.
 """
 
 from collections.abc import Sequence
 
 from forge.domain.content import Files
 from forge.domain.errors import Conflict
-from forge.domain.identity import PLATFORM
+from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import ContestId, PublicationId, SubmissionId, TaskId, WorkspaceId
 from forge.domain.names import WorkspaceOwner
 from forge.domain.roles import Scope
@@ -79,19 +80,21 @@ class ForgejoWorkspaces:
         return tuple(submission_id(ref, task_name, number) for number in numbers)
 
     async def record_submission(
-        self, workspace: WorkspaceId, task: TaskId, files: Files, *, submitter_id: int
+        self, as_: Identity, workspace: WorkspaceId, task: TaskId, files: Files
     ) -> SubmissionId:
         ref = parse_workspace(workspace)
         task_name = parse_task(task).task
         repo = ref.submission_repo(task_name)
-        await self._repos.write_files(PLATFORM, ref.org, repo, files, message=SUBMIT_MESSAGE)
-        number = await self._next_version(ref.org, repo, SUBMISSION_PREFIX)
+        written = await self._repos.write_files(as_, ref.org, repo, files, message=SUBMIT_MESSAGE)
+        number = await self._next_version(ref.org, repo, SUBMISSION_PREFIX, written)
         return submission_id(ref, task_name, number)
 
     async def publish(self, task: TaskId, files: Files) -> PublicationId:
         ref = parse_task(task)
-        await self._repos.write_files(PLATFORM, ref.org, ref.repo, files, message=PUBLISH_MESSAGE)
-        number = await self._next_version(ref.org, ref.repo, PUBLISHED_PREFIX)
+        written = await self._repos.write_files(
+            PLATFORM, ref.org, ref.repo, files, message=PUBLISH_MESSAGE
+        )
+        number = await self._next_version(ref.org, ref.repo, PUBLISHED_PREFIX, written)
         await self._grading.register(task)
         return publication_id(ref, number)
 
@@ -100,17 +103,18 @@ class ForgejoWorkspaces:
         numbers = await self._numbers(ref.org, ref.repo, PUBLISHED_PREFIX)
         return tuple(publication_id(ref, number) for number in numbers)
 
-    async def _next_version(self, org: str, repo: str, prefix: str) -> int:
-        """Create the next protected version at the head, numbered after the
-        highest that exists. Two callers racing for one number collide at the
-        host, and the loser takes the next.
+    async def _next_version(self, org: str, repo: str, prefix: str, target: str | None) -> int:
+        """Create the next protected version at `target`, the commit the
+        caller just made, numbered after the highest that exists. With no
+        commit to name, the head is what there is. Two callers racing for one
+        number collide at the host, and the loser takes the next.
         """
-        head = await self._repos.head(PLATFORM, org, repo)
+        at = target or await self._repos.head(PLATFORM, org, repo)
         for _ in range(NUMBERING_ATTEMPTS):
             numbers = await self._numbers(org, repo, prefix)
             number = (numbers[-1] if numbers else 0) + 1
             try:
-                await self._repos.create_version(PLATFORM, org, repo, f"{prefix}{number}", head)
+                await self._repos.create_version(PLATFORM, org, repo, f"{prefix}{number}", at)
             except Conflict:
                 continue
             return number
@@ -125,13 +129,8 @@ class ForgejoWorkspaces:
         )
 
     async def _workspace_repos(self, ref: WorkspaceRef) -> list[str]:
-        segment = ref.owner.segment
         return [
             str(repo["name"])
             for repo in await self._repos.under(ref.org)
-            if str(repo["name"]) == ref.desk_repo
-            or (
-                str(repo["name"]).startswith(f"{ref.contest}.")
-                and str(repo["name"]).endswith(f".{segment}.sub")
-            )
+            if str(repo["name"]) == ref.desk_repo or ref.is_submission_repo(str(repo["name"]))
         ]

@@ -106,6 +106,7 @@ def _forge_for(settings: Settings, sign_in_redirect_uri: str) -> Forge:
     assert settings.forge_public_url and settings.forge_internal_url
     assert settings.forge_admin_token and settings.forge_oauth_client_secret
     assert settings.forge_oauth_client_id and settings.woodpecker_url and settings.woodpecker_token
+    assert settings.woodpecker_public_url
     return ForgejoForge(
         ForgejoConfig(
             public_url=str(settings.forge_public_url),
@@ -116,7 +117,7 @@ def _forge_for(settings: Settings, sign_in_redirect_uri: str) -> Forge:
             sign_in_redirect_uri=sign_in_redirect_uri,
             sign_ups_open=settings.forge_registration_open,
             ci_url=str(settings.woodpecker_url),
-            ci_public_url=str(settings.woodpecker_url),
+            ci_public_url=str(settings.woodpecker_public_url),
             ci_admin_token=settings.woodpecker_token.get_secret_value(),
         ),
         OrgAccountTokens(),

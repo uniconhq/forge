@@ -46,8 +46,8 @@ def is_workspace(value: str) -> bool:
     return len(parts) == 3 and parts[2].startswith(WORKSPACE_MARK)
 
 
-def desk_repo(segment: str) -> str:
-    return f"{segment}.desk"
+def desk_repo(contest_name: str, segment: str) -> str:
+    return f"{contest_name}.{segment}.desk"
 
 
 def submission_repo(contest_name: str, task_name: str, segment: str) -> str:

@@ -2,10 +2,15 @@
 caches only the reads that grow with the forge while the flag is off.
 """
 
+from forge.domain.identity import AsUser
 from forge.domain.ids import OrgName
 from forge.domain.roles import Role, Scope
 from forge.forges.cached import Cache, CachedForge
 from forge.forges.fake import FakeForge
+
+
+def _ada(fake: FakeForge) -> AsUser:
+    return AsUser(7, fake.mint(7))
 
 
 async def test_a_cached_read_is_served_from_memory(fake: FakeForge) -> None:
@@ -21,20 +26,22 @@ async def test_a_write_through_the_area_drops_its_entry(fake: FakeForge) -> None
     await fake.orgs.create_org(OrgName("acme"), description="Acme")
     cached = CachedForge(fake, enabled=True)
 
-    assert await cached.orgs.roles_of(7) == ()
+    ada = _ada(fake)
+    assert await cached.orgs.roles_of(ada) == ()
     await cached.orgs.grant_role(7, Scope("acme"), Role.ADMIN)
 
-    assert len(await cached.orgs.roles_of(7)) == 1
+    assert len(await cached.orgs.roles_of(ada)) == 1
     assert len(fake.calls_to("roles_of")) == 2
 
 
 async def test_only_the_named_reads_are_cached_while_the_flag_is_off(fake: FakeForge) -> None:
     cached = CachedForge(fake, enabled=False)
 
+    ada = _ada(fake)
     await cached.identity.find_user(7)
     await cached.identity.find_user(7)
-    await cached.orgs.roles_of(7)
-    await cached.orgs.roles_of(7)
+    await cached.orgs.roles_of(ada)
+    await cached.orgs.roles_of(ada)
 
     assert len(fake.calls_to("find_user")) == 1
     assert len(fake.calls_to("roles_of")) == 2

@@ -60,5 +60,7 @@ class IdentityPort(Protocol):
         ...
 
     async def delete_user(self, user_id: int) -> None:
-        """Remove the user and whatever they still own."""
+        """Remove the user and what they own. What other people still read,
+        their questions and answers, stays and reads as nobody's.
+        """
         ...

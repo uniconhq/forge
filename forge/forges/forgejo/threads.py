@@ -118,7 +118,7 @@ def _thread(
         kind=kind,
         title=str(issue["title"]),
         body=str(issue.get("body") or ""),
-        author_id=int(user["id"]) if user.get("id") is not None else None,
+        author_id=_author_id(user),
         created_at=datetime.fromisoformat(str(issue["created_at"])),
         closed=issue.get("state") == "closed",
         answered=ANSWERED in labels,
@@ -130,7 +130,16 @@ def _comment(comment: dict[str, Any]) -> Comment:
     user = comment.get("user") or {}
     return Comment(
         id=str(comment["id"]),
-        author_id=int(user["id"]) if user.get("id") is not None else None,
+        author_id=_author_id(user),
         body=str(comment.get("body") or ""),
         at=datetime.fromisoformat(str(comment["created_at"])),
     )
+
+
+def _author_id(user: dict[str, Any]) -> int | None:
+    """The author, or none for what a deleted user left behind: Forgejo hands
+    those to its ghost user, whose id is below zero.
+    """
+    if user.get("id") is None or int(user["id"]) <= 0:
+        return None
+    return int(user["id"])

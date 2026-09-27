@@ -10,7 +10,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from forge.domain.identity import Credential, User
+from forge.domain.identity import AsUser, Credential, User
 from forge.domain.ids import OrgName
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.port import Forge
@@ -111,6 +111,12 @@ class CachedOrgs:
     async def create_org(self, name: OrgName, *, description: str) -> None:
         await self._inner.create_org(name, description=description)
 
+    async def create_roles(self, name: OrgName) -> None:
+        await self._inner.create_roles(name)
+
+    async def create_thread_labels(self, name: OrgName) -> None:
+        await self._inner.create_thread_labels(name)
+
     async def update_org(self, name: OrgName, *, description: str) -> None:
         await self._inner.update_org(name, description=description)
 
@@ -124,14 +130,14 @@ class CachedOrgs:
         self._cache.drop("roles_of", (user_id,))
         self._cache.drop("holders_of", (scope, role))
 
-    async def roles_of(self, user_id: int) -> tuple[RoleGrant, ...]:
+    async def roles_of(self, as_: AsUser) -> tuple[RoleGrant, ...]:
         if not self._enabled:
-            return await self._inner.roles_of(user_id)
-        hit, value = self._cache.get("roles_of", (user_id,))
+            return await self._inner.roles_of(as_)
+        hit, value = self._cache.get("roles_of", (as_.user_id,))
         if hit:
             return cast(tuple[RoleGrant, ...], value)
-        found = await self._inner.roles_of(user_id)
-        self._cache.put("roles_of", (user_id,), found)
+        found = await self._inner.roles_of(as_)
+        self._cache.put("roles_of", (as_.user_id,), found)
         return found
 
     async def holders_of(self, scope: Scope, role: Role) -> tuple[User, ...]:

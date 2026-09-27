@@ -7,6 +7,7 @@ than the fresh sign-in window.
 
 from forge.context import Context
 from forge.domain.errors import FreshSignInRequired, SharedWorkflowOwner, SoleAdmin
+from forge.domain.identity import AsUser
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.sessions import Session, is_fresh
 from forge.domain.workflows import Visibility
@@ -26,7 +27,8 @@ async def deactivate(ctx: Context, session: Session) -> None:
 
 async def delete(ctx: Context, session: Session) -> None:
     _require_fresh(ctx, session)
-    grants = await ctx.forge.orgs.roles_of(session.user_id)
+    credential = await sessions.credential_for(ctx, session.id)
+    grants = await ctx.forge.orgs.roles_of(AsUser(session.user_id, credential))
     await _refuse_if_sole_admin(ctx.forge, session.user_id, grants)
     await _refuse_if_sharing_workflows(ctx.forge, session.user_id)
     await sessions.revoke_all(ctx, session.user_id)

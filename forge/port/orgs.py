@@ -4,15 +4,29 @@ Roles live at the host and are read live; the package stores none.
 
 from typing import Protocol
 
-from forge.domain.identity import User
+from forge.domain.identity import AsUser, User
 from forge.domain.ids import OrgName
 from forge.domain.roles import Role, RoleGrant, Scope
 
 
 class OrgPort(Protocol):
     async def create_org(self, name: OrgName, *, description: str) -> None:
-        """Make an org with its three roles and its org account. `Conflict`
-        when the name is taken.
+        """Make the org itself, and nothing in it. `Conflict` when the name
+        is taken. Making an org is several calls that can fail halfway, so
+        the pieces are separate operations and the `provisioning` service
+        records which have completed.
+        """
+        ...
+
+    async def create_roles(self, name: OrgName) -> None:
+        """Make the org's three roles and the org account's place in it. A
+        role that exists is kept, so this can be run again.
+        """
+        ...
+
+    async def create_thread_labels(self, name: OrgName) -> None:
+        """Make the labels threads in the org are marked with. A label that
+        exists is kept, so this can be run again.
         """
         ...
 
@@ -30,8 +44,10 @@ class OrgPort(Protocol):
         """Take the role away; revoking a role not held changes nothing."""
         ...
 
-    async def roles_of(self, user_id: int) -> tuple[RoleGrant, ...]:
-        """Every role the user holds directly, at every scope."""
+    async def roles_of(self, as_: AsUser) -> tuple[RoleGrant, ...]:
+        """Every role the user holds directly, at every scope, read with
+        their own credential and no one else's.
+        """
         ...
 
     async def holders_of(self, scope: Scope, role: Role) -> tuple[User, ...]:
