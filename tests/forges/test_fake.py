@@ -40,7 +40,7 @@ async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
     fake.add_user(9, "eve")
     with pytest.raises(Forbidden):
         await fake.workspaces.record_submission(_as(fake, 9), workspace, task, {"a": b"b"})
-    assert fake.calls_to("register")[0].identity.org == "acme"  # type: ignore[union-attr]
+    assert fake.calls_to("register") == []
 
 
 @pytest.mark.parametrize(

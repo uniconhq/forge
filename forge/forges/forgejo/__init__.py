@@ -79,7 +79,7 @@ class ForgejoForge:
         self.orgs = ForgejoOrgs(http, teams, users)
         self.content = ForgejoContent(repos, teams)
         self.grading = WoodpeckerGrading(http, ci, repos, ci_public_url=config.ci_public_url)
-        self.workspaces = ForgejoWorkspaces(repos, users, teams, self.grading)
+        self.workspaces = ForgejoWorkspaces(repos, users, teams)
         self.threads = ForgejoThreads(http)
         self.workflows = ForgejoWorkflows(repos, users)
         self.primitives = ForgejoPrimitives(repos)

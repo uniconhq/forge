@@ -19,13 +19,11 @@ from forge.forges.ids import (
     publication_id,
     submission_id,
 )
-from forge.port.grading import GradingPort
 
 
 class FakeWorkspaces:
-    def __init__(self, state: State, grading: GradingPort) -> None:
+    def __init__(self, state: State) -> None:
         self._state = state
-        self._grading = grading
 
     async def open_workspace(
         self,
@@ -86,7 +84,6 @@ class FakeWorkspaces:
         self._state.commit(repo, files, "Publish", None)
         number = self._state.next_number(repo, PUBLISHED_PREFIX)
         self._state.create_version(PLATFORM, repo, f"{PUBLISHED_PREFIX}{number}")
-        await self._grading.register(task)
         return publication_id(parse_task(task), number)
 
     async def list_publications(self, task: TaskId) -> tuple[PublicationId, ...]:

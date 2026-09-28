@@ -233,6 +233,27 @@ async def test_a_submission_is_written_as_the_contestant_and_named_at_that_commi
     assert recorder.headers("POST", f"{repo}/tags") == ["token admin"]
 
 
+async def test_a_publication_is_written_and_tagged_by_the_platform_and_nothing_else(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/spring.sum.task"
+    recorder.on("GET", f"{repo}/branches/main", ok({"commit": {"id": "head-0"}}))
+    recorder.on("GET", f"{repo}/git/trees/main", ok({"tree": []}))
+    recorder.on("POST", f"{repo}/contents", ok({"commit": {"sha": "c-plans"}}))
+    recorder.on("GET", f"{repo}/tags", ok([{"name": "published/1"}]))
+
+    publication = await forgejo.workspaces.publish(
+        TaskId("acme/spring/sum"), {"plans/public.json": b"{}"}
+    )
+
+    assert publication == "acme/spring/sum#2"
+    assert recorder.sent("POST", f"{repo}/tags") == [
+        {"tag_name": "published/2", "target": "c-plans"}
+    ]
+    assert set(recorder.headers("POST", f"{repo}/contents")) == {"token admin"}
+    assert [call for call in recorder.calls() if call.split(" ")[1].startswith("/api/repos")] == []
+
+
 async def test_a_write_the_host_refuses_as_moved_is_read_again_and_repeated(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:

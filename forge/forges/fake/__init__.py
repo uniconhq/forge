@@ -36,7 +36,7 @@ class FakeForge:
         self.orgs = FakeOrgs(self.state)
         self.content = FakeContent(self.state)
         self.grading = FakeGrading(self.state)
-        self.workspaces = FakeWorkspaces(self.state, self.grading)
+        self.workspaces = FakeWorkspaces(self.state)
         self.threads = FakeThreads(self.state)
         self.workflows = FakeWorkflows(self.state)
         self.primitives = FakePrimitives(self.state)
