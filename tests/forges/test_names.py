@@ -35,7 +35,8 @@ def test_contest_and_task_names_end_in_their_word() -> None:
 
 def test_workspace_names_carry_the_owner_between_the_second_dot_and_the_word() -> None:
     person = WorkspaceRef("acme", "spring", UserOwner("Ada.Lovelace"))
-    assert person.desk_repo == "ada.lovelace.desk"
+    assert person.desk_repo == "spring.ada.lovelace.desk"
+    assert WorkspaceRef("acme", "autumn", UserOwner("ada")).desk_repo != person.desk_repo
     assert person.submission_repo("sum") == "spring.sum.ada.lovelace.sub"
     team = WorkspaceRef("acme", "spring", TeamOwner(TEAM))
     assert team.submission_repo("sum") == f"spring.sum.team.{TEAM}.sub"

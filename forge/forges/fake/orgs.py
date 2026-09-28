@@ -1,10 +1,12 @@
 """The org area in memory."""
 
 from forge.domain.errors import Conflict
-from forge.domain.identity import PLATFORM, User
+from forge.domain.identity import PLATFORM, AsUser, User
 from forge.domain.ids import OrgName
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.forges.fake.state import Org, State
+
+LABELS = ("announcement", "clarification", "answered")
 
 
 class FakeOrgs:
@@ -17,6 +19,19 @@ class FakeOrgs:
         if name in self._state.orgs:
             raise Conflict(f"org {name} already exists")
         self._state.orgs[name] = Org(name, description)
+
+    async def create_roles(self, name: OrgName) -> None:
+        self._state.record("create_roles", PLATFORM, name=name)
+        self._state.check_up()
+        org = self._state.org(name)
+        for role in Role:
+            org.roles.setdefault((Scope(name), role), set())
+        org.roles_ready = True
+
+    async def create_thread_labels(self, name: OrgName) -> None:
+        self._state.record("create_thread_labels", PLATFORM, name=name)
+        self._state.check_up()
+        self._state.org(name).labels.update(LABELS)
 
     async def update_org(self, name: OrgName, *, description: str) -> None:
         self._state.record("update_org", PLATFORM, name=name)
@@ -31,9 +46,10 @@ class FakeOrgs:
         self._state.record("revoke_role", PLATFORM, user_id=user_id, scope=scope, role=role)
         self._state.org(scope.org).roles.get((scope, role), set()).discard(user_id)
 
-    async def roles_of(self, user_id: int) -> tuple[RoleGrant, ...]:
-        self._state.record("roles_of", PLATFORM, user_id=user_id)
+    async def roles_of(self, as_: AsUser) -> tuple[RoleGrant, ...]:
+        self._state.record("roles_of", as_, user_id=as_.user_id)
         self._state.check_up()
+        user_id = self._state.author(as_)
         return tuple(
             RoleGrant(scope, role)
             for org in self._state.orgs.values()

@@ -2,6 +2,12 @@
 history, versions as tags, protected versions, collaborators, topics and
 stars. Every area of the implementation that touches a repository goes
 through here.
+
+The forge lets nobody but the platform create a repository: people have no
+personal quota and no team may create under an org. So every repository is
+made by the platform account, under an org it owns or, through the
+administrator's endpoint, under the person who asked for it, who owns it
+from then on. What goes into it is written as the caller.
 """
 
 import base64
@@ -10,7 +16,7 @@ from typing import Any
 
 from forge.domain.content import Change, ConflictToken, EntryKind, File, Files, TreeEntry
 from forge.domain.errors import Conflict, NotFound
-from forge.domain.identity import PLATFORM, Identity, Platform
+from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import VersionId
 from forge.forges.forgejo.http import Http, json_of, list_of
 from forge.forges.forgejo.names import DEFAULT_BRANCH, PLATFORM_ACCOUNT
@@ -18,6 +24,7 @@ from forge.forges.forgejo.names import DEFAULT_BRANCH, PLATFORM_ACCOUNT
 CREATE_MESSAGE = "Create"
 TREE_PAGE = 1000
 PAGE_LIMIT = 50
+WRITE_ATTEMPTS = 4
 
 
 class Repos:
@@ -27,8 +34,9 @@ class Repos:
     async def create(
         self, as_: Identity, owner: str, name: str, files: Files, *, private: bool
     ) -> None:
-        """Make a repository under an org, or under the calling user when
-        `owner` is their own login, with its first commit and no force-push.
+        """Make a repository under an org, or under the person `owner` names,
+        as the platform, with its first commit written as `as_` and no
+        force-push on its default branch.
         """
         body = {
             "name": name,
@@ -37,14 +45,14 @@ class Repos:
             "default_branch": DEFAULT_BRANCH,
         }
         target = (
-            "/api/v1/user/repos"
-            if await self._is_own(as_, owner)
-            else f"/api/v1/orgs/{owner}/repos"
+            f"/api/v1/orgs/{owner}/repos"
+            if await self._is_org(owner)
+            else f"/api/v1/admin/users/{owner}/repos"
         )
-        await self._http.call(as_, "POST", target, json=body)
+        await self._http.call(PLATFORM, "POST", target, json=body)
         await self.write_files(as_, owner, name, files, message=CREATE_MESSAGE)
         await self._http.call(
-            as_,
+            PLATFORM,
             "POST",
             f"/api/v1/repos/{owner}/{name}/branch_protections",
             json={
@@ -59,10 +67,24 @@ class Repos:
         self, as_: Identity, owner: str, name: str, files: Files, *, message: str
     ) -> VersionId | None:
         """Create or update the files in one commit and return its version,
-        or none when there was nothing to write.
+        or none when there was nothing to write. The host refuses a write
+        whose view of the tree has moved under it, which two writers at once
+        do to each other, so the tree is read again and the write repeated a
+        few times before that is reported.
         """
         if not files:
             return None
+        for attempt in range(WRITE_ATTEMPTS):
+            try:
+                return await self._write_files_once(as_, owner, name, files, message)
+            except Conflict:
+                if attempt == WRITE_ATTEMPTS - 1:
+                    raise
+        raise Conflict(f"{owner}/{name} kept changing while it was written")
+
+    async def _write_files_once(
+        self, as_: Identity, owner: str, name: str, files: Files, message: str
+    ) -> VersionId:
         existing = await self._existing(as_, owner, name)
         first = {"new_branch": DEFAULT_BRANCH} if existing is None else {}
         present = existing or {}
@@ -281,11 +303,12 @@ class Repos:
             return False
         return True
 
-    async def _is_own(self, as_: Identity, owner: str) -> bool:
-        if isinstance(as_, Platform):
+    async def _is_org(self, owner: str) -> bool:
+        try:
+            await self._http.call(PLATFORM, "GET", f"/api/v1/orgs/{owner}")
+        except NotFound:
             return False
-        me = json_of(await self._http.call(as_, "GET", "/api/v1/user"))
-        return str(me.get("login")) == owner
+        return True
 
 
 def _change(commit: dict[str, Any]) -> Change:

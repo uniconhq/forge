@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     forge_registration_open: bool = False
     forge_cache: bool = False
     woodpecker_url: HttpUrl | None = None
+    woodpecker_public_url: HttpUrl | None = None
     woodpecker_token: SecretStr | None = None
 
     s3_endpoint: HttpUrl
@@ -88,6 +89,8 @@ class Settings(BaseSettings):
             raise ValueError(f"UNICON_FORGE=forgejo needs {names}")
         if self.forge_internal_url is None:
             self.forge_internal_url = self.forge_public_url
+        if self.woodpecker_public_url is None:
+            self.woodpecker_public_url = self.woodpecker_url
         return self
 
     @field_validator("*")

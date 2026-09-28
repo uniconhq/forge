@@ -124,7 +124,7 @@ async def credential_for(ctx: Context, session_id: uuid.UUID) -> Credential:
             if latest.credential != stored.credential:
                 return _decrypt(latest.credential, ctx.settings)
             log.info("session.credential_refused", session=str(session_id), reason=exc.detail)
-            await _revoke_now(ctx, session_id)
+            await revoke_now(ctx, session_id)
             raise SessionExpired("Sign in again to keep working at the forge.") from exc
         if await _store(ctx, session_id, was=stored.credential, issued=issued):
             return issued
@@ -248,7 +248,12 @@ async def _stored(sessions: SessionFactory, session_id: uuid.UUID) -> _Stored:
     return _Stored(credential=found.credential, expires_at=found.credential_expires_at)
 
 
-async def _revoke_now(ctx: Context, session_id: uuid.UUID) -> None:
+async def revoke_now(ctx: Context, session_id: uuid.UUID) -> None:
+    """End one session in a transaction of its own, so the revocation lands
+    whatever the caller does with its unit of work afterwards. This is the
+    revoke for a session the host has refused: the caller raises next, and a
+    raise rolls the caller's transaction back.
+    """
     async with ctx.sessions() as own:
         await own.execute(_revocation(ctx.now).where(SessionRow.id == session_id))
         await own.commit()

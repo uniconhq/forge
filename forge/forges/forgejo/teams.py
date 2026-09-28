@@ -7,7 +7,7 @@ contest and task teams are attached to the repositories of their scope.
 from typing import Any
 
 from forge.domain.errors import NotFound
-from forge.domain.identity import PLATFORM
+from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.roles import Role, Scope, ScopeKind
 from forge.forges.forgejo.http import Http, json_of
 from forge.forges.forgejo.names import CI_ADMIN_ACCOUNT
@@ -48,13 +48,14 @@ class Teams:
     def __init__(self, http: Http) -> None:
         self._http = http
 
-    async def create_role_teams(self, org: str) -> None:
-        """The three org-level role teams and the org account's team."""
+    async def ensure_role_teams(self, org: str) -> None:
+        """The three org-level role teams and the org account's team, each
+        made only if it is not there.
+        """
         for role in Role:
-            await self._create(
-                org, team_name(Scope(org), role), TEAM_PERMISSIONS[role], all_repos=True
-            )
-        await self._create(org, ci_team_name(org), "admin", all_repos=True)
+            await self.ensure(Scope(org), role)
+        if await self.find(org, ci_team_name(org)) is None:
+            await self._create(org, ci_team_name(org), "admin", all_repos=True)
 
     async def ensure(self, scope: Scope, role: Role) -> dict[str, Any]:
         name = team_name(scope, role)
@@ -78,9 +79,11 @@ class Teams:
         found: list[dict[str, Any]] = json_of(response).get("data") or []
         return next((team for team in found if team["name"] == name), None)
 
-    async def of_user(self, username: str) -> list[dict[str, Any]]:
-        """Every team the user belongs to, across every org, in one listing."""
-        return await self._http.get_all(PLATFORM, "/api/v1/user/teams", sudo=username)
+    async def of_caller(self, as_: AsUser) -> list[dict[str, Any]]:
+        """Every team the caller belongs to, across every org, in one listing
+        read with their own credential.
+        """
+        return await self._http.get_all(as_, "/api/v1/user/teams")
 
     async def members(self, team_id: int) -> list[dict[str, Any]]:
         return await self._http.get_all(PLATFORM, f"/api/v1/teams/{team_id}/members")

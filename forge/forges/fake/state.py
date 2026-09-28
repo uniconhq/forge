@@ -60,6 +60,8 @@ class Org:
     name: str
     description: str
     roles: dict[tuple[Scope, Role], set[int]] = field(default_factory=dict)
+    roles_ready: bool = False
+    labels: set[str] = field(default_factory=set)
 
 
 class State:
@@ -142,12 +144,14 @@ class State:
         )
         return version
 
-    def create_version(self, as_: Identity, repo: Repo, name: str) -> None:
+    def create_version(
+        self, as_: Identity, repo: Repo, name: str, *, at: str | None = None
+    ) -> None:
         if name.startswith(PROTECTED_PREFIXES) and not isinstance(as_, Platform):
             raise Forbidden(f"only the platform may create {name}")
         if name in repo.versions:
             raise Conflict(f"{name} already exists")
-        repo.versions[name] = repo.head
+        repo.versions[name] = at or repo.head
 
     def next_number(self, repo: Repo, prefix: str) -> int:
         return len([name for name in repo.versions if name.startswith(prefix)]) + 1

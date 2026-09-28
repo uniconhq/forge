@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 
 from forge.domain.content import Files
-from forge.domain.identity import PLATFORM
+from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import ContestId, PublicationId, SubmissionId, TaskId, WorkspaceId
 from forge.domain.names import WorkspaceOwner
 from forge.domain.roles import Scope
@@ -29,7 +29,9 @@ class FakeWorkspaces:
         )
         org, contest_name = ids.contest_parts(contest)
         scope = Scope(org, contest_name)
-        desk = self._state.create_repo(org, ids.desk_repo(owner.segment), {}, scope=scope)
+        desk = self._state.create_repo(
+            org, ids.desk_repo(contest_name, owner.segment), {}, scope=scope
+        )
         desk.writers.update(member_ids)
         for task in tasks:
             task_name = ids.task_parts(task)[2]
@@ -58,19 +60,14 @@ class FakeWorkspaces:
         )
 
     async def record_submission(
-        self, workspace: WorkspaceId, task: TaskId, files: Files, *, submitter_id: int
+        self, as_: Identity, workspace: WorkspaceId, task: TaskId, files: Files
     ) -> SubmissionId:
-        self._state.record(
-            "record_submission",
-            PLATFORM,
-            workspace=workspace,
-            task=task,
-            submitter_id=submitter_id,
-        )
+        self._state.record("record_submission", as_, workspace=workspace, task=task)
         repo = self._submission_repo(workspace, task)
-        self._state.commit(repo, files, "Submit", submitter_id)
+        self._state.require_write(as_, repo)
+        version = self._state.commit(repo, files, "Submit", self._state.author(as_))
         number = self._state.next_number(repo, SUBMISSION_PREFIX)
-        self._state.create_version(PLATFORM, repo, f"{SUBMISSION_PREFIX}{number}")
+        self._state.create_version(PLATFORM, repo, f"{SUBMISSION_PREFIX}{number}", at=version)
         return ids.submission(workspace, ids.task_parts(task)[2], number)
 
     async def publish(self, task: TaskId, files: Files) -> PublicationId:
@@ -101,7 +98,7 @@ class FakeWorkspaces:
             for (owner, name), repo in self._state.repos.items()
             if owner == org
             and (
-                name == ids.desk_repo(segment)
+                name == ids.desk_repo(contest_name, segment)
                 or (name.startswith(f"{contest_name}.") and name.endswith(f".{segment}.sub"))
             )
         ]
