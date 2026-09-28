@@ -16,9 +16,6 @@ dependencies = [
     "cryptography>=50.0.1",
 ]
 
-[project.scripts]
-unicon-forge = "forge.cli:main"
-
 [project.urls]
 Source = "https://github.com/uniconhq/forge"
 
