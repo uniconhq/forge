@@ -10,9 +10,8 @@ from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, inspect
 
-from forge.db.base import Base
 from forge.db.migrations import downgrade_to_base, upgrade_to_head
-from forge.db.tables import Grading, register
+from forge.db.tables import Grading, metadata
 from forge.runtime.setup import Setup
 
 TABLES = {
@@ -36,13 +35,12 @@ def test_the_schema_has_exactly_the_tables_the_package_owns(migrated_database_ur
 
 
 def test_the_migration_matches_the_tables(migrated_database_url: str) -> None:
-    register()
     engine = create_engine(migrated_database_url)
     with engine.connect() as connection:
         context = MigrationContext.configure(
             connection, opts={"compare_type": True, "compare_server_default": True}
         )
-        differences = compare_metadata(context, Base.metadata)
+        differences = compare_metadata(context, metadata)
     engine.dispose()
     assert differences == []
 

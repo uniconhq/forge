@@ -9,11 +9,12 @@ import httpx
 import pytest
 
 from forge.domain.content import ConflictToken
-from forge.domain.errors import Conflict, Forbidden, Misconfigured, Rejected
+from forge.domain.errors import Conflict, Forbidden, Misconfigured, NotFound, Rejected
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
 from forge.domain.ids import ContestId, OrgName, TaskId, WorkspaceId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
+from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
 from forge.forges.forgejo import ForgejoForge
 from tests.forges.forgejo.conftest import Recorder, ok
@@ -184,6 +185,36 @@ async def test_an_org_is_created_limited_with_its_four_teams_and_labels(
     )
     labels = [body["name"] for body in recorder.sent("POST", "/api/v1/orgs/acme/labels")]
     assert labels == ["announcement", "clarification", "answered"]
+
+
+async def test_a_thread_in_an_org_without_its_labels_is_refused_and_no_label_is_made(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/orgs/acme/labels", ok([{"id": 1, "name": "clarification"}]))
+
+    with pytest.raises(NotFound, match="no label announcement"):
+        await forgejo.threads.post_thread(
+            PLATFORM, ContestId("acme/spring"), ThreadKind.ANNOUNCEMENT, title="t", body="b"
+        )
+
+    assert recorder.sent("POST", "/api/v1/orgs/acme/labels") == []
+    assert recorder.sent("POST", "/api/v1/repos/acme/spring.contest/issues") == []
+
+
+async def test_a_thread_is_posted_with_the_label_of_its_kind(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/orgs/acme/labels", ok([{"id": 4, "name": "announcement"}]))
+    recorder.on("POST", "/api/v1/repos/acme/spring.contest/issues", ok({"number": 12}))
+
+    thread = await forgejo.threads.post_thread(
+        PLATFORM, ContestId("acme/spring"), ThreadKind.ANNOUNCEMENT, title="t", body="b"
+    )
+
+    assert thread == "acme/spring.contest#12"
+    assert recorder.sent("POST", "/api/v1/repos/acme/spring.contest/issues") == [
+        {"title": "t", "body": "b", "labels": [4]}
+    ]
 
 
 async def test_roles_and_labels_that_exist_are_kept_on_a_rerun(

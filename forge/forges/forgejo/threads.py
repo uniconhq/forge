@@ -7,14 +7,13 @@ organisers only.
 from datetime import datetime
 from typing import Any
 
+from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import ThreadId
 from forge.domain.threads import Comment, Thread, ThreadKind, ThreadPlace
 from forge.forges.forgejo.http import Http, json_of, list_of
+from forge.forges.forgejo.labels import ANSWERED
 from forge.forges.ids import location, parse_thread, thread_id
-
-ANSWERED = "answered"
-LABEL_COLOUR = "cccccc"
 
 
 class ForgejoThreads:
@@ -86,18 +85,14 @@ class ForgejoThreads:
             await self.close_thread(as_, thread)
 
     async def _label(self, org: str, name: str) -> int:
+        """The id of the org's label `name`. The labels are made when the org
+        is provisioned; one that is missing is `NotFound`, so an org whose
+        label step never ran is reported rather than worked around.
+        """
         for label in await self._http.get_all(PLATFORM, f"/api/v1/orgs/{org}/labels"):
             if label["name"] == name:
                 return int(label["id"])
-        created = json_of(
-            await self._http.call(
-                PLATFORM,
-                "POST",
-                f"/api/v1/orgs/{org}/labels",
-                json={"name": name, "color": LABEL_COLOUR},
-            )
-        )
-        return int(created["id"])
+        raise NotFound(f"org {org} has no label {name}")
 
 
 def _thread(

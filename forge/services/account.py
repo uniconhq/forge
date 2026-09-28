@@ -62,18 +62,9 @@ async def _refuse_if_sole_admin(forge: Forge, user_id: int, grants: tuple[RoleGr
 async def _admins_of(forge: Forge, scope: Scope) -> set[int]:
     """Every admin of a scope, counting admins inherited from broader scopes."""
     admins: set[int] = set()
-    for broader in _scope_and_broader(scope):
+    for broader in scope.lineage():
         admins.update(user.id for user in await forge.orgs.holders_of(broader, Role.ADMIN))
     return admins
-
-
-def _scope_and_broader(scope: Scope) -> list[Scope]:
-    scopes = [Scope(scope.org)]
-    if scope.contest is not None:
-        scopes.append(Scope(scope.org, scope.contest))
-    if scope.task is not None:
-        scopes.append(scope)
-    return scopes
 
 
 async def _refuse_if_sharing_workflows(forge: Forge, user_id: int) -> None:

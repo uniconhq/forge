@@ -1,5 +1,6 @@
 """Alembic's entry point. Migrations run on the synchronous driver, with the
-URL from Alembic's configuration or from `UNICON_DATABASE_URL`.
+URL from Alembic's configuration or from `UNICON_DATABASE_URL`, against the
+metadata of `forge.db.tables`, which carries every table the package owns.
 """
 
 import os
@@ -7,11 +8,9 @@ import os
 from alembic import context
 from sqlalchemy import create_engine, pool
 
-from forge.db import tables
-from forge.db.base import Base
+from forge.db.tables import metadata
 
-target_metadata = Base.metadata
-tables.register()
+target_metadata = metadata
 
 
 def _database_url() -> str:

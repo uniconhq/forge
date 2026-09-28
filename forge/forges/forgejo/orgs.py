@@ -8,10 +8,9 @@ from forge.domain.identity import PLATFORM, AsUser, User
 from forge.domain.ids import OrgName
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.forges.forgejo.http import Http
+from forge.forges.forgejo.labels import LABELS
 from forge.forges.forgejo.teams import Teams, scope_of_team, team_name
 from forge.forges.forgejo.users import Users, user_from
-
-LABELS = {"announcement": "1d76db", "clarification": "fbca04", "answered": "0e8a16"}
 
 
 class ForgejoOrgs:

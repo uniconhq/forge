@@ -44,6 +44,15 @@ def test_a_role_at_an_org_reaches_every_contest_and_task_in_it() -> None:
     assert not holds(grants, Scope("other"), Role.OBSERVER)
 
 
+def test_a_scopes_lineage_is_every_scope_that_covers_it() -> None:
+    task = Scope("acme", "spring", "sum")
+    assert task.lineage() == (Scope("acme"), Scope("acme", "spring"), task)
+    assert Scope("acme").lineage() == (Scope("acme"),)
+    others = [Scope("acme", "autumn"), Scope("acme", "spring", "product"), Scope("other")]
+    for scope in [*task.lineage(), *others]:
+        assert (scope in task.lineage()) == scope.covers(task)
+
+
 def test_a_higher_role_counts_as_a_lower_one_but_not_the_reverse() -> None:
     manager = [RoleGrant(Scope("acme", "spring"), Role.MANAGER)]
     assert holds(manager, Scope("acme", "spring", "sum"), Role.OBSERVER)
