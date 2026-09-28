@@ -1,11 +1,12 @@
-"""The grading area over Woodpecker: registering a task's repository once,
-then starting, reading and cancelling runs as the org account.
+"""The grading area over Woodpecker: registering a task's repository once
+and starting runs as the org account the caller hands in, reading and
+cancelling runs as the CI's administrator.
 """
 
 from collections.abc import Mapping
 from typing import Any
 
-from forge.domain.errors import Conflict, Rejected, Unavailable
+from forge.domain.errors import Conflict, Forbidden, Rejected, Unavailable
 from forge.domain.grading import Run, RunStatus
 from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, Identity
 from forge.domain.ids import RunId, TaskId
@@ -38,9 +39,9 @@ class WoodpeckerGrading:
         self._repos = repos
         self._ci_public_url = ci_public_url.rstrip("/")
 
-    async def register(self, task: TaskId) -> None:
+    async def register(self, as_: AsOrgAccount, task: TaskId) -> None:
         ref = parse_task(task)
-        account = AsOrgAccount(ref.org)
+        account = _acting_for(as_, ref.org)
         record = await self._repos.record(ref.org, ref.repo)
         try:
             registered = json_of(
@@ -59,10 +60,10 @@ class WoodpeckerGrading:
         await self._delete_ci_webhooks(ref.org, ref.repo)
 
     async def start_run(
-        self, task: TaskId, *, variables: Mapping[str, str], compute_label: str
+        self, as_: AsOrgAccount, task: TaskId, *, variables: Mapping[str, str], compute_label: str
     ) -> RunId:
         ref = parse_task(task)
-        account = AsOrgAccount(ref.org)
+        account = _acting_for(as_, ref.org)
         repo = await self._lookup(account, ref.org, ref.repo)
         started = await self._ci.call(
             account,
@@ -103,6 +104,12 @@ class WoodpeckerGrading:
                 await self._forge.call(
                     PLATFORM, "DELETE", f"/api/v1/repos/{org}/{repo}/hooks/{hook['id']}"
                 )
+
+
+def _acting_for(as_: AsOrgAccount, org: str) -> AsOrgAccount:
+    if as_.org != org:
+        raise Forbidden(f"the org account of {as_.org} does not act for {org}")
+    return as_
 
 
 def _parse_run(run: RunId) -> tuple[int, int]:

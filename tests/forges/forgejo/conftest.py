@@ -27,14 +27,6 @@ CONFIG = ForgejoConfig(
 )
 
 
-class Tokens:
-    async def forge_token(self, org: str) -> str:
-        return f"forge-{org}"
-
-    async def ci_token(self, org: str) -> str:
-        return f"ci-{org}"
-
-
 @dataclass
 class Recorder:
     """Answers each request from what `on` scripted for its method and path,
@@ -82,15 +74,15 @@ def forgejo(recorder: Recorder) -> ForgejoForge:
     transport = httpx.MockTransport(recorder.handle)
     forge_http = Http(
         httpx.AsyncClient(base_url=CONFIG.internal_url, transport=transport),
-        ForgejoAuth(CONFIG.admin_token, Tokens()),
+        ForgejoAuth(CONFIG.admin_token),
         backoff_seconds=0,
     )
     ci_http = Http(
         httpx.AsyncClient(base_url=CONFIG.ci_url, transport=transport),
-        WoodpeckerAuth(CONFIG.ci_admin_token, Tokens()),
+        WoodpeckerAuth(CONFIG.ci_admin_token),
         backoff_seconds=0,
     )
-    return ForgejoForge(CONFIG, Tokens(), clients=(forge_http, ci_http))
+    return ForgejoForge(CONFIG, clients=(forge_http, ci_http))
 
 
 def ok(payload: Any, status: int = 200) -> httpx.Response:

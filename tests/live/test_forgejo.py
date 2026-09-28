@@ -31,14 +31,6 @@ pytestmark = [
 ]
 
 
-class NoTokens:
-    async def forge_token(self, org: str) -> str:
-        raise NotFound(f"org {org} has no org account")
-
-    async def ci_token(self, org: str) -> str:
-        raise NotFound(f"org {org} has no org account")
-
-
 @pytest.fixture(scope="module")
 def stamp() -> str:
     return secrets.token_hex(3)
@@ -68,8 +60,7 @@ async def forge(admin: httpx.Client) -> AsyncIterator[ForgejoForge]:
             ci_url="http://unused",
             ci_public_url="http://unused",
             ci_admin_token="unused",
-        ),
-        NoTokens(),
+        )
     )
     try:
         yield built

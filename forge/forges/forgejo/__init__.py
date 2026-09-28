@@ -19,7 +19,6 @@ from forge.forges.forgejo.threads import ForgejoThreads
 from forge.forges.forgejo.users import Users
 from forge.forges.forgejo.workflows import ForgejoWorkflows
 from forge.forges.forgejo.workspaces import ForgejoWorkspaces
-from forge.port.tokens import TokenSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +47,6 @@ class ForgejoForge:
     def __init__(
         self,
         config: ForgejoConfig,
-        tokens: TokenSource,
         *,
         clients: tuple[Http, Http] | None = None,
     ) -> None:
@@ -57,8 +55,8 @@ class ForgejoForge:
         the whole implementation.
         """
         http, ci = clients or (
-            Http(new_client(config.internal_url), ForgejoAuth(config.admin_token, tokens)),
-            Http(new_client(config.ci_url), WoodpeckerAuth(config.ci_admin_token, tokens)),
+            Http(new_client(config.internal_url), ForgejoAuth(config.admin_token)),
+            Http(new_client(config.ci_url), WoodpeckerAuth(config.ci_admin_token)),
         )
         self._clients = (http, ci)
 

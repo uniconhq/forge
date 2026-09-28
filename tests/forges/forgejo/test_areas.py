@@ -10,13 +10,15 @@ import pytest
 
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, Misconfigured, Rejected
-from forge.domain.identity import PLATFORM, AsUser, Credential
+from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
 from forge.domain.ids import ContestId, OrgName, TaskId, WorkspaceId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.workflows import Visibility
 from forge.forges.forgejo import ForgejoForge
 from tests.forges.forgejo.conftest import Recorder, ok
+
+ACME = AsOrgAccount("acme", forge_token="forge-acme", ci_token="ci-acme")
 
 USER = {"id": 7, "login": "ada", "full_name": "Ada", "email": None, "avatar_url": None}
 
@@ -366,13 +368,14 @@ async def test_a_run_is_registered_once_and_started_as_the_org_account(
         ),
     )
 
-    await forgejo.grading.register(TaskId("acme/spring/sum"))
+    await forgejo.grading.register(ACME, TaskId("acme/spring/sum"))
     run = await forgejo.grading.start_run(
-        TaskId("acme/spring/sum"), variables={"A": "1"}, compute_label="box"
+        ACME, TaskId("acme/spring/sum"), variables={"A": "1"}, compute_label="box"
     )
 
     assert run == "5/3"
     assert recorder.headers("POST", "/api/repos") == ["Bearer ci-acme"]
+    assert recorder.headers("POST", "/api/repos/5/pipelines") == ["Bearer ci-acme"]
     assert recorder.sent("PATCH", "/api/repos/5") == [
         {"trusted": {"network": False, "volumes": True, "security": False}}
     ]

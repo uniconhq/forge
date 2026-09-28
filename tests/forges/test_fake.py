@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 import pytest
 
 from forge.domain.errors import Conflict, Forbidden, NotFound
-from forge.domain.identity import PLATFORM, AsUser, Platform
+from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Platform
 from forge.domain.ids import ContestId, OrgName, TaskId, ThreadId, WorkflowId, WorkspaceId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
@@ -60,6 +60,21 @@ async def test_a_malformed_id_names_nothing(
 ) -> None:
     with pytest.raises(NotFound):
         await call(fake)
+
+
+async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> None:
+    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    contest = await fake.content.create_contest(OrgName("acme"), "spring", {})
+    task = await fake.content.create_task(contest, "sum", {})
+    acme = AsOrgAccount("acme", forge_token="f", ci_token="c")
+
+    await fake.grading.register(acme, task)
+    await fake.grading.start_run(acme, task, variables={}, compute_label="box")
+
+    assert [call.identity for call in fake.calls_to("register")] == [acme]
+    assert [call.identity for call in fake.calls_to("start_run")] == [acme]
+    with pytest.raises(Forbidden):
+        await fake.grading.register(AsOrgAccount("other", forge_token="f", ci_token="c"), task)
 
 
 async def test_every_call_is_recorded_with_its_identity(fake: FakeForge) -> None:

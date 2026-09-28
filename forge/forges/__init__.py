@@ -8,7 +8,6 @@ from forge.forges.cached import CachedForge
 from forge.forges.fake import FakeForge
 from forge.forges.forgejo import ForgejoConfig, ForgejoForge
 from forge.port import Forge
-from forge.services.org_accounts import OrgAccountTokens
 from forge.settings import Settings
 
 
@@ -45,6 +44,5 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
             ci_url=str(forgejo.woodpecker_url),
             ci_public_url=str(forgejo.woodpecker_public_url),
             ci_admin_token=forgejo.woodpecker_token.get_secret_value(),
-        ),
-        OrgAccountTokens(),
+        )
     )
