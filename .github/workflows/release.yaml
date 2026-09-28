@@ -5,11 +5,20 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # The whole of CI, Postgres included, run on the tagged commit. Calling the
+  # same workflow rather than copying its steps keeps "the same checks as CI"
+  # true when CI changes: a tag on a red commit never becomes a release.
+  checks:
+    uses: ./.github/workflows/ci.yaml
+
   release:
+    needs: checks
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -28,7 +37,10 @@ jobs:
           fi
 
       # The version inside the package must equal the tag it was built from.
+      # The number is kept as an output, because the release notes below are
+      # not a shell and cannot strip the leading v themselves.
       - name: Check the tag matches the package version
+        id: version
         run: |
           tagged="${GITHUB_REF_NAME#v}"
           declared="$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)"
@@ -37,18 +49,11 @@ jobs:
             echo "tag $GITHUB_REF_NAME, pyproject $declared, forge/__init__.py $in_code: not the same"
             exit 1
           fi
+          echo "number=$tagged" >> "$GITHUB_OUTPUT"
 
-      # The same checks as CI: a tag on a red commit must not become a release.
       - uses: astral-sh/setup-uv@v10.1.0
         with:
           version: 0.12.13
-      - run: uv sync --frozen
-      - run: uv run ruff format --check .
-      - run: uv run ruff check .
-      - run: uv run lint-imports
-      - run: uv run mypy
-      - run: uv run pytest
-
       - run: uv build
 
       # The release carries the wheel and the sdist. A dependant pins one
@@ -57,7 +62,7 @@ jobs:
         with:
           body: |
             `unicon-forge` ${{ github.ref_name }}. Install the wheel below, or
-            `pip install https://github.com/uniconhq/forge/releases/download/${{ github.ref_name }}/unicon_forge-${GITHUB_REF_NAME#v}-py3-none-any.whl`.
+            `pip install https://github.com/uniconhq/forge/releases/download/${{ github.ref_name }}/unicon_forge-${{ steps.version.outputs.number }}-py3-none-any.whl`.
           files: |
             dist/*.whl
             dist/*.tar.gz
