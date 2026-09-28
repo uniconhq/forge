@@ -17,7 +17,6 @@ forge/
   testing.py       the pytest plugin: a migrated database, the fake, a runtime
   crypto.py        encryption of credentials at rest
   log.py           the one structured logger; every line is a JSON record
-  cli.py           unicon-forge migrate
   domain/          the types and their rules; imports nothing else in the package
   port/            the interface a git host is called through, one area per module
   services/        the actions; the only layer that writes to the database
@@ -84,7 +83,8 @@ Nine tables, keyed by UUID v7, with every enumeration as `text` under a
 `CHECK`: `sessions`, `contestants`, `teams`, `team_members`, `invites`,
 `provisioning`, `gradings`, `uploads` and `jupyter_sessions`. They hold what a
 forge cannot: nothing about users, orgs, contests or tasks, which are read live.
-`unicon-forge migrate` applies the migrations under `forge/db/alembic/`.
+`forge.runtime.migrate` applies the migrations under `forge/db/alembic/`; the
+backend runs it as `unicon migrate`.
 
 There is no jobs table. Row work is a `Poller` over a table that carries a
 status, each row taken under `FOR UPDATE SKIP LOCKED`; timed work is a
