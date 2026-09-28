@@ -9,8 +9,10 @@ build, ask and tear down that one setup; a database that does not answer is
 import uuid
 
 import pytest
+from sqlalchemy import update
 
 import forge.api
+from forge.db.tables import Session as SessionRow
 from forge.domain.errors import Conflict, NotReady, SessionExpired
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
@@ -91,6 +93,25 @@ async def test_an_action_handed_a_context_runs_inside_the_callers_unit_of_work(
     await ctx.db.rollback()
 
     assert (await identity.current(setup, session.id)).id == session.id
+
+
+async def test_an_own_transaction_rolls_back_on_a_raise_and_lands_apart_from_the_unit_of_work(
+    setup: Setup, ctx: Context, fake: FakeForge
+) -> None:
+    session = await _signed_in(ctx, fake)
+
+    with pytest.raises(RuntimeError, match="halfway"):
+        async with ctx.own_transaction() as own:
+            await own.execute(
+                update(SessionRow).where(SessionRow.id == session.id).values(revoked_at=ctx.now)
+            )
+            raise RuntimeError("halfway")
+    assert (await identity.current(setup, session.id)).id == session.id
+
+    await sessions.revoke_now(ctx, session.id)
+    await ctx.db.rollback()
+    with pytest.raises(SessionExpired):
+        await identity.current(setup, session.id)
 
 
 async def test_an_action_handed_neither_uses_the_setup_the_process_holds(

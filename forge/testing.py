@@ -154,9 +154,9 @@ async def ctx(setup: Setup) -> AsyncIterator[Context]:
 
 
 @pytest.fixture
-def factory(ctx: Context) -> TransactionFactory:
+def factory(setup: Setup) -> TransactionFactory:
     """The factory for transactions of their own, as the background loops
     and the building blocks that write outside the caller's unit of work use
     it.
     """
-    return ctx.transactions
+    return setup._transactions

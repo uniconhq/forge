@@ -26,7 +26,7 @@ from forge.log import get_logger
 from forge.port import Forge
 from forge.runtime import held
 from forge.runtime.background import Loops, TimedPass
-from forge.runtime.context import ActionSetup, Context
+from forge.runtime.context import ActionSetup, Context, transaction
 from forge.services import sessions
 from forge.settings import Settings, load_settings
 
@@ -104,19 +104,14 @@ class Setup:
         ends, rolled back when it raises, and closed either way. A commit that
         fails raises out of the block.
         """
-        async with self._transactions() as db:
-            try:
-                yield Context(
-                    db=db,
-                    transactions=self._transactions,
-                    forge=self._forge,
-                    settings=self._settings,
-                    clock=self._clock,
-                )
-            except BaseException:
-                await db.rollback()
-                raise
-            await db.commit()
+        async with transaction(self._transactions) as db:
+            yield Context(
+                db=db,
+                forge=self._forge,
+                settings=self._settings,
+                clock=self._clock,
+                _transactions=self._transactions,
+            )
 
     def start_background(self) -> None:
         self._loops.start(self._transactions)

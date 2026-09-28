@@ -22,7 +22,6 @@ from typing import Any
 from sqlalchemy import CursorResult, Row, Update, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.db.engine import TransactionFactory
 from forge.db.tables import Session as SessionRow
 from forge.domain.client_address import client_address
 from forge.domain.errors import Forbidden, NotFound, SessionExpired, Unauthenticated
@@ -93,11 +92,10 @@ async def authenticate(ctx: Context, session_id: uuid.UUID) -> Session:
     if is_expired(_times(row), now, ctx.settings.session_idle_ttl):
         raise SessionExpired("This session has ended.")
     if needs_touch(row.last_seen_at, now):
-        async with ctx.transactions() as own:
+        async with ctx.own_transaction() as own:
             await own.execute(
                 update(SessionRow).where(SessionRow.id == session_id).values(last_seen_at=now)
             )
-            await own.commit()
     return _session(row)
 
 
@@ -109,12 +107,12 @@ async def credential_for(ctx: Context, session_id: uuid.UUID) -> Credential:
     process already used the stored value is not a dead session; the other
     process's value is read back instead.
     """
-    stored = await _stored(ctx.transactions, session_id)
+    stored = await _stored(ctx, session_id)
     if not refresh_due(stored.expires_at, ctx.now):
         return _decrypt(stored.credential, ctx.settings)
 
     async with _lock_for(session_id):
-        stored = await _stored(ctx.transactions, session_id)
+        stored = await _stored(ctx, session_id)
         if not refresh_due(stored.expires_at, ctx.now):
             return _decrypt(stored.credential, ctx.settings)
         try:
@@ -122,7 +120,7 @@ async def credential_for(ctx: Context, session_id: uuid.UUID) -> Credential:
                 _decrypt(stored.credential, ctx.settings)
             )
         except Forbidden as exc:
-            latest = await _stored(ctx.transactions, session_id)
+            latest = await _stored(ctx, session_id)
             if latest.credential != stored.credential:
                 return _decrypt(latest.credential, ctx.settings)
             log.info("session.credential_refused", session=str(session_id), reason=exc.detail)
@@ -130,7 +128,7 @@ async def credential_for(ctx: Context, session_id: uuid.UUID) -> Credential:
             raise SessionExpired("Sign in again to keep working at the forge.") from exc
         if await _store(ctx, session_id, was=stored.credential, issued=issued):
             return issued
-    return _decrypt((await _stored(ctx.transactions, session_id)).credential, ctx.settings)
+    return _decrypt((await _stored(ctx, session_id)).credential, ctx.settings)
 
 
 @action
@@ -239,8 +237,8 @@ def _lock_for(session_id: uuid.UUID) -> asyncio.Lock:
     return lock
 
 
-async def _stored(transactions: TransactionFactory, session_id: uuid.UUID) -> _Stored:
-    async with transactions() as own:
+async def _stored(ctx: Context, session_id: uuid.UUID) -> _Stored:
+    async with ctx.own_transaction() as own:
         found = (
             await own.execute(
                 select(
@@ -259,13 +257,12 @@ async def revoke_now(ctx: Context, session_id: uuid.UUID) -> None:
     revoke for a session the host has refused: the caller raises next, and a
     raise rolls the caller's transaction back.
     """
-    async with ctx.transactions() as own:
+    async with ctx.own_transaction() as own:
         await own.execute(_revocation(ctx.now).where(SessionRow.id == session_id))
-        await own.commit()
 
 
 async def _store(ctx: Context, session_id: uuid.UUID, *, was: bytes, issued: Credential) -> bool:
-    async with ctx.transactions() as own:
+    async with ctx.own_transaction() as own:
         written = await own.execute(
             update(SessionRow)
             .where(SessionRow.id == session_id, SessionRow.credential == was)
@@ -274,7 +271,6 @@ async def _store(ctx: Context, session_id: uuid.UUID, *, was: bytes, issued: Cre
                 credential_expires_at=issued.expires_at,
             )
         )
-        await own.commit()
     return _rows_touched(written) == 1
 
 
