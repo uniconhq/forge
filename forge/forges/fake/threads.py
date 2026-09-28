@@ -77,8 +77,8 @@ class FakeThreads:
 
     def _thread_repo(self, place: ThreadPlace) -> Repo:
         if ids.is_workspace(place):
-            org, _, segment = ids.workspace_parts(WorkspaceId(place))
-            return self._state.repo(org, ids.desk_repo(segment))
+            org, contest_name, segment = ids.workspace_parts(WorkspaceId(place))
+            return self._state.repo(org, ids.desk_repo(contest_name, segment))
         return content_repo(self._state, place)
 
     def _thread(self, as_: Identity, thread: ThreadId) -> Thread:

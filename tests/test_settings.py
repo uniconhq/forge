@@ -88,3 +88,12 @@ def test_a_secret_never_prints_itself() -> None:
 def test_a_key_of_the_wrong_length_is_refused() -> None:
     with pytest.raises(ValidationError, match="expected 32"):
         Settings.for_tests(token_encryption_key="c2hvcnQ")
+
+
+def test_the_ci_public_url_follows_the_ci_url_unless_given(
+    environment: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert str(load_settings().woodpecker_public_url) == "http://woodpecker-server:8000/"
+
+    monkeypatch.setenv("UNICON_WOODPECKER_PUBLIC_URL", "http://ci.example.test")
+    assert str(load_settings().woodpecker_public_url) == "http://ci.example.test/"

@@ -6,14 +6,16 @@ in a fixed word that says what it is:
 
     <org>/<contest>.contest
     <org>/<contest>.<task>.task
-    <org>/<owner>.desk
+    <org>/<contest>.<owner>.desk
     <org>/<contest>.<task>.<owner>.sub
     <owner>/<name>.workflow
     unicon/<name>.primitive
 
 The owner of a workspace is the contestant's username, lower cased, or
 `team.<team-id>`, and is read back as everything between the second dot and
-the final word.
+the final word. A workspace is per contest, so its desk carries the contest
+too: the same person in two contests of one org has two desks, and closing
+one contest's workspace leaves the other's alone.
 """
 
 from dataclasses import dataclass
@@ -93,10 +95,15 @@ class WorkspaceRef:
 
     @property
     def desk_repo(self) -> str:
-        return f"{self.owner.segment}.{DESK}"
+        return f"{self.contest}.{self.owner.segment}.{DESK}"
 
     def submission_repo(self, task: str) -> str:
         return f"{self.contest}.{task}.{self.owner.segment}.{SUBMISSION}"
+
+    def is_submission_repo(self, name: str) -> bool:
+        return name.startswith(f"{self.contest}.") and name.endswith(
+            f".{self.owner.segment}.{SUBMISSION}"
+        )
 
     @property
     def id(self) -> WorkspaceId:

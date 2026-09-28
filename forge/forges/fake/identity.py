@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import secrets
+from dataclasses import replace
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from forge.domain.errors import Forbidden
@@ -104,6 +105,15 @@ class FakeIdentity:
                 members.discard(user_id)
         for key in [key for key, repo in self._state.repos.items() if repo.owner == username]:
             del self._state.repos[key]
+        for thread_id, thread in self._state.threads.items():
+            self._state.threads[thread_id] = replace(
+                thread,
+                author_id=None if thread.author_id == user_id else thread.author_id,
+                comments=tuple(
+                    replace(comment, author_id=None) if comment.author_id == user_id else comment
+                    for comment in thread.comments
+                ),
+            )
 
     def _authorize(self, code_challenge: str, nonce: str) -> str:
         code = secrets.token_urlsafe(16)

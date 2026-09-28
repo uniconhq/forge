@@ -33,11 +33,18 @@ class Users:
         )
 
     async def delete(self, user_id: int) -> None:
-        """Remove the user and whatever they still own."""
+        """Remove the user and what they own, and keep what other people still
+        read. Forgejo's purge takes the user's issues and comments with the
+        account (measured on 15.0.8), and a plain delete refuses while the user
+        still owns a repository. So what they own, at most their private
+        workflows, is removed first, and then the account is deleted without
+        purge: their questions and answers stay, under the ghost user.
+        """
         person = await self._record(user_id)
-        await self._http.call(
-            PLATFORM, "DELETE", f"/api/v1/admin/users/{person['login']}", params={"purge": "true"}
-        )
+        login = str(person["login"])
+        for repo in await self._http.get_all(PLATFORM, f"/api/v1/users/{login}/repos"):
+            await self._http.call(PLATFORM, "DELETE", f"/api/v1/repos/{login}/{repo['name']}")
+        await self._http.call(PLATFORM, "DELETE", f"/api/v1/admin/users/{login}")
 
     async def _record(self, user_id: int) -> dict[str, Any]:
         found = json_of(

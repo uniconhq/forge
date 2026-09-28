@@ -1,9 +1,10 @@
 """The org area over Forgejo. An org is a `limited` organization owned by the
 platform account, with the three role teams, the org account's team and the
-labels threads are marked with.
+labels threads are marked with. The three are separate operations, each
+safe to run again, so provisioning can record and resume them one by one.
 """
 
-from forge.domain.identity import PLATFORM, User
+from forge.domain.identity import PLATFORM, AsUser, User
 from forge.domain.ids import OrgName
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.forges.forgejo.http import Http
@@ -31,8 +32,18 @@ class ForgejoOrgs:
                 "repo_admin_change_team_access": False,
             },
         )
-        await self._teams.create_role_teams(name)
+
+    async def create_roles(self, name: OrgName) -> None:
+        await self._teams.ensure_role_teams(name)
+
+    async def create_thread_labels(self, name: OrgName) -> None:
+        present = {
+            str(label["name"])
+            for label in await self._http.get_all(PLATFORM, f"/api/v1/orgs/{name}/labels")
+        }
         for label, colour in LABELS.items():
+            if label in present:
+                continue
             await self._http.call(
                 PLATFORM,
                 "POST",
@@ -55,10 +66,9 @@ class ForgejoOrgs:
             return
         await self._teams.remove_member(int(team["id"]), await self._users.username_of(user_id))
 
-    async def roles_of(self, user_id: int) -> tuple[RoleGrant, ...]:
-        username = await self._users.username_of(user_id)
+    async def roles_of(self, as_: AsUser) -> tuple[RoleGrant, ...]:
         grants = []
-        for team in await self._teams.of_user(username):
+        for team in await self._teams.of_caller(as_):
             org = str((team.get("organization") or {}).get("username", ""))
             found = scope_of_team(org, str(team["name"]))
             if found is not None:
