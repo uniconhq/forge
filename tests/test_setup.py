@@ -2,25 +2,25 @@
 and closes a transaction of its own, saves nothing when it raises or its
 commit fails, runs inside a caller's unit of work when handed one, and uses
 the setup the process holds when handed neither. `start`, `ready` and `stop`
-build, ask and tear down that one setup.
+build, ask and tear down that one setup; a database that does not answer is
+`NotReady`, with the cause in the log and not in the error.
 """
 
 import uuid
 
 import pytest
-from sqlalchemy.exc import OperationalError
 
-import forge
+import forge.api
 from forge import actions
 from forge.actions import action
 from forge.context import Context
-from forge.domain.errors import Conflict, SessionExpired
+from forge.domain.errors import Conflict, NotReady, SessionExpired
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
 from forge.services import identity, sessions, sign_in
 from forge.settings import TEST_VALUES, Settings
 from forge.setup import Setup
-from forge.testing import APP_URL, CALLBACK, FORGE_URL, FakeClock
+from forge.testing import APP_URL, CALLBACK_PATH, FORGE_URL, FakeClock, logged
 
 
 async def _signed_in(ctx: Context, fake: FakeForge) -> Session:
@@ -102,16 +102,19 @@ async def test_an_action_handed_neither_uses_the_setup_the_process_holds(
 
     with pytest.raises(SessionExpired):
         await identity.current(session.id)
-    assert forge.now() == clock.now()
+    assert forge.api.now() == clock.now()
+    assert forge.api.public_url() == f"{APP_URL}/"
     assert sign_in.sign_up_url() == f"{FORGE_URL}/user/sign_up"
 
 
 async def test_before_start_an_action_names_forge_start() -> None:
-    with pytest.raises(RuntimeError, match=r"forge\.start"):
+    with pytest.raises(RuntimeError, match=r"forge\.api\.start"):
         await sessions.revoke_all(7)
-    with pytest.raises(RuntimeError, match=r"forge\.start"):
-        forge.now()
-    with pytest.raises(RuntimeError, match=r"forge\.start"):
+    with pytest.raises(RuntimeError, match=r"forge\.api\.start"):
+        forge.api.now()
+    with pytest.raises(RuntimeError, match=r"forge\.api\.start"):
+        forge.api.public_url()
+    with pytest.raises(RuntimeError, match=r"forge\.api\.start"):
         sign_in.start("/")
 
 
@@ -127,27 +130,53 @@ async def test_start_builds_the_setup_from_the_environment_and_stop_lets_it_go(
     for name, value in values.items():
         monkeypatch.setenv(f"UNICON_{name.upper()}", str(value))
 
-    forge.start(sign_in_redirect_uri=CALLBACK)
+    forge.api.start(callback_path=CALLBACK_PATH)
     try:
-        await forge.ready()
-        assert forge.now().tzinfo is not None
+        await forge.api.ready()
+        assert forge.api.now().tzinfo is not None
+        assert forge.api.public_url() == f"{APP_URL}/"
         assert sign_in.start("/").url.startswith(FORGE_URL)
         await sessions.revoke_all(7)
         with pytest.raises(RuntimeError, match="already"):
-            forge.start(sign_in_redirect_uri=CALLBACK)
+            forge.api.start(callback_path=CALLBACK_PATH)
     finally:
-        await forge.stop()
+        await forge.api.stop()
 
     assert not actions.holding()
-    with pytest.raises(RuntimeError, match=r"forge\.start"):
-        await forge.ready()
+    with pytest.raises(RuntimeError, match=r"forge\.api\.start"):
+        await forge.api.ready()
 
 
-async def test_ready_raises_when_the_database_does_not_answer() -> None:
-    settings = Settings.for_tests(database_url="postgresql+psycopg://nobody:x@127.0.0.1:1/none")
-    setup = Setup.build(settings, sign_in_redirect_uri=CALLBACK)
+async def test_the_sign_in_callback_is_the_path_joined_to_the_public_url() -> None:
+    settings = Settings.for_tests(public_url="https://unicon.example.test")
+    setup = Setup.build(settings, callback_path=CALLBACK_PATH)
     try:
-        with pytest.raises((OperationalError, TimeoutError)):
+        started = sign_in.start("/", setup=setup)
+    finally:
+        await setup.stop()
+
+    assert "redirect_uri=https%3A%2F%2Funicon.example.test%2Fapi%2Fv1%2Fauth%2Fcallback" in (
+        started.url
+    )
+
+
+def test_a_callback_that_is_not_a_path_is_refused() -> None:
+    with pytest.raises(ValueError, match="not a path"):
+        Setup.build(Settings.for_tests(), callback_path="https://elsewhere.test/callback")
+
+
+async def test_a_database_that_does_not_answer_is_not_ready_and_only_the_log_says_why(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = Settings.for_tests(database_url="postgresql+psycopg://nobody:x@127.0.0.1:1/none")
+    setup = Setup.build(settings, callback_path=CALLBACK_PATH)
+    try:
+        with pytest.raises(NotReady) as refused:
             await setup.ready()
     finally:
         await setup.stop()
+
+    assert refused.value.detail == "The database did not answer."
+    assert refused.value.extra == {}
+    (record,) = logged(caplog, "setup.not_ready")
+    assert record["error"]

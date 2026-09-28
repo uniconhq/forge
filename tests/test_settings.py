@@ -1,16 +1,18 @@
-"""Configuration is read once at start, a mistake names the variable, and
-the Forgejo settings are required only when Forgejo is chosen.
+"""Configuration is read once at start, a mistake names the variable, the
+Forgejo settings are required only when Forgejo is chosen, and cookies are
+secure whenever the platform is served over https.
 """
 
 import pytest
 from pydantic import ValidationError
 
-from forge.settings import Settings, load_settings
+from forge.settings import Settings, load_log_settings, load_settings
 
 COMPLETE = {
     "UNICON_PUBLIC_URL": "http://localhost:8080",
     "UNICON_DATABASE_URL": "postgresql+psycopg://unicon:pw@postgres:5432/unicon",
     "UNICON_TOKEN_ENCRYPTION_KEY": "dW5pY29uIHRlc3QgdG9rZW4gZW5jcnlwdGlvbiBrZXk",
+    "UNICON_SESSION_SIGNING_KEY": "dW5pY29uIHRlc3Qgc2Vzc2lvbiBzaWduaW5nIGtleSE",
     "UNICON_FORGE_PUBLIC_URL": "http://localhost:3300",
     "UNICON_FORGE_ADMIN_TOKEN": "admin-token",
     "UNICON_FORGE_OAUTH_CLIENT_ID": "client-id",
@@ -26,7 +28,13 @@ COMPLETE = {
 
 @pytest.fixture
 def environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in [*COMPLETE, "UNICON_FORGE_INTERNAL_URL", "UNICON_FORGE", "UNICON_LOG_LEVEL"]:
+    for name in [
+        *COMPLETE,
+        "UNICON_FORGE_INTERNAL_URL",
+        "UNICON_FORGE",
+        "UNICON_LOG_LEVEL",
+        "UNICON_COOKIE_SECURE",
+    ]:
         monkeypatch.delenv(name, raising=False)
     for name, value in COMPLETE.items():
         monkeypatch.setenv(name, value)
@@ -97,3 +105,41 @@ def test_the_ci_public_url_follows_the_ci_url_unless_given(
 
     monkeypatch.setenv("UNICON_WOODPECKER_PUBLIC_URL", "http://ci.example.test")
     assert str(load_settings().woodpecker_public_url) == "http://ci.example.test/"
+
+
+def test_cookies_are_secure_by_default_exactly_when_the_public_url_is_https() -> None:
+    assert Settings.for_tests(public_url="http://localhost:8080").secure_cookies is False
+    assert Settings.for_tests(public_url="https://unicon.example.test").secure_cookies is True
+    assert Settings.for_tests(cookie_secure=True).secure_cookies is True
+
+
+def test_insecure_cookies_behind_https_stop_the_process_naming_the_variable(
+    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("UNICON_PUBLIC_URL", "https://unicon.example.test")
+    monkeypatch.setenv("UNICON_COOKIE_SECURE", "false")
+
+    with pytest.raises(SystemExit):
+        load_settings()
+
+    assert "UNICON_COOKIE_SECURE is off but UNICON_PUBLIC_URL is https" in capsys.readouterr().err
+
+
+def test_a_signing_key_of_the_wrong_length_is_refused() -> None:
+    with pytest.raises(ValidationError, match="expected 32"):
+        Settings.for_tests(session_signing_key="c2hvcnQ")
+
+
+def test_the_log_level_is_read_on_its_own_and_a_wrong_one_is_named(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("UNICON_LOG_LEVEL", "debug")
+    assert load_log_settings().log_level == "DEBUG"
+
+    monkeypatch.setenv("UNICON_LOG_LEVEL", "chatty")
+    with pytest.raises(SystemExit):
+        load_log_settings()
+
+    assert "UNICON_LOG_LEVEL: Value error, is not a logging level: chatty" in (
+        capsys.readouterr().err
+    )

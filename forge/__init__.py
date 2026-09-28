@@ -15,12 +15,9 @@ Layers, each a package here, and what each may import:
 imports `services` or `db`. import-linter contracts in `pyproject.toml` fail
 the build on a leak.
 
-A hosting process calls `start` once, then actions, then `stop`; `ready`
-asks the database and `now` reads the package's clock. `setup` holds these.
+A hosting process imports `forge.api` and nothing else of the package; that
+folder lists everything it may call. `unicon-forge migrate` migrates the
+database.
 """
-
-from forge.setup import now, ready, start, stop
-
-__all__ = ["now", "ready", "start", "stop"]
 
 __version__ = "0.2.0"
