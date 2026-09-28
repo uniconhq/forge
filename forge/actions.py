@@ -6,7 +6,7 @@ service calls it, it runs straight through inside the caller's unit of
 work. A service function without the mark is a building block, and only
 another part of the package, which holds a `Context`, can call it.
 
-The process holds one setup, which `forge.start` builds. An action opens
+The process holds one setup, which `forge.api.start` builds. An action opens
 its unit of work on that one, unless it is handed another setup as its
 first argument, which is how a test runs one against a setup of its own.
 """
@@ -18,6 +18,7 @@ from typing import Any, Concatenate, Protocol, cast, overload, runtime_checkable
 
 from forge.context import Clock, Context
 from forge.port import Forge
+from forge.settings import Settings
 
 
 @runtime_checkable
@@ -29,6 +30,9 @@ class ActionSetup(Protocol):
 
     @property
     def clock(self) -> Clock: ...
+
+    @property
+    def settings(self) -> Settings: ...
 
     def unit_of_work(self) -> AbstractAsyncContextManager[Context]: ...
 
@@ -81,11 +85,11 @@ def action[**P, R](work: Callable[Concatenate[Context, P], Awaitable[R]]) -> Act
 
 
 def held() -> ActionSetup:
-    """The setup the process holds. Raises when `forge.start` has not been
+    """The setup the process holds. Raises when `forge.api.start` has not been
     called, rather than building one from whatever is in the environment.
     """
     if _held is None:
-        raise RuntimeError("forge.start has not been called")
+        raise RuntimeError("forge.api.start has not been called")
     return _held
 
 
@@ -97,7 +101,7 @@ def hold(setup: ActionSetup) -> None:
     """Make `setup` the one the process holds. Refused while another is held."""
     global _held
     if _held is not None:
-        raise RuntimeError("forge already holds a setup; call forge.stop first")
+        raise RuntimeError("forge already holds a setup; call forge.api.stop first")
     _held = setup
 
 
