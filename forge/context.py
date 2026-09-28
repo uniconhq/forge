@@ -1,7 +1,7 @@
-"""What a service call runs with: the database session of the unit of work,
-the factory for work that needs a transaction of its own, the forge, the
-settings and the clock. The caller owns the transaction on `db`; a service
-never commits it.
+"""What a building block runs with: the transaction of the unit of work, the
+factory for work that needs a transaction of its own, the forge, the
+settings and the clock. The action that opened the unit of work commits or
+rolls back `db`; a building block never does.
 """
 
 from dataclasses import dataclass
@@ -10,7 +10,7 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.db.engine import SessionFactory
+from forge.db.engine import TransactionFactory
 from forge.port import Forge
 from forge.settings import Settings
 
@@ -29,7 +29,7 @@ class SystemClock:
 @dataclass(frozen=True, slots=True)
 class Context:
     db: AsyncSession
-    sessions: SessionFactory
+    transactions: TransactionFactory
     forge: Forge
     settings: Settings
     clock: Clock

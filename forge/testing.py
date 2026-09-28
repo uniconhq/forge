@@ -1,9 +1,14 @@
 """What a test needs to run the package: a Postgres of its own, migrated, the
-in-memory forge with two users, a clock a test can move, and a runtime and
+in-memory forge with two users, a clock a test can move, and a setup and a
 context over them. Load it as a pytest plugin, with `-p forge.testing` in the
 pytest configuration or `pytest_plugins = ["forge.testing"]` in a conftest.
 `UNICON_TEST_DATABASE_URL` names a server the tests may create databases on;
 without it every test that needs one is skipped.
+
+A test calls an action with `ctx` to run it inside the test's unit of work,
+or with `setup` to have it open and commit one of its own. A dependant that
+calls actions with neither, as the backend does, asks for `held_setup`, which
+makes `setup` the one forge holds for the test and lets go of it afterwards.
 """
 
 import os
@@ -13,13 +18,13 @@ from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge import actions
 from forge.context import Context
-from forge.db.engine import SessionFactory
+from forge.db.engine import TransactionFactory
 from forge.forges.fake import FakeForge
-from forge.runtime import Runtime, migrate
 from forge.settings import Settings
+from forge.setup import Setup, migrate
 
 SERVER_URL_VARIABLE = "UNICON_TEST_DATABASE_URL"
 APP_URL = "http://app.test"
@@ -97,8 +102,8 @@ def fake(clock: FakeClock) -> FakeForge:
 
 
 @pytest.fixture
-async def runtime(settings: Settings, fake: FakeForge, clock: FakeClock) -> AsyncIterator[Runtime]:
-    built = Runtime.build(settings, sign_in_redirect_uri=CALLBACK, forge=fake, clock=clock)
+async def setup(settings: Settings, fake: FakeForge, clock: FakeClock) -> AsyncIterator[Setup]:
+    built = Setup.build(settings, sign_in_redirect_uri=CALLBACK, forge=fake, clock=clock)
     try:
         yield built
     finally:
@@ -106,18 +111,28 @@ async def runtime(settings: Settings, fake: FakeForge, clock: FakeClock) -> Asyn
 
 
 @pytest.fixture
-def factory(runtime: Runtime) -> SessionFactory:
-    return runtime.sessions
+def held_setup(setup: Setup) -> Iterator[Setup]:
+    """`setup`, held as the process's own for the test, so an action called
+    with no setup uses it. Let go when the test ends, passed or failed.
+    """
+    actions.hold(setup)
+    try:
+        yield setup
+    finally:
+        actions.release()
 
 
 @pytest.fixture
-async def db(runtime: Runtime) -> AsyncIterator[AsyncSession]:
+async def ctx(setup: Setup) -> AsyncIterator[Context]:
     """One unit of work, committed when the test ends."""
-    async with runtime.sessions() as session:
-        yield session
-        await session.commit()
+    async with setup.unit_of_work() as context:
+        yield context
 
 
 @pytest.fixture
-def ctx(runtime: Runtime, db: AsyncSession) -> Context:
-    return runtime.context(db)
+def factory(ctx: Context) -> TransactionFactory:
+    """The factory for transactions of their own, as the background loops
+    and the building blocks that write outside the caller's unit of work use
+    it.
+    """
+    return ctx.transactions
