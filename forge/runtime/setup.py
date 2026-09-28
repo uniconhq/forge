@@ -5,6 +5,9 @@ its unit of work on it; `ready` asks its database; `stop` tears it down;
 `public_url` is where the platform is served.
 """
 
+import asyncio
+import uuid
+import weakref
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -24,9 +27,9 @@ from forge.domain.clock import Clock, SystemClock
 from forge.domain.errors import NotReady
 from forge.log import get_logger
 from forge.port import Forge
-from forge.runtime import held
 from forge.runtime.background import Loops, TimedPass
 from forge.runtime.context import ActionSetup, Context, transaction
+from forge.runtime.held import held, hold, holding, release, setup_or_held
 from forge.services import sessions
 from forge.settings import Settings, load_settings
 
@@ -54,6 +57,9 @@ class Setup:
         self._transactions = transactions
         self._clock = clock
         self._loops = Loops()
+        self._refreshing: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
 
     @classmethod
     def build(
@@ -111,7 +117,19 @@ class Setup:
                 settings=self._settings,
                 clock=self._clock,
                 _transactions=self._transactions,
+                _refresh_lock=self.refresh_lock,
             )
+
+    def refresh_lock(self, session_id: uuid.UUID) -> asyncio.Lock:
+        """The one lock this setup's units of work take while refreshing the
+        session's credential, so two requests in the process refresh it once.
+        It lives as long as someone holds it.
+        """
+        lock = self._refreshing.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._refreshing[session_id] = lock
+        return lock
 
     def start_background(self) -> None:
         self._loops.start(self.unit_of_work)
@@ -140,31 +158,31 @@ def start(*, callback_path: str) -> None:
     it is joined to `UNICON_PUBLIC_URL`. Call it once, from inside the running
     event loop.
     """
-    if held.holding():
+    if holding():
         raise RuntimeError("forge.api.start was already called")
     setup = Setup.build(load_settings(), callback_path=callback_path)
-    held.hold(setup)
+    hold(setup)
     setup.start_background()
 
 
 async def ready() -> None:
     """Raise `NotReady` if the database does not answer within two seconds."""
-    await held.held().ready()
+    await held().ready()
 
 
 async def stop() -> None:
     """Stop the background loops and close every connection."""
-    await held.release().stop()
+    await release().stop()
 
 
 def now(*, setup: ActionSetup | None = None) -> datetime:
     """The current instant by the clock the package enforces deadlines with."""
-    return (setup or held.held()).clock.now()
+    return setup_or_held(setup).clock.now()
 
 
 def public_url(*, setup: ActionSetup | None = None) -> str:
     """Where the platform is served, `UNICON_PUBLIC_URL`."""
-    return str((setup or held.held()).settings.public_url)
+    return str(setup_or_held(setup).settings.public_url)
 
 
 def _joined(base: HttpUrl, path: str) -> str:

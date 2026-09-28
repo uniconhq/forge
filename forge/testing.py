@@ -33,8 +33,8 @@ from forge.domain.ids import OrgName
 from forge.domain.workflows import Visibility
 from forge.forges.fake import FakeForge
 from forge.log import JsonFormatter
-from forge.runtime import held
 from forge.runtime.context import Context
+from forge.runtime.held import hold, release
 from forge.runtime.setup import Setup
 from forge.settings import Settings
 
@@ -138,11 +138,11 @@ def held_setup(setup: Setup) -> Iterator[Setup]:
     """`setup`, held as the process's own for the test, so an action called
     with no setup uses it. Let go when the test ends, passed or failed.
     """
-    held.hold(setup)
+    hold(setup)
     try:
         yield setup
     finally:
-        held.release()
+        release()
 
 
 @pytest.fixture

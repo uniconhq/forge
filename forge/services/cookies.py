@@ -15,7 +15,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 from forge.domain.sessions import Session
 from forge.runtime.context import ActionSetup
-from forge.runtime.held import held
+from forge.runtime.held import setup_or_held
 from forge.services.sign_in import SignInAttempt
 from forge.settings import Settings
 
@@ -84,7 +84,7 @@ def policy(*, setup: ActionSetup | None = None) -> CookiePolicy:
 
 
 def _settings(setup: ActionSetup | None) -> Settings:
-    return (setup or held()).settings
+    return setup_or_held(setup).settings
 
 
 def _serializer(settings: Settings, salt: str) -> URLSafeTimedSerializer:

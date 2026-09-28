@@ -18,7 +18,7 @@ from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import ActionSetup, Context
-from forge.runtime.held import held
+from forge.runtime.held import setup_or_held
 from forge.services import sessions
 
 log = get_logger(__name__)
@@ -48,7 +48,7 @@ class SignInStart:
 
 
 def start(next_candidate: str | None, *, setup: ActionSetup | None = None) -> SignInStart:
-    forge = (setup or held()).forge
+    forge = setup_or_held(setup).forge
     attempt = SignInAttempt(
         state=secrets.token_urlsafe(STATE_BYTES),
         verifier=_new_verifier(),
@@ -65,7 +65,7 @@ def sign_up_url(*, setup: ActionSetup | None = None) -> str | None:
     """Where a person creates an account at the host, or none while sign-up
     is closed.
     """
-    return (setup or held()).forge.identity.sign_up_url()
+    return setup_or_held(setup).forge.identity.sign_up_url()
 
 
 @action

@@ -1,13 +1,16 @@
 """What a building block runs with: the transaction of the unit of work, the
-forge, the settings and the clock, and `own_transaction` for the few writes
-that must land whatever the unit of work does. The action that opened the
-unit of work commits or rolls back `db`; a building block never does.
+forge, the settings and the clock, `own_transaction` for the few writes that
+must land whatever the unit of work does, and `refresh_lock`, the setup's
+lock on refreshing one session's credential. The action that opened the unit
+of work commits or rolls back `db`; a building block never does.
 
 `ActionSetup` is what a context is opened on: an action, and the plain
 functions beside it, take one from a setup.
 """
 
-from collections.abc import AsyncIterator
+import asyncio
+import uuid
+from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -43,6 +46,7 @@ class Context:
     settings: Settings
     clock: Clock
     _transactions: TransactionFactory = field(repr=False, kw_only=True)
+    _refresh_lock: Callable[[uuid.UUID], asyncio.Lock] = field(repr=False, kw_only=True)
 
     @property
     def now(self) -> datetime:
@@ -54,6 +58,12 @@ class Context:
         the unit of work does afterwards.
         """
         return transaction(self._transactions)
+
+    def refresh_lock(self, session_id: uuid.UUID) -> asyncio.Lock:
+        """The lock one process holds while it refreshes a session's
+        credential, the same for every unit of work on the setup.
+        """
+        return self._refresh_lock(session_id)
 
 
 @runtime_checkable
@@ -71,6 +81,4 @@ class ActionSetup(Protocol):
 
     def unit_of_work(self) -> AbstractAsyncContextManager[Context]: ...
 
-    async def ready(self) -> None: ...
-
-    async def stop(self) -> None: ...
+    def refresh_lock(self, session_id: uuid.UUID) -> asyncio.Lock: ...

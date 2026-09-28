@@ -17,9 +17,9 @@ from forge.db.tables import Session as SessionRow
 from forge.domain.errors import Conflict, NotReady, SessionExpired, Unauthenticated
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
-from forge.runtime import held
 from forge.runtime.actions import action
 from forge.runtime.context import Context
+from forge.runtime.held import holding
 from forge.runtime.setup import Setup
 from forge.services import identity, sessions, sign_in
 from forge.settings import TEST_VALUES, Settings
@@ -179,7 +179,7 @@ async def test_start_builds_the_setup_from_the_environment_and_stop_lets_it_go(
     finally:
         await forge.api.stop()
 
-    assert not held.holding()
+    assert not holding()
     with pytest.raises(RuntimeError, match=r"forge\.api\.start"):
         await forge.api.ready()
 

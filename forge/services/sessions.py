@@ -11,9 +11,7 @@ whose credential the host refuses to renew, run in a short transaction of
 their own.
 """
 
-import asyncio
 import uuid
-import weakref
 from dataclasses import dataclass
 from datetime import datetime
 from ipaddress import IPv4Address, IPv6Address
@@ -36,8 +34,6 @@ from forge.settings import Settings
 log = get_logger(__name__)
 
 NO_CREDENTIAL = b""
-
-_refreshing: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = weakref.WeakValueDictionary()
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +106,7 @@ async def credential_for(ctx: Context, session_id: uuid.UUID) -> Credential:
     if not refresh_due(stored.expires_at, ctx.now):
         return _decrypt(stored.credential, ctx.settings)
 
-    async with _lock_for(session_id):
+    async with ctx.refresh_lock(session_id):
         stored = await _stored(ctx, session_id)
         if not refresh_due(stored.expires_at, ctx.now):
             return _decrypt(stored.credential, ctx.settings)
@@ -228,14 +224,6 @@ def _revocation(now: datetime) -> Update:
 def _rows_touched(result: Any) -> int:
     cursor: CursorResult[Any] = result
     return cursor.rowcount
-
-
-def _lock_for(session_id: uuid.UUID) -> asyncio.Lock:
-    lock = _refreshing.get(session_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _refreshing[session_id] = lock
-    return lock
 
 
 async def _stored(ctx: Context, session_id: uuid.UUID) -> _Stored:
