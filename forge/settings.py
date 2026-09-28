@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     public_url: HttpUrl
     database_url: PostgresDsn
     token_encryption_key: SecretStr
+    session_signing_key: SecretStr
+    cookie_secure: bool | None = None
 
     forge: ForgeKind = "forgejo"
     forge_public_url: HttpUrl | None = None
@@ -58,20 +60,11 @@ class Settings(BaseSettings):
     s3_secret_key: SecretStr
 
     org_creation_open: bool = True
-    log_level: str = "INFO"
 
     session_hard_ttl: timedelta = timedelta(days=30)
     session_idle_ttl: timedelta = timedelta(days=14)
     sign_in_ttl: timedelta = timedelta(minutes=10)
     fresh_sign_in_window: timedelta = timedelta(minutes=5)
-
-    @field_validator("log_level")
-    @classmethod
-    def _a_logging_level(cls, value: str) -> str:
-        name = value.strip().upper()
-        if name not in logging.getLevelNamesMapping():
-            raise ValueError(f"is not a logging level: {value}")
-        return name
 
     @model_validator(mode="after")
     def _idle_within_hard(self) -> Self:
@@ -110,7 +103,13 @@ class Settings(BaseSettings):
             return int(value)
         return value
 
-    @field_validator("token_encryption_key")
+    @model_validator(mode="after")
+    def _secure_cookies_over_https(self) -> Self:
+        if self.cookie_secure is False and self.public_url.scheme == "https":
+            raise ValueError("UNICON_COOKIE_SECURE is off but UNICON_PUBLIC_URL is https")
+        return self
+
+    @field_validator("token_encryption_key", "session_signing_key")
     @classmethod
     def _thirty_two_bytes_base64url(cls, value: SecretStr) -> SecretStr:
         return require_key(value)
@@ -118,6 +117,20 @@ class Settings(BaseSettings):
     @property
     def token_encryption_key_bytes(self) -> bytes:
         return decode_key(self.token_encryption_key)
+
+    @property
+    def session_signing_key_bytes(self) -> bytes:
+        return decode_key(self.session_signing_key)
+
+    @property
+    def secure_cookies(self) -> bool:
+        """Whether the cookies the hosting process sets are marked `Secure`:
+        `UNICON_COOKIE_SECURE` when given, and otherwise on exactly when the
+        public URL is https.
+        """
+        if self.cookie_secure is None:
+            return self.public_url.scheme == "https"
+        return self.cookie_secure
 
     @classmethod
     def for_tests(cls, **overrides: Any) -> Self:
@@ -137,12 +150,29 @@ class DatabaseSettings(BaseSettings):
     database_url: PostgresDsn
 
 
+class LogSettings(BaseSettings):
+    """The one setting the logger needs, read before anything else is."""
+
+    model_config = SettingsConfigDict(env_prefix="UNICON_", extra="ignore")
+
+    log_level: str = "INFO"
+
+    @field_validator("log_level")
+    @classmethod
+    def _a_logging_level(cls, value: str) -> str:
+        name = value.strip().upper()
+        if name not in logging.getLevelNamesMapping():
+            raise ValueError(f"is not a logging level: {value}")
+        return name
+
+
 TEST_KEY = base64.urlsafe_b64encode(b"\x00" * KEY_BYTES).decode().rstrip("=")
 
 TEST_VALUES: dict[str, Any] = {
     "public_url": "http://localhost:8080",
     "database_url": "postgresql+psycopg://unicon:unicon@localhost:5432/unicon",
     "token_encryption_key": TEST_KEY,
+    "session_signing_key": TEST_KEY,
     "forge": "fake",
     "forge_public_url": "http://localhost:3300",
     "s3_endpoint": "http://garage:3900",
@@ -176,6 +206,10 @@ def load_settings() -> Settings:
 
 def load_database_settings() -> DatabaseSettings:
     return load(DatabaseSettings)
+
+
+def load_log_settings() -> LogSettings:
+    return load(LogSettings)
 
 
 def load[T: BaseSettings](settings_class: type[T]) -> T:

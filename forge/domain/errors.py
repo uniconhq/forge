@@ -5,8 +5,9 @@ structured members of the refusal.
 `PortError` is what the port fails with, in five ways and no others:
 `NotFound`, `Forbidden`, `Conflict`, `Rejected` and `Unavailable`.
 `Misconfigured` is a `Rejected` with its own code, because the platform's own
-registration being refused is not something a user can act on. Everything
-else is a `ServiceError`, raised by the services.
+registration being refused is not something a user can act on. `NotReady`
+is what a readiness check fails with. Everything else is a `ServiceError`,
+raised by the services.
 """
 
 from typing import Any
@@ -63,6 +64,14 @@ class Unavailable(PortError):
     """The host did not answer, after the retries the implementation makes."""
 
     code = "forge_unavailable"
+
+
+class NotReady(UniconError):
+    """The database did not answer in time. The cause goes to the log and not
+    into the error, so nothing that asks learns what failed underneath.
+    """
+
+    code = "not_ready"
 
 
 class ServiceError(UniconError):

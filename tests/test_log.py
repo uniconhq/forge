@@ -1,25 +1,17 @@
-"""Every line the package logs is one JSON record, and a secret comes out
-masked.
+"""Every line the package logs is one JSON record, a secret comes out masked,
+and `setup` sends every logger in the process through the one handler at the
+level the environment names.
 """
 
 import json
 import logging
-from typing import Any
+from collections.abc import Iterator
 
 import pytest
 from pydantic import SecretStr
 
-from forge.log import MASK, JsonFormatter, get_logger
-
-FORMATTER = JsonFormatter()
-
-
-def _records(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]:
-    return [
-        json.loads(FORMATTER.format(record))
-        for record in caplog.records
-        if record.getMessage() == event
-    ]
+from forge.log import MASK, JsonFormatter, get_logger, setup
+from forge.testing import logged
 
 
 def test_a_record_is_one_json_object_with_named_fields(
@@ -29,7 +21,7 @@ def test_a_record_is_one_json_object_with_named_fields(
 
     get_logger("forge.test").info("workspace.opened", contestant="c-1", attempt=2)
 
-    (record,) = _records(caplog, "workspace.opened")
+    (record,) = logged(caplog, "workspace.opened")
     assert record["level"] == "INFO"
     assert record["logger"] == "forge.test"
     assert record["contestant"] == "c-1"
@@ -46,7 +38,7 @@ def test_a_secret_logged_on_purpose_comes_out_masked(
         "token.seen", token=SecretStr("gho_live_token"), nested={"key": SecretStr("k")}
     )
 
-    (record,) = _records(caplog, "token.seen")
+    (record,) = logged(caplog, "token.seen")
     line = json.dumps(record)
     assert "gho_live_token" not in line
     assert record["token"] == MASK
@@ -60,6 +52,34 @@ def test_an_exception_record_carries_the_traceback(caplog: pytest.LogCaptureFixt
     except ValueError:
         get_logger("forge.test").exception("pass.failed", name="drift")
 
-    (record,) = _records(caplog, "pass.failed")
+    (record,) = logged(caplog, "pass.failed")
     assert record["name"] == "drift"
     assert "ValueError: boom" in record["exception"]
+
+
+@pytest.fixture
+def root_logger() -> Iterator[logging.Logger]:
+    """The root logger, put back as it was after `setup` has replaced its
+    handlers.
+    """
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    try:
+        yield root
+    finally:
+        root.handlers[:] = handlers
+        root.setLevel(level)
+
+
+def test_setup_sends_every_logger_through_one_json_handler_at_the_named_level(
+    root_logger: logging.Logger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UNICON_LOG_LEVEL", "warning")
+
+    setup()
+
+    (handler,) = root_logger.handlers
+    assert isinstance(handler.formatter, JsonFormatter)
+    assert root_logger.level == logging.WARNING
+    record = logging.LogRecord("uvicorn.error", logging.INFO, "", 0, "Started", None, None)
+    assert json.loads(handler.format(record))["logger"] == "uvicorn.error"

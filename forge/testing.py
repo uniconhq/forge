@@ -9,12 +9,20 @@ A test calls an action with `ctx` to run it inside the test's unit of work,
 or with `setup` to have it open and commit one of its own. A dependant that
 calls actions with neither, as the backend does, asks for `held_setup`, which
 makes `setup` the one forge holds for the test and lets go of it afterwards.
+
+A dependant imports `forge.api` and this module and nothing else of the
+package, so this module also re-exports what a dependant's test needs to
+arrange the fake: `FakeForge`, and the domain types a test builds, `OrgName`,
+`AsUser` and `Visibility`. `logged` reads back the records a test caused, in
+the shape they are written.
 """
 
+import json
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import psycopg
 import pytest
@@ -22,14 +30,34 @@ import pytest
 from forge import actions
 from forge.context import Context
 from forge.db.engine import TransactionFactory
+from forge.domain.identity import AsUser
+from forge.domain.ids import OrgName
+from forge.domain.workflows import Visibility
 from forge.forges.fake import FakeForge
+from forge.log import JsonFormatter
 from forge.settings import Settings
 from forge.setup import Setup, migrate
+
+__all__ = [
+    "APP_URL",
+    "CALLBACK",
+    "CALLBACK_PATH",
+    "FORGE_URL",
+    "AsUser",
+    "FakeClock",
+    "FakeForge",
+    "OrgName",
+    "Visibility",
+    "logged",
+]
 
 SERVER_URL_VARIABLE = "UNICON_TEST_DATABASE_URL"
 APP_URL = "http://app.test"
 FORGE_URL = "http://forge.test"
-CALLBACK = f"{APP_URL}/api/v1/auth/callback"
+CALLBACK_PATH = "/api/v1/auth/callback"
+CALLBACK = f"{APP_URL}{CALLBACK_PATH}"
+
+_FORMATTER = JsonFormatter()
 
 
 class FakeClock:
@@ -46,6 +74,17 @@ class FakeClock:
 
     def set(self, moment: datetime) -> None:
         self._now = moment
+
+
+def logged(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]:
+    """Every record named `event` that `caplog` holds, as the JSON object the
+    package writes it as.
+    """
+    return [
+        json.loads(_FORMATTER.format(record))
+        for record in caplog.records
+        if record.getMessage() == event
+    ]
 
 
 def _server_url() -> str:
@@ -103,7 +142,7 @@ def fake(clock: FakeClock) -> FakeForge:
 
 @pytest.fixture
 async def setup(settings: Settings, fake: FakeForge, clock: FakeClock) -> AsyncIterator[Setup]:
-    built = Setup.build(settings, sign_in_redirect_uri=CALLBACK, forge=fake, clock=clock)
+    built = Setup.build(settings, callback_path=CALLBACK_PATH, forge=fake, clock=clock)
     try:
         yield built
     finally:

@@ -17,6 +17,9 @@ LAYERS = [
     "forge.forges.forgejo",
     "forge.forges.fake",
     "forge.log",
+    "forge.api",
+    "forge.cookies",
+    "forge.cli",
 ]
 
 
