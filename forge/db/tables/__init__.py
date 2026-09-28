@@ -1,8 +1,9 @@
-"""The nine tables the platform owns: what a forge cannot hold. Importing this
-package registers every table on the metadata, which is what the migrations
-and the tests need.
+"""The nine tables the platform owns: what a forge cannot hold. `metadata`
+is the metadata with every one of them on it, which is what the migrations
+and the tests compare against; reading it from here is what puts them there.
 """
 
+from forge.db.base import Base
 from forge.db.tables.contestants import Contestant
 from forge.db.tables.gradings import Grading
 from forge.db.tables.invites import Invite
@@ -22,9 +23,7 @@ __all__ = [
     "Team",
     "TeamMember",
     "Upload",
-    "register",
+    "metadata",
 ]
 
-
-def register() -> None:
-    """Make sure every table is on the metadata."""
+metadata = Base.metadata

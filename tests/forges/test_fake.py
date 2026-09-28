@@ -3,11 +3,13 @@ completes against it, every call is recorded with its identity, and it refuses
 what a real forge refuses.
 """
 
+from collections.abc import Awaitable, Callable
+
 import pytest
 
 from forge.domain.errors import Conflict, Forbidden, NotFound
-from forge.domain.identity import PLATFORM, AsUser, Platform
-from forge.domain.ids import OrgName
+from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Platform
+from forge.domain.ids import ContestId, OrgName, TaskId, ThreadId, WorkflowId, WorkspaceId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
@@ -38,7 +40,41 @@ async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
     fake.add_user(9, "eve")
     with pytest.raises(Forbidden):
         await fake.workspaces.record_submission(_as(fake, 9), workspace, task, {"a": b"b"})
-    assert fake.calls_to("register")[0].identity.org == "acme"  # type: ignore[union-attr]
+    assert fake.calls_to("register") == []
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda fake: fake.content.create_task(ContestId("acme"), "sum", {}),
+        lambda fake: fake.workspaces.list_publications(TaskId("acme/spring")),
+        lambda fake: fake.workspaces.list_submissions(
+            WorkspaceId("acme/spring/sum"), TaskId("acme/spring/sum")
+        ),
+        lambda fake: fake.workflows.star_workflow(PLATFORM, WorkflowId("ada")),
+        lambda fake: fake.threads.close_thread(PLATFORM, ThreadId("acme/spring.contest")),
+    ],
+)
+async def test_a_malformed_id_names_nothing(
+    fake: FakeForge, call: Callable[[FakeForge], Awaitable[object]]
+) -> None:
+    with pytest.raises(NotFound):
+        await call(fake)
+
+
+async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> None:
+    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    contest = await fake.content.create_contest(OrgName("acme"), "spring", {})
+    task = await fake.content.create_task(contest, "sum", {})
+    acme = AsOrgAccount("acme", forge_token="f", ci_token="c")
+
+    await fake.grading.register(acme, task)
+    await fake.grading.start_run(acme, task, variables={}, compute_label="box")
+
+    assert [call.identity for call in fake.calls_to("register")] == [acme]
+    assert [call.identity for call in fake.calls_to("start_run")] == [acme]
+    with pytest.raises(Forbidden):
+        await fake.grading.register(AsOrgAccount("other", forge_token="f", ci_token="c"), task)
 
 
 async def test_every_call_is_recorded_with_its_identity(fake: FakeForge) -> None:

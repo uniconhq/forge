@@ -17,12 +17,9 @@ COMPLETE = {
     "UNICON_FORGE_ADMIN_TOKEN": "admin-token",
     "UNICON_FORGE_OAUTH_CLIENT_ID": "client-id",
     "UNICON_FORGE_OAUTH_CLIENT_SECRET": "client-secret",
+    "UNICON_FORGE_PLATFORM_ACCOUNT": "unicon-backend",
     "UNICON_WOODPECKER_URL": "http://woodpecker-server:8000",
     "UNICON_WOODPECKER_TOKEN": "woodpecker-token",
-    "UNICON_S3_ENDPOINT": "http://garage:3900",
-    "UNICON_S3_REGION": "garage",
-    "UNICON_S3_ACCESS_KEY": "access",
-    "UNICON_S3_SECRET_KEY": "secret",
 }
 
 
@@ -31,6 +28,8 @@ def environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in [
         *COMPLETE,
         "UNICON_FORGE_INTERNAL_URL",
+        "UNICON_FORGE_REGISTRATION_OPEN",
+        "UNICON_WOODPECKER_PUBLIC_URL",
         "UNICON_FORGE",
         "UNICON_LOG_LEVEL",
         "UNICON_COOKIE_SECURE",
@@ -42,10 +41,12 @@ def environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_a_complete_environment_loads(environment: None) -> None:
     settings = load_settings()
-    assert str(settings.forge_internal_url) == "http://localhost:3300/"
     assert settings.forge == "forgejo"
-    assert settings.forge_admin_token is not None
-    assert settings.forge_admin_token.get_secret_value() == "admin-token"
+    assert settings.forgejo is not None
+    assert str(settings.forgejo.internal_url) == "http://localhost:3300/"
+    assert settings.forgejo.admin_token.get_secret_value() == "admin-token"
+    assert settings.forgejo.platform_account == "unicon-backend"
+    assert settings.forgejo.registration_open is False
 
 
 def test_a_missing_variable_stops_the_process_naming_it(
@@ -75,6 +76,28 @@ def test_forgejo_names_the_settings_it_needs(
     assert "UNICON_FORGE=forgejo needs UNICON_FORGE_PUBLIC_URL, UNICON_WOODPECKER_TOKEN" in lines
 
 
+def test_forgejo_needs_the_platform_account(
+    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("UNICON_FORGE_PLATFORM_ACCOUNT")
+
+    with pytest.raises(SystemExit):
+        load_settings()
+
+    assert "UNICON_FORGE=forgejo needs UNICON_FORGE_PLATFORM_ACCOUNT" in capsys.readouterr().err
+
+
+def test_a_malformed_forgejo_setting_is_named_by_its_variable(
+    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("UNICON_WOODPECKER_URL", "not a url")
+
+    with pytest.raises(SystemExit):
+        load_settings()
+
+    assert "UNICON_WOODPECKER_URL: " in capsys.readouterr().err
+
+
 def test_the_fake_needs_no_forgejo_settings(
     environment: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -82,7 +105,9 @@ def test_the_fake_needs_no_forgejo_settings(
     for name in ("UNICON_FORGE_ADMIN_TOKEN", "UNICON_WOODPECKER_URL", "UNICON_WOODPECKER_TOKEN"):
         monkeypatch.delenv(name)
 
-    assert load_settings().forge == "fake"
+    settings = load_settings()
+    assert settings.forge == "fake"
+    assert settings.forgejo is None
 
 
 def test_a_secret_never_prints_itself() -> None:
@@ -101,10 +126,14 @@ def test_a_key_of_the_wrong_length_is_refused() -> None:
 def test_the_ci_public_url_follows_the_ci_url_unless_given(
     environment: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert str(load_settings().woodpecker_public_url) == "http://woodpecker-server:8000/"
+    forgejo = load_settings().forgejo
+    assert forgejo is not None
+    assert str(forgejo.woodpecker_public_url) == "http://woodpecker-server:8000/"
 
     monkeypatch.setenv("UNICON_WOODPECKER_PUBLIC_URL", "http://ci.example.test")
-    assert str(load_settings().woodpecker_public_url) == "http://ci.example.test/"
+    forgejo = load_settings().forgejo
+    assert forgejo is not None
+    assert str(forgejo.woodpecker_public_url) == "http://ci.example.test/"
 
 
 def test_cookies_are_secure_by_default_exactly_when_the_public_url_is_https() -> None:

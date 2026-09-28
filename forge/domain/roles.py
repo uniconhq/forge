@@ -44,6 +44,18 @@ class Scope:
     def name(self) -> str:
         return "/".join(part for part in (self.org, self.contest, self.task) if part)
 
+    def lineage(self) -> tuple[Scope, ...]:
+        """This scope and every scope above it, broadest first: the org, then
+        the contest if there is one, then the task if there is one. `a` is in
+        `b.lineage()` exactly when `a.covers(b)`.
+        """
+        scopes = [Scope(self.org)]
+        if self.contest is not None:
+            scopes.append(Scope(self.org, self.contest))
+        if self.task is not None:
+            scopes.append(self)
+        return tuple(scopes)
+
     def covers(self, other: Scope) -> bool:
         """Whether a role held here reaches `other`."""
         if self.org != other.org:

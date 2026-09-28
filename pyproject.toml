@@ -1,6 +1,6 @@
 [project]
 name = "unicon-forge"
-version = "0.2.0"
+version = "0.3.0"
 description = "The Unicon contest API as a Python package: domain, services, tables, and the forge port with its implementations"
 readme = "README.md"
 license = "MIT"
@@ -72,10 +72,32 @@ source_modules = ["forge.domain", "forge.services", "forge.db"]
 forbidden_modules = ["forge.forges"]
 
 [[tool.importlinter.contracts]]
+name = "only runtime and testing build a forge implementation"
+type = "forbidden"
+source_modules = [
+    "forge.api",
+    "forge.cli",
+    "forge.db",
+    "forge.domain",
+    "forge.log",
+    "forge.port",
+    "forge.services",
+    "forge.settings",
+]
+forbidden_modules = ["forge.forges"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
 name = "the Forgejo implementation never imports services or db"
 type = "forbidden"
 source_modules = ["forge.forges.forgejo"]
 forbidden_modules = ["forge.services", "forge.db"]
+
+[[tool.importlinter.contracts]]
+name = "the in-memory implementation never imports services, db or runtime"
+type = "forbidden"
+source_modules = ["forge.forges.fake"]
+forbidden_modules = ["forge.services", "forge.db", "forge.runtime"]
 
 [[tool.importlinter.contracts]]
 name = "domain imports nothing else in the package"

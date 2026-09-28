@@ -14,7 +14,10 @@ from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import ContestId, PublicationId, SubmissionId, TaskId, WorkspaceId
 from forge.domain.names import WorkspaceOwner
 from forge.domain.roles import Scope
-from forge.forges.forgejo.names import (
+from forge.forges.forgejo.repos import Repos
+from forge.forges.forgejo.teams import Teams
+from forge.forges.forgejo.users import Users
+from forge.forges.ids import (
     PUBLISHED_PREFIX,
     SUBMISSION_PREFIX,
     WorkspaceRef,
@@ -24,10 +27,6 @@ from forge.forges.forgejo.names import (
     publication_id,
     submission_id,
 )
-from forge.forges.forgejo.repos import Repos
-from forge.forges.forgejo.teams import Teams
-from forge.forges.forgejo.users import Users
-from forge.port.grading import GradingPort
 
 WRITE = "write"
 SUBMIT_MESSAGE = "Submit"
@@ -36,11 +35,10 @@ NUMBERING_ATTEMPTS = 3
 
 
 class ForgejoWorkspaces:
-    def __init__(self, repos: Repos, users: Users, teams: Teams, grading: GradingPort) -> None:
+    def __init__(self, repos: Repos, users: Users, teams: Teams) -> None:
         self._repos = repos
         self._users = users
         self._teams = teams
-        self._grading = grading
 
     async def open_workspace(
         self,
@@ -95,7 +93,6 @@ class ForgejoWorkspaces:
             PLATFORM, ref.org, ref.repo, files, message=PUBLISH_MESSAGE
         )
         number = await self._next_version(ref.org, ref.repo, PUBLISHED_PREFIX, written)
-        await self._grading.register(task)
         return publication_id(ref, number)
 
     async def list_publications(self, task: TaskId) -> tuple[PublicationId, ...]:

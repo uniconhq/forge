@@ -3,34 +3,35 @@
 import secrets
 from collections.abc import Mapping
 
-from forge.domain.errors import NotFound
+from forge.domain.errors import Forbidden, NotFound
 from forge.domain.grading import Enrolment, Run, RunStatus
 from forge.domain.identity import PLATFORM, AsOrgAccount
 from forge.domain.ids import AgentId, OrgName, RunId, TaskId
-from forge.forges.fake import ids
 from forge.forges.fake.state import State
+from forge.forges.ids import location, parse_task
 
 
 class FakeGrading:
     def __init__(self, state: State) -> None:
         self._state = state
 
-    async def register(self, task: TaskId) -> None:
-        self._state.record("register", AsOrgAccount(ids.task_parts(task)[0]), task=task)
+    async def register(self, as_: AsOrgAccount, task: TaskId) -> None:
+        self._state.record("register", as_, task=task)
+        _acting_for(as_, task)
         self._task_repo(task)
 
     async def start_run(
-        self, task: TaskId, *, variables: Mapping[str, str], compute_label: str
+        self, as_: AsOrgAccount, task: TaskId, *, variables: Mapping[str, str], compute_label: str
     ) -> RunId:
-        org = ids.task_parts(task)[0]
         self._state.record(
             "start_run",
-            AsOrgAccount(org),
+            as_,
             task=task,
             variables=dict(variables),
             compute_label=compute_label,
         )
         self._state.check_up()
+        _acting_for(as_, task)
         self._task_repo(task)
         run = Run(id=RunId(f"{task}/{len(self._state.runs) + 1}"), status=RunStatus.PENDING)
         self._state.runs[run.id] = run
@@ -49,8 +50,13 @@ class FakeGrading:
         self._state.runs[run] = Run(id=run, status=RunStatus.CANCELLED)
 
     def _task_repo(self, task: TaskId) -> None:
-        org, contest_name, name = ids.task_parts(task)
-        self._state.repo(org, ids.task_repo(contest_name, name))
+        self._state.repo(*location(task))
+
+
+def _acting_for(as_: AsOrgAccount, task: TaskId) -> None:
+    org = parse_task(task).org
+    if as_.org != org:
+        raise Forbidden(f"the org account of {as_.org} does not act for {org}")
 
 
 class FakeComputes:

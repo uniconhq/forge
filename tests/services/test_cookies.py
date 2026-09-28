@@ -13,11 +13,11 @@ from typing import Any
 import pytest
 from itsdangerous import URLSafeTimedSerializer
 
-from forge import cookies
 from forge.domain.sessions import Session
+from forge.runtime.setup import Setup
+from forge.services import cookies
 from forge.services.sign_in import SignInAttempt
 from forge.settings import Settings
-from forge.setup import Setup
 from forge.testing import CALLBACK_PATH
 
 OTHER_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE"

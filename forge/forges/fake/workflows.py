@@ -5,10 +5,17 @@ from collections.abc import Mapping
 from forge.domain.content import File, Files
 from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM, Identity
-from forge.domain.ids import PrimitiveId, VersionId, WorkflowId
+from forge.domain.ids import PrimitiveId, WorkflowId
 from forge.domain.workflows import Primitive, Visibility, Workflow
-from forge.forges.fake import ids
-from forge.forges.fake.state import PLATFORM_ORG, Repo, State
+from forge.forges.fake.state import Repo, State
+from forge.forges.ids import (
+    PLATFORM_ORG,
+    PRIMITIVE,
+    WORKFLOW,
+    WorkflowRef,
+    parse_workflow,
+    primitive_repo,
+)
 
 DECLARATION = "primitive.yaml"
 
@@ -21,12 +28,13 @@ class FakeWorkflows:
         self, as_: Identity, owner: str, name: str, files: Files, visibility: Visibility
     ) -> WorkflowId:
         self._state.record("create_workflow", as_, owner=owner, name=name, visibility=visibility)
-        repo = self._state.create_repo(owner, ids.workflow_repo(name), files, marked="workflow")
+        ref = WorkflowRef(owner, name)
+        repo = self._state.create_repo(owner, ref.repo, files, marked=WORKFLOW)
         repo.private = visibility is not Visibility.PUBLIC
         author = self._state.author(as_)
         if author is not None:
             repo.writers.add(author)
-        return ids.workflow(owner, name)
+        return ref.id
 
     async def set_workflow_visibility(
         self, as_: Identity, workflow: WorkflowId, visibility: Visibility
@@ -71,7 +79,7 @@ class FakeWorkflows:
         return tuple(
             _workflow(repo)
             for repo in self._state.repos.values()
-            if repo.marked == "workflow" and not repo.private and query in repo.name
+            if repo.marked == WORKFLOW and not repo.private and query in repo.name
         )
 
     async def star_workflow(self, as_: Identity, workflow: WorkflowId) -> None:
@@ -100,12 +108,12 @@ class FakeWorkflows:
         return tuple(
             _workflow(repo)
             for repo in self._state.repos.values()
-            if repo.marked == "workflow" and repo.owner == username
+            if repo.marked == WORKFLOW and repo.owner == username
         )
 
     def _repo(self, workflow: WorkflowId) -> Repo:
-        owner, name = ids.workflow_parts(workflow)
-        return self._state.repo(owner, ids.workflow_repo(name))
+        ref = parse_workflow(workflow)
+        return self._state.repo(ref.owner, ref.repo)
 
 
 class FakePrimitives:
@@ -116,7 +124,9 @@ class FakePrimitives:
         """Seed a primitive the way bootstrap does, one declaration per
         version.
         """
-        repo = self._state.create_repo(PLATFORM_ORG, f"{name}.primitive", {}, marked="primitive")
+        repo = self._state.create_repo(
+            PLATFORM_ORG, primitive_repo(PrimitiveId(name)), {}, marked=PRIMITIVE
+        )
         repo.private = False
         for version, declaration in versions.items():
             self._state.commit(repo, {DECLARATION: declaration}, version, None)
@@ -126,17 +136,17 @@ class FakePrimitives:
         self._state.record("list_primitives", PLATFORM)
         return tuple(
             Primitive(
-                id=PrimitiveId(repo.name.removesuffix(".primitive")),
-                name=repo.name.removesuffix(".primitive"),
+                id=PrimitiveId(repo.name.removesuffix(f".{PRIMITIVE}")),
+                name=repo.name.removesuffix(f".{PRIMITIVE}"),
                 versions=tuple(repo.versions),
             )
             for repo in self._state.repos.values()
-            if repo.marked == "primitive"
+            if repo.marked == PRIMITIVE
         )
 
     async def read_declaration(self, primitive: PrimitiveId, version: str) -> bytes:
         self._state.record("read_declaration", PLATFORM, primitive=primitive, version=version)
-        repo = self._state.repo(PLATFORM_ORG, f"{primitive}.primitive")
+        repo = self._state.repo(PLATFORM_ORG, primitive_repo(primitive))
         if version not in repo.versions or DECLARATION not in repo.files:
             raise NotFound(f"{primitive} has no declaration at {version}")
         return repo.files[DECLARATION]
@@ -149,15 +159,12 @@ def _workflow(repo: Repo) -> Workflow:
         visibility = Visibility.SHARED
     else:
         visibility = Visibility.PRIVATE
-    name = repo.name.removesuffix(".workflow")
+    name = repo.name.removesuffix(f".{WORKFLOW}")
     return Workflow(
-        id=ids.workflow(repo.owner, name),
+        id=WorkflowRef(repo.owner, name).id,
         owner=repo.owner,
         name=name,
         visibility=visibility,
         stars=len(repo.stars),
         versions=tuple(repo.versions),
     )
-
-
-__all__ = ["FakePrimitives", "FakeWorkflows", "VersionId"]

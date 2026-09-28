@@ -9,14 +9,17 @@ import httpx
 import pytest
 
 from forge.domain.content import ConflictToken
-from forge.domain.errors import Conflict, Forbidden, Misconfigured, Rejected
-from forge.domain.identity import PLATFORM, AsUser, Credential
+from forge.domain.errors import Conflict, Forbidden, Misconfigured, NotFound, Rejected
+from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
 from forge.domain.ids import ContestId, OrgName, TaskId, WorkspaceId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
+from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
 from forge.forges.forgejo import ForgejoForge
 from tests.forges.forgejo.conftest import Recorder, ok
+
+ACME = AsOrgAccount("acme", forge_token="forge-acme", ci_token="ci-acme")
 
 USER = {"id": 7, "login": "ada", "full_name": "Ada", "email": None, "avatar_url": None}
 
@@ -75,6 +78,9 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
         assert f"PUT /api/v1/repos/acme/{repo}/collaborators/bob" in calls
     assert "POST /api/v1/repos/acme/spring.sum.bob.sub/tag_protections" in calls
     assert "POST /api/v1/repos/acme/spring.bob.desk/tag_protections" not in calls
+    assert recorder.sent("POST", "/api/v1/repos/acme/spring.sum.bob.sub/tag_protections") == [
+        {"name_pattern": "submission/*", "whitelist_usernames": ["platform-account"]}
+    ]
     assert recorder.sent("PUT", "/api/v1/repos/acme/spring.bob.desk/collaborators/bob") == [
         {"permission": "write"}
     ]
@@ -181,6 +187,36 @@ async def test_an_org_is_created_limited_with_its_four_teams_and_labels(
     assert labels == ["announcement", "clarification", "answered"]
 
 
+async def test_a_thread_in_an_org_without_its_labels_is_refused_and_no_label_is_made(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/orgs/acme/labels", ok([{"id": 1, "name": "clarification"}]))
+
+    with pytest.raises(NotFound, match="no label announcement"):
+        await forgejo.threads.post_thread(
+            PLATFORM, ContestId("acme/spring"), ThreadKind.ANNOUNCEMENT, title="t", body="b"
+        )
+
+    assert recorder.sent("POST", "/api/v1/orgs/acme/labels") == []
+    assert recorder.sent("POST", "/api/v1/repos/acme/spring.contest/issues") == []
+
+
+async def test_a_thread_is_posted_with_the_label_of_its_kind(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/orgs/acme/labels", ok([{"id": 4, "name": "announcement"}]))
+    recorder.on("POST", "/api/v1/repos/acme/spring.contest/issues", ok({"number": 12}))
+
+    thread = await forgejo.threads.post_thread(
+        PLATFORM, ContestId("acme/spring"), ThreadKind.ANNOUNCEMENT, title="t", body="b"
+    )
+
+    assert thread == "acme/spring.contest#12"
+    assert recorder.sent("POST", "/api/v1/repos/acme/spring.contest/issues") == [
+        {"title": "t", "body": "b", "labels": [4]}
+    ]
+
+
 async def test_roles_and_labels_that_exist_are_kept_on_a_rerun(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
@@ -228,6 +264,27 @@ async def test_a_submission_is_written_as_the_contestant_and_named_at_that_commi
         {"tag_name": "submission/2", "target": "c-bob"}
     ]
     assert recorder.headers("POST", f"{repo}/tags") == ["token admin"]
+
+
+async def test_a_publication_is_written_and_tagged_by_the_platform_and_nothing_else(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/spring.sum.task"
+    recorder.on("GET", f"{repo}/branches/main", ok({"commit": {"id": "head-0"}}))
+    recorder.on("GET", f"{repo}/git/trees/main", ok({"tree": []}))
+    recorder.on("POST", f"{repo}/contents", ok({"commit": {"sha": "c-plans"}}))
+    recorder.on("GET", f"{repo}/tags", ok([{"name": "published/1"}]))
+
+    publication = await forgejo.workspaces.publish(
+        TaskId("acme/spring/sum"), {"plans/public.json": b"{}"}
+    )
+
+    assert publication == "acme/spring/sum#2"
+    assert recorder.sent("POST", f"{repo}/tags") == [
+        {"tag_name": "published/2", "target": "c-plans"}
+    ]
+    assert set(recorder.headers("POST", f"{repo}/contents")) == {"token admin"}
+    assert [call for call in recorder.calls() if call.split(" ")[1].startswith("/api/repos")] == []
 
 
 async def test_a_write_the_host_refuses_as_moved_is_read_again_and_repeated(
@@ -342,13 +399,14 @@ async def test_a_run_is_registered_once_and_started_as_the_org_account(
         ),
     )
 
-    await forgejo.grading.register(TaskId("acme/spring/sum"))
+    await forgejo.grading.register(ACME, TaskId("acme/spring/sum"))
     run = await forgejo.grading.start_run(
-        TaskId("acme/spring/sum"), variables={"A": "1"}, compute_label="box"
+        ACME, TaskId("acme/spring/sum"), variables={"A": "1"}, compute_label="box"
     )
 
     assert run == "5/3"
     assert recorder.headers("POST", "/api/repos") == ["Bearer ci-acme"]
+    assert recorder.headers("POST", "/api/repos/5/pipelines") == ["Bearer ci-acme"]
     assert recorder.sent("PATCH", "/api/repos/5") == [
         {"trusted": {"network": False, "volumes": True, "security": False}}
     ]

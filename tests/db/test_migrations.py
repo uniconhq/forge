@@ -10,10 +10,9 @@ from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, inspect
 
-from forge.db.base import Base
-from forge.db.engine import TransactionFactory
 from forge.db.migrations import downgrade_to_base, upgrade_to_head
-from forge.db.tables import Grading, register
+from forge.db.tables import Grading, metadata
+from forge.runtime.setup import Setup
 
 TABLES = {
     "sessions",
@@ -36,13 +35,12 @@ def test_the_schema_has_exactly_the_tables_the_package_owns(migrated_database_ur
 
 
 def test_the_migration_matches_the_tables(migrated_database_url: str) -> None:
-    register()
     engine = create_engine(migrated_database_url)
     with engine.connect() as connection:
         context = MigrationContext.configure(
             connection, opts={"compare_type": True, "compare_server_default": True}
         )
-        differences = compare_metadata(context, Base.metadata)
+        differences = compare_metadata(context, metadata)
     engine.dispose()
     assert differences == []
 
@@ -55,9 +53,9 @@ def test_the_migration_rolls_back(migrated_database_url: str) -> None:
     upgrade_to_head(migrated_database_url)
 
 
-async def test_a_grading_row_round_trips_with_its_verdict(factory: TransactionFactory) -> None:
+async def test_a_grading_row_round_trips_with_its_verdict(setup: Setup) -> None:
     verdict = {"outcome": "verdict", "verdict": "AC", "score": "100", "summary": [{"id": "1"}]}
-    async with factory() as db:
+    async with setup.unit_of_work() as ctx:
         row = Grading(
             workspace_id="acme/spring/@ada",
             submission_id="acme/spring/@ada/sum#1",
@@ -72,11 +70,11 @@ async def test_a_grading_row_round_trips_with_its_verdict(factory: TransactionFa
             selected_at=datetime.now(UTC),
             finished_at=datetime.now(UTC),
         )
-        db.add(row)
-        await db.commit()
+        ctx.db.add(row)
+        await ctx.db.flush()
         row_id = row.id
-    async with factory() as db:
-        found = await db.get(Grading, row_id)
+    async with setup.unit_of_work() as ctx:
+        found = await ctx.db.get(Grading, row_id)
     assert found is not None
     assert found.verdict == verdict
     assert found.run_id == "12/3"

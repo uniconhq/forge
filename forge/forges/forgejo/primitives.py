@@ -5,10 +5,11 @@ carrying the primitive topic, with a declaration at every version.
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import PrimitiveId
 from forge.domain.workflows import Primitive
-from forge.forges.forgejo.names import PLATFORM_ORG, PRIMITIVE, PRIMITIVE_TOPIC, primitive_repo
 from forge.forges.forgejo.repos import Repos
+from forge.forges.ids import PLATFORM_ORG, PRIMITIVE, primitive_repo
 
 DECLARATION = "primitive.yaml"
+PRIMITIVE_TOPIC = "unicon-primitive"
 
 
 class ForgejoPrimitives:

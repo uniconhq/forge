@@ -7,7 +7,7 @@ has no access to.
 
 from typing import Any
 
-from forge.context import Clock
+from forge.domain.clock import Clock
 from forge.domain.identity import Credential, User
 from forge.forges.fake.content import FakeContent
 from forge.forges.fake.grading import FakeComputes, FakeGrading
@@ -36,7 +36,7 @@ class FakeForge:
         self.orgs = FakeOrgs(self.state)
         self.content = FakeContent(self.state)
         self.grading = FakeGrading(self.state)
-        self.workspaces = FakeWorkspaces(self.state, self.grading)
+        self.workspaces = FakeWorkspaces(self.state)
         self.threads = FakeThreads(self.state)
         self.workflows = FakeWorkflows(self.state)
         self.primitives = FakePrimitives(self.state)

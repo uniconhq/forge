@@ -11,35 +11,29 @@ whose credential the host refuses to renew, run in a short transaction of
 their own.
 """
 
-import asyncio
-import json
 import uuid
-import weakref
 from dataclasses import dataclass
 from datetime import datetime
 from ipaddress import IPv4Address, IPv6Address
 from typing import Any
 
 from sqlalchemy import CursorResult, Row, Update, delete, func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.actions import action
-from forge.context import Context
-from forge.crypto import CannotDecrypt, decrypt, encrypt
-from forge.db.engine import TransactionFactory
 from forge.db.tables import Session as SessionRow
 from forge.domain.client_address import client_address
 from forge.domain.errors import Forbidden, NotFound, SessionExpired, Unauthenticated
 from forge.domain.identity import Credential, User
 from forge.domain.sessions import Session, SessionTimes, is_expired, needs_touch, refresh_due
 from forge.log import get_logger
+from forge.runtime.actions import action
+from forge.runtime.context import Context
+from forge.services import credentials
+from forge.services.credentials import CannotDecrypt
 from forge.settings import Settings
 
 log = get_logger(__name__)
 
 NO_CREDENTIAL = b""
-
-_refreshing: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = weakref.WeakValueDictionary()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +61,7 @@ async def create(
     row = SessionRow(
         user_id=user.id,
         username=user.username,
-        credential=_encrypt(credential, ctx.settings),
+        credential=credentials.encrypt(credential, ctx.settings),
         credential_expires_at=credential.expires_at,
         created_at=now,
         expires_at=now + ctx.settings.session_hard_ttl,
@@ -93,11 +87,10 @@ async def authenticate(ctx: Context, session_id: uuid.UUID) -> Session:
     if is_expired(_times(row), now, ctx.settings.session_idle_ttl):
         raise SessionExpired("This session has ended.")
     if needs_touch(row.last_seen_at, now):
-        async with ctx.transactions() as own:
+        async with ctx.own_transaction() as own:
             await own.execute(
                 update(SessionRow).where(SessionRow.id == session_id).values(last_seen_at=now)
             )
-            await own.commit()
     return _session(row)
 
 
@@ -109,12 +102,12 @@ async def credential_for(ctx: Context, session_id: uuid.UUID) -> Credential:
     process already used the stored value is not a dead session; the other
     process's value is read back instead.
     """
-    stored = await _stored(ctx.transactions, session_id)
+    stored = await _stored(ctx, session_id)
     if not refresh_due(stored.expires_at, ctx.now):
         return _decrypt(stored.credential, ctx.settings)
 
-    async with _lock_for(session_id):
-        stored = await _stored(ctx.transactions, session_id)
+    async with ctx.refresh_lock(session_id):
+        stored = await _stored(ctx, session_id)
         if not refresh_due(stored.expires_at, ctx.now):
             return _decrypt(stored.credential, ctx.settings)
         try:
@@ -122,7 +115,7 @@ async def credential_for(ctx: Context, session_id: uuid.UUID) -> Credential:
                 _decrypt(stored.credential, ctx.settings)
             )
         except Forbidden as exc:
-            latest = await _stored(ctx.transactions, session_id)
+            latest = await _stored(ctx, session_id)
             if latest.credential != stored.credential:
                 return _decrypt(latest.credential, ctx.settings)
             log.info("session.credential_refused", session=str(session_id), reason=exc.detail)
@@ -130,7 +123,7 @@ async def credential_for(ctx: Context, session_id: uuid.UUID) -> Credential:
             raise SessionExpired("Sign in again to keep working at the forge.") from exc
         if await _store(ctx, session_id, was=stored.credential, issued=issued):
             return issued
-    return _decrypt((await _stored(ctx.transactions, session_id)).credential, ctx.settings)
+    return _decrypt((await _stored(ctx, session_id)).credential, ctx.settings)
 
 
 @action
@@ -173,13 +166,15 @@ async def list_for(ctx: Context, session: Session) -> list[SessionInfo]:
     ]
 
 
-async def sweep(db: AsyncSession, settings: Settings, now: datetime) -> int:
+async def sweep(ctx: Context) -> int:
     """Delete rows that ended longer ago than the hard lifetime, so the table
-    holds only sessions someone could still be shown.
+    holds only sessions someone could still be shown. A timed pass, run on the
+    pass's unit of work.
     """
+    now, settings = ctx.now, ctx.settings
     cutoff = now - settings.session_hard_ttl
     idle_cutoff = now - settings.session_idle_ttl - settings.session_hard_ttl
-    gone = await db.execute(
+    gone = await ctx.db.execute(
         delete(SessionRow).where(
             (SessionRow.revoked_at < cutoff)
             | (SessionRow.expires_at < cutoff)
@@ -231,16 +226,8 @@ def _rows_touched(result: Any) -> int:
     return cursor.rowcount
 
 
-def _lock_for(session_id: uuid.UUID) -> asyncio.Lock:
-    lock = _refreshing.get(session_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _refreshing[session_id] = lock
-    return lock
-
-
-async def _stored(transactions: TransactionFactory, session_id: uuid.UUID) -> _Stored:
-    async with transactions() as own:
+async def _stored(ctx: Context, session_id: uuid.UUID) -> _Stored:
+    async with ctx.own_transaction() as own:
         found = (
             await own.execute(
                 select(
@@ -259,42 +246,25 @@ async def revoke_now(ctx: Context, session_id: uuid.UUID) -> None:
     revoke for a session the host has refused: the caller raises next, and a
     raise rolls the caller's transaction back.
     """
-    async with ctx.transactions() as own:
+    async with ctx.own_transaction() as own:
         await own.execute(_revocation(ctx.now).where(SessionRow.id == session_id))
-        await own.commit()
 
 
 async def _store(ctx: Context, session_id: uuid.UUID, *, was: bytes, issued: Credential) -> bool:
-    async with ctx.transactions() as own:
+    async with ctx.own_transaction() as own:
         written = await own.execute(
             update(SessionRow)
             .where(SessionRow.id == session_id, SessionRow.credential == was)
             .values(
-                credential=_encrypt(issued, ctx.settings), credential_expires_at=issued.expires_at
+                credential=credentials.encrypt(issued, ctx.settings),
+                credential_expires_at=issued.expires_at,
             )
         )
-        await own.commit()
     return _rows_touched(written) == 1
-
-
-def _encrypt(credential: Credential, settings: Settings) -> bytes:
-    payload = json.dumps(
-        {
-            "access": credential.access,
-            "refresh": credential.refresh,
-            "expires_at": credential.expires_at.isoformat(),
-        }
-    ).encode()
-    return encrypt(payload, settings.token_encryption_key_bytes)
 
 
 def _decrypt(blob: bytes, settings: Settings) -> Credential:
     try:
-        payload = json.loads(decrypt(blob, settings.token_encryption_key_bytes))
+        return credentials.decrypt(blob, settings)
     except CannotDecrypt as exc:
         raise SessionExpired("Sign in again.") from exc
-    return Credential(
-        access=str(payload["access"]),
-        refresh=str(payload["refresh"]),
-        expires_at=datetime.fromisoformat(str(payload["expires_at"])),
-    )

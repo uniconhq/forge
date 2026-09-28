@@ -48,8 +48,8 @@ class WorkspacePort(Protocol):
         ...
 
     async def publish(self, task: TaskId, files: Files) -> PublicationId:
-        """Write the compiled plans, create the next protected version, and
-        register the task for grading as the org account.
+        """Write the compiled plans and name that change as the next protected
+        version, as the platform.
         """
         ...
 

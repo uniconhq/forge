@@ -1,5 +1,5 @@
-"""Every kind of name the Forgejo implementation builds is parsed back, and
-the ids it hands out round-trip.
+"""Every kind of name either implementation builds is parsed back, the ids
+they hand out round-trip, and an id from elsewhere names nothing.
 """
 
 import uuid
@@ -8,12 +8,14 @@ import pytest
 
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.domain.names import TeamOwner, UserOwner
-from forge.forges.forgejo.names import (
+from forge.forges.ids import (
     ContestRef,
     MalformedId,
     TaskRef,
     WorkspaceRef,
     is_workspace,
+    location,
+    owner_from_segment,
     parse_contest,
     parse_publication,
     parse_submission,
@@ -59,6 +61,20 @@ def test_a_workspace_id_is_told_apart_from_a_task_id() -> None:
     assert not is_workspace(TaskRef("acme", "spring", "sum").id)
     with pytest.raises(MalformedId):
         parse_workspace(WorkspaceId("acme/spring/sum"))
+
+
+def test_a_workspace_owner_round_trips_through_its_segment() -> None:
+    team = TeamOwner(TEAM)
+    assert owner_from_segment(team.segment) == team
+    assert owner_from_segment(UserOwner("Ada.Lovelace").segment) == UserOwner("ada.lovelace")
+    with pytest.raises(MalformedId):
+        owner_from_segment("team.not-a-uuid")
+
+
+def test_a_place_is_located_at_its_repository() -> None:
+    assert location("acme/spring") == ("acme", "spring.contest")
+    assert location("acme/spring/sum") == ("acme", "spring.sum.task")
+    assert location("acme/spring/@ada") == ("acme", "spring.ada.desk")
 
 
 def test_an_id_from_elsewhere_is_refused() -> None:

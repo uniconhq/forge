@@ -11,18 +11,12 @@ from forge.domain.errors import Forbidden
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import WorkflowId
 from forge.domain.workflows import Visibility, Workflow
-from forge.forges.forgejo.names import (
-    DEFAULT_BRANCH,
-    PROTECTED_PREFIXES,
-    WORKFLOW,
-    WORKFLOW_TOPIC,
-    WorkflowRef,
-    parse_workflow,
-)
-from forge.forges.forgejo.repos import Repos
+from forge.forges.forgejo.repos import DEFAULT_BRANCH, Repos
 from forge.forges.forgejo.users import Users
+from forge.forges.ids import PROTECTED_PREFIXES, WORKFLOW, WorkflowRef, parse_workflow
 
 READ = "read"
+WORKFLOW_TOPIC = "unicon-workflow"
 
 
 class ForgejoWorkflows:
