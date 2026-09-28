@@ -31,14 +31,6 @@ pytestmark = [
 ]
 
 
-class NoTokens:
-    async def forge_token(self, org: str) -> str:
-        raise NotFound(f"org {org} has no org account")
-
-    async def ci_token(self, org: str) -> str:
-        raise NotFound(f"org {org} has no org account")
-
-
 @pytest.fixture(scope="module")
 def stamp() -> str:
     return secrets.token_hex(3)
@@ -53,13 +45,14 @@ def admin() -> httpx.Client:
 
 
 @pytest.fixture
-async def forge() -> AsyncIterator[ForgejoForge]:
+async def forge(admin: httpx.Client) -> AsyncIterator[ForgejoForge]:
     assert URL and ADMIN_TOKEN
     built = ForgejoForge(
         ForgejoConfig(
             public_url=URL,
             internal_url=URL,
             admin_token=ADMIN_TOKEN,
+            platform_account=admin.get("/api/v1/user").json()["login"],
             oauth_client_id="unused",
             oauth_client_secret="unused",
             sign_in_redirect_uri="http://unused/callback",
@@ -67,8 +60,7 @@ async def forge() -> AsyncIterator[ForgejoForge]:
             ci_url="http://unused",
             ci_public_url="http://unused",
             ci_admin_token="unused",
-        ),
-        NoTokens(),
+        )
     )
     try:
         yield built

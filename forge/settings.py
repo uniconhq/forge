@@ -7,31 +7,102 @@ value. Secrets are `SecretStr` and never reach a log.
 import base64
 import binascii
 import logging
+import os
 import sys
 from datetime import timedelta
 from typing import Any, Literal, Self
 
-from pydantic import HttpUrl, PostgresDsn, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    HttpUrl,
+    PostgresDsn,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
+from pydantic.fields import FieldInfo
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 KEY_BYTES = 32
 
 ForgeKind = Literal["forgejo", "fake"]
 
-FORGEJO_FIELDS = (
-    "forge_public_url",
-    "forge_admin_token",
-    "forge_oauth_client_id",
-    "forge_oauth_client_secret",
-    "woodpecker_url",
-    "woodpecker_token",
-)
+FORGE_PUBLIC_URL = "UNICON_FORGE_PUBLIC_URL"
+
+FORGEJO_VARIABLES = {
+    "internal_url": "UNICON_FORGE_INTERNAL_URL",
+    "admin_token": "UNICON_FORGE_ADMIN_TOKEN",
+    "oauth_client_id": "UNICON_FORGE_OAUTH_CLIENT_ID",
+    "oauth_client_secret": "UNICON_FORGE_OAUTH_CLIENT_SECRET",
+    "registration_open": "UNICON_FORGE_REGISTRATION_OPEN",
+    "platform_account": "UNICON_FORGE_PLATFORM_ACCOUNT",
+    "woodpecker_url": "UNICON_WOODPECKER_URL",
+    "woodpecker_public_url": "UNICON_WOODPECKER_PUBLIC_URL",
+    "woodpecker_token": "UNICON_WOODPECKER_TOKEN",
+}
+
+DEFAULTED_FORGEJO_FIELDS = ("internal_url", "woodpecker_public_url")
+
+
+class ForgejoSettings(BaseModel):
+    """The settings of the Forgejo implementation, each read from the variable
+    `FORGEJO_VARIABLES` names. `internal_url` is where the package reaches
+    Forgejo, the public URL unless given. `platform_account` is the Forgejo
+    account the admin token belongs to, the one account protected versions
+    are reserved for. `woodpecker_public_url` is the URL the CI knows itself
+    by, `woodpecker_url` unless given.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    internal_url: HttpUrl
+    admin_token: SecretStr
+    oauth_client_id: str
+    oauth_client_secret: SecretStr
+    registration_open: bool = False
+    platform_account: str
+    woodpecker_url: HttpUrl
+    woodpecker_public_url: HttpUrl
+    woodpecker_token: SecretStr
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ci_public_url_follows_the_ci_url(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("woodpecker_public_url") is None:
+            return {**data, "woodpecker_public_url": data.get("woodpecker_url")}
+        return data
+
+    @field_validator("*")
+    @classmethod
+    def _no_blank_values(cls, value: Any) -> Any:
+        return not_blank(value)
+
+
+class ForgejoVariables(PydanticBaseSettingsSource):
+    """Reads the variables `FORGEJO_VARIABLES` names into the one nested
+    `forgejo` setting, so the Forgejo settings travel together and every
+    variable keeps its name.
+    """
+
+    def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
+        return None, field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        environment = {name.upper(): value for name, value in os.environ.items()}
+        found = {
+            field: environment[variable]
+            for field, variable in FORGEJO_VARIABLES.items()
+            if variable in environment
+        }
+        return {"forgejo": found} if found else {}
 
 
 class Settings(BaseSettings):
     """The package's configuration. `forge` picks the implementation behind
-    the port; the settings of the Forgejo implementation are required only
-    when it is chosen.
+    the port. `forgejo`, the settings of the Forgejo implementation, is
+    required when it is chosen and none otherwise. `forge_public_url` is
+    where browsers reach the forge, for either implementation.
     """
 
     model_config = SettingsConfigDict(env_prefix="UNICON_", extra="ignore")
@@ -44,27 +115,55 @@ class Settings(BaseSettings):
 
     forge: ForgeKind = "forgejo"
     forge_public_url: HttpUrl | None = None
-    forge_internal_url: HttpUrl | None = None
-    forge_admin_token: SecretStr | None = None
-    forge_oauth_client_id: str | None = None
-    forge_oauth_client_secret: SecretStr | None = None
-    forge_registration_open: bool = False
     forge_cache: bool = False
-    woodpecker_url: HttpUrl | None = None
-    woodpecker_public_url: HttpUrl | None = None
-    woodpecker_token: SecretStr | None = None
-
-    s3_endpoint: HttpUrl
-    s3_region: str
-    s3_access_key: SecretStr
-    s3_secret_key: SecretStr
-
-    org_creation_open: bool = True
+    forgejo: ForgejoSettings | None = None
 
     session_hard_ttl: timedelta = timedelta(days=30)
     session_idle_ttl: timedelta = timedelta(days=14)
     sign_in_ttl: timedelta = timedelta(minutes=10)
     fresh_sign_in_window: timedelta = timedelta(minutes=5)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (
+            init_settings,
+            env_settings,
+            ForgejoVariables(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
+        )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _forgejo_needs_its_settings(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if data.get("forge", "forgejo") != "forgejo":
+            return {**data, "forgejo": None}
+        given = data.get("forgejo")
+        if isinstance(given, ForgejoSettings):
+            return data
+        values = dict(given or {})
+        missing = [] if data.get("forge_public_url") is not None else [FORGE_PUBLIC_URL]
+        missing += [
+            FORGEJO_VARIABLES[name]
+            for name, field in ForgejoSettings.model_fields.items()
+            if field.is_required()
+            and name not in DEFAULTED_FORGEJO_FIELDS
+            and values.get(name) is None
+        ]
+        if missing:
+            raise ValueError(f"UNICON_FORGE=forgejo needs {', '.join(missing)}")
+        if values.get("internal_url") is None:
+            values["internal_url"] = data["forge_public_url"]
+        return {**data, "forgejo": values}
 
     @model_validator(mode="after")
     def _idle_within_hard(self) -> Self:
@@ -72,27 +171,10 @@ class Settings(BaseSettings):
             raise ValueError("UNICON_SESSION_IDLE_TTL is longer than UNICON_SESSION_HARD_TTL")
         return self
 
-    @model_validator(mode="after")
-    def _forgejo_needs_its_settings(self) -> Self:
-        if self.forge != "forgejo":
-            return self
-        missing = [name for name in FORGEJO_FIELDS if getattr(self, name) is None]
-        if missing:
-            names = ", ".join(f"UNICON_{name.upper()}" for name in missing)
-            raise ValueError(f"UNICON_FORGE=forgejo needs {names}")
-        if self.forge_internal_url is None:
-            self.forge_internal_url = self.forge_public_url
-        if self.woodpecker_public_url is None:
-            self.woodpecker_public_url = self.woodpecker_url
-        return self
-
     @field_validator("*")
     @classmethod
     def _no_blank_values(cls, value: Any) -> Any:
-        text = value.get_secret_value() if isinstance(value, SecretStr) else value
-        if isinstance(text, str) and not text.strip():
-            raise ValueError("is empty")
-        return value
+        return not_blank(value)
 
     @field_validator(
         "session_hard_ttl", "session_idle_ttl", "sign_in_ttl", "fresh_sign_in_window", mode="before"
@@ -175,11 +257,15 @@ TEST_VALUES: dict[str, Any] = {
     "session_signing_key": TEST_KEY,
     "forge": "fake",
     "forge_public_url": "http://localhost:3300",
-    "s3_endpoint": "http://garage:3900",
-    "s3_region": "garage",
-    "s3_access_key": "test-access-key",
-    "s3_secret_key": "test-secret-key",
 }
+
+
+def not_blank(value: Any) -> Any:
+    """Refuse a string, or a secret, that is empty or only whitespace."""
+    text = value.get_secret_value() if isinstance(value, SecretStr) else value
+    if isinstance(text, str) and not text.strip():
+        raise ValueError("is empty")
+    return value
 
 
 def require_key(value: SecretStr) -> SecretStr:
@@ -233,7 +319,15 @@ def _problems(exc: ValueError) -> list[str]:
         if not error["loc"]:
             lines.append(f"  {error['msg'].removeprefix('Value error, ')}")
             continue
-        location = str(error["loc"][0])
-        name = location if location.startswith("UNICON_") else f"UNICON_{location.upper()}"
-        lines.append(f"  {name}: {error['msg']}")
+        lines.append(f"  {_variable(error['loc'])}: {error['msg']}")
     return lines
+
+
+def _variable(location: tuple[int | str, ...]) -> str:
+    """The variable a validation error is about, from where pydantic says it
+    is: a nested Forgejo setting is named by its own variable.
+    """
+    head = str(location[0])
+    if head == "forgejo" and len(location) > 1:
+        return FORGEJO_VARIABLES.get(str(location[1]), "UNICON_FORGEJO")
+    return head if head.startswith("UNICON_") else f"UNICON_{head.upper()}"

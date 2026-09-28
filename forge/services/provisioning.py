@@ -18,9 +18,9 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.context import Context
 from forge.db.tables import Provisioning
 from forge.log import get_logger
+from forge.runtime.context import Context
 
 log = get_logger(__name__)
 
@@ -105,7 +105,7 @@ async def _claim(ctx: Context, kind: str, target_id: str) -> Record:
     attempt counted. In a transaction of its own so the record of the
     attempt exists before any step runs.
     """
-    async with ctx.transactions() as own:
+    async with ctx.own_transaction() as own:
         row = await _find(own, kind, target_id)
         if row is None:
             row = Provisioning(kind=kind, target_id=target_id, status=PENDING, attempts=0)
@@ -115,7 +115,6 @@ async def _claim(ctx: Context, kind: str, target_id: str) -> Record:
             row.status = RUNNING
             row.attempts = row.attempts + 1
         record = _record(row)
-        await own.commit()
     return record
 
 
@@ -130,13 +129,12 @@ async def _find(db: AsyncSession, kind: str, target_id: str) -> Provisioning | N
 
 
 async def _write(ctx: Context, row_id: uuid.UUID, **values: Any) -> Record:
-    async with ctx.transactions() as own:
+    async with ctx.own_transaction() as own:
         await own.execute(update(Provisioning).where(Provisioning.id == row_id).values(**values))
         row = (
             await own.execute(select(Provisioning).where(Provisioning.id == row_id))
         ).scalar_one()
         record = _record(row)
-        await own.commit()
     return record
 
 

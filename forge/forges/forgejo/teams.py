@@ -10,7 +10,6 @@ from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.roles import Role, Scope, ScopeKind
 from forge.forges.forgejo.http import Http, json_of
-from forge.forges.forgejo.names import CI_ADMIN_ACCOUNT
 
 CI_TEAM_SUFFIX = "ci"
 TEAM_PERMISSIONS = {Role.ADMIN: "admin", Role.MANAGER: "write", Role.OBSERVER: "read"}
@@ -24,10 +23,6 @@ def team_name(scope: Scope, role: Role) -> str:
 
 def ci_team_name(org: str) -> str:
     return f"{org}-{CI_TEAM_SUFFIX}"
-
-
-def org_account_name(org: str) -> str:
-    return f"{CI_ADMIN_ACCOUNT}-{org}"
 
 
 def scope_of_team(org: str, name: str) -> tuple[Scope, Role] | None:

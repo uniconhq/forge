@@ -7,19 +7,22 @@ build, ask and tear down that one setup; a database that does not answer is
 """
 
 import uuid
+from datetime import timedelta
 
 import pytest
+from sqlalchemy import update
 
 import forge.api
-from forge import actions
-from forge.actions import action
-from forge.context import Context
-from forge.domain.errors import Conflict, NotReady, SessionExpired
+from forge.db.tables import Session as SessionRow
+from forge.domain.errors import Conflict, NotReady, SessionExpired, Unauthenticated
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
+from forge.runtime.actions import action
+from forge.runtime.context import Context
+from forge.runtime.held import holding
+from forge.runtime.setup import Setup
 from forge.services import identity, sessions, sign_in
 from forge.settings import TEST_VALUES, Settings
-from forge.setup import Setup
 from forge.testing import APP_URL, CALLBACK_PATH, FORGE_URL, FakeClock, logged
 
 
@@ -93,6 +96,40 @@ async def test_an_action_handed_a_context_runs_inside_the_callers_unit_of_work(
     assert (await identity.current(setup, session.id)).id == session.id
 
 
+async def test_an_own_transaction_rolls_back_on_a_raise_and_lands_apart_from_the_unit_of_work(
+    setup: Setup, ctx: Context, fake: FakeForge
+) -> None:
+    session = await _signed_in(ctx, fake)
+
+    with pytest.raises(RuntimeError, match="halfway"):
+        async with ctx.own_transaction() as own:
+            await own.execute(
+                update(SessionRow).where(SessionRow.id == session.id).values(revoked_at=ctx.now)
+            )
+            raise RuntimeError("halfway")
+    assert (await identity.current(setup, session.id)).id == session.id
+
+    await sessions.revoke_now(ctx, session.id)
+    await ctx.db.rollback()
+    with pytest.raises(SessionExpired):
+        await identity.current(setup, session.id)
+
+
+async def test_the_setup_sweeps_ended_sessions_on_a_timed_pass(
+    setup: Setup, ctx: Context, fake: FakeForge, clock: FakeClock
+) -> None:
+    session = await _signed_in(ctx, fake)
+    await sessions.revoke_all(ctx, 7)
+    await ctx.db.commit()
+    clock.advance(setup.settings.session_hard_ttl + timedelta(days=1))
+
+    (sweep,) = [timed for timed in setup._loops.passes if timed.name == "sessions.sweep"]
+    assert await sweep.tick(setup.unit_of_work)
+
+    with pytest.raises(Unauthenticated):
+        await identity.current(setup, session.id)
+
+
 async def test_an_action_handed_neither_uses_the_setup_the_process_holds(
     held_setup: Setup, ctx: Context, fake: FakeForge, clock: FakeClock
 ) -> None:
@@ -142,7 +179,7 @@ async def test_start_builds_the_setup_from_the_environment_and_stop_lets_it_go(
     finally:
         await forge.api.stop()
 
-    assert not actions.holding()
+    assert not holding()
     with pytest.raises(RuntimeError, match=r"forge\.api\.start"):
         await forge.api.ready()
 

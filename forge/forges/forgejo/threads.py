@@ -7,15 +7,13 @@ organisers only.
 from datetime import datetime
 from typing import Any
 
+from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM, Identity
-from forge.domain.ids import ThreadId, WorkspaceId
+from forge.domain.ids import ThreadId
 from forge.domain.threads import Comment, Thread, ThreadKind, ThreadPlace
-from forge.forges.forgejo.content import location
 from forge.forges.forgejo.http import Http, json_of, list_of
-from forge.forges.forgejo.names import is_workspace, parse_thread, parse_workspace, thread_id
-
-ANSWERED = "answered"
-LABEL_COLOUR = "cccccc"
+from forge.forges.forgejo.labels import ANSWERED
+from forge.forges.ids import location, parse_thread, thread_id
 
 
 class ForgejoThreads:
@@ -25,7 +23,7 @@ class ForgejoThreads:
     async def post_thread(
         self, as_: Identity, place: ThreadPlace, kind: ThreadKind, *, title: str, body: str
     ) -> ThreadId:
-        org, repo = _location(place)
+        org, repo = location(place)
         label = await self._label(org, kind.value)
         issue = json_of(
             await self._http.call(
@@ -40,7 +38,7 @@ class ForgejoThreads:
     async def list_threads(
         self, as_: Identity, place: ThreadPlace, kind: ThreadKind
     ) -> tuple[Thread, ...]:
-        org, repo = _location(place)
+        org, repo = location(place)
         issues = await self._http.get_all(
             as_, f"/api/v1/repos/{org}/{repo}/issues", state="all", labels=kind.value, type="issues"
         )
@@ -87,25 +85,14 @@ class ForgejoThreads:
             await self.close_thread(as_, thread)
 
     async def _label(self, org: str, name: str) -> int:
+        """The id of the org's label `name`. The labels are made when the org
+        is provisioned; one that is missing is `NotFound`, so an org whose
+        label step never ran is reported rather than worked around.
+        """
         for label in await self._http.get_all(PLATFORM, f"/api/v1/orgs/{org}/labels"):
             if label["name"] == name:
                 return int(label["id"])
-        created = json_of(
-            await self._http.call(
-                PLATFORM,
-                "POST",
-                f"/api/v1/orgs/{org}/labels",
-                json={"name": name, "color": LABEL_COLOUR},
-            )
-        )
-        return int(created["id"])
-
-
-def _location(place: ThreadPlace) -> tuple[str, str]:
-    if is_workspace(place):
-        workspace = parse_workspace(WorkspaceId(place))
-        return workspace.org, workspace.desk_repo
-    return location(place)
+        raise NotFound(f"org {org} has no label {name}")
 
 
 def _thread(

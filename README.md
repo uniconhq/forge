@@ -11,30 +11,37 @@ over it, pins one release of it, and imports `forge.api` and nothing else.
 
 ```
 forge/
-  api/             the front door: everything a hosting process may call
-  settings.py      every UNICON_* setting, read once at start
-  setup.py         the package set up for one process; start, ready, stop and now
-  actions.py       the @action mark, and the one setup the process holds
-  context.py       what a building block runs with, and the clock
-  testing.py       the pytest plugin: a migrated database, the fake, a setup
-  crypto.py        encryption of credentials at rest
-  cookies.py       what goes into the two cookies, and the key that signs them
-  log.py           the one structured logger; every line is a JSON record
-  cli.py           unicon-forge migrate
-  domain/          the types and their rules; imports nothing else in the package
-  port/            the interface a git host is called through, one area per module
-  services/        the actions and their building blocks; the only layer that
-                   writes to the database
-  db/              the tables, the engine and the migrations
-  forges/forgejo/  the port over Forgejo and Woodpecker
-  forges/fake/     the port in memory, one module per area over one state
-  forges/cached.py the port wrapped in a small per-read cache
-  forges/README.md what any git host must provide to sit behind the port
+  api/               the front door: everything a hosting process may call
+  settings.py        every UNICON_* setting, read once at start
+  log.py             the one structured logger; every line is a JSON record
+  cli.py             unicon-forge migrate
+  testing.py         the pytest plugin: a migrated database, the fake, a setup
+  runtime/           how a call runs in a process
+    context.py       what a building block runs with, and what an action takes
+                     from a setup
+    actions.py       the @action mark
+    held.py          the one setup the process holds
+    setup.py         the package set up for one process; start, ready, stop and now
+    background.py    the pollers and timed passes that run with nobody clicking
+  domain/            the types and their rules, and the clock; imports nothing
+                     else in the package
+  port/              the interface a git host is called through, one area per module
+  services/          the actions and their building blocks, the cookies and the
+                     credential at rest; the only layer that writes to the database
+  db/                the tables, the engine and the migrations
+  forges/__init__.py build, which picks the implementation the settings name
+  forges/ids.py      how both implementations name repositories and build and
+                     read ids
+  forges/forgejo/    the port over Forgejo and Woodpecker
+  forges/fake/       the port in memory, one module per area over one state
+  forges/cached.py   the port wrapped in a small per-read cache
+  forges/README.md   what any git host must provide to sit behind the port
 tests/
-  forges/          each implementation against the port's contract
-  services/        the services over a real Postgres and the fake
-  db/              the migrations, up and down
-  live/            the Forgejo implementation against a running Forgejo
+  runtime/           the setup, the actions over it, and the background loops
+  forges/            each implementation against the port's contract
+  services/          the services over a real Postgres and the fake
+  db/                the migrations, up and down
+  live/              the Forgejo implementation against a running Forgejo
 ```
 
 ## The front door
@@ -49,10 +56,11 @@ forge/api/
   account.py    deactivate, delete
   sessions.py   revoke, revoke_all, list_for, and the SessionInfo they return
   identity.py   whoami, current, and the Me whoami returns
-  sign_in.py    start, complete, sign_up_url, and SignInAttempt
+  sign_in.py    start, complete, sign_up_url, SignInAttempt, and the SignInStart
+                start returns
   orgs.py       provision, and the Record it returns
   cookies.py    what goes into the two cookies and what comes out, and the policy
-  log.py        setup and get_logger
+  log.py        setup, get_logger, and the Logger it returns
   errors.py     every error the package raises to its callers
   types.py      Session, User, Role, Scope, ScopeKind, RoleGrant
 ```
@@ -61,9 +69,10 @@ Each module only imports names written elsewhere in the package and lists
 them in `__all__`, so `from forge.api import sessions` gives `sessions.revoke`
 and no way to reach `sessions.create`. `tests/test_api.py` fails when a name
 on the list is a building block, a function whose first parameter is a
-`Context` and which is not marked `@action`, or when a module writes a name
-itself instead of re-exporting it. A new action reaches the backend only when
-it is added here, and that one line is the review point.
+`Context` and which is not marked `@action`, when a module writes a name
+itself instead of re-exporting it, or when a listed function returns a type
+the package writes that is not listed too. A new action reaches the backend
+only when it is added here, and that one line is the review point.
 
 ## The port
 
@@ -85,7 +94,16 @@ the platform's own: a submission is committed by the contestant, a person's
 roles are read with their own credential, and the platform's token never
 stands in for anyone. Provisioning, which includes creating every repository
 since the host lets no one else create one, and protected versions are done
-as the platform account.
+as the platform account, the account `UNICON_FORGE_PLATFORM_ACCOUNT` names
+and the admin token belongs to. Registering a task for grading and starting
+its runs are done as the org's own account, which the caller hands in as an
+`AsOrgAccount` carrying that account's two credentials. Publishing a task
+writes its plans and tags them; registering it is a separate call, so the
+service that publishes runs the two as two provisioning steps.
+
+Both implementations name repositories and build and read ids with the one
+grammar in `forges/ids.py`, so an id from elsewhere is `NotFound` whichever
+is behind the port.
 
 `UNICON_FORGE=forgejo` runs against Forgejo and Woodpecker; `UNICON_FORGE=fake`
 runs the whole stack against the in-memory forge, which records every call
@@ -95,8 +113,9 @@ always, org reads when `UNICON_FORGE_CACHE` is on.
 
 ## The setup
 
-`forge/setup.py` sets the package up for one process: the forge behind the
-port, the pool of database connections, the clock and the background loops.
+`forge/runtime/setup.py` sets the package up for one process: the forge
+behind the port, which `forges.build` picks and configures from the settings,
+the pool of database connections, the clock and the background loops.
 The process that hosts the package calls
 `forge.api.start(callback_path=...)` once at start. It reads the `UNICON_*`
 settings, builds the one setup the process holds, and starts the loops.
@@ -113,8 +132,10 @@ The settings are all the package's, the host's included: the host reads no
 environment variable. `UNICON_SESSION_SIGNING_KEY` signs the two cookies and
 never leaves the package. `UNICON_COOKIE_SECURE` defaults to on exactly when
 `UNICON_PUBLIC_URL` is https, and the package refuses to start when the URL is
-https and the flag is set off. A missing or malformed variable stops the
-process at start with the variable named.
+https and the flag is set off. The Forgejo settings travel together as
+`settings.forgejo`, read from the `UNICON_FORGE_*` and `UNICON_WOODPECKER_*`
+variables and required only when `UNICON_FORGE=forgejo`. A missing or
+malformed variable stops the process at start with the variable named.
 
 ## Cookies
 
@@ -132,7 +153,8 @@ those are HTTP.
 ## Actions and building blocks
 
 A service is a module of functions under `forge/services/`. The functions a
-hosting process calls are actions, marked `@action` from `forge/actions.py`:
+hosting process calls are actions, marked `@action` from
+`forge/runtime/actions.py`:
 
 | Module | Actions |
 |---|---|
@@ -158,11 +180,14 @@ browser had before, together.
 
 Every other service function is a building block, called only from inside
 the package. Its first parameter is a `Context`: the transaction of the
-unit of work, a factory for work that needs a transaction of its own, the
-forge, the settings and the clock. A building block never commits. Two
-things run in short transactions of their own so they land whatever the
-action does next: session bookkeeping, so a refused request still records
-what it learned, and the `provisioning` record. Making something at the
+unit of work, the forge, the settings and the clock. A building block never
+commits `ctx.db`. Two things run in short transactions of their own, opened
+with `ctx.own_transaction()`, which commits when its block ends and rolls
+back when it raises, so they land whatever the action does next: session
+bookkeeping, so a refused request still records what it learned, and the
+`provisioning` record. The setup holds one lock per session for refreshing
+its credential, taken as `ctx.refresh_lock(session_id)`, so two requests in
+one process refresh it once. Making something at the
 forge is several calls that can fail halfway, so `provisioning.run` walks
 the steps of making one thing, writes the last completed step to its row as
 soon as it completes, leaves a failure on the row naming the step and the
@@ -188,16 +213,21 @@ installed; the host has no migrate command of its own.
 There is no jobs table. Row work is a `Poller` over a table that carries a
 status, each row taken under `FOR UPDATE SKIP LOCKED`; timed work is a
 `TimedPass` under a Postgres advisory lock, so it runs once however many
-processes are up. Both are in `forge/services/background.py`.
+processes are up. Both are in `forge/runtime/background.py`. Each tick is
+one unit of work, and its work runs with the `Context` over it, the forge
+included; `sessions.sweep` is the first timed pass.
 
 ## Layer rules
 
-Three import-linter contracts in `pyproject.toml`, run by `lint-imports` in
+Five import-linter contracts in `pyproject.toml`, run by `lint-imports` in
 CI, so a cross-layer import fails the build:
 
 - `domain`, `services` and `db` never import anything under `forges`.
+- Only `runtime` and `testing` import `forges` themselves; `api` reaches an
+  implementation through `runtime`.
 - `forges.forgejo` never imports `services` or `db`. It may import `port` and
   `domain`.
+- `forges.fake` never imports `services`, `db` or `runtime`.
 - `domain` imports nothing else in the package, `port` included.
 
 ## Logging
@@ -221,7 +251,8 @@ building block with `ctx`, and an action either with `ctx`, to run it inside
 that unit of work, or with `setup`, to have it commit one of its own.
 `held_setup` makes `setup` the one forge holds for the test, for code that
 calls actions with neither, and lets it go when the test ends, passed or
-failed. A dependant loads the same plugin, so its tests run the package the
+failed. A test ticks a poller or a timed pass with `setup.unit_of_work`, as
+the setup does. A dependant loads the same plugin, so its tests run the package the
 way the backend does, with no fixtures of its own to keep in step. Since a
 dependant imports nothing but `forge.api` and `forge.testing`, the plugin also
 re-exports what its tests arrange the fake with: `FakeForge`, `FakeClock`,
@@ -247,8 +278,9 @@ The service and migration tests need a real Postgres; they create and drop a
 database of their own on the server the URL names. Without the variable those
 tests are skipped. The tests under `tests/live/` drive the Forgejo
 implementation against a running Forgejo, named by `UNICON_LIVE_FORGE_URL`
-with an administrator token in `UNICON_LIVE_FORGE_ADMIN_TOKEN`; they are
-skipped without both, and `-m "not live"` leaves them out.
+with an administrator token in `UNICON_LIVE_FORGE_ADMIN_TOKEN`, whose own
+account is the platform account; they are skipped without both, and
+`-m "not live"` leaves them out.
 
 ## Releasing
 

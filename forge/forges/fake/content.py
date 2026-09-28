@@ -5,8 +5,8 @@ from forge.domain.errors import Conflict, NotFound
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import ContestId, OrgName, TaskId, VersionId
 from forge.domain.roles import Scope
-from forge.forges.fake import ids
-from forge.forges.fake.state import Repo, State
+from forge.forges.fake.state import State
+from forge.forges.ids import ContestRef, TaskRef, location, parse_contest
 from forge.port.content import ContentPlace
 
 
@@ -17,22 +17,24 @@ class FakeContent:
     async def create_contest(self, org: OrgName, name: str, files: Files) -> ContestId:
         self._state.record("create_contest", PLATFORM, org=org, name=name)
         self._state.org(org)
-        self._state.create_repo(org, ids.contest_repo(name), files, scope=Scope(org, name))
-        return ids.contest(org, name)
+        ref = ContestRef(org, name)
+        self._state.create_repo(org, ref.repo, files, scope=Scope(org, name))
+        return ref.id
 
     async def create_task(self, contest: ContestId, name: str, files: Files) -> TaskId:
         self._state.record("create_task", PLATFORM, contest=contest, name=name)
-        org, contest_name = ids.contest_parts(contest)
+        parent = parse_contest(contest)
+        ref = TaskRef(parent.org, parent.contest, name)
         self._state.create_repo(
-            org, ids.task_repo(contest_name, name), files, scope=Scope(org, contest_name, name)
+            ref.org, ref.repo, files, scope=Scope(ref.org, ref.contest, ref.task)
         )
-        return ids.task(contest, name)
+        return ref.id
 
     async def read_file(
         self, as_: Identity, place: ContentPlace, path: str, *, at: VersionId | None = None
     ) -> File:
         self._state.record("read_file", as_, place=place, path=path, at=at)
-        repo = content_repo(self._state, place)
+        repo = self._state.repo(*location(place))
         self._state.require_read(as_, repo)
         if at is not None and at not in {change.version for change in repo.history}:
             raise NotFound(f"{place} has no version {at}")
@@ -51,7 +53,7 @@ class FakeContent:
         expected: ConflictToken | None,
     ) -> VersionId:
         self._state.record("write_file", as_, place=place, path=path, expected=expected)
-        repo = content_repo(self._state, place)
+        repo = self._state.repo(*location(place))
         self._state.require_write(as_, repo)
         current = repo.tokens.get(path)
         if expected is None and current is not None:
@@ -66,7 +68,7 @@ class FakeContent:
         self, as_: Identity, place: ContentPlace, path: str = ""
     ) -> tuple[TreeEntry, ...]:
         self._state.record("list_tree", as_, place=place, path=path)
-        repo = content_repo(self._state, place)
+        repo = self._state.repo(*location(place))
         self._state.require_read(as_, repo)
         prefix = f"{path.rstrip('/')}/" if path else ""
         seen: dict[str, TreeEntry] = {}
@@ -85,14 +87,6 @@ class FakeContent:
         self, as_: Identity, place: ContentPlace, path: str | None = None
     ) -> tuple[Change, ...]:
         self._state.record("history", as_, place=place, path=path)
-        repo = content_repo(self._state, place)
+        repo = self._state.repo(*location(place))
         self._state.require_read(as_, repo)
         return tuple(reversed(repo.history))
-
-
-def content_repo(state: State, place: str) -> Repo:
-    parts = place.split("/")
-    if len(parts) == 2:
-        return state.repo(parts[0], ids.contest_repo(parts[1]))
-    org, contest_name, name = ids.task_parts(TaskId(place))
-    return state.repo(org, ids.task_repo(contest_name, name))

@@ -16,6 +16,7 @@ CONFIG = ForgejoConfig(
     public_url="http://forge.test",
     internal_url="http://forge.internal",
     admin_token="admin",
+    platform_account="platform-account",
     oauth_client_id="client",
     oauth_client_secret="secret",
     sign_in_redirect_uri="http://app.test/api/v1/auth/callback",
@@ -24,14 +25,6 @@ CONFIG = ForgejoConfig(
     ci_public_url="http://ci.test",
     ci_admin_token="ci-admin",
 )
-
-
-class Tokens:
-    async def forge_token(self, org: str) -> str:
-        return f"forge-{org}"
-
-    async def ci_token(self, org: str) -> str:
-        return f"ci-{org}"
 
 
 @dataclass
@@ -81,15 +74,15 @@ def forgejo(recorder: Recorder) -> ForgejoForge:
     transport = httpx.MockTransport(recorder.handle)
     forge_http = Http(
         httpx.AsyncClient(base_url=CONFIG.internal_url, transport=transport),
-        ForgejoAuth(CONFIG.admin_token, Tokens()),
+        ForgejoAuth(CONFIG.admin_token),
         backoff_seconds=0,
     )
     ci_http = Http(
         httpx.AsyncClient(base_url=CONFIG.ci_url, transport=transport),
-        WoodpeckerAuth(CONFIG.ci_admin_token, Tokens()),
+        WoodpeckerAuth(CONFIG.ci_admin_token),
         backoff_seconds=0,
     )
-    return ForgejoForge(CONFIG, Tokens(), clients=(forge_http, ci_http))
+    return ForgejoForge(CONFIG, clients=(forge_http, ci_http))
 
 
 def ok(payload: Any, status: int = 200) -> httpx.Response:

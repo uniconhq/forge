@@ -9,14 +9,15 @@ from datetime import timedelta
 import psycopg
 import pytest
 
-from forge.context import Context
 from forge.domain.errors import NotFound, SessionExpired, Unauthenticated
 from forge.domain.identity import Credential
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
+from forge.runtime.context import Context
+from forge.runtime.setup import Setup
 from forge.services import sessions
-from forge.setup import Setup
-from forge.testing import FakeClock
+from forge.settings import Settings
+from forge.testing import CALLBACK_PATH, FakeClock
 
 
 async def _signed_in(ctx: Context, fake: FakeForge, user_id: int = 7) -> tuple[Session, Credential]:
@@ -104,21 +105,20 @@ async def test_a_credential_near_expiry_is_refreshed_once_for_two_callers(
 
 
 async def test_a_refresh_another_process_won_is_read_back(
-    setup: Setup,
-    ctx: Context,
-    fake: FakeForge,
-    clock: FakeClock,
-    monkeypatch: pytest.MonkeyPatch,
+    setup: Setup, settings: Settings, ctx: Context, fake: FakeForge, clock: FakeClock
 ) -> None:
     session, _ = await _signed_in(ctx, fake)
     clock.advance(timedelta(minutes=57))
-    monkeypatch.setattr(sessions, "_lock_for", lambda session_id: asyncio.Lock())
+    other = Setup.build(settings, callback_path=CALLBACK_PATH, forge=fake, clock=clock)
 
-    async def use() -> Credential:
-        async with setup.unit_of_work() as own:
+    async def use(on: Setup) -> Credential:
+        async with on.unit_of_work() as own:
             return await sessions.credential_for(own, session.id)
 
-    first, second = await asyncio.gather(use(), use())
+    try:
+        first, second = await asyncio.gather(use(setup), use(other))
+    finally:
+        await other.stop()
 
     assert first == second
     assert (await sessions.authenticate(ctx, session.id)).user_id == 7
@@ -167,6 +167,6 @@ async def test_the_sweeper_drops_sessions_nobody_can_be_shown(
     await ctx.db.commit()
     clock.advance(ctx.settings.session_hard_ttl + timedelta(days=1))
 
-    assert await sessions.sweep(ctx.db, ctx.settings, ctx.now) == 1
+    assert await sessions.sweep(ctx) == 1
     with pytest.raises(Unauthenticated):
         await sessions.authenticate(ctx, session.id)

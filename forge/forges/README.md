@@ -10,7 +10,7 @@ package's own tables, and stays there when the host changes.
 | An identity provider the platform signs users in through, returning a credential to act as them | OpenID Connect with PKCE; OAuth2 access and refresh tokens | OpenID Connect with PKCE; OAuth2 access and refresh tokens |
 | Scoped roles that inherit downward: a role at an org reaches every contest and task in it | Teams, one per role per scope; an org-level team covers every repository, new ones included | Group members with inherited access; a subgroup per contest, a project per task |
 | Per-workspace write access for one contestant or one team's members | Collaborators on the workspace repositories | Project members with Developer access |
-| Protected versions only the platform's account may create | Protected tags on `published/*` and `submission/*`, allowed for `unicon-backend` only | Protected tags by role, emulated: the platform's account is the only Maintainer, so it alone may create them |
+| Protected versions only the platform's account may create | Protected tags on `published/*` and `submission/*`, allowed for the platform's account, `UNICON_FORGE_PLATFORM_ACCOUNT`, only | Protected tags by role, emulated: the platform's account is the only Maintainer, so it alone may create them |
 | File writes with a conflict check on the previous version | Contents API with the blob SHA the write started from | Commits API with `last_commit_id` |
 | History and rollback | Git log; a rollback is a new commit | Commits list; a rollback is a new commit |
 | Threads with labels and comments for announcements and clarifications | Issues with labels and comments | Issues with labels and notes |
@@ -22,4 +22,6 @@ package's own tables, and stays there when the host changes.
 | Accounts that can be deactivated reversibly and deleted with what they own | Admin API: `active` flag; delete with purge | Admin API: block and unblock; delete with hard delete |
 
 The Forgejo implementation is `forgejo/`. The in-memory implementation for
-tests is `fake/`. `cached.py` wraps either in the small per-read cache.
+tests is `fake/`. Both name repositories and build and read ids with the one
+grammar in `ids.py`. `cached.py` wraps either in the small per-read cache, and
+`build` in `__init__.py` picks one from the settings.

@@ -2,6 +2,6 @@
 record the host writes.
 """
 
-from forge.log import get_logger, setup
+from forge.log import Logger, get_logger, setup
 
-__all__ = ["get_logger", "setup"]
+__all__ = ["Logger", "get_logger", "setup"]
