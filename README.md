@@ -142,9 +142,9 @@ skipped without both, and `-m "not live"` leaves them out.
 
 Push a tag `v1.2.3` on `main`. The release workflow refuses a tag whose commit
 is not on `main`, checks that the tag, the version in `pyproject.toml` and
-`forge.__version__` are the same number, runs the same checks as CI, builds
-the wheel and the sdist, and attaches both to a GitHub release. A dependant
-pins that release.
+`forge.__version__` are the same number, runs the CI workflow itself on the
+tagged commit, Postgres included, builds the wheel and the sdist, and
+attaches both to a GitHub release. A dependant pins that release.
 
 ## Licence
 
