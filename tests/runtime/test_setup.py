@@ -7,13 +7,14 @@ build, ask and tear down that one setup; a database that does not answer is
 """
 
 import uuid
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import update
 
 import forge.api
 from forge.db.tables import Session as SessionRow
-from forge.domain.errors import Conflict, NotReady, SessionExpired
+from forge.domain.errors import Conflict, NotReady, SessionExpired, Unauthenticated
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
 from forge.runtime import held
@@ -111,6 +112,21 @@ async def test_an_own_transaction_rolls_back_on_a_raise_and_lands_apart_from_the
     await sessions.revoke_now(ctx, session.id)
     await ctx.db.rollback()
     with pytest.raises(SessionExpired):
+        await identity.current(setup, session.id)
+
+
+async def test_the_setup_sweeps_ended_sessions_on_a_timed_pass(
+    setup: Setup, ctx: Context, fake: FakeForge, clock: FakeClock
+) -> None:
+    session = await _signed_in(ctx, fake)
+    await sessions.revoke_all(ctx, 7)
+    await ctx.db.commit()
+    clock.advance(setup.settings.session_hard_ttl + timedelta(days=1))
+
+    (sweep,) = [timed for timed in setup._loops.passes if timed.name == "sessions.sweep"]
+    assert await sweep.tick(setup.unit_of_work)
+
+    with pytest.raises(Unauthenticated):
         await identity.current(setup, session.id)
 
 

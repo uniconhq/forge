@@ -20,7 +20,6 @@ from ipaddress import IPv4Address, IPv6Address
 from typing import Any
 
 from sqlalchemy import CursorResult, Row, Update, delete, func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.db.tables import Session as SessionRow
 from forge.domain.client_address import client_address
@@ -171,13 +170,15 @@ async def list_for(ctx: Context, session: Session) -> list[SessionInfo]:
     ]
 
 
-async def sweep(db: AsyncSession, settings: Settings, now: datetime) -> int:
+async def sweep(ctx: Context) -> int:
     """Delete rows that ended longer ago than the hard lifetime, so the table
-    holds only sessions someone could still be shown.
+    holds only sessions someone could still be shown. A timed pass, run on the
+    pass's unit of work.
     """
+    now, settings = ctx.now, ctx.settings
     cutoff = now - settings.session_hard_ttl
     idle_cutoff = now - settings.session_idle_ttl - settings.session_hard_ttl
-    gone = await db.execute(
+    gone = await ctx.db.execute(
         delete(SessionRow).where(
             (SessionRow.revoked_at < cutoff)
             | (SessionRow.expires_at < cutoff)

@@ -26,7 +26,6 @@ from typing import Any
 import psycopg
 import pytest
 
-from forge.db.engine import TransactionFactory
 from forge.db.migrations import upgrade_to_head
 from forge.domain.clock import FakeClock
 from forge.domain.identity import AsUser
@@ -151,12 +150,3 @@ async def ctx(setup: Setup) -> AsyncIterator[Context]:
     """One unit of work, committed when the test ends."""
     async with setup.unit_of_work() as context:
         yield context
-
-
-@pytest.fixture
-def factory(setup: Setup) -> TransactionFactory:
-    """The factory for transactions of their own, as the background loops
-    and the building blocks that write outside the caller's unit of work use
-    it.
-    """
-    return setup._transactions

@@ -167,6 +167,6 @@ async def test_the_sweeper_drops_sessions_nobody_can_be_shown(
     await ctx.db.commit()
     clock.advance(ctx.settings.session_hard_ttl + timedelta(days=1))
 
-    assert await sessions.sweep(ctx.db, ctx.settings, ctx.now) == 1
+    assert await sessions.sweep(ctx) == 1
     with pytest.raises(Unauthenticated):
         await sessions.authenticate(ctx, session.id)

@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
 from pydantic import HttpUrl
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from forge import forges
 from forge.db.engine import (
@@ -83,7 +83,7 @@ class Setup:
             transactions=new_transaction_factory(engine),
             clock=clock or SystemClock(),
         )
-        setup._loops.add(TimedPass("sessions.sweep", setup._sweep_sessions, SESSION_SWEEP_INTERVAL))
+        setup._loops.add(TimedPass("sessions.sweep", sessions.sweep, SESSION_SWEEP_INTERVAL))
         return setup
 
     @property
@@ -114,7 +114,7 @@ class Setup:
             )
 
     def start_background(self) -> None:
-        self._loops.start(self._transactions)
+        self._loops.start(self.unit_of_work)
 
     async def ready(self) -> None:
         """Raise `NotReady` unless the database answers within two seconds.
@@ -131,9 +131,6 @@ class Setup:
         await self._forge.aclose()
         await self._probe_engine.dispose()
         await self._engine.dispose()
-
-    async def _sweep_sessions(self, db: AsyncSession) -> None:
-        await sessions.sweep(db, self._settings, self._clock.now())
 
 
 def start(*, callback_path: str) -> None:
