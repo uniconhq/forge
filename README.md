@@ -12,14 +12,16 @@ over it and pins one release of it.
 ```
 forge/
   settings.py      every UNICON_* setting, read once at start
-  runtime.py       the package assembled for one process: forge, database, loops
-  context.py       what a service call runs with, and the clock
-  testing.py       the pytest plugin: a migrated database, the fake, a runtime
+  setup.py         the package set up for one process; start, ready, stop and now
+  actions.py       the @action mark, and the one setup the process holds
+  context.py       what a building block runs with, and the clock
+  testing.py       the pytest plugin: a migrated database, the fake, a setup
   crypto.py        encryption of credentials at rest
   log.py           the one structured logger; every line is a JSON record
   domain/          the types and their rules; imports nothing else in the package
   port/            the interface a git host is called through, one area per module
-  services/        the actions; the only layer that writes to the database
+  services/        the actions and their building blocks; the only layer that
+                   writes to the database
   db/              the tables, the engine and the migrations
   forges/forgejo/  the port over Forgejo and Woodpecker
   forges/fake/     the port in memory, one module per area over one state
@@ -60,22 +62,61 @@ with its identity and refuses what a real forge refuses. `CachedForge` wraps
 either and caches the reads that repeat within a request: user lookups
 always, org reads when `UNICON_FORGE_CACHE` is on.
 
-## Services and the context
+## The setup
 
-A service is a module of functions under `forge/services/`. Each takes a
-`Context`: the database session of the unit of work, a session factory for
-work that needs a transaction of its own, the forge, the settings and the
-clock. The caller owns the transaction on `ctx.db` and commits or rolls it
-back when the call returns; a service never commits it. Two things run in
-short transactions of their own so they land whatever the caller does next:
-session bookkeeping, so a refused request still records what it learned, and
-the `provisioning` record. Making something at the forge is several calls
-that can fail halfway, so `provisioning.run` walks the steps of making one
-thing, writes the last completed step to its row as soon as it completes,
-leaves a failure on the row naming the step and the error, and on a rerun
-starts at the step after the last one that completed. `orgs.provision` is
-the first user of it. `Runtime` assembles all of this for one process from
-the settings and hands out a context per unit of work.
+`forge/setup.py` sets the package up for one process: the forge behind the
+port, the pool of database connections, the clock and the background loops.
+The process that hosts the package calls
+`forge.start(sign_in_redirect_uri=...)` once at start. It reads the
+`UNICON_*` settings, builds the one setup the process holds, and starts the
+loops. `sign_in_redirect_uri` is the host's sign-in callback, the one thing
+the package cannot know on its own. `await forge.ready()` raises unless the
+database answers within two seconds, on a connection outside the pool, and
+`await forge.stop()` stops the loops and closes every connection. An action
+called before `start` raises an error naming `forge.start`.
+
+## Actions and building blocks
+
+A service is a module of functions under `forge/services/`. The functions a
+hosting process calls are actions, marked `@action` from `forge/actions.py`:
+
+| Module | Actions |
+|---|---|
+| `sessions` | `revoke`, `revoke_all`, `list_for` |
+| `identity` | `whoami`, `current` |
+| `account` | `deactivate`, `delete` |
+| `sign_in` | `complete` |
+| `orgs` | `provision` |
+
+An action is one unit of work. Called as `account.delete(session)`, it opens
+a transaction on the setup the process holds, runs, commits when it
+returns, rolls back when it raises, and closes the transaction either way. A
+commit that fails raises out of the call, so the caller never answers a
+success for a change that was not saved. Handed a setup first, as
+`account.delete(setup, session)`, it opens the transaction on that setup,
+which is how a test runs one against a setup of its own. Handed a `Context`
+first, as another service calls it, it runs inside the caller's transaction,
+so `account.delete` calling `sessions.revoke_all` stays one transaction.
+When two writes must succeed or fail together, they are one action with a
+name: `sign_in.complete` creates the new session and ends the one the
+browser had before, together.
+
+Every other service function is a building block, called only from inside
+the package. Its first parameter is a `Context`: the transaction of the
+unit of work, a factory for work that needs a transaction of its own, the
+forge, the settings and the clock. A building block never commits. Two
+things run in short transactions of their own so they land whatever the
+action does next: session bookkeeping, so a refused request still records
+what it learned, and the `provisioning` record. Making something at the
+forge is several calls that can fail halfway, so `provisioning.run` walks
+the steps of making one thing, writes the last completed step to its row as
+soon as it completes, leaves a failure on the row naming the step and the
+error, and on a rerun starts at the step after the last one that completed.
+`orgs.provision` is the first user of it.
+
+Three functions need no transaction and are plain functions with an optional
+`setup=`: `sign_in.start(next)`, `sign_in.sign_up_url()` and `forge.now()`,
+the clock the package enforces deadlines with.
 
 ## The tables
 
@@ -83,7 +124,7 @@ Nine tables, keyed by UUID v7, with every enumeration as `text` under a
 `CHECK`: `sessions`, `contestants`, `teams`, `team_members`, `invites`,
 `provisioning`, `gradings`, `uploads` and `jupyter_sessions`. They hold what a
 forge cannot: nothing about users, orgs, contests or tasks, which are read live.
-`forge.runtime.migrate` applies the migrations under `forge/db/alembic/`; the
+`forge.setup.migrate` applies the migrations under `forge/db/alembic/`; the
 backend runs it as `unicon migrate`.
 
 There is no jobs table. Row work is a `Poller` over a table that carries a
@@ -113,9 +154,14 @@ hosts the package calls `forge.log.configure(level)` once at start.
 
 `forge.testing` is a pytest plugin, loaded with `-p forge.testing` or from a
 `conftest.py`. It gives a test a migrated Postgres of its own, the in-memory
-forge with two users, a clock the test can move, and a `runtime`, `db` and
-`ctx` over them. A dependant loads the same plugin, so its tests run the
-package the way the backend does, with no fixtures of its own to keep in step.
+forge with two users, a clock the test can move, a `setup` over them, and a
+`ctx`, one unit of work committed when the test ends. A test calls a
+building block with `ctx`, and an action either with `ctx`, to run it inside
+that unit of work, or with `setup`, to have it commit one of its own.
+`held_setup` makes `setup` the one forge holds for the test, for code that
+calls actions with neither, and lets it go when the test ends, passed or
+failed. A dependant loads the same plugin, so its tests run the package the
+way the backend does, with no fixtures of its own to keep in step.
 
 ## Checks
 

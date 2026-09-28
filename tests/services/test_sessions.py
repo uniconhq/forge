@@ -14,8 +14,8 @@ from forge.domain.errors import NotFound, SessionExpired, Unauthenticated
 from forge.domain.identity import Credential
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
-from forge.runtime import Runtime
 from forge.services import sessions
+from forge.setup import Setup
 from forge.testing import FakeClock
 
 
@@ -87,14 +87,14 @@ async def test_use_moves_the_idle_clock(ctx: Context, fake: FakeForge, clock: Fa
 
 
 async def test_a_credential_near_expiry_is_refreshed_once_for_two_callers(
-    runtime: Runtime, ctx: Context, fake: FakeForge, clock: FakeClock
+    setup: Setup, ctx: Context, fake: FakeForge, clock: FakeClock
 ) -> None:
     session, _ = await _signed_in(ctx, fake)
     clock.advance(timedelta(minutes=57))
 
     async def use() -> Credential:
-        async with runtime.sessions() as db:
-            return await sessions.credential_for(runtime.context(db), session.id)
+        async with setup.unit_of_work() as own:
+            return await sessions.credential_for(own, session.id)
 
     first, second = await asyncio.gather(use(), use())
 
@@ -104,7 +104,7 @@ async def test_a_credential_near_expiry_is_refreshed_once_for_two_callers(
 
 
 async def test_a_refresh_another_process_won_is_read_back(
-    runtime: Runtime,
+    setup: Setup,
     ctx: Context,
     fake: FakeForge,
     clock: FakeClock,
@@ -115,8 +115,8 @@ async def test_a_refresh_another_process_won_is_read_back(
     monkeypatch.setattr(sessions, "_lock_for", lambda session_id: asyncio.Lock())
 
     async def use() -> Credential:
-        async with runtime.sessions() as db:
-            return await sessions.credential_for(runtime.context(db), session.id)
+        async with setup.unit_of_work() as own:
+            return await sessions.credential_for(own, session.id)
 
     first, second = await asyncio.gather(use(), use())
 

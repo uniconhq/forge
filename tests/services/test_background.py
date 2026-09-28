@@ -10,25 +10,25 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.db.engine import SessionFactory
+from forge.db.engine import TransactionFactory
 from forge.db.tables import Provisioning
 from forge.services.background import Loops, Poller, TimedPass
 
 
-async def _seed(factory: SessionFactory, count: int) -> None:
+async def _seed(factory: TransactionFactory, count: int) -> None:
     async with factory() as db:
         for index in range(count):
             db.add(Provisioning(kind="org", target_id=f"org-{index}", status="pending"))
         await db.commit()
 
 
-async def _rows(factory: SessionFactory) -> list[Any]:
+async def _rows(factory: TransactionFactory) -> list[Any]:
     async with factory() as db:
         found = await db.execute(Provisioning.__table__.select().order_by(Provisioning.target_id))
         return list(found)
 
 
-async def test_two_pollers_never_take_the_same_row(factory: SessionFactory) -> None:
+async def test_two_pollers_never_take_the_same_row(factory: TransactionFactory) -> None:
     await _seed(factory, 6)
     taken: list[tuple[str, str]] = []
     gate = asyncio.Event()
@@ -50,7 +50,7 @@ async def test_two_pollers_never_take_the_same_row(factory: SessionFactory) -> N
     assert len({target for _, target in taken}) == 6
 
 
-async def test_a_failed_row_is_recorded_and_the_batch_survives(factory: SessionFactory) -> None:
+async def test_a_failed_row_is_recorded_and_the_batch_survives(factory: TransactionFactory) -> None:
     await _seed(factory, 2)
 
     async def work(db: AsyncSession, row: Any) -> None:
@@ -69,7 +69,7 @@ async def test_a_failed_row_is_recorded_and_the_batch_survives(factory: SessionF
     assert rows[0].attempts == 1
 
 
-async def test_two_passes_ticking_together_do_the_work_once(factory: SessionFactory) -> None:
+async def test_two_passes_ticking_together_do_the_work_once(factory: TransactionFactory) -> None:
     runs: list[str] = []
     gate = asyncio.Event()
 
@@ -89,7 +89,7 @@ async def test_two_passes_ticking_together_do_the_work_once(factory: SessionFact
     assert len(runs) == 1
 
 
-async def test_loops_start_and_stop_cleanly(factory: SessionFactory) -> None:
+async def test_loops_start_and_stop_cleanly(factory: TransactionFactory) -> None:
     await _seed(factory, 1)
     seen: list[str] = []
 
