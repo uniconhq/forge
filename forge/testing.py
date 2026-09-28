@@ -21,7 +21,6 @@ import json
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import psycopg
@@ -29,6 +28,7 @@ import pytest
 
 from forge.db.engine import TransactionFactory
 from forge.db.migrations import upgrade_to_head
+from forge.domain.clock import FakeClock
 from forge.domain.identity import AsUser
 from forge.domain.ids import OrgName
 from forge.domain.workflows import Visibility
@@ -59,22 +59,6 @@ CALLBACK_PATH = "/api/v1/auth/callback"
 CALLBACK = f"{APP_URL}{CALLBACK_PATH}"
 
 _FORMATTER = JsonFormatter()
-
-
-class FakeClock:
-    """A clock a test moves by hand."""
-
-    def __init__(self, start: datetime | None = None) -> None:
-        self._now = start or datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
-
-    def now(self) -> datetime:
-        return self._now
-
-    def advance(self, by: timedelta) -> None:
-        self._now += by
-
-    def set(self, moment: datetime) -> None:
-        self._now = moment
 
 
 def logged(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]:

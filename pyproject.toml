@@ -94,6 +94,12 @@ source_modules = ["forge.forges.forgejo"]
 forbidden_modules = ["forge.services", "forge.db"]
 
 [[tool.importlinter.contracts]]
+name = "the in-memory implementation never imports services, db or runtime"
+type = "forbidden"
+source_modules = ["forge.forges.fake"]
+forbidden_modules = ["forge.services", "forge.db", "forge.runtime"]
+
+[[tool.importlinter.contracts]]
 name = "domain imports nothing else in the package"
 type = "forbidden"
 source_modules = ["forge.domain"]

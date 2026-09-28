@@ -9,25 +9,15 @@ functions beside it, take one from a setup.
 
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.db.engine import TransactionFactory
+from forge.domain.clock import Clock
 from forge.port import Forge
 from forge.settings import Settings
-
-
-class Clock(Protocol):
-    def now(self) -> datetime:
-        """The current instant, timezone-aware."""
-        ...
-
-
-class SystemClock:
-    def now(self) -> datetime:
-        return datetime.now(UTC)
 
 
 @dataclass(frozen=True, slots=True)

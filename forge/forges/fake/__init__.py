@@ -7,6 +7,7 @@ has no access to.
 
 from typing import Any
 
+from forge.domain.clock import Clock
 from forge.domain.identity import Credential, User
 from forge.forges.fake.content import FakeContent
 from forge.forges.fake.grading import FakeComputes, FakeGrading
@@ -16,7 +17,6 @@ from forge.forges.fake.state import Call, State
 from forge.forges.fake.threads import FakeThreads
 from forge.forges.fake.workflows import FakePrimitives, FakeWorkflows
 from forge.forges.fake.workspaces import FakeWorkspaces
-from forge.runtime.context import Clock
 
 __all__ = ["Call", "FakeForge", "State"]
 

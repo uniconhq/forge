@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from forge.domain.clock import FakeClock
 from forge.domain.errors import InvalidName
 from forge.domain.names import (
     TeamOwner,
@@ -91,3 +92,9 @@ def test_a_sign_in_lands_only_on_a_path_inside_the_platform() -> None:
         "/" + "a" * 3000,
     ):
         assert safe_next(outside) == "/"
+
+
+def test_a_fake_clock_moves_when_advanced() -> None:
+    clock = FakeClock(NOW)
+    clock.advance(IDLE)
+    assert clock.now() == NOW + IDLE
