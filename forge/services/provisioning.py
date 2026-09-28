@@ -105,7 +105,7 @@ async def _claim(ctx: Context, kind: str, target_id: str) -> Record:
     attempt counted. In a transaction of its own so the record of the
     attempt exists before any step runs.
     """
-    async with ctx.sessions() as own:
+    async with ctx.transactions() as own:
         row = await _find(own, kind, target_id)
         if row is None:
             row = Provisioning(kind=kind, target_id=target_id, status=PENDING, attempts=0)
@@ -130,7 +130,7 @@ async def _find(db: AsyncSession, kind: str, target_id: str) -> Provisioning | N
 
 
 async def _write(ctx: Context, row_id: uuid.UUID, **values: Any) -> Record:
-    async with ctx.sessions() as own:
+    async with ctx.transactions() as own:
         await own.execute(update(Provisioning).where(Provisioning.id == row_id).values(**values))
         row = (
             await own.execute(select(Provisioning).where(Provisioning.id == row_id))

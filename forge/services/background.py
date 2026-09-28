@@ -17,7 +17,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
-from forge.db.engine import SessionFactory
+from forge.db.engine import TransactionFactory
 from forge.log import get_logger
 
 log = get_logger(__name__)
@@ -44,7 +44,7 @@ class Poller:
     interval: timedelta = timedelta(seconds=2)
     batch: int = 10
 
-    async def tick(self, factory: SessionFactory) -> int:
+    async def tick(self, factory: TransactionFactory) -> int:
         async with factory() as db:
             rows: Sequence[Any] = (
                 (
@@ -84,7 +84,7 @@ class TimedPass:
     def lock_key(self) -> int:
         return zlib.crc32(self.name.encode())
 
-    async def tick(self, factory: SessionFactory) -> bool:
+    async def tick(self, factory: TransactionFactory) -> bool:
         async with factory() as db:
             held = (
                 await db.execute(
@@ -116,7 +116,7 @@ class Loops:
             else:
                 self.passes.append(loop)
 
-    def start(self, factory: SessionFactory) -> None:
+    def start(self, factory: TransactionFactory) -> None:
         for poller in self.pollers:
             self._tasks.append(
                 asyncio.create_task(self._run(poller.name, poller.interval, poller.tick, factory))
@@ -142,8 +142,8 @@ class Loops:
     async def _run(
         name: str,
         interval: timedelta,
-        tick: Callable[[SessionFactory], Awaitable[Any]],
-        factory: SessionFactory,
+        tick: Callable[[TransactionFactory], Awaitable[Any]],
+        factory: TransactionFactory,
     ) -> None:
         while True:
             try:

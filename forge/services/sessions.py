@@ -3,11 +3,12 @@ keeping the credential inside it usable, and ending one. The only place the
 `sessions` table is read or written and the only place a credential is
 decrypted.
 
-Writes made on behalf of the caller go on the caller's unit of work. The
-three writes that must land whatever the request does, touching the last-seen
-time, the refresh compare-and-set and the revocation of a session whose
-credential the host refuses to renew, run in a short transaction of their
-own.
+`revoke`, `revoke_all` and `list_for` are actions; the rest are building
+blocks. Writes made on behalf of the caller go on the caller's unit of work.
+The three writes that must land whatever the request does, touching the
+last-seen time, the refresh compare-and-set and the revocation of a session
+whose credential the host refuses to renew, run in a short transaction of
+their own.
 """
 
 import asyncio
@@ -22,9 +23,10 @@ from typing import Any
 from sqlalchemy import CursorResult, Row, Update, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge.actions import action
 from forge.context import Context
 from forge.crypto import CannotDecrypt, decrypt, encrypt
-from forge.db.engine import SessionFactory
+from forge.db.engine import TransactionFactory
 from forge.db.tables import Session as SessionRow
 from forge.domain.client_address import client_address
 from forge.domain.errors import Forbidden, NotFound, SessionExpired, Unauthenticated
@@ -91,7 +93,7 @@ async def authenticate(ctx: Context, session_id: uuid.UUID) -> Session:
     if is_expired(_times(row), now, ctx.settings.session_idle_ttl):
         raise SessionExpired("This session has ended.")
     if needs_touch(row.last_seen_at, now):
-        async with ctx.sessions() as own:
+        async with ctx.transactions() as own:
             await own.execute(
                 update(SessionRow).where(SessionRow.id == session_id).values(last_seen_at=now)
             )
@@ -107,12 +109,12 @@ async def credential_for(ctx: Context, session_id: uuid.UUID) -> Credential:
     process already used the stored value is not a dead session; the other
     process's value is read back instead.
     """
-    stored = await _stored(ctx.sessions, session_id)
+    stored = await _stored(ctx.transactions, session_id)
     if not refresh_due(stored.expires_at, ctx.now):
         return _decrypt(stored.credential, ctx.settings)
 
     async with _lock_for(session_id):
-        stored = await _stored(ctx.sessions, session_id)
+        stored = await _stored(ctx.transactions, session_id)
         if not refresh_due(stored.expires_at, ctx.now):
             return _decrypt(stored.credential, ctx.settings)
         try:
@@ -120,7 +122,7 @@ async def credential_for(ctx: Context, session_id: uuid.UUID) -> Credential:
                 _decrypt(stored.credential, ctx.settings)
             )
         except Forbidden as exc:
-            latest = await _stored(ctx.sessions, session_id)
+            latest = await _stored(ctx.transactions, session_id)
             if latest.credential != stored.credential:
                 return _decrypt(latest.credential, ctx.settings)
             log.info("session.credential_refused", session=str(session_id), reason=exc.detail)
@@ -128,9 +130,10 @@ async def credential_for(ctx: Context, session_id: uuid.UUID) -> Credential:
             raise SessionExpired("Sign in again to keep working at the forge.") from exc
         if await _store(ctx, session_id, was=stored.credential, issued=issued):
             return issued
-    return _decrypt((await _stored(ctx.sessions, session_id)).credential, ctx.settings)
+    return _decrypt((await _stored(ctx.transactions, session_id)).credential, ctx.settings)
 
 
+@action
 async def revoke(ctx: Context, session_id: uuid.UUID, *, owner: int | None = None) -> None:
     """End one session on the caller's unit of work. Given an `owner`, the
     session must be theirs.
@@ -143,10 +146,12 @@ async def revoke(ctx: Context, session_id: uuid.UUID, *, owner: int | None = Non
         raise NotFound("No such session.")
 
 
+@action
 async def revoke_all(ctx: Context, user_id: int) -> None:
     await ctx.db.execute(_revocation(ctx.now).where(SessionRow.user_id == user_id))
 
 
+@action
 async def list_for(ctx: Context, session: Session) -> list[SessionInfo]:
     now = ctx.now
     rows = await ctx.db.execute(
@@ -234,8 +239,8 @@ def _lock_for(session_id: uuid.UUID) -> asyncio.Lock:
     return lock
 
 
-async def _stored(sessions: SessionFactory, session_id: uuid.UUID) -> _Stored:
-    async with sessions() as own:
+async def _stored(transactions: TransactionFactory, session_id: uuid.UUID) -> _Stored:
+    async with transactions() as own:
         found = (
             await own.execute(
                 select(
@@ -254,13 +259,13 @@ async def revoke_now(ctx: Context, session_id: uuid.UUID) -> None:
     revoke for a session the host has refused: the caller raises next, and a
     raise rolls the caller's transaction back.
     """
-    async with ctx.sessions() as own:
+    async with ctx.transactions() as own:
         await own.execute(_revocation(ctx.now).where(SessionRow.id == session_id))
         await own.commit()
 
 
 async def _store(ctx: Context, session_id: uuid.UUID, *, was: bytes, issued: Credential) -> bool:
-    async with ctx.sessions() as own:
+    async with ctx.transactions() as own:
         written = await own.execute(
             update(SessionRow)
             .where(SessionRow.id == session_id, SessionRow.credential == was)

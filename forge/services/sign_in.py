@@ -1,20 +1,23 @@
 """Sign-in through the host's OpenID Connect provider. `start` builds the
-redirect and what checks the answer; `complete` exchanges the code the host
-sends back, checks the state and the nonce, and creates the session.
+redirect and what checks the answer; `complete`, an action, exchanges the
+code the host sends back, checks the state and the nonce, creates the
+session, and ends the one the browser had before, together. `sign_up_url`
+is where a person creates an account at the host.
 """
 
 import base64
 import hashlib
 import secrets
+import uuid
 from dataclasses import dataclass
 from hmac import compare_digest
 
+from forge.actions import ActionSetup, action, held
 from forge.context import Context
 from forge.domain.errors import Forbidden, SignInInvalid
 from forge.domain.next_path import safe_next
 from forge.domain.sessions import Session
 from forge.log import get_logger
-from forge.port import Forge
 from forge.services import sessions
 
 log = get_logger(__name__)
@@ -43,7 +46,8 @@ class SignInStart:
     attempt: SignInAttempt
 
 
-def start(forge: Forge, next_candidate: str | None) -> SignInStart:
+def start(next_candidate: str | None, *, setup: ActionSetup | None = None) -> SignInStart:
+    forge = (setup or held()).forge
     attempt = SignInAttempt(
         state=secrets.token_urlsafe(STATE_BYTES),
         verifier=_new_verifier(),
@@ -56,6 +60,14 @@ def start(forge: Forge, next_candidate: str | None) -> SignInStart:
     return SignInStart(url=url, attempt=attempt)
 
 
+def sign_up_url(*, setup: ActionSetup | None = None) -> str | None:
+    """Where a person creates an account at the host, or none while sign-up
+    is closed.
+    """
+    return (setup or held()).forge.identity.sign_up_url()
+
+
+@action
 async def complete(
     ctx: Context,
     *,
@@ -64,9 +76,13 @@ async def complete(
     attempt: SignInAttempt | None,
     ip: str | None,
     user_agent: str | None,
+    previous_session_id: uuid.UUID | None = None,
 ) -> tuple[Session, str]:
-    """Finish a sign-in and return the new session and where to land. A
-    mismatched state or nonce is refused and no session is created.
+    """Finish a sign-in and return the new session and where to land. The
+    session the browser already had, `previous_session_id`, is ended in the
+    same transaction, so the new one is never saved while the old one stays
+    working. A mismatched state or nonce is refused, no session is created
+    and the previous one is left as it was.
     """
     if attempt is None:
         raise SignInInvalid("This sign-in did not start here, or took too long.")
@@ -84,6 +100,8 @@ async def complete(
     session = await sessions.create(
         ctx, user=signed.user, credential=signed.credential, ip=ip, user_agent=user_agent
     )
+    if previous_session_id is not None:
+        await sessions.revoke(ctx, previous_session_id)
     log.info("sign_in.completed", user_id=signed.user.id, session=str(session.id))
     return session, attempt.next
 

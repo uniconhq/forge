@@ -6,6 +6,7 @@ never stored.
 import uuid
 from dataclasses import dataclass
 
+from forge.actions import action
 from forge.context import Context
 from forge.domain.errors import Forbidden, SessionExpired, Unavailable
 from forge.domain.identity import AsUser, User
@@ -29,6 +30,7 @@ class Me:
     degraded: bool
 
 
+@action
 async def whoami(ctx: Context, session: Session) -> Me:
     try:
         credential = await sessions.credential_for(ctx, session.id)
@@ -46,6 +48,7 @@ async def whoami(ctx: Context, session: Session) -> Me:
     return Me(user=user, roles=roles, degraded=False)
 
 
+@action
 async def current(ctx: Context, session_id: uuid.UUID) -> Session:
     """The session behind an id, checked for its lifetimes."""
     return await sessions.authenticate(ctx, session_id)

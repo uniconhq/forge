@@ -5,6 +5,7 @@ or a shared workflow other people may be using. Both need a session younger
 than the fresh sign-in window.
 """
 
+from forge.actions import action
 from forge.context import Context
 from forge.domain.errors import FreshSignInRequired, SharedWorkflowOwner, SoleAdmin
 from forge.domain.identity import AsUser
@@ -18,6 +19,7 @@ from forge.services import sessions
 log = get_logger(__name__)
 
 
+@action
 async def deactivate(ctx: Context, session: Session) -> None:
     _require_fresh(ctx, session)
     await sessions.revoke_all(ctx, session.user_id)
@@ -25,6 +27,7 @@ async def deactivate(ctx: Context, session: Session) -> None:
     log.info("account.deactivated", user_id=session.user_id)
 
 
+@action
 async def delete(ctx: Context, session: Session) -> None:
     _require_fresh(ctx, session)
     credential = await sessions.credential_for(ctx, session.id)
