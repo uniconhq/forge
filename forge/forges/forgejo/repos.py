@@ -19,7 +19,7 @@ from forge.domain.errors import Conflict, NotFound
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import VersionId
 from forge.forges.forgejo.http import Http, json_of, list_of
-from forge.forges.forgejo.names import DEFAULT_BRANCH, PLATFORM_ACCOUNT
+from forge.forges.forgejo.names import DEFAULT_BRANCH
 
 CREATE_MESSAGE = "Create"
 TREE_PAGE = 1000
@@ -28,8 +28,9 @@ WRITE_ATTEMPTS = 4
 
 
 class Repos:
-    def __init__(self, http: Http) -> None:
+    def __init__(self, http: Http, *, platform_account: str) -> None:
         self._http = http
+        self._platform_account = platform_account
 
     async def create(
         self, as_: Identity, owner: str, name: str, files: Files, *, private: bool
@@ -211,7 +212,7 @@ class Repos:
             PLATFORM,
             "POST",
             f"/api/v1/repos/{owner}/{name}/tag_protections",
-            json={"name_pattern": f"{prefix}*", "whitelist_usernames": [PLATFORM_ACCOUNT]},
+            json={"name_pattern": f"{prefix}*", "whitelist_usernames": [self._platform_account]},
         )
 
     async def add_collaborator(

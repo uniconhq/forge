@@ -75,6 +75,9 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
         assert f"PUT /api/v1/repos/acme/{repo}/collaborators/bob" in calls
     assert "POST /api/v1/repos/acme/spring.sum.bob.sub/tag_protections" in calls
     assert "POST /api/v1/repos/acme/spring.bob.desk/tag_protections" not in calls
+    assert recorder.sent("POST", "/api/v1/repos/acme/spring.sum.bob.sub/tag_protections") == [
+        {"name_pattern": "submission/*", "whitelist_usernames": ["platform-account"]}
+    ]
     assert recorder.sent("PUT", "/api/v1/repos/acme/spring.bob.desk/collaborators/bob") == [
         {"permission": "write"}
     ]

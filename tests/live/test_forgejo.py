@@ -53,13 +53,14 @@ def admin() -> httpx.Client:
 
 
 @pytest.fixture
-async def forge() -> AsyncIterator[ForgejoForge]:
+async def forge(admin: httpx.Client) -> AsyncIterator[ForgejoForge]:
     assert URL and ADMIN_TOKEN
     built = ForgejoForge(
         ForgejoConfig(
             public_url=URL,
             internal_url=URL,
             admin_token=ADMIN_TOKEN,
+            platform_account=admin.get("/api/v1/user").json()["login"],
             oauth_client_id="unused",
             oauth_client_secret="unused",
             sign_in_redirect_uri="http://unused/callback",

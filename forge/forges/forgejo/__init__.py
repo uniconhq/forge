@@ -24,14 +24,17 @@ from forge.port.tokens import TokenSource
 
 @dataclass(frozen=True, slots=True)
 class ForgejoConfig:
-    """`ci_public_url` is the URL the CI knows itself by, `WOODPECKER_HOST`:
-    the CI writes its webhooks under it, and that is how the implementation
-    tells the CI's webhook from any other.
+    """`platform_account` is the account `admin_token` belongs to, the one
+    account protected versions are reserved for. `ci_public_url` is the URL
+    the CI knows itself by, `WOODPECKER_HOST`: the CI writes its webhooks
+    under it, and that is how the implementation tells the CI's webhook from
+    any other.
     """
 
     public_url: str
     internal_url: str
     admin_token: str
+    platform_account: str
     oauth_client_id: str
     oauth_client_secret: str
     sign_in_redirect_uri: str
@@ -60,7 +63,7 @@ class ForgejoForge:
         self._clients = (http, ci)
 
         users = Users(http)
-        repos = Repos(http)
+        repos = Repos(http, platform_account=config.platform_account)
         teams = Teams(http)
         oauth = OAuth(
             http,

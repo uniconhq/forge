@@ -33,8 +33,6 @@ from forge.domain.ids import (
 )
 from forge.domain.names import WorkspaceOwner, owner_from_segment
 
-PLATFORM_ACCOUNT = "unicon-backend"
-CI_ADMIN_ACCOUNT = "unicon-ci"
 PLATFORM_ORG = "unicon"
 WORKSPACE_MARK = "@"
 

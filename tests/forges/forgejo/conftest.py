@@ -16,6 +16,7 @@ CONFIG = ForgejoConfig(
     public_url="http://forge.test",
     internal_url="http://forge.internal",
     admin_token="admin",
+    platform_account="platform-account",
     oauth_client_id="client",
     oauth_client_secret="secret",
     sign_in_redirect_uri="http://app.test/api/v1/auth/callback",

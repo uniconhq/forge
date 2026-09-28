@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pydantic import HttpUrl
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from forge import forges
 from forge.db.engine import (
     TransactionFactory,
     new_engine,
@@ -21,16 +22,12 @@ from forge.db.engine import (
 )
 from forge.domain.clock import Clock, SystemClock
 from forge.domain.errors import NotReady
-from forge.forges.cached import CachedForge
-from forge.forges.fake import FakeForge
-from forge.forges.forgejo import ForgejoConfig, ForgejoForge
 from forge.log import get_logger
 from forge.port import Forge
 from forge.runtime import held
 from forge.runtime.background import Loops, TimedPass
 from forge.runtime.context import ActionSetup, Context
 from forge.services import sessions
-from forge.services.org_accounts import OrgAccountTokens
 from forge.settings import Settings, load_settings
 
 log = get_logger(__name__)
@@ -69,15 +66,18 @@ class Setup:
     ) -> Setup:
         """Assemble the package. `callback_path` is the hosting process's own
         route that the host sends a browser back to after sign-in; it is
-        joined to the public URL.
+        joined to the public URL. `forge`, when given, is used as it is, in
+        place of the one the settings pick.
         """
         if not callback_path.startswith("/"):
             raise ValueError(f"callback_path is not a path: {callback_path}")
         engine = new_engine(str(settings.database_url))
-        inner = forge or _forge_for(settings, _joined(settings.public_url, callback_path))
         setup = cls(
             settings=settings,
-            forge=CachedForge(inner, enabled=settings.forge_cache),
+            forge=forge
+            or forges.build(
+                settings, sign_in_redirect_uri=_joined(settings.public_url, callback_path)
+            ),
             engine=engine,
             probe_engine=new_probe_engine(str(settings.database_url)),
             transactions=new_transaction_factory(engine),
@@ -177,29 +177,3 @@ def public_url(*, setup: ActionSetup | None = None) -> str:
 
 def _joined(base: HttpUrl, path: str) -> str:
     return str(base).rstrip("/") + path
-
-
-def _forge_for(settings: Settings, sign_in_redirect_uri: str) -> Forge:
-    if settings.forge == "fake":
-        return FakeForge(
-            public_url=str(settings.forge_public_url), sign_in_redirect_uri=sign_in_redirect_uri
-        )
-    assert settings.forge_public_url and settings.forge_internal_url
-    assert settings.forge_admin_token and settings.forge_oauth_client_secret
-    assert settings.forge_oauth_client_id and settings.woodpecker_url and settings.woodpecker_token
-    assert settings.woodpecker_public_url
-    return ForgejoForge(
-        ForgejoConfig(
-            public_url=str(settings.forge_public_url),
-            internal_url=str(settings.forge_internal_url),
-            admin_token=settings.forge_admin_token.get_secret_value(),
-            oauth_client_id=settings.forge_oauth_client_id,
-            oauth_client_secret=settings.forge_oauth_client_secret.get_secret_value(),
-            sign_in_redirect_uri=sign_in_redirect_uri,
-            sign_ups_open=settings.forge_registration_open,
-            ci_url=str(settings.woodpecker_url),
-            ci_public_url=str(settings.woodpecker_public_url),
-            ci_admin_token=settings.woodpecker_token.get_secret_value(),
-        ),
-        OrgAccountTokens(),
-    )
