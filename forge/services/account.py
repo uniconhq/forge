@@ -5,8 +5,6 @@ or a shared workflow other people may be using. Both need a session younger
 than the fresh sign-in window.
 """
 
-from forge.actions import action
-from forge.context import Context
 from forge.domain.errors import FreshSignInRequired, SharedWorkflowOwner, SoleAdmin
 from forge.domain.identity import AsUser
 from forge.domain.roles import Role, RoleGrant, Scope
@@ -14,6 +12,8 @@ from forge.domain.sessions import Session, is_fresh
 from forge.domain.workflows import Visibility
 from forge.log import get_logger
 from forge.port import Forge
+from forge.runtime.actions import action
+from forge.runtime.context import Context
 from forge.services import sessions
 
 log = get_logger(__name__)

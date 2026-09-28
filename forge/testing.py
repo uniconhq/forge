@@ -27,16 +27,17 @@ from typing import Any
 import psycopg
 import pytest
 
-from forge import actions
-from forge.context import Context
 from forge.db.engine import TransactionFactory
+from forge.db.migrations import upgrade_to_head
 from forge.domain.identity import AsUser
 from forge.domain.ids import OrgName
 from forge.domain.workflows import Visibility
 from forge.forges.fake import FakeForge
 from forge.log import JsonFormatter
+from forge.runtime import held
+from forge.runtime.context import Context
+from forge.runtime.setup import Setup
 from forge.settings import Settings
-from forge.setup import Setup, migrate
 
 __all__ = [
     "APP_URL",
@@ -114,7 +115,7 @@ def database_url() -> Iterator[str]:
 
 @pytest.fixture
 def migrated_database_url(database_url: str) -> str:
-    migrate(database_url)
+    upgrade_to_head(database_url)
     return database_url
 
 
@@ -154,11 +155,11 @@ def held_setup(setup: Setup) -> Iterator[Setup]:
     """`setup`, held as the process's own for the test, so an action called
     with no setup uses it. Let go when the test ends, passed or failed.
     """
-    actions.hold(setup)
+    held.hold(setup)
     try:
         yield setup
     finally:
-        actions.release()
+        held.release()
 
 
 @pytest.fixture

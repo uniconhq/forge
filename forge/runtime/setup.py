@@ -12,9 +12,6 @@ from datetime import datetime, timedelta
 from pydantic import HttpUrl
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from forge import actions
-from forge.actions import ActionSetup
-from forge.context import Clock, Context, SystemClock
 from forge.db.engine import (
     TransactionFactory,
     new_engine,
@@ -22,15 +19,16 @@ from forge.db.engine import (
     new_transaction_factory,
     ping,
 )
-from forge.db.migrations import upgrade_to_head
 from forge.domain.errors import NotReady
 from forge.forges.cached import CachedForge
 from forge.forges.fake import FakeForge
 from forge.forges.forgejo import ForgejoConfig, ForgejoForge
 from forge.log import get_logger
 from forge.port import Forge
+from forge.runtime import held
+from forge.runtime.background import Loops, TimedPass
+from forge.runtime.context import ActionSetup, Clock, Context, SystemClock
 from forge.services import sessions
-from forge.services.background import Loops, TimedPass
 from forge.services.org_accounts import OrgAccountTokens
 from forge.settings import Settings, load_settings
 
@@ -149,36 +147,31 @@ def start(*, callback_path: str) -> None:
     it is joined to `UNICON_PUBLIC_URL`. Call it once, from inside the running
     event loop.
     """
-    if actions.holding():
+    if held.holding():
         raise RuntimeError("forge.api.start was already called")
     setup = Setup.build(load_settings(), callback_path=callback_path)
-    actions.hold(setup)
+    held.hold(setup)
     setup.start_background()
 
 
 async def ready() -> None:
     """Raise `NotReady` if the database does not answer within two seconds."""
-    await actions.held().ready()
+    await held.held().ready()
 
 
 async def stop() -> None:
     """Stop the background loops and close every connection."""
-    await actions.release().stop()
+    await held.release().stop()
 
 
 def now(*, setup: ActionSetup | None = None) -> datetime:
     """The current instant by the clock the package enforces deadlines with."""
-    return (setup or actions.held()).clock.now()
+    return (setup or held.held()).clock.now()
 
 
 def public_url(*, setup: ActionSetup | None = None) -> str:
     """Where the platform is served, `UNICON_PUBLIC_URL`."""
-    return str((setup or actions.held()).settings.public_url)
-
-
-def migrate(database_url: str) -> None:
-    """Bring a database up to the package's latest migration."""
-    upgrade_to_head(database_url)
+    return str((setup or held.held()).settings.public_url)
 
 
 def _joined(base: HttpUrl, path: str) -> str:

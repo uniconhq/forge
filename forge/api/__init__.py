@@ -10,6 +10,6 @@ its clock and says where the platform is served. The actions and the types
 are in the modules beside it.
 """
 
-from forge.setup import now, public_url, ready, start, stop
+from forge.runtime.setup import now, public_url, ready, start, stop
 
 __all__ = ["now", "public_url", "ready", "start", "stop"]

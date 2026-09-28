@@ -14,7 +14,7 @@ from types import ModuleType
 import pytest
 
 import forge.api
-from forge.context import Context
+from forge.runtime.context import Context
 from forge.services import sessions
 
 

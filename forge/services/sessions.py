@@ -12,7 +12,6 @@ their own.
 """
 
 import asyncio
-import json
 import uuid
 import weakref
 from dataclasses import dataclass
@@ -23,9 +22,6 @@ from typing import Any
 from sqlalchemy import CursorResult, Row, Update, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.actions import action
-from forge.context import Context
-from forge.crypto import CannotDecrypt, decrypt, encrypt
 from forge.db.engine import TransactionFactory
 from forge.db.tables import Session as SessionRow
 from forge.domain.client_address import client_address
@@ -33,6 +29,10 @@ from forge.domain.errors import Forbidden, NotFound, SessionExpired, Unauthentic
 from forge.domain.identity import Credential, User
 from forge.domain.sessions import Session, SessionTimes, is_expired, needs_touch, refresh_due
 from forge.log import get_logger
+from forge.runtime.actions import action
+from forge.runtime.context import Context
+from forge.services import credentials
+from forge.services.credentials import CannotDecrypt
 from forge.settings import Settings
 
 log = get_logger(__name__)
@@ -67,7 +67,7 @@ async def create(
     row = SessionRow(
         user_id=user.id,
         username=user.username,
-        credential=_encrypt(credential, ctx.settings),
+        credential=credentials.encrypt(credential, ctx.settings),
         credential_expires_at=credential.expires_at,
         created_at=now,
         expires_at=now + ctx.settings.session_hard_ttl,
@@ -270,31 +270,16 @@ async def _store(ctx: Context, session_id: uuid.UUID, *, was: bytes, issued: Cre
             update(SessionRow)
             .where(SessionRow.id == session_id, SessionRow.credential == was)
             .values(
-                credential=_encrypt(issued, ctx.settings), credential_expires_at=issued.expires_at
+                credential=credentials.encrypt(issued, ctx.settings),
+                credential_expires_at=issued.expires_at,
             )
         )
         await own.commit()
     return _rows_touched(written) == 1
 
 
-def _encrypt(credential: Credential, settings: Settings) -> bytes:
-    payload = json.dumps(
-        {
-            "access": credential.access,
-            "refresh": credential.refresh,
-            "expires_at": credential.expires_at.isoformat(),
-        }
-    ).encode()
-    return encrypt(payload, settings.token_encryption_key_bytes)
-
-
 def _decrypt(blob: bytes, settings: Settings) -> Credential:
     try:
-        payload = json.loads(decrypt(blob, settings.token_encryption_key_bytes))
+        return credentials.decrypt(blob, settings)
     except CannotDecrypt as exc:
         raise SessionExpired("Sign in again.") from exc
-    return Credential(
-        access=str(payload["access"]),
-        refresh=str(payload["refresh"]),
-        expires_at=datetime.fromisoformat(str(payload["expires_at"])),
-    )

@@ -11,15 +11,15 @@ import uuid
 import pytest
 
 import forge.api
-from forge import actions
-from forge.actions import action
-from forge.context import Context
 from forge.domain.errors import Conflict, NotReady, SessionExpired
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
+from forge.runtime import held
+from forge.runtime.actions import action
+from forge.runtime.context import Context
+from forge.runtime.setup import Setup
 from forge.services import identity, sessions, sign_in
 from forge.settings import TEST_VALUES, Settings
-from forge.setup import Setup
 from forge.testing import APP_URL, CALLBACK_PATH, FORGE_URL, FakeClock, logged
 
 
@@ -142,7 +142,7 @@ async def test_start_builds_the_setup_from_the_environment_and_stop_lets_it_go(
     finally:
         await forge.api.stop()
 
-    assert not actions.holding()
+    assert not held.holding()
     with pytest.raises(RuntimeError, match=r"forge\.api\.start"):
         await forge.api.ready()
 

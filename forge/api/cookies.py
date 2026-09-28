@@ -2,7 +2,7 @@
 in the package.
 """
 
-from forge.cookies import (
+from forge.services.cookies import (
     CookiePolicy,
     policy,
     session_id,

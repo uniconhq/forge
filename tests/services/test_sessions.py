@@ -9,13 +9,13 @@ from datetime import timedelta
 import psycopg
 import pytest
 
-from forge.context import Context
 from forge.domain.errors import NotFound, SessionExpired, Unauthenticated
 from forge.domain.identity import Credential
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
+from forge.runtime.context import Context
+from forge.runtime.setup import Setup
 from forge.services import sessions
-from forge.setup import Setup
 from forge.testing import FakeClock
 
 
