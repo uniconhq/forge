@@ -3,8 +3,9 @@ with named fields, so logs can be searched and filtered rather than parsed out
 of sentences. Every module logs through `get_logger` and nothing prints.
 
 A `SecretStr` or `SecretBytes` given as a field is written masked, so a token
-passed to the logger by mistake never reaches a line. The backend logs in the
-same shape, so the two can be read together.
+passed to the logger by mistake never reaches a line. The hosting process
+calls `setup` once, before anything logs, and writes its own records through
+`get_logger`, so every line the process prints has the same shape.
 """
 
 import json
@@ -14,6 +15,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import SecretBytes, SecretStr
+
+from forge.settings import load_log_settings
 
 MASK = "**********"
 
@@ -85,10 +88,13 @@ def plain(value: Any) -> Any:
     return str(value)
 
 
-def configure(level: str) -> None:
-    """Send every record from every logger through the one JSON handler on
-    stderr. The process that hosts this package calls it once at start.
+def setup() -> None:
+    """Send every record from every logger in the process, the web server's
+    included, through the one JSON handler on stderr, at the level
+    `UNICON_LOG_LEVEL` names. A level that is not one stops the process with
+    the variable named.
     """
+    level = load_log_settings().log_level
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JsonFormatter())
     root = logging.getLogger()
