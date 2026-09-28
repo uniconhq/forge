@@ -11,7 +11,7 @@ from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, inspect
 
 from forge.db.base import Base
-from forge.db.engine import SessionFactory
+from forge.db.engine import TransactionFactory
 from forge.db.migrations import downgrade_to_base, upgrade_to_head
 from forge.db.tables import Grading, register
 
@@ -55,7 +55,7 @@ def test_the_migration_rolls_back(migrated_database_url: str) -> None:
     upgrade_to_head(migrated_database_url)
 
 
-async def test_a_grading_row_round_trips_with_its_verdict(factory: SessionFactory) -> None:
+async def test_a_grading_row_round_trips_with_its_verdict(factory: TransactionFactory) -> None:
     verdict = {"outcome": "verdict", "verdict": "AC", "score": "100", "summary": [{"id": "1"}]}
     async with factory() as db:
         row = Grading(

@@ -1,5 +1,6 @@
 """Sign-in: the redirect carries the checks, a real answer produces a session
-for the right user, and a tampered state or nonce is refused.
+for the right user and ends the one the browser had, and a tampered state or
+nonce is refused.
 """
 
 from dataclasses import replace
@@ -9,9 +10,11 @@ import pytest
 
 from forge.context import Context
 from forge.domain.errors import SessionExpired, SignInInvalid
+from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
-from forge.services import identity, sign_in
+from forge.services import identity, sessions, sign_in
 from forge.services.sign_in import SignInAttempt
+from forge.setup import Setup
 
 
 def _answer(fake: FakeForge, started: sign_in.SignInStart) -> tuple[str, str]:
@@ -19,23 +22,35 @@ def _answer(fake: FakeForge, started: sign_in.SignInStart) -> tuple[str, str]:
     return query["code"][0], query["state"][0]
 
 
-def test_the_redirect_carries_the_challenge_and_state_and_keeps_the_rest(
-    fake: FakeForge,
-) -> None:
-    started = sign_in.start(fake, "/contests/4")
+async def _signed_in(ctx: Context, fake: FakeForge) -> Session:
+    session = await sessions.create(
+        ctx, user=fake.users[7], credential=fake.mint(7), ip=None, user_agent=None
+    )
+    await ctx.db.commit()
+    return session
+
+
+def test_the_redirect_carries_the_challenge_and_state_and_keeps_the_rest(setup: Setup) -> None:
+    started = sign_in.start("/contests/4", setup=setup)
 
     query = parse_qs(urlsplit(started.url).query)
     assert query["state"] == [started.attempt.state]
     assert query["nonce"] == [started.attempt.nonce]
     assert query["code_challenge"] != [started.attempt.verifier]
     assert started.attempt.next == "/contests/4"
-    assert sign_in.start(fake, "https://evil.test").attempt.next == "/"
+    assert sign_in.start("https://evil.test", setup=setup).attempt.next == "/"
+
+
+def test_the_sign_up_url_is_the_hosts_while_sign_up_is_open(setup: Setup, fake: FakeForge) -> None:
+    assert sign_in.sign_up_url(setup=setup) == "http://forge.test/user/sign_up"
+    fake.identity.sign_ups_open = False
+    assert sign_in.sign_up_url(setup=setup) is None
 
 
 async def test_a_real_answer_produces_a_session_for_the_right_user(
-    ctx: Context, fake: FakeForge
+    setup: Setup, ctx: Context, fake: FakeForge
 ) -> None:
-    started = sign_in.start(fake, "/contests/4")
+    started = sign_in.start("/contests/4", setup=setup)
     code, state = _answer(fake, started)
 
     session, landing = await sign_in.complete(
@@ -50,11 +65,33 @@ async def test_a_real_answer_produces_a_session_for_the_right_user(
     assert me.degraded is False
 
 
+async def test_a_sign_in_ends_the_session_the_browser_had(
+    setup: Setup, ctx: Context, fake: FakeForge
+) -> None:
+    previous = await _signed_in(ctx, fake)
+    started = sign_in.start("/", setup=setup)
+    code, state = _answer(fake, started)
+
+    session, _ = await sign_in.complete(
+        setup,
+        code=code,
+        state=state,
+        attempt=started.attempt,
+        ip=None,
+        user_agent=None,
+        previous_session_id=previous.id,
+    )
+
+    with pytest.raises(SessionExpired):
+        await identity.current(setup, previous.id)
+    assert (await identity.current(setup, session.id)).user_id == 7
+
+
 @pytest.mark.parametrize("tampered", ["state", "nonce", "missing"])
 async def test_a_tampered_answer_is_refused_and_leaves_no_session(
-    ctx: Context, fake: FakeForge, tampered: str
+    setup: Setup, ctx: Context, fake: FakeForge, tampered: str
 ) -> None:
-    started = sign_in.start(fake, "/")
+    started = sign_in.start("/", setup=setup)
     code, state = _answer(fake, started)
     attempt: SignInAttempt | None = started.attempt
     if tampered == "state":
@@ -71,8 +108,29 @@ async def test_a_tampered_answer_is_refused_and_leaves_no_session(
     assert fake.calls_to("complete_sign_in") == [] or tampered == "nonce"
 
 
-async def test_a_spent_code_is_refused(ctx: Context, fake: FakeForge) -> None:
-    started = sign_in.start(fake, "/")
+async def test_a_refused_sign_in_leaves_the_previous_session_working(
+    setup: Setup, ctx: Context, fake: FakeForge
+) -> None:
+    previous = await _signed_in(ctx, fake)
+    started = sign_in.start("/", setup=setup)
+    code, _ = _answer(fake, started)
+
+    with pytest.raises(SignInInvalid):
+        await sign_in.complete(
+            setup,
+            code=code,
+            state="not-this-attempt",
+            attempt=started.attempt,
+            ip=None,
+            user_agent=None,
+            previous_session_id=previous.id,
+        )
+
+    assert (await identity.current(setup, previous.id)).id == previous.id
+
+
+async def test_a_spent_code_is_refused(setup: Setup, ctx: Context, fake: FakeForge) -> None:
+    started = sign_in.start("/", setup=setup)
     code, state = _answer(fake, started)
     await sign_in.complete(
         ctx, code=code, state=state, attempt=started.attempt, ip=None, user_agent=None
@@ -85,13 +143,13 @@ async def test_a_spent_code_is_refused(ctx: Context, fake: FakeForge) -> None:
 
 
 async def test_a_credential_the_forge_refuses_ends_the_session_whatever_the_caller_does(
-    ctx: Context, fake: FakeForge
+    setup: Setup, ctx: Context, fake: FakeForge
 ) -> None:
     """The revocation is written in a transaction of its own, so the caller
     rolling its unit of work back, which is what a raise makes it do, does
     not bring the session back.
     """
-    started = sign_in.start(fake, "/")
+    started = sign_in.start("/", setup=setup)
     code, state = _answer(fake, started)
     session, _ = await sign_in.complete(
         ctx, code=code, state=state, attempt=started.attempt, ip=None, user_agent=None
