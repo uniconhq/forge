@@ -7,8 +7,8 @@ from forge.domain.errors import NotFound
 from forge.domain.grading import Enrolment, Run, RunStatus
 from forge.domain.identity import PLATFORM, AsOrgAccount
 from forge.domain.ids import AgentId, OrgName, RunId, TaskId
-from forge.forges.fake import ids
 from forge.forges.fake.state import State
+from forge.forges.ids import location, parse_task
 
 
 class FakeGrading:
@@ -16,16 +16,15 @@ class FakeGrading:
         self._state = state
 
     async def register(self, task: TaskId) -> None:
-        self._state.record("register", AsOrgAccount(ids.task_parts(task)[0]), task=task)
+        self._state.record("register", AsOrgAccount(parse_task(task).org), task=task)
         self._task_repo(task)
 
     async def start_run(
         self, task: TaskId, *, variables: Mapping[str, str], compute_label: str
     ) -> RunId:
-        org = ids.task_parts(task)[0]
         self._state.record(
             "start_run",
-            AsOrgAccount(org),
+            AsOrgAccount(parse_task(task).org),
             task=task,
             variables=dict(variables),
             compute_label=compute_label,
@@ -49,8 +48,7 @@ class FakeGrading:
         self._state.runs[run] = Run(id=run, status=RunStatus.CANCELLED)
 
     def _task_repo(self, task: TaskId) -> None:
-        org, contest_name, name = ids.task_parts(task)
-        self._state.repo(org, ids.task_repo(contest_name, name))
+        self._state.repo(*location(task))
 
 
 class FakeComputes:

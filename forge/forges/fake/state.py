@@ -17,13 +17,9 @@ from forge.domain.identity import AsUser, Credential, Identity, Platform, User
 from forge.domain.ids import AgentId, RunId, ThreadId, VersionId
 from forge.domain.roles import RANK, Role, Scope
 from forge.domain.threads import Thread
+from forge.forges.ids import PROTECTED_PREFIXES
 
 CREDENTIAL_TTL = timedelta(hours=1)
-PLATFORM_ORG = "unicon"
-PUBLISHED_PREFIX = "published/"
-SUBMISSION_PREFIX = "submission/"
-PROTECTED_PREFIXES = (PUBLISHED_PREFIX, SUBMISSION_PREFIX)
-WORKSPACE_MARK = "@"
 
 
 @dataclass(frozen=True, slots=True)

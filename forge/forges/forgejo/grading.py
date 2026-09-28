@@ -10,8 +10,8 @@ from forge.domain.grading import Run, RunStatus
 from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, Identity
 from forge.domain.ids import RunId, TaskId
 from forge.forges.forgejo.http import Http, json_of
-from forge.forges.forgejo.names import DEFAULT_BRANCH, parse_task
-from forge.forges.forgejo.repos import Repos
+from forge.forges.forgejo.repos import DEFAULT_BRANCH, Repos
+from forge.forges.ids import parse_task
 from forge.log import get_logger
 
 log = get_logger(__name__)

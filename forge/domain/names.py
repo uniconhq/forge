@@ -53,9 +53,3 @@ class TeamOwner:
 
 
 WorkspaceOwner = UserOwner | TeamOwner
-
-
-def owner_from_segment(segment: str) -> WorkspaceOwner:
-    if segment.startswith(TEAM_PREFIX):
-        return TeamOwner(uuid.UUID(segment.removeprefix(TEAM_PREFIX)))
-    return UserOwner(segment)

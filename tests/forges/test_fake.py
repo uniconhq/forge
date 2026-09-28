@@ -3,11 +3,13 @@ completes against it, every call is recorded with its identity, and it refuses
 what a real forge refuses.
 """
 
+from collections.abc import Awaitable, Callable
+
 import pytest
 
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, AsUser, Platform
-from forge.domain.ids import OrgName
+from forge.domain.ids import ContestId, OrgName, TaskId, ThreadId, WorkflowId, WorkspaceId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
@@ -39,6 +41,25 @@ async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
     with pytest.raises(Forbidden):
         await fake.workspaces.record_submission(_as(fake, 9), workspace, task, {"a": b"b"})
     assert fake.calls_to("register")[0].identity.org == "acme"  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda fake: fake.content.create_task(ContestId("acme"), "sum", {}),
+        lambda fake: fake.workspaces.list_publications(TaskId("acme/spring")),
+        lambda fake: fake.workspaces.list_submissions(
+            WorkspaceId("acme/spring/sum"), TaskId("acme/spring/sum")
+        ),
+        lambda fake: fake.workflows.star_workflow(PLATFORM, WorkflowId("ada")),
+        lambda fake: fake.threads.close_thread(PLATFORM, ThreadId("acme/spring.contest")),
+    ],
+)
+async def test_a_malformed_id_names_nothing(
+    fake: FakeForge, call: Callable[[FakeForge], Awaitable[object]]
+) -> None:
+    with pytest.raises(NotFound):
+        await call(fake)
 
 
 async def test_every_call_is_recorded_with_its_identity(fake: FakeForge) -> None:

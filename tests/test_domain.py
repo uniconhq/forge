@@ -2,7 +2,6 @@
 session lifetimes, and where a sign-in may land.
 """
 
-import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,9 +9,6 @@ import pytest
 from forge.domain.clock import FakeClock
 from forge.domain.errors import InvalidName
 from forge.domain.names import (
-    TeamOwner,
-    UserOwner,
-    owner_from_segment,
     validate_contest_or_task_name,
     validate_name,
 )
@@ -39,12 +35,6 @@ def test_contest_and_task_names_stop_at_twenty_four() -> None:
     assert validate_name("a" * 40)
     with pytest.raises(InvalidName):
         validate_name("a" * 41)
-
-
-def test_a_workspace_owner_round_trips_through_its_segment() -> None:
-    team = TeamOwner(uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31"))
-    assert owner_from_segment(team.segment) == team
-    assert owner_from_segment(UserOwner("Ada.Lovelace").segment) == UserOwner("ada.lovelace")
 
 
 def test_a_role_at_an_org_reaches_every_contest_and_task_in_it() -> None:

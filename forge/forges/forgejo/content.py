@@ -7,15 +7,15 @@ from forge.domain.content import Change, ConflictToken, File, Files, TreeEntry
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import ContestId, OrgName, TaskId, VersionId
 from forge.domain.roles import Scope
-from forge.forges.forgejo.names import (
+from forge.forges.forgejo.repos import Repos
+from forge.forges.forgejo.teams import Teams
+from forge.forges.ids import (
     PUBLISHED_PREFIX,
     ContestRef,
     TaskRef,
+    location,
     parse_contest,
-    parse_task,
 )
-from forge.forges.forgejo.repos import Repos
-from forge.forges.forgejo.teams import Teams
 from forge.port.content import ContentPlace
 
 
@@ -70,12 +70,3 @@ class ForgejoContent:
     ) -> tuple[Change, ...]:
         owner, name = location(place)
         return await self._repos.history(as_, owner, name, path)
-
-
-def location(place: str) -> tuple[str, str]:
-    """The org and repository a contest or task id names."""
-    if place.count("/") == 1:
-        contest = parse_contest(ContestId(place))
-        return contest.org, contest.repo
-    task = parse_task(TaskId(place))
-    return task.org, task.repo

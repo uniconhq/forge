@@ -19,8 +19,8 @@ from forge.domain.errors import Conflict, NotFound
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import VersionId
 from forge.forges.forgejo.http import Http, json_of, list_of
-from forge.forges.forgejo.names import DEFAULT_BRANCH
 
+DEFAULT_BRANCH = "main"
 CREATE_MESSAGE = "Create"
 TREE_PAGE = 1000
 PAGE_LIMIT = 50

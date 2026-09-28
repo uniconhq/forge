@@ -14,7 +14,10 @@ from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import ContestId, PublicationId, SubmissionId, TaskId, WorkspaceId
 from forge.domain.names import WorkspaceOwner
 from forge.domain.roles import Scope
-from forge.forges.forgejo.names import (
+from forge.forges.forgejo.repos import Repos
+from forge.forges.forgejo.teams import Teams
+from forge.forges.forgejo.users import Users
+from forge.forges.ids import (
     PUBLISHED_PREFIX,
     SUBMISSION_PREFIX,
     WorkspaceRef,
@@ -24,9 +27,6 @@ from forge.forges.forgejo.names import (
     publication_id,
     submission_id,
 )
-from forge.forges.forgejo.repos import Repos
-from forge.forges.forgejo.teams import Teams
-from forge.forges.forgejo.users import Users
 from forge.port.grading import GradingPort
 
 WRITE = "write"

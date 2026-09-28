@@ -1,5 +1,8 @@
-"""How the platform's objects are named at Forgejo, and how the opaque ids the
-port hands out are built and read. Nothing above the port sees these shapes.
+"""How the platform's objects are named at the host, and how the opaque ids
+the port hands out are built and read. Both implementations use this one
+grammar, so an id is read the same way, and a malformed one is refused the
+same way, whichever is behind the port. Nothing above the port sees these
+shapes.
 
 Every repository the platform creates joins its segments with dots and ends
 in a fixed word that says what it is:
@@ -18,6 +21,7 @@ too: the same person in two contests of one org has two desks, and closing
 one contest's workspace leaves the other's alone.
 """
 
+import uuid
 from dataclasses import dataclass
 
 from forge.domain.errors import NotFound
@@ -31,7 +35,7 @@ from forge.domain.ids import (
     WorkflowId,
     WorkspaceId,
 )
-from forge.domain.names import WorkspaceOwner, owner_from_segment
+from forge.domain.names import TEAM_PREFIX, TeamOwner, UserOwner, WorkspaceOwner
 
 PLATFORM_ORG = "unicon"
 WORKSPACE_MARK = "@"
@@ -46,10 +50,6 @@ PRIMITIVE = "primitive"
 PUBLISHED_PREFIX = "published/"
 SUBMISSION_PREFIX = "submission/"
 PROTECTED_PREFIXES = (PUBLISHED_PREFIX, SUBMISSION_PREFIX)
-DEFAULT_BRANCH = "main"
-
-WORKFLOW_TOPIC = "unicon-workflow"
-PRIMITIVE_TOPIC = "unicon-primitive"
 
 
 class MalformedId(NotFound):
@@ -139,6 +139,18 @@ def parse_workspace(value: WorkspaceId) -> WorkspaceRef:
     return WorkspaceRef(org, contest, owner_from_segment(owner.removeprefix(WORKSPACE_MARK)))
 
 
+def owner_from_segment(segment: str) -> WorkspaceOwner:
+    """The owner a workspace segment names: a team by its id after the team
+    prefix, otherwise a contestant by their username.
+    """
+    if segment.startswith(TEAM_PREFIX):
+        try:
+            return TeamOwner(uuid.UUID(segment.removeprefix(TEAM_PREFIX)))
+        except ValueError:
+            raise MalformedId(f"{segment} is not a team") from None
+    return UserOwner(segment)
+
+
 def is_workspace(value: str) -> bool:
     parts = value.split("/")
     return len(parts) == 3 and parts[2].startswith(WORKSPACE_MARK)
@@ -147,6 +159,20 @@ def is_workspace(value: str) -> bool:
 def parse_workflow(value: WorkflowId) -> WorkflowRef:
     owner, name = _split(value, 2)
     return WorkflowRef(owner, name)
+
+
+def location(place: str) -> tuple[str, str]:
+    """The owner and repository a contest, task or workspace id names: a
+    workspace's is its desk.
+    """
+    if is_workspace(place):
+        workspace = parse_workspace(WorkspaceId(place))
+        return workspace.org, workspace.desk_repo
+    if place.count("/") == 1:
+        contest = parse_contest(ContestId(place))
+        return contest.org, contest.repo
+    task = parse_task(TaskId(place))
+    return task.org, task.repo
 
 
 def primitive_repo(value: PrimitiveId) -> str:
