@@ -16,10 +16,12 @@ LAYERS = [
     "forge.forges",
     "forge.forges.forgejo",
     "forge.forges.fake",
+    "forge.runtime",
     "forge.log",
+    "forge.settings",
     "forge.api",
-    "forge.cookies",
     "forge.cli",
+    "forge.testing",
 ]
 
 

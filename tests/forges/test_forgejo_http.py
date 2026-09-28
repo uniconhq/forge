@@ -13,13 +13,7 @@ from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavail
 from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, AsUser, Credential
 from forge.forges.forgejo.http import ForgejoAuth, Http, WoodpeckerAuth
 
-
-class Tokens:
-    async def forge_token(self, org: str) -> str:
-        return f"forge-token-{org}"
-
-    async def ci_token(self, org: str) -> str:
-        return f"ci-token-{org}"
+ACME = AsOrgAccount("acme", forge_token="forge-token-acme", ci_token="ci-token-acme")
 
 
 def _client(answers: list[httpx.Response | Exception], seen: list[httpx.Request]) -> Http:
@@ -33,7 +27,7 @@ def _client(answers: list[httpx.Response | Exception], seen: list[httpx.Request]
     transport = httpx.MockTransport(handle)
     return Http(
         httpx.AsyncClient(base_url="http://forge.test", transport=transport),
-        ForgejoAuth("admin", Tokens()),
+        ForgejoAuth("admin"),
         backoff_seconds=0,
     )
 
@@ -84,7 +78,7 @@ async def test_each_identity_signs_its_own_way() -> None:
 
     await http.call(PLATFORM, "GET", "/a")
     await http.call(AsUser(7, credential), "GET", "/b")
-    await http.call(AsOrgAccount("acme"), "GET", "/c")
+    await http.call(ACME, "GET", "/c")
 
     assert [request.headers["Authorization"] for request in seen] == [
         "token admin",
@@ -96,11 +90,15 @@ async def test_each_identity_signs_its_own_way() -> None:
 
 
 async def test_the_ci_signs_the_administrator_and_org_accounts_only() -> None:
-    auth = WoodpeckerAuth("ci-admin", Tokens())
+    auth = WoodpeckerAuth("ci-admin")
     assert await auth.header(CI_ADMIN) == "Bearer ci-admin"
-    assert await auth.header(AsOrgAccount("acme")) == "Bearer ci-token-acme"
+    assert await auth.header(ACME) == "Bearer ci-token-acme"
     with pytest.raises(Forbidden):
         await auth.header(PLATFORM)
+
+
+def test_an_org_accounts_credentials_are_never_printed() -> None:
+    assert "token-acme" not in repr(ACME)
 
 
 async def test_a_list_is_read_until_a_short_page() -> None:

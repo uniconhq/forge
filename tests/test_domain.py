@@ -2,16 +2,13 @@
 session lifetimes, and where a sign-in may land.
 """
 
-import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from forge.domain.clock import FakeClock
 from forge.domain.errors import InvalidName
 from forge.domain.names import (
-    TeamOwner,
-    UserOwner,
-    owner_from_segment,
     validate_contest_or_task_name,
     validate_name,
 )
@@ -40,17 +37,20 @@ def test_contest_and_task_names_stop_at_twenty_four() -> None:
         validate_name("a" * 41)
 
 
-def test_a_workspace_owner_round_trips_through_its_segment() -> None:
-    team = TeamOwner(uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31"))
-    assert owner_from_segment(team.segment) == team
-    assert owner_from_segment(UserOwner("Ada.Lovelace").segment) == UserOwner("ada.lovelace")
-
-
 def test_a_role_at_an_org_reaches_every_contest_and_task_in_it() -> None:
     grants = [RoleGrant(Scope("acme"), Role.ADMIN)]
     assert holds(grants, Scope("acme", "spring", "sum"), Role.ADMIN)
     assert holds(grants, Scope("acme", "spring"), Role.OBSERVER)
     assert not holds(grants, Scope("other"), Role.OBSERVER)
+
+
+def test_a_scopes_lineage_is_every_scope_that_covers_it() -> None:
+    task = Scope("acme", "spring", "sum")
+    assert task.lineage() == (Scope("acme"), Scope("acme", "spring"), task)
+    assert Scope("acme").lineage() == (Scope("acme"),)
+    others = [Scope("acme", "autumn"), Scope("acme", "spring", "product"), Scope("other")]
+    for scope in [*task.lineage(), *others]:
+        assert (scope in task.lineage()) == scope.covers(task)
 
 
 def test_a_higher_role_counts_as_a_lower_one_but_not_the_reverse() -> None:
@@ -91,3 +91,9 @@ def test_a_sign_in_lands_only_on_a_path_inside_the_platform() -> None:
         "/" + "a" * 3000,
     ):
         assert safe_next(outside) == "/"
+
+
+def test_a_fake_clock_moves_when_advanced() -> None:
+    clock = FakeClock(NOW)
+    clock.advance(IDLE)
+    assert clock.now() == NOW + IDLE

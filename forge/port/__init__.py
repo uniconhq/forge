@@ -22,7 +22,6 @@ from forge.port.identity import IdentityPort, SignedIn
 from forge.port.orgs import OrgPort
 from forge.port.primitives import PrimitivePort
 from forge.port.threads import ThreadPort
-from forge.port.tokens import TokenSource
 from forge.port.workflows import WorkflowPort
 from forge.port.workspaces import WorkspacePort
 
@@ -36,7 +35,6 @@ __all__ = [
     "PrimitivePort",
     "SignedIn",
     "ThreadPort",
-    "TokenSource",
     "WorkflowPort",
     "WorkspacePort",
 ]

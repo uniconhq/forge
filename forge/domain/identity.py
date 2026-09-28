@@ -2,7 +2,7 @@
 them, and the identity a call through the port is made under.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 
@@ -51,9 +51,14 @@ class AsUser:
 
 @dataclass(frozen=True, slots=True)
 class AsOrgAccount:
-    """The service account that registers and grades for one org."""
+    """A call made as the service account that registers and grades for one
+    org. It carries the account's two credentials, one at the forge and one
+    at the CI, the way `AsUser` carries a person's; neither is printed.
+    """
 
     org: str
+    forge_token: str = field(repr=False)
+    ci_token: str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)

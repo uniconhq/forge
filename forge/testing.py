@@ -21,22 +21,22 @@ import json
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import psycopg
 import pytest
 
-from forge import actions
-from forge.context import Context
-from forge.db.engine import TransactionFactory
+from forge.db.migrations import upgrade_to_head
+from forge.domain.clock import FakeClock
 from forge.domain.identity import AsUser
 from forge.domain.ids import OrgName
 from forge.domain.workflows import Visibility
 from forge.forges.fake import FakeForge
 from forge.log import JsonFormatter
+from forge.runtime.context import Context
+from forge.runtime.held import hold, release
+from forge.runtime.setup import Setup
 from forge.settings import Settings
-from forge.setup import Setup, migrate
 
 __all__ = [
     "APP_URL",
@@ -58,22 +58,6 @@ CALLBACK_PATH = "/api/v1/auth/callback"
 CALLBACK = f"{APP_URL}{CALLBACK_PATH}"
 
 _FORMATTER = JsonFormatter()
-
-
-class FakeClock:
-    """A clock a test moves by hand."""
-
-    def __init__(self, start: datetime | None = None) -> None:
-        self._now = start or datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
-
-    def now(self) -> datetime:
-        return self._now
-
-    def advance(self, by: timedelta) -> None:
-        self._now += by
-
-    def set(self, moment: datetime) -> None:
-        self._now = moment
 
 
 def logged(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]:
@@ -114,7 +98,7 @@ def database_url() -> Iterator[str]:
 
 @pytest.fixture
 def migrated_database_url(database_url: str) -> str:
-    migrate(database_url)
+    upgrade_to_head(database_url)
     return database_url
 
 
@@ -154,11 +138,11 @@ def held_setup(setup: Setup) -> Iterator[Setup]:
     """`setup`, held as the process's own for the test, so an action called
     with no setup uses it. Let go when the test ends, passed or failed.
     """
-    actions.hold(setup)
+    hold(setup)
     try:
         yield setup
     finally:
-        actions.release()
+        release()
 
 
 @pytest.fixture
@@ -166,12 +150,3 @@ async def ctx(setup: Setup) -> AsyncIterator[Context]:
     """One unit of work, committed when the test ends."""
     async with setup.unit_of_work() as context:
         yield context
-
-
-@pytest.fixture
-def factory(ctx: Context) -> TransactionFactory:
-    """The factory for transactions of their own, as the background loops
-    and the building blocks that write outside the caller's unit of work use
-    it.
-    """
-    return ctx.transactions

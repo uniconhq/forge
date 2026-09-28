@@ -13,7 +13,6 @@ import httpx
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import AsOrgAccount, AsUser, CiAdmin, Identity, Platform
 from forge.log import get_logger
-from forge.port.tokens import TokenSource
 
 log = get_logger(__name__)
 
@@ -40,9 +39,8 @@ class Auth(Protocol):
 
 
 class ForgejoAuth:
-    def __init__(self, admin_token: str, tokens: TokenSource) -> None:
+    def __init__(self, admin_token: str) -> None:
         self._admin_token = admin_token
-        self._tokens = tokens
 
     async def header(self, as_: Identity) -> str:
         match as_:
@@ -50,24 +48,23 @@ class ForgejoAuth:
                 return f"token {self._admin_token}"
             case AsUser(credential=credential):
                 return f"Bearer {credential.access}"
-            case AsOrgAccount(org=org):
-                return f"token {await self._tokens.forge_token(org)}"
+            case AsOrgAccount(forge_token=token):
+                return f"token {token}"
             case CiAdmin():
                 raise Forbidden("the CI administrator has no access to the forge")
         raise Forbidden("unknown identity")
 
 
 class WoodpeckerAuth:
-    def __init__(self, admin_token: str, tokens: TokenSource) -> None:
+    def __init__(self, admin_token: str) -> None:
         self._admin_token = admin_token
-        self._tokens = tokens
 
     async def header(self, as_: Identity) -> str:
         match as_:
             case CiAdmin():
                 return f"Bearer {self._admin_token}"
-            case AsOrgAccount(org=org):
-                return f"Bearer {await self._tokens.ci_token(org)}"
+            case AsOrgAccount(ci_token=token):
+                return f"Bearer {token}"
         raise Forbidden("only the CI administrator and org accounts reach the CI")
 
 
