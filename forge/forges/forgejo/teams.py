@@ -10,7 +10,7 @@ may edit and delete the repository's protected tags and branches (measured
 on Forgejo 15.0.8), which would let them make a publication or rewrite
 history, so the admin and manager roles are both `write` there and the
 platform holds the difference between them. Only the org account's team is
-an admin, because the CI accepts nothing less from whoever registers a
+an admin, because the CI accepts nothing less from whoever activates a
 repository. A team found with any other permission is put back.
 """
 

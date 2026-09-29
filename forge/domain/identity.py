@@ -51,7 +51,7 @@ class AsUser:
 
 @dataclass(frozen=True, slots=True)
 class AsOrgAccount:
-    """A call made as the service account that registers and grades for one
+    """A call made as the service account that activates and grades the tasks of one
     org. It carries the account's two credentials, one at the forge and one
     at the CI, the way `AsUser` carries a person's; neither is printed.
     """

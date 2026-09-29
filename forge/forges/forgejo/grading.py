@@ -1,4 +1,4 @@
-"""The grading area over Woodpecker: registering a task's repository once
+"""The grading area over Woodpecker: activating a task's repository once
 and starting runs as the org account the caller hands in, reading and
 cancelling runs as the CI's administrator, and the org account's own user
 and token at the CI, made by the administrator and the sign-in dance.
@@ -44,22 +44,22 @@ class WoodpeckerGrading:
         self._ci_public_url = ci_public_url.rstrip("/")
         self._login = login
 
-    async def register(self, as_: AsOrgAccount, task: TaskId) -> None:
+    async def activate(self, as_: AsOrgAccount, task: TaskId) -> None:
         ref = parse_task(task)
         account = _acting_for(as_, ref.org)
         record = await self._repos.record(ref.org, ref.repo)
         try:
-            registered = json_of(
+            activated = json_of(
                 await self._ci.call(
                     account, "POST", "/api/repos", params={"forge_remote_id": int(record["id"])}
                 )
             )
         except Conflict:
-            registered = await self._lookup(account, ref.org, ref.repo)
+            activated = await self._lookup(account, ref.org, ref.repo)
         await self._ci.call(
             CI_ADMIN,
             "PATCH",
-            f"/api/repos/{registered['id']}",
+            f"/api/repos/{activated['id']}",
             json={"trusted": {"network": False, "volumes": True, "security": False}},
         )
         await self._delete_ci_webhooks(ref.org, ref.repo)

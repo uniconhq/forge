@@ -14,18 +14,16 @@ import pytest
 from sqlalchemy import update
 
 from forge.db.tables import Contestant
-from forge.domain.content import Edit
 from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
 from forge.domain.release import Closed
 from forge.domain.sessions import Session
 from forge.runtime.setup import Setup
-from forge.services import publications, release, sessions
-from forge.services.publications import Published
+from forge.services import release
 from forge.services.release import TaskRelease
 from forge.testing import FakeClock, register_contestant
-from tests.services.conftest import SPRING, Acme
+from tests.services.conftest import SPRING, Acme, publish, signed_in
 
 CONTEST = """\
 name: Spring 2026
@@ -53,35 +51,15 @@ async def _contest(
     )
 
 
-async def _publish(setup: Setup, acme: Acme, task: TaskId, extra: bytes = b"") -> None:
-    head = await acme.fake.content.list_files(PLATFORM, task)
-    task_yaml = acme.fake.state.repos[("acme", "spring.sum.task")].files["task.yaml"]
-    result = await publications.save(
-        setup, acme.ada, task, {"task.yaml": Edit(task_yaml + extra, head.tokens["task.yaml"])}
-    )
-    assert isinstance(result, Published)
-
-
-async def _session(setup: Setup, acme: Acme, user_id: int) -> Session:
-    async with setup.unit_of_work() as ctx:
-        return await sessions.create(
-            ctx,
-            user=acme.fake.users[user_id],
-            credential=acme.fake.mint(user_id),
-            ip=None,
-            user_agent=None,
-        )
-
-
 @pytest.fixture
 async def bob(setup: Setup, acme: Acme) -> Session:
-    return await _session(setup, acme, 8)
+    return await signed_in(setup, acme.fake, 8)
 
 
 @pytest.fixture
 async def ada(setup: Setup, acme: Acme) -> Session:
     """The org's admin, an organiser of every contest in it."""
-    return await _session(setup, acme, 7)
+    return await signed_in(setup, acme.fake, 7)
 
 
 async def test_a_task_with_no_publication_is_not_released(
@@ -98,7 +76,7 @@ async def test_a_published_task_of_a_running_contest_is_released_visible_and_ope
     setup: Setup, acme: Acme, sum_task: TaskId, bob: Session
 ) -> None:
     await _contest(acme)
-    await _publish(setup, acme, sum_task)
+    await publish(setup, acme, sum_task)
     acme.fake.reset_calls()
 
     assert await release.of_task(setup, bob, sum_task) == OPEN
@@ -125,7 +103,7 @@ async def test_a_task_missing_any_part_is_not_released(
     moved: timedelta,
 ) -> None:
     await _contest(acme, state=state)
-    await _publish(setup, acme, sum_task, extra)
+    await publish(setup, acme, sum_task, extra)
     clock.advance(moved)
 
     found = await release.of_task(setup, bob, sum_task)
@@ -142,7 +120,7 @@ async def test_the_latest_publication_decides_and_not_the_files_saved_since(
     setup: Setup, acme: Acme, sum_task: TaskId, bob: Session
 ) -> None:
     await _contest(acme)
-    await _publish(setup, acme, sum_task)
+    await publish(setup, acme, sum_task)
     head = await acme.fake.content.list_files(PLATFORM, sum_task)
     await acme.fake.content.save_files(
         PLATFORM,
@@ -159,7 +137,7 @@ async def test_after_the_end_the_task_stays_visible_and_is_open_only_within_an_e
     setup: Setup, acme: Acme, sum_task: TaskId, bob: Session, clock: FakeClock
 ) -> None:
     await _contest(acme)
-    await _publish(setup, acme, sum_task)
+    await publish(setup, acme, sum_task)
     clock.advance(timedelta(hours=3, minutes=30))
 
     ended = await release.of_task(setup, bob, sum_task)
@@ -174,7 +152,7 @@ async def test_closed_submissions_and_an_archived_contest_each_close_the_task(
     setup: Setup, acme: Acme, sum_task: TaskId, bob: Session, ada: Session
 ) -> None:
     await _contest(acme)
-    await _publish(setup, acme, sum_task)
+    await publish(setup, acme, sum_task)
 
     await _contest(acme, closed="true")
     closed = await release.of_task(setup, bob, sum_task)
@@ -193,7 +171,7 @@ async def test_a_draft_contest_is_no_such_task_to_anyone_but_its_organisers(
     setup: Setup, acme: Acme, sum_task: TaskId, bob: Session, ada: Session
 ) -> None:
     await _contest(acme, state="draft")
-    await _publish(setup, acme, sum_task)
+    await publish(setup, acme, sum_task)
     await register_contestant(setup, SPRING, 8)
 
     with pytest.raises(NotFound):
@@ -207,7 +185,7 @@ async def test_a_hidden_contest_shows_its_tasks_to_its_contestants_alone(
     setup: Setup, acme: Acme, sum_task: TaskId, bob: Session
 ) -> None:
     await _contest(acme, visibility="hidden")
-    await _publish(setup, acme, sum_task)
+    await publish(setup, acme, sum_task)
 
     with pytest.raises(NotFound):
         await release.of_task(setup, bob, sum_task)

@@ -1,14 +1,14 @@
 """The save that publishes. A valid save writes the organiser's files and one
 plan per stage as one change and publishes exactly that change, numbered
-after the last, with a note that reads back; the first publication registers
-the task for grading and no later one does unless that record was lost, and
-a registration that fails is left pending for the poller. A save another
-save landed under is kept as a draft. A save inside `plans/` and a manager's change to
-an admin-only setting are refused with nothing written. A save that does not
-check is a draft: its files written, no publication, and its errors
-recomputed whenever the task's state is read. What changed how the task
-grades is named, and while the contest runs such a save asks to be
-confirmed.
+after the last, with a note that reads back; the first publication activates
+the task at the CI and no later one does unless that record was lost, and an
+activation that fails is left pending for the poller. A save another save
+landed under is kept as a draft, and so, always, is a save asked to be. A
+save inside `plans/` and a manager's change to an admin-only setting are
+refused with nothing written. A save that does not check is a draft: its
+files written, no publication, and its errors recomputed whenever the task's
+state is read. What changed how the task grades is named, and while the
+contest runs such a save asks to be confirmed.
 """
 
 from collections.abc import Mapping
@@ -112,87 +112,87 @@ async def test_a_valid_save_is_one_change_with_its_plans_and_that_change_is_publ
     assert (listed.grading_changed, listed.changes) == (False, ())
 
 
-async def test_the_first_publication_registers_the_task_and_later_ones_do_not(
+async def test_the_first_publication_activates_the_task_and_later_ones_do_not(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     first = await _save(setup, acme, sum_task, {"statement.md": b"One.\n"})
     second = await _save(setup, acme, sum_task, {"statement.md": b"Two.\n"})
 
     assert isinstance(first, Published) and isinstance(second, Published)
-    assert (first.registration, second.registration) == ("done", "not_needed")
+    assert (first.activation, second.activation) == ("done", "not_needed")
     assert (first.number, second.number) == (1, 2)
-    (registered,) = acme.fake.calls_to("register")
-    assert isinstance(registered.identity, AsOrgAccount)
-    assert registered.identity.org == "acme"
-    assert registered.arguments == {"task": sum_task}
+    (activated,) = acme.fake.calls_to("activate")
+    assert isinstance(activated.identity, AsOrgAccount)
+    assert activated.identity.org == "acme"
+    assert activated.arguments == {"task": sum_task}
 
 
-async def test_a_registration_that_fails_is_left_pending_and_the_poller_makes_it(
+async def test_an_activation_that_fails_is_left_pending_and_the_poller_makes_it(
     setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original = acme.fake.grading.register
+    original = acme.fake.grading.activate
 
     async def broken(*args: Any, **kwargs: Any) -> None:
         raise Unavailable("the CI went away")
 
-    monkeypatch.setattr(acme.fake.grading, "register", broken)
+    monkeypatch.setattr(acme.fake.grading, "activate", broken)
     first = await _save(setup, acme, sum_task, {"statement.md": b"One.\n"})
     await tick(setup, "provisioning")
     second = await _save(setup, acme, sum_task, {"statement.md": b"Two.\n"})
 
     assert isinstance(first, Published) and isinstance(second, Published)
-    assert (first.registration, second.registration) == ("pending", "pending")
+    assert (first.activation, second.activation) == ("pending", "pending")
     assert acme.fake.state.repos[("acme", "spring.sum.task")].versions.keys() == {
         "published/1",
         "published/2",
     }
     async with setup.unit_of_work() as ctx:
-        waiting = await provisioning.record_of(ctx, "registration", sum_task)
+        waiting = await provisioning.record_of(ctx, "activation", sum_task)
     assert waiting is not None
     assert (waiting.status, waiting.failed_step, waiting.error) == (
         "failed",
-        "register",
+        "activate",
         "the forge or the CI did not answer",
     )
-    assert waiting.steps == ("register",)
+    assert waiting.steps == ("activate",)
 
-    monkeypatch.setattr(acme.fake.grading, "register", original)
+    monkeypatch.setattr(acme.fake.grading, "activate", original)
     await tick(setup, "provisioning")
 
     async with setup.unit_of_work() as ctx:
-        done = await provisioning.record_of(ctx, "registration", sum_task)
+        done = await provisioning.record_of(ctx, "activation", sum_task)
     assert done is not None
     assert done.status == "ready"
-    assert len(acme.fake.calls_to("register")) == 1
+    assert len(acme.fake.calls_to("activate")) == 1
     third = await _save(setup, acme, sum_task, {"statement.md": b"Three.\n"})
     assert isinstance(third, Published)
-    assert third.registration == "not_needed"
+    assert third.activation == "not_needed"
 
 
-async def test_a_registration_whose_record_was_lost_is_made_by_the_next_save(
+async def test_an_activation_whose_record_was_lost_is_made_by_the_next_save(
     setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original = acme.fake.grading.register
+    original = acme.fake.grading.activate
 
     async def broken(*args: Any, **kwargs: Any) -> None:
         raise Unavailable("the CI went away")
 
-    monkeypatch.setattr(acme.fake.grading, "register", broken)
+    monkeypatch.setattr(acme.fake.grading, "activate", broken)
     edits = await _edits(acme, sum_task, {"statement.md": b"One.\n"})
     with pytest.raises(RuntimeError, match="lost"):
         async with setup.unit_of_work() as ctx:
             first = await publications.save(ctx, acme.ada, sum_task, edits)
-            assert isinstance(first, Published) and first.registration == "pending"
+            assert isinstance(first, Published) and first.activation == "pending"
             raise RuntimeError("the commit was lost")
-    monkeypatch.setattr(acme.fake.grading, "register", original)
+    monkeypatch.setattr(acme.fake.grading, "activate", original)
 
     second = await _save(setup, acme, sum_task, {"statement.md": b"Two.\n"})
     third = await _save(setup, acme, sum_task, {"statement.md": b"Three.\n"})
 
     assert isinstance(second, Published) and isinstance(third, Published)
-    assert (second.number, second.registration) == (2, "done")
-    assert third.registration == "not_needed"
-    assert len(acme.fake.calls_to("register")) == 1
+    assert (second.number, second.activation) == (2, "done")
+    assert third.activation == "not_needed"
+    assert len(acme.fake.calls_to("activate")) == 1
 
 
 async def test_a_save_that_changes_nothing_since_the_publication_publishes_nothing_new(
@@ -557,6 +557,29 @@ async def test_a_grading_change_kept_as_a_draft_is_written_and_not_published(
     published = await publications.save(setup, acme.ada, running, {}, confirm=True)
     assert isinstance(published, Published)
     assert published.changes == ("plans/default.json changed",)
+
+
+@pytest.mark.parametrize("confirm", [False, True], ids=["alone", "with-confirm"])
+async def test_a_save_kept_as_a_draft_never_publishes_whatever_else_holds(
+    setup: Setup, acme: Acme, sum_task: TaskId, confirm: bool
+) -> None:
+    first = await _save(
+        setup, acme, sum_task, {"statement.md": b"New.\n"}, keep_as_draft=True, confirm=confirm
+    )
+    await _published(setup, acme, sum_task)
+    acme.fake.reset_calls()
+    later = await _save(
+        setup, acme, sum_task, {"statement.md": b"Newer.\n"}, keep_as_draft=True, confirm=confirm
+    )
+
+    assert isinstance(first, Draft) and isinstance(later, Draft)
+    assert (first.errors, first.held_back) == ((), ())
+    assert (later.errors, later.held_back) == ((), ())
+    assert _written(acme) == ["save_files"]
+    assert acme.fake.calls_to("activate") == []
+    assert [entry.number for entry in await publications.list(setup, acme.ada, sum_task)] == [1]
+    state = await tasks.state(setup, acme.ada, sum_task)
+    assert (state.draft, state.errors) == (True, ())
 
 
 async def test_a_text_only_save_while_the_contest_runs_publishes_without_asking(

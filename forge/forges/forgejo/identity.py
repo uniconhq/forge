@@ -38,6 +38,9 @@ class ForgejoIdentity:
     async def find_user_by_username(self, username: str) -> User:
         return await self._users.find_by_username(username)
 
+    async def verified_emails(self, user_id: int) -> tuple[str, ...]:
+        return await self._users.verified_emails(user_id)
+
     async def create_user(
         self,
         username: str,

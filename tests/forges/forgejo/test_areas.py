@@ -51,6 +51,7 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
 ) -> None:
     recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
     for repo in ("spring.bob.desk", "spring.sum.bob.sub"):
+        recorder.on("GET", f"/api/v1/repos/acme/{repo}", ok({}, 404))
         recorder.on("GET", f"/api/v1/repos/acme/{repo}/branches/main", ok({}, 404))
         recorder.on("GET", f"/api/v1/repos/acme/{repo}/branch_protections/main", ok({}, 404))
         for team in (1, 2, 3):
@@ -70,8 +71,9 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
     )
 
     workspace = await forgejo.workspaces.open_workspace(
-        ContestId("acme/spring"), UserOwner("Bob"), [8], [TaskId("acme/spring/sum")]
+        ContestId("acme/spring"), UserOwner("Bob"), [8]
     )
+    await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
 
     assert workspace == WorkspaceId("acme/spring/@bob")
     calls = recorder.calls()
@@ -81,6 +83,9 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
         assert f"PUT /api/v1/repos/acme/{repo}/collaborators/bob" in calls
     assert "POST /api/v1/repos/acme/spring.sum.bob.sub/tag_protections" in calls
     assert "POST /api/v1/repos/acme/spring.bob.desk/tag_protections" not in calls
+    assert calls.index("POST /api/v1/repos/acme/spring.sum.bob.sub/tag_protections") < calls.index(
+        "PUT /api/v1/repos/acme/spring.sum.bob.sub/collaborators/bob"
+    )
     assert recorder.sent("POST", "/api/v1/repos/acme/spring.sum.bob.sub/tag_protections") == [
         {"name_pattern": "submission/*", "whitelist_usernames": ["platform-account"]}
     ]
@@ -97,6 +102,43 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
             "block_on_rejected_reviews": False,
         }
     ]
+
+
+async def test_a_workspace_opened_again_keeps_what_is_there(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    recorder.on("GET", "/api/v1/repos/acme/spring.bob.desk", ok({"id": 3}))
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.bob.desk/branch_protections/main",
+        ok({"enable_force_push": False}),
+    )
+    recorder.on(
+        "GET",
+        "/api/v1/orgs/acme/teams/search",
+        ok(
+            {
+                "data": [
+                    {"id": 1, "name": "acme.spring-admin"},
+                    {"id": 2, "name": "acme.spring-manager"},
+                    {"id": 3, "name": "acme.spring-observer"},
+                ]
+            }
+        ),
+    )
+
+    workspace = await forgejo.workspaces.open_workspace(
+        ContestId("acme/spring"), UserOwner("bob"), [8]
+    )
+
+    calls = recorder.calls()
+    assert "POST /api/v1/orgs/acme/repos" not in calls
+    assert "POST /api/v1/repos/acme/spring.bob.desk/branch_protections" not in calls
+    assert not [call for call in calls if call.startswith("PUT /api/v1/teams/")]
+    assert "PUT /api/v1/repos/acme/spring.bob.desk/collaborators/bob" in calls
+    with pytest.raises(NotFound):
+        await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/autumn/sum"), [8])
 
 
 async def test_a_file_is_read_with_a_token_and_written_back_with_it(
@@ -567,7 +609,7 @@ async def test_a_sign_in_exchanges_the_code_and_reads_the_nonce(
     assert forgejo.identity.sign_up_url() == "http://forge.test/user/sign_up"
 
 
-async def test_a_run_is_registered_once_and_started_as_the_org_account(
+async def test_a_run_is_activated_once_and_started_as_the_org_account(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/v1/repos/acme/spring.sum.task", ok({"id": 55}))
@@ -585,7 +627,7 @@ async def test_a_run_is_registered_once_and_started_as_the_org_account(
         ),
     )
 
-    await forgejo.grading.register(ACME, TaskId("acme/spring/sum"))
+    await forgejo.grading.activate(ACME, TaskId("acme/spring/sum"))
     run = await forgejo.grading.start_run(
         ACME, TaskId("acme/spring/sum"), variables={"A": "1"}, compute_label="box"
     )

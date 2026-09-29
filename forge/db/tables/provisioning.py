@@ -1,10 +1,9 @@
 """The record of making something at the forge. Making an org, a contest, a
-task or a workspace takes several calls and can fail halfway; the forge only
-knows whether a thing exists, so the last completed step lives here and a
-rerun starts after it; a failed row names the step it stopped at in
-`failed_step` and the reason in `error`. A task's registration for grading
-is recorded the same way when its first publication could not register it
-at once.
+task, a contestant's workspace or the place they submit one task to takes
+several calls and can fail halfway; the forge only knows whether a thing
+exists, so the last completed step lives here and a rerun starts after it; a
+failed row names the step it stopped at in `failed_step` and the reason in
+`error`. A task's activation at the CI is recorded the same way.
 `payload` is the request that started the job, what the steps need that the
 forge does not hold: the description, who asked.
 """
@@ -19,7 +18,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from forge.db.base import Base, Timestamped
 from forge.domain.ids import new_id
 
-KINDS = ("org", "contest", "task", "workspace", "registration")
+KINDS = ("org", "contest", "task", "workspace", "submission_place", "activation")
 STATUSES = ("pending", "running", "ready", "failed")
 
 

@@ -175,3 +175,79 @@ class ConfirmationRequired(ServiceError):
     """
 
     code = "confirmation_required"
+
+
+class RegistrationRefused(ServiceError):
+    """A registration the contest's rules turn away. Each rule has an error of
+    its own below, and its `code` says which, so a page can say what happened.
+    """
+
+
+class RegistrationClosed(RegistrationRefused):
+    """The contest's registration window is not open."""
+
+    code = "registration_closed"
+
+
+class IsStaff(RegistrationRefused):
+    """The user holds a role at the contest, at one of its tasks or at its org,
+    and nobody is an organiser and a contestant of one contest.
+    """
+
+    code = "is_staff"
+
+
+class AlreadyRegistered(RegistrationRefused):
+    """The user already has a registration for the contest, whatever became of
+    it.
+    """
+
+    code = "already_registered"
+
+
+class InviteRequired(RegistrationRefused):
+    """The contest is invite-only and the user has no accepted invite to it."""
+
+    code = "invite_required"
+
+
+class WrongInviteCode(RegistrationRefused):
+    """The contest asks for a code and the one given, if any, is not it."""
+
+    code = "wrong_invite_code"
+
+
+class DomainNotAllowed(RegistrationRefused):
+    """The user's email address, or its absence, does not match the contest's
+    pattern.
+    """
+
+    code = "domain_not_allowed"
+
+
+class ContestFull(RegistrationRefused):
+    """Every place the contest's capacity allows is taken."""
+
+    code = "contest_full"
+
+
+class WrongStatus(ServiceError):
+    """A decision the registration's status does not allow, such as approving
+    one already rejected. `current` is the status it has.
+    """
+
+    code = "wrong_status"
+
+
+class InvalidReason(ServiceError):
+    """A rejection without a reason the contestant can read, or with one longer
+    than the limit.
+    """
+
+    code = "invalid_reason"
+
+
+class InvalidExtension(ServiceError):
+    """A time extension below nothing or above the most one may be."""
+
+    code = "invalid_extension"

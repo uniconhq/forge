@@ -188,32 +188,45 @@ async def test_anyones_roles_are_read_as_the_platform_and_a_contest_role_comes_a
 
 
 async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_commit(
-    forge: ForgejoForge, org: str, user: dict[str, Any], person: AsUser, admin: httpx.Client
+    forge: ForgejoForge, org: str, admin: httpx.Client, stamp: str
 ) -> None:
-    contest = await forge.content.create_contest(OrgName(org), "autumn", {"contest.yaml": b"x\n"})
-    task = await forge.content.create_task(contest, "sum", {"task.yaml": b"y\n"})
-    workspace = await forge.workspaces.open_workspace(
-        contest, UserOwner(user["login"]), [int(user["id"])], [task]
-    )
+    contestant = make_user(admin, f"contestant-{stamp}")
+    person = as_person(admin, contestant)
+    member = [int(contestant["id"])]
+    try:
+        contest = await forge.content.create_contest(
+            OrgName(org), "autumn", {"contest.yaml": b"x\n"}
+        )
+        task = await forge.content.create_task(contest, "sum", {"task.yaml": b"y\n"})
+        for _ in range(2):
+            workspace = await forge.workspaces.open_workspace(
+                contest, UserOwner(contestant["login"]), member
+            )
+            await forge.workspaces.open_submission_place(workspace, task, member)
 
-    first = await forge.workspaces.record_submission(
-        person, workspace, task, {"main.py": b"print(1)\n"}
-    )
-    second = await forge.workspaces.record_submission(
-        person, workspace, task, {"main.py": b"print(2)\n"}
-    )
-    assert await forge.workspaces.list_submissions(workspace, task) == (first, second)
+        first = await forge.workspaces.record_submission(
+            person, workspace, task, {"main.py": b"print(1)\n"}
+        )
+        second = await forge.workspaces.record_submission(
+            person, workspace, task, {"main.py": b"print(2)\n"}
+        )
+        assert await forge.workspaces.list_submissions(workspace, task) == (first, second)
 
-    repo = f"/api/v1/repos/{org}/autumn.sum.{user['login'].lower()}.sub"
-    tags = {tag["name"]: tag["commit"]["sha"] for tag in admin.get(f"{repo}/tags").json()}
-    commits = admin.get(f"{repo}/commits", params={"sha": "main"}).json()
-    by_sha = {commit["sha"]: commit for commit in commits}
-    assert by_sha[tags["submission/1"]]["commit"]["message"].startswith("Submit")
-    assert by_sha[tags["submission/1"]]["author"]["login"] == user["login"]
-    assert tags["submission/1"] != tags["submission/2"]
+        repo = f"/api/v1/repos/{org}/autumn.sum.{contestant['login'].lower()}.sub"
+        tags = {tag["name"]: tag["commit"]["sha"] for tag in admin.get(f"{repo}/tags").json()}
+        commits = admin.get(f"{repo}/commits", params={"sha": "main"}).json()
+        by_sha = {commit["sha"]: commit for commit in commits}
+        assert by_sha[tags["submission/1"]]["commit"]["message"].startswith("Submit")
+        assert by_sha[tags["submission/1"]]["author"]["login"] == contestant["login"]
+        assert tags["submission/1"] != tags["submission/2"]
 
-    await forge.workspaces.close_workspace(workspace, [int(user["id"])])
-    assert await forge.workspaces.list_publications(task) == ()
+        await forge.workspaces.close_workspace(workspace, member)
+        assert await forge.workspaces.list_publications(task) == ()
+        with pytest.raises((Forbidden, NotFound)):
+            await forge.workspaces.record_submission(person, workspace, task, {"main.py": b"late"})
+        assert await forge.workspaces.list_submissions(workspace, task) == (first, second)
+    finally:
+        delete_user(admin, contestant["login"])
 
 
 async def test_the_same_person_has_a_workspace_in_each_contest_of_the_org(
@@ -223,8 +236,8 @@ async def test_the_same_person_has_a_workspace_in_each_contest_of_the_org(
     second = await forge.content.create_contest(OrgName(org), "two", {"contest.yaml": b"x\n"})
     owner = UserOwner(user["login"])
 
-    in_first = await forge.workspaces.open_workspace(first, owner, [int(user["id"])], [])
-    in_second = await forge.workspaces.open_workspace(second, owner, [int(user["id"])], [])
+    in_first = await forge.workspaces.open_workspace(first, owner, [int(user["id"])])
+    in_second = await forge.workspaces.open_workspace(second, owner, [int(user["id"])])
     await forge.threads.post_thread(
         person, in_second, ThreadKind.CLARIFICATION, title="Q", body="?"
     )
@@ -296,7 +309,7 @@ async def test_a_deleted_user_is_gone_and_their_questions_still_read(
     person = as_person(admin, leaver)
     contest = await forge.content.create_contest(OrgName(org), "leaving", {"contest.yaml": b"x\n"})
     workspace = await forge.workspaces.open_workspace(
-        contest, UserOwner(leaver["login"]), [int(leaver["id"])], []
+        contest, UserOwner(leaver["login"]), [int(leaver["id"])]
     )
     thread = await forge.threads.post_thread(
         person, workspace, ThreadKind.CLARIFICATION, title="Before I go", body="?"
@@ -478,3 +491,15 @@ async def test_the_platform_owns_the_orgs_it_made_and_no_one_elses_name(
         assert await forge.orgs.platform_owns(OrgName(f"nobody-{stamp}")) is False
     finally:
         delete_org(admin, org)
+
+
+async def test_the_addresses_the_forge_confirmed_are_read_for_a_person(
+    forge: ForgejoForge, admin: httpx.Client, stamp: str
+) -> None:
+    person = make_user(admin, f"emails-{stamp}")
+    try:
+        confirmed = await forge.identity.verified_emails(int(person["id"]))
+    finally:
+        delete_user(admin, person["login"])
+
+    assert confirmed == (person["email"],)

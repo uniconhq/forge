@@ -44,10 +44,11 @@ from dataclasses import dataclass
 
 from sqlalchemy import select, text
 
-from forge.db.tables.contestants import REGISTERED, Contestant
+from forge.db.tables import Contestant
 from forge.domain.errors import ContestantConflict, Forbidden, NotFound, SoleAdmin
 from forge.domain.identity import User
 from forge.domain.ids import ContestId
+from forge.domain.registration import REGISTERED
 from forge.domain.roles import (
     RANK,
     Role,
