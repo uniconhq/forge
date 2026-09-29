@@ -1,11 +1,15 @@
 """Identity: signing a user in through the host, keeping their credential
-alive, and the account lifecycle.
+alive, and the account lifecycle, including the accounts the platform makes
+itself: a person's when sign-up is closed, and an org's service account.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from forge.domain.identity import Credential, User
+
+AccountVisibility = Literal["public", "private"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +57,41 @@ class IdentityPort(Protocol):
 
     async def find_user(self, user_id: int) -> User:
         """`NotFound` when no user has that id."""
+        ...
+
+    async def find_user_by_username(self, username: str) -> User:
+        """`NotFound` when no user has that username."""
+        ...
+
+    async def create_user(
+        self,
+        username: str,
+        email: str,
+        password: str,
+        *,
+        must_change_password: bool,
+        visibility: AccountVisibility = "public",
+    ) -> User:
+        """Make an account at the host, as the platform. `private` keeps it out
+        of the host's own listings, for a service account. `Conflict` when the
+        username or the email is taken.
+        """
+        ...
+
+    async def set_password(self, user_id: int, password: str) -> None:
+        """Replace the user's password, as the platform, without knowing the
+        old one. How the platform signs a service account in again without
+        ever storing its password.
+        """
+        ...
+
+    async def mint_token(
+        self, username: str, password: str, *, name: str, scopes: Sequence[str]
+    ) -> str:
+        """A long-lived credential for the user, made with their password and
+        named so a rerun replaces it rather than adding another. `Forbidden`
+        when the password is wrong.
+        """
         ...
 
     async def deactivate_user(self, user_id: int) -> None:

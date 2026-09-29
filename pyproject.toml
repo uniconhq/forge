@@ -1,6 +1,6 @@
 [project]
 name = "unicon-forge"
-version = "0.3.0"
+version = "0.4.0"
 description = "The Unicon contest API as a Python package: domain, services, tables, and the forge port with its implementations"
 readme = "README.md"
 license = "MIT"
@@ -15,6 +15,7 @@ dependencies = [
     "httpx>=0.28.1",
     "cryptography>=50.0.1",
     "itsdangerous>=2.2.0",
+    "pyyaml>=6.0.3",
 ]
 
 [project.scripts]
@@ -30,6 +31,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "import-linter>=2.15",
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 [build-system]

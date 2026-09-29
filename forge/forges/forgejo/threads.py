@@ -109,7 +109,9 @@ def _thread(
         created_at=datetime.fromisoformat(str(issue["created_at"])),
         closed=issue.get("state") == "closed",
         answered=ANSWERED in labels,
-        comments=tuple(_comment(comment) for comment in comments),
+        comments=tuple(
+            _comment(comment) for comment in sorted(comments, key=lambda found: int(found["id"]))
+        ),
     )
 
 

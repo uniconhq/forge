@@ -1,12 +1,16 @@
 """Users at Forgejo: the one place a user id becomes a login, and the
-administration of accounts as the platform.
+administration of accounts as the platform, including the accounts the
+platform makes itself and the tokens it mints for them with their password.
 """
 
+import base64
+from collections.abc import Sequence
 from typing import Any
 
 from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM, User
-from forge.forges.forgejo.http import Http, json_of
+from forge.forges.forgejo.http import Http, json_of, list_of
+from forge.port.identity import AccountVisibility
 
 
 class Users:
@@ -16,8 +20,69 @@ class Users:
     async def find(self, user_id: int) -> User:
         return user_from(await self._record(user_id))
 
+    async def find_by_username(self, username: str) -> User:
+        return user_from(
+            json_of(await self._http.call(PLATFORM, "GET", f"/api/v1/users/{username}"))
+        )
+
     async def username_of(self, user_id: int) -> str:
         return str((await self._record(user_id))["login"])
+
+    async def create(
+        self,
+        username: str,
+        email: str,
+        password: str,
+        *,
+        must_change_password: bool,
+        visibility: AccountVisibility,
+    ) -> User:
+        created = await self._http.call(
+            PLATFORM,
+            "POST",
+            "/api/v1/admin/users",
+            json={
+                "username": username,
+                "email": email,
+                "password": password,
+                "must_change_password": must_change_password,
+                "visibility": visibility,
+                "send_notify": False,
+            },
+        )
+        return user_from(json_of(created))
+
+    async def set_password(self, user_id: int, password: str) -> None:
+        person = await self._record(user_id)
+        await self._http.call(
+            PLATFORM,
+            "PATCH",
+            f"/api/v1/admin/users/{person['login']}",
+            json={
+                "password": password,
+                "must_change_password": False,
+                "login_name": person.get("login_name") or person["login"],
+                "source_id": person.get("source_id", 0),
+            },
+        )
+
+    async def mint_token(
+        self, username: str, password: str, *, name: str, scopes: Sequence[str]
+    ) -> str:
+        """A token made with the user's own password, over basic
+        authentication, which is the one way Forgejo mints one for an account
+        other than the caller's. Forgejo refuses a second token of one name,
+        so the one that exists is deleted first and a rerun replaces it.
+        """
+        headers = {"Authorization": basic(username, password)}
+        path = f"/api/v1/users/{username}/tokens"
+        for token in list_of(await self._http.request("GET", path, headers=headers)):
+            if token.get("name") == name:
+                await self._http.request("DELETE", f"{path}/{token['id']}", headers=headers)
+        minted = await self._http.request(
+            "POST", path, json={"name": name, "scopes": list(scopes)}, headers=headers
+        )
+        return str(json_of(minted)["sha1"])
 
     async def deactivate(self, user_id: int) -> None:
         person = await self._record(user_id)
@@ -55,6 +120,10 @@ class Users:
             raise NotFound(f"no user with id {user_id}")
         person: dict[str, Any] = people[0]
         return person
+
+
+def basic(username: str, password: str) -> str:
+    return "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
 
 
 def user_from(person: dict[str, Any]) -> User:

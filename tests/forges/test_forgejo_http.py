@@ -1,6 +1,7 @@
 """The HTTP client retries a server that is busy, raises `Unavailable` once
-the retries are used up, turns every refusal into one of the five errors, and
-signs each identity its own way.
+the retries are used up, never sends a create twice once it reached the
+server, turns every refusal into one of the five errors, and signs each
+identity its own way.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -49,6 +50,50 @@ async def test_a_server_that_stays_down_is_unavailable() -> None:
     with pytest.raises(Unavailable):
         await http.call(PLATFORM, "GET", "/api/v1/version")
     assert len(seen) == 4
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT", "PATCH", "DELETE"])
+async def test_a_request_that_sets_a_state_is_retried_on_a_busy_server_or_a_lost_answer(
+    method: str,
+) -> None:
+    seen: list[httpx.Request] = []
+    http = _client([httpx.Response(502), httpx.ReadTimeout("lost"), httpx.Response(204)], seen)
+
+    response = await http.call(PLATFORM, method, "/api/v1/teams/1/members/ada")
+
+    assert response.status_code == 204
+    assert len(seen) == 3
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [httpx.Response(502), httpx.ReadTimeout("lost"), httpx.RemoteProtocolError("cut")],
+    ids=["busy", "answer-lost", "cut-off"],
+)
+async def test_a_create_that_reached_the_server_is_never_sent_again(
+    failure: httpx.Response | Exception,
+) -> None:
+    seen: list[httpx.Request] = []
+    http = _client([failure, httpx.Response(201, json={"id": 1})], seen)
+
+    with pytest.raises(Unavailable):
+        await http.call(PLATFORM, "POST", "/api/v1/orgs", json={"username": "acme"})
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [httpx.ConnectError("refused"), httpx.ConnectTimeout("slow"), httpx.PoolTimeout("busy")],
+    ids=["refused", "connect-timeout", "pool-timeout"],
+)
+async def test_a_create_that_never_left_is_sent_again(failure: Exception) -> None:
+    seen: list[httpx.Request] = []
+    http = _client([failure, httpx.Response(201, json={"id": 1})], seen)
+
+    response = await http.call(PLATFORM, "POST", "/api/v1/orgs", json={"username": "acme"})
+
+    assert response.json() == {"id": 1}
+    assert len(seen) == 2
 
 
 @pytest.mark.parametrize(

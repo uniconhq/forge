@@ -2,8 +2,9 @@
 and closes a transaction of its own, saves nothing when it raises or its
 commit fails, runs inside a caller's unit of work when handed one, and uses
 the setup the process holds when handed neither. `start`, `ready` and `stop`
-build, ask and tear down that one setup; a database that does not answer is
-`NotReady`, with the cause in the log and not in the error.
+build, ask and tear down that one setup, and a setup started without its
+background runs no loop; a database that does not answer is `NotReady`, with
+the cause in the log and not in the error.
 """
 
 import uuid
@@ -19,7 +20,7 @@ from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.runtime.held import holding
+from forge.runtime.held import held, holding
 from forge.runtime.setup import Setup
 from forge.services import identity, sessions, sign_in
 from forge.settings import TEST_VALUES, Settings
@@ -217,3 +218,25 @@ async def test_a_database_that_does_not_answer_is_not_ready_and_only_the_log_say
     assert refused.value.extra == {}
     (record,) = logged(caplog, "setup.not_ready")
     assert record["error"]
+
+
+async def test_start_without_background_runs_no_loop(
+    migrated_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    values = {
+        **TEST_VALUES,
+        "database_url": migrated_database_url,
+        "public_url": APP_URL,
+        "forge_public_url": FORGE_URL,
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(f"UNICON_{name.upper()}", str(value))
+
+    forge.api.start(callback_path=CALLBACK_PATH, background=False)
+    try:
+        held_setup = held()
+        assert isinstance(held_setup, Setup)
+        assert held_setup._loops.running is False
+        await sessions.revoke_all(7)
+    finally:
+        await forge.api.stop()

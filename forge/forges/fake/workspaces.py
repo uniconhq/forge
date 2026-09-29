@@ -1,11 +1,22 @@
-"""The workspace area in memory."""
+"""The workspace area in memory. A publication names a version already
+written and keeps its note beside it, as a tag with a message does.
+"""
 
 from collections.abc import Sequence
 
 from forge.domain.content import Files
+from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM, Identity
-from forge.domain.ids import ContestId, PublicationId, SubmissionId, TaskId, WorkspaceId
+from forge.domain.ids import (
+    ContestId,
+    PublicationId,
+    SubmissionId,
+    TaskId,
+    VersionId,
+    WorkspaceId,
+)
 from forge.domain.names import WorkspaceOwner
+from forge.domain.publications import Publication, read_note
 from forge.domain.roles import Scope
 from forge.forges.fake.state import Repo, State
 from forge.forges.ids import (
@@ -40,11 +51,14 @@ class FakeWorkspaces:
         scope = Scope(ref.org, ref.contest)
         desk = self._state.create_repo(ref.org, ref.desk_repo, {}, scope=scope)
         desk.writers.update(member_ids)
+        desk.teams.add(scope)
         for task in tasks:
             sub = self._state.create_repo(
                 ref.org, ref.submission_repo(parse_task(task).task), {}, scope=scope
             )
             sub.writers.update(member_ids)
+            sub.teams.add(scope)
+            sub.reserved.add(SUBMISSION_PREFIX)
         return ref.id
 
     async def close_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
@@ -78,19 +92,39 @@ class FakeWorkspaces:
         self._state.create_version(PLATFORM, repo, f"{SUBMISSION_PREFIX}{number}", at=version)
         return submission_id(ref, task_name, number)
 
-    async def publish(self, task: TaskId, files: Files) -> PublicationId:
-        self._state.record("publish", PLATFORM, task=task)
-        repo = self._state.repo(*location(task))
-        self._state.commit(repo, files, "Publish", None)
-        number = self._state.next_number(repo, PUBLISHED_PREFIX)
-        self._state.create_version(PLATFORM, repo, f"{PUBLISHED_PREFIX}{number}")
-        return publication_id(parse_task(task), number)
-
-    async def list_publications(self, task: TaskId) -> tuple[PublicationId, ...]:
-        self._state.record("list_publications", PLATFORM, task=task)
+    async def publish(self, task: TaskId, at: VersionId, note: str) -> PublicationId:
+        self._state.record("publish", PLATFORM, task=task, at=at)
+        self._state.check_up()
         ref = parse_task(task)
         repo = self._state.repo(*location(task))
-        return tuple(publication_id(ref, number) for number in _numbers(repo, PUBLISHED_PREFIX))
+        if at not in repo.snapshots:
+            raise NotFound(f"{task} has no version {at}")
+        numbers = _numbers(repo, PUBLISHED_PREFIX)
+        number = (numbers[-1] if numbers else 0) + 1
+        self._state.create_version(PLATFORM, repo, f"{PUBLISHED_PREFIX}{number}", at=at, note=note)
+        self._state.published_at[(task, number)] = self._state.clock.now()
+        return publication_id(ref, number)
+
+    async def list_publications(self, task: TaskId) -> tuple[Publication, ...]:
+        self._state.record("list_publications", PLATFORM, task=task)
+        self._state.check_up()
+        ref = parse_task(task)
+        repo = self._state.repo(*location(task))
+        publications = []
+        for number in _numbers(repo, PUBLISHED_PREFIX):
+            name = f"{PUBLISHED_PREFIX}{number}"
+            note = read_note(repo.notes.get(name))
+            publications.append(
+                Publication(
+                    id=publication_id(ref, number),
+                    number=number,
+                    version=VersionId(repo.versions[name]),
+                    grading_changed=note.grading_changed,
+                    changes=note.changes,
+                    at=self._state.published_at.get((task, number), self._state.clock.now()),
+                )
+            )
+        return tuple(publications)
 
     def _workspace_repos(self, ref: WorkspaceRef) -> list[Repo]:
         return [

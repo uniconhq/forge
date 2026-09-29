@@ -7,9 +7,18 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
+from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Platform
-from forge.domain.ids import ContestId, OrgName, TaskId, ThreadId, WorkflowId, WorkspaceId
+from forge.domain.ids import (
+    ContestId,
+    OrgName,
+    TaskId,
+    ThreadId,
+    VersionId,
+    WorkflowId,
+    WorkspaceId,
+)
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
@@ -26,14 +35,15 @@ async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
     await fake.orgs.grant_role(7, Scope("acme"), Role.ADMIN)
     contest = await fake.content.create_contest(OrgName("acme"), "spring", {"contest.yaml": b"x"})
     task = await fake.content.create_task(contest, "sum", {"task.yaml": b"y"})
-    publication = await fake.workspaces.publish(task, {"plans/public.json": b"{}"})
+    head = await fake.content.list_files(PLATFORM, task)
+    publication = await fake.workspaces.publish(task, head.version, "grading_changed: false\n")
     workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8], [task])
     bob = _as(fake, 8)
     submission = await fake.workspaces.record_submission(
         bob, workspace, task, {"main.py": b"print(1)"}
     )
 
-    assert await fake.workspaces.list_publications(task) == (publication,)
+    assert [entry.id for entry in await fake.workspaces.list_publications(task)] == [publication]
     assert await fake.workspaces.list_submissions(workspace, task) == (submission,)
     assert await fake.orgs.roles_of(_as(fake, 7)) == (RoleGrant(Scope("acme"), Role.ADMIN),)
     assert fake.calls_to("record_submission")[0].identity == bob
@@ -198,3 +208,207 @@ async def test_a_deleted_users_questions_still_read_as_nobodys(fake: FakeForge) 
     assert listed.author_id is None
     assert [comment.author_id for comment in listed.comments] == [None, None]
     assert [comment.body for comment in listed.comments] == ["A", "Thanks"]
+
+
+async def test_a_service_account_is_made_placed_and_signed_in_at_the_ci(
+    fake: FakeForge,
+) -> None:
+    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_roles(OrgName("acme"))
+
+    account = await fake.identity.create_user(
+        "unicon-ci-acme", "unicon-ci-acme@unicon.invalid", "pw-1", must_change_password=False
+    )
+    assert account.id == 9
+    assert await fake.identity.find_user_by_username("Unicon-CI-Acme") == account
+    with pytest.raises(Conflict):
+        await fake.identity.create_user("unicon-ci-acme", "x@y", "pw", must_change_password=False)
+    with pytest.raises(NotFound):
+        await fake.identity.find_user_by_username("nobody")
+    assert "pw-1" not in str(fake.calls_to("create_user")[0].arguments)
+
+    assert await fake.orgs.ensure_account_membership(OrgName("acme"), account.id) is True
+    assert await fake.orgs.ensure_account_membership(OrgName("acme"), account.id) is False
+    assert fake.state.orgs["acme"].account_members == {account.id}
+
+    token = await fake.identity.mint_token("unicon-ci-acme", "pw-1", name="unicon", scopes=["a"])
+    assert fake.state.tokens[token] == account.id
+    with pytest.raises(Forbidden):
+        await fake.identity.mint_token("unicon-ci-acme", "wrong", name="unicon", scopes=["a"])
+    await fake.identity.set_password(account.id, "pw-2")
+    with pytest.raises(Forbidden):
+        await fake.grading.mint_ci_token("unicon-ci-acme", "pw-1")
+    with pytest.raises(Forbidden, match="admits no user"):
+        await fake.grading.mint_ci_token("unicon-ci-acme", "pw-2")
+
+    assert await fake.grading.create_ci_user("unicon-ci-acme") == 1
+    assert await fake.grading.create_ci_user("unicon-ci-acme") == 1
+    ci_token = await fake.grading.mint_ci_token("unicon-ci-acme", "pw-2")
+    acme = AsOrgAccount("acme", forge_token=token, ci_token=ci_token)
+    assert await fake.grading.ci_user_is_alive(acme) is True
+    fake.ci_dead.add("unicon-ci-acme")
+    assert await fake.grading.ci_user_is_alive(acme) is False
+    renewed = await fake.grading.mint_ci_token("unicon-ci-acme", "pw-2")
+    assert await fake.grading.ci_user_is_alive(
+        AsOrgAccount("acme", forge_token=token, ci_token=renewed)
+    )
+    assert fake.calls_to("ci_user_is_alive")[0].identity == acme
+
+
+async def test_anyones_roles_are_read_as_the_platform(fake: FakeForge) -> None:
+    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.grant_role(8, Scope("acme"), Role.OBSERVER)
+    await fake.orgs.grant_role(8, Scope("acme", "spring", "sum"), Role.MANAGER)
+
+    assert set(await fake.orgs.roles_of_user(8)) == {
+        RoleGrant(Scope("acme"), Role.OBSERVER),
+        RoleGrant(Scope("acme", "spring", "sum"), Role.MANAGER),
+    }
+    assert await fake.orgs.roles_of_user(7) == ()
+    assert fake.calls_to("roles_of_user")[0].identity == PLATFORM
+    with pytest.raises(NotFound):
+        await fake.orgs.roles_of_user(99)
+
+
+async def test_holders_are_listed_whatever_their_name_and_every_one_can_be_revoked(
+    fake: FakeForge,
+) -> None:
+    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    lookalike = fake.add_user(9, "unicon-ci-acme")
+    await fake.orgs.grant_role(7, Scope("acme"), Role.ADMIN)
+    await fake.orgs.grant_role(lookalike.id, Scope("acme"), Role.ADMIN)
+
+    holders = await fake.orgs.holders_of(Scope("acme"), Role.ADMIN)
+    assert [holder.id for holder in holders] == [7, 9]
+    await fake.orgs.revoke_role(lookalike.id, Scope("acme"), Role.ADMIN)
+    await fake.orgs.revoke_role(7, Scope("acme"), Role.ADMIN)
+    assert await fake.orgs.holders_of(Scope("acme"), Role.ADMIN) == ()
+
+
+async def test_an_event_push_is_made_once_per_url(fake: FakeForge) -> None:
+    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+
+    await fake.orgs.create_event_push(OrgName("acme"), url="http://backend/events", secret="s1")
+    await fake.orgs.create_event_push(OrgName("acme"), url="http://backend/events", secret="s2")
+
+    assert fake.state.orgs["acme"].event_push == ("http://backend/events", "s1")
+    assert "s1" not in str(fake.calls_to("create_event_push")[0].arguments)
+    await fake.orgs.update_org(OrgName("acme"), description="Acme Corp", display_name="ACME")
+    assert (fake.state.orgs["acme"].description, fake.state.orgs["acme"].display_name) == (
+        "Acme Corp",
+        "ACME",
+    )
+
+
+async def _contest_and_task(fake: FakeForge) -> tuple[ContestId, TaskId]:
+    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    contest = await fake.content.create_contest(OrgName("acme"), "spring", {"contest.yaml": b"c"})
+    task = await fake.content.create_task(contest, "sum", {"task.yaml": b"t", "data/a.in": b"1"})
+    return contest, task
+
+
+async def test_a_contest_role_reaches_a_task_only_once_it_is_secured(fake: FakeForge) -> None:
+    contest, task = await _contest_and_task(fake)
+    await fake.orgs.grant_role(8, Scope("acme", "spring"), Role.MANAGER)
+    bob = _as(fake, 8)
+
+    with pytest.raises(Forbidden):
+        await fake.content.read_file(bob, task, "task.yaml")
+    assert await fake.content.secure(contest) == 4
+    assert await fake.content.secure(task) == 8
+    assert await fake.content.secure(task) == 0
+
+    assert (await fake.content.read_file(bob, task, "task.yaml")).content == b"t"
+    repo = fake.state.repos[("acme", "spring.sum.task")]
+    assert repo.teams == {Scope("acme", "spring"), Scope("acme", "spring", "sum")}
+    assert repo.rewrites_refused is True
+    assert repo.reserved == {"published/"}
+    assert fake.state.repos[("acme", "spring.contest")].reserved == set()
+    repo.teams.discard(Scope("acme", "spring"))
+    assert await fake.content.secure(task) == 3
+    assert {call.identity for call in fake.calls_to("secure")} == {PLATFORM}
+
+
+async def test_contests_and_tasks_are_there_and_listed_as_the_reader_sees_them(
+    fake: FakeForge,
+) -> None:
+    contest, task = await _contest_and_task(fake)
+    other = await fake.content.create_contest(OrgName("acme"), "autumn", {})
+    await fake.content.secure(contest)
+    await fake.content.secure(other)
+    await fake.orgs.grant_role(8, Scope("acme", "autumn"), Role.OBSERVER)
+
+    assert await fake.content.exists(task) is True
+    assert await fake.content.exists(TaskId("acme/spring/nope")) is False
+    assert await fake.content.list_contests(PLATFORM, OrgName("acme")) == (other, contest)
+    assert await fake.content.list_contests(_as(fake, 8), OrgName("acme")) == (other,)
+    assert await fake.content.list_tasks(PLATFORM, contest) == (task,)
+    assert await fake.content.list_tasks(_as(fake, 8), contest) == ()
+
+
+async def test_a_save_is_one_change_as_the_person_checked_file_by_file(fake: FakeForge) -> None:
+    _, task = await _contest_and_task(fake)
+    await fake.orgs.grant_role(7, Scope("acme"), Role.MANAGER)
+    ada = _as(fake, 7)
+    before = await fake.content.list_files(ada, task)
+    history = len(fake.state.repos[("acme", "spring.sum.task")].history)
+
+    with pytest.raises(Conflict):
+        await fake.content.save_files(
+            ada,
+            task,
+            {"task.yaml": b"t2", "data/b.in": b"2"},
+            expected={"task.yaml": ConflictToken("stale")},
+            message="Save",
+        )
+    with pytest.raises(Conflict):
+        await fake.content.save_files(ada, task, {"data/a.in": b"9"}, expected={}, message="Save")
+    assert len(fake.state.repos[("acme", "spring.sum.task")].history) == history
+
+    version = await fake.content.save_files(
+        ada,
+        task,
+        {"task.yaml": b"t2", "data/b.in": b"2", "data/a.in": None},
+        expected={"task.yaml": before.tokens["task.yaml"], "data/a.in": before.tokens["data/a.in"]},
+        message="Save",
+    )
+
+    after = await fake.content.list_files(ada, task)
+    assert after.version == version
+    assert sorted(after.tokens) == ["data/b.in", "task.yaml"]
+    assert after.has("data/") and not after.has("checker/")
+    (change, *_) = await fake.content.history(ada, task)
+    assert (change.version, change.author_id, change.message) == (version, 7, "Save")
+    assert [entry.version for entry in await fake.content.history(ada, task, "data/b.in")] == [
+        version
+    ]
+    old = await fake.content.read_file(ada, task, "task.yaml", at=before.version)
+    assert old.content == b"t"
+    assert (await fake.content.list_files(ada, task, at=before.version)).tokens == before.tokens
+
+
+async def test_a_publication_names_a_version_with_its_note_and_numbers_follow(
+    fake: FakeForge,
+) -> None:
+    _, task = await _contest_and_task(fake)
+    first = await fake.content.list_files(PLATFORM, task)
+    await fake.content.save_files(
+        PLATFORM, task, {"statement.md": b"s"}, expected={}, message="Save"
+    )
+    second = await fake.content.list_files(PLATFORM, task)
+
+    one = await fake.workspaces.publish(task, first.version, "grading_changed: false\n")
+    two = await fake.workspaces.publish(
+        task, second.version, "grading_changed: true\nchanges:\n- limits.rate changed\n"
+    )
+
+    listed = await fake.workspaces.list_publications(task)
+    assert [(entry.id, entry.number, entry.version) for entry in listed] == [
+        (one, 1, first.version),
+        (two, 2, second.version),
+    ]
+    assert (listed[0].grading_changed, listed[0].changes) == (False, ())
+    assert (listed[1].grading_changed, listed[1].changes) == (True, ("limits.rate changed",))
+    assert second.version == fake.state.repos[("acme", "spring.sum.task")].head
+    with pytest.raises(NotFound):
+        await fake.workspaces.publish(task, VersionId("nowhere"), "")

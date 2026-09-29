@@ -126,9 +126,52 @@ class SoleAdmin(ServiceError):
     code = "sole_admin"
 
 
+class ContestantConflict(ServiceError):
+    """The user is a contestant in the contests in `contests`, pending or
+    approved, and nobody is an organiser and a contestant of one contest.
+    """
+
+    code = "contestant_conflict"
+
+
 class SharedWorkflowOwner(ServiceError):
     """The user owns the shared or public workflows in `workflows`, which other
     people may be using.
     """
 
     code = "shared_workflow_owner"
+
+
+class InvalidPath(ServiceError):
+    """A file path that is not a plain relative path inside a contest or a
+    task: empty, absolute, with an empty, `.` or `..` segment, or with a
+    character a URL or git reads as something else. `path` names it.
+    """
+
+    code = "invalid_path"
+
+
+class ReservedPath(ServiceError):
+    """A save writes inside `plans/`, where only the compiler writes. `paths`
+    lists each path it tried.
+    """
+
+    code = "reserved_path"
+
+
+class AdminOnly(ServiceError):
+    """A manager's save changes settings that belong to the scope's admin.
+    `keys` names each one: a top-level key of the settings file, or a whole
+    file such as `statement.md`.
+    """
+
+    code = "admin_only"
+
+
+class ConfirmationRequired(ServiceError):
+    """A save during a running contest would change how the task grades.
+    `changes` lists what would change, in words a person reads; the same save
+    sent again with the confirmation publishes it.
+    """
+
+    code = "confirmation_required"

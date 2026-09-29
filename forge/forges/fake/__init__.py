@@ -50,6 +50,12 @@ class FakeForge:
         return None
 
     def add_user(self, user_id: int, username: str, **fields: Any) -> User:
+        """A person at the fake. An id already taken, by a test's user or by
+        an account the package made, is refused, so a test never replaces
+        one without knowing.
+        """
+        if user_id in self.state.users:
+            raise ValueError(f"the fake already has a user with id {user_id}")
         user = User(id=user_id, username=username, **fields)
         self.state.users[user_id] = user
         return user
@@ -102,3 +108,10 @@ class FakeForge:
     @property
     def refreshes(self) -> int:
         return self.state.refreshes
+
+    @property
+    def ci_dead(self) -> set[str]:
+        """The usernames whose CI sign-in has gone: the CI no longer answers
+        their token until the sign-in dance is run for them again.
+        """
+        return self.state.ci_dead

@@ -1,7 +1,7 @@
 """Repositories at Forgejo: creating them, writing and reading files, the
-history, versions as tags, protected versions, collaborators, topics and
-stars. Every area of the implementation that touches a repository goes
-through here.
+history, versions as tags, protected versions and the protected default
+branch, collaborators, topics and stars. Every area of the implementation
+that touches a repository goes through here.
 
 The forge lets nobody but the platform create a repository: people have no
 personal quota and no team may create under an org. So every repository is
@@ -11,11 +11,20 @@ from then on. What goes into it is written as the caller.
 """
 
 import base64
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from forge.domain.content import Change, ConflictToken, EntryKind, File, Files, TreeEntry
-from forge.domain.errors import Conflict, NotFound
+from forge.domain.content import (
+    Change,
+    ConflictToken,
+    EntryKind,
+    File,
+    Files,
+    FileSet,
+    TreeEntry,
+)
+from forge.domain.errors import Conflict, NotFound, Unavailable
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import VersionId
 from forge.forges.forgejo.http import Http, json_of, list_of
@@ -23,6 +32,7 @@ from forge.forges.forgejo.http import Http, json_of, list_of
 DEFAULT_BRANCH = "main"
 CREATE_MESSAGE = "Create"
 TREE_PAGE = 1000
+MAX_TREE_PAGES = 100
 PAGE_LIMIT = 50
 WRITE_ATTEMPTS = 4
 
@@ -36,8 +46,10 @@ class Repos:
         self, as_: Identity, owner: str, name: str, files: Files, *, private: bool
     ) -> None:
         """Make a repository under an org, or under the person `owner` names,
-        as the platform, with its first commit written as `as_` and no
-        force-push on its default branch.
+        as the platform, with its first commit written as `as_`. A repository
+        of that name with no commit yet is one an earlier try made and did
+        not fill, since only the platform makes repositories, so the files
+        are written into it; one with commits is `Conflict`.
         """
         body = {
             "name": name,
@@ -50,19 +62,39 @@ class Repos:
             if await self._is_org(owner)
             else f"/api/v1/admin/users/{owner}/repos"
         )
-        await self._http.call(PLATFORM, "POST", target, json=body)
+        try:
+            await self._http.call(PLATFORM, "POST", target, json=body)
+        except Conflict:
+            if not files or await self._existing(PLATFORM, owner, name) is not None:
+                raise
         await self.write_files(as_, owner, name, files, message=CREATE_MESSAGE)
+
+    async def protect_branch(self, owner: str, name: str) -> bool:
+        """Refuse force-pushes to the default branch, so nothing written can
+        be rewritten, and say whether that had to be put back.
+        """
+        path = f"/api/v1/repos/{owner}/{name}/branch_protections"
+        try:
+            found = json_of(await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}"))
+        except NotFound:
+            await self._http.call(
+                PLATFORM,
+                "POST",
+                path,
+                json={
+                    "branch_name": DEFAULT_BRANCH,
+                    "enable_push": True,
+                    "enable_force_push": False,
+                    "block_on_rejected_reviews": False,
+                },
+            )
+            return True
+        if not found.get("enable_force_push"):
+            return False
         await self._http.call(
-            PLATFORM,
-            "POST",
-            f"/api/v1/repos/{owner}/{name}/branch_protections",
-            json={
-                "branch_name": DEFAULT_BRANCH,
-                "enable_push": True,
-                "enable_force_push": False,
-                "block_on_rejected_reviews": False,
-            },
+            PLATFORM, "PATCH", f"{path}/{DEFAULT_BRANCH}", json={"enable_force_push": False}
         )
+        return True
 
     async def write_files(
         self, as_: Identity, owner: str, name: str, files: Files, *, message: str
@@ -101,7 +133,7 @@ class Repos:
                     {
                         "operation": "update" if path in present else "create",
                         "path": path,
-                        "content": base64.b64encode(content).decode(),
+                        "content": _encoded(content),
                         **({"sha": present[path]} if path in present else {}),
                     }
                     for path, content in sorted(files.items())
@@ -109,6 +141,61 @@ class Repos:
             },
         )
         return VersionId(str(json_of(written)["commit"]["sha"]))
+
+    async def commit_files(
+        self,
+        as_: Identity,
+        owner: str,
+        name: str,
+        files: Mapping[str, bytes | None],
+        *,
+        expected: Mapping[str, ConflictToken | None],
+        message: str,
+    ) -> VersionId:
+        """Create, update and remove the files in one commit as `as_`. Each
+        update and removal carries the blob it was read at, and the host
+        refuses the whole commit when any has moved since, or when a file to
+        create is there already; both are `Conflict`, and neither is tried
+        again.
+        """
+        operations: list[dict[str, str]] = []
+        for path, content in sorted(files.items()):
+            token = expected.get(path)
+            if content is None:
+                if token is None:
+                    raise NotFound(f"{path} is removed only with the version it was read at")
+                operations.append({"operation": "delete", "path": path, "sha": str(token)})
+            elif token is None:
+                operations.append(
+                    {"operation": "create", "path": path, "content": _encoded(content)}
+                )
+            else:
+                operations.append(
+                    {
+                        "operation": "update",
+                        "path": path,
+                        "content": _encoded(content),
+                        "sha": str(token),
+                    }
+                )
+        written = await self._http.call(
+            as_,
+            "POST",
+            f"/api/v1/repos/{owner}/{name}/contents",
+            json={"branch": DEFAULT_BRANCH, "message": message, "files": operations},
+        )
+        return VersionId(str(json_of(written)["commit"]["sha"]))
+
+    async def file_set(self, as_: Identity, owner: str, name: str, at: str | None) -> FileSet:
+        """Every file at a version, or at the head of the default branch, with
+        the commit that is and each file's blob.
+        """
+        version = at or await self.head(as_, owner, name)
+        blobs = await self._blobs(as_, owner, name, version)
+        return FileSet(
+            version=VersionId(version),
+            tokens={path: ConflictToken(blob) for path, blob in blobs.items()},
+        )
 
     async def read_file(
         self, as_: Identity, owner: str, name: str, path: str, *, at: str | None = None
@@ -139,7 +226,7 @@ class Repos:
         expected: ConflictToken | None,
     ) -> VersionId:
         body: dict[str, Any] = {
-            "content": base64.b64encode(content).decode(),
+            "content": _encoded(content),
             "message": message,
             "branch": DEFAULT_BRANCH,
         }
@@ -193,27 +280,51 @@ class Repos:
         return str(branch["commit"]["id"])
 
     async def versions(self, as_: Identity, owner: str, name: str) -> list[str]:
-        found = await self._http.get_all(as_, f"/api/v1/repos/{owner}/{name}/tags")
-        return [str(entry["name"]) for entry in found]
+        return [str(entry["name"]) for entry in await self.tags(as_, owner, name)]
+
+    async def tags(self, as_: Identity, owner: str, name: str) -> list[dict[str, Any]]:
+        """Every tag, with its message and the commit it points at."""
+        return await self._http.get_all(as_, f"/api/v1/repos/{owner}/{name}/tags")
 
     async def create_version(
-        self, as_: Identity, owner: str, name: str, version: str, target: str
+        self,
+        as_: Identity,
+        owner: str,
+        name: str,
+        version: str,
+        target: str,
+        *,
+        message: str | None = None,
     ) -> None:
-        await self._http.call(
-            as_,
-            "POST",
-            f"/api/v1/repos/{owner}/{name}/tags",
-            json={"tag_name": version, "target": target},
-        )
+        """A tag at `target`; given a `message`, an annotated tag carrying it."""
+        body = {"tag_name": version, "target": target}
+        if message is not None:
+            body["message"] = message
+        await self._http.call(as_, "POST", f"/api/v1/repos/{owner}/{name}/tags", json=body)
 
-    async def protect_versions(self, owner: str, name: str, prefix: str) -> None:
-        """Reserve versions under `prefix` for the platform account."""
+    async def reserve_versions(self, owner: str, name: str, prefix: str) -> bool:
+        """Reserve versions under `prefix` for the platform account, and say
+        whether that had to be put back.
+        """
+        path = f"/api/v1/repos/{owner}/{name}/tag_protections"
+        pattern = f"{prefix}*"
+        allowed = [self._platform_account]
+        for protection in list_of(await self._http.call(PLATFORM, "GET", path)):
+            if protection.get("name_pattern") != pattern:
+                continue
+            if list(protection.get("whitelist_usernames") or []) == allowed:
+                return False
+            await self._http.call(
+                PLATFORM,
+                "PATCH",
+                f"{path}/{protection['id']}",
+                json={"name_pattern": pattern, "whitelist_usernames": allowed},
+            )
+            return True
         await self._http.call(
-            PLATFORM,
-            "POST",
-            f"/api/v1/repos/{owner}/{name}/tag_protections",
-            json={"name_pattern": f"{prefix}*", "whitelist_usernames": [self._platform_account]},
+            PLATFORM, "POST", path, json={"name_pattern": pattern, "whitelist_usernames": allowed}
         )
+        return True
 
     async def add_collaborator(
         self, as_: Identity, owner: str, name: str, username: str, *, permission: str
@@ -264,11 +375,19 @@ class Repos:
     async def owned_by(self, username: str) -> list[dict[str, Any]]:
         return await self._http.get_all(PLATFORM, f"/api/v1/users/{username}/repos")
 
-    async def under(self, org: str) -> list[dict[str, Any]]:
-        return await self._http.get_all(PLATFORM, f"/api/v1/orgs/{org}/repos")
+    async def under(self, org: str, as_: Identity = PLATFORM) -> list[dict[str, Any]]:
+        """Every repository in the org that `as_` may see."""
+        return await self._http.get_all(as_, f"/api/v1/orgs/{org}/repos")
 
     async def record(self, owner: str, name: str) -> dict[str, Any]:
         return json_of(await self._http.call(PLATFORM, "GET", f"/api/v1/repos/{owner}/{name}"))
+
+    async def exists(self, owner: str, name: str) -> bool:
+        try:
+            await self.record(owner, name)
+        except NotFound:
+            return False
+        return True
 
     async def _existing(self, as_: Identity, owner: str, name: str) -> dict[str, str] | None:
         """The blob of every file on the default branch, or none for a
@@ -283,19 +402,27 @@ class Repos:
         return await self._blobs(as_, owner, name, DEFAULT_BRANCH)
 
     async def _blobs(self, as_: Identity, owner: str, name: str, at: str) -> dict[str, str]:
-        tree = json_of(
-            await self._http.call(
-                as_,
-                "GET",
-                f"/api/v1/repos/{owner}/{name}/git/trees/{at}",
-                params={"recursive": "true", "per_page": TREE_PAGE},
+        """The blob of every file at a version, read page by page while the
+        host says the listing was cut short.
+        """
+        blobs: dict[str, str] = {}
+        for page in range(1, MAX_TREE_PAGES + 1):
+            tree = json_of(
+                await self._http.call(
+                    as_,
+                    "GET",
+                    f"/api/v1/repos/{owner}/{name}/git/trees/{at}",
+                    params={"recursive": "true", "per_page": TREE_PAGE, "page": page},
+                )
             )
-        )
-        return {
-            str(entry["path"]): str(entry["sha"])
-            for entry in tree.get("tree") or []
-            if entry.get("type") == "blob"
-        }
+            blobs.update(
+                (str(entry["path"]), str(entry["sha"]))
+                for entry in tree.get("tree") or []
+                if entry.get("type") == "blob"
+            )
+            if not tree.get("truncated"):
+                return blobs
+        raise Unavailable(f"the tree of {owner}/{name} did not end within {MAX_TREE_PAGES} pages")
 
     async def _exists(self, as_: Identity, owner: str, name: str, path: str) -> bool:
         try:
@@ -310,6 +437,10 @@ class Repos:
         except NotFound:
             return False
         return True
+
+
+def _encoded(content: bytes) -> str:
+    return base64.b64encode(content).decode()
 
 
 def _change(commit: dict[str, Any]) -> Change:

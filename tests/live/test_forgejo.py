@@ -1,117 +1,85 @@
 """The Forgejo implementation against a real Forgejo. These run only when
 `UNICON_LIVE_FORGE_URL` and `UNICON_LIVE_FORGE_ADMIN_TOKEN` name a running
 instance whose platform account may create users and orgs; every name they
-create carries a random suffix and is removed afterwards.
+create carries a random suffix and is removed afterwards. The tests that
+need the CI run only when `UNICON_LIVE_CI_URL`, `UNICON_LIVE_CI_PUBLIC_URL`,
+`UNICON_LIVE_CI_ADMIN_TOKEN` and `UNICON_LIVE_FORGE_PUBLIC_URL` name a
+running Woodpecker signed in through that Forgejo, and the forge as a
+browser reaches it. The contest and task content is in `test_content.py`.
 """
 
-import os
+import contextlib
 import secrets
-from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime, timedelta
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
 import pytest
 
-from forge.domain.errors import Conflict, NotFound
-from forge.domain.identity import PLATFORM, AsUser, Credential
+from forge.domain.errors import Conflict, Forbidden, NotFound
+from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser
 from forge.domain.ids import OrgName
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
-from forge.forges.forgejo import ForgejoConfig, ForgejoForge
+from forge.forges.forgejo import ForgejoForge
+from tests.live.conftest import (
+    CI_ADMIN_TOKEN,
+    CI_URL,
+    HAS_CI,
+    LIVE,
+    as_person,
+    delete_org,
+    delete_user,
+    make_user,
+    needs_ci,
+)
 
-URL = os.environ.get("UNICON_LIVE_FORGE_URL")
-ADMIN_TOKEN = os.environ.get("UNICON_LIVE_FORGE_ADMIN_TOKEN")
-
-pytestmark = [
-    pytest.mark.live,
-    pytest.mark.skipif(not URL or not ADMIN_TOKEN, reason="no live forge configured"),
-]
-
-
-@pytest.fixture(scope="module")
-def stamp() -> str:
-    return secrets.token_hex(3)
-
-
-@pytest.fixture(scope="module")
-def admin() -> httpx.Client:
-    assert URL and ADMIN_TOKEN
-    return httpx.Client(
-        base_url=URL.rstrip("/"), headers={"Authorization": f"token {ADMIN_TOKEN}"}, timeout=30
-    )
-
-
-@pytest.fixture
-async def forge(admin: httpx.Client) -> AsyncIterator[ForgejoForge]:
-    assert URL and ADMIN_TOKEN
-    built = ForgejoForge(
-        ForgejoConfig(
-            public_url=URL,
-            internal_url=URL,
-            admin_token=ADMIN_TOKEN,
-            platform_account=admin.get("/api/v1/user").json()["login"],
-            oauth_client_id="unused",
-            oauth_client_secret="unused",
-            sign_in_redirect_uri="http://unused/callback",
-            sign_ups_open=True,
-            ci_url="http://unused",
-            ci_public_url="http://unused",
-            ci_admin_token="unused",
-        )
-    )
-    try:
-        yield built
-    finally:
-        await built.aclose()
+pytestmark = LIVE
 
 
 @pytest.fixture(scope="module")
 def user(admin: httpx.Client, stamp: str) -> Iterator[dict[str, Any]]:
-    created = admin.post(
-        "/api/v1/admin/users",
-        json={
-            "username": f"live-{stamp}",
-            "email": f"live-{stamp}@unicon.invalid",
-            "password": "live-password-123",
-            "must_change_password": False,
-        },
-    )
-    assert created.status_code == 201, created.text
-    person: dict[str, Any] = created.json()
+    person = make_user(admin, f"live-{stamp}")
     yield person
-    admin.delete(f"/api/v1/admin/users/{person['login']}", params={"purge": "true"})
+    delete_user(admin, person["login"])
 
 
 @pytest.fixture(scope="module")
 def person(admin: httpx.Client, user: dict[str, Any]) -> AsUser:
-    """The user acting as themself. A personal token stands in for the OAuth
-    credential a sign-in would yield: Forgejo takes either as a bearer.
-    """
-    minted = httpx.post(
-        f"{admin.base_url}/api/v1/users/{user['login']}/tokens",
-        auth=(user["login"], "live-password-123"),
-        json={"name": "live-test", "scopes": ["all"]},
-        timeout=30,
-    )
-    assert minted.status_code == 201, minted.text
-    credential = Credential(
-        access=str(minted.json()["sha1"]),
-        refresh="",
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
-    )
-    return AsUser(int(user["id"]), credential)
+    """The user acting as themself."""
+    return as_person(admin, user)
 
 
 @pytest.fixture(scope="module")
 def org(admin: httpx.Client, stamp: str) -> Iterator[str]:
     name = f"live-org-{stamp}"
     yield name
-    for repo in admin.get(f"/api/v1/orgs/{name}/repos", params={"limit": 50}).json() or []:
-        admin.delete(f"/api/v1/repos/{name}/{repo['name']}")
-    admin.delete(f"/api/v1/orgs/{name}")
+    delete_org(admin, name)
+
+
+@pytest.fixture(scope="module")
+def account_name(admin: httpx.Client, org: str) -> Iterator[str]:
+    """The org's service account's username; the tests make the account and
+    this removes it, at the forge and at the CI, afterwards.
+    """
+    name = f"unicon-ci-{org}"
+    yield name
+    admin.delete(f"/api/v1/admin/users/{name}", params={"purge": "true"})
+    if HAS_CI:
+        assert CI_URL and CI_ADMIN_TOKEN
+        httpx.delete(
+            f"{CI_URL.rstrip('/')}/api/users/{name}",
+            headers={"Authorization": f"Bearer {CI_ADMIN_TOKEN}"},
+            timeout=30,
+        )
+
+
+async def _org_exists(forge: ForgejoForge, org: str) -> None:
+    with contextlib.suppress(Conflict):
+        await forge.orgs.create_org(OrgName(org), description="Live test org")
+    await forge.orgs.create_roles(OrgName(org))
 
 
 async def test_a_user_is_found_deactivated_and_reactivated(
@@ -151,6 +119,8 @@ async def test_an_org_with_its_roles_and_a_contest_with_its_files(
         OrgName(org), "spring", {"contest.yaml": b"name: Spring\n"}
     )
     task = await forge.content.create_task(contest, "sum", {"task.yaml": b"name: Sum\n"})
+    await forge.content.secure(contest)
+    await forge.content.secure(task)
 
     first = await forge.content.read_file(PLATFORM, contest, "contest.yaml")
     assert first.content == b"name: Spring\n"
@@ -182,6 +152,39 @@ async def test_an_org_with_its_roles_and_a_contest_with_its_files(
     assert RoleGrant(Scope(org, "spring"), Role.MANAGER) in await forge.orgs.roles_of(person)
     await forge.orgs.revoke_role(user_id, Scope(org, "spring"), Role.MANAGER)
     assert RoleGrant(Scope(org, "spring"), Role.MANAGER) not in await forge.orgs.roles_of(person)
+
+
+async def test_anyones_roles_are_read_as_the_platform_and_a_contest_role_comes_and_goes(
+    forge: ForgejoForge, org: str, user: dict[str, Any], person: AsUser, admin: httpx.Client
+) -> None:
+    await _org_exists(forge, org)
+    user_id = int(user["id"])
+    contest = Scope(org, "roles")
+    team = f"{org}.roles-observer"
+
+    await forge.orgs.grant_role(user_id, contest, Role.OBSERVER)
+    try:
+        read = await forge.orgs.roles_of_user(user_id)
+        assert RoleGrant(contest, Role.OBSERVER) in read
+        assert set(read) == set(await forge.orgs.roles_of(person))
+        assert user_id in [
+            holder.id for holder in await forge.orgs.holders_of(contest, Role.OBSERVER)
+        ]
+        teams = admin.get(f"/api/v1/orgs/{org}/teams", params={"limit": 50}).json()
+        (made,) = [entry for entry in teams if entry["name"] == team]
+        assert made["includes_all_repositories"] is False
+        members = admin.get(f"/api/v1/teams/{made['id']}/members").json()
+        assert [member["login"] for member in members] == [user["login"]]
+
+        await forge.orgs.revoke_role(user_id, contest, Role.OBSERVER)
+        assert RoleGrant(contest, Role.OBSERVER) not in await forge.orgs.roles_of_user(user_id)
+        assert admin.get(f"/api/v1/teams/{made['id']}/members").json() == []
+    finally:
+        for entry in admin.get(f"/api/v1/orgs/{org}/teams", params={"limit": 50}).json():
+            if entry["name"].startswith(f"{org}.roles-"):
+                admin.delete(f"/api/v1/teams/{entry['id']}")
+    with pytest.raises(NotFound):
+        await forge.orgs.roles_of_user(2_000_000_000)
 
 
 async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_commit(
@@ -289,29 +292,8 @@ async def test_workflows_are_created_versioned_searched_and_copied(
 async def test_a_deleted_user_is_gone_and_their_questions_still_read(
     forge: ForgejoForge, org: str, admin: httpx.Client, stamp: str
 ) -> None:
-    created = admin.post(
-        "/api/v1/admin/users",
-        json={
-            "username": f"leaver-{stamp}",
-            "email": f"leaver-{stamp}@unicon.invalid",
-            "password": "live-password-123",
-            "must_change_password": False,
-        },
-    )
-    assert created.status_code == 201, created.text
-    leaver = created.json()
-    token = httpx.post(
-        f"{admin.base_url}/api/v1/users/{leaver['login']}/tokens",
-        auth=(leaver["login"], "live-password-123"),
-        json={"name": "live-test", "scopes": ["all"]},
-        timeout=30,
-    ).json()["sha1"]
-    person = AsUser(
-        int(leaver["id"]),
-        Credential(
-            access=str(token), refresh="", expires_at=datetime.now(UTC) + timedelta(hours=1)
-        ),
-    )
+    leaver = make_user(admin, f"leaver-{stamp}")
+    person = as_person(admin, leaver)
     contest = await forge.content.create_contest(OrgName(org), "leaving", {"contest.yaml": b"x\n"})
     workspace = await forge.workspaces.open_workspace(
         contest, UserOwner(leaver["login"]), [int(leaver["id"])], []
@@ -335,3 +317,164 @@ async def test_a_deleted_user_is_gone_and_their_questions_still_read(
     assert listed.author_id is None
     assert [comment.body for comment in listed.comments] == ["An answer", "Thanks"]
     assert listed.comments[1].author_id is None
+
+
+async def test_an_org_gets_one_event_push_however_often_it_is_asked(
+    forge: ForgejoForge, org: str, admin: httpx.Client
+) -> None:
+    await _org_exists(forge, org)
+    url = f"http://backend/api/v1/events/forge/{org}"
+
+    await forge.orgs.create_event_push(OrgName(org), url=url, secret="live-secret")
+    await forge.orgs.create_event_push(OrgName(org), url=url, secret="live-secret")
+
+    hooks = [
+        hook
+        for hook in admin.get(f"/api/v1/orgs/{org}/hooks").json()
+        if hook["config"]["url"] == url
+    ]
+    assert len(hooks) == 1, hooks
+    (hook,) = hooks
+    assert hook["active"] is True
+    assert hook["config"]["content_type"] == "json"
+    assert set(hook["events"]) >= {"push", "create", "delete", "issues", "issue_comment"}
+    assert admin.delete(f"/api/v1/orgs/{org}/hooks/{hook['id']}").status_code == 204
+
+
+async def test_the_service_account_is_made_placed_and_given_a_token(
+    forge: ForgejoForge, org: str, admin: httpx.Client, account_name: str
+) -> None:
+    await _org_exists(forge, org)
+    password = "live-" + secrets.token_urlsafe(12)
+
+    account = await forge.identity.create_user(
+        account_name,
+        f"{account_name}@unicon.invalid",
+        password,
+        must_change_password=False,
+        visibility="private",
+    )
+    with pytest.raises(Conflict):
+        await forge.identity.create_user(
+            account_name, f"{account_name}@unicon.invalid", password, must_change_password=False
+        )
+    assert await forge.identity.find_user_by_username(account_name) == account
+    assert await forge.orgs.ensure_account_membership(OrgName(org), account.id) is True
+    assert await forge.orgs.ensure_account_membership(OrgName(org), account.id) is False
+    token = await forge.identity.mint_token(
+        account_name, password, name="unicon", scopes=["read:user", "read:organization"]
+    )
+    again = await forge.identity.mint_token(
+        account_name, password, name="unicon", scopes=["read:user"]
+    )
+
+    assert account.username == account_name
+    teams = admin.get(f"/api/v1/orgs/{org}/teams", params={"limit": 50}).json()
+    ci_team = next(team for team in teams if team["name"] == f"{org}-ci")
+    members = admin.get(f"/api/v1/teams/{ci_team['id']}/members").json()
+    assert [member["login"] for member in members] == [account_name]
+    assert ci_team["permission"] == "admin"
+    assert token != again
+    named = httpx.get(
+        f"{admin.base_url}/api/v1/users/{account_name}/tokens", auth=(account_name, password)
+    ).json()
+    assert [entry["name"] for entry in named] == ["unicon"]
+    me = httpx.get(f"{admin.base_url}/api/v1/user", headers={"Authorization": f"token {again}"})
+    assert me.json()["login"] == account_name
+    with pytest.raises(Forbidden):
+        await forge.identity.mint_token(account_name, "wrong", name="unicon", scopes=["read:user"])
+
+    await forge.orgs.grant_role(account.id, Scope(org), Role.OBSERVER)
+    await forge.orgs.revoke_role(account.id, Scope(org), Role.OBSERVER)
+    assert RoleGrant(Scope(org), Role.OBSERVER) not in await forge.orgs.roles_of_user(account.id)
+    members = admin.get(f"/api/v1/teams/{ci_team['id']}/members").json()
+    assert [member["login"] for member in members] == [account_name]
+
+    fresh = "live-" + secrets.token_urlsafe(12)
+    await forge.identity.set_password(account.id, fresh)
+    with pytest.raises(Forbidden):
+        await forge.identity.mint_token(account_name, password, name="unicon", scopes=["read:user"])
+    await forge.identity.mint_token(account_name, fresh, name="unicon", scopes=["read:user"])
+
+
+@needs_ci
+async def test_the_ci_user_is_created_and_the_sign_in_dance_yields_a_token(
+    forge: ForgejoForge, org: str, account_name: str
+) -> None:
+    assert CI_URL and CI_ADMIN_TOKEN
+    account = await forge.identity.find_user_by_username(account_name)
+    password = "live-" + secrets.token_urlsafe(12)
+    await forge.identity.set_password(account.id, password)
+    ci_admin = {"Authorization": f"Bearer {CI_ADMIN_TOKEN}"}
+
+    ci_id = await forge.grading.create_ci_user(account_name)
+    assert await forge.grading.create_ci_user(account_name) == ci_id
+    listed = httpx.get(f"{CI_URL.rstrip('/')}/api/users/{account_name}", headers=ci_admin)
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["id"] == ci_id
+
+    token = await forge.grading.mint_ci_token(account_name, password)
+
+    me = httpx.get(
+        f"{CI_URL.rstrip('/')}/api/user", headers={"Authorization": f"Bearer {token}"}, timeout=30
+    )
+    assert me.status_code == 200, me.text
+    assert me.json()["login"] == account_name
+    alive = AsOrgAccount(org, forge_token="unused", ci_token=token)
+    assert await forge.grading.ci_user_is_alive(alive) is True
+    assert (
+        await forge.grading.ci_user_is_alive(
+            AsOrgAccount(org, forge_token="unused", ci_token="not-a-token")
+        )
+        is False
+    )
+
+    with pytest.raises(Forbidden):
+        await forge.grading.mint_ci_token(account_name, "wrong")
+    renewed = "live-" + secrets.token_urlsafe(12)
+    await forge.identity.set_password(account.id, renewed)
+    second = await forge.grading.mint_ci_token(account_name, renewed)
+    assert await forge.grading.ci_user_is_alive(
+        AsOrgAccount(org, forge_token="unused", ci_token=second)
+    )
+
+
+async def test_a_role_team_made_a_repository_admin_is_given_write_back(
+    forge: ForgejoForge, admin: httpx.Client, stamp: str
+) -> None:
+    org = f"live-perm-{stamp}"
+    await forge.orgs.create_org(OrgName(org), description="Live permission check")
+    try:
+        await forge.orgs.create_roles(OrgName(org))
+        teams = {team["name"]: team for team in admin.get(f"/api/v1/orgs/{org}/teams").json()}
+        widened = teams[f"{org}-admin"]
+        assert widened["permission"] == "write"
+        patched = admin.patch(
+            f"/api/v1/teams/{widened['id']}",
+            json={"name": widened["name"], "permission": "admin", "units": ["repo.code"]},
+        )
+        assert patched.status_code == 200, patched.text
+        assert admin.get(f"/api/v1/teams/{widened['id']}").json()["permission"] == "admin"
+
+        await forge.orgs.create_roles(OrgName(org))
+
+        after = {team["name"]: team for team in admin.get(f"/api/v1/orgs/{org}/teams").json()}
+        assert after[f"{org}-admin"]["permission"] == "write"
+        assert after[f"{org}-manager"]["permission"] == "write"
+        assert after[f"{org}-observer"]["permission"] == "read"
+        assert after[f"{org}-ci"]["permission"] == "admin"
+    finally:
+        delete_org(admin, org)
+
+
+async def test_the_platform_owns_the_orgs_it_made_and_no_one_elses_name(
+    forge: ForgejoForge, admin: httpx.Client, stamp: str, user: dict[str, Any]
+) -> None:
+    org = f"live-own-{stamp}"
+    await forge.orgs.create_org(OrgName(org), description="Live ownership check")
+    try:
+        assert await forge.orgs.platform_owns(OrgName(org)) is True
+        assert await forge.orgs.platform_owns(OrgName(str(user["login"]))) is False
+        assert await forge.orgs.platform_owns(OrgName(f"nobody-{stamp}")) is False
+    finally:
+        delete_org(admin, org)
