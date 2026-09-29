@@ -1,15 +1,20 @@
 """Every error the package raises to its callers, each with a stable `code`."""
 
 from forge.domain.errors import (
+    AdminOnly,
+    ConfirmationRequired,
     Conflict,
+    ContestantConflict,
     Forbidden,
     FreshSignInRequired,
     InvalidName,
+    InvalidPath,
     Misconfigured,
     NotFound,
     NotReady,
     PortError,
     Rejected,
+    ReservedPath,
     ServiceError,
     SessionExpired,
     SharedWorkflowOwner,
@@ -20,17 +25,24 @@ from forge.domain.errors import (
     Unavailable,
     UniconError,
 )
+from forge.domain.yaml_models import InvalidDefinition
 
 __all__ = [
+    "AdminOnly",
+    "ConfirmationRequired",
     "Conflict",
+    "ContestantConflict",
     "Forbidden",
     "FreshSignInRequired",
+    "InvalidDefinition",
     "InvalidName",
+    "InvalidPath",
     "Misconfigured",
     "NotFound",
     "NotReady",
     "PortError",
     "Rejected",
+    "ReservedPath",
     "ServiceError",
     "SessionExpired",
     "SharedWorkflowOwner",

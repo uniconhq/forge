@@ -1,9 +1,11 @@
 """The identity area over Forgejo."""
 
+from collections.abc import Sequence
+
 from forge.domain.identity import Credential, User
 from forge.forges.forgejo.oauth import OAuth
 from forge.forges.forgejo.users import Users
-from forge.port.identity import SignedIn
+from forge.port.identity import AccountVisibility, SignedIn
 
 SIGN_UP_PATH = "/user/sign_up"
 
@@ -32,6 +34,34 @@ class ForgejoIdentity:
 
     async def find_user(self, user_id: int) -> User:
         return await self._users.find(user_id)
+
+    async def find_user_by_username(self, username: str) -> User:
+        return await self._users.find_by_username(username)
+
+    async def create_user(
+        self,
+        username: str,
+        email: str,
+        password: str,
+        *,
+        must_change_password: bool,
+        visibility: AccountVisibility = "public",
+    ) -> User:
+        return await self._users.create(
+            username,
+            email,
+            password,
+            must_change_password=must_change_password,
+            visibility=visibility,
+        )
+
+    async def set_password(self, user_id: int, password: str) -> None:
+        await self._users.set_password(user_id, password)
+
+    async def mint_token(
+        self, username: str, password: str, *, name: str, scopes: Sequence[str]
+    ) -> str:
+        return await self._users.mint_token(username, password, name=name, scopes=scopes)
 
     async def deactivate_user(self, user_id: int) -> None:
         await self._users.deactivate(user_id)

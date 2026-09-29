@@ -1,5 +1,7 @@
-"""The rules the domain types carry: names, roles and their inheritance, the
-session lifetimes, and where a sign-in may land.
+"""The rules the domain types carry: names, paths and the file sets they are
+listed in, roles and their inheritance, how a contest's or a task's scope
+and id turn into each other, the session lifetimes, and where a sign-in may
+land.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -7,14 +9,28 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from forge.domain.clock import FakeClock
-from forge.domain.errors import InvalidName
+from forge.domain.content import ConflictToken, FileSet, check_path
+from forge.domain.errors import InvalidName, InvalidPath, NotFound
+from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.names import (
     validate_contest_or_task_name,
     validate_name,
 )
 from forge.domain.next_path import safe_next
-from forge.domain.roles import Role, RoleGrant, Scope, holds
+from forge.domain.roles import (
+    Role,
+    RoleGrant,
+    Scope,
+    contest_scope,
+    holds,
+    place_of,
+    scope_of_place,
+    task_id_of,
+    task_scope,
+    workflow_id_of,
+)
 from forge.domain.sessions import SessionTimes, is_expired, is_fresh, refresh_due
+from forge.domain.workflow_definition import parse_workflow_ref
 
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
 IDLE = timedelta(days=14)
@@ -97,3 +113,79 @@ def test_a_fake_clock_moves_when_advanced() -> None:
     clock = FakeClock(NOW)
     clock.advance(IDLE)
     assert clock.now() == NOW + IDLE
+
+
+@pytest.mark.parametrize(
+    "path", ["task.yaml", "data/testcases/1.in", "checker/check er.py", "notes-v2_final.md"]
+)
+def test_a_plain_relative_path_passes(path: str) -> None:
+    assert check_path(path) == path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "",
+        "/abs",
+        "a/",
+        "a//b",
+        ".",
+        "a/./b",
+        "..",
+        "a/../b",
+        "a\\b",
+        "a?b",
+        "a#b",
+        "a%2e",
+        "a:b",
+        "a\nb",
+    ],
+)
+def test_a_path_that_could_leave_the_place_or_mean_something_else_is_refused(path: str) -> None:
+    with pytest.raises(InvalidPath) as refused:
+        check_path(path)
+    assert refused.value.extra == {"path": path}
+
+
+def test_a_file_set_has_a_file_and_a_folder_with_something_under_it() -> None:
+    files = FileSet(
+        VersionId("v"),
+        {"task.yaml": ConflictToken("a"), "data/testcases/1.in": ConflictToken("b")},
+    )
+
+    assert files.has("task.yaml") and files.has("data/") and files.has("data/testcases/")
+    assert not files.has("data") and not files.has("checker/")
+    assert files.under("data/") == {"data/testcases/1.in": "b"}
+    assert files.under("task.yaml") == {"task.yaml": "a"}
+    assert files.under("none.txt") == {}
+
+
+def test_a_contest_and_a_task_turn_into_their_ids_and_back() -> None:
+    task = Scope("acme", "spring", "sum")
+
+    assert task_id_of(task) == "acme/spring/sum"
+    assert task_scope(TaskId("acme/spring/sum")) == task
+    assert place_of(task) == "acme/spring/sum"
+    assert place_of(Scope("acme", "spring")) == "acme/spring"
+    assert scope_of_place("acme/spring") == Scope("acme", "spring")
+    with pytest.raises(ValueError):
+        task_id_of(Scope("acme", "spring"))
+    with pytest.raises(ValueError):
+        place_of(Scope("acme"))
+
+
+@pytest.mark.parametrize("place", ["acme", "acme//sum", "a/b/c/d", ""])
+def test_a_malformed_place_names_nothing(place: str) -> None:
+    with pytest.raises(NotFound):
+        scope_of_place(place)
+
+
+def test_a_contest_id_is_not_a_task_and_a_task_id_is_not_a_contest() -> None:
+    with pytest.raises(NotFound):
+        contest_scope(ContestId("acme/spring/sum"))
+    with pytest.raises(NotFound):
+        task_scope(TaskId("acme/spring"))
+
+
+def test_a_workflow_reference_gives_the_id_it_is_read_by() -> None:
+    assert workflow_id_of(parse_workflow_ref("unicon/classic@v1")) == "unicon/classic"

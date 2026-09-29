@@ -33,6 +33,8 @@ def environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "UNICON_FORGE",
         "UNICON_LOG_LEVEL",
         "UNICON_COOKIE_SECURE",
+        "UNICON_INTERNAL_URL",
+        "UNICON_ORG_CREATION_OPEN",
     ]:
         monkeypatch.delenv(name, raising=False)
     for name, value in COMPLETE.items():
@@ -171,4 +173,27 @@ def test_the_log_level_is_read_on_its_own_and_a_wrong_one_is_named(
 
     assert "UNICON_LOG_LEVEL: Value error, is not a logging level: chatty" in (
         capsys.readouterr().err
+    )
+
+
+def test_org_creation_is_open_unless_the_variable_closes_it(
+    environment: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert load_settings().org_creation_open is True
+    assert Settings.for_tests().org_creation_open is True
+
+    monkeypatch.setenv("UNICON_ORG_CREATION_OPEN", "false")
+    assert load_settings().org_creation_open is False
+
+
+def test_the_internal_url_follows_the_public_url_unless_given(
+    environment: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert str(load_settings().internal_url) == "http://localhost:8080/"
+    assert str(Settings.for_tests().internal_url) == str(Settings.for_tests().public_url)
+
+    monkeypatch.setenv("UNICON_INTERNAL_URL", "http://backend:8000")
+    assert str(load_settings().internal_url) == "http://backend:8000/"
+    assert str(Settings.for_tests(internal_url="http://backend:8000").internal_url) == (
+        "http://backend:8000/"
     )

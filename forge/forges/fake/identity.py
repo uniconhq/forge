@@ -3,13 +3,14 @@
 import base64
 import hashlib
 import secrets
+from collections.abc import Sequence
 from dataclasses import replace
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from forge.domain.errors import Forbidden
+from forge.domain.errors import Conflict, Forbidden
 from forge.domain.identity import PLATFORM, Credential, User
 from forge.forges.fake.state import State
-from forge.port.identity import SignedIn
+from forge.port.identity import AccountVisibility, SignedIn
 
 
 class FakeIdentity:
@@ -80,6 +81,56 @@ class FakeIdentity:
         self._state.check_up()
         return self._state.user(user_id)
 
+    async def find_user_by_username(self, username: str) -> User:
+        self._state.record("find_user_by_username", PLATFORM, username=username)
+        self._state.check_up()
+        return self._state.user_named(username)
+
+    async def create_user(
+        self,
+        username: str,
+        email: str,
+        password: str,
+        *,
+        must_change_password: bool,
+        visibility: AccountVisibility = "public",
+    ) -> User:
+        self._state.record(
+            "create_user",
+            PLATFORM,
+            username=username,
+            email=email,
+            must_change_password=must_change_password,
+            visibility=visibility,
+        )
+        self._state.check_up()
+        if any(user.username.lower() == username.lower() for user in self._state.users.values()):
+            raise Conflict(f"user already exists [name: {username}]")
+        user = User(id=self._state.new_user_id(), username=username, email=email)
+        self._state.users[user.id] = user
+        self._state.passwords[user.id] = password
+        return user
+
+    async def set_password(self, user_id: int, password: str) -> None:
+        self._state.record("set_password", PLATFORM, user_id=user_id)
+        self._state.check_up()
+        self._state.user(user_id)
+        self._state.passwords[user_id] = password
+
+    async def mint_token(
+        self, username: str, password: str, *, name: str, scopes: Sequence[str]
+    ) -> str:
+        self._state.record(
+            "mint_token", PLATFORM, username=username, name=name, scopes=list(scopes)
+        )
+        self._state.check_up()
+        user = self._state.user_named(username)
+        if self._state.passwords.get(user.id) != password:
+            raise Forbidden(f"the forge did not accept the password of {username}")
+        token = secrets.token_urlsafe(16)
+        self._state.tokens[token] = user.id
+        return token
+
     async def deactivate_user(self, user_id: int) -> None:
         self._state.record("deactivate_user", PLATFORM, user_id=user_id)
         self._state.check_up()
@@ -99,6 +150,7 @@ class FakeIdentity:
         self._state.check_up()
         username = self._state.username(user_id)
         del self._state.users[user_id]
+        self._state.passwords.pop(user_id, None)
         self._state.revoke_credentials(user_id)
         for org in self._state.orgs.values():
             for members in org.roles.values():
