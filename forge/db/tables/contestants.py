@@ -14,6 +14,9 @@ from forge.db.base import Base, Timestamped
 from forge.domain.ids import new_id
 
 STATUSES = ("pending", "approved", "rejected", "withdrawn", "removed")
+APPROVED = "approved"
+REGISTERED = ("pending", APPROVED)
+"""The statuses that make the person a contestant of the contest."""
 
 
 class Contestant(Base, Timestamped):

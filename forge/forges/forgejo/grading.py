@@ -1,15 +1,17 @@
 """The grading area over Woodpecker: registering a task's repository once
 and starting runs as the org account the caller hands in, reading and
-cancelling runs as the CI's administrator.
+cancelling runs as the CI's administrator, and the org account's own user
+and token at the CI, made by the administrator and the sign-in dance.
 """
 
 from collections.abc import Mapping
 from typing import Any
 
-from forge.domain.errors import Conflict, Forbidden, Rejected, Unavailable
+from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.grading import Run, RunStatus
 from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, Identity
 from forge.domain.ids import RunId, TaskId
+from forge.forges.forgejo.ci_login import CiLogin
 from forge.forges.forgejo.http import Http, json_of
 from forge.forges.forgejo.repos import DEFAULT_BRANCH, Repos
 from forge.forges.ids import parse_task
@@ -33,11 +35,14 @@ STATUS = {
 
 
 class WoodpeckerGrading:
-    def __init__(self, forge_http: Http, ci: Http, repos: Repos, *, ci_public_url: str) -> None:
+    def __init__(
+        self, forge_http: Http, ci: Http, repos: Repos, *, ci_public_url: str, login: CiLogin
+    ) -> None:
         self._forge = forge_http
         self._ci = ci
         self._repos = repos
         self._ci_public_url = ci_public_url.rstrip("/")
+        self._login = login
 
     async def register(self, as_: AsOrgAccount, task: TaskId) -> None:
         ref = parse_task(task)
@@ -93,6 +98,28 @@ class WoodpeckerGrading:
     async def cancel_run(self, run: RunId) -> None:
         repo_id, number = _parse_run(run)
         await self._ci.call(CI_ADMIN, "POST", f"/api/repos/{repo_id}/pipelines/{number}/cancel")
+
+    async def create_ci_user(self, username: str) -> int:
+        """Looked up before it is made: Woodpecker answers a duplicate with a
+        server error, which the client would take for a CI that is down.
+        """
+        try:
+            found = json_of(await self._ci.call(CI_ADMIN, "GET", f"/api/users/{username}"))
+        except NotFound:
+            found = json_of(
+                await self._ci.call(CI_ADMIN, "POST", "/api/users", json={"login": username})
+            )
+        return int(found["id"])
+
+    async def mint_ci_token(self, username: str, forge_password: str) -> str:
+        return await self._login.mint_token(username, forge_password)
+
+    async def ci_user_is_alive(self, as_: AsOrgAccount) -> bool:
+        try:
+            await self._ci.call(as_, "GET", "/api/user")
+        except Forbidden:
+            return False
+        return True
 
     async def _lookup(self, as_: Identity, org: str, repo: str) -> dict[str, Any]:
         return json_of(await self._ci.call(as_, "GET", f"/api/repos/lookup/{org}/{repo}"))

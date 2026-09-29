@@ -31,6 +31,7 @@ class ForgejoWorkflows:
         await self._repos.create(
             as_, ref.owner, ref.repo, files, private=visibility is not Visibility.PUBLIC
         )
+        await self._repos.protect_branch(ref.owner, ref.repo)
         await self._repos.mark(as_, ref.owner, ref.repo, WORKFLOW_TOPIC)
         return ref.id
 

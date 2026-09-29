@@ -13,10 +13,10 @@ import zlib
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import InstrumentedAttribute
 
 from forge.log import get_logger
@@ -26,7 +26,7 @@ log = get_logger(__name__)
 
 UnitOfWork = Callable[[], AbstractAsyncContextManager[Context]]
 RowWork = Callable[[Context, Any], Awaitable[None]]
-RowFailure = Callable[[Any, Exception], None]
+RowFailure = Callable[[Any, Exception, datetime], None]
 PassWork = Callable[[Context], Awaitable[object]]
 
 
@@ -34,8 +34,11 @@ PassWork = Callable[[Context], Awaitable[object]]
 class Poller:
     """Takes rows of `table` whose `status` is one of `waiting`, in batches,
     and calls `work` on each under a savepoint of its own. A failure rolls the
-    row's savepoint back and hands the row to `failed`, which records the
-    error on it, so one bad row costs neither the batch nor its own record.
+    row's savepoint back and hands the row to `failed` with the time, which
+    records the error on it, so one bad row costs neither the batch nor its
+    own record.
+    With `due`, a row is taken only once that time has come, or when it has
+    none, which is how a table keeps a row waiting a while before a retry.
     """
 
     name: str
@@ -46,18 +49,15 @@ class Poller:
     failed: RowFailure
     interval: timedelta = timedelta(seconds=2)
     batch: int = 10
+    due: InstrumentedAttribute[Any] | None = None
 
     async def tick(self, unit_of_work: UnitOfWork) -> int:
         async with unit_of_work() as ctx:
+            taken = select(self.table).where(self.status.in_(list(self.waiting)))
+            if self.due is not None:
+                taken = taken.where(or_(self.due.is_(None), self.due <= ctx.now))
             rows: Sequence[Any] = (
-                (
-                    await ctx.db.execute(
-                        select(self.table)
-                        .where(self.status.in_(list(self.waiting)))
-                        .with_for_update(skip_locked=True)
-                        .limit(self.batch)
-                    )
-                )
+                (await ctx.db.execute(taken.with_for_update(skip_locked=True).limit(self.batch)))
                 .scalars()
                 .all()
             )
@@ -68,7 +68,7 @@ class Poller:
                 except Exception as exc:
                     log.exception("poller.row_failed", poller=self.name)
                     await ctx.db.refresh(row)
-                    self.failed(row, exc)
+                    self.failed(row, exc, ctx.now)
             return len(rows)
 
 

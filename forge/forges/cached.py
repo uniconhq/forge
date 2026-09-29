@@ -7,6 +7,7 @@ page, which are cached either way.
 
 import time
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -14,7 +15,7 @@ from forge.domain.identity import AsUser, Credential, User
 from forge.domain.ids import OrgName
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.port import Forge
-from forge.port.identity import IdentityPort, SignedIn
+from forge.port.identity import AccountVisibility, IdentityPort, SignedIn
 from forge.port.orgs import OrgPort
 
 TTL_SECONDS = 60.0
@@ -89,6 +90,34 @@ class CachedIdentity:
         self._cache.put("find_user", (user_id,), found)
         return found
 
+    async def find_user_by_username(self, username: str) -> User:
+        return await self._inner.find_user_by_username(username)
+
+    async def create_user(
+        self,
+        username: str,
+        email: str,
+        password: str,
+        *,
+        must_change_password: bool,
+        visibility: AccountVisibility = "public",
+    ) -> User:
+        return await self._inner.create_user(
+            username,
+            email,
+            password,
+            must_change_password=must_change_password,
+            visibility=visibility,
+        )
+
+    async def set_password(self, user_id: int, password: str) -> None:
+        await self._inner.set_password(user_id, password)
+
+    async def mint_token(
+        self, username: str, password: str, *, name: str, scopes: Sequence[str]
+    ) -> str:
+        return await self._inner.mint_token(username, password, name=name, scopes=scopes)
+
     async def deactivate_user(self, user_id: int) -> None:
         await self._inner.deactivate_user(user_id)
         self._cache.drop("find_user", (user_id,))
@@ -108,6 +137,12 @@ class CachedOrgs:
         self._cache = cache
         self._enabled = enabled
 
+    async def name_taken(self, name: OrgName) -> bool:
+        return await self._inner.name_taken(name)
+
+    async def platform_owns(self, name: OrgName) -> bool:
+        return await self._inner.platform_owns(name)
+
     async def create_org(self, name: OrgName, *, description: str) -> None:
         await self._inner.create_org(name, description=description)
 
@@ -117,8 +152,16 @@ class CachedOrgs:
     async def create_thread_labels(self, name: OrgName) -> None:
         await self._inner.create_thread_labels(name)
 
-    async def update_org(self, name: OrgName, *, description: str) -> None:
-        await self._inner.update_org(name, description=description)
+    async def create_event_push(self, name: OrgName, *, url: str, secret: str) -> None:
+        await self._inner.create_event_push(name, url=url, secret=secret)
+
+    async def ensure_account_membership(self, name: OrgName, user_id: int) -> bool:
+        return await self._inner.ensure_account_membership(name, user_id)
+
+    async def update_org(
+        self, name: OrgName, *, description: str, display_name: str | None = None
+    ) -> None:
+        await self._inner.update_org(name, description=description, display_name=display_name)
 
     async def grant_role(self, user_id: int, scope: Scope, role: Role) -> None:
         await self._inner.grant_role(user_id, scope, role)
@@ -139,6 +182,12 @@ class CachedOrgs:
         found = await self._inner.roles_of(as_)
         self._cache.put("roles_of", (as_.user_id,), found)
         return found
+
+    async def roles_of_user(self, user_id: int) -> tuple[RoleGrant, ...]:
+        """Never cached: the rules on changing roles read it just before
+        they write.
+        """
+        return await self._inner.roles_of_user(user_id)
 
     async def holders_of(self, scope: Scope, role: Role) -> tuple[User, ...]:
         if not self._enabled:

@@ -1,7 +1,8 @@
 """Workspaces, submissions and publications. A workspace is where one
 contestant, or the group entering together, works for one contest; a
 submission and a publication are protected versions that only the platform
-may create.
+may create. A publication names a version a save already wrote and carries
+a note, the short document `forge.domain.publications` writes and reads.
 """
 
 from collections.abc import Sequence
@@ -9,8 +10,16 @@ from typing import Protocol
 
 from forge.domain.content import Files
 from forge.domain.identity import Identity
-from forge.domain.ids import ContestId, PublicationId, SubmissionId, TaskId, WorkspaceId
+from forge.domain.ids import (
+    ContestId,
+    PublicationId,
+    SubmissionId,
+    TaskId,
+    VersionId,
+    WorkspaceId,
+)
 from forge.domain.names import WorkspaceOwner
+from forge.domain.publications import Publication
 
 
 class WorkspacePort(Protocol):
@@ -47,12 +56,16 @@ class WorkspacePort(Protocol):
         """
         ...
 
-    async def publish(self, task: TaskId, files: Files) -> PublicationId:
-        """Write the compiled plans and name that change as the next protected
-        version, as the platform.
+    async def publish(self, task: TaskId, at: VersionId, note: str) -> PublicationId:
+        """Name the task's version `at` as its next publication, numbered after
+        the highest there is, carrying `note`, as the platform. Nothing is
+        written: the save that made `at` wrote everything the publication
+        freezes. Two publications at once each get their own number.
         """
         ...
 
-    async def list_publications(self, task: TaskId) -> tuple[PublicationId, ...]:
-        """Every publication of the task, oldest first."""
+    async def list_publications(self, task: TaskId) -> tuple[Publication, ...]:
+        """Every publication of the task, oldest first, each with what its
+        note says.
+        """
         ...

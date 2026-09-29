@@ -5,6 +5,9 @@ import `forge.port` and `forge.domain`, never `forge.services` or `forge.db`.
 
 from dataclasses import dataclass
 
+import httpx
+
+from forge.forges.forgejo.ci_login import CiLogin
 from forge.forges.forgejo.computes import WoodpeckerComputes
 from forge.forges.forgejo.content import ForgejoContent
 from forge.forges.forgejo.grading import WoodpeckerGrading
@@ -49,10 +52,12 @@ class ForgejoForge:
         config: ForgejoConfig,
         *,
         clients: tuple[Http, Http] | None = None,
+        browser_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         """Assemble the areas over the host and the CI. `clients` replaces the
         two HTTP clients, which is how a test puts a recording transport under
-        the whole implementation.
+        the whole implementation; `browser_transport` does the same for the
+        client the CI sign-in dance browses with.
         """
         http, ci = clients or (
             Http(new_client(config.internal_url), ForgejoAuth(config.admin_token)),
@@ -74,9 +79,21 @@ class ForgejoForge:
         self.identity = ForgejoIdentity(
             oauth, users, public_url=config.public_url, sign_ups_open=config.sign_ups_open
         )
-        self.orgs = ForgejoOrgs(http, teams, users)
+        self.orgs = ForgejoOrgs(http, teams, users, platform_account=config.platform_account)
         self.content = ForgejoContent(repos, teams)
-        self.grading = WoodpeckerGrading(http, ci, repos, ci_public_url=config.ci_public_url)
+        self.grading = WoodpeckerGrading(
+            http,
+            ci,
+            repos,
+            ci_public_url=config.ci_public_url,
+            login=CiLogin(
+                forge_public_url=config.public_url,
+                forge_url=config.internal_url,
+                ci_public_url=config.ci_public_url,
+                ci_url=config.ci_url,
+                transport=browser_transport,
+            ),
+        )
         self.workspaces = ForgejoWorkspaces(repos, users, teams)
         self.threads = ForgejoThreads(http)
         self.workflows = ForgejoWorkflows(repos, users)

@@ -5,7 +5,7 @@ from collections.abc import Mapping
 
 from forge.domain.errors import Forbidden, NotFound
 from forge.domain.grading import Enrolment, Run, RunStatus
-from forge.domain.identity import PLATFORM, AsOrgAccount
+from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount
 from forge.domain.ids import AgentId, OrgName, RunId, TaskId
 from forge.forges.fake.state import State
 from forge.forges.ids import location, parse_task
@@ -48,6 +48,35 @@ class FakeGrading:
         if run not in self._state.runs:
             raise NotFound(f"no run {run}")
         self._state.runs[run] = Run(id=run, status=RunStatus.CANCELLED)
+
+    async def create_ci_user(self, username: str) -> int:
+        self._state.record("create_ci_user", CI_ADMIN, username=username)
+        self._state.check_up()
+        if username not in self._state.ci_users:
+            self._state.ci_users[username] = len(self._state.ci_users) + 1
+        return self._state.ci_users[username]
+
+    async def mint_ci_token(self, username: str, forge_password: str) -> str:
+        """The sign-in dance in memory: the password must be the account's
+        at the forge and the CI must have been told about the account.
+        """
+        self._state.record("mint_ci_token", PLATFORM, username=username)
+        self._state.check_up()
+        user = self._state.user_named(username)
+        if self._state.passwords.get(user.id) != forge_password:
+            raise Forbidden(f"the forge did not accept the sign-in as {username}")
+        if username not in self._state.ci_users:
+            raise Forbidden(f"the CI admits no user named {username}")
+        token = secrets.token_urlsafe(16)
+        self._state.ci_tokens[token] = username
+        self._state.ci_dead.discard(username)
+        return token
+
+    async def ci_user_is_alive(self, as_: AsOrgAccount) -> bool:
+        self._state.record("ci_user_is_alive", as_, org=as_.org)
+        self._state.check_up()
+        username = self._state.ci_tokens.get(as_.ci_token)
+        return username is not None and username not in self._state.ci_dead
 
     def _task_repo(self, task: TaskId) -> None:
         self._state.repo(*location(task))
