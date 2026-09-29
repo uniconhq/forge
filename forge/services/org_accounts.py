@@ -1,5 +1,5 @@
 """An org's service account, `unicon-ci-<org>`: the one account that
-registers the org's tasks for grading and starts its runs. It is a user at
+activates the org's tasks at the CI and starts their runs. It is a user at
 the forge, a member of the org account's place in the org and nothing else,
 and a user at the CI. The `org_accounts` row holds its two credentials and
 the secret the org's event push is signed with, each as ciphertext; its
@@ -197,7 +197,7 @@ async def keepalive(ctx: Context) -> int:
 
 async def restore_membership(ctx: Context) -> int:
     """Put back every account that is missing from its place in its org,
-    which is what lets the org's tasks be registered for grading at all.
+    which is what lets the org's tasks be activated at the CI at all.
     Returns how many had to be put back.
     """
     restored = 0

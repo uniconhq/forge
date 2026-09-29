@@ -39,6 +39,9 @@ class Poller:
     own record.
     With `due`, a row is taken only once that time has come, or when it has
     none, which is how a table keeps a row waiting a while before a retry.
+    With `order`, the rows are taken and worked in that order, so two
+    processes whose work locks other rows lock them in the same order and
+    never wait on each other in a circle.
     """
 
     name: str
@@ -50,12 +53,15 @@ class Poller:
     interval: timedelta = timedelta(seconds=2)
     batch: int = 10
     due: InstrumentedAttribute[Any] | None = None
+    order: InstrumentedAttribute[Any] | None = None
 
     async def tick(self, unit_of_work: UnitOfWork) -> int:
         async with unit_of_work() as ctx:
             taken = select(self.table).where(self.status.in_(list(self.waiting)))
             if self.due is not None:
                 taken = taken.where(or_(self.due.is_(None), self.due <= ctx.now))
+            if self.order is not None:
+                taken = taken.order_by(self.order)
             rows: Sequence[Any] = (
                 (await ctx.db.execute(taken.with_for_update(skip_locked=True).limit(self.batch)))
                 .scalars()

@@ -1,7 +1,8 @@
 """What a building block runs with: the transaction of the unit of work, the
 forge, the settings and the clock, `own_transaction` for the few writes that
-must land whatever the unit of work does, and `refresh_lock`, the setup's
-lock on refreshing one session's credential. The action that opened the unit
+must land whatever the unit of work does, `refresh_lock`, the setup's lock on
+refreshing one session's credential, and `memo`, the answers the setup keeps
+for a few seconds. The action that opened the unit
 of work commits or rolls back `db`; a building block never does.
 
 `ActionSetup` is what a context is opened on: an action, and the plain
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from forge.db.engine import TransactionFactory
 from forge.domain.clock import Clock
 from forge.port import Forge
+from forge.runtime.memo import Memo
 from forge.settings import Settings
 
 
@@ -47,6 +49,7 @@ class Context:
     clock: Clock
     _transactions: TransactionFactory = field(repr=False, kw_only=True)
     _refresh_lock: Callable[[uuid.UUID], asyncio.Lock] = field(repr=False, kw_only=True)
+    memo: Memo = field(repr=False, kw_only=True)
 
     @property
     def now(self) -> datetime:

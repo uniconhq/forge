@@ -53,7 +53,9 @@ TARGETS = {
     "org": "acme",
     "contest": "acme/spring",
     "task": "acme/spring/sum",
-    "registration": "acme/spring/sum",
+    "workspace": "0190f0e8-0000-7000-8000-000000000000",
+    "submission_place": "0190f0e8-0000-7000-8000-000000000000/acme/spring/sum",
+    "activation": "acme/spring/sum",
 }
 
 

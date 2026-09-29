@@ -20,7 +20,7 @@ package's own tables, and stays there when the host changes.
 | A searchable mark on a workflow, with stars | Topics `unicon-workflow` and `unicon-primitive`; stars | Project topics; stars |
 | A copy of a workflow from a version, without a fork relationship | A new repository created from the source tree at that version | A new project created from the source tree at that version |
 | Event push to the platform | One org-level webhook, signed, allowed only to the backend's hostname | Group webhooks are a paid feature, emulated with a per-project webhook created with each project |
-| A CI that asks the platform for each run's steps, runs pinned images with variables, lends the registering account's credential to the checkout only, scopes its machines to an org on the server side, and pins a run to one machine by label | Woodpecker with the configuration extension set exclusive, org agents, agent labels, trusted clone image | GitLab CI cannot ask a service for a run's steps; the platform would drive Woodpecker against GitLab instead |
+| A CI that asks the platform for each run's steps, runs pinned images with variables, lends the activating account's credential to the checkout only, scopes its machines to an org on the server side, and pins a run to one machine by label | Woodpecker with the configuration extension set exclusive, org agents, agent labels, trusted clone image | GitLab CI cannot ask a service for a run's steps; the platform would drive Woodpecker against GitLab instead |
 | Accounts that can be deactivated reversibly and deleted with what they own | Admin API: `active` flag; delete with purge | Admin API: block and unblock; delete with hard delete |
 
 The Forgejo implementation is `forgejo/`. The in-memory implementation for

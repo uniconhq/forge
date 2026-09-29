@@ -1,6 +1,7 @@
 """One row per person per contest, from the registration request to removal.
 A registration before approval has no object at the forge, which is why the
-row exists.
+row exists. `workspace_id` is the workspace the forge handed out when the
+contestant's workspace was opened, and none until then.
 """
 
 import uuid
@@ -12,11 +13,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.db.base import Base, Timestamped
 from forge.domain.ids import new_id
+from forge.domain.registration import Status
 
-STATUSES = ("pending", "approved", "rejected", "withdrawn", "removed")
-APPROVED = "approved"
-REGISTERED = ("pending", APPROVED)
-"""The statuses that make the person a contestant of the contest."""
+STATUSES = tuple(status.value for status in Status)
 
 
 class Contestant(Base, Timestamped):
@@ -32,6 +31,7 @@ class Contestant(Base, Timestamped):
     decided_by_user_id: Mapped[int | None] = mapped_column(BigInteger)
     reason: Mapped[str | None]
     time_extension_seconds: Mapped[int] = mapped_column(server_default=text("0"))
+    workspace_id: Mapped[str | None]
 
     __table_args__ = (
         CheckConstraint(f"status in {STATUSES}", name="status"),

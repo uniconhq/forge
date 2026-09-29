@@ -63,6 +63,13 @@ class IdentityPort(Protocol):
         """`NotFound` when no user has that username."""
         ...
 
+    async def verified_emails(self, user_id: int) -> tuple[str, ...]:
+        """Every email address the host has confirmed belongs to the user, read
+        as the platform. An address the person typed and never confirmed is
+        left out.
+        """
+        ...
+
     async def create_user(
         self,
         username: str,

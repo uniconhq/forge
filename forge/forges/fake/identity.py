@@ -86,6 +86,13 @@ class FakeIdentity:
         self._state.check_up()
         return self._state.user_named(username)
 
+    async def verified_emails(self, user_id: int) -> tuple[str, ...]:
+        """The user's address, unless a test marked it unconfirmed."""
+        self._state.record("verified_emails", PLATFORM, user_id=user_id)
+        self._state.check_up()
+        email = self._state.user(user_id).email
+        return (email,) if email and email not in self._state.unverified else ()
+
     async def create_user(
         self,
         username: str,

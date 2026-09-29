@@ -6,7 +6,10 @@ permission changed at the forge its own back, and every contest and task in
 it is secured again through `content.secure`, which puts back any of its
 roles, its protected history or, for a task, its reserved publications that
 went missing, so a failure halfway through provisioning, or a team detached
-at the forge, does not leave a contest nobody below the org can reach.
+at the forge, does not leave a contest nobody below the org can reach. Every
+task with a publication also asks for any place to submit it an approved
+contestant still lacks, which is how a place whose save never landed is made
+without waiting for the task's next save.
 """
 
 from forge.domain.errors import PortError
@@ -14,7 +17,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import org_accounts
+from forge.services import org_accounts, workspaces
 
 log = get_logger(__name__)
 
@@ -59,7 +62,21 @@ async def secure_content(ctx: Context) -> int:
                 continue
             for task in tasks:
                 put_back += await _secured(ctx, task)
+                put_back += await _placed(ctx, task)
     return put_back
+
+
+async def _placed(ctx: Context, task: TaskId) -> int:
+    """How many places to submit the task were asked for again, for a task
+    with a publication.
+    """
+    try:
+        if not await ctx.forge.workspaces.list_publications(task):
+            return 0
+    except PortError as exc:
+        log.warning("drift.task_unreadable", task=task, error=type(exc).__name__)
+        return 0
+    return await workspaces.place_for_everyone(ctx, task)
 
 
 async def _secured(ctx: Context, place: ContestId | TaskId) -> int:

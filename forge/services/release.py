@@ -11,23 +11,20 @@ the forge changes when a task becomes released.
 """
 
 from dataclasses import dataclass
-from datetime import timedelta
-
-from sqlalchemy import select
+from datetime import datetime, timedelta
 
 from forge.db.tables import Contestant
-from forge.db.tables.contestants import APPROVED
 from forge.domain import release as rules
-from forge.domain.definitions import CONTEST_FILE, TASK_FILE, parse_contest, parse_task
+from forge.domain.definitions import ContestDefinition, TaskDefinition
 from forge.domain.errors import NotFound
-from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId
+from forge.domain.registration import Status
 from forge.domain.release import Closed
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import roles
+from forge.services import contestants, published, roles
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,48 +39,82 @@ class TaskRelease:
     closed: Closed | None
 
 
+NOT_RELEASED = TaskRelease(released=False, visible=False, open=False, closed=Closed.NOT_RELEASED)
+
+
 @action
 async def of_task(ctx: Context, session: Session, task: TaskId) -> TaskRelease:
     """Whether the task is released, visible and open to the signed-in person
     now, by the server's clock. `NotFound` when the contest is hidden from
     them.
     """
-    contest_id = contest_id_of(task_scope(task))
-    contest = parse_contest(
-        (await ctx.forge.content.read_file(PLATFORM, contest_id, CONTEST_FILE)).content
-    )
-    row = await _contestant(ctx, contest_id, session.user_id)
-    if not rules.contest_visible_to(
-        contest,
-        has_session=True,
-        is_contestant=row is not None and row.status == APPROVED,
-        is_organiser=await roles.holds_role_in_contest(ctx, session.user_id, contest_id),
-    ):
-        raise NotFound("There is no such task.")
-    published = await ctx.forge.workspaces.list_publications(task)
-    if not published:
-        return TaskRelease(released=False, visible=False, open=False, closed=Closed.NOT_RELEASED)
-    definition = parse_task(
-        (
-            await ctx.forge.content.read_file(PLATFORM, task, TASK_FILE, at=published[-1].version)
-        ).content
-    )
-    now = ctx.now
-    extension = timedelta(seconds=row.time_extension_seconds if row is not None else 0)
-    openness = rules.openness(contest, definition, now, extension)
+    try:
+        settings, person = await seen(ctx, session, contest_id_of(task_scope(task)))
+    except NotFound as exc:
+        raise NotFound(published.NO_SUCH_TASK) from exc
+    found = await published.task(ctx, task)
+    if found is None:
+        return NOT_RELEASED
+    return of(settings, found.definition, ctx.now, contestants.time_extension(person.row))
+
+
+def of(
+    settings: ContestDefinition, definition: TaskDefinition, now: datetime, extension: timedelta
+) -> TaskRelease:
+    """Where a task with these settings stands at `now` for a person with their
+    own `extension`.
+    """
+    openness = rules.openness(settings, definition, now, extension)
     return TaskRelease(
-        released=rules.released(contest, definition, now),
-        visible=rules.visible(contest, definition, now),
+        released=rules.released(settings, definition, now),
+        visible=rules.visible(settings, definition, now),
         open=openness.open,
         closed=openness.reason,
     )
 
 
-async def _contestant(ctx: Context, contest: ContestId, user_id: int) -> Contestant | None:
-    return (
-        await ctx.db.execute(
-            select(Contestant).where(
-                Contestant.contest_id == contest, Contestant.user_id == user_id
-            )
-        )
-    ).scalar_one_or_none()
+@dataclass(frozen=True, slots=True)
+class Reader:
+    """A signed-in person as a contest's reads see them: their registration
+    for it, if any, and whether they hold a role at it, at one of its tasks or
+    at its org.
+    """
+
+    row: Contestant | None
+    organises: bool
+
+
+async def reader(ctx: Context, session: Session, contest: ContestId) -> Reader:
+    """The signed-in person as the contest's reads see them, their roles read
+    once.
+    """
+    return Reader(
+        row=await contestants.row_of(ctx, contest, session.user_id),
+        organises=await roles.holds_role_in_contest(ctx, session.user_id, contest),
+    )
+
+
+async def seen(
+    ctx: Context, session: Session, contest: ContestId
+) -> tuple[ContestDefinition, Reader]:
+    """The contest's settings and the person as its reads see them, once the
+    contest is one they see. `NotFound` otherwise, the same as for a contest
+    that is not there.
+    """
+    settings = await published.contest(ctx, contest)
+    person = await reader(ctx, session, contest)
+    if not sees(settings, person):
+        raise NotFound(published.NO_SUCH_CONTEST)
+    return settings, person
+
+
+def sees(settings: ContestDefinition, person: Reader) -> bool:
+    """Whether the person sees the contest at all: organisers always, and
+    anyone else as its visibility says.
+    """
+    return rules.contest_visible_to(
+        settings,
+        has_session=True,
+        is_contestant=person.row is not None and person.row.status == Status.APPROVED,
+        is_organiser=person.organises,
+    )
