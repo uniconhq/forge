@@ -1,6 +1,6 @@
 """The migration brings an empty database to the schema the tables declare,
-with exactly the tables the package owns, and a grading row round-trips with
-its verdict.
+with exactly the tables the package owns and rolls back to nothing, a
+registration job included, and a grading row round-trips with its verdict.
 """
 
 import uuid
@@ -8,10 +8,10 @@ from datetime import UTC, datetime
 
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, select, text
 
 from forge.db.migrations import downgrade_to_base, upgrade_to_head
-from forge.db.tables import Grading, metadata
+from forge.db.tables import Grading, OrgAccount, Provisioning, metadata
 from forge.runtime.setup import Setup
 
 TABLES = {
@@ -24,6 +24,7 @@ TABLES = {
     "gradings",
     "uploads",
     "jupyter_sessions",
+    "org_accounts",
 }
 
 
@@ -53,6 +54,21 @@ def test_the_migration_rolls_back(migrated_database_url: str) -> None:
     upgrade_to_head(migrated_database_url)
 
 
+def test_the_migration_rolls_back_over_a_registration_job(migrated_database_url: str) -> None:
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO provisioning (id, kind, target_id) "
+                "VALUES (gen_random_uuid(), 'registration', 'acme/spring/sum')"
+            )
+        )
+    engine.dispose()
+
+    downgrade_to_base(migrated_database_url)
+    upgrade_to_head(migrated_database_url)
+
+
 async def test_a_grading_row_round_trips_with_its_verdict(setup: Setup) -> None:
     verdict = {"outcome": "verdict", "verdict": "AC", "score": "100", "summary": [{"id": "1"}]}
     async with setup.unit_of_work() as ctx:
@@ -78,3 +94,29 @@ async def test_a_grading_row_round_trips_with_its_verdict(setup: Setup) -> None:
     assert found is not None
     assert found.verdict == verdict
     assert found.run_id == "12/3"
+
+
+async def test_a_provisioning_row_carries_its_payload_and_an_org_account_its_ciphertext(
+    setup: Setup,
+) -> None:
+    async with setup.unit_of_work() as ctx:
+        ctx.db.add(Provisioning(kind="org", target_id="acme", payload={"description": "Acme"}))
+        ctx.db.add(
+            OrgAccount(
+                org_name="acme",
+                username="unicon-ci-acme",
+                forge_token=b"\x01",
+                ci_token=b"",
+                event_secret=b"\x02",
+            )
+        )
+    async with setup.unit_of_work() as ctx:
+        job = (await ctx.db.execute(select(Provisioning))).scalar_one()
+        account = (await ctx.db.execute(select(OrgAccount))).scalar_one()
+    assert job.payload == {"description": "Acme"}
+    assert (account.forge_user_id, account.ci_user_id, account.last_kept_alive_at) == (
+        None,
+        None,
+        None,
+    )
+    assert account.created_at is not None
