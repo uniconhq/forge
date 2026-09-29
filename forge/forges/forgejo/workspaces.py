@@ -1,16 +1,18 @@
 """The workspace area over Forgejo. A workspace is a desk repository plus one
-submission repository per task, attached to the contest's role teams so its
-organisers can read them, with the members as write collaborators. A
-submission and a publication are tags under a reserved prefix that only the
-platform account may create, each pointing at the exact commit the files
-went in with. A publication is an annotated tag whose message is its note.
+submission repository per task, each attached to the contest's role teams so
+its organisers can read it, with the members as write collaborators. Each is
+made on its own, and every part of making one checks before it acts, so a
+try that stopped halfway is finished by the next. A submission and a
+publication are tags under a reserved prefix that only the platform account
+may create, each pointing at the exact commit the files went in with. A
+publication is an annotated tag whose message is its note.
 """
 
 from collections.abc import Sequence
 from datetime import datetime
 
 from forge.domain.content import Files
-from forge.domain.errors import Conflict
+from forge.domain.errors import Conflict, NotFound
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import (
     ContestId,
@@ -49,27 +51,48 @@ class ForgejoWorkspaces:
         self._teams = teams
 
     async def open_workspace(
-        self,
-        contest: ContestId,
-        owner: WorkspaceOwner,
-        member_ids: Sequence[int],
-        tasks: Sequence[TaskId],
+        self, contest: ContestId, owner: WorkspaceOwner, member_ids: Sequence[int]
     ) -> WorkspaceId:
-        parent = parse_contest(contest)
-        ref = WorkspaceRef(parent.org, parent.contest, owner)
-        usernames = [await self._users.username_of(member) for member in member_ids]
-        repos = [ref.desk_repo] + [ref.submission_repo(parse_task(task).task) for task in tasks]
-        for repo in repos:
-            await self._repos.create(PLATFORM, ref.org, repo, {}, private=True)
-            await self._repos.protect_branch(ref.org, repo)
-            await self._teams.attach_scope(Scope(ref.org, ref.contest), repo)
-            if repo != ref.desk_repo:
-                await self._repos.reserve_versions(ref.org, repo, SUBMISSION_PREFIX)
-            for username in usernames:
-                await self._repos.add_collaborator(
-                    PLATFORM, ref.org, repo, username, permission=WRITE
-                )
+        ref = _ref(contest, owner)
+        await self._open(ref, ref.desk_repo, member_ids)
         return ref.id
+
+    def workspace_of(self, contest: ContestId, owner: WorkspaceOwner) -> WorkspaceId:
+        return _ref(contest, owner).id
+
+    async def open_submission_place(
+        self, workspace: WorkspaceId, task: TaskId, member_ids: Sequence[int]
+    ) -> None:
+        ref = parse_workspace(workspace)
+        task_ref = parse_task(task)
+        if (task_ref.org, task_ref.contest) != (ref.org, ref.contest):
+            raise NotFound(f"{task} is not a task of the contest {workspace} is in")
+        await self._open(ref, ref.submission_repo(task_ref.task), member_ids, reserve=True)
+
+    async def _open(
+        self, ref: WorkspaceRef, repo: str, member_ids: Sequence[int], *, reserve: bool = False
+    ) -> None:
+        """Make one repository of the workspace, empty and private, unless it
+        is there: only the platform makes repositories, so one of that name
+        is an earlier try's. Then refuse rewriting its history, attach the
+        contest's roles, with `reserve` keep its submissions for the platform,
+        and only then give the members write access, so nobody can write a
+        place whose submissions anyone may name. Each leaves what is already
+        right alone.
+        """
+        if not await self._repos.exists(ref.org, repo):
+            try:
+                await self._repos.create(PLATFORM, ref.org, repo, {}, private=True)
+            except Conflict:
+                if not await self._repos.exists(ref.org, repo):
+                    raise
+        await self._repos.protect_branch(ref.org, repo)
+        await self._teams.attach_scope(Scope(ref.org, ref.contest), repo)
+        if reserve:
+            await self._repos.reserve_versions(ref.org, repo, SUBMISSION_PREFIX)
+        for member in member_ids:
+            username = await self._users.username_of(member)
+            await self._repos.add_collaborator(PLATFORM, ref.org, repo, username, permission=WRITE)
 
     async def close_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
         ref = parse_workspace(workspace)
@@ -159,3 +182,8 @@ class ForgejoWorkspaces:
             for repo in await self._repos.under(ref.org)
             if str(repo["name"]) == ref.desk_repo or ref.is_submission_repo(str(repo["name"]))
         ]
+
+
+def _ref(contest: ContestId, owner: WorkspaceOwner) -> WorkspaceRef:
+    parent = parse_contest(contest)
+    return WorkspaceRef(parent.org, parent.contest, owner)

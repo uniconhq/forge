@@ -37,29 +37,51 @@ class FakeWorkspaces:
         self._state = state
 
     async def open_workspace(
-        self,
-        contest: ContestId,
-        owner: WorkspaceOwner,
-        member_ids: Sequence[int],
-        tasks: Sequence[TaskId],
+        self, contest: ContestId, owner: WorkspaceOwner, member_ids: Sequence[int]
     ) -> WorkspaceId:
         self._state.record(
             "open_workspace", PLATFORM, contest=contest, owner=owner, member_ids=list(member_ids)
         )
-        parent = parse_contest(contest)
-        ref = WorkspaceRef(parent.org, parent.contest, owner)
-        scope = Scope(ref.org, ref.contest)
-        desk = self._state.create_repo(ref.org, ref.desk_repo, {}, scope=scope)
-        desk.writers.update(member_ids)
-        desk.teams.add(scope)
-        for task in tasks:
-            sub = self._state.create_repo(
-                ref.org, ref.submission_repo(parse_task(task).task), {}, scope=scope
-            )
-            sub.writers.update(member_ids)
-            sub.teams.add(scope)
-            sub.reserved.add(SUBMISSION_PREFIX)
+        self._state.check_up()
+        ref = _ref(contest, owner)
+        self._open(ref, ref.desk_repo, member_ids)
         return ref.id
+
+    def workspace_of(self, contest: ContestId, owner: WorkspaceOwner) -> WorkspaceId:
+        return _ref(contest, owner).id
+
+    async def open_submission_place(
+        self, workspace: WorkspaceId, task: TaskId, member_ids: Sequence[int]
+    ) -> None:
+        self._state.record(
+            "open_submission_place",
+            PLATFORM,
+            workspace=workspace,
+            task=task,
+            member_ids=list(member_ids),
+        )
+        self._state.check_up()
+        ref = parse_workspace(workspace)
+        task_ref = parse_task(task)
+        if (task_ref.org, task_ref.contest) != (ref.org, ref.contest):
+            raise NotFound(f"{task} is not a task of the contest {workspace} is in")
+        self._open(ref, ref.submission_repo(task_ref.task), member_ids, reserve=True)
+
+    def _open(
+        self, ref: WorkspaceRef, name: str, member_ids: Sequence[int], *, reserve: bool = False
+    ) -> None:
+        """One repository of the workspace, its submissions reserved before
+        anyone may write it, as the Forgejo implementation does.
+        """
+        scope = Scope(ref.org, ref.contest)
+        repo = self._state.repos.get((ref.org, name))
+        if repo is None:
+            repo = self._state.create_repo(ref.org, name, {}, scope=scope)
+        repo.rewrites_refused = True
+        repo.teams.add(scope)
+        if reserve:
+            repo.reserved.add(SUBMISSION_PREFIX)
+        repo.writers.update(member_ids)
 
     async def close_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
         self._state.record(
@@ -132,6 +154,11 @@ class FakeWorkspaces:
             for (owner, name), repo in self._state.repos.items()
             if owner == ref.org and (name == ref.desk_repo or ref.is_submission_repo(name))
         ]
+
+
+def _ref(contest: ContestId, owner: WorkspaceOwner) -> WorkspaceRef:
+    parent = parse_contest(contest)
+    return WorkspaceRef(parent.org, parent.contest, owner)
 
 
 def _numbers(repo: Repo, prefix: str) -> list[int]:

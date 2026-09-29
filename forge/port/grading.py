@@ -1,4 +1,4 @@
-"""Grading runs at the CI: registering a task once and starting runs as the
+"""Grading runs at the CI: activating a task once and starting runs as the
 org account the caller hands in, then reading and cancelling runs as the CI's
 administrator. The CI admits only accounts it was told about, so the org
 account's user there is made by the CI's administrator and its credential is
@@ -14,9 +14,9 @@ from forge.domain.ids import RunId, TaskId
 
 
 class GradingPort(Protocol):
-    async def register(self, as_: AsOrgAccount, task: TaskId) -> None:
-        """Make the task known to the CI, as the task's org account, so it can
-        be graded. Registering twice changes nothing. `Forbidden` when `as_`
+    async def activate(self, as_: AsOrgAccount, task: TaskId) -> None:
+        """Switch the CI on for the task, as the task's org account, so it can
+        be graded. Activating twice changes nothing. `Forbidden` when `as_`
         is another org's account.
         """
         ...

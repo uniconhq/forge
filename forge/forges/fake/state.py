@@ -101,6 +101,7 @@ class State:
         self.ci_users: dict[str, int] = {}
         self.ci_tokens: dict[str, str] = {}
         self.ci_dead: set[str] = set()
+        self.unverified: set[str] = set()
         self.refreshes = 0
         self.refuse_refresh = False
         self.unavailable = False

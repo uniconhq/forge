@@ -37,7 +37,8 @@ async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
     task = await fake.content.create_task(contest, "sum", {"task.yaml": b"y"})
     head = await fake.content.list_files(PLATFORM, task)
     publication = await fake.workspaces.publish(task, head.version, "grading_changed: false\n")
-    workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8], [task])
+    workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8])
+    await fake.workspaces.open_submission_place(workspace, task, [8])
     bob = _as(fake, 8)
     submission = await fake.workspaces.record_submission(
         bob, workspace, task, {"main.py": b"print(1)"}
@@ -50,7 +51,7 @@ async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
     fake.add_user(9, "eve")
     with pytest.raises(Forbidden):
         await fake.workspaces.record_submission(_as(fake, 9), workspace, task, {"a": b"b"})
-    assert fake.calls_to("register") == []
+    assert fake.calls_to("activate") == []
 
 
 @pytest.mark.parametrize(
@@ -78,13 +79,13 @@ async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> 
     task = await fake.content.create_task(contest, "sum", {})
     acme = AsOrgAccount("acme", forge_token="f", ci_token="c")
 
-    await fake.grading.register(acme, task)
+    await fake.grading.activate(acme, task)
     await fake.grading.start_run(acme, task, variables={}, compute_label="box")
 
-    assert [call.identity for call in fake.calls_to("register")] == [acme]
+    assert [call.identity for call in fake.calls_to("activate")] == [acme]
     assert [call.identity for call in fake.calls_to("start_run")] == [acme]
     with pytest.raises(Forbidden):
-        await fake.grading.register(AsOrgAccount("other", forge_token="f", ci_token="c"), task)
+        await fake.grading.activate(AsOrgAccount("other", forge_token="f", ci_token="c"), task)
 
 
 async def test_every_call_is_recorded_with_its_identity(fake: FakeForge) -> None:
@@ -150,11 +151,11 @@ async def test_a_contest_manager_reads_a_clarification_and_a_stranger_does_not(
     fake.add_user(9, "eve")
     await fake.orgs.grant_role(9, Scope("acme", "spring"), Role.MANAGER)
     contest = await fake.content.create_contest(OrgName("acme"), "spring", {})
-    workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8], [])
+    workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8])
     bob = _as(fake, 8)
     await fake.threads.post_thread(bob, workspace, ThreadKind.CLARIFICATION, title="Q", body="?")
     autumn = await fake.content.create_contest(OrgName("acme"), "autumn", {})
-    other = await fake.workspaces.open_workspace(autumn, UserOwner("bob"), [8], [])
+    other = await fake.workspaces.open_workspace(autumn, UserOwner("bob"), [8])
     assert await fake.threads.list_threads(bob, other, ThreadKind.CLARIFICATION) == ()
 
     assert len(await fake.threads.list_threads(bob, workspace, ThreadKind.CLARIFICATION)) == 1
@@ -194,7 +195,7 @@ async def test_deleting_a_user_removes_them_and_what_they_own(fake: FakeForge) -
 async def test_a_deleted_users_questions_still_read_as_nobodys(fake: FakeForge) -> None:
     await fake.orgs.create_org(OrgName("acme"), description="Acme")
     contest = await fake.content.create_contest(OrgName("acme"), "spring", {})
-    workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8], [])
+    workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8])
     bob = _as(fake, 8)
     thread = await fake.threads.post_thread(
         bob, workspace, ThreadKind.CLARIFICATION, title="Q", body="?"

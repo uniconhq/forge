@@ -15,8 +15,8 @@ class FakeGrading:
     def __init__(self, state: State) -> None:
         self._state = state
 
-    async def register(self, as_: AsOrgAccount, task: TaskId) -> None:
-        self._state.record("register", as_, task=task)
+    async def activate(self, as_: AsOrgAccount, task: TaskId) -> None:
+        self._state.record("activate", as_, task=task)
         _acting_for(as_, task)
         self._task_repo(task)
 
