@@ -243,7 +243,9 @@ def reason(exc: Exception) -> str:
 
 def poller(work: Mapping[str, RowWork], interval: timedelta = POLL_INTERVAL) -> Poller:
     """The poller over the waiting rows, handing each to the function `work`
-    names for its kind.
+    names for its kind, in the order of what they make: a contestant's
+    workspace and places start with the contestant's id, so every tick locks
+    contestants in the same order.
     """
     makers = dict(work)
 
@@ -262,6 +264,7 @@ def poller(work: Mapping[str, RowWork], interval: timedelta = POLL_INTERVAL) -> 
         failed,
         interval=interval,
         due=Provisioning.retry_at,
+        order=Provisioning.target_id,
     )
 
 

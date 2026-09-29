@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
+import regex
 from pydantic import Field, PlainValidator, model_validator
 
 from forge.domain.errors import InvalidName
@@ -162,8 +163,8 @@ def _pattern(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("Must be text: a regular expression.")
     try:
-        re.compile(value)
-    except re.error as error:
+        regex.compile(value)
+    except regex.error as error:
         raise ValueError(f"Is not a regular expression: {error}.") from None
     return value
 

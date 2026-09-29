@@ -40,7 +40,7 @@ def validate_org_name(value: str) -> str:
 
 def service_account_name(org: str) -> str:
     """The username of the org's own service account at the forge, the one
-    that registers and grades for it: `unicon-ci-<org>`.
+    that activates and grades its tasks: `unicon-ci-<org>`.
     """
     return f"{SERVICE_ACCOUNT_PREFIX}{org}"
 

@@ -1,16 +1,17 @@
 """The migration brings an empty database to the schema the tables declare,
 with exactly the tables the package owns and rolls back to nothing, a
-registration job included, and a grading row round-trips with its verdict.
+activation job included, and a grading row round-trips with its verdict.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, inspect, select, text
 
-from forge.db.migrations import downgrade_to_base, upgrade_to_head
+from forge.db.migrations import alembic_config, downgrade_to_base, upgrade_to_head
 from forge.db.tables import Grading, OrgAccount, Provisioning, metadata
 from forge.runtime.setup import Setup
 
@@ -54,17 +55,26 @@ def test_the_migration_rolls_back(migrated_database_url: str) -> None:
     upgrade_to_head(migrated_database_url)
 
 
-def test_the_migration_rolls_back_over_a_registration_job(migrated_database_url: str) -> None:
+def test_the_migration_rolls_back_over_an_activation_and_a_submission_place_job(
+    migrated_database_url: str,
+) -> None:
     engine = create_engine(migrated_database_url)
     with engine.begin() as connection:
         connection.execute(
             text(
-                "INSERT INTO provisioning (id, kind, target_id) "
-                "VALUES (gen_random_uuid(), 'registration', 'acme/spring/sum')"
+                "INSERT INTO provisioning (id, kind, target_id, last_step) "
+                "VALUES (gen_random_uuid(), 'activation', 'acme/spring/sum', 'activate'), "
+                "(gen_random_uuid(), 'submission_place', 'x/acme/spring/sum', NULL)"
             )
         )
     engine.dispose()
 
+    command.downgrade(alembic_config(migrated_database_url), "0002")
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        jobs = connection.execute(text("SELECT kind, last_step FROM provisioning")).all()
+    engine.dispose()
+    assert [tuple(job) for job in jobs] == [("registration", "register")]
     downgrade_to_base(migrated_database_url)
     upgrade_to_head(migrated_database_url)
 
@@ -120,3 +130,14 @@ async def test_a_provisioning_row_carries_its_payload_and_an_org_account_its_cip
         None,
     )
     assert account.created_at is not None
+
+
+async def test_a_time_reads_back_in_utc_whatever_zone_the_server_is_in(setup: Setup) -> None:
+    async with setup.unit_of_work() as ctx:
+        zone: str = (await ctx.db.execute(text("SHOW TimeZone"))).scalar_one()
+        ctx.db.add(Provisioning(kind="org", target_id="acme"))
+    async with setup.unit_of_work() as ctx:
+        job = (await ctx.db.execute(select(Provisioning))).scalar_one()
+
+    assert zone == "UTC"
+    assert job.created_at.utcoffset() == timedelta(0)
