@@ -10,7 +10,7 @@ from collections.abc import Iterator
 import pytest
 from pydantic import SecretStr
 
-from forge.log import MASK, JsonFormatter, get_logger, setup
+from forge.log import MASK, QUIET, JsonFormatter, get_logger, setup
 from forge.testing import logged
 
 
@@ -83,3 +83,19 @@ def test_setup_sends_every_logger_through_one_json_handler_at_the_named_level(
     assert root_logger.level == logging.WARNING
     record = logging.LogRecord("uvicorn.error", logging.INFO, "", 0, "Started", None, None)
     assert json.loads(handler.format(record))["logger"] == "uvicorn.error"
+
+
+def test_setup_keeps_the_http_clients_request_lines_out_at_info(
+    root_logger: logging.Logger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UNICON_LOG_LEVEL", "info")
+    quiet = [logging.getLogger(name) for name in QUIET]
+    levels = [logger.level for logger in quiet]
+    try:
+        setup()
+
+        assert [logger.getEffectiveLevel() for logger in quiet] == [logging.WARNING] * len(quiet)
+        assert logging.getLogger("uvicorn.error").getEffectiveLevel() == logging.INFO
+    finally:
+        for logger, level in zip(quiet, levels, strict=True):
+            logger.setLevel(level)
