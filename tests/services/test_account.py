@@ -1,13 +1,17 @@
-"""Deactivate and delete: both need a fresh session, deactivate is reversible
-at the forge, and delete refuses to orphan a scope or a shared workflow.
+"""Create makes an account with a first password that is handed back once
+and never logged. Deactivate and delete both need a fresh session, deactivate
+is reversible at the forge, and delete refuses to orphan a scope or a shared
+workflow.
 """
 
+import logging
 from datetime import timedelta
 
 import pytest
 
 from forge.domain.errors import (
     FreshSignInRequired,
+    InvalidName,
     NotFound,
     SessionExpired,
     SharedWorkflowOwner,
@@ -19,6 +23,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.domain.workflows import Visibility
 from forge.forges.fake import FakeForge
+from forge.log import JsonFormatter
 from forge.runtime.context import Context
 from forge.services import account, sessions
 from forge.testing import FakeClock
@@ -107,3 +112,29 @@ async def test_a_delete_removes_roles_first_then_the_account(ctx: Context, fake:
     assert operations.index("revoke_role") < operations.index("delete_user")
     with pytest.raises(NotFound):
         await fake.identity.find_user(7)
+
+
+async def test_an_account_is_created_with_a_first_password_shown_once(
+    ctx: Context, fake: FakeForge, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+
+    user, password = await account.create(ctx, "carol", email="carol@example.test")
+
+    assert user.username == "carol"
+    assert user.email == "carol@example.test"
+    assert fake.state.passwords[user.id] == password
+    assert len(password) >= 24
+    (call,) = fake.calls_to("create_user")
+    assert call.arguments["must_change_password"] is True
+    assert password not in str(call.arguments)
+    written = "\n".join(JsonFormatter().format(record) for record in caplog.records)
+    assert password not in written
+    assert [record.getMessage() for record in caplog.records] == ["account.created"]
+
+
+async def test_a_service_account_name_and_a_blank_one_are_refused(ctx: Context) -> None:
+    with pytest.raises(InvalidName, match="reserved"):
+        await account.create(ctx, "unicon-ci-acme", email="x@example.test")
+    with pytest.raises(InvalidName):
+        await account.create(ctx, " ", email="x@example.test")

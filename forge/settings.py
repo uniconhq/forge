@@ -102,16 +102,21 @@ class Settings(BaseSettings):
     """The package's configuration. `forge` picks the implementation behind
     the port. `forgejo`, the settings of the Forgejo implementation, is
     required when it is chosen and none otherwise. `forge_public_url` is
-    where browsers reach the forge, for either implementation.
+    where browsers reach the forge, for either implementation. `internal_url`
+    is where the forge reaches the platform inside the deployment, the public
+    URL unless given: the org event push points there. `org_creation_open`
+    says whether any signed-in user may create an org, or only the operator.
     """
 
     model_config = SettingsConfigDict(env_prefix="UNICON_", extra="ignore")
 
     public_url: HttpUrl
+    internal_url: HttpUrl
     database_url: PostgresDsn
     token_encryption_key: SecretStr
     session_signing_key: SecretStr
     cookie_secure: bool | None = None
+    org_creation_open: bool = True
 
     forge: ForgeKind = "forgejo"
     forge_public_url: HttpUrl | None = None
@@ -139,6 +144,13 @@ class Settings(BaseSettings):
             dotenv_settings,
             file_secret_settings,
         )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _internal_url_follows_the_public_url(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("internal_url") is None and "public_url" in data:
+            return {**data, "internal_url": data["public_url"]}
+        return data
 
     @model_validator(mode="before")
     @classmethod

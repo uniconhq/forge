@@ -3,6 +3,11 @@ port picked by `UNICON_FORGE`, the database, the clock, and the background
 loops. `start` builds the one setup the process holds and every action opens
 its unit of work on it; `ready` asks its database; `stop` tears it down;
 `public_url` is where the platform is served.
+
+The loops are the session sweeper, the `provisioning` poller and the nightly
+drift pass. `MAKERS` is what the poller hands each kind of row to: the org,
+the contest, the task and the registration for grading, each made by the
+service of that name.
 """
 
 import asyncio
@@ -27,16 +32,32 @@ from forge.domain.clock import Clock, SystemClock
 from forge.domain.errors import NotReady
 from forge.log import get_logger
 from forge.port import Forge
-from forge.runtime.background import Loops, TimedPass
+from forge.runtime.background import Loops, Poller, TimedPass
 from forge.runtime.context import ActionSetup, Context, transaction
 from forge.runtime.held import held, hold, holding, release, setup_or_held
-from forge.services import sessions
+from forge.services import (
+    contests,
+    drift,
+    orgs,
+    provisioning,
+    registrations,
+    sessions,
+    tasks,
+)
 from forge.settings import Settings, load_settings
 
 log = get_logger(__name__)
 
 READY_TIMEOUT_SECONDS = 2.0
 SESSION_SWEEP_INTERVAL = timedelta(hours=1)
+DRIFT_INTERVAL = timedelta(hours=24)
+
+MAKERS: dict[str, provisioning.RowWork] = {
+    orgs.KIND: orgs.provision,
+    contests.KIND: contests.provision,
+    tasks.KIND: tasks.provision,
+    registrations.KIND: registrations.provision,
+}
 
 
 class Setup:
@@ -89,7 +110,11 @@ class Setup:
             transactions=new_transaction_factory(engine),
             clock=clock or SystemClock(),
         )
-        setup._loops.add(TimedPass("sessions.sweep", sessions.sweep, SESSION_SWEEP_INTERVAL))
+        setup._loops.add(
+            TimedPass("sessions.sweep", sessions.sweep, SESSION_SWEEP_INTERVAL),
+            provisioning.poller(MAKERS),
+            TimedPass("drift.nightly", drift.nightly, DRIFT_INTERVAL),
+        )
         return setup
 
     @property
@@ -134,6 +159,22 @@ class Setup:
     def start_background(self) -> None:
         self._loops.start(self.unit_of_work)
 
+    async def tick(self, name: str) -> None:
+        """Run one tick of the poller or timed pass named `name` now, as the
+        loop would. `ValueError` naming the loops there are for any other
+        name.
+        """
+        loops: dict[str, Poller | TimedPass] = {
+            poller.name: poller for poller in self._loops.pollers
+        }
+        loops.update({timed.name: timed for timed in self._loops.passes})
+        loop = loops.get(name)
+        if loop is None:
+            raise ValueError(
+                f"there is no poller or timed pass named {name!r}; there are {sorted(loops)}"
+            )
+        await loop.tick(self.unit_of_work)
+
     async def ready(self) -> None:
         """Raise `NotReady` unless the database answers within two seconds.
         The cause is logged and kept out of the error.
@@ -151,18 +192,20 @@ class Setup:
         await self._engine.dispose()
 
 
-def start(*, callback_path: str) -> None:
+def start(*, callback_path: str, background: bool = True) -> None:
     """Build the setup the process holds from the `UNICON_*` settings and
     start its background loops. `callback_path` is the hosting process's
     sign-in callback route, the one thing the package cannot know on its own;
-    it is joined to `UNICON_PUBLIC_URL`. Call it once, from inside the running
-    event loop.
+    it is joined to `UNICON_PUBLIC_URL`. With `background` off no poller or
+    timed pass runs, for a one-off command that must not tick one as a side
+    effect. Call it once, from inside the running event loop.
     """
     if holding():
         raise RuntimeError("forge.api.start was already called")
     setup = Setup.build(load_settings(), callback_path=callback_path)
     hold(setup)
-    setup.start_background()
+    if background:
+        setup.start_background()
 
 
 async def ready() -> None:

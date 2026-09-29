@@ -4,7 +4,7 @@ work once, and the work of either runs with the context of its unit of work.
 """
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -141,7 +141,7 @@ async def test_loops_start_and_stop_cleanly(setup: Setup) -> None:
     assert loops.running is False
 
 
-def _failed(row: Any, error: Exception) -> None:
+def _failed(row: Any, error: Exception, now: datetime) -> None:
     row.status = "failed"
     row.error = str(error)
     row.attempts = (row.attempts or 0) + 1
