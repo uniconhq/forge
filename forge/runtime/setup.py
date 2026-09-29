@@ -6,8 +6,9 @@ its unit of work on it; `ready` asks its database; `stop` tears it down;
 
 The loops are the session sweeper, the `provisioning` poller and the nightly
 drift pass. `MAKERS` is what the poller hands each kind of row to: the org,
-the contest, the task and the registration for grading, each made by the
-service of that name.
+the contest and the task, each made by the service of that name, a
+contestant's workspace and the place they submit one task to, both made by
+`workspaces`, and a task's activation at the CI.
 """
 
 import asyncio
@@ -35,14 +36,16 @@ from forge.port import Forge
 from forge.runtime.background import Loops, Poller, TimedPass
 from forge.runtime.context import ActionSetup, Context, transaction
 from forge.runtime.held import held, hold, holding, release, setup_or_held
+from forge.runtime.memo import Memo
 from forge.services import (
+    activations,
     contests,
     drift,
     orgs,
     provisioning,
-    registrations,
     sessions,
     tasks,
+    workspaces,
 )
 from forge.settings import Settings, load_settings
 
@@ -56,7 +59,9 @@ MAKERS: dict[str, provisioning.RowWork] = {
     orgs.KIND: orgs.provision,
     contests.KIND: contests.provision,
     tasks.KIND: tasks.provision,
-    registrations.KIND: registrations.provision,
+    workspaces.KIND: workspaces.provision,
+    workspaces.PLACE_KIND: workspaces.provision_place,
+    activations.KIND: activations.provision,
 }
 
 
@@ -78,6 +83,7 @@ class Setup:
         self._transactions = transactions
         self._clock = clock
         self._loops = Loops()
+        self._memo = Memo(clock)
         self._refreshing: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
             weakref.WeakValueDictionary()
         )
@@ -143,6 +149,7 @@ class Setup:
                 clock=self._clock,
                 _transactions=self._transactions,
                 _refresh_lock=self.refresh_lock,
+                memo=self._memo,
             )
 
     def refresh_lock(self, session_id: uuid.UUID) -> asyncio.Lock:

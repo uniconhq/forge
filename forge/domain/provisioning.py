@@ -7,8 +7,11 @@ An org takes ten: its account row, the org, its roles, the labels its
 threads are marked with, its signed event push, its first admin, its service
 account at the forge, that account's forge credential, its user at the CI,
 and its sign-in at the CI. A contest and a task each take two, the place
-with its starter files and its roles and protection. A task's registration
-for grading takes one.
+with its starter files and its roles and protection. A contestant's
+workspace takes two, their desk and then a place to submit each task
+published by then; a task published afterwards gives each of them its
+place as a thing of its own, in one step. A task's activation at the CI
+takes one.
 """
 
 from collections.abc import Mapping
@@ -30,7 +33,9 @@ STEPS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         ),
         "contest": ("repo", "roles"),
         "task": ("repo", "roles"),
-        "registration": ("register",),
+        "workspace": ("desk", "submission_places"),
+        "submission_place": ("place",),
+        "activation": ("activate",),
     }
 )
 

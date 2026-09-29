@@ -15,9 +15,11 @@ steps in order, and refuses before anything is written.
    `check` works them out again whenever the task's state is asked for.
 3. What the save changes about how the task grades is worked out against
    the latest publication: its plans, the data files they name and the
-   limits. While the contest runs, a save that changes any of them is
-   refused with `ConfirmationRequired`, listing the changes, unless the
-   caller confirms it or asks to keep it as a draft.
+   limits. A save asked to be kept as a draft is written as one here, saying
+   what it held back, and publishes nothing, whatever else holds. While the
+   contest runs, a save that changes any of them is refused with
+   `ConfirmationRequired`, listing the changes, unless the caller confirms
+   it.
 4. The organiser's files and every `plans/<stage>.json` are written as one
    change, as the organiser, so the history is theirs and a publication
    never catches a task half saved.
@@ -26,10 +28,13 @@ steps in order, and refuses before anything is written.
    save landed between the check and the write, the change holds files this
    save never checked, so it is kept as a draft instead, saying so, and the
    next save checks and publishes the task as it then stands.
-6. The task is registered for grading as the org's account, once
-   (`registrations`): at its first publication, or at the next one when the
-   record of it was lost. A registration that fails does not undo the
+6. The task is activated at the CI as the org's account, once
+   (`activations`): at its first publication, or at the next one when the
+   record of it was lost. An activation that fails does not undo the
    publication, and the result says it is pending.
+7. Every approved contestant of the contest who has no place to submit the
+   task yet is given one (`workspaces`), by the poller, so a task published
+   after its contestants were approved reaches them too.
 """
 
 import hashlib
@@ -71,9 +76,9 @@ from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import registrations
+from forge.services import activations, workspaces
 from forge.services.access import Organiser, require
-from forge.services.registrations import Registration
+from forge.services.activations import Activation
 
 log = get_logger(__name__)
 
@@ -89,24 +94,24 @@ LANDED_UNDER = (
 @dataclass(frozen=True, slots=True)
 class Published:
     """A save that published: the publication and its number, whether it
-    changed how the task grades and what, and where the task's registration
-    for grading stands: done by this save, pending with the poller, or not
-    needed because an earlier publication did it.
+    changed how the task grades and what, and where the task's activation at
+    the CI stands: done by this save, pending with the poller, or not needed
+    because an earlier publication did it.
     """
 
     publication: PublicationId
     number: int
     grading_changed: bool
     changes: tuple[str, ...]
-    registration: Registration
+    activation: Activation
 
 
 @dataclass(frozen=True, slots=True)
 class Draft:
     """A save kept as a draft: the version its files were written as, and
     either the errors that kept it from being published, each at its YAML
-    path, or, for a change to how the task grades held back while the
-    contest runs, what it would change.
+    path, or, for a valid save kept as a draft, what it would have changed
+    about how the task grades.
     """
 
     version: VersionId
@@ -138,10 +143,10 @@ async def save(
 ) -> Published | Draft:
     """Save the task's files, each path with its new content and the token
     it was read with, and publish the result when it is valid. Needs the
-    manager role at the task. `confirm` publishes a change to how the task
-    grades while its contest runs; `keep_as_draft` writes it without
-    publishing instead. A token that has moved is `Conflict`, with nothing
-    written.
+    manager role at the task. `keep_as_draft` writes the files and publishes
+    nothing, on any save; otherwise `confirm` publishes a change to how the
+    task grades while its contest runs. A token that has moved is
+    `Conflict`, with nothing written.
     """
     scope = task_scope(task)
     require(organiser, scope, Role.MANAGER)
@@ -164,15 +169,15 @@ async def save(
         before, published_files = await _published_snapshot(ctx, as_, task, latest)
         after = await _saved_snapshot(ctx, as_, task, head, changes, checked, published_files)
         changed = grading_changes(before, after)
-    if changed and not confirm and await _contest_running(ctx, task):
-        if not keep_as_draft:
-            raise ConfirmationRequired(
-                "The contest is running and this save changes how the task grades. Send it "
-                "again confirmed to publish it, or keep it as a draft.",
-                changes=[*changed],
-            )
+    if keep_as_draft:
         version = await _write(ctx, as_, task, head, changes, {}, said)
         return _draft(organiser, task, version, (), changed)
+    if changed and not confirm and await _contest_running(ctx, task):
+        raise ConfirmationRequired(
+            "The contest is running and this save changes how the task grades. Send it "
+            "again confirmed to publish it, or keep it as a draft.",
+            changes=[*changed],
+        )
 
     plans = await _plan_files(ctx, as_, task, head, checked)
     version = await _write(ctx, as_, task, head, changes, plans, said)
@@ -180,18 +185,13 @@ async def save(
     if version != head.version and await _landed_under(ctx, as_, task, head, version, written):
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
     if latest is not None and version == latest.version:
-        return Published(
-            latest.id,
-            latest.number,
-            latest.grading_changed,
-            latest.changes,
-            await registrations.ensure(ctx, task),
+        return await _reached(
+            ctx, task, latest.id, latest.number, latest.grading_changed, latest.changes
         )
     publication = await ctx.forge.workspaces.publish(
         task, version, write_note(bool(changed), changed)
     )
     number = await _number_of(ctx, task, publication)
-    registration = await registrations.ensure(ctx, task)
     log.info(
         "publications.published",
         task=task,
@@ -199,10 +199,26 @@ async def save(
         number=number,
         version=version,
         grading_changed=bool(changed),
-        registration=registration,
         user_id=organiser.user.id,
     )
-    return Published(publication, number, bool(changed), changed, registration)
+    return await _reached(ctx, task, publication, number, bool(changed), changed)
+
+
+async def _reached(
+    ctx: Context,
+    task: TaskId,
+    publication: PublicationId,
+    number: int,
+    grading_changed: bool,
+    changes: tuple[str, ...],
+) -> Published:
+    """The latest publication, once what every publication leads to is made
+    sure of: the task's activation at the CI, and a place to submit it for
+    every approved contestant.
+    """
+    activation = await activations.ensure(ctx, task)
+    await workspaces.place_for_everyone(ctx, task)
+    return Published(publication, number, grading_changed, changes, activation)
 
 
 async def check(

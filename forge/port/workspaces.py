@@ -1,8 +1,10 @@
 """Workspaces, submissions and publications. A workspace is where one
-contestant, or the group entering together, works for one contest; a
-submission and a publication are protected versions that only the platform
-may create. A publication names a version a save already wrote and carries
-a note, the short document `forge.domain.publications` writes and reads.
+contestant, or the group entering together, works for one contest: a desk
+their questions live in and a place to submit each task to, made one part
+at a time so a part that fails is made again alone. A submission and a
+publication are protected versions that only the platform may create. A
+publication names a version a save already wrote and carries a note, the
+short document `forge.domain.publications` writes and reads.
 """
 
 from collections.abc import Sequence
@@ -24,15 +26,28 @@ from forge.domain.publications import Publication
 
 class WorkspacePort(Protocol):
     async def open_workspace(
-        self,
-        contest: ContestId,
-        owner: WorkspaceOwner,
-        member_ids: Sequence[int],
-        tasks: Sequence[TaskId],
+        self, contest: ContestId, owner: WorkspaceOwner, member_ids: Sequence[int]
     ) -> WorkspaceId:
-        """Make the place the owner works in for the contest, with a desk and
-        one submission place per task, and give the members write access.
-        `Conflict` when it already exists.
+        """Make the owner's workspace in the contest with its desk, which the
+        contest's organisers read, and give the members write access to the
+        desk, as the platform. What is there already is kept and only what
+        is missing is made, so this can be run again.
+        """
+        ...
+
+    def workspace_of(self, contest: ContestId, owner: WorkspaceOwner) -> WorkspaceId:
+        """The id the owner's workspace in the contest has, opened or not. No
+        call is made.
+        """
+        ...
+
+    async def open_submission_place(
+        self, workspace: WorkspaceId, task: TaskId, member_ids: Sequence[int]
+    ) -> None:
+        """Make the workspace's place to submit the task, with its submissions
+        reserved for the platform, and give the members write access to it,
+        as the platform. It can be run again, as `open_workspace` can.
+        `NotFound` for a task of another contest.
         """
         ...
 

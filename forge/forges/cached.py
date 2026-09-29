@@ -90,6 +90,9 @@ class CachedIdentity:
         self._cache.put("find_user", (user_id,), found)
         return found
 
+    async def verified_emails(self, user_id: int) -> tuple[str, ...]:
+        return await self._inner.verified_emails(user_id)
+
     async def find_user_by_username(self, username: str) -> User:
         return await self._inner.find_user_by_username(username)
 

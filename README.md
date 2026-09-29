@@ -21,6 +21,7 @@ forge/
                      from a setup
     actions.py       the @action mark
     held.py          the one setup the process holds
+    memo.py          answers the setup keeps for a few seconds
     setup.py         the package set up for one process; start, ready, stop and now
     background.py    the pollers and timed passes that run with nobody clicking
   domain/            the types and their rules, the definition files, the plans,
@@ -73,9 +74,16 @@ forge/api/
                 returns, and task_id_of, the id of a task in a contest
   files.py      read, tree, history, write, rollback, and the File, TreeEntry,
                 EntryKind and Change they return
-  publications.py  save, list, and the Published, Draft, Registration and
+  publications.py  save, list, and the Published, Draft, Activation and
                 Publication they return
   release.py    of_task, and the TaskRelease it returns with its Closed reason
+  contestants.py  register, mine, list, approve, reject, remove, extend, and the
+                Registration they return with its Status and WorkspaceState
+  contest_home.py  contests, home, task, and the ContestSummary, ContestHome,
+                TaskEntry and TaskPage they return, with the Limits and Rate a
+                page carries and the State and ContestVisibility of a contest
+  landing.py    contests, contest, statement, and the PublicContest, PublicTask
+                and PublicStatement they return
   events.py     check, EVENTS_PATH, where the door is, and SIGNATURE_HEADERS, the
                 headers the signature comes in
   roles.py      holders, grant, revoke, and the Holder holders returns
@@ -147,7 +155,7 @@ difference between admin and manager. Provisioning, which includes creating
 every repository since the host lets no one else create one, and protected
 versions are done as the platform account, the account
 `UNICON_FORGE_PLATFORM_ACCOUNT` names and the admin token belongs to.
-Registering a task for grading and starting its runs are done as the org's own
+Activating a task at the CI and starting its runs are done as the org's own
 account, which the caller hands in as an `AsOrgAccount` carrying that
 account's two credentials.
 
@@ -167,7 +175,16 @@ every file of a place at a version with its token, the same for the same
 content, which is how a save compares data files without reading them.
 `workspaces.publish` names a version a save already wrote as the next
 publication, with a note, and `workspaces.list_publications` reads each back
-as a `Publication` with what its note says.
+as a `Publication` with what its note says. A contestant's workspace is made
+one part at a time, each of which can be run again and keeps what is
+already right: `workspaces.open_workspace` makes the desk and gives the
+members write access to it, `workspaces.open_submission_place` makes the
+place to submit one task, reserves its submissions for the platform and only
+then gives them write access there, and `workspaces.close_workspace` takes
+the access away and keeps everything in it. `workspaces.workspace_of` names
+a workspace without a call, for closing one whose name never reached the
+contestant's row. `identity.verified_emails` reads the addresses the host
+has confirmed are a person's.
 
 The org account is made by the platform too, through five more operations
 the port declares: `identity.create_user` and `mint_token` make the account
@@ -266,6 +283,9 @@ hosting process calls are actions, marked `@action` from
 | `files` | `read`, `tree`, `history`, `write`, `rollback` |
 | `publications` | `save`, `list` |
 | `release` | `of_task` |
+| `contestants` | `register`, `mine`, `list`, `approve`, `reject`, `remove`, `extend` |
+| `contest_home` | `contests`, `home`, `task` |
+| `landing` | `contests`, `contest`, `statement` |
 | `events` | `check` |
 | `roles` | `holders`, `grant`, `revoke` |
 
@@ -415,9 +435,9 @@ takes each path with its new content and the token it was read with, as an
    the latest publication: its plans, the data files its settings name and
    its limits. While the contest runs, a save that changes any of them is
    refused with `ConfirmationRequired`, listing the changes, and nothing is
-   written; the same save with `confirm=True` publishes, and with
-   `keep_as_draft=True` its files are written as a draft that says what it
-   held back.
+   written; the same save with `confirm=True` publishes. A save with
+   `keep_as_draft=True` is written as a draft that says what it held back
+   and publishes nothing, on any save, valid or not, running contest or not.
 4. The organiser's files and every `plans/<stage>.json` are written as one
    change, as the organiser; a plan of a stage the task no longer has is
    removed in the same change.
@@ -427,16 +447,18 @@ takes each path with its new content and the token it was read with, as an
    another save landed between the check and the write, the change holds
    files this save never checked, so it comes back as a `Draft` saying so,
    and the next save checks and publishes the task as it then stands.
-6. The task is registered for grading as the org's account, once: activated
-   at the CI, trusted for `volumes` and nothing else, and left with no
-   webhook. Its `registration` row in `provisioning` is the record, so the
-   first publication registers it, and a later one does only when that
-   record never landed. A registration that fails does not undo the
+6. The task is activated at the CI as the org's account, once: taken for
+   grading, trusted for `volumes` and nothing else, and left with no
+   webhook. Its `activation` row in `provisioning` is the record, so the
+   first publication activates it, and a later one does only when that
+   record never landed. An activation that fails does not undo the
    publication: the row is left waiting for the `provisioning` poller, and
    the result says it is pending until the poller has made it.
+7. Every approved contestant of the contest with no place to submit the task
+   yet is given one, by the poller (below).
 
 A valid save comes back as `Published`, with the publication, its number,
-whether it changed how the task grades and what, and the registration:
+whether it changed how the task grades and what, and the activation:
 `done`, `pending` or `not_needed`. `publications.list` gives every
 publication with its flag and its changes, for the task's history.
 
@@ -446,6 +468,69 @@ reads `contest.yaml`, the `task.yaml` of the latest publication and the
 person's own time extension on their `contestants` row, all as the
 platform, and a task with no publication is not released. Nothing at the
 forge changes when a task becomes released.
+
+## Contestants
+
+A person asks to join a contest with `contestants.register(session,
+contest)`, with the code the contest asks for when it asks for one. A
+request nobody has approved has nothing at the forge, so all of it is a row
+in `contestants`. The contest has to be one they see: published, and
+`public` or `signed-in`. Then, stopping at the first refusal, each with a
+code of its own: the registration window is open (`registration_closed`);
+they hold no role at the contest, its tasks or its org (`is_staff`), read
+under the org's lock on role changes, the one `roles.grant` takes, so a
+grant and a registration never pass each other; they have no registration
+there already (`already_registered`); the invite, the code and the email
+address the contest asks for (`invite_required`, `wrong_invite_code`,
+`domain_not_allowed`), where a pattern must match the whole of one of the
+addresses the forge has confirmed are theirs, whatever its case, within a
+time limit, since the pattern is an organiser's; an address counts only as
+far as the forge confirms it, so with Forgejo that needs
+`REGISTER_EMAIL_CONFIRM` on wherever people sign themselves up; and a place is free (`contest_full`), counted under an
+advisory lock on the contest, so the last place goes once. The row is
+written pending with what let it through; with `approval: auto` it is
+approved in the same call. The rules themselves are in
+`forge/domain/registration.py`.
+
+An organiser managing the contest decides: `approve` a pending registration,
+`reject` a pending one with a reason the person reads (`invalid_reason`
+without one), `remove` an approved one, and `extend` a pending or approved
+one, which gives that person more time past the contest's end
+(`invalid_extension` below nothing or past a year). A decision from any
+other status is `wrong_status`, naming the status. `list` gives every
+registration of the contest to anyone observing it, oldest first, with
+where each approved contestant's workspace stands; `mine` gives a person
+their own.
+
+Approval asks for the contestant's workspace, which the `provisioning`
+poller makes in parts, each recorded as a row of its own and tried again
+alone when it fails: the `workspace` row opens the desk, names the
+workspace on the contestant's row, and asks for a `submission_place` row
+for every task published by then, released or not; each `submission_place`
+row makes that one place, once the desk is open, and waits for it
+otherwise. A save that publishes a task, and the nightly pass, ask for a
+place for every approved contestant with none yet, so a task published
+later reaches them. The workspace is `ready` once its desk and every place asked for it
+are made, and `preparing` until then, with the reason while a part is
+failing. Removing a contestant takes their access to every part away and
+keeps what is in it; a part made for someone no longer approved does
+nothing. The poller takes its rows in the order of what they make, so every
+tick locks contestants in the same order.
+
+What a signed-in person reads of a contest is `contest_home`: `contests`,
+every contest they see with their own status; `home`, a contest's dates,
+their registration, what the register form needs, their own deadline, which
+is the end plus their extension, the server's clock and the tasks released
+to them in the contest's order; and `task`, a visible task's statement and
+limits and nothing else of what it holds. A visitor with no session reads
+`landing`: the public contests, one with its released tasks, and a released
+task's statement. The list of public contests is kept by each process for
+five seconds (`ctx.memo`, `forge/runtime/memo.py`), since anyone may ask for
+it and it reads every org's contests; visitors arriving while it is read wait
+for that one read. All of it is read live as the platform from the latest
+publication of each task, with the contest's visibility and the release
+rules applied first, and a contest or task the reader may not see is no
+such contest or task, the same answer as one that is not there.
 
 ## Errors
 
@@ -464,10 +549,15 @@ structured members in `extra`:
 | `SoleAdmin` | `sole_admin` | `scopes`, each `{"kind", "name"}` |
 | `ContestantConflict` | `contestant_conflict` | `contests` |
 | `SharedWorkflowOwner` | `shared_workflow_owner` | `workflows` |
+| `WrongStatus` | `wrong_status` | `current`, the registration's status |
 
 The rest, `invalid_name`, `unauthenticated`, `session_expired`,
-`fresh_sign_in_required`, `sign_in_invalid`, `sign_in_denied` and
-`not_ready`, carry nothing beyond the detail.
+`fresh_sign_in_required`, `sign_in_invalid`, `sign_in_denied`,
+`not_ready`, the registration refusals `registration_closed`, `is_staff`,
+`already_registered`, `invite_required`, `wrong_invite_code`,
+`domain_not_allowed` and `contest_full`, which share the base class
+`RegistrationRefused`, and `invalid_reason` and `invalid_extension`, carry
+nothing beyond the detail.
 
 ## The tables
 
@@ -480,6 +570,8 @@ forge credential, CI credential and event secret each as AES-256-GCM
 ciphertext under `UNICON_TOKEN_ENCRYPTION_KEY`, the way a session's
 credential is, so a copy of the table hands out no access;
 `services/credentials.py` is the one place either is sealed or opened.
+`contestants` names each contestant's workspace in `workspace_id` once it is
+opened, so it keeps the name it was opened under.
 `unicon-forge migrate` reads `UNICON_DATABASE_URL`, applies the migrations
 under `forge/db/alembic/` and exits. A deployment runs it before the host
 starts, from the host's image, which has the package and its command
@@ -492,8 +584,10 @@ processes are up. Both are in `forge/runtime/background.py`. Each tick is
 one unit of work, and its work runs with the `Context` over it, the forge
 included. The setup runs three loops: the `provisioning` poller every two
 seconds over the `pending` and `failed` rows whose `retry_at` has come,
-handing each by its `kind`, `org`, `contest`, `task` or `registration`, to
-the service of that name, as `MAKERS` in `forge/runtime/setup.py` lists;
+handing each by its `kind` to the service that makes it, as `MAKERS` in
+`forge/runtime/setup.py` lists: `org`, `contest` and `task` to the service
+of that name, `workspace` and `submission_place` to `workspaces`, and
+`activation` to `activations`;
 `sessions.sweep` hourly; and `drift.nightly` daily, which puts back any org
 account missing from its place in its org, makes one call to the CI as each
 account, since the CI refreshes the account's forge credential only when
@@ -501,7 +595,8 @@ that account calls it, signing in again any account the CI no longer
 answers, makes every org's roles again, giving back any team whose
 permission changed at the forge, and secures every contest and task of every
 org the platform made again, putting back any role, protection or
-reservation that went missing.
+reservation that went missing, and asks for any place to submit a published
+task that an approved contestant still lacks.
 
 ## Layer rules
 
@@ -525,7 +620,10 @@ JSON object: `time`, `level`, `logger`, `event`, then the fields. A
 hosts the package calls `forge.api.log.setup()` once at start, before
 anything logs. It reads `UNICON_LOG_LEVEL` and sends every logger in the
 process through the one JSON handler, the web server's included, and the
-host writes its own records through `forge.api.log.get_logger`.
+host writes its own records through `forge.api.log.get_logger`. The HTTP
+client's own loggers, `httpx` and `httpcore`, log from a warning up whatever
+the level, since the line they write for every request holds its whole URL,
+and a URL of the CI's sign-in holds a one-time code.
 
 ## Testing
 
@@ -547,7 +645,8 @@ records a test caused as the JSON objects they are written as. `tick(setup,
 name)` runs one tick of the poller or timed pass of that name, such as
 `provisioning` or `drift.nightly`, as the setup would, and
 `register_contestant(setup, contest, user_id)` writes the row that makes
-someone a contestant, with a status and an extension. `seed_classic(fake)`
+someone a contestant, with a status and an extension, and asks for no
+workspace. `seed_classic(fake)`
 puts the built-in workflow `unicon/classic@v1` at the fake from `CLASSIC`, a
 copy of the file deploy's bootstrap seeds, so a task's first save finds a
 workflow; the package's tests check the copy against deploy's file when that
