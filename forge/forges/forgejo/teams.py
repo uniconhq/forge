@@ -1,7 +1,17 @@
 """Roles at Forgejo are teams: one per role per scope, named
 `<org>-admin`, `<org>.<contest>-manager` and so on, plus the org account's
 team `<org>-ci`. An org-level team covers every repository in the org;
-contest and task teams are attached to the repositories of their scope.
+contest and task teams are attached to the repositories of their scope, and
+a contest's teams to its tasks' repositories too, which is how a role at a
+contest reaches its tasks at the forge.
+
+No organiser's team is a repository admin at the forge. A repository admin
+may edit and delete the repository's protected tags and branches (measured
+on Forgejo 15.0.8), which would let them make a publication or rewrite
+history, so the admin and manager roles are both `write` there and the
+platform holds the difference between them. Only the org account's team is
+an admin, because the CI accepts nothing less from whoever registers a
+repository. A team found with any other permission is put back.
 """
 
 from typing import Any
@@ -12,7 +22,8 @@ from forge.domain.roles import Role, Scope, ScopeKind
 from forge.forges.forgejo.http import Http, json_of
 
 CI_TEAM_SUFFIX = "ci"
-TEAM_PERMISSIONS = {Role.ADMIN: "admin", Role.MANAGER: "write", Role.OBSERVER: "read"}
+TEAM_PERMISSIONS = {Role.ADMIN: "write", Role.MANAGER: "write", Role.OBSERVER: "read"}
+CI_TEAM_PERMISSION = "admin"
 UNITS = ["repo.code", "repo.issues", "repo.releases"]
 SEARCH_LIMIT = 50
 
@@ -45,21 +56,31 @@ class Teams:
 
     async def ensure_role_teams(self, org: str) -> None:
         """The three org-level role teams and the org account's team, each
-        made only if it is not there.
+        made only if it is not there and given back its permission if that
+        has changed.
         """
         for role in Role:
             await self.ensure(Scope(org), role)
-        if await self.find(org, ci_team_name(org)) is None:
-            await self._create(org, ci_team_name(org), "admin", all_repos=True)
+        team = await self.find(org, ci_team_name(org))
+        if team is None:
+            await self._create(org, ci_team_name(org), CI_TEAM_PERMISSION, all_repos=True)
+        elif team.get("permission") != CI_TEAM_PERMISSION:
+            await self._set_permission(team, CI_TEAM_PERMISSION)
 
     async def ensure(self, scope: Scope, role: Role) -> dict[str, Any]:
+        """The role's team at the scope, made if it is not there and given
+        back its permission if that has changed.
+        """
         name = team_name(scope, role)
+        permission = TEAM_PERMISSIONS[role]
         team = await self.find(scope.org, name)
-        if team is not None:
-            return team
-        return await self._create(
-            scope.org, name, TEAM_PERMISSIONS[role], all_repos=scope.kind is ScopeKind.ORG
-        )
+        if team is None:
+            return await self._create(
+                scope.org, name, permission, all_repos=scope.kind is ScopeKind.ORG
+            )
+        if team.get("permission") != permission:
+            await self._set_permission(team, permission)
+        return team
 
     async def find(self, org: str, name: str) -> dict[str, Any] | None:
         try:
@@ -80,6 +101,12 @@ class Teams:
         """
         return await self._http.get_all(as_, "/api/v1/user/teams")
 
+    async def of_user(self, username: str) -> list[dict[str, Any]]:
+        """Every team a user belongs to, across every org, in one listing the
+        platform account reads on their behalf.
+        """
+        return await self._http.get_all(PLATFORM, "/api/v1/user/teams", sudo=username)
+
     async def members(self, team_id: int) -> list[dict[str, Any]]:
         return await self._http.get_all(PLATFORM, f"/api/v1/teams/{team_id}/members")
 
@@ -89,18 +116,40 @@ class Teams:
     async def remove_member(self, team_id: int, username: str) -> None:
         await self._http.call(PLATFORM, "DELETE", f"/api/v1/teams/{team_id}/members/{username}")
 
-    async def attach_scope(self, scope: Scope, repo: str) -> None:
-        """Put a repository under the role teams of its scope, creating them
-        as needed. An org-level scope needs nothing: its teams cover every
-        repository.
+    async def attach_scope(self, scope: Scope, repo: str) -> int:
+        """Put a repository under the role teams of its scope and of every
+        contest above it, creating the teams as needed, so a contest's roles
+        reach its tasks as well as the contest itself. An org's teams need
+        nothing: they cover every repository. A team already attached is
+        left alone; returns how many had to be attached.
         """
-        if scope.kind is ScopeKind.ORG:
-            return
-        for role in Role:
-            team = await self.ensure(scope, role)
-            await self._http.call(
-                PLATFORM, "PUT", f"/api/v1/teams/{team['id']}/repos/{scope.org}/{repo}"
-            )
+        attached = 0
+        for at in scope.lineage():
+            if at.kind is ScopeKind.ORG:
+                continue
+            for role in Role:
+                team = await self.ensure(at, role)
+                path = f"/api/v1/teams/{team['id']}/repos/{scope.org}/{repo}"
+                try:
+                    await self._http.call(PLATFORM, "GET", path)
+                except NotFound:
+                    await self._http.call(PLATFORM, "PUT", path)
+                    attached += 1
+        return attached
+
+    async def _set_permission(self, team: dict[str, Any], permission: str) -> None:
+        await self._http.call(
+            PLATFORM,
+            "PATCH",
+            f"/api/v1/teams/{team['id']}",
+            json={
+                "name": team["name"],
+                "permission": permission,
+                "includes_all_repositories": bool(team.get("includes_all_repositories")),
+                "can_create_org_repo": False,
+                "units": UNITS,
+            },
+        )
 
     async def _create(
         self, org: str, name: str, permission: str, *, all_repos: bool

@@ -1,6 +1,8 @@
 """Grading runs at the CI: registering a task once and starting runs as the
 org account the caller hands in, then reading and cancelling runs as the CI's
-administrator.
+administrator. The CI admits only accounts it was told about, so the org
+account's user there is made by the CI's administrator and its credential is
+minted by signing the account in, unattended, with its password at the host.
 """
 
 from collections.abc import Mapping
@@ -33,3 +35,22 @@ class GradingPort(Protocol):
         ...
 
     async def cancel_run(self, run: RunId) -> None: ...
+
+    async def create_ci_user(self, username: str) -> int:
+        """Make the account's user at the CI, as the CI's administrator, and
+        return its id there. A user that exists is found instead.
+        """
+        ...
+
+    async def mint_ci_token(self, username: str, forge_password: str) -> str:
+        """Sign the account in at the CI through the host, unattended, with
+        its password at the host, and mint the credential the CI takes from
+        it afterwards. `Forbidden` when the host refuses the password.
+        """
+        ...
+
+    async def ci_user_is_alive(self, as_: AsOrgAccount) -> bool:
+        """Whether the CI still answers the org account under its credential.
+        The call itself is what keeps the account's copy at the CI fresh.
+        """
+        ...

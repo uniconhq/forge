@@ -2,6 +2,14 @@
 retrying `Http`. It signs each request for the identity the call is made
 under, retries a server that is busy, and turns every refusal into one of the
 port's five errors.
+
+A retry never makes something twice. Every method but POST sets a state, so
+reading, putting, patching and deleting are retried on a busy server or a
+lost answer alike. A POST creates something, so it is retried only when it
+never reached the server, the connection failing before anything was sent;
+a POST the server answered with an error, or whose answer was lost, is
+`Unavailable` at once, and the step that sent it finds on its next run
+whether the thing was made.
 """
 
 import asyncio
@@ -24,6 +32,8 @@ PAGE_SIZE = 50
 MAX_PAGES = 200
 
 SERVER_ERROR = 500
+CREATES = frozenset({"POST"})
+NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 NOT_FOUND = 404
 FORBIDDEN = (401, 403)
 CONFLICT = 409
@@ -149,13 +159,13 @@ class Http:
                         method, path, json=json, data=data, params=params, headers=headers
                     )
             except httpx.HTTPError as exc:
-                if attempt == self._retries:
+                if attempt == self._retries or not _may_resend(method, exc):
                     raise Unavailable(f"no answer from {path}: {type(exc).__name__}") from exc
                 await self._pause(attempt)
                 continue
             if response.status_code < SERVER_ERROR:
                 return response
-            if attempt == self._retries:
+            if attempt == self._retries or method in CREATES:
                 raise Unavailable(f"{path} answered {response.status_code}")
             await self._pause(attempt)
         raise Unavailable(f"no answer from {path}")
@@ -163,6 +173,13 @@ class Http:
     async def _pause(self, attempt: int) -> None:
         log.debug("http.retry", attempt=attempt + 1)
         await asyncio.sleep(self._backoff * (2**attempt))
+
+
+def _may_resend(method: str, failure: httpx.HTTPError) -> bool:
+    """Whether a request that failed on the way may be sent again: any that
+    sets a state, and a create only when it never left.
+    """
+    return method not in CREATES or isinstance(failure, NOT_SENT)
 
 
 def new_client(base_url: str) -> httpx.AsyncClient:

@@ -1,12 +1,14 @@
 """What the in-memory forge holds: users, orgs and their roles, repositories
-with their files, versions and access, threads, runs and agents, plus the
-record of every call made through the port and the knobs a test turns.
+with their files at every version, their protected versions and who reaches
+them, threads, runs and agents, plus the record of every call made through
+the port and the knobs a test turns.
 """
 
 import hashlib
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from forge.domain.clock import Clock, SystemClock
@@ -33,18 +35,33 @@ class Call:
 
 @dataclass
 class Repo:
+    """One place at the fake forge. `scope` is the contest or task it belongs
+    to, and `teams` the roles of which scopes reach it: an org's roles reach
+    every place in the org, a contest's or a task's only the places they are
+    attached to. `snapshots` holds every file at every version, and
+    `touched` the paths each version wrote or removed. `reserved` is the
+    protected versions' prefixes only the platform may create here, and
+    `rewrites_refused` whether its history is kept from being rewritten.
+    """
+
     owner: str
     name: str
     private: bool = True
     files: dict[str, bytes] = field(default_factory=dict)
     tokens: dict[str, ConflictToken] = field(default_factory=dict)
     history: list[Change] = field(default_factory=list)
+    snapshots: dict[str, dict[str, bytes]] = field(default_factory=dict)
+    touched: dict[str, set[str]] = field(default_factory=dict)
     versions: dict[str, str] = field(default_factory=dict)
+    notes: dict[str, str] = field(default_factory=dict)
     writers: set[int] = field(default_factory=set)
     readers: set[int] = field(default_factory=set)
     stars: set[int] = field(default_factory=set)
     marked: str | None = None
     scope: Scope | None = None
+    teams: set[Scope] = field(default_factory=set)
+    reserved: set[str] = field(default_factory=set)
+    rewrites_refused: bool = False
 
     @property
     def head(self) -> str:
@@ -55,9 +72,12 @@ class Repo:
 class Org:
     name: str
     description: str
+    display_name: str | None = None
     roles: dict[tuple[Scope, Role], set[int]] = field(default_factory=dict)
     roles_ready: bool = False
     labels: set[str] = field(default_factory=set)
+    account_members: set[int] = field(default_factory=set)
+    event_push: tuple[str, str] | None = None
 
 
 class State:
@@ -71,10 +91,16 @@ class State:
         self.threads: dict[ThreadId, Thread] = {}
         self.runs: dict[RunId, Run] = {}
         self.agents: dict[AgentId, tuple[str | None, str, str]] = {}
+        self.published_at: dict[tuple[str, int], datetime] = {}
         self.calls: list[Call] = []
         self.codes: dict[str, tuple[int, str, str]] = {}
         self.credentials: dict[str, int] = {}
         self.refresh_tokens: dict[str, int] = {}
+        self.passwords: dict[int, str] = {}
+        self.tokens: dict[str, int] = {}
+        self.ci_users: dict[str, int] = {}
+        self.ci_tokens: dict[str, str] = {}
+        self.ci_dead: set[str] = set()
         self.refreshes = 0
         self.refuse_refresh = False
         self.unavailable = False
@@ -95,6 +121,15 @@ class State:
 
     def username(self, user_id: int) -> str:
         return self.user(user_id).username
+
+    def user_named(self, username: str) -> User:
+        for user in self.users.values():
+            if user.username.lower() == username.lower():
+                return user
+        raise NotFound(f"no user named {username}")
+
+    def new_user_id(self) -> int:
+        return max(self.users, default=0) + 1
 
     def org(self, name: str) -> Org:
         try:
@@ -125,11 +160,24 @@ class State:
             self.commit(repo, files, "Create", None)
         return repo
 
-    def commit(self, repo: Repo, files: Files, message: str, author_id: int | None) -> str:
+    def commit(
+        self,
+        repo: Repo,
+        files: Mapping[str, bytes | None],
+        message: str,
+        author_id: int | None,
+    ) -> str:
+        """One new version writing `files`, where none removes a file."""
         version = secrets.token_hex(20)
         for path, content in files.items():
+            if content is None:
+                repo.files.pop(path, None)
+                repo.tokens.pop(path, None)
+                continue
             repo.files[path] = content
-            repo.tokens[path] = ConflictToken(hashlib.sha1(content).hexdigest())
+            repo.tokens[path] = token_of(content)
+        repo.snapshots[version] = dict(repo.files)
+        repo.touched[version] = set(files)
         repo.history.append(
             Change(
                 version=VersionId(version),
@@ -141,13 +189,22 @@ class State:
         return version
 
     def create_version(
-        self, as_: Identity, repo: Repo, name: str, *, at: str | None = None
+        self, as_: Identity, repo: Repo, name: str, *, at: str | None = None, note: str = ""
     ) -> None:
         if name.startswith(PROTECTED_PREFIXES) and not isinstance(as_, Platform):
             raise Forbidden(f"only the platform may create {name}")
         if name in repo.versions:
             raise Conflict(f"{name} already exists")
         repo.versions[name] = at or repo.head
+        repo.notes[name] = note
+
+    def files_at(self, repo: Repo, at: str | None) -> dict[str, bytes]:
+        """Every file of the repository at a version, or at its head."""
+        if at is None:
+            return repo.files
+        if at not in repo.snapshots:
+            raise NotFound(f"{repo.owner}/{repo.name} has no version {at}")
+        return repo.snapshots[at]
 
     def next_number(self, repo: Repo, prefix: str) -> int:
         return len([name for name in repo.versions if name.startswith(prefix)]) + 1
@@ -202,9 +259,20 @@ class State:
         )
 
     def holds(self, user_id: int, repo: Repo, role: Role) -> bool:
+        """Whether the user holds `role` in a way that reaches the repository:
+        at its org, or at a contest or task whose roles are attached to it.
+        """
         if repo.scope is None or repo.owner not in self.orgs:
             return False
         return any(
-            scope.covers(repo.scope) and RANK[held] >= RANK[role] and user_id in members
+            scope.covers(repo.scope)
+            and (scope.contest is None or scope in repo.teams)
+            and RANK[held] >= RANK[role]
+            and user_id in members
             for (scope, held), members in self.orgs[repo.owner].roles.items()
         )
+
+
+def token_of(content: bytes) -> ConflictToken:
+    """The token a file is read with: the same for the same content."""
+    return ConflictToken(hashlib.sha1(content).hexdigest())
