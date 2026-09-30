@@ -5,7 +5,8 @@ create carries a random suffix and is removed afterwards. The tests that
 need the CI run only when `UNICON_LIVE_CI_URL`, `UNICON_LIVE_CI_PUBLIC_URL`,
 `UNICON_LIVE_CI_ADMIN_TOKEN` and `UNICON_LIVE_FORGE_PUBLIC_URL` name a
 running Woodpecker signed in through that Forgejo, and the forge as a
-browser reaches it. The contest and task content is in `test_content.py`.
+browser reaches it. The contest and task content is in `test_content.py`,
+and the workflows people make in `test_workflows.py`.
 """
 
 import contextlib
@@ -265,22 +266,6 @@ async def test_the_same_person_has_a_workspace_in_each_contest_of_the_org(
 
     await forge.workspaces.close_workspace(in_first, [int(user["id"])])
     assert len(await forge.threads.list_threads(person, in_second, ThreadKind.CLARIFICATION)) == 1
-
-
-async def test_a_person_creates_a_workflow_under_their_own_name(
-    forge: ForgejoForge, user: dict[str, Any], person: AsUser, admin: httpx.Client
-) -> None:
-    workflow = await forge.workflows.create_workflow(
-        person, user["login"], "mine", {"workflow.yaml": b"steps: []\n"}, Visibility.PRIVATE
-    )
-    await forge.workflows.create_workflow_version(person, workflow, "v1")
-
-    read = await forge.workflows.read_workflow_file(person, workflow, "v1", "workflow.yaml")
-    assert read.content == b"steps: []\n"
-    owned = await forge.workflows.workflows_owned_by(int(user["id"]))
-    assert [entry.id for entry in owned] == [workflow]
-    commits = admin.get(f"/api/v1/repos/{user['login']}/mine.workflow/commits").json()
-    assert commits[-1]["author"]["login"] == user["login"]
 
 
 async def test_threads_are_posted_answered_and_closed(forge: ForgejoForge, org: str) -> None:
