@@ -256,3 +256,20 @@ def _place_target(contestant_id: uuid.UUID, task: TaskId) -> str:
 def _parse_place_target(target: str) -> tuple[uuid.UUID, TaskId]:
     contestant_id, task = target.split(SEPARATOR, 1)
     return uuid.UUID(contestant_id), TaskId(task)
+
+
+async def place_ready(ctx: Context, contestant: Contestant, task: TaskId) -> bool:
+    """Whether the contestant's desk is open and their place to submit the
+    task is made.
+    """
+    if contestant.workspace_id is None:
+        return False
+    status = (
+        await ctx.db.execute(
+            select(Provisioning.status).where(
+                Provisioning.kind == PLACE_KIND,
+                Provisioning.target_id == _place_target(contestant.id, task),
+            )
+        )
+    ).scalar_one_or_none()
+    return status == provisioning.READY
