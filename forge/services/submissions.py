@@ -32,13 +32,14 @@ forge by the key its protected version's note carries, and only its rows are
 inserted. A submit whose commit landed but whose version was never named
 leaves a commit that is no submission, and the next try makes one. What is
 left is a submission named at the forge whose rows never landed and whose
-submit is never tried again.
+submit is never tried again; the reconcile pass inserts its grading.
 
 A contestant reads their own submissions back, newest first, each with its
 grading at every stage as that stage's `show` allows: status only, status
 and metrics, or everything. `files` gives the inputs a submission was made
 with, and `file` one of its files, so a page can put them back into the
-upload panel.
+upload panel. `run_log` gives the log of a grading's run where the stage
+shows everything, of at most `RUN_LOG_MAX` bytes (`log_too_large`).
 
 What the store or the forge says when it fails goes to the log, and the
 contestant is told only that it did not answer, refused the platform, or
@@ -64,6 +65,7 @@ from forge.domain.errors import (
     Conflict,
     Forbidden,
     InvalidIdempotencyKey,
+    LogTooLarge,
     Misconfigured,
     NotFound,
     PortError,
@@ -76,7 +78,7 @@ from forge.domain.errors import (
     UploadNotYours,
     WorkspaceNotReady,
 )
-from forge.domain.grading import GradingStatus
+from forge.domain.grading import RUN_LOG_MAX, GradingStatus, log_key
 from forge.domain.identity import AsUser
 from forge.domain.ids import SubmissionId, TaskId, WorkspaceId
 from forge.domain.sessions import Session
@@ -95,6 +97,7 @@ SUBMIT_LOCK = 0x5355424D
 """The first key of every lock on a workspace's submits of a task, the second
 being the workspace and task hashed by Postgres."""
 NO_SUCH_SUBMISSION = "There is no such submission."
+NO_LOG = "This submission has no log you may read."
 FORGE_UNAVAILABLE = "The forge did not answer; try again in a moment."
 FORGE_MISCONFIGURED = "The forge refused the platform's own registration."
 FORGE_REFUSED = "The forge refused the submission; submit again, or tell the organisers."
@@ -264,6 +267,48 @@ async def file(ctx: Context, session: Session, task: TaskId, number: int, path: 
     if path not in named:
         raise NotFound("The submission has no such file.")
     return await _file(ctx, user, submission, path)
+
+
+@action
+async def run_log(
+    ctx: Context, session: Session, task: TaskId, number: int, *, stage: str | None = None
+) -> bytes:
+    """The run log of one of the signed-in person's own submissions, of the
+    latest attempt at `stage`, or at the first stage in the task's order
+    with a log, where the stage's `show` is `full`. `NotFound` for a
+    submission that is not theirs, or one with no log they may read, and
+    `LogTooLarge` for a log over `RUN_LOG_MAX` bytes, which is never read
+    whole.
+    """
+    entrant = await submitters.entrant(ctx, session, task)
+    workspace = entrant.workspace
+    found = await _read(ctx, entrant, workspace, number) if workspace is not None else []
+    if not found:
+        raise NotFound(NO_SUCH_SUBMISSION)
+    shown = [
+        result
+        for result in found[0].gradings
+        if result.log and (stage is None or result.stage == stage)
+    ]
+    if not shown:
+        raise NotFound(NO_LOG)
+    grading = str(shown[0].id)
+    try:
+        return await ctx.forge.objects.read(
+            Store.RESULTS, log_key(shown[0].id, shown[0].attempt), max_size=RUN_LOG_MAX
+        )
+    except NotFound as exc:
+        log.warning("submissions.log_missing", task=task, number=number)
+        raise NotFound(NO_LOG) from exc
+    except Misconfigured as exc:
+        raise uploads.store_failure(exc, "submissions.log_unreadable", grading=grading) from None
+    except Rejected as exc:
+        log.warning("submissions.log_too_large", grading=grading, detail=exc.detail)
+        raise LogTooLarge(
+            f"The run log is larger than the {RUN_LOG_MAX} bytes shown.", limit=RUN_LOG_MAX
+        ) from None
+    except PortError as exc:
+        raise uploads.store_failure(exc, "submissions.log_unreadable", grading=grading) from None
 
 
 async def _hold(ctx: Context, workspace: WorkspaceId, task: TaskId) -> None:

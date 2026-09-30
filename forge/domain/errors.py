@@ -232,8 +232,9 @@ class ContestFull(RegistrationRefused):
 
 
 class WrongStatus(ServiceError):
-    """A decision the registration's status does not allow, such as approving
-    one already rejected. `current` is the status it has.
+    """A decision the thing's status does not allow, such as approving a
+    registration already rejected or cancelling a grading that is done.
+    `current` is the status it has.
     """
 
     code = "wrong_status"
@@ -352,6 +353,14 @@ class InvalidInputs(SubmitRefused):
     code = "invalid_inputs"
 
 
+class LogTooLarge(ServiceError):
+    """A run log is larger than the platform reads back for a contestant,
+    which no harness writes. `limit` is the most shown, in bytes.
+    """
+
+    code = "log_too_large"
+
+
 class InvalidIdempotencyKey(ServiceError):
     """A submit's idempotency key is missing or not the short random text a
     browser makes once per submit.
@@ -370,6 +379,14 @@ class CiRequestRefused(ServiceError):
     code = "ci_request_refused"
 
 
+class InvalidToken(ServiceError):
+    """A grading run's report carries no token, or not the token of the
+    grading it is for. A token of another grading is refused the same way.
+    """
+
+    code = "invalid_token"
+
+
 class GradingClosed(ServiceError):
     """The grading takes no more from its run: it is not the run's to report
     on now, because it finished, was cancelled or requeued, or its deadline
@@ -377,3 +394,11 @@ class GradingClosed(ServiceError):
     """
 
     code = "grading_closed"
+
+
+class InvalidCallback(ServiceError):
+    """A grading run's report is not one: not a JSON object, an event this
+    platform does not take, or a progress report without its counts.
+    """
+
+    code = "invalid_callback"

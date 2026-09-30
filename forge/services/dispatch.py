@@ -26,11 +26,14 @@ publication is gone cannot be run at all and ends in `system_error` too.
 
 The `gradings.overdue` pass looks every minute at the runs the CI holds
 whose deadline has passed. A run the CI reports ended, or no longer has, died
-without a verdict. A run still going past a running grading's deadline has
-overrun the time it was given, so it is cancelled at the CI and died the
-same way. A run the CI has not handed to a machine yet, or is still checking
-out, is looked at again five minutes later. A grading whose run died ends in
-`system_error`.
+without a verdict. A run still going past a running grading's deadline can
+report nothing any more, since its token is refused, so it is cancelled at
+the CI and died the same way. A run the CI has not handed to a machine yet,
+or is still checking out, is looked at again five minutes later. A grading
+whose run died goes back to the queue once, to get a fresh machine, and the
+second time ends in `system_error`. Its next run is handed new secrets, so
+the run given up on can neither fetch the next one's envelope nor report for
+it.
 """
 
 import contextlib
@@ -63,10 +66,12 @@ log = get_logger(__name__)
 POLL_INTERVAL = timedelta(seconds=2)
 OVERDUE_INTERVAL = timedelta(minutes=1)
 OVERDUE_BATCH = 50
+REQUEUES = 1
 REFUSALS = 20
 
 WAITING_FOR_MACHINE = "Waiting for a grading machine to take its run."
 CHECKING_OUT = "Its run is checking out the task and the submission."
+REQUEUED = "Its run ended without a verdict; it is being tried once more."
 ACCOUNT_NOT_READY = "The org's grading account is not ready yet."
 NOT_ACTIVATED = "The task is not taken for grading at the CI yet."
 REFUSED = "The CI refused the org's grading account."
@@ -74,7 +79,7 @@ NO_RUN = "The CI answered without starting a run."
 NO_ANSWER = "The CI did not answer."
 UNEXPECTED = "Something went wrong starting its run."
 PUBLICATION_GONE = "The publication it grades against is gone."
-DIED = "Its run ended without a verdict."
+DIED_TWICE = "Its run ended without a verdict twice."
 GAVE_UP = "The CI answered its start without a run 20 times."
 
 
@@ -230,6 +235,22 @@ async def _is_dead(ctx: Context, row: Grading) -> bool:
 
 
 def died(ctx: Context, row: Grading) -> None:
-    """A run of the grading ended without a verdict: `system_error`."""
-    log.warning("dispatch.died", grading=str(row.id), run=row.run_id)
-    gradings.finish(row, GradingStatus.SYSTEM_ERROR, ctx.now, error=DIED)
+    """A run of the grading ended without a verdict: back to the queue the
+    first time, with the next run's token, and `system_error` the second.
+    """
+    if row.requeues >= REQUEUES:
+        log.warning("dispatch.died_twice", grading=str(row.id), run=row.run_id)
+        gradings.finish(row, GradingStatus.SYSTEM_ERROR, ctx.now, error=DIED_TWICE)
+        return
+    log.warning("dispatch.requeued", grading=str(row.id), run=row.run_id)
+    row.status = GradingStatus.QUEUED
+    row.requeues = row.requeues + 1
+    gradings.renew_token(ctx, row)
+    row.queued_at = ctx.now
+    row.wait_reason = REQUEUED
+    row.retry_at = None
+    row.start_failures = 0
+    row.dispatched_at = None
+    row.started_at = None
+    row.deadline_at = None
+    row.progress = None

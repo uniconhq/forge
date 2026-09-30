@@ -8,10 +8,13 @@ A grading run proves who it is with two secrets derived from
 so neither is stored: the callback token the harness reports back with,
 whose SHA-256 the grading's row keeps, and the envelope key the envelope's
 URL carries. Each is `base64url(HMAC-SHA256(k, "<purpose>:" || grading id ||
-":" || run))`, the id written as its canonical text, `run` which of the
-grading's runs it is, from 0, and the result without padding, with `k`
-derived from the key by HKDF-SHA256 under an info naming the purpose. A retry
-or a rejudge is a new row with a new id, so each is handed new secrets.
+":" || run))`, the id written as its canonical text, `run` the number of
+times the grading went back to the queue after a run of it died, from 0, and
+the result without padding, with `k` derived from the key by HKDF-SHA256
+under an info naming the purpose. A retry or a rejudge is a new row with a
+new id, and a requeued grading's next run is another run, so each is handed
+new secrets, and a run that was given up on can neither fetch the next one's
+envelope nor report for it.
 
 The times agree with each other and with the CI. A machine gives one run
 `RUN_TIMEOUT`, the CI's pipeline timeout, which the deployment sets to 30
@@ -103,6 +106,12 @@ WAITING = (GradingStatus.QUEUED, GradingStatus.DISPATCHING)
 """The statuses of a grading whose run is still to be started."""
 AT_THE_CI = (GradingStatus.DISPATCHED, GradingStatus.RUNNING)
 """The statuses of a grading whose run the CI holds."""
+FINISHED = (
+    GradingStatus.DONE,
+    GradingStatus.FAILED,
+    GradingStatus.CANCELLED,
+    GradingStatus.SYSTEM_ERROR,
+)
 
 
 class RunStatus(StrEnum):
@@ -229,6 +238,12 @@ def token_hash(token: str) -> bytes:
 def log_key(grading: uuid.UUID, attempt: int) -> str:
     """Where a grading's run log is kept in the results store."""
     return f"logs/{grading}/{attempt}.log"
+
+
+RUN_LOG_MAX = 9 * 1024 * 1024
+"""The largest run log read back for a contestant. The harness cuts the log
+it writes to 8 MiB and a line saying what it left out; the URL it writes
+with takes any length, so the read is where the bound holds."""
 
 
 def wall_seconds(plan: Plan) -> int:
