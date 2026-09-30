@@ -2,7 +2,7 @@
 declaration reads or is refused at its path; a file name, an `accept` list
 and the parts of a large file; what a submission lays out and what it
 refuses, input by input; the note its protected version carries; and the
-secret a grading run is handed, derived and never stored.
+two secrets a grading run is handed, derived and never stored.
 """
 
 import json
@@ -12,7 +12,7 @@ import pytest
 
 from forge.domain.definitions import parse_task, starter_task
 from forge.domain.errors import InvalidInputs
-from forge.domain.grading import callback_token, token_hash
+from forge.domain.grading import callback_token, envelope_key, token_hash
 from forge.domain.primitives import PortType, parse_primitive
 from forge.domain.submissions import (
     SubmittedInput,
@@ -274,6 +274,8 @@ def test_a_gradings_secrets_are_its_own_runs_and_only_the_hash_is_kept() -> None
     assert token != callback_token(key, two, run=0)
     assert token != callback_token(key, one, run=1)
     assert token != callback_token(b"\x02" * 32, one, run=0)
+    assert token != envelope_key(key, one, run=0)
+    assert envelope_key(key, one, run=0) != envelope_key(key, one, run=1)
     assert "=" not in token and len(token) == 43
     assert len(token_hash(token)) == 32
     assert token_hash(token) != token.encode()

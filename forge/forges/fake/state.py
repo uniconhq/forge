@@ -103,6 +103,7 @@ class State:
         self.threads: dict[ThreadId, Thread] = {}
         self.runs: dict[RunId, Run] = {}
         self.started: dict[RunId, StartedRun] = {}
+        self.ci_key = secrets.token_bytes(32)
         self.refuse_starts = 0
         self.lose_start_answer = False
         self.agents: dict[AgentId, tuple[str | None, str, str]] = {}

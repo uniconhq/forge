@@ -23,4 +23,4 @@ folder lists everything it may call. `unicon-forge migrate` migrates the
 database.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

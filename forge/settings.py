@@ -24,6 +24,7 @@ from pydantic import (
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+from forge.domain.grading import CLONE_IMAGE
 from forge.domain.plans import HARNESS_IMAGE
 from forge.domain.primitives import IMAGE
 
@@ -152,8 +153,9 @@ class Settings(BaseSettings):
     says whether any signed-in user may create an org, or only the operator.
     `s3`, the object store's settings, is required with `forgejo`; the fake
     keeps its store in memory. `harness_image` is the harness every plan
-    names, by digest, the one of the runner release the package pins unless
-    given.
+    names, by digest, and `clone_image` the image the CI checks a task and a
+    submission out with, by digest, each the one of the runner release the
+    package pins unless given.
     """
 
     model_config = SettingsConfigDict(env_prefix="UNICON_", extra="ignore")
@@ -173,6 +175,7 @@ class Settings(BaseSettings):
     forgejo: ForgejoSettings | None = None
     s3: S3Settings | None = None
     harness_image: str = HARNESS_IMAGE
+    clone_image: str = CLONE_IMAGE
 
     session_hard_ttl: timedelta = timedelta(days=30)
     session_idle_ttl: timedelta = timedelta(days=14)
@@ -241,7 +244,7 @@ class Settings(BaseSettings):
             values["internal_url"] = data["forge_public_url"]
         return {**data, "forgejo": values}
 
-    @field_validator("harness_image")
+    @field_validator("harness_image", "clone_image")
     @classmethod
     def _an_image_by_digest(cls, value: str) -> str:
         if not IMAGE.match(value):

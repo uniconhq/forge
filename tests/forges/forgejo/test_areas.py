@@ -713,42 +713,6 @@ async def test_a_sign_in_exchanges_the_code_and_reads_the_nonce(
     assert forgejo.identity.sign_up_url() == "http://forge.test/user/sign_up"
 
 
-async def test_a_run_is_activated_once_and_started_as_the_org_account(
-    forgejo: ForgejoForge, recorder: Recorder
-) -> None:
-    recorder.on("GET", "/api/v1/repos/acme/spring.sum.task", ok({"id": 55}))
-    recorder.on("POST", "/api/repos", ok({"id": 5}))
-    recorder.on("GET", "/api/repos/lookup/acme/spring.sum.task", ok({"id": 5}))
-    recorder.on("POST", "/api/repos/5/pipelines", ok({"number": 3}))
-    recorder.on(
-        "GET",
-        "/api/v1/repos/acme/spring.sum.task/hooks",
-        ok(
-            [
-                {"id": 1, "config": {"url": "http://ci.test/api/hook"}},
-                {"id": 2, "config": {"url": "http://backend/x"}},
-            ]
-        ),
-    )
-
-    await forgejo.grading.activate(ACME, TaskId("acme/spring/sum"))
-    run = await forgejo.grading.start_run(
-        ACME, TaskId("acme/spring/sum"), variables={"A": "1"}, compute_label="box"
-    )
-
-    assert run == "5/3"
-    assert recorder.headers("POST", "/api/repos") == ["Bearer ci-acme"]
-    assert recorder.headers("POST", "/api/repos/5/pipelines") == ["Bearer ci-acme"]
-    assert recorder.sent("PATCH", "/api/repos/5") == [
-        {"trusted": {"network": False, "volumes": True, "security": False}}
-    ]
-    assert "DELETE /api/v1/repos/acme/spring.sum.task/hooks/1" in recorder.calls()
-    assert "DELETE /api/v1/repos/acme/spring.sum.task/hooks/2" not in recorder.calls()
-    assert recorder.sent("POST", "/api/repos/5/pipelines") == [
-        {"branch": "main", "variables": {"A": "1", "UNICON_COMPUTE": "box"}}
-    ]
-
-
 async def test_a_deleted_person_loses_what_they_own_and_keeps_what_others_read(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:

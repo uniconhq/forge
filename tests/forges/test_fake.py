@@ -3,16 +3,20 @@ completes against it, every call is recorded with its identity, and it refuses
 what a real forge refuses.
 """
 
+import uuid
 from collections.abc import Awaitable, Callable
 
 import pytest
 
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, NotFound
+from forge.domain.grading import GradingRun
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Platform
 from forge.domain.ids import (
     ContestId,
     OrgName,
+    PublicationId,
+    SubmissionId,
     TaskId,
     ThreadId,
     VersionId,
@@ -83,7 +87,17 @@ async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> 
     acme = AsOrgAccount("acme", forge_token="f", ci_token="c")
 
     await fake.grading.activate(acme, task)
-    await fake.grading.start_run(acme, task, variables={}, compute_label="box")
+    run = GradingRun(
+        grading=uuid.uuid4(),
+        task=task,
+        publication=PublicationId(f"{task}#1"),
+        publication_version=VersionId("0" * 40),
+        submission=SubmissionId("acme/spring/@bob/sum#1"),
+        submission_version=VersionId("1" * 40),
+        envelope_url="http://machines.test/envelope",
+        compute="pool:platform",
+    )
+    await fake.grading.start_run(acme, run)
 
     assert [call.identity for call in fake.calls_to("activate")] == [acme]
     assert [call.identity for call in fake.calls_to("start_run")] == [acme]
