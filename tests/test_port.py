@@ -31,6 +31,7 @@ AREAS = {
     "primitives": port.PrimitivePort,
     "grading": port.GradingPort,
     "computes": port.ComputePort,
+    "objects": port.ObjectStore,
 }
 
 
@@ -60,7 +61,14 @@ def test_every_error_code_is_unique() -> None:
         for cls in vars(errors).values()
         if inspect.isclass(cls)
         and issubclass(cls, UniconError)
-        and cls not in (UniconError, errors.PortError, errors.ServiceError)
+        and cls
+        not in (
+            UniconError,
+            errors.PortError,
+            errors.ServiceError,
+            errors.RegistrationRefused,
+            errors.SubmitRefused,
+        )
     ]
     assert len(codes) == len(set(codes))
 

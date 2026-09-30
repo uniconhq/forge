@@ -610,10 +610,11 @@ def test_the_starter_task_is_valid_and_names_only_files_it_carries() -> None:
     assert set(files) == {
         "task.yaml",
         "statement.md",
-        "data/testcases/.gitkeep",
+        "data/testcases/1.in",
+        "data/testcases/1.ans",
         "checker/.gitkeep",
     }
-    assert files["data/testcases/.gitkeep"] == b""
+    assert (files["data/testcases/1.in"], files["data/testcases/1.ans"]) == (b"1 2\n", b"3\n")
     assert files["checker/.gitkeep"] == b""
     assert files["statement.md"].count(b"\n") == 1
     task = parse_task(files["task.yaml"])
@@ -753,3 +754,23 @@ stages:
             "message": "There is no file under data/public/ in the task.",
         }
     ]
+
+
+def test_a_size_limit_above_the_platform_ceiling_is_a_problem_at_its_path() -> None:
+    task = parse_task(
+        b"name: Big\n"
+        b"workflow: unicon/classic@v1\n"
+        b"inputs:\n"
+        b"  contestant:\n"
+        b"    - id: submission\n"
+        b"      type: file\n"
+        b"      max_size: 65MB\n"
+        b"limits:\n"
+        b"  max_size: 1GB\n"
+    )
+
+    assert [problem["path"] for problem in task.oversized()] == [
+        "limits.max_size",
+        "inputs.contestant[0].max_size",
+    ]
+    assert parse_task(b"name: Small\nworkflow: unicon/classic@v1\n").oversized() == []

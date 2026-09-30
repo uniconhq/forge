@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from forge.domain.errors import NotFound
-from forge.domain.ids import ContestId, TaskId, WorkflowId
+from forge.domain.ids import ContestId, PrimitiveId, TaskId, WorkflowId
 from forge.domain.workflow_definition import WorkflowRef
 
 
@@ -152,3 +152,14 @@ def workflow_id_of(ref: WorkflowRef) -> WorkflowId:
     version is given to the read beside it.
     """
     return WorkflowId(f"{ref.owner}/{ref.name}")
+
+
+PRIMITIVE_OWNER = "unicon"
+"""The one owner primitives have: the platform's own org."""
+
+
+def primitive_id_of(ref: WorkflowRef) -> PrimitiveId | None:
+    """The id of the primitive a reference names, `<name>`, or none when its
+    owner is not the platform's org, which alone holds primitives.
+    """
+    return PrimitiveId(ref.name) if ref.owner == PRIMITIVE_OWNER else None

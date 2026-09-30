@@ -54,6 +54,7 @@ class Repo:
     touched: dict[str, set[str]] = field(default_factory=dict)
     versions: dict[str, str] = field(default_factory=dict)
     notes: dict[str, str] = field(default_factory=dict)
+    version_times: dict[str, datetime] = field(default_factory=dict)
     writers: set[int] = field(default_factory=set)
     readers: set[int] = field(default_factory=set)
     stars: set[int] = field(default_factory=set)
@@ -66,6 +67,17 @@ class Repo:
     @property
     def head(self) -> str:
         return self.history[-1].version if self.history else ""
+
+
+@dataclass
+class StartedRun:
+    """A run the fake CI was asked to start: the task it is of, the variables
+    it was started with, and when.
+    """
+
+    task: str
+    variables: dict[str, str]
+    at: datetime
 
 
 @dataclass
@@ -90,6 +102,9 @@ class State:
         self.repos: dict[tuple[str, str], Repo] = {}
         self.threads: dict[ThreadId, Thread] = {}
         self.runs: dict[RunId, Run] = {}
+        self.started: dict[RunId, StartedRun] = {}
+        self.refuse_starts = 0
+        self.lose_start_answer = False
         self.agents: dict[AgentId, tuple[str | None, str, str]] = {}
         self.published_at: dict[tuple[str, int], datetime] = {}
         self.calls: list[Call] = []
@@ -105,6 +120,8 @@ class State:
         self.refreshes = 0
         self.refuse_refresh = False
         self.unavailable = False
+        self.racing_submissions = 0
+        self.lose_submission_answer = False
         self.signed_in_user_id = 0
 
     def record(self, operation: str, identity: Identity, **arguments: Any) -> None:
@@ -198,6 +215,13 @@ class State:
             raise Conflict(f"{name} already exists")
         repo.versions[name] = at or repo.head
         repo.notes[name] = note
+        repo.version_times[name] = self.clock.now()
+
+    def version_files(self, repo: Repo, version: str) -> dict[str, bytes]:
+        """Every file of the repository at one of its named versions."""
+        if version not in repo.versions:
+            raise NotFound(f"{repo.owner}/{repo.name} has no version {version}")
+        return repo.snapshots.get(repo.versions[version], {})
 
     def files_at(self, repo: Repo, at: str | None) -> dict[str, bytes]:
         """Every file of the repository at a version, or at its head."""
