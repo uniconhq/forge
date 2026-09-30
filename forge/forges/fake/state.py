@@ -164,6 +164,7 @@ class State:
 
     def create_repo(
         self,
+        as_: Identity,
         owner: str,
         name: str,
         files: Files,
@@ -171,6 +172,12 @@ class State:
         scope: Scope | None = None,
         marked: str | None = None,
     ) -> Repo:
+        """A new repository, made only by the platform: the forge gives people
+        no repositories of their own to create and no team the right to
+        create one in an org, and refuses anyone else as `Forbidden`.
+        """
+        if not isinstance(as_, Platform):
+            raise Forbidden(f"only the platform may create {owner}/{name}")
         if (owner, name) in self.repos:
             raise Conflict(f"{owner}/{name} already exists")
         repo = Repo(owner=owner, name=name, scope=scope, marked=marked)

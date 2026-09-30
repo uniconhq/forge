@@ -150,6 +150,85 @@ async def test_a_protected_version_by_anyone_but_the_platform_is_refused(fake: F
     assert isinstance(fake.calls_to("create_workflow_version")[-1].identity, AsUser)
 
 
+async def test_only_the_platform_creates_a_repository(fake: FakeForge) -> None:
+    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.grant_role(7, Scope("acme"), Role.ADMIN)
+
+    for owner in ("ada", "acme"):
+        with pytest.raises(Forbidden):
+            fake.state.create_repo(_as(fake, 7), owner, "made.workflow", {})
+    assert fake.state.repos == {}
+    made = fake.state.create_repo(PLATFORM, "ada", "made.workflow", {})
+    assert (made.owner, made.name) == ("ada", "made.workflow")
+
+
+async def test_a_persons_workflow_is_theirs_to_read_name_a_version_of_and_share(
+    fake: FakeForge,
+) -> None:
+    ada, bob = _as(fake, 7), _as(fake, 8)
+    fake.add_user(9, "eve")
+    eve = _as(fake, 9)
+
+    workflow = await fake.workflows.create_workflow(
+        ada, "ada", "own", {"workflow.yaml": b"steps: []"}, Visibility.PRIVATE
+    )
+    await fake.workflows.create_workflow_version(ada, workflow, "v1")
+
+    read = await fake.workflows.read_workflow_file(ada, workflow, "v1", "workflow.yaml")
+    assert read.content == b"steps: []"
+    (owned,) = await fake.workflows.workflows_owned_by(7)
+    assert (owned.id, owned.owner, owned.visibility) == (workflow, "ada", Visibility.PRIVATE)
+    assert fake.state.repo("ada", "own.workflow").history[0].author_id == 7
+    with pytest.raises(Forbidden):
+        await fake.workflows.read_workflow_file(bob, workflow, "v1", "workflow.yaml")
+
+    await fake.workflows.share_workflow(ada, workflow, 8)
+    assert (await fake.workflows.read_workflow_file(bob, workflow, "v1", "workflow.yaml")).content
+    assert (await fake.workflows.workflows_owned_by(7))[0].visibility is Visibility.SHARED
+    for refused in (
+        fake.workflows.share_workflow(bob, workflow, 9),
+        fake.workflows.set_workflow_visibility(eve, workflow, Visibility.PUBLIC),
+        fake.workflows.create_workflow_version(bob, workflow, "v2"),
+    ):
+        with pytest.raises(Forbidden):
+            await refused
+    await fake.workflows.unshare_workflow(ada, workflow, 8)
+    with pytest.raises(Forbidden):
+        await fake.workflows.read_workflow_file(bob, workflow, "v1", "workflow.yaml")
+    await fake.workflows.set_workflow_visibility(ada, workflow, Visibility.PUBLIC)
+    assert (await fake.workflows.read_workflow_file(eve, workflow, "v1", "workflow.yaml")).content
+
+
+async def test_an_org_workflow_reaches_the_org_roles_and_nobody_else(fake: FakeForge) -> None:
+    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    fake.add_user(9, "eve")
+    fake.add_user(10, "cat")
+    await fake.orgs.grant_role(7, Scope("acme"), Role.MANAGER)
+    await fake.orgs.grant_role(8, Scope("acme"), Role.OBSERVER)
+    await fake.orgs.grant_role(10, Scope("acme", "spring"), Role.ADMIN)
+    manager, observer, eve, cat = (_as(fake, user) for user in (7, 8, 9, 10))
+
+    workflow = await fake.workflows.create_workflow(
+        manager, "acme", "grading", {"workflow.yaml": b"steps: []"}, Visibility.PRIVATE
+    )
+    await fake.workflows.create_workflow_version(manager, workflow, "v1")
+
+    assert (
+        await fake.workflows.read_workflow_file(observer, workflow, "v1", "workflow.yaml")
+    ).content
+    for outsider in (eve, cat):
+        with pytest.raises(Forbidden):
+            await fake.workflows.read_workflow_file(outsider, workflow, "v1", "workflow.yaml")
+    with pytest.raises(Forbidden):
+        await fake.workflows.share_workflow(observer, workflow, 9)
+    await fake.workflows.share_workflow(manager, workflow, 9)
+    assert (await fake.workflows.read_workflow_file(eve, workflow, "v1", "workflow.yaml")).content
+    with pytest.raises(Forbidden):
+        await fake.workflows.create_workflow(
+            observer, "acme", "other", {"workflow.yaml": b""}, Visibility.PRIVATE
+        )
+
+
 async def test_a_read_without_access_is_refused(fake: FakeForge) -> None:
     await fake.orgs.create_org(OrgName("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme"), Role.ADMIN)

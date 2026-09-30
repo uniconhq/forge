@@ -224,6 +224,22 @@ a workspace without a call, for closing one whose name never reached the
 contestant's row. `identity.verified_emails` reads the addresses the host
 has confirmed are a person's.
 
+A workflow is made the same way, as the platform in its owner's name.
+`workflows.create_workflow` makes a person's own under their name, through
+Forgejo's administrator route that creates a repository for a user, so they
+own it; an org's is made in the org, where the org's three role teams reach
+it as they reach every repository there, admin and manager with `write` and
+observer with `read`, and nobody else does. The platform protects its `main`
+and sets the workflow mark; the person writes its first commit, names its
+versions and reads it as themself. Making it public or private, and sharing
+it with a named person or taking that away, need a repository admin, which
+no organiser's team is, so the platform does them once the forge has said,
+to the person's own credential, that they may write it. `copy_workflow`
+reads the source as the person and makes the copy the same way. Who may
+create a workflow under an owner, the person themself or a manager at the
+org, is the services' rule; nothing calls these yet, since the workflow
+pages are feature 10.
+
 The org account is made by the platform too, through five more operations
 the port declares: `identity.create_user` and `mint_token` make the account
 at the host and its credential there, `orgs.ensure_account_membership` puts
@@ -264,7 +280,8 @@ is behind the port.
 
 `UNICON_FORGE=forgejo` runs against Forgejo and Woodpecker; `UNICON_FORGE=fake`
 runs the whole stack against the in-memory forge, which records every call
-with its identity and refuses what a real forge refuses. `CachedForge` wraps
+with its identity and refuses what a real forge refuses, a repository made
+by anyone but the platform among it. `CachedForge` wraps
 either and caches the reads that repeat within a request: user lookups
 always, org reads when `UNICON_FORGE_CACHE` is on.
 

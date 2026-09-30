@@ -1,5 +1,13 @@
 """Workflows: arrangements of grading steps owned by an org or a user, marked
 at the host so they can be searched, shared, versioned, starred and copied.
+
+A host lets only the platform create a place, so a workflow is made as the
+platform in its owner's name: a person's own, which they then own, or an
+org's, which the organisers whose role at the org covers it reach, admin and
+manager to write and observer to read. The person a call is made for writes
+its first change, names its versions and reads it, with the host's own check
+underneath. Who may read it is changed as the platform, once the host has
+said the person may write it.
 """
 
 from typing import Protocol
@@ -14,20 +22,33 @@ class WorkflowPort(Protocol):
     async def create_workflow(
         self, as_: Identity, owner: str, name: str, files: Files, visibility: Visibility
     ) -> WorkflowId:
-        """Make a workflow under `owner`, an org or the calling user.
-        `Conflict` when the name is taken.
+        """Make a workflow under `owner`, an org or a user, as the platform,
+        with its files written as `as_`, who must be able to write under that
+        owner: the user themself, or at an org a manager or admin there.
+        Whether `as_` may create under `owner` at all is the caller's rule;
+        the host checks only the write. `Conflict` when the name is taken.
         """
         ...
 
     async def set_workflow_visibility(
         self, as_: Identity, workflow: WorkflowId, visibility: Visibility
-    ) -> None: ...
-
-    async def share_workflow(self, as_: Identity, workflow: WorkflowId, user_id: int) -> None:
-        """Let the user read the workflow."""
+    ) -> None:
+        """Make the workflow public or private, as the platform once the host
+        says `as_` may write it; `Forbidden` otherwise.
+        """
         ...
 
-    async def unshare_workflow(self, as_: Identity, workflow: WorkflowId, user_id: int) -> None: ...
+    async def share_workflow(self, as_: Identity, workflow: WorkflowId, user_id: int) -> None:
+        """Let the user read the workflow, as the platform once the host says
+        `as_` may write it; `Forbidden` otherwise.
+        """
+        ...
+
+    async def unshare_workflow(self, as_: Identity, workflow: WorkflowId, user_id: int) -> None:
+        """Take the user's read of the workflow away, as `share_workflow`
+        gives it.
+        """
+        ...
 
     async def create_workflow_version(
         self, as_: Identity, workflow: WorkflowId, version: str
@@ -55,7 +76,8 @@ class WorkflowPort(Protocol):
         self, as_: Identity, source: WorkflowId, version: str, owner: str, name: str
     ) -> WorkflowId:
         """A new private workflow owned by `owner`, made from the source at
-        `version`.
+        `version`, which `as_` reads, and made the way `create_workflow`
+        makes one.
         """
         ...
 

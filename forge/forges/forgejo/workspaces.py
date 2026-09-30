@@ -96,14 +96,14 @@ class ForgejoWorkspaces:
             await self._repos.reserve_versions(ref.org, repo, SUBMISSION_PREFIX)
         for member in member_ids:
             username = await self._users.username_of(member)
-            await self._repos.add_collaborator(PLATFORM, ref.org, repo, username, permission=WRITE)
+            await self._repos.add_collaborator(ref.org, repo, username, permission=WRITE)
 
     async def close_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
         ref = parse_workspace(workspace)
         usernames = [await self._users.username_of(member) for member in member_ids]
         for repo in await self._workspace_repos(ref):
             for username in usernames:
-                await self._repos.remove_collaborator(PLATFORM, ref.org, repo, username)
+                await self._repos.remove_collaborator(ref.org, repo, username)
 
     async def list_submissions(self, workspace: WorkspaceId, task: TaskId) -> tuple[Submitted, ...]:
         ref = parse_workspace(workspace)
