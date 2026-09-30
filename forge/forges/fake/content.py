@@ -41,7 +41,7 @@ class FakeContent:
         self._state.check_up()
         self._state.org(org)
         ref = ContestRef(org, name)
-        self._state.create_repo(org, ref.repo, files, scope=Scope(org, name))
+        self._state.create_repo(PLATFORM, org, ref.repo, files, scope=Scope(org, name))
         return ref.id
 
     async def create_task(self, contest: ContestId, name: str, files: Files) -> TaskId:
@@ -50,7 +50,7 @@ class FakeContent:
         parent = parse_contest(contest)
         ref = TaskRef(parent.org, parent.contest, name)
         self._state.create_repo(
-            ref.org, ref.repo, files, scope=Scope(ref.org, ref.contest, ref.task)
+            PLATFORM, ref.org, ref.repo, files, scope=Scope(ref.org, ref.contest, ref.task)
         )
         return ref.id
 
