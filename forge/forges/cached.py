@@ -220,6 +220,7 @@ class CachedForge:
         self.primitives = inner.primitives
         self.grading = inner.grading
         self.computes = inner.computes
+        self.objects = inner.objects
 
     @property
     def name(self) -> str:
