@@ -70,6 +70,17 @@ class Repo:
 
 
 @dataclass
+class StartedRun:
+    """A run the fake CI was asked to start: the task it is of, the variables
+    it was started with, and when.
+    """
+
+    task: str
+    variables: dict[str, str]
+    at: datetime
+
+
+@dataclass
 class Org:
     name: str
     description: str
@@ -91,6 +102,10 @@ class State:
         self.repos: dict[tuple[str, str], Repo] = {}
         self.threads: dict[ThreadId, Thread] = {}
         self.runs: dict[RunId, Run] = {}
+        self.started: dict[RunId, StartedRun] = {}
+        self.ci_key = secrets.token_bytes(32)
+        self.refuse_starts = 0
+        self.lose_start_answer = False
         self.agents: dict[AgentId, tuple[str | None, str, str]] = {}
         self.published_at: dict[tuple[str, int], datetime] = {}
         self.calls: list[Call] = []

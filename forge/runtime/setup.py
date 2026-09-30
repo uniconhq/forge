@@ -5,7 +5,9 @@ its unit of work on it; `ready` asks its database; `stop` tears it down;
 `public_url` is where the platform is served.
 
 The loops are the session sweeper, the `provisioning` poller, the nightly
-drift pass and the hourly sweep of uploads no submit used. `MAKERS` is what
+drift pass, the hourly sweep of uploads no submit used, the
+`gradings.dispatch` poller that starts grading runs, and the
+`gradings.overdue` pass over runs past their deadline. `MAKERS` is what
 the poller hands each kind of row to: the org, the contest and the task,
 each made by the service of that name, a
 contestant's workspace and the place they submit one task to, both made by
@@ -41,6 +43,7 @@ from forge.runtime.memo import Memo
 from forge.services import (
     activations,
     contests,
+    dispatch,
     drift,
     orgs,
     provisioning,
@@ -124,6 +127,8 @@ class Setup:
             provisioning.poller(MAKERS),
             TimedPass("drift.nightly", drift.nightly, DRIFT_INTERVAL),
             TimedPass("uploads.sweep", uploads.sweep, UPLOAD_SWEEP_INTERVAL),
+            dispatch.poller(),
+            TimedPass("gradings.overdue", dispatch.overdue, dispatch.OVERDUE_INTERVAL),
         )
         return setup
 

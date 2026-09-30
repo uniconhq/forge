@@ -12,13 +12,24 @@ and on no retry or rejudge, unique for a workspace, task and stage.
 `wait_reason` is a short line an organiser reads to see why a grading is not
 moving. `callback_token_hash` is the SHA-256 of the one token its run
 reports back with, stored at the insert.
+
+`queued_at` is when the grading last entered the queue, at its insert or at
+its requeue, and a run carrying its id started before then is not its run.
+`start_failures` counts the starts that failed since, and `retry_at` is when
+a grading whose start failed is next tried. `run_id` is its run at the CI,
+`dispatched_at` when that run was started and `deadline_at` its deadline:
+the start's, until the harness fetches the envelope and it becomes the
+run's own. `requeues` counts the times a run of it ended without a verdict
+and it went back to the queue, which happens once. `progress` is the last
+progress its run reported, `{"step", "done", "total"}`, and `error` a line
+for staff about a grading that ended in `system_error`.
 """
 
 import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, Index, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, Index, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.db.base import Base, Timestamped
@@ -46,6 +57,11 @@ class Grading(Base, Timestamped):
 
     status: Mapped[str]
     wait_reason: Mapped[str | None]
+    queued_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    start_failures: Mapped[int] = mapped_column(server_default=text("0"))
+    retry_at: Mapped[datetime | None]
+    requeues: Mapped[int] = mapped_column(server_default=text("0"))
+    progress: Mapped[dict[str, Any] | None]
     verdict: Mapped[dict[str, Any] | None]
     log_key: Mapped[str | None]
     run_id: Mapped[str | None]

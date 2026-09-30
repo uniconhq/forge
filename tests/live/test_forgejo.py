@@ -205,12 +205,31 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
             await forge.workspaces.open_submission_place(workspace, task, member)
 
         first = await forge.workspaces.record_submission(
-            person, workspace, task, {"main.py": b"print(1)\n"}
+            person, workspace, task, {"main.py": b"print(1)\n"}, key="live-key-one"
         )
         second = await forge.workspaces.record_submission(
-            person, workspace, task, {"main.py": b"print(2)\n"}
+            person,
+            workspace,
+            task,
+            {"files/submission/sum.py": b"print(2)\n", "submission.json": b"{}\n"},
+            key="live-key-two",
         )
         assert await forge.workspaces.list_submissions(workspace, task) == (first, second)
+        assert [(made.number, made.key) for made in (first, second)] == [
+            (1, "live-key-one"),
+            (2, "live-key-two"),
+        ]
+        assert await forge.workspaces.read_submission_file(person, first.id, "main.py") == (
+            b"print(1)\n"
+        )
+        assert (
+            await forge.workspaces.read_submission_file(
+                person, second.id, "files/submission/sum.py"
+            )
+            == b"print(2)\n"
+        )
+        with pytest.raises(NotFound):
+            await forge.workspaces.read_submission_file(person, second.id, "main.py")
 
         repo = f"/api/v1/repos/{org}/autumn.sum.{contestant['login'].lower()}.sub"
         tags = {tag["name"]: tag["commit"]["sha"] for tag in admin.get(f"{repo}/tags").json()}
@@ -223,7 +242,9 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
         await forge.workspaces.close_workspace(workspace, member)
         assert await forge.workspaces.list_publications(task) == ()
         with pytest.raises((Forbidden, NotFound)):
-            await forge.workspaces.record_submission(person, workspace, task, {"main.py": b"late"})
+            await forge.workspaces.record_submission(
+                person, workspace, task, {"main.py": b"late"}, key="live-key-late"
+            )
         assert await forge.workspaces.list_submissions(workspace, task) == (first, second)
     finally:
         delete_user(admin, contestant["login"])
