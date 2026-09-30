@@ -6,6 +6,7 @@ from forge.domain.content import File, Files
 from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import PrimitiveId, WorkflowId
+from forge.domain.roles import Scope
 from forge.domain.workflows import Primitive, Visibility, Workflow
 from forge.forges.fake.state import Repo, State, token_of
 from forge.forges.ids import (
@@ -27,13 +28,19 @@ class FakeWorkflows:
     async def create_workflow(
         self, as_: Identity, owner: str, name: str, files: Files, visibility: Visibility
     ) -> WorkflowId:
+        """Made as the platform in the owner's name, as Forgejo does: a
+        person's own they own, and an org's the org's roles reach. The files
+        are then written as `as_`, who must be able to write there.
+        """
         self._state.record("create_workflow", as_, owner=owner, name=name, visibility=visibility)
         ref = WorkflowRef(owner, name)
-        repo = self._state.create_repo(owner, ref.repo, files, marked=WORKFLOW)
+        scope = Scope(owner) if owner in self._state.orgs else None
+        repo = self._state.create_repo(PLATFORM, owner, ref.repo, {}, scope=scope, marked=WORKFLOW)
         repo.private = visibility is not Visibility.PUBLIC
-        author = self._state.author(as_)
-        if author is not None:
-            repo.writers.add(author)
+        repo.rewrites_refused = True
+        if files:
+            self._state.require_write(as_, repo)
+            self._state.commit(repo, files, "Create", self._state.author(as_))
         return ref.id
 
     async def set_workflow_visibility(
@@ -126,7 +133,7 @@ class FakePrimitives:
         version.
         """
         repo = self._state.create_repo(
-            PLATFORM_ORG, primitive_repo(PrimitiveId(name)), {}, marked=PRIMITIVE
+            PLATFORM, PLATFORM_ORG, primitive_repo(PrimitiveId(name)), {}, marked=PRIMITIVE
         )
         repo.private = False
         for version, declaration in versions.items():

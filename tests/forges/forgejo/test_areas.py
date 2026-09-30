@@ -11,7 +11,7 @@ import pytest
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, Misconfigured, NotFound, Rejected
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
-from forge.domain.ids import ContestId, OrgName, TaskId, VersionId, WorkspaceId
+from forge.domain.ids import ContestId, OrgName, TaskId, VersionId, WorkflowId, WorkspaceId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
@@ -667,8 +667,70 @@ async def test_a_workflow_under_a_person_is_made_by_the_platform_and_written_by_
         "token admin"
     ]
     assert recorder.headers("PUT", "/api/v1/repos/ada/classic.workflow/topics/unicon-workflow") == [
-        "Bearer access"
+        "token admin"
     ]
+
+
+async def test_an_org_workflow_is_made_and_marked_by_the_platform_and_written_by_its_manager(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    recorder.on("GET", "/api/v1/orgs/acme", ok({"username": "acme"}))
+    recorder.on("GET", f"{repo}/branches/main", ok({}, 404))
+    recorder.on("GET", f"{repo}/branch_protections/main", ok({}, 404))
+    recorder.on("POST", f"{repo}/contents", ok({"commit": {"sha": "c"}}))
+
+    workflow = await forgejo.workflows.create_workflow(
+        AsUser(7, _credential()),
+        "acme",
+        "grading",
+        {"workflow.yaml": b"steps: []"},
+        Visibility.PRIVATE,
+    )
+
+    assert workflow == "acme/grading"
+    assert recorder.headers("POST", "/api/v1/orgs/acme/repos") == ["token admin"]
+    assert recorder.sent("POST", "/api/v1/orgs/acme/repos")[0]["private"] is True
+    assert recorder.headers("POST", f"{repo}/contents") == ["Bearer access"]
+    assert recorder.headers("POST", f"{repo}/branch_protections") == ["token admin"]
+    assert recorder.headers("PUT", f"{repo}/topics/unicon-workflow") == ["token admin"]
+
+
+async def test_who_reads_a_workflow_changes_as_the_platform_for_someone_who_may_write_it(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    recorder.on("GET", repo, ok({"permissions": {"admin": False, "push": True, "pull": True}}))
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 9, "login": "eve"}]}))
+    manager = AsUser(7, _credential())
+    workflow = WorkflowId("acme/grading")
+
+    await forgejo.workflows.set_workflow_visibility(manager, workflow, Visibility.PUBLIC)
+    await forgejo.workflows.share_workflow(manager, workflow, 9)
+    await forgejo.workflows.unshare_workflow(manager, workflow, 9)
+
+    assert recorder.headers("GET", repo) == ["Bearer access"] * 3
+    assert recorder.headers("PATCH", repo) == ["token admin"]
+    assert recorder.sent("PATCH", repo) == [{"private": False}]
+    assert recorder.headers("PUT", f"{repo}/collaborators/eve") == ["token admin"]
+    assert recorder.sent("PUT", f"{repo}/collaborators/eve") == [{"permission": "read"}]
+    assert recorder.headers("DELETE", f"{repo}/collaborators/eve") == ["token admin"]
+
+
+async def test_someone_who_only_reads_a_workflow_changes_nobodys_access_to_it(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    recorder.on("GET", repo, ok({"permissions": {"admin": False, "push": False, "pull": True}}))
+    observer = AsUser(8, _credential())
+    workflow = WorkflowId("acme/grading")
+
+    with pytest.raises(Forbidden):
+        await forgejo.workflows.set_workflow_visibility(observer, workflow, Visibility.PUBLIC)
+    with pytest.raises(Forbidden):
+        await forgejo.workflows.share_workflow(observer, workflow, 9)
+
+    assert [call for call in recorder.calls() if not call.startswith("GET ")] == []
 
 
 async def test_a_spent_refresh_is_forbidden_and_a_wrong_registration_is_misconfigured(
