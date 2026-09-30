@@ -6,8 +6,9 @@ its unit of work on it; `ready` asks its database; `stop` tears it down;
 
 The loops are the session sweeper, the `provisioning` poller, the nightly
 drift pass, the hourly sweep of uploads no submit used, the
-`gradings.dispatch` poller that starts grading runs, and the
-`gradings.overdue` pass over runs past their deadline. `MAKERS` is what
+`gradings.dispatch` poller that starts grading runs, the `gradings.overdue`
+pass over runs past their deadline, and the `gradings.reconcile` pass that
+gives every submission its gradings. `MAKERS` is what
 the poller hands each kind of row to: the org, the contest and the task,
 each made by the service of that name, a
 contestant's workspace and the place they submit one task to, both made by
@@ -47,6 +48,7 @@ from forge.services import (
     drift,
     orgs,
     provisioning,
+    reconcile,
     sessions,
     tasks,
     uploads,
@@ -129,6 +131,7 @@ class Setup:
             TimedPass("uploads.sweep", uploads.sweep, UPLOAD_SWEEP_INTERVAL),
             dispatch.poller(),
             TimedPass("gradings.overdue", dispatch.overdue, dispatch.OVERDUE_INTERVAL),
+            TimedPass("gradings.reconcile", reconcile.timed, reconcile.INTERVAL),
         )
         return setup
 

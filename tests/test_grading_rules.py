@@ -1,16 +1,20 @@
 """The rules a grading run keeps to, without a database: the package's copy of
 the runner's contract files is the runner's own and checks what it should,
-and the run's clock agrees with the CI's.
+a report reads as one or is refused, a verdict is kept only when it matches
+its schema and its grading, and the run's clock agrees with the CI's.
 """
 
 import json
+import math
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from forge.domain.contracts import CONTRACTS, schema_text, violation
+from forge.domain.errors import InvalidCallback
 from forge.domain.grading import (
     REPORT_ALLOWANCE,
     RUN_TIMEOUT,
@@ -21,6 +25,7 @@ from forge.domain.grading import (
     wall_seconds,
 )
 from forge.domain.plans import Plan
+from forge.domain.reports import VERDICT_MAX, Event, read_report, verdict_problem
 
 RUNNER = Path(__file__).resolve().parents[2] / "runner"
 GRADING = uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31")
@@ -49,6 +54,91 @@ def test_a_document_that_breaks_a_contract_says_where() -> None:
     assert violation({"schema_version": 3}, "verdict") == (
         "at the top: 'grading_id' is a required property"
     )
+
+
+def _verdict(**changes: Any) -> dict[str, Any]:
+    verdict: dict[str, Any] = {
+        "schema_version": 3,
+        "grading_id": str(GRADING),
+        "submission": {
+            "org": "acme",
+            "repo": "spring.sum.bob.sub",
+            "tag": "submission/1",
+            "commit": "1" * 40,
+        },
+        "stage": "default",
+        "attempt": 1,
+        "task": {"org": "acme", "repo": "spring.sum.task"},
+        "publication": {"tag": "published/1", "commit": "2" * 40},
+        "outcome": "wrong_answer",
+        "metrics": {"points": 0},
+        "tests": [
+            {"id": "1", "outcome": "wrong_answer", "time_ms": 3, "memory_kb": None, "metrics": {}}
+        ],
+        "summary": "0 of 1 tests accepted.",
+        "resources": {"wall_ms": 10, "cpu_ms": None, "peak_memory_kb": None},
+        "log": None,
+        "started_at": "2026-09-26T12:00:00Z",
+        "finished_at": "2026-09-26T12:00:01Z",
+    }
+    verdict.update(changes)
+    return verdict
+
+
+def test_a_verdict_of_this_grading_is_kept() -> None:
+    assert verdict_problem(_verdict(), grading=GRADING, stage="default", attempt=1) is None
+
+
+@pytest.mark.parametrize(
+    ("changes", "stage", "attempt", "problem"),
+    [
+        ({"outcome": "great"}, "default", 1, "verdict.schema.json"),
+        ({"metrics": {"Points": 1}}, "default", 1, "verdict.schema.json"),
+        ({"outcome": "system_error"}, "default", 1, "verdict.schema.json"),
+        ({"grading_id": str(uuid.uuid4())}, "default", 1, "another grading"),
+        ({}, "public", 1, "another stage or attempt"),
+        ({}, "default", 2, "another stage or attempt"),
+        ({"summary": "x" * VERDICT_MAX}, "default", 1, "more than the"),
+        ({"metrics": {"points": math.nan}}, "default", 1, "not a JSON document"),
+    ],
+)
+def test_a_verdict_that_is_not_one_to_keep_says_why(
+    changes: dict[str, Any], stage: str, attempt: int, problem: str
+) -> None:
+    found = verdict_problem(_verdict(**changes), grading=GRADING, stage=stage, attempt=attempt)
+    assert found is not None and problem in found
+
+
+def test_a_verdict_that_is_not_an_object_is_not_kept() -> None:
+    found = verdict_problem("accepted", grading=GRADING, stage="default", attempt=1)
+    assert found is not None
+
+
+def test_the_three_reports_read() -> None:
+    assert read_report(b'{"event": "started"}').event is Event.STARTED
+    progress = read_report(b'{"event": "progress", "step": "run", "done": 3, "total": 10}')
+    assert progress.progress == {"step": "run", "done": 3, "total": 10}
+    finished = read_report(json.dumps({"event": "finished", "verdict": {"a": 1}}).encode())
+    assert (finished.event, finished.verdict) == (Event.FINISHED, {"a": 1})
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"not json",
+        b"[]",
+        b'{"event": "exploded"}',
+        b'{"event": "progress", "step": "run", "done": -1, "total": 3}',
+        b'{"event": "progress", "step": "run", "done": true, "total": 3}',
+        b'{"event": "progress", "step": "", "done": 1, "total": 3}',
+        b'{"event": "progress", "done": 1, "total": 3}',
+        b'{"event": "finished"}',
+        b"\xff\xfe",
+    ],
+)
+def test_what_is_not_a_report_is_refused(body: bytes) -> None:
+    with pytest.raises(InvalidCallback):
+        read_report(body)
 
 
 def _plan(*limits: int) -> Plan:
