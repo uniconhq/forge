@@ -2,6 +2,16 @@
 workflow topic: private, private with read collaborators for shared, or
 public. A version is a tag, and a copy is a new repository made from the
 source tree at a version.
+
+Only the platform may create a repository at the forge, so the platform
+makes the workflow's: under the person's own name through the administrator's
+endpoint, which leaves them its owner, or in the org, where the org's three
+role teams already cover every repository, admin and manager with `write`
+and observer with `read`. The platform protects `main` and sets the mark;
+the person writes the first commit, so it is theirs. Changing who may read a
+workflow needs a repository admin, which no organiser's team is, so it is
+done as the platform once the forge has said, to the person's own
+credential, that they may write the workflow.
 """
 
 from typing import Any
@@ -32,26 +42,29 @@ class ForgejoWorkflows:
             as_, ref.owner, ref.repo, files, private=visibility is not Visibility.PUBLIC
         )
         await self._repos.protect_branch(ref.owner, ref.repo)
-        await self._repos.mark(as_, ref.owner, ref.repo, WORKFLOW_TOPIC)
+        await self._repos.mark(ref.owner, ref.repo, WORKFLOW_TOPIC)
         return ref.id
 
     async def set_workflow_visibility(
         self, as_: Identity, workflow: WorkflowId, visibility: Visibility
     ) -> None:
         ref = parse_workflow(workflow)
+        await self._repos.require_write(as_, ref.owner, ref.repo)
         await self._repos.set_private(
-            as_, ref.owner, ref.repo, private=visibility is not Visibility.PUBLIC
+            ref.owner, ref.repo, private=visibility is not Visibility.PUBLIC
         )
 
     async def share_workflow(self, as_: Identity, workflow: WorkflowId, user_id: int) -> None:
         ref = parse_workflow(workflow)
+        await self._repos.require_write(as_, ref.owner, ref.repo)
         username = await self._users.username_of(user_id)
-        await self._repos.add_collaborator(as_, ref.owner, ref.repo, username, permission=READ)
+        await self._repos.add_collaborator(ref.owner, ref.repo, username, permission=READ)
 
     async def unshare_workflow(self, as_: Identity, workflow: WorkflowId, user_id: int) -> None:
         ref = parse_workflow(workflow)
+        await self._repos.require_write(as_, ref.owner, ref.repo)
         username = await self._users.username_of(user_id)
-        await self._repos.remove_collaborator(as_, ref.owner, ref.repo, username)
+        await self._repos.remove_collaborator(ref.owner, ref.repo, username)
 
     async def create_workflow_version(
         self, as_: Identity, workflow: WorkflowId, version: str

@@ -7,7 +7,9 @@ The forge lets nobody but the platform create a repository: people have no
 personal quota and no team may create under an org. So every repository is
 made by the platform account, under an org it owns or, through the
 administrator's endpoint, under the person who asked for it, who owns it
-from then on. What goes into it is written as the caller.
+from then on. What goes into it is written as the caller. What needs a
+repository admin, the protection, the mark, visibility and collaborators,
+is done as the platform too, since no organiser's team is one.
 """
 
 import base64
@@ -24,8 +26,8 @@ from forge.domain.content import (
     FileSet,
     TreeEntry,
 )
-from forge.domain.errors import Conflict, NotFound, Unavailable
-from forge.domain.identity import PLATFORM, Identity
+from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
+from forge.domain.identity import PLATFORM, Identity, Platform
 from forge.domain.ids import VersionId
 from forge.forges.forgejo.http import Http, json_of, list_of
 
@@ -352,21 +354,31 @@ class Repos:
         )
         return True
 
+    async def require_write(self, as_: Identity, owner: str, name: str) -> None:
+        """Refuse as `Forbidden` unless the forge says, to `as_`'s own
+        credential, that they may write the repository, for a change the
+        platform then makes in their name because it needs a repository
+        admin. The platform itself may.
+        """
+        if isinstance(as_, Platform):
+            return
+        record = json_of(await self._http.call(as_, "GET", f"/api/v1/repos/{owner}/{name}"))
+        if not (record.get("permissions") or {}).get("push"):
+            raise Forbidden(f"the caller may not change {owner}/{name}")
+
     async def add_collaborator(
-        self, as_: Identity, owner: str, name: str, username: str, *, permission: str
+        self, owner: str, name: str, username: str, *, permission: str
     ) -> None:
         await self._http.call(
-            as_,
+            PLATFORM,
             "PUT",
             f"/api/v1/repos/{owner}/{name}/collaborators/{username}",
             json={"permission": permission},
         )
 
-    async def remove_collaborator(
-        self, as_: Identity, owner: str, name: str, username: str
-    ) -> None:
+    async def remove_collaborator(self, owner: str, name: str, username: str) -> None:
         await self._http.call(
-            as_, "DELETE", f"/api/v1/repos/{owner}/{name}/collaborators/{username}"
+            PLATFORM, "DELETE", f"/api/v1/repos/{owner}/{name}/collaborators/{username}"
         )
 
     async def collaborators(self, owner: str, name: str) -> list[dict[str, Any]]:
@@ -374,13 +386,13 @@ class Repos:
             await self._http.call(PLATFORM, "GET", f"/api/v1/repos/{owner}/{name}/collaborators")
         )
 
-    async def set_private(self, as_: Identity, owner: str, name: str, private: bool) -> None:
+    async def set_private(self, owner: str, name: str, private: bool) -> None:
         await self._http.call(
-            as_, "PATCH", f"/api/v1/repos/{owner}/{name}", json={"private": private}
+            PLATFORM, "PATCH", f"/api/v1/repos/{owner}/{name}", json={"private": private}
         )
 
-    async def mark(self, as_: Identity, owner: str, name: str, topic: str) -> None:
-        await self._http.call(as_, "PUT", f"/api/v1/repos/{owner}/{name}/topics/{topic}")
+    async def mark(self, owner: str, name: str, topic: str) -> None:
+        await self._http.call(PLATFORM, "PUT", f"/api/v1/repos/{owner}/{name}/topics/{topic}")
 
     async def star(self, as_: Identity, owner: str, name: str) -> None:
         await self._http.call(as_, "PUT", f"/api/v1/user/starred/{owner}/{name}")
