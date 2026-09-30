@@ -199,6 +199,12 @@ class State:
         repo.versions[name] = at or repo.head
         repo.notes[name] = note
 
+    def version_files(self, repo: Repo, version: str) -> dict[str, bytes]:
+        """Every file of the repository at one of its named versions."""
+        if version not in repo.versions:
+            raise NotFound(f"{repo.owner}/{repo.name} has no version {version}")
+        return repo.snapshots.get(repo.versions[version], {})
+
     def files_at(self, repo: Repo, at: str | None) -> dict[str, bytes]:
         """Every file of the repository at a version, or at its head."""
         if at is None:

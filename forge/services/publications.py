@@ -8,8 +8,9 @@ steps in order, and refuses before anything is written.
    naming each.
 2. The state being saved, the files at the head with the save's files over
    them, is checked: `task.yaml` validates, every file it names is there,
-   every workflow it names is read at its version as the organiser saving,
-   and one plan per stage compiles. A state that fails is kept as a draft:
+   every workflow it names and every primitive their steps use is read at
+   its version as the organiser saving, and one plan per stage compiles over
+   the files of that state. A state that fails is kept as a draft:
    the organiser's files are written as one change, nothing is published,
    and the last publication keeps grading. The errors are not stored;
    `check` works them out again whenever the task's state is asked for.
@@ -37,6 +38,7 @@ steps in order, and refuses before anything is written.
    after its contestants were approved reaches them too.
 """
 
+import builtins
 import hashlib
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
@@ -68,10 +70,18 @@ from forge.domain.plans import (
     is_reserved,
     plan_path,
 )
+from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.publications import Publication, write_note
 from forge.domain.release import is_running
-from forge.domain.roles import Role, contest_id_of, holds, task_scope, workflow_id_of
-from forge.domain.workflow_definition import WorkflowDefinition, parse_workflow
+from forge.domain.roles import (
+    Role,
+    contest_id_of,
+    holds,
+    primitive_id_of,
+    task_scope,
+    workflow_id_of,
+)
+from forge.domain.workflow_definition import WorkflowDefinition, WorkflowRef, parse_workflow
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
@@ -226,8 +236,9 @@ async def check(
 ) -> Checked:
     """Check the state a save leaves, the files at `head` with `changes` over
     them, reading what it needs as `as_`: `task.yaml` validates, every file
-    it names is in the state, every workflow it names is read at its version,
-    and the plans compile. Every problem carries its YAML path.
+    it names is in the state, every workflow it names and every primitive
+    their steps use is read at its version, and the plans compile over the
+    files of the state. Every problem carries its YAML path.
     """
     text = await _content(ctx, as_, task, TASK_FILE, head, changes)
     if text is None:
@@ -241,10 +252,20 @@ async def check(
     workflows, unreadable = await _workflows(ctx, as_, definition)
     problems.extend(unreadable)
     if not unreadable:
+        primitives, unresolved = await _primitives(ctx, as_, definition, workflows)
+        problems.extend(unresolved)
+    if not unreadable and not unresolved:
         try:
-            plans = compile_plans(definition, workflows)
+            plans = compile_plans(
+                definition,
+                workflows,
+                primitives,
+                present,
+                harness_image=ctx.settings.harness_image,
+            )
         except InvalidDefinition as invalid:
-            problems.extend(invalid.errors)
+            reported = {problem["path"] for problem in problems}
+            problems.extend(error for error in invalid.errors if error["path"] not in reported)
         else:
             if not problems:
                 return Checked(definition, plans, ())
@@ -331,6 +352,73 @@ async def _workflows(
             message = f"The workflow {ref} is not valid: {invalid.detail}"
             problems = (*problems, Problem(path=at, message=message))
     return found, problems
+
+
+async def _primitives(
+    ctx: Context,
+    as_: Identity,
+    definition: TaskDefinition,
+    workflows: Mapping[str, WorkflowDefinition],
+) -> tuple[dict[str, PrimitiveDeclaration], tuple[Problem, ...]]:
+    """The declaration of every primitive a step of the task's workflows
+    uses, read at its version as `as_`, and a problem at the workflow's path
+    for each `use:` that cannot be read, is not a primitive, or does not
+    validate.
+    """
+    found: dict[str, PrimitiveDeclaration] = {}
+    problems: builtins.list[Problem] = []
+    tried: set[str] = set()
+    for ref, at in definition.workflow_refs():
+        for index, step in enumerate(workflows[str(ref)].steps):
+            use = str(step.use)
+            if use in tried:
+                continue
+            tried.add(use)
+            where = f"In {ref}, steps[{index}].use: "
+            declaration, problem = await _primitive(ctx, as_, step.use)
+            if problem is not None:
+                problems.append(Problem(path=at, message=where + problem))
+            elif declaration is not None:
+                found[use] = declaration
+    return found, tuple(problems)
+
+
+async def _primitive(
+    ctx: Context, as_: Identity, use: WorkflowRef
+) -> tuple[PrimitiveDeclaration | None, str | None]:
+    """The declaration a `use:` names, or what is wrong with it. A `use:` that
+    names a workflow the organiser can read is refused as not supported yet,
+    and one they cannot read is refused naming it, the same whether it is not
+    there or not shared with them.
+    """
+    primitive = primitive_id_of(use)
+    if primitive is not None:
+        try:
+            text = await ctx.forge.primitives.read_declaration(as_, primitive, use.version)
+        except NotFound, Forbidden:
+            pass
+        else:
+            try:
+                declaration = parse_primitive(text)
+            except InvalidDefinition as invalid:
+                return None, f"The primitive {use} is not valid: {invalid.detail}"
+            if (declaration.name, declaration.version) != (f"{use.owner}/{use.name}", use.version):
+                return (
+                    None,
+                    f"The primitive {use} declares itself as "
+                    f"{declaration.name}@{declaration.version}.",
+                )
+            return declaration, None
+    try:
+        await ctx.forge.workflows.read_workflow_file(
+            as_, workflow_id_of(use), use.version, WORKFLOW_FILE
+        )
+    except NotFound, Forbidden:
+        return None, (
+            f"{use} cannot be read: there is no such primitive or workflow at that version, "
+            "or it is not shared with you."
+        )
+    return None, f"{use} is a workflow; using a workflow as a step comes with feature 10."
 
 
 async def _published_snapshot(

@@ -116,10 +116,10 @@ with a sentence a form shows beside that field. `admin_only_changes` names
 the admin-only keys a save changes, `missing_files` names each file input
 whose path is not in the state being saved, at the YAML path of its value,
 and `starter_contest` and `starter_task` are the files a new contest or task
-is created with. `plans.py` compiles a task into one plan per stage in the
-runner's plan shape, over the workflows `TaskDefinition.workflow_refs`
-names, pinned to the harness digest of the runner release the package is
-built against, and names what changed how a task grades between two
+is created with. `primitives.py` reads a primitive's `primitive.yaml`, its
+image by digest, its entrypoint, whether it batches, its limits and the
+limits it raises from an input, and its typed inputs and outputs. `plans.py`
+is the compiler (below) and names what changed how a task grades between two
 publications.
 `release.py` works out from the settings and the clock whether a task is
 released, visible and open to one contestant, and who sees a contest at all.
@@ -173,6 +173,8 @@ person saving, each carrying the token it was read with, and refuses the
 whole change as `Conflict` when any has moved; `content.list_files` gives
 every file of a place at a version with its token, the same for the same
 content, which is how a save compares data files without reading them.
+`primitives.read_declaration` reads a primitive's declaration at a version
+as the organiser whose save compiles it.
 `workspaces.publish` names a version a save already wrote as the next
 publication, with a note, and `workspaces.list_publications` reads each back
 as a `Publication` with what its note says. A contestant's workspace is made
@@ -248,8 +250,10 @@ because every org mints a service account and a login at the CI.
 https, and the package refuses to start when the URL is https and the flag
 is set off. The Forgejo settings travel together as
 `settings.forgejo`, read from the `UNICON_FORGE_*` and `UNICON_WOODPECKER_*`
-variables and required only when `UNICON_FORGE=forgejo`. A missing or
-malformed variable stops the process at start with the variable named.
+variables and required only when `UNICON_FORGE=forgejo`.
+`UNICON_HARNESS_IMAGE` is the harness every plan names, by digest, the one of
+the runner release the package pins unless given. A missing or malformed
+variable stops the process at start with the variable named.
 
 ## Cookies
 
@@ -425,8 +429,9 @@ takes each path with its new content and the token it was read with, as an
    `AdminOnly`, naming each. An admin passes.
 2. The state being saved, the files at the head with the save's over them,
    is checked: `task.yaml` validates, every file it names is there, every
-   workflow it names is read at its version as the organiser, and one plan
-   per stage compiles. A state that fails is a `Draft`: the organiser's
+   workflow it names and every primitive their steps use is read at its
+   version as the organiser, and one plan per stage compiles over the files
+   of that state. A state that fails is a `Draft`: the organiser's
    files are written as one change, nothing is published, and the last
    publication keeps grading. The errors come back with their YAML paths
    and are not stored; `tasks.state` checks the head again whenever it is
@@ -461,6 +466,36 @@ A valid save comes back as `Published`, with the publication, its number,
 whether it changed how the task grades and what, and the activation:
 `done`, `pending` or `not_needed`. `publications.list` gives every
 publication with its flag and its changes, for the task's history.
+
+## The compiler
+
+`forge/domain/plans.py` compiles each stage into the plan the harness runs,
+the runner's `plan.schema.json` version 3, flat and fully resolved, so
+nothing is read at grade time: the harness image, the stage, the test list,
+the steps in order and the verdict block. Each `use:` is the primitive whose
+declaration the save read; a `use:` that is someone else's private workflow,
+or not there, is an error naming it, and a workflow used as a step waits for
+feature 10. Each step carries its primitive's image by digest, entrypoint and
+limits, and each `with` value becomes one of the plan's values: a literal, a
+file or list of files in the task, a contestant input or the language chosen
+for it, or an earlier step's output. A `foreach` over a setter's `file[]`
+input runs over the tests in its folder at the version being saved: the
+files directly in it, hidden ones left out, grouped by stem, `1.in` and
+`1.ans` the test `1` with the fields `input` and `answer`, ordered with
+numbers compared as numbers; an empty folder is an error at the input's YAML
+path. A step whose primitive declares `batch: true` takes every test in one
+container, and one that does not is one step per test. Inside a `foreach`, a
+step of the same list is read for the same test. Limits are the
+declaration's, raised by `limits_from` from values known at the save, and a
+batch's time and CPU are summed over its tests. It checks what grading needs:
+every input given is declared, every required one is given, every output read
+is declared, and each value has its input's type, a language list included
+against the enum the compile step takes. The workflow's `outputs` become the
+verdict block: `outcome` required, `metrics`, each test's `time_ms` and
+`memory_kb`, and `summary`. Every problem is reported at the YAML path in
+`task.yaml` of the workflow it is in. The plan is the same bytes every time
+for the same state. A new task's starter carries one example test, so its
+first save publishes.
 
 `release.of_task(session, task)` says whether the signed-in person sees the
 task and may submit to it now: released, visible and open, and why not. It
@@ -648,10 +683,12 @@ name)` runs one tick of the poller or timed pass of that name, such as
 someone a contestant, with a status and an extension, and asks for no
 workspace. `seed_classic(fake)`
 puts the built-in workflow `unicon/classic@v1` at the fake from `CLASSIC`, a
-copy of the file deploy's bootstrap seeds, so a task's first save finds a
-workflow; the package's tests check the copy against deploy's file when that
-repo is checked out beside this one. The fake refuses a user id it already
-has, since the accounts the package makes take the next free ids.
+copy of the file deploy's bootstrap seeds, and with `seed_primitives` the
+three primitives it uses from `PRIMITIVES`, each primitive repo's own
+`primitive.yaml` with an image of `PLACEHOLDER_DIGEST`, so a task's first
+save finds a workflow and every step's image; the package's tests check the
+copy against deploy's file when that repo is checked out beside this one.
+The fake refuses a user id it already has, since the accounts the package makes take the next free ids.
 
 ## Checks
 

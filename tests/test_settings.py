@@ -6,6 +6,7 @@ secure whenever the platform is served over https.
 import pytest
 from pydantic import ValidationError
 
+from forge.domain.plans import HARNESS_IMAGE
 from forge.settings import Settings, load_log_settings, load_settings
 
 COMPLETE = {
@@ -35,6 +36,7 @@ def environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "UNICON_COOKIE_SECURE",
         "UNICON_INTERNAL_URL",
         "UNICON_ORG_CREATION_OPEN",
+        "UNICON_HARNESS_IMAGE",
     ]:
         monkeypatch.delenv(name, raising=False)
     for name, value in COMPLETE.items():
@@ -197,3 +199,17 @@ def test_the_internal_url_follows_the_public_url_unless_given(
     assert str(Settings.for_tests(internal_url="http://backend:8000").internal_url) == (
         "http://backend:8000/"
     )
+
+
+def test_the_harness_image_is_the_pinned_one_unless_given_and_always_by_digest(
+    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert load_settings().harness_image == HARNESS_IMAGE
+    local = "localhost:5000/harness@sha256:" + "a" * 64
+    monkeypatch.setenv("UNICON_HARNESS_IMAGE", local)
+    assert load_settings().harness_image == local
+
+    monkeypatch.setenv("UNICON_HARNESS_IMAGE", "ghcr.io/uniconhq/harness:latest")
+    with pytest.raises(SystemExit):
+        load_settings()
+    assert "UNICON_HARNESS_IMAGE: Value error, is not an image by digest" in capsys.readouterr().err

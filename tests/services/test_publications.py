@@ -34,7 +34,7 @@ from forge.runtime.setup import Setup
 from forge.services import provisioning, publications, tasks
 from forge.services.access import Organiser
 from forge.services.publications import Draft, Published
-from forge.testing import CLASSIC, tick
+from forge.testing import CLASSIC, PRIMITIVES, tick
 from tests.services.conftest import SPRING, Acme, organiser
 
 RUNNING = b"""\
@@ -101,10 +101,19 @@ async def test_a_valid_save_is_one_change_with_its_plans_and_that_change_is_publ
     assert repo.versions == {"published/1": head.version}
     plan = Plan.from_bytes(repo.files["plans/default.json"])
     assert [step.primitive for step in plan.steps] == [
-        "unicon/compile@v1",
-        "unicon/sandbox-run@v1",
-        "unicon/diff-check@v1",
+        "compile@v1",
+        "sandbox-run@v1",
+        "diff-check@v1",
     ]
+    assert plan.tests == ("1",)
+    assert plan.harness_image == setup.settings.harness_image
+    reads = acme.fake.calls_to("read_declaration")
+    assert {call.arguments["primitive"] for call in reads} == {
+        "compile",
+        "sandbox-run",
+        "diff-check",
+    }
+    assert all(call.identity == acme.ada.identity for call in reads)
     (published,) = acme.fake.calls_to("publish")
     assert published.identity == PLATFORM
     (listed,) = await publications.list(setup, acme.ada, sum_task)
@@ -400,7 +409,9 @@ async def test_a_save_naming_a_missing_file_is_a_draft_and_the_state_recomputes_
     assert state.latest is not None
     assert state.latest.id == published.publication
 
-    fixed = await _save(setup, acme, sum_task, {"data/hidden/1.in": b"1 2\n"})
+    fixed = await _save(
+        setup, acme, sum_task, {"data/hidden/1.in": b"1 2\n", "data/hidden/1.ans": b"3\n"}
+    )
     assert isinstance(fixed, Published)
     assert fixed.number == 2
     later = await tasks.state(setup, acme.ada, sum_task)
@@ -408,16 +419,29 @@ async def test_a_save_naming_a_missing_file_is_a_draft_and_the_state_recomputes_
 
 
 @pytest.mark.parametrize(
-    ("change", "path"),
+    ("change", "path", "named"),
     [
-        ((b"workflow: unicon/classic@v1", b"workflow: unicon/classic@v9"), "workflow"),
-        ((b"workflow: unicon/classic@v1", b"workflow: bob/mine@v1"), "workflow"),
-        ((b"limits:", b"stages:\n  - id: one\n    workflow: unicon/gone@v1\nlimits:"), None),
+        (
+            (b"workflow: unicon/classic@v1", b"workflow: unicon/classic@v9"),
+            "workflow",
+            "unicon/classic@v9",
+        ),
+        ((b"workflow: unicon/classic@v1", b"workflow: bob/mine@v1"), "workflow", "bob/mine@v1"),
+        (
+            (b"limits:", b"stages:\n  - id: one\n    workflow: unicon/gone@v1\nlimits:"),
+            None,
+            "unicon/gone@v1",
+        ),
     ],
     ids=["no-such-version", "not-shared", "stage-override"],
 )
-async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_path(
-    setup: Setup, acme: Acme, sum_task: TaskId, change: tuple[bytes, bytes], path: str | None
+async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_path_naming_it(
+    setup: Setup,
+    acme: Acme,
+    sum_task: TaskId,
+    change: tuple[bytes, bytes],
+    path: str | None,
+    named: str,
 ) -> None:
     bob = AsUser(8, acme.fake.mint(8))
     mine = await acme.fake.workflows.create_workflow(
@@ -432,9 +456,55 @@ async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_path(
     (error,) = draft.errors
     assert error["path"] == (path or "stages[0].workflow")
     assert "cannot be read" in error["message"]
+    assert named in error["message"]
     assert acme.fake.calls_to("publish") == []
     reads = acme.fake.calls_to("read_workflow_file")
     assert {call.identity for call in reads} == {acme.ada.identity}
+
+
+@pytest.mark.parametrize(
+    ("use", "said"),
+    [
+        (
+            b"unicon/compile@v7",
+            "In unicon/custom@v1, steps[0].use: unicon/compile@v7 cannot be read: there is no "
+            "such primitive or workflow at that version, or it is not shared with you.",
+        ),
+        (
+            b"unicon/classic@v1",
+            "In unicon/custom@v1, steps[0].use: unicon/classic@v1 is a workflow; using a "
+            "workflow as a step comes with feature 10.",
+        ),
+        (
+            b"unicon/odd@v1",
+            "In unicon/custom@v1, steps[0].use: The primitive unicon/odd@v1 declares itself as "
+            "unicon/compile@v1.",
+        ),
+    ],
+    ids=["no-such-version", "a-workflow", "declares-another"],
+)
+async def test_a_step_whose_use_is_no_primitive_the_organiser_reads_is_an_error_naming_it(
+    setup: Setup, acme: Acme, sum_task: TaskId, use: bytes, said: str
+) -> None:
+    acme.fake.primitives.add("odd", {"v1": PRIMITIVES["compile"]})
+    custom = CLASSIC.replace(b"name: unicon/classic", b"name: unicon/custom").replace(
+        b"use: unicon/compile@v1", b"use: " + use
+    )
+    made = await acme.fake.workflows.create_workflow(
+        PLATFORM, "unicon", "custom", {"workflow.yaml": custom}, Visibility.PUBLIC
+    )
+    await acme.fake.workflows.create_workflow_version(PLATFORM, made, "v1")
+    task_yaml = (await _task_yaml(acme, sum_task)).replace(
+        b"workflow: unicon/classic@v1", b"workflow: unicon/custom@v1"
+    )
+
+    draft = await _save(setup, acme, sum_task, {"task.yaml": task_yaml})
+
+    assert isinstance(draft, Draft)
+    assert [(error["path"], error["message"]) for error in draft.errors] == [("workflow", said)]
+    reads = acme.fake.calls_to("read_declaration")
+    assert reads and {call.identity for call in reads} == {acme.ada.identity}
+    assert acme.fake.calls_to("publish") == []
 
 
 async def test_an_invalid_task_yaml_and_an_uncovered_input_are_drafts_with_their_paths(
@@ -484,9 +554,11 @@ async def test_a_named_data_file_and_a_limit_each_set_the_flag(
 ) -> None:
     await _published(setup, acme, sum_task)
 
-    added = await _save(setup, acme, sum_task, {"data/testcases/1.in": b"1 2\n"})
-    same = await _save(setup, acme, sum_task, {"data/testcases/1.in": b"1 2\n"})
-    changed = await _save(setup, acme, sum_task, {"data/testcases/1.in": b"2 3\n"})
+    added = await _save(
+        setup, acme, sum_task, {"data/testcases/2.in": b"1 2\n", "data/testcases/2.ans": b"3\n"}
+    )
+    same = await _save(setup, acme, sum_task, {"data/testcases/2.in": b"1 2\n"})
+    changed = await _save(setup, acme, sum_task, {"data/testcases/2.in": b"2 3\n"})
     elsewhere = await _save(setup, acme, sum_task, {"notes/idea.md": b"later\n"})
     task_yaml = await _task_yaml(acme, sum_task)
     limit = await _save(
@@ -499,9 +571,13 @@ async def test_a_named_data_file_and_a_limit_each_set_the_flag(
     assert isinstance(added, Published) and isinstance(changed, Published)
     assert isinstance(same, Published) and isinstance(elsewhere, Published)
     assert isinstance(limit, Published)
-    assert added.changes == ("data/testcases/1.in added",)
+    assert added.changes == (
+        "plans/default.json changed",
+        "data/testcases/2.ans added",
+        "data/testcases/2.in added",
+    )
     assert same.grading_changed is False
-    assert changed.changes == ("data/testcases/1.in changed",)
+    assert changed.changes == ("data/testcases/2.in changed",)
     assert elsewhere.grading_changed is False
     assert limit.changes == ("limits.submissions changed",)
 
