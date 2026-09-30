@@ -370,6 +370,14 @@ class CiRequestRefused(ServiceError):
     code = "ci_request_refused"
 
 
+class InvalidToken(ServiceError):
+    """A grading run's report carries no token, or not the token of the
+    grading it is for. A token of another grading is refused the same way.
+    """
+
+    code = "invalid_token"
+
+
 class GradingClosed(ServiceError):
     """The grading takes no more from its run: it is not the run's to report
     on now, because it finished, was cancelled or requeued, or its deadline
@@ -377,3 +385,11 @@ class GradingClosed(ServiceError):
     """
 
     code = "grading_closed"
+
+
+class InvalidCallback(ServiceError):
+    """A grading run's report is not one: not a JSON object, an event this
+    platform does not take, or a progress report without its counts.
+    """
+
+    code = "invalid_callback"

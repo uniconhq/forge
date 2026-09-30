@@ -1,7 +1,7 @@
 """What a grading run asks of the platform, with no session: the CI asking
-what the run is, and the harness fetching its envelope. Each call is handed
-over as it arrived and authenticated here, since a grading's id alone
-proves nothing.
+what the run is, the harness fetching its envelope, and the harness
+reporting. Each call is handed over as it arrived and authenticated here,
+since a grading's id alone proves nothing.
 
 `config` is the CI's configuration extension. Its request is signed by the
 CI (the port checks the signature), names the grading in the run's
@@ -25,13 +25,28 @@ clock and the time kept for reporting from now. Any later fetch is refused,
 since the envelope's URL is a variable of the run that anyone who reads the
 task's runs at the CI can see, and the envelope hands out the callback
 token. A harness whose fetch lost its answer ends its run without a
-report, and the overdue pass finds the run dead once its deadline passes.
-The envelope carries the callback token, the callback URL, and a URL the
-harness writes its log with, signed for the machine URL until the deadline.
+report, and the overdue pass requeues the grading once its deadline passes,
+with a fresh machine and the secrets of its next run, whose envelope is
+served once the same way. The envelope carries the callback token, the
+callback URL, and a URL the harness writes its log with, signed for the
+machine URL until the deadline.
 
-The envelope's key is not checked while the row is held: the grading is
-read, the key checked, and only then is the row locked and the key checked
-again, so a caller that proves nothing holds nothing up.
+`callback` takes a report under the callback token of the grading's current
+run, compared by its SHA-256 with the row's in constant time, so another
+grading's token, or an earlier run's, is refused like a wrong one. A report
+comes only from a `running` grading before its deadline. `started` confirms
+the run began, `progress` is kept on the row, and `finished` carries the
+verdict: one that matches the runner's `verdict.schema.json`, names this
+grading and is within `VERDICT_MAX` is kept with its log key and the
+grading is `done`, or `system_error` when the verdict says so; any other
+leaves the grading in `system_error` with the reason, and is taken, since
+sending it again would not mend it. A kept verdict sent again, because its
+answer was lost, is answered the same.
+
+Neither the envelope's key nor a report's token is checked while the row is
+held: the grading is read, the secret checked, and only then is the row
+locked and the secret checked again, so a caller that proves nothing holds
+nothing up.
 """
 
 import hmac
@@ -47,6 +62,7 @@ from forge.domain.errors import (
     CiRequestRefused,
     Forbidden,
     GradingClosed,
+    InvalidToken,
     NotFound,
     PortError,
     Rejected,
@@ -60,11 +76,13 @@ from forge.domain.grading import (
     GradingStatus,
     log_key,
     run_deadline,
+    token_hash,
     wall_seconds,
 )
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
 from forge.domain.plans import Plan, plan_path
+from forge.domain.reports import Event, read_report, verdict_problem
 from forge.log import get_logger
 from forge.port.objects import Store
 from forge.runtime.actions import action
@@ -76,6 +94,8 @@ log = get_logger(__name__)
 SCHEMA_VERSION = 3
 REFUSED = "The platform does not answer this request."
 NOT_TAKING = "The grading takes no reports or envelope now."
+WRONG_TOKEN = "The report's token is not this grading's."
+ERROR_LIMIT = 500
 SHORTEST_URL = timedelta(seconds=1)
 
 
@@ -166,6 +186,72 @@ async def envelope(ctx: Context, grading: uuid.UUID, key: str) -> dict[str, Any]
     }
 
 
+@action
+async def callback(
+    ctx: Context, grading: uuid.UUID, authorization: str | None, body: bytes
+) -> GradingStatus:
+    """Take one report of the grading's run, under the bearer token in
+    `authorization`, and answer where the grading stands after it.
+    `InvalidToken` for a missing or wrong token, `InvalidCallback` for a body
+    that is no report, and `GradingClosed` for a grading that takes no
+    reports now.
+    """
+    token = _bearer(authorization)
+    row = None
+    if token is not None:
+        given = token_hash(token)
+        row = await _proven(ctx, grading, lambda row: _carries(row, given))
+    if row is None:
+        log.info("runs.callback_refused", grading=str(grading), reason="token")
+        raise InvalidToken(WRONG_TOKEN)
+    report = read_report(body)
+    status = GradingStatus(row.status)
+    if (
+        report.event is Event.FINISHED
+        and status in (GradingStatus.DONE, GradingStatus.SYSTEM_ERROR)
+        and row.verdict is not None
+        and row.verdict == report.verdict
+    ):
+        return status
+    if status is not GradingStatus.RUNNING or (
+        row.deadline_at is not None and ctx.now >= row.deadline_at
+    ):
+        log.info("runs.callback_refused", grading=str(row.id), reason="closed", status=status)
+        raise GradingClosed(NOT_TAKING)
+    match report.event:
+        case Event.STARTED:
+            row.started_at = row.started_at or ctx.now
+        case Event.PROGRESS:
+            row.progress = report.progress
+        case Event.FINISHED:
+            _finished(ctx, row, report.verdict)
+    await ctx.db.flush()
+    return GradingStatus(row.status)
+
+
+def _finished(ctx: Context, row: Grading, verdict: Any) -> None:
+    problem = verdict_problem(verdict, grading=row.id, stage=row.stage, attempt=row.attempt)
+    if problem is not None:
+        log.warning("runs.verdict_refused", grading=str(row.id), problem=problem)
+        gradings.finish(row, GradingStatus.SYSTEM_ERROR, ctx.now, error=problem)
+        return
+    row.verdict = verdict
+    row.log_key = log_key(row.id, row.attempt) if verdict["log"] is not None else None
+    if verdict["outcome"] == GradingStatus.SYSTEM_ERROR.value:
+        gradings.finish(
+            row, GradingStatus.SYSTEM_ERROR, ctx.now, error=str(verdict["summary"])[:ERROR_LIMIT]
+        )
+    else:
+        gradings.finish(row, GradingStatus.DONE, ctx.now)
+    log.info("runs.finished", grading=str(row.id), outcome=verdict["outcome"])
+
+
+def _carries(row: Grading, given: bytes) -> bool:
+    """Whether `given` is the SHA-256 of the callback token the row keeps."""
+    kept = row.callback_token_hash
+    return kept is not None and hmac.compare_digest(given, kept)
+
+
 def _refuse_closed(row: Grading) -> None:
     """Refuse the envelope of a grading that is not `dispatched`: the CI holds
     no run of it, or its run fetched the envelope already. A run that waited
@@ -226,3 +312,13 @@ async def _plan(ctx: Context, row: Grading, run: GradingRun, refusal: Exception)
     except PortError as exc:
         log.warning("runs.forge_unavailable", grading=str(row.id), error=type(exc).__name__)
         raise Unavailable("The forge did not answer.") from None
+
+
+def _bearer(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    scheme, _, token = authorization.strip().partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token:
+        return None
+    return token
