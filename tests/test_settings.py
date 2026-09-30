@@ -1,6 +1,6 @@
 """Configuration is read once at start, a mistake names the variable, the
-Forgejo settings are required only when Forgejo is chosen, and cookies are
-secure whenever the platform is served over https.
+Forgejo and object store settings are required only when Forgejo is chosen,
+and cookies are secure whenever the platform is served over https.
 """
 
 import pytest
@@ -21,6 +21,9 @@ COMPLETE = {
     "UNICON_FORGE_PLATFORM_ACCOUNT": "unicon-backend",
     "UNICON_WOODPECKER_URL": "http://woodpecker-server:8000",
     "UNICON_WOODPECKER_TOKEN": "woodpecker-token",
+    "UNICON_S3_ENDPOINT": "http://garage:3900",
+    "UNICON_S3_ACCESS_KEY": "GK-test",
+    "UNICON_S3_SECRET_KEY": "s3-secret",
 }
 
 
@@ -36,7 +39,11 @@ def environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "UNICON_COOKIE_SECURE",
         "UNICON_INTERNAL_URL",
         "UNICON_ORG_CREATION_OPEN",
+        "UNICON_MACHINE_URL",
         "UNICON_HARNESS_IMAGE",
+        "UNICON_S3_REGION",
+        "UNICON_S3_UPLOADS_BUCKET",
+        "UNICON_S3_RESULTS_BUCKET",
     ]:
         monkeypatch.delenv(name, raising=False)
     for name, value in COMPLETE.items():
@@ -199,6 +206,48 @@ def test_the_internal_url_follows_the_public_url_unless_given(
     assert str(Settings.for_tests(internal_url="http://backend:8000").internal_url) == (
         "http://backend:8000/"
     )
+
+
+def test_the_object_store_travels_with_forgejo_and_defaults_its_region_and_buckets(
+    environment: None,
+) -> None:
+    settings = load_settings()
+    assert settings.s3 is not None
+    assert str(settings.s3.endpoint) == "http://garage:3900/"
+    assert settings.s3.secret_key.get_secret_value() == "s3-secret"
+    assert (settings.s3.region, settings.s3.uploads_bucket, settings.s3.results_bucket) == (
+        "garage",
+        "unicon-uploads",
+        "unicon-results",
+    )
+
+
+def test_forgejo_without_the_object_store_names_its_variables(
+    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("UNICON_S3_ENDPOINT")
+    monkeypatch.delenv("UNICON_S3_SECRET_KEY")
+
+    with pytest.raises(SystemExit):
+        load_settings()
+
+    lines = capsys.readouterr().err
+    assert "UNICON_FORGE=forgejo needs UNICON_S3_ENDPOINT, UNICON_S3_SECRET_KEY" in lines
+
+
+def test_the_fake_needs_no_object_store(environment: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("UNICON_S3_ENDPOINT", "UNICON_S3_ACCESS_KEY", "UNICON_S3_SECRET_KEY"):
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("UNICON_FORGE", "fake")
+    assert load_settings().forgejo is None
+
+
+def test_the_machine_url_follows_the_public_url_unless_given(
+    environment: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert str(load_settings().machine_url) == "http://localhost:8080/"
+    monkeypatch.setenv("UNICON_MACHINE_URL", "http://proxy")
+    assert str(load_settings().machine_url) == "http://proxy/"
 
 
 def test_the_harness_image_is_the_pinned_one_unless_given_and_always_by_digest(
