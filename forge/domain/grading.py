@@ -106,6 +106,12 @@ WAITING = (GradingStatus.QUEUED, GradingStatus.DISPATCHING)
 """The statuses of a grading whose run is still to be started."""
 AT_THE_CI = (GradingStatus.DISPATCHED, GradingStatus.RUNNING)
 """The statuses of a grading whose run the CI holds."""
+FINISHED = (
+    GradingStatus.DONE,
+    GradingStatus.FAILED,
+    GradingStatus.CANCELLED,
+    GradingStatus.SYSTEM_ERROR,
+)
 
 
 class RunStatus(StrEnum):

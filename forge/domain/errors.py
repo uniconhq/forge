@@ -232,8 +232,9 @@ class ContestFull(RegistrationRefused):
 
 
 class WrongStatus(ServiceError):
-    """A decision the registration's status does not allow, such as approving
-    one already rejected. `current` is the status it has.
+    """A decision the thing's status does not allow, such as approving a
+    registration already rejected or cancelling a grading that is done.
+    `current` is the status it has.
     """
 
     code = "wrong_status"
