@@ -10,6 +10,7 @@ publication is an annotated tag whose message is its note.
 
 from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 
 from forge.domain.content import Files
 from forge.domain.errors import Conflict, NotFound
@@ -25,6 +26,8 @@ from forge.domain.ids import (
 from forge.domain.names import WorkspaceOwner
 from forge.domain.publications import Publication, read_note
 from forge.domain.roles import Scope
+from forge.domain.submissions import Submitted, write_note
+from forge.domain.submissions import read_note as read_submission_note
 from forge.forges.forgejo.repos import Repos
 from forge.forges.forgejo.teams import Teams
 from forge.forges.forgejo.users import Users
@@ -33,6 +36,7 @@ from forge.forges.ids import (
     SUBMISSION_PREFIX,
     WorkspaceRef,
     parse_contest,
+    parse_submission,
     parse_task,
     parse_workspace,
     publication_id,
@@ -101,23 +105,40 @@ class ForgejoWorkspaces:
             for username in usernames:
                 await self._repos.remove_collaborator(PLATFORM, ref.org, repo, username)
 
-    async def list_submissions(
-        self, workspace: WorkspaceId, task: TaskId
-    ) -> tuple[SubmissionId, ...]:
+    async def list_submissions(self, workspace: WorkspaceId, task: TaskId) -> tuple[Submitted, ...]:
         ref = parse_workspace(workspace)
         task_name = parse_task(task).task
-        numbers = await self._numbers(ref.org, ref.submission_repo(task_name), SUBMISSION_PREFIX)
-        return tuple(submission_id(ref, task_name, number) for number in numbers)
+        tags = await self._repos.tags(PLATFORM, ref.org, ref.submission_repo(task_name))
+        found = [
+            _submitted(ref, task_name, tag)
+            for tag in tags
+            if str(tag["name"]).startswith(SUBMISSION_PREFIX)
+            and str(tag["name"]).removeprefix(SUBMISSION_PREFIX).isdigit()
+        ]
+        return tuple(sorted(found, key=lambda submitted: submitted.number))
 
     async def record_submission(
-        self, as_: Identity, workspace: WorkspaceId, task: TaskId, files: Files
-    ) -> SubmissionId:
+        self, as_: Identity, workspace: WorkspaceId, task: TaskId, files: Files, *, key: str
+    ) -> Submitted:
         ref = parse_workspace(workspace)
         task_name = parse_task(task).task
         repo = ref.submission_repo(task_name)
-        written = await self._repos.write_files(as_, ref.org, repo, files, message=SUBMIT_MESSAGE)
-        number = await self._next_version(ref.org, repo, SUBMISSION_PREFIX, written)
-        return submission_id(ref, task_name, number)
+        written = await self._repos.replace_files(as_, ref.org, repo, files, message=SUBMIT_MESSAGE)
+        number = await self._next_version(
+            ref.org, repo, SUBMISSION_PREFIX, written, note=write_note(key)
+        )
+        for tag in await self._repos.tags(PLATFORM, ref.org, repo):
+            if tag.get("name") == f"{SUBMISSION_PREFIX}{number}":
+                return _submitted(ref, task_name, tag)
+        raise NotFound(f"the submission {number} is not listed after it was made")
+
+    async def read_submission_file(
+        self, as_: Identity, submission: SubmissionId, path: str
+    ) -> bytes:
+        ref, task_name, number = parse_submission(submission)
+        return await self._repos.read_raw(
+            as_, ref.org, ref.submission_repo(task_name), path, at=f"{SUBMISSION_PREFIX}{number}"
+        )
 
     async def publish(self, task: TaskId, at: VersionId, note: str) -> PublicationId:
         ref = parse_task(task)
@@ -182,6 +203,18 @@ class ForgejoWorkspaces:
             for repo in await self._repos.under(ref.org)
             if str(repo["name"]) == ref.desk_repo or ref.is_submission_repo(str(repo["name"]))
         ]
+
+
+def _submitted(ref: WorkspaceRef, task: str, tag: dict[str, Any]) -> Submitted:
+    number = int(str(tag["name"]).removeprefix(SUBMISSION_PREFIX))
+    commit = tag.get("commit") or {}
+    return Submitted(
+        id=submission_id(ref, task, number),
+        number=number,
+        version=VersionId(str(commit["sha"])),
+        key=read_submission_note(tag.get("message")),
+        at=datetime.fromisoformat(str(commit["created"])),
+    )
 
 
 def _ref(contest: ContestId, owner: WorkspaceOwner) -> WorkspaceRef:

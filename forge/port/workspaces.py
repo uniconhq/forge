@@ -22,6 +22,7 @@ from forge.domain.ids import (
 )
 from forge.domain.names import WorkspaceOwner
 from forge.domain.publications import Publication
+from forge.domain.submissions import Submitted
 
 
 class WorkspacePort(Protocol):
@@ -55,19 +56,30 @@ class WorkspacePort(Protocol):
         """Take the members' access away and keep the contents."""
         ...
 
-    async def list_submissions(
-        self, workspace: WorkspaceId, task: TaskId
-    ) -> tuple[SubmissionId, ...]:
-        """Every submission the workspace made for the task, oldest first."""
+    async def list_submissions(self, workspace: WorkspaceId, task: TaskId) -> tuple[Submitted, ...]:
+        """Every submission the workspace made for the task, oldest first, each
+        with its number, its version and the idempotency key it was made
+        with. `NotFound` for a place to submit that is not there.
+        """
         ...
 
     async def record_submission(
-        self, as_: Identity, workspace: WorkspaceId, task: TaskId, files: Files
-    ) -> SubmissionId:
-        """Write the files as `as_`, the contestant submitting, so the change
+        self, as_: Identity, workspace: WorkspaceId, task: TaskId, files: Files, *, key: str
+    ) -> Submitted:
+        """Write the files as `as_`, the contestant submitting, as one change
+        that leaves exactly these files in the place to submit, so the change
         is theirs, and name that exact change as the next protected version,
-        as the platform. Two submissions at once each get their own number
-        over their own files.
+        as the platform, with a note carrying `key`. Two submissions at once
+        each get their own number over their own files: a number another took
+        first is refused by the host, and the next is tried.
+        """
+        ...
+
+    async def read_submission_file(
+        self, as_: Identity, submission: SubmissionId, path: str
+    ) -> bytes:
+        """One file of a submission, at the version it was made with, read as
+        `as_`. `NotFound` when the submission has no such file.
         """
         ...
 
