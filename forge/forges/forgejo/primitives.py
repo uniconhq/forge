@@ -2,7 +2,7 @@
 carrying the primitive topic, with a declaration at every version.
 """
 
-from forge.domain.identity import PLATFORM
+from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import PrimitiveId
 from forge.domain.workflows import Primitive
 from forge.forges.forgejo.repos import Repos
@@ -28,8 +28,8 @@ class ForgejoPrimitives:
             found.append(Primitive(id=PrimitiveId(short), name=short, versions=tuple(versions)))
         return tuple(found)
 
-    async def read_declaration(self, primitive: PrimitiveId, version: str) -> bytes:
+    async def read_declaration(self, as_: Identity, primitive: PrimitiveId, version: str) -> bytes:
         found = await self._repos.read_file(
-            PLATFORM, PLATFORM_ORG, primitive_repo(primitive), DECLARATION, at=version
+            as_, PLATFORM_ORG, primitive_repo(primitive), DECLARATION, at=version
         )
         return found.content

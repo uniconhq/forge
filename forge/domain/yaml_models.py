@@ -7,6 +7,7 @@ problem is reported as a path into the YAML and a sentence a person reads:
 shows the sentence beside the field the path names.
 """
 
+import math
 import re
 from collections.abc import Hashable, Iterable, Sequence
 from datetime import date, datetime
@@ -252,13 +253,22 @@ def _handle(value: object) -> str:
 
 
 def _number(value: object) -> int | float:
-    if isinstance(value, bool) or not isinstance(value, int | float):
+    if not is_number(value):
         raise ValueError("Must be a number.")
+    assert isinstance(value, int | float)
     return value
 
 
 def is_number(value: object) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool)
+    """Whether `value` is a number: an int or a float, not a true-or-false,
+    and not an infinity or NaN, which YAML and JSON can spell but no limit,
+    input or plan holds.
+    """
+    return (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and (isinstance(value, int) or math.isfinite(value))
+    )
 
 
 _TIME_EXAMPLE = "such as 2026-06-01T09:00:00Z"
