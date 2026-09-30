@@ -3,13 +3,14 @@ pointed at, the platform account's own client, a `ForgejoForge` over them,
 and the people a test makes and removes. `UNICON_LIVE_FORGE_URL` and
 `UNICON_LIVE_FORGE_ADMIN_TOKEN` name the forge; a test that needs the CI
 also needs `UNICON_LIVE_CI_URL`, `UNICON_LIVE_CI_PUBLIC_URL`,
-`UNICON_LIVE_CI_ADMIN_TOKEN` and `UNICON_LIVE_FORGE_PUBLIC_URL`. Every name
-a test makes carries a random suffix.
+`UNICON_LIVE_CI_ADMIN_TOKEN` and `UNICON_LIVE_FORGE_PUBLIC_URL`. `ci` is the
+CI administrator's own client and `live_setup` a setup over both and the
+test Postgres. Every name a test makes carries a random suffix.
 """
 
 import os
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -18,6 +19,9 @@ import pytest
 
 from forge.domain.identity import AsUser, Credential
 from forge.forges.forgejo import ForgejoConfig, ForgejoForge
+from forge.runtime.setup import Setup
+from forge.settings import Settings
+from forge.testing import APP_URL, CALLBACK_PATH
 
 URL = os.environ.get("UNICON_LIVE_FORGE_URL")
 ADMIN_TOKEN = os.environ.get("UNICON_LIVE_FORGE_ADMIN_TOKEN")
@@ -67,6 +71,38 @@ def forge_config(admin: httpx.Client) -> ForgejoConfig:
 
 def platform_account(admin: httpx.Client) -> str:
     return str(admin.get("/api/v1/user").json()["login"])
+
+
+@pytest.fixture
+def ci() -> Iterator[httpx.Client]:
+    """The CI's administrator's own client."""
+    assert CI_URL and CI_ADMIN_TOKEN
+    with httpx.Client(
+        base_url=CI_URL.rstrip("/"),
+        headers={"Authorization": f"Bearer {CI_ADMIN_TOKEN}"},
+        timeout=30,
+    ) as client:
+        yield client
+
+
+@pytest.fixture
+async def live_setup(migrated_database_url: str, admin: httpx.Client) -> AsyncIterator[Setup]:
+    """A setup over the live forge and CI and the test Postgres, with the
+    platform reached at the backend's name inside the deployment.
+    """
+    settings = Settings.for_tests(
+        database_url=migrated_database_url,
+        public_url=APP_URL,
+        forge_public_url=FORGE_PUBLIC_URL,
+        internal_url="http://backend:8000",
+    )
+    built = Setup.build(
+        settings, callback_path=CALLBACK_PATH, forge=ForgejoForge(forge_config(admin))
+    )
+    try:
+        yield built
+    finally:
+        await built.stop()
 
 
 @pytest.fixture

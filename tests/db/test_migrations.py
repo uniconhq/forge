@@ -219,3 +219,32 @@ def test_going_back_from_submissions_keeps_the_rows_within_the_old_checks(
         ("acme/spring/sum", 1, ""),
         ("acme/spring/sum", 2, ""),
     ]
+
+
+def test_a_grading_from_before_dispatch_entered_the_queue_when_it_was_made(
+    migrated_database_url: str,
+) -> None:
+    command.downgrade(alembic_config(migrated_database_url), "0004")
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        _grading(connection, "queued", None, "k-1234567")
+    engine.dispose()
+
+    upgrade_to_head(migrated_database_url)
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        found = connection.execute(
+            text(
+                "SELECT queued_at = created_at, start_failures, retry_at, requeues, progress "
+                "FROM gradings"
+            )
+        ).one()
+    engine.dispose()
+    assert tuple(found) == (True, 0, None, 0, None)
+
+    command.downgrade(alembic_config(migrated_database_url), "0004")
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        columns = {column["name"] for column in inspect(connection).get_columns("gradings")}
+    engine.dispose()
+    assert not columns & {"queued_at", "start_failures", "retry_at", "requeues", "progress"}
