@@ -83,7 +83,7 @@ class FakeWorkspaces:
         scope = Scope(ref.org, ref.contest)
         repo = self._state.repos.get((ref.org, name))
         if repo is None:
-            repo = self._state.create_repo(ref.org, name, {}, scope=scope)
+            repo = self._state.create_repo(PLATFORM, ref.org, name, {}, scope=scope)
         repo.rewrites_refused = True
         repo.teams.add(scope)
         if reserve:
