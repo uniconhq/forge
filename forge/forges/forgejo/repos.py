@@ -107,38 +107,54 @@ class Repos:
         """
         if not files:
             return None
+        return await self._write_repeatedly(as_, owner, name, files, message, replace=False)
+
+    async def replace_files(
+        self, as_: Identity, owner: str, name: str, files: Files, *, message: str
+    ) -> VersionId:
+        """Write the files in one commit as `as_` and remove every other file
+        on the default branch in the same commit, so the commit holds exactly
+        these files; repeated like `write_files` when the tree moves under it.
+        """
+        return await self._write_repeatedly(as_, owner, name, files, message, replace=True)
+
+    async def _write_repeatedly(
+        self, as_: Identity, owner: str, name: str, files: Files, message: str, *, replace: bool
+    ) -> VersionId:
         for attempt in range(WRITE_ATTEMPTS):
             try:
-                return await self._write_files_once(as_, owner, name, files, message)
+                return await self._write_files_once(as_, owner, name, files, message, replace)
             except Conflict:
                 if attempt == WRITE_ATTEMPTS - 1:
                     raise
         raise Conflict(f"{owner}/{name} kept changing while it was written")
 
     async def _write_files_once(
-        self, as_: Identity, owner: str, name: str, files: Files, message: str
+        self, as_: Identity, owner: str, name: str, files: Files, message: str, replace: bool
     ) -> VersionId:
         existing = await self._existing(as_, owner, name)
         first = {"new_branch": DEFAULT_BRANCH} if existing is None else {}
         present = existing or {}
+        operations: list[dict[str, str]] = [
+            {
+                "operation": "update" if path in present else "create",
+                "path": path,
+                "content": _encoded(content),
+                **({"sha": present[path]} if path in present else {}),
+            }
+            for path, content in sorted(files.items())
+        ]
+        if replace:
+            operations.extend(
+                {"operation": "delete", "path": path, "sha": blob}
+                for path, blob in sorted(present.items())
+                if path not in files
+            )
         written = await self._http.call(
             as_,
             "POST",
             f"/api/v1/repos/{owner}/{name}/contents",
-            json={
-                "branch": DEFAULT_BRANCH,
-                **first,
-                "message": message,
-                "files": [
-                    {
-                        "operation": "update" if path in present else "create",
-                        "path": path,
-                        "content": _encoded(content),
-                        **({"sha": present[path]} if path in present else {}),
-                    }
-                    for path, content in sorted(files.items())
-                ],
-            },
+            json={"branch": DEFAULT_BRANCH, **first, "message": message, "files": operations},
         )
         return VersionId(str(json_of(written)["commit"]["sha"]))
 
@@ -213,6 +229,16 @@ class Repos:
             content=base64.b64decode(entry.get("content") or ""),
             token=ConflictToken(str(entry["sha"])),
         )
+
+    async def read_raw(self, as_: Identity, owner: str, name: str, path: str, *, at: str) -> bytes:
+        """One file's bytes at a version, big files included, through the
+        media endpoint, which has no cap on size and resolves a file kept in
+        the large-file store.
+        """
+        found = await self._http.call(
+            as_, "GET", f"/api/v1/repos/{owner}/{name}/media/{path}", params={"ref": at}
+        )
+        return found.content
 
     async def write_file(
         self,

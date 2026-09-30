@@ -301,22 +301,123 @@ async def test_a_submission_is_written_as_the_contestant_and_named_at_that_commi
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     repo = "/api/v1/repos/acme/spring.sum.bob.sub"
+    created = "2026-09-30T10:00:00Z"
+    first = {"name": "submission/1", "commit": {"sha": "c-1", "created": created}}
+    second = {
+        "name": "submission/2",
+        "message": "idempotency_key: key-12345678\n",
+        "commit": {"sha": "c-bob", "created": created},
+    }
     recorder.on("GET", f"{repo}/branches/main", ok({"commit": {"id": "head-0"}}))
-    recorder.on("GET", f"{repo}/git/trees/main", ok({"tree": []}))
-    recorder.on("GET", f"{repo}/tags", ok([{"name": "submission/1"}, {"name": "v-other"}]))
+    tree = [
+        {"path": "files/submission/old.py", "sha": "b-old", "type": "blob"},
+        {"path": "main.py", "sha": "b-main", "type": "blob"},
+    ]
+    recorder.on("GET", f"{repo}/git/trees/main", ok({"tree": tree}))
+    recorder.on(
+        "GET", f"{repo}/tags", ok([first, {"name": "v-other"}]), ok([first, second]), ok([])
+    )
     recorder.on("POST", f"{repo}/contents", ok({"commit": {"sha": "c-bob"}}))
     bob = AsUser(8, _credential())
 
     submission = await forgejo.workspaces.record_submission(
-        bob, WorkspaceId("acme/spring/@bob"), TaskId("acme/spring/sum"), {"main.py": b"x"}
+        bob,
+        WorkspaceId("acme/spring/@bob"),
+        TaskId("acme/spring/sum"),
+        {"main.py": b"x"},
+        key="key-12345678",
     )
 
-    assert submission == "acme/spring/@bob/sum#2"
+    assert (submission.id, submission.number, submission.version) == (
+        "acme/spring/@bob/sum#2",
+        2,
+        "c-bob",
+    )
+    assert (submission.key, submission.at) == (
+        "key-12345678",
+        datetime(2026, 9, 30, 10, tzinfo=UTC),
+    )
     assert recorder.headers("POST", f"{repo}/contents") == ["Bearer access"]
+    [written] = recorder.sent("POST", f"{repo}/contents")
+    assert [(entry["operation"], entry["path"]) for entry in written["files"]] == [
+        ("update", "main.py"),
+        ("delete", "files/submission/old.py"),
+    ]
     assert recorder.sent("POST", f"{repo}/tags") == [
-        {"tag_name": "submission/2", "target": "c-bob"}
+        {
+            "tag_name": "submission/2",
+            "target": "c-bob",
+            "message": "idempotency_key: key-12345678\n",
+        }
     ]
     assert recorder.headers("POST", f"{repo}/tags") == ["token admin"]
+
+
+async def test_a_submission_number_another_took_first_is_taken_by_the_next(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/spring.sum.bob.sub"
+    commit = {"sha": "c-bob", "created": "2026-09-30T10:00:00Z"}
+    raced = {"name": "submission/1", "commit": {"sha": "c-other", "created": commit["created"]}}
+    mine = {"name": "submission/2", "message": "idempotency_key: key-12345678\n", "commit": commit}
+    recorder.on("GET", f"{repo}/branches/main", ok({}, 404))
+    recorder.on("POST", f"{repo}/contents", ok({"commit": {"sha": "c-bob"}}))
+    recorder.on("GET", f"{repo}/tags", ok([]), ok([raced]), ok([raced, mine]))
+    recorder.on("POST", f"{repo}/tags", ok({"message": "tag already exists"}, 409), ok({}))
+
+    submission = await forgejo.workspaces.record_submission(
+        AsUser(8, _credential()),
+        WorkspaceId("acme/spring/@bob"),
+        TaskId("acme/spring/sum"),
+        {"main.py": b"x"},
+        key="key-12345678",
+    )
+
+    assert submission.number == 2
+    assert [body["tag_name"] for body in recorder.sent("POST", f"{repo}/tags")] == [
+        "submission/1",
+        "submission/2",
+    ]
+    [written] = recorder.sent("POST", f"{repo}/contents")
+    assert written["new_branch"] == "main"
+
+
+async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_through_media(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/spring.sum.bob.sub"
+    commit = {"sha": "c-2", "created": "2026-09-30T10:00:00Z"}
+    recorder.on(
+        "GET",
+        f"{repo}/tags",
+        ok(
+            [
+                {
+                    "name": "submission/2",
+                    "message": "idempotency_key: k-2222222\n",
+                    "commit": commit,
+                },
+                {"name": "scratch", "commit": commit},
+                {"name": "submission/1", "commit": {**commit, "sha": "c-1"}},
+            ]
+        ),
+    )
+    recorder.on("GET", f"{repo}/media/files/submission/main.py", httpx.Response(200, content=b"x"))
+    workspace, task = WorkspaceId("acme/spring/@bob"), TaskId("acme/spring/sum")
+
+    listed = await forgejo.workspaces.list_submissions(workspace, task)
+    content = await forgejo.workspaces.read_submission_file(
+        AsUser(8, _credential()), listed[1].id, "files/submission/main.py"
+    )
+
+    assert [(made.number, made.version, made.key) for made in listed] == [
+        (1, "c-1", None),
+        (2, "c-2", "k-2222222"),
+    ]
+    assert content == b"x"
+    [read] = [request for request in recorder.seen if "/media/" in request.url.path]
+    assert read.url.params["ref"] == "submission/2"
+    assert read.headers["Authorization"] == "Bearer access"
 
 
 async def test_a_publication_tags_the_saved_commit_with_its_note_and_writes_nothing(
@@ -526,15 +627,18 @@ async def test_a_write_the_host_refuses_as_moved_is_read_again_and_repeated(
         ok({"message": "the tree moved"}, 409),
         ok({"commit": {"sha": "c-2"}}),
     )
+    made = {"name": "submission/1", "commit": {"sha": "c-2", "created": "2026-09-30T10:00:00Z"}}
+    recorder.on("GET", f"{repo}/tags", ok([]), ok([made]))
 
     submission = await forgejo.workspaces.record_submission(
         AsUser(8, _credential()),
         WorkspaceId("acme/spring/@bob"),
         TaskId("acme/spring/sum"),
         {"main.py": b"x"},
+        key="key-12345678",
     )
 
-    assert submission == "acme/spring/@bob/sum#1"
+    assert submission.id == "acme/spring/@bob/sum#1"
     assert recorder.calls().count(f"POST {repo}/contents") == 2
     assert recorder.calls().count(f"GET {repo}/git/trees/main") == 2
     assert recorder.sent("POST", f"{repo}/tags")[0]["target"] == "c-2"

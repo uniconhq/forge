@@ -1,15 +1,19 @@
 """The migration brings an empty database to the schema the tables declare,
-with exactly the tables the package owns and rolls back to nothing, a
-activation job included, and a grading row round-trips with its verdict.
+with exactly the tables the package owns and rolls back to nothing, an
+activation job and a grading row made by a submit included, and a grading
+row round-trips with its verdict.
 """
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
+import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy.exc import IntegrityError
 
 from forge.db.migrations import alembic_config, downgrade_to_base, upgrade_to_head
 from forge.db.tables import Grading, OrgAccount, Provisioning, metadata
@@ -83,10 +87,15 @@ async def test_a_grading_row_round_trips_with_its_verdict(setup: Setup) -> None:
     verdict = {"outcome": "verdict", "verdict": "AC", "score": "100", "summary": [{"id": "1"}]}
     async with setup.unit_of_work() as ctx:
         row = Grading(
+            task_id="acme/spring/sum",
             workspace_id="acme/spring/@ada",
             submission_id="acme/spring/@ada/sum#1",
+            submission_number=1,
+            submission_version="c" * 40,
+            submitted_at=datetime.now(UTC),
             publication_id="acme/spring/sum#1",
             stage="public",
+            idempotency_key="key-12345678",
             status="done",
             verdict=verdict,
             log_key="logs/1",
@@ -141,3 +150,72 @@ async def test_a_time_reads_back_in_utc_whatever_zone_the_server_is_in(setup: Se
 
     assert zone == "UTC"
     assert job.created_at.utcoffset() == timedelta(0)
+
+
+def _grading(connection: Any, status: str, wait_reason: str | None, key: str | None) -> None:
+    connection.execute(
+        text(
+            "INSERT INTO gradings (id, task_id, workspace_id, submission_id, submission_number, "
+            "submission_version, submitted_at, publication_id, stage, status, wait_reason, "
+            "idempotency_key) VALUES (gen_random_uuid(), 'acme/spring/sum', 'acme/spring/@ada', "
+            "'acme/spring/@ada/sum#' || :number, :number, 'c', now(), 'acme/spring/sum#1', "
+            "'default', :status, :reason, :key)"
+        ),
+        {"number": 1 if key else 2, "status": status, "reason": wait_reason, "key": key},
+    )
+
+
+def test_a_key_is_unique_for_a_workspace_task_and_stage(migrated_database_url: str) -> None:
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        _grading(connection, "queued", None, "key-12345678")
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO gradings (id, task_id, workspace_id, submission_id, "
+                "submission_number, submission_version, submitted_at, publication_id, stage, "
+                "status, idempotency_key) VALUES (gen_random_uuid(), 'acme/spring/sum', "
+                "'acme/spring/@ada', 'acme/spring/@ada/sum#9', 9, 'c', now(), "
+                "'acme/spring/sum#1', 'default', 'queued', 'key-12345678')"
+            )
+        )
+    engine.dispose()
+
+
+def test_going_back_from_submissions_keeps_the_rows_within_the_old_checks(
+    migrated_database_url: str,
+) -> None:
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        _grading(connection, "system_error", "The CI refused the start: no machine.", "k-1234567")
+        _grading(connection, "queued", "ci_unavailable", None)
+    engine.dispose()
+
+    command.downgrade(alembic_config(migrated_database_url), "0003")
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text("SELECT submission_id, status, wait_reason FROM gradings ORDER BY submission_id")
+        ).all()
+        columns = {column["name"] for column in inspect(connection).get_columns("gradings")}
+    engine.dispose()
+    assert [tuple(row) for row in rows] == [
+        ("acme/spring/@ada/sum#1", "failed", None),
+        ("acme/spring/@ada/sum#2", "queued", "ci_unavailable"),
+    ]
+    assert not columns & {"task_id", "submission_number", "idempotency_key", "submitted_at"}
+
+    upgrade_to_head(migrated_database_url)
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        found = connection.execute(
+            text(
+                "SELECT task_id, submission_number, submission_version FROM gradings "
+                "ORDER BY submission_number"
+            )
+        ).all()
+    engine.dispose()
+    assert [tuple(row) for row in found] == [
+        ("acme/spring/sum", 1, ""),
+        ("acme/spring/sum", 2, ""),
+    ]

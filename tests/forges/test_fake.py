@@ -41,16 +41,19 @@ async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
     await fake.workspaces.open_submission_place(workspace, task, [8])
     bob = _as(fake, 8)
     submission = await fake.workspaces.record_submission(
-        bob, workspace, task, {"main.py": b"print(1)"}
+        bob, workspace, task, {"main.py": b"print(1)"}, key="key-12345678"
     )
 
     assert [entry.id for entry in await fake.workspaces.list_publications(task)] == [publication]
     assert await fake.workspaces.list_submissions(workspace, task) == (submission,)
+    assert (submission.number, submission.key) == (1, "key-12345678")
     assert await fake.orgs.roles_of(_as(fake, 7)) == (RoleGrant(Scope("acme"), Role.ADMIN),)
     assert fake.calls_to("record_submission")[0].identity == bob
     fake.add_user(9, "eve")
     with pytest.raises(Forbidden):
-        await fake.workspaces.record_submission(_as(fake, 9), workspace, task, {"a": b"b"})
+        await fake.workspaces.record_submission(
+            _as(fake, 9), workspace, task, {"a": b"b"}, key="key-87654321"
+        )
     assert fake.calls_to("activate") == []
 
 

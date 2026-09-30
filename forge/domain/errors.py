@@ -289,6 +289,23 @@ class WorkspaceNotReady(SubmitRefused):
     code = "workspace_not_ready"
 
 
+class SubmissionLimit(SubmitRefused):
+    """The contestant has made every submission the task allows. `limit` is
+    how many that is.
+    """
+
+    code = "submission_limit"
+
+
+class RateLimited(SubmitRefused):
+    """The contestant submitted as often as the task's rate allows within its
+    window. `rate` is the rate, such as `1 per 30s`, and `retry_at` the first
+    instant another submission is taken, in ISO 8601.
+    """
+
+    code = "rate_limited"
+
+
 class TooLarge(SubmitRefused):
     """A file, or the submission as a whole, is larger than the task allows.
     `limit` is the most allowed in bytes, and `input` the input whose limit it
@@ -296,6 +313,15 @@ class TooLarge(SubmitRefused):
     """
 
     code = "too_large"
+
+
+class UploadNotYours(SubmitRefused):
+    """An upload named is not one this person made for this task. One that
+    does not exist is answered the same way, so the answer says nothing
+    about anyone else's. `uploads` lists each id refused.
+    """
+
+    code = "upload_not_yours"
 
 
 class UploadNotReady(SubmitRefused):
@@ -324,3 +350,11 @@ class InvalidInputs(SubmitRefused):
     """
 
     code = "invalid_inputs"
+
+
+class InvalidIdempotencyKey(ServiceError):
+    """A submit's idempotency key is missing or not the short random text a
+    browser makes once per submit.
+    """
+
+    code = "invalid_idempotency_key"
