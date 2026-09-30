@@ -9,7 +9,7 @@ One person holds a bounded number of unsubmitted uploads for a task, and a
 bounded number of bytes declared by them, a rejected one included, even
 when two slots are asked at once. A failing store is told to the caller in
 fixed words, never its own. The hourly sweep removes, after two days, every upload no submit used,
-object and row.
+object and row, and the object of one a submit used, keeping its row.
 """
 
 import asyncio
@@ -37,12 +37,13 @@ from forge.domain.errors import (
     UploadNotReady,
 )
 from forge.domain.identity import PLATFORM
+from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import PART_SIZE, SINGLE_REQUEST_MAX, UploadStatus
 from forge.domain.workflows import Visibility
 from forge.port.objects import FinishedPart, Store
 from forge.runtime.setup import Setup
-from forge.services import publications, uploads
-from forge.testing import CLASSIC, FakeClock
+from forge.services import publications, submissions, uploads
+from forge.testing import CLASSIC, FakeClock, tick
 from tests.services.conftest import Acme, Entered, signed_in, upload
 
 SOURCE = b"print(1)\n"
@@ -183,13 +184,22 @@ async def test_completing_measures_what_arrived_and_a_mismatch_is_rejected(
     rejected = await uploads.complete(setup, session, task, short.id)
     assert (rejected.status, rejected.size) == (UploadStatus.REJECTED, 3)
 
+    with pytest.raises(UploadNotReady):
+        await submissions.submit(
+            setup,
+            session,
+            task,
+            {"submission": SubmittedInput(uploads=(short.id,), language="python")},
+            idempotency_key="key-rejected-1",
+        )
+
 
 async def test_a_person_holds_a_bounded_number_of_uploads_until_a_submit_uses_them(
     setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(rules, "OPEN_MAX", 3)
     session, task = entered.session, entered.task
-    await upload(setup, acme.fake, session, task, SOURCE)
+    verified = await upload(setup, acme.fake, session, task, SOURCE)
     short = await uploads.slot(setup, session, task, input="submission", filename="a.py", size=9)
     assert isinstance(short, uploads.PostSlot)
     acme.fake.objects.post(short.fields, b"1")
@@ -203,6 +213,15 @@ async def test_a_person_holds_a_bounded_number_of_uploads_until_a_submit_uses_th
 
     assert refused.value.extra == {"limit": 3, "bytes": 2 * 10 * 1024 * 1024}
     assert len(await _rows(setup)) == 3
+    await submissions.submit(
+        setup,
+        session,
+        task,
+        {"submission": SubmittedInput(uploads=(verified.id,), language="python")},
+        idempotency_key="key-frees-one",
+    )
+    freed = await uploads.slot(setup, session, task, input="submission", filename="c.py", size=1)
+    assert isinstance(freed, uploads.PostSlot)
 
 
 async def test_a_person_declares_at_most_two_submissions_worth_of_open_uploads(
@@ -365,6 +384,61 @@ async def test_a_large_file_goes_in_parts_of_exact_length_and_is_measured_once_j
     assert done.sha256 == hashlib.sha256(content).hexdigest()
     [row] = await _rows(setup)
     assert row.multipart_upload_id is None
+
+
+async def test_an_abandoned_upload_in_parts_never_becomes_submittable(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _big_task(setup, acme, entered)
+    size = SINGLE_REQUEST_MAX + 1
+    slot = await uploads.slot(
+        setup, entered.session, entered.task, input="submission", filename="big.py", size=size
+    )
+    assert isinstance(slot, uploads.PartsSlot)
+    acme.fake.objects.put_part(slot.parts[0].url, b"a" * PART_SIZE)
+
+    with pytest.raises(UploadNotReady):
+        await submissions.submit(
+            setup,
+            entered.session,
+            entered.task,
+            {"submission": SubmittedInput(uploads=(slot.id,), language="python")},
+            idempotency_key="key-abandoned",
+        )
+
+
+async def test_the_sweep_removes_unused_uploads_after_two_days_and_keeps_a_used_ones_row(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    session, task = entered.session, entered.task
+    used = await upload(setup, acme.fake, session, task, b"print(1)\n")
+    unused = await upload(setup, acme.fake, session, task, b"print(2)\n", filename="b.py")
+    await submissions.submit(
+        setup,
+        session,
+        task,
+        {"submission": SubmittedInput(uploads=(used.id,), language="python")},
+        idempotency_key="key-for-sweep",
+    )
+    clock.advance(timedelta(days=1))
+    await tick(setup, "uploads.sweep")
+    assert len(await _rows(setup)) == 2
+
+    clock.advance(timedelta(days=1))
+    await tick(setup, "uploads.sweep")
+
+    rows = {row.id: row for row in await _rows(setup)}
+    assert list(rows) == [used.id]
+    assert (rows[used.id].status, rows[used.id].consumed_by) == (
+        "expired",
+        "acme/spring/@bob/sum#1",
+    )
+    assert acme.fake.objects.objects[Store.UPLOADS] == {}
+    assert sorted(key for _, key in acme.fake.objects.deleted) == sorted(
+        [f"uploads/{used.id}", f"uploads/{unused.id}"]
+    )
+    await tick(setup, "uploads.sweep")
+    assert len(acme.fake.objects.deleted) == 2
 
 
 async def test_the_sweep_takes_every_due_upload_however_many_there_are(

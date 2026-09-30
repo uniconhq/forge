@@ -1,11 +1,27 @@
-"""The rules under uploads, with no database: a primitive's declaration
-reads or is refused at its path; and a file name, an `accept` list and the
-parts of a large file.
+"""The rules under uploads and submissions, with no database: a primitive's
+declaration reads or is refused at its path; a file name, an `accept` list
+and the parts of a large file; what a submission lays out and what it
+refuses, input by input; the note its protected version carries; and the
+secret a grading run is handed, derived and never stored.
 """
+
+import json
+import uuid
 
 import pytest
 
+from forge.domain.definitions import parse_task, starter_task
+from forge.domain.errors import InvalidInputs
+from forge.domain.grading import callback_token, token_hash
 from forge.domain.primitives import PortType, parse_primitive
+from forge.domain.submissions import (
+    SubmittedInput,
+    UploadedFile,
+    key_is_valid,
+    lay_out,
+    read_note,
+    write_note,
+)
 from forge.domain.uploads import (
     PART_SIZE,
     SINGLE_REQUEST_MAX,
@@ -117,3 +133,147 @@ def test_a_large_file_goes_in_parts_of_exact_lengths() -> None:
     huge = 100 * 1024**3
     assert part_size(huge) > PART_SIZE and len(parts_of(huge)) <= 1000
     assert sum(part.length for part in parts_of(huge)) == huge
+
+
+TASK = parse_task(
+    starter_task("Sum")["task.yaml"].replace(
+        b"      language: [python]\n",
+        b"      language: [python, cpp]\n"
+        b"    - {id: weights, type: 'file[]', max_size: 1MB}\n"
+        b"    - {id: alpha, type: number, min: 0, max: 1, default: 0.5}\n"
+        b"    - {id: note, type: text}\n",
+    )
+)
+SOURCE, W1, W2 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+UPLOADS = {
+    SOURCE: UploadedFile(SOURCE, "submission", "main.py", 10),
+    W1: UploadedFile(W1, "weights", "b.bin", 3),
+    W2: UploadedFile(W2, "weights", "a.bin", 3),
+}
+
+
+def test_a_submission_lays_out_its_files_and_names_them_in_submission_json() -> None:
+    layout = lay_out(
+        TASK.inputs.contestant,
+        {
+            "submission": SubmittedInput(uploads=(SOURCE,), language="cpp"),
+            "weights": SubmittedInput(uploads=(W1, W2)),
+            "note": SubmittedInput(value="hello"),
+        },
+        UPLOADS,
+    )
+
+    assert layout.files == {
+        "files/submission/main.py": SOURCE,
+        "files/weights/a.bin": W2,
+        "files/weights/b.bin": W1,
+    }
+    assert json.loads(layout.document) == {
+        "schema_version": 3,
+        "inputs": {
+            "submission": {"files": ["files/submission/main.py"], "language": "cpp"},
+            "weights": {"files": ["files/weights/a.bin", "files/weights/b.bin"]},
+            "alpha": {"value": 0.5},
+            "note": {"value": "hello"},
+        },
+    }
+    assert layout.document.endswith(b"}\n")
+
+
+@pytest.mark.parametrize(
+    ("given", "input", "message"),
+    [
+        ({"submission": SubmittedInput(uploads=(SOURCE,))}, "submission", "Choose one of"),
+        (
+            {"submission": SubmittedInput(uploads=(SOURCE,), language="rust")},
+            "submission",
+            "Choose one of the languages python, cpp.",
+        ),
+        ({"submission": SubmittedInput(value="print(1)")}, "submission", "needs a file"),
+        (
+            {"submission": SubmittedInput(uploads=(SOURCE, W1), language="cpp")},
+            "submission",
+            "exactly one file",
+        ),
+        (
+            {"submission": SubmittedInput(uploads=(W1,), language="cpp")},
+            "submission",
+            "another input",
+        ),
+        ({"alpha": SubmittedInput(value=2)}, "alpha", "Must be at most 1."),
+        ({"alpha": SubmittedInput(value=True)}, "alpha", "Must be a number."),
+        ({"alpha": SubmittedInput(value=float("nan"))}, "alpha", "Must be a number."),
+        ({"note": SubmittedInput(value=None)}, "note", "This input is required."),
+        ({"note": SubmittedInput(uploads=(W1,))}, "note", "not files"),
+        ({"ghost": SubmittedInput(value=1)}, "ghost", "The task has no such input."),
+    ],
+    ids=[
+        "no-language",
+        "unlisted-language",
+        "value-for-code",
+        "two-files",
+        "upload-of-another-input",
+        "above-max",
+        "boolean-for-number",
+        "nan-for-number",
+        "required-text",
+        "files-for-text",
+        "unknown-input",
+    ],
+)
+def test_a_submission_that_does_not_fit_the_inputs_is_refused_naming_the_input(
+    given: dict[str, SubmittedInput], input: str, message: str
+) -> None:
+    complete = {
+        "submission": SubmittedInput(uploads=(SOURCE,), language="cpp"),
+        "weights": SubmittedInput(uploads=(W1,)),
+        "note": SubmittedInput(value="x"),
+    }
+    with pytest.raises(InvalidInputs) as refused:
+        lay_out(TASK.inputs.contestant, {**complete, **given}, UPLOADS)
+    errors = refused.value.extra["errors"]
+    assert [error["input"] for error in errors] == [input]
+    assert message in errors[0]["message"]
+
+
+def test_two_files_of_one_name_are_refused() -> None:
+    twin = uuid.uuid4()
+    uploads = {**UPLOADS, twin: UploadedFile(twin, "weights", "a.bin", 1)}
+    with pytest.raises(InvalidInputs) as refused:
+        lay_out(
+            TASK.inputs.contestant,
+            {
+                "submission": SubmittedInput(uploads=(SOURCE,), language="cpp"),
+                "weights": SubmittedInput(uploads=(W2, twin)),
+                "note": SubmittedInput(value="x"),
+            },
+            uploads,
+        )
+    assert refused.value.extra["errors"] == [
+        {"input": "weights", "message": "Two files have the same name."}
+    ]
+
+
+def test_a_key_is_short_random_text_and_its_note_reads_back() -> None:
+    assert key_is_valid(str(uuid.uuid4()))
+    assert not key_is_valid("short")
+    assert not key_is_valid("has space 12345")
+    assert not key_is_valid("x" * 129)
+    assert read_note(write_note("key-12345678")) == "key-12345678"
+    assert read_note(None) is None
+    assert read_note("[1") is None
+    assert read_note("idempotency_key: 7") is None
+
+
+def test_a_gradings_secrets_are_its_own_runs_and_only_the_hash_is_kept() -> None:
+    key = b"\x01" * 32
+    one, two = uuid.uuid4(), uuid.uuid4()
+
+    token = callback_token(key, one, run=0)
+    assert token == callback_token(key, one, run=0)
+    assert token != callback_token(key, two, run=0)
+    assert token != callback_token(key, one, run=1)
+    assert token != callback_token(b"\x02" * 32, one, run=0)
+    assert "=" not in token and len(token) == 43
+    assert len(token_hash(token)) == 32
+    assert token_hash(token) != token.encode()

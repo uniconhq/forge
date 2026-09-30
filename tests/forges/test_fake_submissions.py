@@ -1,6 +1,8 @@
-"""The in-memory forge's primitives and object store behave as a real forge
-and store do: a primitive's declaration is read as the organiser at its
-version; and the store refuses a form or a part URL past its expiry or
+"""The in-memory forge's submissions, primitives and object store behave as a
+real forge and store do: a submission holds exactly its files, is numbered
+after the highest there is, carries its key and takes the next number when
+another took its own; a primitive's declaration is read as the organiser at
+its version; and the store refuses a form or a part URL past its expiry or
 carrying more than it was signed for.
 """
 
@@ -10,12 +12,70 @@ from datetime import timedelta
 import pytest
 
 from forge.domain.clock import FakeClock
-from forge.domain.errors import Forbidden, NotFound, Rejected
+from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import PLATFORM, AsUser
-from forge.domain.ids import PrimitiveId
+from forge.domain.ids import OrgName, PrimitiveId, TaskId, WorkspaceId
+from forge.domain.names import UserOwner
 from forge.forges.fake import FakeForge
 from forge.port.objects import FinishedPart, Store
 from forge.testing import PRIMITIVES, seed_primitives
+
+
+async def _place(fake: FakeForge) -> tuple[WorkspaceId, TaskId, AsUser]:
+    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    contest = await fake.content.create_contest(OrgName("acme"), "spring", {"contest.yaml": b"c"})
+    task = await fake.content.create_task(contest, "sum", {"task.yaml": b"t"})
+    workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8])
+    await fake.workspaces.open_submission_place(workspace, task, [8])
+    return workspace, task, AsUser(8, fake.mint(8))
+
+
+async def test_a_submission_holds_exactly_its_files_and_carries_its_key(fake: FakeForge) -> None:
+    workspace, task, bob = await _place(fake)
+
+    first = await fake.workspaces.record_submission(
+        bob, workspace, task, {"files/a/x.py": b"1", "submission.json": b"{}"}, key="first-key"
+    )
+    second = await fake.workspaces.record_submission(
+        bob, workspace, task, {"files/a/y.py": b"2", "submission.json": b"{}"}, key="second-key"
+    )
+
+    assert [
+        (made.number, made.key) for made in await fake.workspaces.list_submissions(workspace, task)
+    ] == [(1, "first-key"), (2, "second-key")]
+    repo = fake.state.repos[("acme", "spring.sum.bob.sub")]
+    assert sorted(repo.snapshots[second.version]) == ["files/a/y.py", "submission.json"]
+    assert repo.versions["submission/1"] == first.version
+    assert repo.history[-1].author_id == 8
+    assert await fake.workspaces.read_submission_file(bob, first.id, "files/a/x.py") == b"1"
+    with pytest.raises(NotFound):
+        await fake.workspaces.read_submission_file(bob, second.id, "files/a/x.py")
+
+
+async def test_a_number_another_took_first_is_taken_by_the_next(fake: FakeForge) -> None:
+    workspace, task, bob = await _place(fake)
+    fake.racing_submissions = 1
+
+    made = await fake.workspaces.record_submission(
+        bob, workspace, task, {"submission.json": b"{}"}, key="racing-key"
+    )
+
+    assert made.number == 2
+    listed = await fake.workspaces.list_submissions(workspace, task)
+    assert [(entry.number, entry.key) for entry in listed] == [(1, None), (2, "racing-key")]
+
+
+async def test_a_lost_answer_leaves_the_submission_named(fake: FakeForge) -> None:
+    workspace, task, bob = await _place(fake)
+    fake.lose_submission_answer = True
+
+    with pytest.raises(Unavailable):
+        await fake.workspaces.record_submission(
+            bob, workspace, task, {"submission.json": b"{}"}, key="lost-key-1"
+        )
+
+    [made] = await fake.workspaces.list_submissions(workspace, task)
+    assert made.key == "lost-key-1"
 
 
 async def test_a_declaration_is_read_as_the_organiser_at_its_version(fake: FakeForge) -> None:
