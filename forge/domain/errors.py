@@ -358,3 +358,22 @@ class InvalidIdempotencyKey(ServiceError):
     """
 
     code = "invalid_idempotency_key"
+
+
+class CiRequestRefused(ServiceError):
+    """A request the CI made about a run that the platform will not answer:
+    its signature does not verify, it names no grading, or the grading it
+    names is not one to start now. The detail says no more than that; the
+    reason goes to the log.
+    """
+
+    code = "ci_request_refused"
+
+
+class GradingClosed(ServiceError):
+    """The grading takes no more from its run: it is not the run's to report
+    on now, because it finished, was cancelled or requeued, or its deadline
+    passed.
+    """
+
+    code = "grading_closed"

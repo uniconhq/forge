@@ -18,6 +18,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "regex>=2026.1",
     "boto3>=1.43.104",
+    "jsonschema[format-nongpl]>=4.26.0",
 ]
 
 [project.scripts]
@@ -36,6 +37,7 @@ dev = [
     "types-pyyaml>=6.0.12.20260906",
     "types-regex>=2026.9.10.20260911",
     "types-boto3[s3]>=1.43.104",
+    "types-jsonschema>=4.26.0.20260518",
 ]
 
 [build-system]
