@@ -240,6 +240,12 @@ def log_key(grading: uuid.UUID, attempt: int) -> str:
     return f"logs/{grading}/{attempt}.log"
 
 
+RUN_LOG_MAX = 9 * 1024 * 1024
+"""The largest run log read back for a contestant. The harness cuts the log
+it writes to 8 MiB and a line saying what it left out; the URL it writes
+with takes any length, so the read is where the bound holds."""
+
+
 def wall_seconds(plan: Plan) -> int:
     """How long the harness may take over the plan: every step's time limit
     summed, which for a batch is already its tests' together, with a margin
