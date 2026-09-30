@@ -132,6 +132,17 @@ def parse_task(value: TaskId) -> TaskRef:
     return TaskRef(org, contest, task)
 
 
+def task_of_repo(owner: str, name: str) -> TaskRef:
+    """The task a repository is, by its owner and name. `MalformedId` for a
+    repository that is no task's.
+    """
+    stem, dot, word = name.rpartition(".")
+    contest, _, task = stem.partition(".")
+    if not dot or word != TASK or not contest or not task or "." in task or not owner:
+        raise MalformedId(f"{owner}/{name} is not a task")
+    return TaskRef(owner, contest, task)
+
+
 def parse_workspace(value: WorkspaceId) -> WorkspaceRef:
     org, contest, owner = _split(value, 3)
     if not owner.startswith(WORKSPACE_MARK):

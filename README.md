@@ -26,8 +26,9 @@ forge/
     background.py    the pollers and timed passes that run with nobody clicking
   domain/            the types and their rules, the definition files, the plans,
                      a publication and its note, the release rules, the steps
-                     of making each kind of thing and the clock; imports
-                     nothing else in the package
+                     of making each kind of thing, grading's rules and clock,
+                     the runner's contract files in schemas/ and the clock;
+                     imports nothing else in the package
   port/              the interface a git host is called through, one area per module
   services/          the actions and their building blocks, the cookies and the
                      credential at rest; the only layer that writes to the database
@@ -94,6 +95,9 @@ forge/api/
   submissions.py  submit, mine, one, files, file, the SubmittedInput submit
                 takes, and the Submission, Result, SubmittedFiles,
                 GradingStatus and Show they return
+  runs.py       config, envelope, the CiRequest config takes and the CiAnswer
+                it returns, and CI_CONFIG_PATH and ENVELOPE_PATH, where each
+                is served
   roles.py      holders, grant, revoke, and the Holder holders returns
   cookies.py    what goes into the two cookies and what comes out, and the policy
   log.py        setup, get_logger, and the Logger it returns
@@ -131,7 +135,10 @@ is the compiler (below) and names what changed how a task grades between two
 publications. `submissions.py` lays out what a contestant gives as the files
 and `submission.json` of one commit, and `uploads.py` holds the rules of an
 upload's slot and parts. `grading.py` holds where a grading stands, what a
-grading run is, its two secrets and its clock.
+grading run is, its two secrets and its clock, and `contracts.py` checks a
+document against `schemas/`, a copy of the five contract files of the runner
+release the package pins, which the tests check against the runner's own
+when that repo is checked out beside this one.
 `release.py` works out from the settings and the clock whether a task is
 released, visible and open to one contestant, and who sees a contest at all.
 
@@ -196,7 +203,11 @@ of its files at its version, big ones included.
 in the platform's words, as the org account, with the variables
 `grading.run_variables` writes for it, and `grading.find_run` finds the run a
 start whose answer was lost left, by the grading's id.
-The Forgejo implementation writes the Woodpecker side of each (below).
+`grading.read_config_request` checks the CI's signed question of what a run
+is and reads it as a `ConfigAsk`, and `grading.config_answer` answers it with
+the run's three steps; `grading.run_places` says what the envelope names of
+the run's places at the forge. The Forgejo implementation writes the
+Woodpecker side of each (below).
 `workspaces.publish` names a version a save already wrote as the next
 publication, with a note, and `workspaces.list_publications` reads each back
 as a `Publication` with what its note says. A contestant's workspace is made
@@ -290,9 +301,11 @@ variables, and the object store's as `settings.s3`, read from
 (`unicon-uploads`) and `UNICON_S3_RESULTS_BUCKET` (`unicon-results`); both are
 required only when `UNICON_FORGE=forgejo`. `UNICON_MACHINE_URL` is where
 grading machines reach the platform, `UNICON_PUBLIC_URL` unless given.
-`UNICON_HARNESS_IMAGE` is the harness every plan names, by digest, the one of
-the runner release the package pins unless given. A missing or malformed
-variable stops the process at start with the variable named.
+`UNICON_HARNESS_IMAGE` is the harness every plan names, by digest, and
+`UNICON_CLONE_IMAGE` the image the CI checks a task and a submission out
+with, by digest, each the one of the runner release the package pins unless
+given. A missing or malformed variable stops the process at start with the
+variable named.
 
 ## Cookies
 
@@ -333,6 +346,7 @@ hosting process calls are actions, marked `@action` from
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
 | `submissions` | `submit`, `mine`, `one`, `files`, `file` |
+| `runs` | `config`, `envelope` |
 
 A hosting process reaches them through `forge.api`. An action is one unit of
 work. Called as `account.delete(session)`, it opens a transaction on the setup
@@ -699,9 +713,10 @@ proves itself with two secrets derived from `UNICON_TOKEN_ENCRYPTION_KEY`,
 the grading's id and the number of the run: the envelope key its envelope's
 URL carries and the callback token it reports back with, whose SHA-256 the
 row keeps. Its status runs `queued`, `dispatching` (a start was sent and its
-answer never came back) and `dispatched` (the CI holds the run, waiting for
-a machine or checking out), and ends `system_error`, a failure of the
-platform's, never a grade, when its run cannot be started or dies.
+answer never came back), `dispatched` (the CI holds the run, waiting for a
+machine or checking out) and `running` (the harness fetched its envelope),
+and ends `system_error`, a failure of the platform's, never a grade, when
+its run cannot be started or dies.
 
 **Starting a run.** The `gradings.dispatch` poller takes the `queued` and
 `dispatching` rows whose `retry_at` has come, oldest in the queue first, under
@@ -723,6 +738,56 @@ empty 204 when the extension refused it, and keeps a run that ended at once
 (measured); the next try passes over that run, and a grading whose start has
 failed 20 times and is then answered that way ends in `system_error`, as
 does one whose publication is gone.
+
+**The configuration extension.** `runs.config(request)` takes the CI's
+request as it arrived, a `CiRequest` of method, target, headers and body. The
+Forgejo implementation checks its RFC 9421 signature, over the request target
+and the body's `Content-Digest`, made within five minutes, against the CI's
+ed25519 key, read from `GET /api/signature/public-key` with the CI
+administrator's token, kept, and read again once when a request does not
+verify; a signature that says it expires is refused after that. The key is
+asked for at most once a minute, whether the last read worked or not. The request names the task's repository and the
+run's variables; the grading must be the one `UNICON_GRADING_ID` names, of
+that task, `queued` or `dispatching`, since the CI asks while the start is
+under way, and every other variable must be the one the platform starts that
+grading's run with. The answer, `{"configs": [{"name": "grading", "data":
+...}]}`, is the same every time for the same run: `labels` from
+`UNICON_COMPUTE`; under `clone:` two full steps, `task` and `submission`,
+each running `UNICON_CLONE_IMAGE` with `remote`, `sha`, `ref` (the
+`published/<n>` or `submission/<n>` tag) and `path` (`/woodpecker/task`,
+`/woodpecker/submission`) set, `lfs` on for the task alone, the machine's
+store of large files for the task's org as `unicon-lfs-<org>:/lfs-cache`, one
+per org, so no org's task is served a large file another org's task brought
+to the machine by naming its object id, and no `environment`, since a clone
+step with one is lent no credential; and one step, `grade`, running the
+harness image the stage's plan names in the publication, with the socket
+filter's socket mounted read-only as `unicon-filter:/run/unicon:ro`, which
+the harness connects to and cannot replace, `DOCKER_HOST` naming it, and no
+credential. Anything else is `CiRequestRefused`, never an
+empty answer, with the reason in the log. The action writes nothing, so it
+never waits on the start holding the row.
+
+**The envelope.** `runs.envelope(grading, key)` is the runner's
+`envelope.schema.json` version 3, served once: only with the envelope key of
+the grading's current run (`NotFound` otherwise), and only while the grading
+is `dispatched` (`GradingClosed` otherwise). That fetch is the run
+beginning: the grading is `running` and its deadline is written, the wall
+clock and a minute for reporting from now, so a run that waited for a
+machine loses none of its time. Any later fetch is `GradingClosed`, since
+the envelope's URL is one of the run's variables, which anyone who can read
+the task's runs at the CI sees, and the envelope hands out the callback
+token. The harness fetches it once and does not try again: one whose fetch
+lost its answer ends its run without a report, and the overdue pass finds
+the run dead once its deadline passes. The envelope carries
+the task, publication and submission as the forge names them, the two
+checkouts, the callback URL and token, a URL the harness writes its log with
+into `unicon-results` at `logs/<grading id>/<attempt>.log`, signed for
+`UNICON_MACHINE_URL` until the deadline, the deadline, and
+`limits.wall_seconds`: the plan's step time limits summed with fifteen
+seconds for each container and a minute for the run, never more than 25
+minutes. The times agree with the CI: a run is given the 30 minutes of
+Woodpecker's pipeline timeout (`WOODPECKER_DEFAULT_PIPELINE_TIMEOUT`), four of
+them for the checkouts, 25 for the harness and one for reporting.
 
 **Runs that die.** The `gradings.overdue` pass looks every minute at the
 runs the CI holds whose deadline has passed. A run the CI reports ended, or
@@ -766,8 +831,10 @@ The rest, `invalid_name`, `unauthenticated`, `session_expired`,
 `domain_not_allowed` and `contest_full`, which share the base class
 `RegistrationRefused`, `invalid_reason` and `invalid_extension`, and
 `archived` (the contest is archived), `not_approved`,
-`workspace_not_ready` and `invalid_idempotency_key`, carry nothing beyond
-the detail. The refusals of an upload or a submit share the base class
+`workspace_not_ready` and `invalid_idempotency_key`, and grading's
+`ci_request_refused` (the CI's request does not verify or names no grading
+being started) and `grading_closed` (the grading takes no envelope now),
+carry nothing beyond the detail. The refusals of an upload or a submit share the base class
 `SubmitRefused`.
 
 ## The tables
@@ -883,7 +950,9 @@ The fake's store is `fake.objects`: a test plays the browser with
 value `complete` takes for the part, and the grading machine with
 `put(url, content)`. `fake.racing_submissions = n` makes the next submission
 collide with `n` others for its number, and `fake.lose_submission_answer`
-names it and then fails as if the answer were lost.
+names it and then fails as if the answer were lost. The fake CI signs the
+question it asks the extension with a key of its own:
+`fake.grading.config_request(task, variables, now=)` is that question, and
 `fake.grading.finish(run, status)` leaves a run as the CI would;
 `fake.state.refuse_starts = n` answers the next `n` starts without a run,
 keeping a run that ended at once, and `fake.state.lose_start_answer` starts
@@ -919,8 +988,8 @@ platform's key in `UNICON_LIVE_S3_ACCESS_KEY` and `UNICON_LIVE_S3_SECRET_KEY`,
 and is skipped without them. `tests/live/test_organiser_path.py` walks the
 whole path over a real setup, the test Postgres included, and the check that
 history cannot be rewritten pushes with `git` to a repository it made.
-`tests/live/test_grading.py` starts a grading's run as the org account,
-finding it again by its grading id.
+`tests/live/test_grading.py` reads the CI's signing key and starts a
+grading's run as the org account, finding it again by its grading id.
 
 ## Releasing
 

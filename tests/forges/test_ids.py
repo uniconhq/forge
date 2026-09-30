@@ -24,6 +24,7 @@ from forge.forges.ids import (
     parse_workspace,
     publication_id,
     submission_id,
+    task_of_repo,
     thread_id,
 )
 
@@ -82,3 +83,10 @@ def test_an_id_from_elsewhere_is_refused() -> None:
         parse_contest(ContestId("acme"))
     with pytest.raises(MalformedId):
         parse_task(TaskId("acme/spring"))
+
+
+def test_a_task_is_read_back_from_its_repository() -> None:
+    assert task_of_repo("acme", "spring.sum.task") == TaskRef("acme", "spring", "sum")
+    for name in ("spring.contest", "spring.sum.bob.sub", "sum.task", "spring.sum.task.x", ".task"):
+        with pytest.raises(MalformedId):
+            task_of_repo("acme", name)

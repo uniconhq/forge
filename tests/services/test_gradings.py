@@ -1,13 +1,17 @@
 """A grading from its queued row to its run at the CI, over a real Postgres
 and the fake. The dispatcher starts each run once, as the org account,
-pinned to the platform pool, with the run's variables, and puts a failed
-start back in the queue with a reason and a wait; a start whose answer was
-lost is found rather than sent again. A run past its deadline that the CI
-has not handed to a machine is looked at again, and one that died is a
-system error.
+pinned to the platform pool, with the variables the extension checks, and
+puts a failed start back in the queue with a reason and a wait; a start
+whose answer was lost is found rather than sent again. The extension answers
+the three steps only for a signed request naming a grading being started
+with those variables. The envelope is served once, with its key, to a run
+the CI holds that has not begun, and that fetch starts the run's clock. A
+run past its deadline that the CI has not handed to a machine is looked at
+again, and one that died is a system error.
 """
 
 import asyncio
+import json
 import uuid
 from datetime import timedelta
 from typing import Any
@@ -16,18 +20,29 @@ import pytest
 from sqlalchemy import select, update
 
 from forge.db.tables import Grading
+from forge.domain.contracts import violation
+from forge.domain.errors import (
+    CiRequestRefused,
+    GradingClosed,
+    NotFound,
+)
 from forge.domain.grading import (
+    REPORT_ALLOWANCE,
     RUN_TIMEOUT,
     GradingRun,
     GradingStatus,
     RunStatus,
+    callback_token,
     envelope_key,
+    wall_seconds,
 )
-from forge.domain.identity import AsOrgAccount
+from forge.domain.identity import PLATFORM, AsOrgAccount
 from forge.domain.ids import RunId
+from forge.domain.plans import Plan
 from forge.domain.submissions import SubmittedInput
+from forge.port.objects import Store
 from forge.runtime.setup import Setup
-from forge.services import dispatch, gradings, submissions
+from forge.services import dispatch, gradings, runs, submissions
 from forge.testing import FakeClock, tick
 from tests.services.conftest import Acme, Entered, upload
 
@@ -70,8 +85,17 @@ async def _set(setup: Setup, grading: uuid.UUID, **values: Any) -> None:
         await ctx.db.execute(update(Grading).where(Grading.id == grading).values(**values))
 
 
+async def _variables(setup: Setup, row: Grading) -> dict[str, str]:
+    async with setup.unit_of_work() as ctx:
+        return dict(ctx.forge.grading.run_variables(await gradings.run_of(ctx, row)))
+
+
 def _key(setup: Setup, row: Grading) -> str:
     return envelope_key(setup.settings.token_encryption_key_bytes, row.id, run=row.requeues)
+
+
+def _token(setup: Setup, row: Grading) -> str:
+    return callback_token(setup.settings.token_encryption_key_bytes, row.id, run=row.requeues)
 
 
 async def test_a_queued_grading_becomes_one_run_as_the_org_account_on_the_platform_pool(
@@ -190,6 +214,144 @@ async def test_a_ci_that_does_not_answer_leaves_the_grading_queued(
 
     after = await _row(setup, row.id)
     assert (after.status, after.wait_reason) == (GradingStatus.QUEUED, dispatch.NO_ANSWER)
+
+
+async def test_the_extension_answers_the_three_steps_for_a_grading_being_started(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+    request = acme.fake.grading.config_request(entered.task, variables, now=clock.now())
+
+    answer = await runs.config(setup, request)
+    again = await runs.config(setup, request)
+
+    assert answer == again
+    document = json.loads(answer.body)
+    [publication] = await acme.fake.workspaces.list_publications(entered.task)
+    assert document["labels"] == "pool:platform"
+    assert document["clone"][0]["commit"] == publication.version
+    assert document["clone"][1]["commit"] == row.submission_version
+    assert {step["image"] for step in document["clone"]} == {setup.settings.clone_image}
+    assert document["steps"] == [
+        {
+            "name": "grade",
+            "image": setup.settings.harness_image,
+            "volumes": ["unicon-filter:/run/unicon:ro"],
+        }
+    ]
+    assert [step["volumes"] for step in document["clone"]] == [["unicon-lfs-acme:/lfs-cache"]] * 2
+    assert (await _row(setup, row.id)).status == GradingStatus.QUEUED
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["another_key", "body_changed", "stale", "unknown_grading", "variables_disagree"],
+)
+async def test_the_extension_refuses_what_it_should_not_answer(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, change: str
+) -> None:
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+    grading = acme.fake.grading
+    match change:
+        case "another_key":
+            request = grading.config_request(entered.task, variables, now=clock.now(), key=b"x")
+        case "body_changed":
+            request = grading.config_request(entered.task, variables, now=clock.now(), body=b"{}")
+        case "stale":
+            request = grading.config_request(
+                entered.task, variables, now=clock.now() - timedelta(minutes=6)
+            )
+        case "unknown_grading":
+            request = grading.config_request(
+                entered.task,
+                {**variables, "UNICON_GRADING_ID": str(uuid.uuid4())},
+                now=clock.now(),
+            )
+        case _:
+            request = grading.config_request(
+                entered.task,
+                {**variables, "UNICON_SUBMISSION_COMMIT": "0" * 40},
+                now=clock.now(),
+            )
+
+    with pytest.raises(CiRequestRefused) as refused:
+        await runs.config(setup, request)
+    assert refused.value.detail == runs.REFUSED
+
+
+async def test_the_extension_refuses_a_grading_whose_run_was_started_already(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+    await tick(setup, "gradings.dispatch")
+
+    with pytest.raises(CiRequestRefused):
+        await runs.config(
+            setup, acme.fake.grading.config_request(entered.task, variables, now=clock.now())
+        )
+
+
+async def test_the_envelope_is_the_runs_served_once_and_its_fetch_starts_the_clock(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    row = await _submit(setup, acme, entered)
+    await tick(setup, "gradings.dispatch")
+    clock.advance(timedelta(minutes=40))
+
+    document = await runs.envelope(setup, row.id, _key(setup, row))
+
+    assert violation(document, "envelope") is None
+    after = await _row(setup, row.id)
+    async with setup.unit_of_work() as ctx:
+        [publication] = await ctx.forge.workspaces.list_publications(entered.task)
+        found = await ctx.forge.content.read_file(
+            PLATFORM, entered.task, "plans/default.json", at=publication.version
+        )
+    wall = wall_seconds(Plan.from_bytes(found.content))
+    assert document["limits"] == {"wall_seconds": wall}
+    assert after.status == GradingStatus.RUNNING
+    assert after.started_at == clock.now()
+    assert after.deadline_at == clock.now() + timedelta(seconds=wall) + REPORT_ALLOWANCE
+    assert document["deadline"] == after.deadline_at.isoformat().replace("+00:00", "Z")
+    assert document["callback"] == {
+        "url": f"http://app.test/api/v1/gradings/{row.id}/callback",
+        "token": _token(setup, row),
+    }
+    assert document["checkouts"] == {
+        "task": "/woodpecker/task",
+        "submission": "/woodpecker/submission",
+    }
+    assert document["submission"]["repo"] == "spring.sum.bob.sub"
+    assert document["publication"] == {"tag": "published/1", "commit": publication.version}
+    acme.fake.objects.put(document["log_put"], b"the log")
+    assert acme.fake.objects.objects[Store.RESULTS][f"logs/{row.id}/1.log"] == b"the log"
+
+    clock.advance(timedelta(seconds=30))
+    with pytest.raises(GradingClosed):
+        await runs.envelope(setup, row.id, _key(setup, row))
+    assert (await _row(setup, row.id)).deadline_at == after.deadline_at
+
+
+async def test_the_envelope_needs_its_key_and_a_run_the_ci_holds(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    row = await _submit(setup, acme, entered)
+    with pytest.raises(GradingClosed):
+        await runs.envelope(setup, row.id, _key(setup, row))
+    await tick(setup, "gradings.dispatch")
+
+    with pytest.raises(NotFound):
+        await runs.envelope(setup, row.id, "wrong")
+    with pytest.raises(NotFound):
+        await runs.envelope(setup, uuid.uuid4(), _key(setup, row))
+
+    await runs.envelope(setup, row.id, _key(setup, row))
+    clock.advance(RUN_TIMEOUT)
+    with pytest.raises(GradingClosed):
+        await runs.envelope(setup, row.id, _key(setup, row))
 
 
 async def test_a_run_waiting_for_a_machine_past_its_deadline_is_looked_at_again(

@@ -37,9 +37,16 @@ from forge.domain.roles import task_scope
 from forge.domain.submissions import Submitted
 from forge.runtime.context import Context
 
+NO_SUCH_GRADING = "There is no such grading."
+
+CI_CONFIG_PATH = "/api/v1/ci/config"
+"""Where the CI asks what a run is, the configuration extension, under the
+platform's internal URL."""
 ENVELOPE_PATH = "/api/v1/gradings/{grading}/envelope"
 """Where a run fetches its envelope, under the machine URL, with the envelope
 key as `?key=`."""
+CALLBACK_PATH = "/api/v1/gradings/{grading}/callback"
+"""Where a run reports, under the machine URL."""
 
 
 def new_row(
@@ -86,6 +93,11 @@ def renew_token(ctx: Context, row: Grading) -> None:
     """
     token = callback_token(ctx.settings.token_encryption_key_bytes, row.id, run=row.requeues)
     row.callback_token_hash = token_hash(token)
+
+
+def callback_token_of(ctx: Context, row: Grading) -> str:
+    """The token the grading's current run reports back with."""
+    return callback_token(ctx.settings.token_encryption_key_bytes, row.id, run=row.requeues)
 
 
 def envelope_key_of(ctx: Context, row: Grading) -> str:
@@ -140,6 +152,11 @@ def envelope_url(ctx: Context, row: Grading) -> str:
     """Where the grading's current run fetches its envelope, key included."""
     path = ENVELOPE_PATH.format(grading=row.id)
     return f"{_machine_url(ctx)}{path}?key={envelope_key_of(ctx, row)}"
+
+
+def callback_url(ctx: Context, grading: uuid.UUID) -> str:
+    """Where the grading's run reports."""
+    return f"{_machine_url(ctx)}{CALLBACK_PATH.format(grading=grading)}"
 
 
 def _machine_url(ctx: Context) -> str:

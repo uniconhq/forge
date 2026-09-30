@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/uniconhq/runner/main/schemas/envelope.schema.json",
+  "title": "Unicon grading envelope",
+  "description": "The one small file the harness is told about. The forge repo writes it when it dispatches a grading run and the CI starts the harness image with a URL to it. Everything the harness reads comes from the two checkouts the CI made beside it, the publication and the submission; the envelope says which run this is, where those checkouts are, where to report and how long it has. It carries a one-run callback token and nothing that outlives the run, because the harness may run on a machine we do not own. Nothing is downloaded from object storage.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "grading_id",
+    "submission",
+    "stage",
+    "attempt",
+    "task",
+    "publication",
+    "checkouts",
+    "callback",
+    "log_put",
+    "deadline",
+    "limits"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "description": "The envelope shape this file is written against. The harness refuses a version it does not speak instead of guessing at the fields.",
+      "type": "integer",
+      "const": 3
+    },
+    "grading_id": {
+      "description": "The gradings row this run belongs to. Also passed to the image as UNICON_GRADING_ID; the harness refuses an envelope whose id disagrees with its environment.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "submission": { "$ref": "#/$defs/submission" },
+    "stage": {
+      "description": "Which grading stage this attempt is, for example public or final. Stage names are the contest's, not the platform's. The plan to run is plans/<stage>.json in the publication checkout.",
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt": {
+      "description": "1 for the first grading of this submission in this stage, higher for a rejudge. Part of the result key, so a rejudge overwrites nothing.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "task": { "$ref": "#/$defs/task" },
+    "publication": { "$ref": "#/$defs/publication" },
+    "checkouts": {
+      "description": "Where the CI put the two checkouts, as absolute paths inside the harness container: /woodpecker/task and /woodpecker/submission, the paths the forge repo's CI answer clones into. The publication checkout holds the task files, the tests and the plan at the publication's commit, with its large files pulled; the submission checkout holds submission.json and the contestant's files at the submission's commit.",
+      "type": "object",
+      "required": ["task", "submission"],
+      "additionalProperties": false,
+      "properties": {
+        "task": {
+          "description": "The publication checkout.",
+          "type": "string",
+          "pattern": "^/"
+        },
+        "submission": {
+          "description": "The submission checkout.",
+          "type": "string",
+          "pattern": "^/"
+        }
+      }
+    },
+    "callback": {
+      "description": "Where the harness posts the started and progress events and the final verdict, each with the token as a bearer credential. The token is good for this run only.",
+      "type": "object",
+      "required": ["url", "token"],
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "description": "The forge repo's callback address for this run, <machine URL>/api/v1/gradings/<grading id>/callback. The harness posts to it exactly as given.",
+          "type": "string",
+          "format": "uri"
+        },
+        "token": {
+          "description": "Bearer token scoped to this grading id and expiring with the deadline. The only credential the harness ever holds.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "log_put": {
+      "description": "Presigned PUT for the run log into unicon-results at logs/<grading id>/<attempt>.log, signed for the machine URL. The one thing the harness writes to object storage; the harness never chooses an object key.",
+      "type": "string",
+      "format": "uri"
+    },
+    "deadline": {
+      "description": "After this instant the callback token is dead and the forge repo treats the run as lost. The harness stops rather than posting a verdict it cannot deliver.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "limits": {
+      "description": "Run-wide limits, always present. Per-step limits live in the plan.",
+      "type": "object",
+      "required": ["wall_seconds"],
+      "additionalProperties": false,
+      "properties": {
+        "wall_seconds": {
+          "description": "Wall clock for the whole run, the outermost of the timers. Per-test CPU and wall limits are in the plan.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "task": {
+      "description": "The forge identity of the task being graded against. The harness copies it into the verdict, which is why the envelope carries it rather than leaving the harness to work it out from a path.",
+      "type": "object",
+      "required": ["org", "repo"],
+      "additionalProperties": false,
+      "properties": {
+        "org": {
+          "description": "The org that owns the task, the same org the submission is in.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "repo": {
+          "description": "The task repo, <contest>.<task>.task, the one carrying task.yaml, the tests and the plans.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        }
+      }
+    },
+    "publication": {
+      "description": "Which publication of the task this run grades against: the protected tag and the commit it pointed at when the run was dispatched. The commit is what was checked out.",
+      "type": "object",
+      "required": ["tag", "commit"],
+      "additionalProperties": false,
+      "properties": {
+        "tag": {
+          "description": "The protected tag on the task repo, published/<n>.",
+          "type": "string",
+          "pattern": "^published/[0-9]+$"
+        },
+        "commit": {
+          "description": "Full commit sha the tag pointed at. Forgejo repos are SHA-1 today, so 40 hex characters.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "submission": {
+      "description": "The forge identity of what is being graded. The forge survives a loss of the Unicon database, so this identity is what lets a verdict be matched back to a submission without a rejudge.",
+      "type": "object",
+      "required": ["org", "repo", "tag", "commit"],
+      "additionalProperties": false,
+      "properties": {
+        "org": {
+          "description": "The org that owns the submission repo.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "repo": {
+          "description": "The contestant's submission repo for one task, <contest>.<task>.<owner>.sub.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "tag": {
+          "description": "The protected tag that is the submission, submission/<n>.",
+          "type": "string",
+          "pattern": "^submission/[0-9]+$"
+        },
+        "commit": {
+          "description": "Full commit sha the tag points at, the commit the contestant's files went in with.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    }
+  }
+}

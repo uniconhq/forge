@@ -1,20 +1,22 @@
 """Grading runs at the CI: activating a task once, then starting runs as the
-org account the caller hands in, finding one already started, and reading
-and cancelling runs as the CI's administrator. The CI admits only accounts
+org account the caller hands in, finding one already started, reading and
+cancelling runs as the CI's administrator, and the two things the CI and
+the platform say to each other about a run: the CI's signed question of
+what a run is, and the answer with its steps. The CI admits only accounts
 it was told about, so the org account's user there is made by the CI's
 administrator and its credential is minted by signing the account in,
 unattended, with its password at the host.
 
 A run is described to the port as a `GradingRun`, in the platform's words;
 the implementation writes it in the CI's: the variables a run is started
-with.
+with, the steps of its answer, and what its envelope says of where it is.
 """
 
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Protocol
 
-from forge.domain.grading import GradingRun, Run
+from forge.domain.grading import CiAnswer, CiRequest, ConfigAsk, GradingRun, Run, RunPlaces
 from forge.domain.identity import AsOrgAccount
 from forge.domain.ids import RunId, TaskId
 
@@ -58,6 +60,32 @@ class GradingPort(Protocol):
 
     async def cancel_run(self, run: RunId) -> None:
         """Stop the run at the CI. `NotFound` when there is no such run."""
+        ...
+
+    async def read_config_request(self, request: CiRequest, *, now: datetime) -> ConfigAsk:
+        """The CI's question of what a run is, once its signature is checked
+        against the CI's own key and found fresh at `now`. `Forbidden` for a
+        request the CI did not sign, one changed since, or a stale one;
+        `Rejected` for a signed body that is not such a question.
+        """
+        ...
+
+    def config_answer(
+        self, run: GradingRun, ask: ConfigAsk, *, harness_image: str, clone_image: str
+    ) -> CiAnswer:
+        """The answer to `ask` for `run`: check the task out at the version its
+        publication froze with its large files, check the submission out at
+        its version, both with `clone_image` and the machine's shared store
+        of large files, and run `harness_image` with the socket filter's
+        socket and no credential, on a machine carrying the run's label. The
+        same every time for the same run. No call is made.
+        """
+        ...
+
+    def run_places(self, run: GradingRun) -> RunPlaces:
+        """What the run's envelope says of where it is at the forge and on
+        the machine. No call is made.
+        """
         ...
 
     async def create_ci_user(self, username: str) -> int:

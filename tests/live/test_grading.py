@@ -1,14 +1,18 @@
-"""Grading against the real Woodpecker: a queued grading of a published task
-is started as the org's own account on `main` with the run's variables,
-found again by its grading id, and read and cancelled as the CI's
-administrator. While the CI starts it, the CI asks the configuration
-extension of the backend the deployment runs; a backend that refuses it
-leaves the CI answering the start with an empty 204 and keeping a run that
-ended at once, carrying the same variables, and the grading then waits in
-the queue with its reason. Everything made is removed afterwards.
+"""Grading against the real Woodpecker: the CI's signing key is read with the
+administrator's token and a request it did not sign is refused, and a
+queued grading of a published task is started as the org's own account on
+`main` with the run's variables, found again by its grading id, and read
+and read and cancelled as the CI's administrator. While the CI starts it,
+the CI asks the configuration extension of the backend the deployment runs;
+a backend that refuses it leaves the CI answering the start with an empty
+204 and keeping a run that ended at once, carrying the same variables, and
+the grading then waits in the queue with its reason. Everything made is
+removed afterwards.
 """
 
+import base64
 import dataclasses
+import hashlib
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -16,10 +20,15 @@ from typing import Any
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 from sqlalchemy import select
 
 from forge.db.tables import Grading
-from forge.domain.grading import ENDED, GradingStatus, RunStatus
+from forge.domain.errors import Forbidden
+from forge.domain.grading import ENDED, CiRequest, GradingStatus, RunStatus
 from forge.domain.ids import (
     ContestId,
     OrgName,
@@ -30,6 +39,7 @@ from forge.domain.ids import (
 )
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
+from forge.forges.forgejo import ForgejoForge
 from forge.runtime.setup import Setup
 from forge.services import (
     access,
@@ -83,6 +93,37 @@ async def _signed_in(setup: Setup, admin: httpx.Client, person: dict[str, Any]) 
             ip=None,
             user_agent=None,
         )
+
+
+async def test_the_cis_key_is_read_and_a_request_it_did_not_sign_is_refused(
+    forge: ForgejoForge,
+) -> None:
+    body = b'{"repo": {"owner": "acme", "name": "spring.sum.task"}, "pipeline": {}}'
+    digest = "sha-256=:" + base64.b64encode(hashlib.sha256(body).digest()).decode() + ":"
+    now = datetime.now(UTC)
+    parameters = (
+        f'("@request-target" "content-digest");created={int(now.timestamp())};alg="ed25519"'
+    )
+    base = (
+        f'"@request-target": /api/v1/ci/config\n"content-digest": {digest}\n'
+        f'"@signature-params": {parameters}'
+    )
+    signature = base64.b64encode(Ed25519PrivateKey.generate().sign(base.encode())).decode()
+    request = CiRequest(
+        method="POST",
+        target="/api/v1/ci/config",
+        headers={
+            "Content-Digest": digest,
+            "Signature-Input": f"woodpecker-ci-extensions={parameters}",
+            "Signature": f"woodpecker-ci-extensions=:{signature}:",
+        },
+        body=body,
+    )
+
+    with pytest.raises(Forbidden):
+        await forge.grading.read_config_request(request, now=now)
+
+    assert isinstance(forge.grading._key, Ed25519PublicKey)
 
 
 async def test_a_queued_grading_is_started_as_the_org_account_and_found_by_its_id(
