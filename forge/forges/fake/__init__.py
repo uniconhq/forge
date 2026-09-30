@@ -113,6 +113,28 @@ class FakeForge:
         return self.state.refreshes
 
     @property
+    def racing_submissions(self) -> int:
+        """How many submissions made elsewhere take the next number first,
+        so the next record of a submission collides that many times.
+        """
+        return self.state.racing_submissions
+
+    @racing_submissions.setter
+    def racing_submissions(self, count: int) -> None:
+        self.state.racing_submissions = count
+
+    @property
+    def lose_submission_answer(self) -> bool:
+        """Whether the next record of a submission names it and then fails as
+        if its answer were lost on the way back.
+        """
+        return self.state.lose_submission_answer
+
+    @lose_submission_answer.setter
+    def lose_submission_answer(self, value: bool) -> None:
+        self.state.lose_submission_answer = value
+
+    @property
     def ci_dead(self) -> set[str]:
         """The usernames whose CI sign-in has gone: the CI no longer answers
         their token until the sign-in dance is run for them again.

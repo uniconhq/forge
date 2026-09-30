@@ -54,6 +54,7 @@ class Repo:
     touched: dict[str, set[str]] = field(default_factory=dict)
     versions: dict[str, str] = field(default_factory=dict)
     notes: dict[str, str] = field(default_factory=dict)
+    version_times: dict[str, datetime] = field(default_factory=dict)
     writers: set[int] = field(default_factory=set)
     readers: set[int] = field(default_factory=set)
     stars: set[int] = field(default_factory=set)
@@ -105,6 +106,8 @@ class State:
         self.refreshes = 0
         self.refuse_refresh = False
         self.unavailable = False
+        self.racing_submissions = 0
+        self.lose_submission_answer = False
         self.signed_in_user_id = 0
 
     def record(self, operation: str, identity: Identity, **arguments: Any) -> None:
@@ -198,6 +201,7 @@ class State:
             raise Conflict(f"{name} already exists")
         repo.versions[name] = at or repo.head
         repo.notes[name] = note
+        repo.version_times[name] = self.clock.now()
 
     def version_files(self, repo: Repo, version: str) -> dict[str, bytes]:
         """Every file of the repository at one of its named versions."""
