@@ -15,7 +15,7 @@ access away and keeps the repositories. Everything made at both services is
 removed afterwards.
 """
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -27,7 +27,6 @@ from forge.domain.ids import ContestId, OrgName, TaskId
 from forge.domain.registration import Status, WorkspaceState
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
-from forge.forges.forgejo import ForgejoForge
 from forge.runtime.setup import Setup
 from forge.services import (
     access,
@@ -42,34 +41,18 @@ from forge.services import (
 )
 from forge.services.provisioning import Record
 from forge.services.publications import Draft, Published
-from forge.settings import Settings
-from forge.testing import APP_URL, CALLBACK_PATH, tick
+from forge.testing import tick
 from tests.live.conftest import (
-    CI_ADMIN_TOKEN,
     CI_PUBLIC_URL,
-    CI_URL,
-    FORGE_PUBLIC_URL,
     LIVE,
     credential_of,
     delete_org,
     delete_user,
-    forge_config,
     make_user,
     needs_ci,
 )
 
 pytestmark = [*LIVE, needs_ci]
-
-
-@pytest.fixture
-def ci() -> Iterator[httpx.Client]:
-    assert CI_URL and CI_ADMIN_TOKEN
-    with httpx.Client(
-        base_url=CI_URL.rstrip("/"),
-        headers={"Authorization": f"Bearer {CI_ADMIN_TOKEN}"},
-        timeout=30,
-    ) as client:
-        yield client
 
 
 @pytest.fixture
@@ -103,23 +86,6 @@ def contestant(admin: httpx.Client, stamp: str) -> Iterator[dict[str, Any]]:
     made = make_user(admin, f"live-contestant-{stamp}")
     yield made
     delete_user(admin, made["login"])
-
-
-@pytest.fixture
-async def live_setup(migrated_database_url: str, admin: httpx.Client) -> AsyncIterator[Setup]:
-    settings = Settings.for_tests(
-        database_url=migrated_database_url,
-        public_url=APP_URL,
-        forge_public_url=FORGE_PUBLIC_URL,
-        internal_url="http://backend:8000",
-    )
-    built = Setup.build(
-        settings, callback_path=CALLBACK_PATH, forge=ForgejoForge(forge_config(admin))
-    )
-    try:
-        yield built
-    finally:
-        await built.stop()
 
 
 async def _ready(setup: Setup, record: Record | None) -> None:
