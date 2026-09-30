@@ -19,10 +19,12 @@ from pydantic import SecretBytes, SecretStr
 from forge.settings import load_log_settings
 
 MASK = "**********"
-QUIET = ("httpx", "httpcore")
-"""The HTTP client's loggers, which write every request's whole URL at info.
-A URL of the sign-in dance carries a one-time code and its state, so these
-say only what goes wrong; the package logs what it asked the forge itself."""
+QUIET = ("httpx", "httpcore", "boto3", "botocore", "s3transfer", "urllib3")
+"""The HTTP clients' loggers: the forge's, which writes every request's whole
+URL at info, and the object store's, which writes every request with its
+signed headers at debug. A URL of the sign-in dance carries a one-time code
+and its state, so these say only what goes wrong; the package logs what it
+asked the forge and the store itself."""
 
 Fields = dict[str, Any]
 
@@ -95,7 +97,7 @@ def plain(value: Any) -> Any:
 def setup() -> None:
     """Send every record from every logger in the process, the web server's
     included, through the one JSON handler on stderr, at the level
-    `UNICON_LOG_LEVEL` names, except the HTTP client's, which log from a
+    `UNICON_LOG_LEVEL` names, except the HTTP clients', which log from a
     warning up whatever the level. A level that is not one stops the process
     with the variable named.
     """

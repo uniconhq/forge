@@ -47,6 +47,15 @@ FORGEJO_VARIABLES = {
 
 DEFAULTED_FORGEJO_FIELDS = ("internal_url", "woodpecker_public_url")
 
+S3_VARIABLES = {
+    "endpoint": "UNICON_S3_ENDPOINT",
+    "region": "UNICON_S3_REGION",
+    "access_key": "UNICON_S3_ACCESS_KEY",
+    "secret_key": "UNICON_S3_SECRET_KEY",
+    "uploads_bucket": "UNICON_S3_UPLOADS_BUCKET",
+    "results_bucket": "UNICON_S3_RESULTS_BUCKET",
+}
+
 
 class ForgejoSettings(BaseModel):
     """The settings of the Forgejo implementation, each read from the variable
@@ -82,11 +91,41 @@ class ForgejoSettings(BaseModel):
         return not_blank(value)
 
 
-class ForgejoVariables(PydanticBaseSettingsSource):
-    """Reads the variables `FORGEJO_VARIABLES` names into the one nested
-    `forgejo` setting, so the Forgejo settings travel together and every
-    variable keeps its name.
+class S3Settings(BaseModel):
+    """Where the object store is and the key the platform signs in to it
+    with, each read from the variable `S3_VARIABLES` names. `endpoint` is the
+    store's internal address; the region is `garage` and the buckets
+    `unicon-uploads` and `unicon-results` unless given.
     """
+
+    model_config = ConfigDict(frozen=True)
+
+    endpoint: HttpUrl
+    region: str = "garage"
+    access_key: str
+    secret_key: SecretStr
+    uploads_bucket: str = "unicon-uploads"
+    results_bucket: str = "unicon-results"
+
+    @field_validator("*")
+    @classmethod
+    def _no_blank_values(cls, value: Any) -> Any:
+        return not_blank(value)
+
+
+class NestedVariables(PydanticBaseSettingsSource):
+    """Reads the variables a mapping names into one nested setting, so a
+    group of settings travels together and every variable keeps its name:
+    the `UNICON_FORGE_*` and `UNICON_WOODPECKER_*` ones into `forgejo`, and
+    the `UNICON_S3_*` ones into `s3`.
+    """
+
+    def __init__(
+        self, settings_cls: type[BaseSettings], name: str, variables: dict[str, str]
+    ) -> None:
+        super().__init__(settings_cls)
+        self._name = name
+        self._variables = variables
 
     def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
         return None, field_name, False
@@ -95,10 +134,10 @@ class ForgejoVariables(PydanticBaseSettingsSource):
         environment = {name.upper(): value for name, value in os.environ.items()}
         found = {
             field: environment[variable]
-            for field, variable in FORGEJO_VARIABLES.items()
+            for field, variable in self._variables.items()
             if variable in environment
         }
-        return {"forgejo": found} if found else {}
+        return {self._name: found} if found else {}
 
 
 class Settings(BaseSettings):
@@ -107,16 +146,21 @@ class Settings(BaseSettings):
     required when it is chosen and none otherwise. `forge_public_url` is
     where browsers reach the forge, for either implementation. `internal_url`
     is where the forge reaches the platform inside the deployment, the public
-    URL unless given: the org event push points there. `org_creation_open`
+    URL unless given: the org event push points there. `machine_url` is
+    where grading machines reach the platform, for the envelope, the callback
+    and the log they write, the public URL unless given. `org_creation_open`
     says whether any signed-in user may create an org, or only the operator.
-    `harness_image` is the harness every plan names, by digest, the one of
-    the runner release the package pins unless given.
+    `s3`, the object store's settings, is required with `forgejo`; the fake
+    keeps its store in memory. `harness_image` is the harness every plan
+    names, by digest, the one of the runner release the package pins unless
+    given.
     """
 
     model_config = SettingsConfigDict(env_prefix="UNICON_", extra="ignore")
 
     public_url: HttpUrl
     internal_url: HttpUrl
+    machine_url: HttpUrl
     database_url: PostgresDsn
     token_encryption_key: SecretStr
     session_signing_key: SecretStr
@@ -127,6 +171,7 @@ class Settings(BaseSettings):
     forge_public_url: HttpUrl | None = None
     forge_cache: bool = False
     forgejo: ForgejoSettings | None = None
+    s3: S3Settings | None = None
     harness_image: str = HARNESS_IMAGE
 
     session_hard_ttl: timedelta = timedelta(days=30)
@@ -146,17 +191,22 @@ class Settings(BaseSettings):
         return (
             init_settings,
             env_settings,
-            ForgejoVariables(settings_cls),
+            NestedVariables(settings_cls, "forgejo", FORGEJO_VARIABLES),
+            NestedVariables(settings_cls, "s3", S3_VARIABLES),
             dotenv_settings,
             file_secret_settings,
         )
 
     @model_validator(mode="before")
     @classmethod
-    def _internal_url_follows_the_public_url(cls, data: Any) -> Any:
-        if isinstance(data, dict) and data.get("internal_url") is None and "public_url" in data:
-            return {**data, "internal_url": data["public_url"]}
-        return data
+    def _internal_urls_follow_the_public_url(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "public_url" not in data:
+            return data
+        found = dict(data)
+        for name in ("internal_url", "machine_url"):
+            if found.get(name) is None:
+                found[name] = data["public_url"]
+        return found
 
     @model_validator(mode="before")
     @classmethod
@@ -177,6 +227,14 @@ class Settings(BaseSettings):
             and name not in DEFAULTED_FORGEJO_FIELDS
             and values.get(name) is None
         ]
+        storage = data.get("s3")
+        if not isinstance(storage, S3Settings):
+            given_s3 = dict(storage or {})
+            missing += [
+                S3_VARIABLES[name]
+                for name, field in S3Settings.model_fields.items()
+                if field.is_required() and given_s3.get(name) is None
+            ]
         if missing:
             raise ValueError(f"UNICON_FORGE=forgejo needs {', '.join(missing)}")
         if values.get("internal_url") is None:
@@ -357,4 +415,6 @@ def _variable(location: tuple[int | str, ...]) -> str:
     head = str(location[0])
     if head == "forgejo" and len(location) > 1:
         return FORGEJO_VARIABLES.get(str(location[1]), "UNICON_FORGEJO")
+    if head == "s3" and len(location) > 1:
+        return S3_VARIABLES.get(str(location[1]), "UNICON_S3")
     return head if head.startswith("UNICON_") else f"UNICON_{head.upper()}"

@@ -1,6 +1,7 @@
 """The port over Forgejo and Woodpecker, assembled from one area object per
-port area over three shared collaborators: `Users`, `Repos` and `Teams`. May
-import `forge.port` and `forge.domain`, never `forge.services` or `forge.db`.
+port area over three shared collaborators: `Users`, `Repos` and `Teams`, and
+the object store beside them over S3. May import `forge.port` and
+`forge.domain`, never `forge.services` or `forge.db`.
 """
 
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from forge.forges.forgejo.grading import WoodpeckerGrading
 from forge.forges.forgejo.http import ForgejoAuth, Http, WoodpeckerAuth, new_client
 from forge.forges.forgejo.identity import ForgejoIdentity
 from forge.forges.forgejo.oauth import OAuth
+from forge.forges.forgejo.objects import NoStore, S3Objects, StorageConfig
 from forge.forges.forgejo.orgs import ForgejoOrgs
 from forge.forges.forgejo.primitives import ForgejoPrimitives
 from forge.forges.forgejo.repos import Repos
@@ -30,7 +32,9 @@ class ForgejoConfig:
     account protected versions are reserved for. `ci_public_url` is the URL
     the CI knows itself by, `WOODPECKER_HOST`: the CI writes its webhooks
     under it, and that is how the implementation tells the CI's webhook from
-    any other.
+    any other. `storage` is the object store beside the forge, which the
+    Forgejo implementation reaches over S3; without it every call to the
+    store is `Misconfigured`.
     """
 
     public_url: str
@@ -44,6 +48,7 @@ class ForgejoConfig:
     ci_url: str
     ci_public_url: str
     ci_admin_token: str
+    storage: StorageConfig | None = None
 
 
 class ForgejoForge:
@@ -99,6 +104,9 @@ class ForgejoForge:
         self.workflows = ForgejoWorkflows(repos, users)
         self.primitives = ForgejoPrimitives(repos)
         self.computes = WoodpeckerComputes(ci)
+        self.objects: S3Objects | NoStore = (
+            S3Objects(config.storage) if config.storage is not None else NoStore()
+        )
 
     @property
     def name(self) -> str:

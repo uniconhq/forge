@@ -1,7 +1,9 @@
 """The forge port: the one interface between this package and the git host
 behind it, in the platform's own words. It is a set of areas, each a
 `Protocol` in its own module, composed into one `Forge`. `forges.forgejo` and
-`forges.fake` implement every area.
+`forges.fake` implement every area. The object store the platform keeps
+uploads and logs in travels with the forge as its `objects` area, since the
+deployment that runs the forge runs the store beside it.
 
 Two rules hold the port together. Every reference the package stores is an
 opaque id the port hands out, and nothing reads inside one. Every failure is
@@ -19,6 +21,7 @@ from forge.port.computes import ComputePort
 from forge.port.content import ContentPort
 from forge.port.grading import GradingPort
 from forge.port.identity import IdentityPort, SignedIn
+from forge.port.objects import ObjectStore
 from forge.port.orgs import OrgPort
 from forge.port.primitives import PrimitivePort
 from forge.port.threads import ThreadPort
@@ -31,6 +34,7 @@ __all__ = [
     "Forge",
     "GradingPort",
     "IdentityPort",
+    "ObjectStore",
     "OrgPort",
     "PrimitivePort",
     "SignedIn",
@@ -70,6 +74,9 @@ class Forge(Protocol):
 
     @property
     def computes(self) -> ComputePort: ...
+
+    @property
+    def objects(self) -> ObjectStore: ...
 
     @property
     def name(self) -> str:

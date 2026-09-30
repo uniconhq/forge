@@ -24,6 +24,7 @@ from forge.db.tables import Contestant
 from forge.domain import registration
 from forge.domain import release as rules
 from forge.domain.definitions import (
+    ContestantInput,
     ContestVisibility,
     Limits,
     RegistrationMode,
@@ -99,8 +100,9 @@ class ContestHome:
 
 @dataclass(frozen=True, slots=True)
 class TaskPage:
-    """A task as a person reads it: its statement, and the limits a submit is
-    checked against.
+    """A task as a person reads it: its statement, the limits a submit is
+    checked against, and the inputs a contestant gives, which the submit
+    panel is built from.
     """
 
     task: TaskId
@@ -110,6 +112,7 @@ class TaskPage:
     points: int | None
     statement: str
     limits: Limits
+    inputs: tuple[ContestantInput, ...]
     release: TaskRelease
 
 
@@ -190,7 +193,8 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
 
 @action
 async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
-    """The task's statement and limits for the signed-in person. `NotFound`
+    """The task's statement, limits and contestant inputs for the signed-in
+    person. `NotFound`
     for a task that is not visible to them, or in a contest they may not see.
     """
     contest = contest_id_of(task_scope(task))
@@ -210,6 +214,7 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
         points=found.points,
         statement=await published.statement(ctx, found),
         limits=found.definition.limits,
+        inputs=found.definition.inputs.contestant,
         release=release.of(settings, found.definition, now, contestants.time_extension(person.row)),
     )
 
