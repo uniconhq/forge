@@ -81,11 +81,16 @@ forge/api/
                 Registration they return with its Status and WorkspaceState
   contest_home.py  contests, home, task, and the ContestSummary, ContestHome,
                 TaskEntry and TaskPage they return, with the Limits and Rate a
-                page carries and the State and ContestVisibility of a contest
+                page carries, the ContestantInput entries and their InputType
+                a submit panel is built from, and the State and
+                ContestVisibility of a contest
   landing.py    contests, contest, statement, and the PublicContest, PublicTask
                 and PublicStatement they return
   events.py     check, EVENTS_PATH, where the door is, and SIGNATURE_HEADERS, the
                 headers the signature comes in
+  uploads.py    slot, complete, the PostSlot, PartsSlot and SlotPart a slot is,
+                the Upload complete returns with its UploadStatus, and the
+                FinishedPart complete takes
   roles.py      holders, grant, revoke, and the Holder holders returns
   cookies.py    what goes into the two cookies and what comes out, and the policy
   log.py        setup, get_logger, and the Logger it returns
@@ -120,7 +125,7 @@ is created with. `primitives.py` reads a primitive's `primitive.yaml`, its
 image by digest, its entrypoint, whether it batches, its limits and the
 limits it raises from an input, and its typed inputs and outputs. `plans.py`
 is the compiler (below) and names what changed how a task grades between two
-publications.
+publications. `uploads.py` holds the rules of an upload's slot and parts.
 `release.py` works out from the settings and the clock whether a task is
 released, visible and open to one contestant, and who sees a contest at all.
 
@@ -210,6 +215,18 @@ service account: the package knows an org's service account by its id in
 `org_accounts`, never by its name, since anyone may sign up under a name that
 looks like one.
 
+The object store the platform keeps uploads and logs in travels with the
+forge as its `objects` area (`port/objects.py`): a form for one file of at
+most a declared size, an upload in parts with a URL per part signed for its
+exact length, a URL a grading machine writes a result with, and measuring,
+reading, up to a size given, and removing what arrived. The Forgejo implementation reaches Garage
+over S3 with boto3 at `UNICON_S3_ENDPOINT` and signs what a browser is
+handed for `UNICON_PUBLIC_URL` and what a machine is handed for
+`UNICON_MACHINE_URL`, path-style, with `bucket` as a form field of its own,
+since Garage reads it from the form; the proxy passes `/unicon-uploads/` and
+`/unicon-results/` to Garage with the Host header unchanged. The fake keeps
+its store in memory and refuses what Garage refuses.
+
 Both implementations name repositories and build and read ids with the one
 grammar in `forges/ids.py`, so an id from elsewhere is `NotFound` whichever
 is behind the port.
@@ -250,7 +267,12 @@ because every org mints a service account and a login at the CI.
 https, and the package refuses to start when the URL is https and the flag
 is set off. The Forgejo settings travel together as
 `settings.forgejo`, read from the `UNICON_FORGE_*` and `UNICON_WOODPECKER_*`
-variables and required only when `UNICON_FORGE=forgejo`.
+variables, and the object store's as `settings.s3`, read from
+`UNICON_S3_ENDPOINT`, `UNICON_S3_REGION` (`garage` unless given),
+`UNICON_S3_ACCESS_KEY`, `UNICON_S3_SECRET_KEY`, `UNICON_S3_UPLOADS_BUCKET`
+(`unicon-uploads`) and `UNICON_S3_RESULTS_BUCKET` (`unicon-results`); both are
+required only when `UNICON_FORGE=forgejo`. `UNICON_MACHINE_URL` is where
+grading machines reach the platform, `UNICON_PUBLIC_URL` unless given.
 `UNICON_HARNESS_IMAGE` is the harness every plan names, by digest, the one of
 the runner release the package pins unless given. A missing or malformed
 variable stops the process at start with the variable named.
@@ -292,6 +314,7 @@ hosting process calls are actions, marked `@action` from
 | `landing` | `contests`, `contest`, `statement` |
 | `events` | `check` |
 | `roles` | `holders`, `grant`, `revoke` |
+| `uploads` | `slot`, `complete` |
 
 A hosting process reaches them through `forge.api`. An action is one unit of
 work. Called as `account.delete(session)`, it opens a transaction on the setup
@@ -556,8 +579,9 @@ What a signed-in person reads of a contest is `contest_home`: `contests`,
 every contest they see with their own status; `home`, a contest's dates,
 their registration, what the register form needs, their own deadline, which
 is the end plus their extension, the server's clock and the tasks released
-to them in the contest's order; and `task`, a visible task's statement and
-limits and nothing else of what it holds. A visitor with no session reads
+to them in the contest's order; and `task`, a visible task's statement,
+limits and the inputs a contestant gives, with the labels, languages, file
+types and sizes a submit panel shows, and nothing else of what it holds. A visitor with no session reads
 `landing`: the public contests, one with its released tasks, and a released
 task's statement. The list of public contests is kept by each process for
 five seconds (`ctx.memo`, `forge/runtime/memo.py`), since anyone may ask for
@@ -566,6 +590,43 @@ for that one read. All of it is read live as the platform from the latest
 publication of each task, with the contest's visibility and the release
 rules applied first, and a contest or task the reader may not see is no
 such contest or task, the same answer as one that is not there.
+
+## Uploads
+
+A contestant's files go from the browser straight to the object store and
+never through the platform. `uploads.slot(session, task, input=, filename=,
+size=, content_type=)` needs the person to be able to submit to the task
+now, the input to be one of the task's
+code, file or file[] inputs, the name to be one plain name the input's
+`accept` takes, and the size to be within the input's `max_size` and the
+task's `limits.max_size`, and never above the platform's ceiling of 64MB
+(`too_large`, naming the limit and the input whose it is); a save that sets a
+larger limit is a draft, with the problem at that limit's path, since a submit
+reads its files whole and writes them to the forge in one request. A
+person holds at most 200 uploads for a task that no submit has used,
+declaring at most twice the task's submission limit in bytes together, the
+one asked for included (`upload_limit`, with `limit` and `bytes`); a
+rejected upload counts until the sweep removes it, since its object stays
+until then and its form takes bytes until it expires. The count is taken
+under an advisory lock on the person and the task, held until the unit of
+work ends, so two slots asked at once cannot both pass. It records an `uploads` row and answers with a `PostSlot`, a form whose
+policy caps the file at the size declared, good for 15 minutes, or for a file
+over 16MB a `PartsSlot`, a URL per part of `part_size` bytes, each signed for
+its exact length, good for two hours. `uploads.complete(session, task,
+upload, parts=)` joins the parts, given with the value the store answered
+each with, measures what arrived and keeps its size and SHA-256: the size
+declared is `verified`, any other `rejected`, and a rejected upload is never
+submitted. Asked again it answers the same. An upload is its owner's alone,
+for one task: anyone else asking for it is told there is no such upload.
+When the store fails, what it said, its S3 error code among it, goes to the
+log, and the caller is told in fixed words that the store did not answer
+(`forge_unavailable`) or refused the platform's own key
+(`forge_misconfigured`); a completion the store failed on leaves the
+upload `presigned`, to be completed again.
+
+The hourly `uploads.sweep` pass removes every upload no submit used once its
+two days are over, object and row. It takes them 200 at a time until none is due, so a busy day never outruns
+it, and leaves one whose object the store failed on for the next pass.
 
 ## Errors
 
@@ -585,14 +646,21 @@ structured members in `extra`:
 | `ContestantConflict` | `contestant_conflict` | `contests` |
 | `SharedWorkflowOwner` | `shared_workflow_owner` | `workflows` |
 | `WrongStatus` | `wrong_status` | `current`, the registration's status |
+| `TaskClosed` | `task_closed` | `reason`, `ended` or `submissions_closed` |
+| `TooLarge` | `too_large` | `limit` in bytes, and `input`, or none for the task's |
+| `UploadNotReady` | `upload_not_ready` | `uploads`, each id refused |
+| `UploadLimit` | `upload_limit` | `limit`, the open uploads one person may hold for a task, and `bytes`, what they may declare together |
+| `InvalidInputs` | `invalid_inputs` | `errors`, each `{"input", "message"}` |
 
 The rest, `invalid_name`, `unauthenticated`, `session_expired`,
 `fresh_sign_in_required`, `sign_in_invalid`, `sign_in_denied`,
 `not_ready`, the registration refusals `registration_closed`, `is_staff`,
 `already_registered`, `invite_required`, `wrong_invite_code`,
 `domain_not_allowed` and `contest_full`, which share the base class
-`RegistrationRefused`, and `invalid_reason` and `invalid_extension`, carry
-nothing beyond the detail.
+`RegistrationRefused`, `invalid_reason` and `invalid_extension`, and
+`archived` (the contest is archived), `not_approved` and
+`workspace_not_ready`, carry nothing beyond the detail. The refusals of an
+upload share the base class `SubmitRefused`.
 
 ## The tables
 
@@ -606,7 +674,9 @@ ciphertext under `UNICON_TOKEN_ENCRYPTION_KEY`, the way a session's
 credential is, so a copy of the table hands out no access;
 `services/credentials.py` is the one place either is sealed or opened.
 `contestants` names each contestant's workspace in `workspace_id` once it is
-opened, so it keeps the name it was opened under.
+opened, so it keeps the name it was opened under. An `uploads` row is one browser upload: its owner, task and
+input, name, declared and measured size, digest, status, the id of its parts
+while they arrive, the submission that consumed it, and when it is swept.
 `unicon-forge migrate` reads `UNICON_DATABASE_URL`, applies the migrations
 under `forge/db/alembic/` and exits. A deployment runs it before the host
 starts, from the host's image, which has the package and its command
@@ -623,7 +693,7 @@ handing each by its `kind` to the service that makes it, as `MAKERS` in
 `forge/runtime/setup.py` lists: `org`, `contest` and `task` to the service
 of that name, `workspace` and `submission_place` to `workspaces`, and
 `activation` to `activations`;
-`sessions.sweep` hourly; and `drift.nightly` daily, which puts back any org
+`sessions.sweep` hourly; `uploads.sweep` hourly; and `drift.nightly` daily, which puts back any org
 account missing from its place in its org, makes one call to the CI as each
 account, since the CI refreshes the account's forge credential only when
 that account calls it, signing in again any account the CI no longer
@@ -656,9 +726,10 @@ hosts the package calls `forge.api.log.setup()` once at start, before
 anything logs. It reads `UNICON_LOG_LEVEL` and sends every logger in the
 process through the one JSON handler, the web server's included, and the
 host writes its own records through `forge.api.log.get_logger`. The HTTP
-client's own loggers, `httpx` and `httpcore`, log from a warning up whatever
-the level, since the line they write for every request holds its whole URL,
-and a URL of the CI's sign-in holds a one-time code.
+clients' own loggers, `httpx` and `httpcore` and the object store's `boto3`,
+`botocore`, `s3transfer` and `urllib3`, log from a warning up whatever the
+level, since the lines they write for every request hold its whole URL or
+its signed headers, and a URL of the CI's sign-in holds a one-time code.
 
 ## Testing
 
@@ -688,7 +759,10 @@ three primitives it uses from `PRIMITIVES`, each primitive repo's own
 `primitive.yaml` with an image of `PLACEHOLDER_DIGEST`, so a task's first
 save finds a workflow and every step's image; the package's tests check the
 copy against deploy's file when that repo is checked out beside this one.
-The fake refuses a user id it already has, since the accounts the package makes take the next free ids.
+The fake's store is `fake.objects`: a test plays the browser with
+`post(slot.fields, content)` and `put_part(url, content)`, which answers the
+value `complete` takes for the part, and the grading machine with
+`put(url, content)`. The fake refuses a user id it already has, since the accounts the package makes take the next free ids.
 
 ## Checks
 
@@ -714,7 +788,10 @@ account is the platform account; they are skipped without both, and
 the CI need a Woodpecker signed in through that Forgejo as well:
 `UNICON_LIVE_CI_URL`, `UNICON_LIVE_CI_PUBLIC_URL`, `UNICON_LIVE_CI_ADMIN_TOKEN`
 and `UNICON_LIVE_FORGE_PUBLIC_URL`, the URL the CI sends a browser to; they
-are skipped without all four. `tests/live/test_organiser_path.py` walks the
+are skipped without all four. `tests/live/test_objects.py` drives the S3
+store against a running Garage named by `UNICON_LIVE_S3_ENDPOINT` with the
+platform's key in `UNICON_LIVE_S3_ACCESS_KEY` and `UNICON_LIVE_S3_SECRET_KEY`,
+and is skipped without them. `tests/live/test_organiser_path.py` walks the
 whole path over a real setup, the test Postgres included, and the check that
 history cannot be rewritten pushes with `git` to a repository it made.
 

@@ -249,6 +249,7 @@ async def check(
         return Checked(None, {}, tuple(invalid.errors))
     present = {*head.tokens, *changes}
     problems = definition.missing_files(lambda path: has_path(present, path))
+    problems.extend(definition.oversized())
     workflows, unreadable = await _workflows(ctx, as_, definition)
     problems.extend(unreadable)
     if not unreadable:

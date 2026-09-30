@@ -7,6 +7,7 @@ from forge.domain.errors import Misconfigured
 from forge.forges.cached import CachedForge
 from forge.forges.fake import FakeForge
 from forge.forges.forgejo import ForgejoConfig, ForgejoForge
+from forge.forges.forgejo.objects import StorageConfig
 from forge.port import Forge
 from forge.settings import Settings
 
@@ -28,8 +29,8 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
         return FakeForge(
             public_url=str(settings.forge_public_url), sign_in_redirect_uri=sign_in_redirect_uri
         )
-    forgejo = settings.forgejo
-    if forgejo is None or settings.forge_public_url is None:
+    forgejo, s3 = settings.forgejo, settings.s3
+    if forgejo is None or s3 is None or settings.forge_public_url is None:
         raise Misconfigured("UNICON_FORGE=forgejo without its settings")
     return ForgejoForge(
         ForgejoConfig(
@@ -44,5 +45,15 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
             ci_url=str(forgejo.woodpecker_url),
             ci_public_url=str(forgejo.woodpecker_public_url),
             ci_admin_token=forgejo.woodpecker_token.get_secret_value(),
+            storage=StorageConfig(
+                endpoint=str(s3.endpoint),
+                region=s3.region,
+                access_key=s3.access_key,
+                secret_key=s3.secret_key.get_secret_value(),
+                uploads_bucket=s3.uploads_bucket,
+                results_bucket=s3.results_bucket,
+                public_url=str(settings.public_url),
+                machine_url=str(settings.machine_url),
+            ),
         )
     )

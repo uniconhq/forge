@@ -754,3 +754,23 @@ stages:
             "message": "There is no file under data/public/ in the task.",
         }
     ]
+
+
+def test_a_size_limit_above_the_platform_ceiling_is_a_problem_at_its_path() -> None:
+    task = parse_task(
+        b"name: Big\n"
+        b"workflow: unicon/classic@v1\n"
+        b"inputs:\n"
+        b"  contestant:\n"
+        b"    - id: submission\n"
+        b"      type: file\n"
+        b"      max_size: 65MB\n"
+        b"limits:\n"
+        b"  max_size: 1GB\n"
+    )
+
+    assert [problem["path"] for problem in task.oversized()] == [
+        "limits.max_size",
+        "inputs.contestant[0].max_size",
+    ]
+    assert parse_task(b"name: Small\nworkflow: unicon/classic@v1\n").oversized() == []
