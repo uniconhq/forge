@@ -6,6 +6,7 @@ and cookies are secure whenever the platform is served over https.
 import pytest
 from pydantic import ValidationError
 
+from forge.domain.grading import CLONE_IMAGE
 from forge.domain.plans import HARNESS_IMAGE
 from forge.settings import Settings, load_log_settings, load_settings
 
@@ -262,3 +263,17 @@ def test_the_harness_image_is_the_pinned_one_unless_given_and_always_by_digest(
     with pytest.raises(SystemExit):
         load_settings()
     assert "UNICON_HARNESS_IMAGE: Value error, is not an image by digest" in capsys.readouterr().err
+
+
+def test_the_clone_image_is_the_pinned_one_unless_given_and_always_by_digest(
+    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert load_settings().clone_image == CLONE_IMAGE
+    local = "localhost:5000/uniconhq/clone@sha256:" + "b" * 64
+    monkeypatch.setenv("UNICON_CLONE_IMAGE", local)
+    assert load_settings().clone_image == local
+
+    monkeypatch.setenv("UNICON_CLONE_IMAGE", "ghcr.io/uniconhq/clone:v1")
+    with pytest.raises(SystemExit):
+        load_settings()
+    assert "UNICON_CLONE_IMAGE: Value error, is not an image by digest" in capsys.readouterr().err
