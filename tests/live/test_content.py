@@ -246,12 +246,12 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
         {
             "task.yaml": b"name: Sum\n",
             "plans/default.json": b"{}\n",
-            "data/testcases/.gitkeep": None,
-            "data/testcases/1.in": b"1 2\n",
+            "data/testcases/1.ans": None,
+            "data/testcases/2.in": b"1 2\n",
         },
         expected={
             "task.yaml": head.tokens["task.yaml"],
-            "data/testcases/.gitkeep": head.tokens["data/testcases/.gitkeep"],
+            "data/testcases/1.ans": head.tokens["data/testcases/1.ans"],
         },
         message="Save",
     )
@@ -260,14 +260,14 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
     assert commit["author"]["login"] == manager["login"]
     assert [parent["sha"] for parent in commit["parents"]] == [head.version]
     assert sorted(entry["filename"] for entry in commit["files"]) == [
-        "data/testcases/.gitkeep",
-        "data/testcases/1.in",
+        "data/testcases/1.ans",
+        "data/testcases/2.in",
         "plans/default.json",
         "task.yaml",
     ]
     saved = await forge.content.list_files(as_manager, task)
     assert saved.version == version
-    assert "data/testcases/.gitkeep" not in saved.tokens
+    assert "data/testcases/1.ans" not in saved.tokens
 
     with pytest.raises(Conflict):
         await forge.content.save_files(
