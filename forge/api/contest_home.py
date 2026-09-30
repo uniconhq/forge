@@ -2,7 +2,8 @@
 contest's home and a task's page, and the types they come back as.
 """
 
-from forge.domain.definitions import ContestVisibility, Limits, Rate, State
+from forge.domain.definitions import ContestantInput, ContestVisibility, Limits, Rate, State
+from forge.domain.workflow_definition import InputType
 from forge.services.contest_home import (
     ContestHome,
     ContestSummary,
@@ -17,6 +18,8 @@ __all__ = [
     "ContestHome",
     "ContestSummary",
     "ContestVisibility",
+    "ContestantInput",
+    "InputType",
     "Limits",
     "Rate",
     "State",
