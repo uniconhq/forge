@@ -4,7 +4,9 @@ workflow `unicon/classic@v1` public at the fake as bootstrap makes it, a
 contest and a task made the way an organiser makes them, and a checked
 `Organiser` for anyone. For the contestant's side: a session for anyone,
 the contest's settings written as a test needs them, a task made and one
-published by a save of its starter.
+published by a save of its starter, a contestant entered in a running
+contest with their place to submit made, and a file uploaded as a browser
+uploads one.
 """
 
 from dataclasses import dataclass
@@ -18,7 +20,16 @@ from forge.domain.roles import Role, Scope, task_id_of
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
 from forge.runtime.setup import Setup
-from forge.services import access, contests, orgs, publications, sessions, tasks
+from forge.services import (
+    access,
+    contestants,
+    contests,
+    orgs,
+    publications,
+    sessions,
+    tasks,
+    uploads,
+)
 from forge.services.access import Organiser
 from forge.services.publications import Published
 from forge.testing import seed_classic, tick
@@ -125,3 +136,48 @@ async def sum_task(setup: Setup, acme: Acme, spring: ContestId) -> TaskId:
     await tick(setup, "provisioning")
     acme.fake.reset_calls()
     return SUM
+
+
+@dataclass(frozen=True, slots=True)
+class Entered:
+    """bob (8), approved in acme/spring, running and public, with his desk
+    open and his place to submit the published task sum made.
+    """
+
+    session: Session
+    task: TaskId
+
+
+@pytest.fixture
+async def entered(setup: Setup, acme: Acme, sum_task: TaskId) -> Entered:
+    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await publish(setup, acme, sum_task)
+    bob = await signed_in(setup, acme.fake, 8)
+    await contestants.register(setup, bob, SPRING)
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+    await contestants.approve(setup, manager, SPRING, 8)
+    for _ in range(3):
+        await tick(setup, "provisioning")
+    acme.fake.reset_calls()
+    return Entered(bob, sum_task)
+
+
+async def upload(
+    setup: Setup,
+    fake: FakeForge,
+    session: Session,
+    task: TaskId,
+    content: bytes,
+    *,
+    input: str = "submission",
+    filename: str = "main.py",
+) -> uploads.Upload:
+    """A file uploaded the way a browser does: a slot, the bytes posted with
+    its form, and the upload completed.
+    """
+    slot = await uploads.slot(
+        setup, session, task, input=input, filename=filename, size=len(content)
+    )
+    assert isinstance(slot, uploads.PostSlot)
+    fake.objects.post(slot.fields, content)
+    return await uploads.complete(setup, session, task, slot.id)

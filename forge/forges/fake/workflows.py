@@ -7,7 +7,7 @@ from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import PrimitiveId, WorkflowId
 from forge.domain.workflows import Primitive, Visibility, Workflow
-from forge.forges.fake.state import Repo, State
+from forge.forges.fake.state import Repo, State, token_of
 from forge.forges.ids import (
     PLATFORM_ORG,
     PRIMITIVE,
@@ -70,9 +70,10 @@ class FakeWorkflows:
         self._state.record("read_workflow_file", as_, workflow=workflow, version=version, path=path)
         repo = self._repo(workflow)
         self._state.require_read(as_, repo)
-        if version not in repo.versions or path not in repo.files:
+        files = self._state.version_files(repo, version) if version in repo.versions else {}
+        if path not in files:
             raise NotFound(f"{path} at {version} is not in {workflow}")
-        return File(path=path, content=repo.files[path], token=repo.tokens[path])
+        return File(path=path, content=files[path], token=token_of(files[path]))
 
     async def search_public_workflows(self, query: str) -> tuple[Workflow, ...]:
         self._state.record("search_public_workflows", PLATFORM, query=query)
@@ -144,12 +145,15 @@ class FakePrimitives:
             if repo.marked == PRIMITIVE
         )
 
-    async def read_declaration(self, primitive: PrimitiveId, version: str) -> bytes:
-        self._state.record("read_declaration", PLATFORM, primitive=primitive, version=version)
+    async def read_declaration(self, as_: Identity, primitive: PrimitiveId, version: str) -> bytes:
+        self._state.record("read_declaration", as_, primitive=primitive, version=version)
+        self._state.check_up()
         repo = self._state.repo(PLATFORM_ORG, primitive_repo(primitive))
-        if version not in repo.versions or DECLARATION not in repo.files:
+        self._state.require_read(as_, repo)
+        files = self._state.version_files(repo, version) if version in repo.versions else {}
+        if DECLARATION not in files:
             raise NotFound(f"{primitive} has no declaration at {version}")
-        return repo.files[DECLARATION]
+        return files[DECLARATION]
 
 
 def _workflow(repo: Repo) -> Workflow:

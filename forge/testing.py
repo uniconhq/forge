@@ -54,6 +54,8 @@ __all__ = [
     "CALLBACK_PATH",
     "CLASSIC",
     "FORGE_URL",
+    "PLACEHOLDER_DIGEST",
+    "PRIMITIVES",
     "AsUser",
     "FakeClock",
     "FakeForge",
@@ -64,6 +66,7 @@ __all__ = [
     "logged",
     "register_contestant",
     "seed_classic",
+    "seed_primitives",
     "tick",
 ]
 
@@ -77,7 +80,9 @@ _FORMATTER = JsonFormatter()
 
 CLASSIC = b"""\
 # unicon/classic@v1, the built-in workflow for a task judged by comparing
-# output with an answer.
+# output with an answer: compile the submission once, run the binary on
+# every testcase under the task's limits, and diff each run's output
+# against that testcase's answer.
 name: unicon/classic
 version: v1
 
@@ -96,34 +101,124 @@ steps:
     use: unicon/compile@v1
     with:
       source: ${{ inputs.submission }}
-
+      language: ${{ inputs.submission.language }}
   - id: run
     use: unicon/sandbox-run@v1
     foreach: ${{ inputs.testcases }}
     with:
-      binary: ${{ steps.compile.output }}
+      binary: ${{ steps.compile.binary }}
       input: ${{ item.input }}
       time_limit: ${{ inputs.time_limit }}
       memory_limit: ${{ inputs.memory_limit }}
-
   - id: check
     use: unicon/diff-check@v1
     foreach: ${{ inputs.testcases }}
     with:
-      actual: ${{ steps.run.stdout }}
+      actual: ${{ steps.run.output }}
       expected: ${{ item.answer }}
 
 outputs:
   outcome: ${{ steps.check.outcome }}
   metrics:
     points: ${{ steps.check.points }}
+  tests:
+    time_ms: ${{ steps.run.time_ms }}
+    memory_kb: ${{ steps.run.memory_kb }}
+  summary: ${{ steps.compile.compile_log }}
 """
+
+PLACEHOLDER_DIGEST = "sha256:" + "0" * 64
+"""The digest the fake's primitives name. Bootstrap writes each primitive's
+real digest from the release manifest; nothing in a test runs an image."""
+
+
+def _declared(name: str, rest: str) -> bytes:
+    """A primitive's declaration at `v1` under the platform's org, its image
+    named by the placeholder digest.
+    """
+    head = (
+        f"name: unicon/{name}\nversion: v1\n"
+        f"image: ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}\n"
+    )
+    return (head + rest).encode()
+
+
+PRIMITIVES: dict[str, bytes] = {
+    "compile": _declared(
+        "compile",
+        """\
+entrypoint: [/usr/local/bin/compile]
+batch: false
+limits: {time_ms: 60000, cpu_ms: 60000, memory_mb: 1024, pids: 128, output_mb: 64}
+limits_from: {}
+inputs:
+  source: {type: file}
+  language: {type: enum, values: [python, c, cpp, java]}
+outputs:
+  binary: {type: file, optional: true}
+  compile_log: {type: text}
+  outcome: {type: outcome}
+""",
+    ),
+    "sandbox-run": _declared(
+        "sandbox-run",
+        """\
+entrypoint: [/usr/local/bin/sandbox-run]
+batch: true
+limits: {time_ms: 5000, cpu_ms: 5000, memory_mb: 256, pids: 128, output_mb: 64}
+limits_from:
+  time_ms: {input: time_limit, scale: 2000, add: 3000}
+  cpu_ms: {input: time_limit, scale: 2000, add: 3000}
+  memory_mb: {input: memory_limit, scale: 1, add: 256}
+inputs:
+  binary: {type: file}
+  input: {type: file}
+  time_limit: {type: number}
+  memory_limit: {type: number}
+outputs:
+  output: {type: file}
+  time_ms: {type: number}
+  memory_kb: {type: number}
+  outcome: {type: outcome}
+""",
+    ),
+    "diff-check": _declared(
+        "diff-check",
+        """\
+entrypoint: [/usr/local/bin/diff-check]
+batch: true
+limits: {time_ms: 5000, cpu_ms: 5000, memory_mb: 256, pids: 32, output_mb: 1}
+limits_from: {}
+inputs:
+  actual: {type: file}
+  expected: {type: file}
+outputs:
+  outcome: {type: outcome}
+  points: {type: number}
+""",
+    ),
+}
+"""The declarations of the three primitives the built-in workflow uses, at
+`v1`: each primitive repo's own `primitive.yaml` as it is, with the `image`
+line deploy's bootstrap writes under `name` and `version`, carrying a
+placeholder digest in place of the image's own."""
+
+
+async def seed_primitives(fake: FakeForge) -> None:
+    """`unicon/compile`, `unicon/sandbox-run` and `unicon/diff-check` at `v1`
+    at the fake, from `PRIMITIVES`, as bootstrap mirrors them into a real
+    forge.
+    """
+    for name, declaration in PRIMITIVES.items():
+        fake.primitives.add(name, {"v1": declaration})
 
 
 async def seed_classic(fake: FakeForge) -> None:
-    """`unicon/classic@v1` public at the fake, as bootstrap makes it at a real
-    forge, so a task's first save finds a workflow its organiser can read.
+    """`unicon/classic@v1` public at the fake, and the three primitives it
+    uses, as bootstrap makes them at a real forge, so a task's first save
+    finds a workflow its organiser can read and every step's image.
     """
+    await seed_primitives(fake)
     workflow = await fake.workflows.create_workflow(
         PLATFORM, "unicon", "classic", {"workflow.yaml": CLASSIC}, Visibility.PUBLIC
     )

@@ -81,11 +81,19 @@ forge/api/
                 Registration they return with its Status and WorkspaceState
   contest_home.py  contests, home, task, and the ContestSummary, ContestHome,
                 TaskEntry and TaskPage they return, with the Limits and Rate a
-                page carries and the State and ContestVisibility of a contest
+                page carries, the ContestantInput entries and their InputType
+                a submit panel is built from, and the State and
+                ContestVisibility of a contest
   landing.py    contests, contest, statement, and the PublicContest, PublicTask
                 and PublicStatement they return
   events.py     check, EVENTS_PATH, where the door is, and SIGNATURE_HEADERS, the
                 headers the signature comes in
+  uploads.py    slot, complete, the PostSlot, PartsSlot and SlotPart a slot is,
+                the Upload complete returns with its UploadStatus, and the
+                FinishedPart complete takes
+  submissions.py  submit, mine, one, files, file, the SubmittedInput submit
+                takes, and the Submission, Result, SubmittedFiles,
+                GradingStatus and Show they return
   roles.py      holders, grant, revoke, and the Holder holders returns
   cookies.py    what goes into the two cookies and what comes out, and the policy
   log.py        setup, get_logger, and the Logger it returns
@@ -116,11 +124,14 @@ with a sentence a form shows beside that field. `admin_only_changes` names
 the admin-only keys a save changes, `missing_files` names each file input
 whose path is not in the state being saved, at the YAML path of its value,
 and `starter_contest` and `starter_task` are the files a new contest or task
-is created with. `plans.py` compiles a task into one plan per stage in the
-runner's plan shape, over the workflows `TaskDefinition.workflow_refs`
-names, pinned to the harness digest of the runner release the package is
-built against, and names what changed how a task grades between two
-publications.
+is created with. `primitives.py` reads a primitive's `primitive.yaml`, its
+image by digest, its entrypoint, whether it batches, its limits and the
+limits it raises from an input, and its typed inputs and outputs. `plans.py`
+is the compiler (below) and names what changed how a task grades between two
+publications. `submissions.py` lays out what a contestant gives as the files
+and `submission.json` of one commit, and `uploads.py` holds the rules of an
+upload's slot and parts. `grading.py` holds where a grading stands, what a
+grading run is, its two secrets and its clock.
 `release.py` works out from the settings and the clock whether a task is
 released, visible and open to one contestant, and who sees a contest at all.
 
@@ -173,6 +184,19 @@ person saving, each carrying the token it was read with, and refuses the
 whole change as `Conflict` when any has moved; `content.list_files` gives
 every file of a place at a version with its token, the same for the same
 content, which is how a save compares data files without reading them.
+`primitives.read_declaration` reads a primitive's declaration at a version
+as the organiser whose save compiles it. `workspaces.record_submission`
+writes a submission's files as one change as the contestant, leaving exactly
+those files in the place, and names it the next `submission/<n>` as the
+platform with a note carrying the submit's idempotency key, taking the next
+number when another took its own; `list_submissions` reads each back as a
+`Submitted` with its number, version and key, and `read_submission_file` one
+of its files at its version, big ones included.
+`grading.start_run` starts a `GradingRun`, what one run of one grading is
+in the platform's words, as the org account, with the variables
+`grading.run_variables` writes for it, and `grading.find_run` finds the run a
+start whose answer was lost left, by the grading's id.
+The Forgejo implementation writes the Woodpecker side of each (below).
 `workspaces.publish` names a version a save already wrote as the next
 publication, with a note, and `workspaces.list_publications` reads each back
 as a `Publication` with what its note says. A contestant's workspace is made
@@ -207,6 +231,18 @@ one read however many scopes there are. The port tells no person from a
 service account: the package knows an org's service account by its id in
 `org_accounts`, never by its name, since anyone may sign up under a name that
 looks like one.
+
+The object store the platform keeps uploads and logs in travels with the
+forge as its `objects` area (`port/objects.py`): a form for one file of at
+most a declared size, an upload in parts with a URL per part signed for its
+exact length, a URL a grading machine writes a result with, and measuring,
+reading, up to a size given, and removing what arrived. The Forgejo implementation reaches Garage
+over S3 with boto3 at `UNICON_S3_ENDPOINT` and signs what a browser is
+handed for `UNICON_PUBLIC_URL` and what a machine is handed for
+`UNICON_MACHINE_URL`, path-style, with `bucket` as a form field of its own,
+since Garage reads it from the form; the proxy passes `/unicon-uploads/` and
+`/unicon-results/` to Garage with the Host header unchanged. The fake keeps
+its store in memory and refuses what Garage refuses.
 
 Both implementations name repositories and build and read ids with the one
 grammar in `forges/ids.py`, so an id from elsewhere is `NotFound` whichever
@@ -248,8 +284,15 @@ because every org mints a service account and a login at the CI.
 https, and the package refuses to start when the URL is https and the flag
 is set off. The Forgejo settings travel together as
 `settings.forgejo`, read from the `UNICON_FORGE_*` and `UNICON_WOODPECKER_*`
-variables and required only when `UNICON_FORGE=forgejo`. A missing or
-malformed variable stops the process at start with the variable named.
+variables, and the object store's as `settings.s3`, read from
+`UNICON_S3_ENDPOINT`, `UNICON_S3_REGION` (`garage` unless given),
+`UNICON_S3_ACCESS_KEY`, `UNICON_S3_SECRET_KEY`, `UNICON_S3_UPLOADS_BUCKET`
+(`unicon-uploads`) and `UNICON_S3_RESULTS_BUCKET` (`unicon-results`); both are
+required only when `UNICON_FORGE=forgejo`. `UNICON_MACHINE_URL` is where
+grading machines reach the platform, `UNICON_PUBLIC_URL` unless given.
+`UNICON_HARNESS_IMAGE` is the harness every plan names, by digest, the one of
+the runner release the package pins unless given. A missing or malformed
+variable stops the process at start with the variable named.
 
 ## Cookies
 
@@ -288,6 +331,8 @@ hosting process calls are actions, marked `@action` from
 | `landing` | `contests`, `contest`, `statement` |
 | `events` | `check` |
 | `roles` | `holders`, `grant`, `revoke` |
+| `uploads` | `slot`, `complete` |
+| `submissions` | `submit`, `mine`, `one`, `files`, `file` |
 
 A hosting process reaches them through `forge.api`. An action is one unit of
 work. Called as `account.delete(session)`, it opens a transaction on the setup
@@ -425,8 +470,9 @@ takes each path with its new content and the token it was read with, as an
    `AdminOnly`, naming each. An admin passes.
 2. The state being saved, the files at the head with the save's over them,
    is checked: `task.yaml` validates, every file it names is there, every
-   workflow it names is read at its version as the organiser, and one plan
-   per stage compiles. A state that fails is a `Draft`: the organiser's
+   workflow it names and every primitive their steps use is read at its
+   version as the organiser, and one plan per stage compiles over the files
+   of that state. A state that fails is a `Draft`: the organiser's
    files are written as one change, nothing is published, and the last
    publication keeps grading. The errors come back with their YAML paths
    and are not stored; `tasks.state` checks the head again whenever it is
@@ -461,6 +507,36 @@ A valid save comes back as `Published`, with the publication, its number,
 whether it changed how the task grades and what, and the activation:
 `done`, `pending` or `not_needed`. `publications.list` gives every
 publication with its flag and its changes, for the task's history.
+
+## The compiler
+
+`forge/domain/plans.py` compiles each stage into the plan the harness runs,
+the runner's `plan.schema.json` version 3, flat and fully resolved, so
+nothing is read at grade time: the harness image, the stage, the test list,
+the steps in order and the verdict block. Each `use:` is the primitive whose
+declaration the save read; a `use:` that is someone else's private workflow,
+or not there, is an error naming it, and a workflow used as a step waits for
+feature 10. Each step carries its primitive's image by digest, entrypoint and
+limits, and each `with` value becomes one of the plan's values: a literal, a
+file or list of files in the task, a contestant input or the language chosen
+for it, or an earlier step's output. A `foreach` over a setter's `file[]`
+input runs over the tests in its folder at the version being saved: the
+files directly in it, hidden ones left out, grouped by stem, `1.in` and
+`1.ans` the test `1` with the fields `input` and `answer`, ordered with
+numbers compared as numbers; an empty folder is an error at the input's YAML
+path. A step whose primitive declares `batch: true` takes every test in one
+container, and one that does not is one step per test. Inside a `foreach`, a
+step of the same list is read for the same test. Limits are the
+declaration's, raised by `limits_from` from values known at the save, and a
+batch's time and CPU are summed over its tests. It checks what grading needs:
+every input given is declared, every required one is given, every output read
+is declared, and each value has its input's type, a language list included
+against the enum the compile step takes. The workflow's `outputs` become the
+verdict block: `outcome` required, `metrics`, each test's `time_ms` and
+`memory_kb`, and `summary`. Every problem is reported at the YAML path in
+`task.yaml` of the workflow it is in. The plan is the same bytes every time
+for the same state. A new task's starter carries one example test, so its
+first save publishes.
 
 `release.of_task(session, task)` says whether the signed-in person sees the
 task and may submit to it now: released, visible and open, and why not. It
@@ -521,8 +597,9 @@ What a signed-in person reads of a contest is `contest_home`: `contests`,
 every contest they see with their own status; `home`, a contest's dates,
 their registration, what the register form needs, their own deadline, which
 is the end plus their extension, the server's clock and the tasks released
-to them in the contest's order; and `task`, a visible task's statement and
-limits and nothing else of what it holds. A visitor with no session reads
+to them in the contest's order; and `task`, a visible task's statement,
+limits and the inputs a contestant gives, with the labels, languages, file
+types and sizes a submit panel shows, and nothing else of what it holds. A visitor with no session reads
 `landing`: the public contests, one with its released tasks, and a released
 task's statement. The list of public contests is kept by each process for
 five seconds (`ctx.memo`, `forge/runtime/memo.py`), since anyone may ask for
@@ -531,6 +608,129 @@ for that one read. All of it is read live as the platform from the latest
 publication of each task, with the contest's visibility and the release
 rules applied first, and a contest or task the reader may not see is no
 such contest or task, the same answer as one that is not there.
+
+## Uploads
+
+A contestant's files go from the browser straight to the object store and
+never through the platform. `uploads.slot(session, task, input=, filename=,
+size=, content_type=)` needs the person to be able to submit to the task
+now, the input to be one of the task's
+code, file or file[] inputs, the name to be one plain name the input's
+`accept` takes, and the size to be within the input's `max_size` and the
+task's `limits.max_size`, and never above the platform's ceiling of 64MB
+(`too_large`, naming the limit and the input whose it is); a save that sets a
+larger limit is a draft, with the problem at that limit's path, since a submit
+reads its files whole and writes them to the forge in one request. A
+person holds at most 200 uploads for a task that no submit has used,
+declaring at most twice the task's submission limit in bytes together, the
+one asked for included (`upload_limit`, with `limit` and `bytes`); a
+rejected upload counts until the sweep removes it, since its object stays
+until then and its form takes bytes until it expires. The count is taken
+under an advisory lock on the person and the task, held until the unit of
+work ends, so two slots asked at once cannot both pass. It records an `uploads` row and answers with a `PostSlot`, a form whose
+policy caps the file at the size declared, good for 15 minutes, or for a file
+over 16MB a `PartsSlot`, a URL per part of `part_size` bytes, each signed for
+its exact length, good for two hours. `uploads.complete(session, task,
+upload, parts=)` joins the parts, given with the value the store answered
+each with, measures what arrived and keeps its size and SHA-256: the size
+declared is `verified`, any other `rejected`, and a rejected upload is never
+submitted. Asked again it answers the same. An upload is its owner's alone,
+for one task: anyone else asking for it is told there is no such upload.
+When the store fails, what it said, its S3 error code among it, goes to the
+log, and the caller is told in fixed words that the store did not answer
+(`forge_unavailable`) or refused the platform's own key
+(`forge_misconfigured`); a completion the store failed on leaves the
+upload `presigned`, to be completed again.
+
+The hourly `uploads.sweep` pass removes every upload no submit used once its
+two days are over, object and row. It takes them 200 at a time until none is due, so a busy day never outruns
+it, and leaves one whose object the store failed on for the next pass.
+
+## Submissions
+
+`submissions.submit(session, task, inputs, idempotency_key=)` runs in this
+order and stops at the first refusal, before anything is written, each with a
+code of its own: the task is open by the server's clock plus the
+contestant's extension (`task_closed` with its `reason`, or `archived`); they
+are approved (`not_approved`); their place to submit the task is made
+(`workspace_not_ready`); they have submissions left (`submission_limit`),
+counted from the submissions at the forge; the task's rate holds
+(`rate_limited`, with `retry_at`), counted from the grading rows within its
+window; every upload named is theirs for this task (`upload_not_yours`), a
+checked file no submission used (`upload_not_ready`), and each and all of
+them within the sizes allowed (`too_large`); and what is given fits the
+task's contestant inputs (`invalid_inputs`, each problem at its input). The
+bytes are read back and checked against the digest the upload was verified
+with. Then the files go in as one commit as the contestant, `files/<input
+id>/<file name>` beside `submission.json`, named `submission/<n>` as the
+platform; one `queued` grading row is inserted per stage graded on submit,
+against the task's current publication, attempt 1, with the SHA-256 of its
+first run's callback token, `base64url(HMAC-SHA256(k, "callback:" || grading
+id || ":" || run))` with `k` derived from `UNICON_TOKEN_ENCRYPTION_KEY` by
+HKDF and `run` 0, so the token itself is never stored; and the uploads are
+marked consumed. The bytes of an upload whose object is gone, or grew, are
+refused like ones that changed (`upload_not_ready`), and no more of an
+object is read than the size the upload was checked at. A forge that fails
+the commit, or a store that fails the read, is told in fixed words: the
+forge or the store did not answer (`forge_unavailable`), refused the
+platform's own registration (`forge_misconfigured`), or the forge refused
+the submission (`rejected`), with what it said in the log.
+
+Submits of one workspace to one task happen one after another, under an
+advisory lock held until the unit of work ends. The same idempotency key
+sent again answers with the submission it made and creates nothing: its rows
+are found by the key, unique for a workspace, task and stage, and when the
+forge's writes landed but the rows did not, the submission is found at the
+forge by the key its note carries and only its rows are inserted.
+
+`mine` lists the signed-in person's own submissions of a task, newest first,
+`one` gives one by its number, each with the latest attempt of its grading at
+every stage as that stage's `show` allows: `full` the outcome, metrics,
+summary, each test's row and whether there is a log, `metrics` the outcome
+and metrics, `hidden` the status alone. A `system_error`'s summary is written
+for staff and is never shown, whatever the stage's `show`. `files` gives the inputs one was made
+with, as its `submission.json` names them, and `file` one of those files.
+Anyone else's submission is no such submission.
+
+## Grading
+
+A grading is one row of `gradings` per submission, stage and attempt. A run
+proves itself with two secrets derived from `UNICON_TOKEN_ENCRYPTION_KEY`,
+the grading's id and the number of the run: the envelope key its envelope's
+URL carries and the callback token it reports back with, whose SHA-256 the
+row keeps. Its status runs `queued`, `dispatching` (a start was sent and its
+answer never came back) and `dispatched` (the CI holds the run, waiting for
+a machine or checking out), and ends `system_error`, a failure of the
+platform's, never a grade, when its run cannot be started or dies.
+
+**Starting a run.** The `gradings.dispatch` poller takes the `queued` and
+`dispatching` rows whose `retry_at` has come, oldest in the queue first, under
+`FOR UPDATE SKIP LOCKED`, so two processes never start one run twice. As the
+org's own account (`org_accounts.identity`) it first looks for a run of the
+task carrying the grading's id, started since the grading entered the queue
+and not ended, which is what a start whose answer was lost left; finding
+none, it starts one on `main`, the one thing the CI starts a run on, with the
+variables `UNICON_GRADING_ID`, `UNICON_ENVELOPE_URL`,
+`UNICON_PUBLICATION_COMMIT`, `UNICON_SUBMISSION_REPO`,
+`UNICON_SUBMISSION_COMMIT` and `UNICON_COMPUTE`, which is `pool:platform`, so
+only a machine the platform controls takes it. The run's id, when it was
+started and a deadline, one run timeout later, go on the row, which is
+`dispatched`. Anything but a run coming back is a failed start: the row goes
+back to `queued` with a `wait_reason` an organiser reads, or stays
+`dispatching` when the start was sent and no answer came, and waits five
+seconds, doubling to at most five minutes. Woodpecker answers a start with an
+empty 204 when the extension refused it, and keeps a run that ended at once
+(measured); the next try passes over that run, and a grading whose start has
+failed 20 times and is then answered that way ends in `system_error`, as
+does one whose publication is gone.
+
+**Runs that die.** The `gradings.overdue` pass looks every minute at the
+runs the CI holds whose deadline has passed. A run the CI reports ended, or
+no longer has, died without a verdict; a running grading's run still going
+past its deadline has overrun its time, so it is cancelled at the CI and died
+the same way; a run the CI still holds unstarted, or checking out, is looked
+at again five minutes later. A grading whose run died ends in
+`system_error`.
 
 ## Errors
 
@@ -550,14 +750,25 @@ structured members in `extra`:
 | `ContestantConflict` | `contestant_conflict` | `contests` |
 | `SharedWorkflowOwner` | `shared_workflow_owner` | `workflows` |
 | `WrongStatus` | `wrong_status` | `current`, the registration's status |
+| `TaskClosed` | `task_closed` | `reason`, `ended` or `submissions_closed` |
+| `SubmissionLimit` | `submission_limit` | `limit`, the submissions allowed |
+| `RateLimited` | `rate_limited` | `rate`, such as `1 per 30s`, and `retry_at` |
+| `TooLarge` | `too_large` | `limit` in bytes, and `input`, or none for the task's |
+| `UploadNotYours` | `upload_not_yours` | `uploads`, each id refused |
+| `UploadNotReady` | `upload_not_ready` | `uploads`, each id refused |
+| `UploadLimit` | `upload_limit` | `limit`, the open uploads one person may hold for a task, and `bytes`, what they may declare together |
+| `InvalidInputs` | `invalid_inputs` | `errors`, each `{"input", "message"}` |
 
 The rest, `invalid_name`, `unauthenticated`, `session_expired`,
 `fresh_sign_in_required`, `sign_in_invalid`, `sign_in_denied`,
 `not_ready`, the registration refusals `registration_closed`, `is_staff`,
 `already_registered`, `invite_required`, `wrong_invite_code`,
 `domain_not_allowed` and `contest_full`, which share the base class
-`RegistrationRefused`, and `invalid_reason` and `invalid_extension`, carry
-nothing beyond the detail.
+`RegistrationRefused`, `invalid_reason` and `invalid_extension`, and
+`archived` (the contest is archived), `not_approved`,
+`workspace_not_ready` and `invalid_idempotency_key`, carry nothing beyond
+the detail. The refusals of an upload or a submit share the base class
+`SubmitRefused`.
 
 ## The tables
 
@@ -571,7 +782,18 @@ ciphertext under `UNICON_TOKEN_ENCRYPTION_KEY`, the way a session's
 credential is, so a copy of the table hands out no access;
 `services/credentials.py` is the one place either is sealed or opened.
 `contestants` names each contestant's workspace in `workspace_id` once it is
-opened, so it keeps the name it was opened under.
+opened, so it keeps the name it was opened under. A `gradings` row names the
+task, the workspace, the submission with its number and the exact version its
+files went in with, when it was submitted, the publication, the stage and
+attempt, and the idempotency key of the submit that made it; its status is
+one of `queued`, `dispatching`, `dispatched`, `running`, `done`, `failed`,
+`cancelled` and `system_error`, and `wait_reason` is a short line an
+organiser reads. `queued_at` is when it last entered the queue,
+`start_failures` and `retry_at` count its failed starts and say when it is
+next tried, `run_id`, `dispatched_at` and `deadline_at` are its run, when it
+was started and its deadline, and `error` a line for staff. An `uploads` row is one browser upload: its owner, task and
+input, name, declared and measured size, digest, status, the id of its parts
+while they arrive, the submission that consumed it, and when it is swept.
 `unicon-forge migrate` reads `UNICON_DATABASE_URL`, applies the migrations
 under `forge/db/alembic/` and exits. A deployment runs it before the host
 starts, from the host's image, which has the package and its command
@@ -588,7 +810,9 @@ handing each by its `kind` to the service that makes it, as `MAKERS` in
 `forge/runtime/setup.py` lists: `org`, `contest` and `task` to the service
 of that name, `workspace` and `submission_place` to `workspaces`, and
 `activation` to `activations`;
-`sessions.sweep` hourly; and `drift.nightly` daily, which puts back any org
+`sessions.sweep` hourly; `uploads.sweep` hourly; the `gradings.dispatch`
+poller every two seconds and the `gradings.overdue` pass every minute, both
+above; and `drift.nightly` daily, which puts back any org
 account missing from its place in its org, makes one call to the CI as each
 account, since the CI refreshes the account's forge credential only when
 that account calls it, signing in again any account the CI no longer
@@ -621,9 +845,10 @@ hosts the package calls `forge.api.log.setup()` once at start, before
 anything logs. It reads `UNICON_LOG_LEVEL` and sends every logger in the
 process through the one JSON handler, the web server's included, and the
 host writes its own records through `forge.api.log.get_logger`. The HTTP
-client's own loggers, `httpx` and `httpcore`, log from a warning up whatever
-the level, since the line they write for every request holds its whole URL,
-and a URL of the CI's sign-in holds a one-time code.
+clients' own loggers, `httpx` and `httpcore` and the object store's `boto3`,
+`botocore`, `s3transfer` and `urllib3`, log from a warning up whatever the
+level, since the lines they write for every request hold its whole URL or
+its signed headers, and a URL of the CI's sign-in holds a one-time code.
 
 ## Testing
 
@@ -648,10 +873,21 @@ name)` runs one tick of the poller or timed pass of that name, such as
 someone a contestant, with a status and an extension, and asks for no
 workspace. `seed_classic(fake)`
 puts the built-in workflow `unicon/classic@v1` at the fake from `CLASSIC`, a
-copy of the file deploy's bootstrap seeds, so a task's first save finds a
-workflow; the package's tests check the copy against deploy's file when that
-repo is checked out beside this one. The fake refuses a user id it already
-has, since the accounts the package makes take the next free ids.
+copy of the file deploy's bootstrap seeds, and with `seed_primitives` the
+three primitives it uses from `PRIMITIVES`, each primitive repo's own
+`primitive.yaml` with an image of `PLACEHOLDER_DIGEST`, so a task's first
+save finds a workflow and every step's image; the package's tests check the
+copy against deploy's file when that repo is checked out beside this one.
+The fake's store is `fake.objects`: a test plays the browser with
+`post(slot.fields, content)` and `put_part(url, content)`, which answers the
+value `complete` takes for the part, and the grading machine with
+`put(url, content)`. `fake.racing_submissions = n` makes the next submission
+collide with `n` others for its number, and `fake.lose_submission_answer`
+names it and then fails as if the answer were lost.
+`fake.grading.finish(run, status)` leaves a run as the CI would;
+`fake.state.refuse_starts = n` answers the next `n` starts without a run,
+keeping a run that ended at once, and `fake.state.lose_start_answer` starts
+the next run and fails as if its answer were lost. The fake refuses a user id it already has, since the accounts the package makes take the next free ids.
 
 ## Checks
 
@@ -677,9 +913,14 @@ account is the platform account; they are skipped without both, and
 the CI need a Woodpecker signed in through that Forgejo as well:
 `UNICON_LIVE_CI_URL`, `UNICON_LIVE_CI_PUBLIC_URL`, `UNICON_LIVE_CI_ADMIN_TOKEN`
 and `UNICON_LIVE_FORGE_PUBLIC_URL`, the URL the CI sends a browser to; they
-are skipped without all four. `tests/live/test_organiser_path.py` walks the
+are skipped without all four. `tests/live/test_objects.py` drives the S3
+store against a running Garage named by `UNICON_LIVE_S3_ENDPOINT` with the
+platform's key in `UNICON_LIVE_S3_ACCESS_KEY` and `UNICON_LIVE_S3_SECRET_KEY`,
+and is skipped without them. `tests/live/test_organiser_path.py` walks the
 whole path over a real setup, the test Postgres included, and the check that
 history cannot be rewritten pushes with `git` to a repository it made.
+`tests/live/test_grading.py` starts a grading's run as the org account,
+finding it again by its grading id.
 
 ## Releasing
 

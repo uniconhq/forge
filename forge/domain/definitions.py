@@ -493,6 +493,11 @@ def parse_rate(value: object) -> Rate:
 DEFAULT_SUBMISSIONS = 50
 DEFAULT_RATE = Rate(1, timedelta(seconds=30))
 DEFAULT_MAX_SIZE = parse_size("10MB")
+SUBMISSION_CEILING = parse_size("64MB")
+"""The most any submission may be, whatever a task allows. A submit reads
+its files whole and writes them to the forge in one request, so the ceiling
+is what bounds the memory one submit takes; a larger one waits for files to
+be streamed into the submission repo."""
 
 
 class Limits(Model):
@@ -674,6 +679,24 @@ class TaskDefinition(Model):
             if entry.names_file
         )
 
+    def oversized(self) -> list[Problem]:
+        """A problem at every size limit above `SUBMISSION_CEILING`: the
+        task's `limits.max_size` and each contestant input's `max_size`.
+        """
+        message = (
+            f"Must be at most {format_size(SUBMISSION_CEILING)}, the largest submission "
+            "the platform takes."
+        )
+        problems: list[Problem] = []
+        if self.limits.max_size > SUBMISSION_CEILING:
+            problems.append(Problem(path="limits.max_size", message=message))
+        for index, entry in enumerate(self.inputs.contestant):
+            if entry.max_size is not None and entry.max_size > SUBMISSION_CEILING:
+                problems.append(
+                    Problem(path=f"inputs.contestant[{index}].max_size", message=message)
+                )
+        return problems
+
     def missing_files(self, has: Callable[[str], bool]) -> list[Problem]:
         """A problem at the value of every file input whose path `has` says
         is not in the state being saved. A path ending in `/` is a folder,
@@ -790,8 +813,9 @@ tasks: []
 def starter_task(name: str) -> dict[str, bytes]:
     """The files a new task is created with: a `task.yaml` titled `name` that
     grades Python with `unicon/classic@v1` against the testcases in
-    `data/testcases/`, a placeholder statement, and a placeholder file in
-    each of `data/testcases/` and `checker/` so git keeps the folders.
+    `data/testcases/`, a placeholder statement, one example testcase, `1.in`
+    with its answer `1.ans`, so the first save compiles a plan that grades,
+    and a placeholder file in `checker/` so git keeps the folder.
     """
     task = f"""\
 # The task's settings. The format is TASK-FORMAT.md, section 3.
@@ -823,6 +847,7 @@ limits:
     return {
         TASK_FILE: task.encode(),
         STATEMENT_FILE: b"Write the statement contestants read here.\n",
-        "data/testcases/.gitkeep": b"",
+        "data/testcases/1.in": b"1 2\n",
+        "data/testcases/1.ans": b"3\n",
         "checker/.gitkeep": b"",
     }

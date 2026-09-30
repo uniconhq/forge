@@ -18,6 +18,7 @@ from forge.domain.ids import ContestId, TaskId
 from forge.domain.registration import Status
 from forge.domain.release import Closed
 from forge.domain.roles import Role, Scope
+from forge.domain.workflow_definition import InputType
 from forge.runtime.setup import Setup
 from forge.services import contest_home, contestants, contests
 from forge.testing import FakeClock, register_contestant, tick
@@ -118,7 +119,7 @@ async def test_a_contestants_deadline_and_openness_carry_their_extension(
     assert (theirs.release.open, theirs.release.closed) == (False, Closed.ENDED)
 
 
-async def test_a_task_page_gives_the_published_statement_and_limits(
+async def test_a_task_page_gives_the_published_statement_limits_and_inputs(
     setup: Setup, acme: Acme, published: list[TaskId]
 ) -> None:
     sum_task = TaskId("acme/spring/sum")
@@ -138,6 +139,9 @@ async def test_a_task_page_gives_the_published_statement_and_limits(
     assert (page.name, page.label, page.points) == ("sum", "B", 50)
     assert page.statement == statement.content.decode()
     assert (page.limits.submissions, page.limits.max_size) == (50, 10 * 1024 * 1024)
+    assert [(entry.id, entry.type, entry.language) for entry in page.inputs] == [
+        ("submission", InputType.CODE, ("python",))
+    ]
 
 
 @pytest.mark.parametrize("name", ["hidden", "later", "unsaved", "nothing"])

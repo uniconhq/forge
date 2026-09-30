@@ -251,3 +251,110 @@ class InvalidExtension(ServiceError):
     """A time extension below nothing or above the most one may be."""
 
     code = "invalid_extension"
+
+
+class SubmitRefused(ServiceError):
+    """An upload or a submit the task's rules turn away before anything is
+    written. Each rule has an error of its own below, and its `code` says
+    which, so a page can say what happened and, where one applies, the limit.
+    """
+
+
+class TaskClosed(SubmitRefused):
+    """The task takes no submissions from this contestant now: the contest's
+    end plus their own extension has passed, or its organisers closed
+    submissions. `reason` says which, `ended` or `submissions_closed`.
+    """
+
+    code = "task_closed"
+
+
+class Archived(SubmitRefused):
+    """The contest is archived: its tasks are kept for reading and take no
+    submissions.
+    """
+
+    code = "archived"
+
+
+class NotApproved(SubmitRefused):
+    """The person is not an approved contestant of the task's contest."""
+
+    code = "not_approved"
+
+
+class WorkspaceNotReady(SubmitRefused):
+    """The contestant's place to submit the task is still being made."""
+
+    code = "workspace_not_ready"
+
+
+class SubmissionLimit(SubmitRefused):
+    """The contestant has made every submission the task allows. `limit` is
+    how many that is.
+    """
+
+    code = "submission_limit"
+
+
+class RateLimited(SubmitRefused):
+    """The contestant submitted as often as the task's rate allows within its
+    window. `rate` is the rate, such as `1 per 30s`, and `retry_at` the first
+    instant another submission is taken, in ISO 8601.
+    """
+
+    code = "rate_limited"
+
+
+class TooLarge(SubmitRefused):
+    """A file, or the submission as a whole, is larger than the task allows.
+    `limit` is the most allowed in bytes, and `input` the input whose limit it
+    is, or none for the task's limit on a whole submission.
+    """
+
+    code = "too_large"
+
+
+class UploadNotYours(SubmitRefused):
+    """An upload named is not one this person made for this task. One that
+    does not exist is answered the same way, so the answer says nothing
+    about anyone else's. `uploads` lists each id refused.
+    """
+
+    code = "upload_not_yours"
+
+
+class UploadNotReady(SubmitRefused):
+    """An upload named is not a complete, checked file that no submission has
+    used yet: its bytes have not all arrived, what arrived is not what was
+    declared, or it was submitted already. `uploads` lists each id refused.
+    """
+
+    code = "upload_not_ready"
+
+
+class UploadLimit(SubmitRefused):
+    """The person holds as many uploads for the task as one person may before
+    a submit uses them: `limit` of them, or `bytes` declared by them
+    together. An upload stops counting once a submit uses it, and goes two
+    days after it was asked for.
+    """
+
+    code = "upload_limit"
+
+
+class InvalidInputs(SubmitRefused):
+    """What was given does not fit the task's contestant inputs. `errors`
+    lists each problem as `{"input", "message"}`, `input` being the id of
+    the input it is about.
+    """
+
+    code = "invalid_inputs"
+
+
+class InvalidIdempotencyKey(ServiceError):
+    """A submit's idempotency key is missing or not the short random text a
+    browser makes once per submit.
+    """
+
+    code = "invalid_idempotency_key"
