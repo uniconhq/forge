@@ -24,6 +24,9 @@ from pydantic import (
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+from forge.domain.plans import HARNESS_IMAGE
+from forge.domain.primitives import IMAGE
+
 KEY_BYTES = 32
 
 ForgeKind = Literal["forgejo", "fake"]
@@ -106,6 +109,8 @@ class Settings(BaseSettings):
     is where the forge reaches the platform inside the deployment, the public
     URL unless given: the org event push points there. `org_creation_open`
     says whether any signed-in user may create an org, or only the operator.
+    `harness_image` is the harness every plan names, by digest, the one of
+    the runner release the package pins unless given.
     """
 
     model_config = SettingsConfigDict(env_prefix="UNICON_", extra="ignore")
@@ -122,6 +127,7 @@ class Settings(BaseSettings):
     forge_public_url: HttpUrl | None = None
     forge_cache: bool = False
     forgejo: ForgejoSettings | None = None
+    harness_image: str = HARNESS_IMAGE
 
     session_hard_ttl: timedelta = timedelta(days=30)
     session_idle_ttl: timedelta = timedelta(days=14)
@@ -176,6 +182,15 @@ class Settings(BaseSettings):
         if values.get("internal_url") is None:
             values["internal_url"] = data["forge_public_url"]
         return {**data, "forgejo": values}
+
+    @field_validator("harness_image")
+    @classmethod
+    def _an_image_by_digest(cls, value: str) -> str:
+        if not IMAGE.match(value):
+            raise ValueError(
+                "is not an image by digest, such as ghcr.io/uniconhq/harness@sha256:..."
+            )
+        return value
 
     @model_validator(mode="after")
     def _idle_within_hard(self) -> Self:

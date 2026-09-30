@@ -45,7 +45,8 @@ async def test_a_contest_manager_asks_and_the_poller_makes_the_task_with_its_fil
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
     assert sorted(repo.files) == [
         "checker/.gitkeep",
-        "data/testcases/.gitkeep",
+        "data/testcases/1.ans",
+        "data/testcases/1.in",
         "statement.md",
         "task.yaml",
     ]
