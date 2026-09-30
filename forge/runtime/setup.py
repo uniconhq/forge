@@ -4,9 +4,10 @@ loops. `start` builds the one setup the process holds and every action opens
 its unit of work on it; `ready` asks its database; `stop` tears it down;
 `public_url` is where the platform is served.
 
-The loops are the session sweeper, the `provisioning` poller and the nightly
-drift pass. `MAKERS` is what the poller hands each kind of row to: the org,
-the contest and the task, each made by the service of that name, a
+The loops are the session sweeper, the `provisioning` poller, the nightly
+drift pass and the hourly sweep of uploads no submit used. `MAKERS` is what
+the poller hands each kind of row to: the org, the contest and the task,
+each made by the service of that name, a
 contestant's workspace and the place they submit one task to, both made by
 `workspaces`, and a task's activation at the CI.
 """
@@ -45,6 +46,7 @@ from forge.services import (
     provisioning,
     sessions,
     tasks,
+    uploads,
     workspaces,
 )
 from forge.settings import Settings, load_settings
@@ -54,6 +56,7 @@ log = get_logger(__name__)
 READY_TIMEOUT_SECONDS = 2.0
 SESSION_SWEEP_INTERVAL = timedelta(hours=1)
 DRIFT_INTERVAL = timedelta(hours=24)
+UPLOAD_SWEEP_INTERVAL = timedelta(hours=1)
 
 MAKERS: dict[str, provisioning.RowWork] = {
     orgs.KIND: orgs.provision,
@@ -120,6 +123,7 @@ class Setup:
             TimedPass("sessions.sweep", sessions.sweep, SESSION_SWEEP_INTERVAL),
             provisioning.poller(MAKERS),
             TimedPass("drift.nightly", drift.nightly, DRIFT_INTERVAL),
+            TimedPass("uploads.sweep", uploads.sweep, UPLOAD_SWEEP_INTERVAL),
         )
         return setup
 
