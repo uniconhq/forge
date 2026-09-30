@@ -91,6 +91,9 @@ forge/api/
   uploads.py    slot, complete, the PostSlot, PartsSlot and SlotPart a slot is,
                 the Upload complete returns with its UploadStatus, and the
                 FinishedPart complete takes
+  submissions.py  submit, mine, one, files, file, the SubmittedInput submit
+                takes, and the Submission, Result, SubmittedFiles,
+                GradingStatus and Show they return
   roles.py      holders, grant, revoke, and the Holder holders returns
   cookies.py    what goes into the two cookies and what comes out, and the policy
   log.py        setup, get_logger, and the Logger it returns
@@ -125,7 +128,10 @@ is created with. `primitives.py` reads a primitive's `primitive.yaml`, its
 image by digest, its entrypoint, whether it batches, its limits and the
 limits it raises from an input, and its typed inputs and outputs. `plans.py`
 is the compiler (below) and names what changed how a task grades between two
-publications. `uploads.py` holds the rules of an upload's slot and parts.
+publications. `submissions.py` lays out what a contestant gives as the files
+and `submission.json` of one commit, and `uploads.py` holds the rules of an
+upload's slot and parts. `grading.py` holds where a grading stands and the
+callback token its run is handed.
 `release.py` works out from the settings and the clock whether a task is
 released, visible and open to one contestant, and who sees a contest at all.
 
@@ -179,7 +185,13 @@ whole change as `Conflict` when any has moved; `content.list_files` gives
 every file of a place at a version with its token, the same for the same
 content, which is how a save compares data files without reading them.
 `primitives.read_declaration` reads a primitive's declaration at a version
-as the organiser whose save compiles it.
+as the organiser whose save compiles it. `workspaces.record_submission`
+writes a submission's files as one change as the contestant, leaving exactly
+those files in the place, and names it the next `submission/<n>` as the
+platform with a note carrying the submit's idempotency key, taking the next
+number when another took its own; `list_submissions` reads each back as a
+`Submitted` with its number, version and key, and `read_submission_file` one
+of its files at its version, big ones included.
 `workspaces.publish` names a version a save already wrote as the next
 publication, with a note, and `workspaces.list_publications` reads each back
 as a `Publication` with what its note says. A contestant's workspace is made
@@ -315,6 +327,7 @@ hosting process calls are actions, marked `@action` from
 | `events` | `check` |
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
+| `submissions` | `submit`, `mine`, `one`, `files`, `file` |
 
 A hosting process reaches them through `forge.api`. An action is one unit of
 work. Called as `account.delete(session)`, it opens a transaction on the setup
@@ -628,6 +641,52 @@ The hourly `uploads.sweep` pass removes every upload no submit used once its
 two days are over, object and row. It takes them 200 at a time until none is due, so a busy day never outruns
 it, and leaves one whose object the store failed on for the next pass.
 
+## Submissions
+
+`submissions.submit(session, task, inputs, idempotency_key=)` runs in this
+order and stops at the first refusal, before anything is written, each with a
+code of its own: the task is open by the server's clock plus the
+contestant's extension (`task_closed` with its `reason`, or `archived`); they
+are approved (`not_approved`); their place to submit the task is made
+(`workspace_not_ready`); they have submissions left (`submission_limit`),
+counted from the submissions at the forge; the task's rate holds
+(`rate_limited`, with `retry_at`), counted from the grading rows within its
+window; every upload named is theirs for this task (`upload_not_yours`), a
+checked file no submission used (`upload_not_ready`), and each and all of
+them within the sizes allowed (`too_large`); and what is given fits the
+task's contestant inputs (`invalid_inputs`, each problem at its input). The
+bytes are read back and checked against the digest the upload was verified
+with. Then the files go in as one commit as the contestant, `files/<input
+id>/<file name>` beside `submission.json`, named `submission/<n>` as the
+platform; one `queued` grading row is inserted per stage graded on submit,
+against the task's current publication, attempt 1, with the SHA-256 of its
+first run's callback token, `base64url(HMAC-SHA256(k, "callback:" || grading
+id || ":" || run))` with `k` derived from `UNICON_TOKEN_ENCRYPTION_KEY` by
+HKDF and `run` 0, so the token itself is never stored; and the uploads are
+marked consumed. The bytes of an upload whose object is gone, or grew, are
+refused like ones that changed (`upload_not_ready`), and no more of an
+object is read than the size the upload was checked at. A forge that fails
+the commit, or a store that fails the read, is told in fixed words: the
+forge or the store did not answer (`forge_unavailable`), refused the
+platform's own registration (`forge_misconfigured`), or the forge refused
+the submission (`rejected`), with what it said in the log.
+
+Submits of one workspace to one task happen one after another, under an
+advisory lock held until the unit of work ends. The same idempotency key
+sent again answers with the submission it made and creates nothing: its rows
+are found by the key, unique for a workspace, task and stage, and when the
+forge's writes landed but the rows did not, the submission is found at the
+forge by the key its note carries and only its rows are inserted.
+
+`mine` lists the signed-in person's own submissions of a task, newest first,
+`one` gives one by its number, each with the latest attempt of its grading at
+every stage as that stage's `show` allows: `full` the outcome, metrics,
+summary, each test's row and whether there is a log, `metrics` the outcome
+and metrics, `hidden` the status alone. A `system_error`'s summary is written
+for staff and is never shown, whatever the stage's `show`. `files` gives the inputs one was made
+with, as its `submission.json` names them, and `file` one of those files.
+Anyone else's submission is no such submission.
+
 ## Errors
 
 Every error has a stable `code` and a `detail` for a person, and some carry
@@ -647,7 +706,10 @@ structured members in `extra`:
 | `SharedWorkflowOwner` | `shared_workflow_owner` | `workflows` |
 | `WrongStatus` | `wrong_status` | `current`, the registration's status |
 | `TaskClosed` | `task_closed` | `reason`, `ended` or `submissions_closed` |
+| `SubmissionLimit` | `submission_limit` | `limit`, the submissions allowed |
+| `RateLimited` | `rate_limited` | `rate`, such as `1 per 30s`, and `retry_at` |
 | `TooLarge` | `too_large` | `limit` in bytes, and `input`, or none for the task's |
+| `UploadNotYours` | `upload_not_yours` | `uploads`, each id refused |
 | `UploadNotReady` | `upload_not_ready` | `uploads`, each id refused |
 | `UploadLimit` | `upload_limit` | `limit`, the open uploads one person may hold for a task, and `bytes`, what they may declare together |
 | `InvalidInputs` | `invalid_inputs` | `errors`, each `{"input", "message"}` |
@@ -658,9 +720,10 @@ The rest, `invalid_name`, `unauthenticated`, `session_expired`,
 `already_registered`, `invite_required`, `wrong_invite_code`,
 `domain_not_allowed` and `contest_full`, which share the base class
 `RegistrationRefused`, `invalid_reason` and `invalid_extension`, and
-`archived` (the contest is archived), `not_approved` and
-`workspace_not_ready`, carry nothing beyond the detail. The refusals of an
-upload share the base class `SubmitRefused`.
+`archived` (the contest is archived), `not_approved`,
+`workspace_not_ready` and `invalid_idempotency_key`, carry nothing beyond
+the detail. The refusals of an upload or a submit share the base class
+`SubmitRefused`.
 
 ## The tables
 
@@ -674,7 +737,13 @@ ciphertext under `UNICON_TOKEN_ENCRYPTION_KEY`, the way a session's
 credential is, so a copy of the table hands out no access;
 `services/credentials.py` is the one place either is sealed or opened.
 `contestants` names each contestant's workspace in `workspace_id` once it is
-opened, so it keeps the name it was opened under. An `uploads` row is one browser upload: its owner, task and
+opened, so it keeps the name it was opened under. A `gradings` row names the
+task, the workspace, the submission with its number and the exact version its
+files went in with, when it was submitted, the publication, the stage and
+attempt, and the idempotency key of the submit that made it; its status is
+one of `queued`, `dispatching`, `dispatched`, `running`, `done`, `failed`,
+`cancelled` and `system_error`, and `wait_reason` is a short line an
+organiser reads. An `uploads` row is one browser upload: its owner, task and
 input, name, declared and measured size, digest, status, the id of its parts
 while they arrive, the submission that consumed it, and when it is swept.
 `unicon-forge migrate` reads `UNICON_DATABASE_URL`, applies the migrations
@@ -762,7 +831,9 @@ copy against deploy's file when that repo is checked out beside this one.
 The fake's store is `fake.objects`: a test plays the browser with
 `post(slot.fields, content)` and `put_part(url, content)`, which answers the
 value `complete` takes for the part, and the grading machine with
-`put(url, content)`. The fake refuses a user id it already has, since the accounts the package makes take the next free ids.
+`put(url, content)`. `fake.racing_submissions = n` makes the next submission
+collide with `n` others for its number, and `fake.lose_submission_answer`
+names it and then fails as if the answer were lost. The fake refuses a user id it already has, since the accounts the package makes take the next free ids.
 
 ## Checks
 
