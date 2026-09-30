@@ -2,7 +2,8 @@
 records every call with the identity it was made under, and refuses the three
 things a real forge refuses: a write whose conflict check is stale, a
 protected version created by anything but the platform, and a read the user
-has no access to.
+has no access to. Its object store is in memory too, and refuses what a
+real store refuses.
 """
 
 from typing import Any
@@ -12,6 +13,7 @@ from forge.domain.identity import Credential, User
 from forge.forges.fake.content import FakeContent
 from forge.forges.fake.grading import FakeComputes, FakeGrading
 from forge.forges.fake.identity import FakeIdentity
+from forge.forges.fake.objects import FakeObjects
 from forge.forges.fake.orgs import FakeOrgs
 from forge.forges.fake.state import Call, State
 from forge.forges.fake.threads import FakeThreads
@@ -41,6 +43,7 @@ class FakeForge:
         self.workflows = FakeWorkflows(self.state)
         self.primitives = FakePrimitives(self.state)
         self.computes = FakeComputes(self.state)
+        self.objects = FakeObjects(self.state.clock)
 
     @property
     def name(self) -> str:
