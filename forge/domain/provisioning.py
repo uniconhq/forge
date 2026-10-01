@@ -6,8 +6,9 @@ record reads the steps from the record itself.
 An org takes ten: its account row, the org, its roles, the labels its
 threads are marked with, its signed event push, its first admin, its service
 account at the forge, that account's forge credential, its user at the CI,
-and its sign-in at the CI. A contest and a task each take two, the place
-with its starter files and its roles and protection. A contestant's
+and its sign-in at the CI. A contest takes two, the place with its starter
+files and its roles and protection; a task takes those two and then its
+entry in the contest's `contest.yaml`. A contestant's
 workspace takes two, their desk and then a place to submit each task
 published by then; a task published afterwards gives each of them its
 place as a thing of its own, in one step. A task's activation at the CI
@@ -32,7 +33,7 @@ STEPS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "ci_login",
         ),
         "contest": ("repo", "roles"),
-        "task": ("repo", "roles"),
+        "task": ("repo", "roles", "contest_entry"),
         "workspace": ("desk", "submission_places"),
         "submission_place": ("place",),
         "activation": ("activate",),

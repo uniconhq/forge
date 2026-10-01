@@ -1,28 +1,37 @@
 """Making a task, listing a contest's tasks, following how far making one has
 got, and where its files stand against its publications. A task is one place
-at the forge holding `task.yaml`, `statement.md` and placeholder files that
-keep `data/testcases/` and `checker/` there, with three roles of its own.
+at the forge holding `task.yaml`, `statement.md` and an example testcase in
+`data/testcases/`, with three roles of its own.
 `create` writes the request and answers at once; the `provisioning` poller
 runs `provision`: the place with its starter files, then its roles and
 protection, which `content.secure` attaches and checks, reserving the task's
-publications for the platform in the same call. Nothing is published until
-the first save.
+publications for the platform in the same call, then the task's entry in
+`contest.yaml`. Nothing is published until the first save.
 
 A contest's tasks are the tasks there are at the forge. The `tasks` list in
-`contest.yaml` orders, labels and scores them, and creating a task does not
-touch it.
+`contest.yaml` orders, labels and scores them. A new task is added to the
+end of that list by the platform, with the next free letter as its label and
+100 points (`forge.domain.contest_entries`), so it shows on the contest's
+pages without anyone editing the file first. The edit is made in the file's
+text, so the organisers' comments and layout stay. When the file does not
+read as a `contest.yaml`, or its list cannot be added to line by line, the
+task is made without an entry and an organiser adds one by hand; an
+organiser's change to the file between the read and the write sends the
+step round again, and a task already in the list is left as it is.
 """
 
 from dataclasses import dataclass
 
 from forge.db.tables import Provisioning
-from forge.domain.definitions import starter_task, title_of
+from forge.domain.contest_entries import Unlisted, with_entry
+from forge.domain.definitions import CONTEST_FILE, starter_task, title_of
 from forge.domain.errors import Conflict, NotFound
+from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.names import validate_contest_or_task_name
 from forge.domain.publications import Publication
 from forge.domain.roles import Role, Scope, contest_id_of, contest_scope, task_id_of, task_scope
-from forge.domain.yaml_models import Problem
+from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -92,9 +101,41 @@ async def provision(ctx: Context, row: Provisioning) -> None:
     async def make_roles(attempt: Attempt) -> None:
         await ctx.forge.content.secure(task)
 
+    async def list_in_contest(attempt: Attempt) -> None:
+        await _list_in_contest(ctx, task)
+
     await provisioning.run(
-        ctx, row, provisioning.steps(KIND, {"repo": make_repo, "roles": make_roles})
+        ctx,
+        row,
+        provisioning.steps(
+            KIND, {"repo": make_repo, "roles": make_roles, "contest_entry": list_in_contest}
+        ),
     )
+
+
+async def _list_in_contest(ctx: Context, task: TaskId) -> None:
+    """Add the task to the end of its contest's `tasks` list, as the
+    platform, unless it is there already or the list cannot be added to.
+    """
+    scope = task_scope(task)
+    contest = contest_id_of(scope)
+    found = await ctx.forge.content.read_file(PLATFORM, contest, CONTEST_FILE)
+    try:
+        updated = with_entry(found.content, str(scope.task))
+    except (InvalidDefinition, Unlisted) as exc:
+        log.warning("tasks.not_listed", task=task, reason=str(exc))
+        return
+    if updated is None:
+        return
+    await ctx.forge.content.write_file(
+        PLATFORM,
+        contest,
+        CONTEST_FILE,
+        updated,
+        message=f"Add {scope.task} to the contest's tasks",
+        expected=found.token,
+    )
+    log.info("tasks.listed", task=task)
 
 
 @action

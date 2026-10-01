@@ -27,7 +27,8 @@ a registration that passed is approved in the same call.
 
 An organiser managing the contest decides a registration: `approve` turns a
 pending one approved and asks for the contestant's workspace, `reject`
-records the decision with a reason the person reads, `remove` ends an
+records the decision with a reason the person reads, `reopen` takes a
+rejection back and leaves the registration pending again, `remove` ends an
 approved one, taking the contestant's access to their workspace away and
 keeping what is in it, and `extend` gives one person more time, which every
 deadline check adds. Anyone observing the contest lists the registrations,
@@ -183,6 +184,33 @@ async def reject(
     _decide(ctx, row, Status.REJECTED, decided_by=organiser.user.id, reason=checked)
     await ctx.db.flush()
     log.info("contestants.rejected", contest=contest, user_id=user_id, by=organiser.user.id)
+    return await registration_of(ctx, row, await _user(ctx, user_id))
+
+
+@action
+async def reopen(
+    ctx: Context, organiser: Organiser, contest: ContestId, user_id: int
+) -> Registration:
+    """Take a rejection back: the registration is pending again, waiting for
+    a decision, with the reason gone. It takes a place again, so it is
+    refused like a new registration when the person holds a role at the
+    contest by now (`is_staff`) or every place is taken (`contest_full`),
+    checked under the same locks. Needs the manager role at the contest.
+    """
+    require(organiser, contest_scope(contest), Role.MANAGER)
+    settings = await published.contest(ctx, contest)
+    await roles.one_change_at_a_time(ctx, contest_scope(contest).org)
+    if await roles.holds_role_in_contest(ctx, user_id, contest):
+        raise IsStaff("That person holds a role at this contest now.")
+    await _hold_places(ctx, contest)
+    row = await _decided(ctx, organiser, contest, user_id, (Status.REJECTED,), "reopened")
+    await _refuse_full(ctx, contest, settings)
+    row.status = Status.PENDING
+    row.decided_at = None
+    row.decided_by_user_id = None
+    row.reason = None
+    await ctx.db.flush()
+    log.info("contestants.reopened", contest=contest, user_id=user_id, by=organiser.user.id)
     return await registration_of(ctx, row, await _user(ctx, user_id))
 
 

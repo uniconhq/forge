@@ -13,6 +13,7 @@ from forge.services.contestants import (
     register,
     reject,
     remove,
+    reopen,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "register",
     "reject",
     "remove",
+    "reopen",
 ]
