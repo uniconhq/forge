@@ -612,10 +612,8 @@ def test_the_starter_task_is_valid_and_names_only_files_it_carries() -> None:
         "statement.md",
         "data/testcases/1.in",
         "data/testcases/1.ans",
-        "checker/.gitkeep",
     }
     assert (files["data/testcases/1.in"], files["data/testcases/1.ans"]) == (b"1 2\n", b"3\n")
-    assert files["checker/.gitkeep"] == b""
     assert files["statement.md"].count(b"\n") == 1
     task = parse_task(files["task.yaml"])
     assert task.name == "Sum of Two"

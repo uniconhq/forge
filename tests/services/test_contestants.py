@@ -3,8 +3,8 @@ breaks a rule is refused with that rule's code; one that breaks none is one
 pending row, and nothing is written at the forge. Two registrations for the
 last place leave one row. A contest set to approve on its own approves at
 once and asks for the workspace. An organiser managing the contest approves,
-rejects with a reason, removes and extends, each only from the statuses it
-is allowed from; anyone observing it lists the registrations, and nobody
+rejects with a reason, reopens a rejection, removes and extends, each only
+from the statuses it is allowed from; anyone observing it lists the registrations, and nobody
 else does.
 """
 
@@ -299,6 +299,59 @@ async def test_a_rejection_carries_a_reason_the_person_reads(
     assert (mine.status, mine.reason) == (Status.REJECTED, "Not a student.")
     with pytest.raises(WrongStatus):
         await contestants.approve(setup, manager, SPRING, 8)
+
+
+async def test_a_rejection_is_taken_back_and_the_registration_is_pending_again(
+    setup: Setup, people: Acme, spring: str, manager: Organiser
+) -> None:
+    await write_contest(people.fake, settings())
+    await _register(setup, people, 8)
+    with pytest.raises(WrongStatus):
+        await contestants.reopen(setup, manager, SPRING, 8)
+    await contestants.reject(setup, manager, SPRING, 8, "Not a student.")
+
+    reopened = await contestants.reopen(setup, manager, SPRING, 8)
+    approved = await contestants.approve(setup, manager, SPRING, 8)
+
+    assert (reopened.status, reopened.reason, reopened.decided_at) == (Status.PENDING, None, None)
+    assert approved.status == Status.APPROVED
+    with pytest.raises(WrongStatus):
+        await contestants.reopen(setup, manager, SPRING, 8)
+
+
+async def test_a_rejection_is_not_taken_back_into_a_full_contest_or_for_staff(
+    setup: Setup, people: Acme, spring: str, manager: Organiser
+) -> None:
+    await write_contest(people.fake, settings(capacity="1"))
+    await _register(setup, people, 8)
+    await contestants.reject(setup, manager, SPRING, 8, "Not a student.")
+    await _register(setup, people, 20)
+    await contestants.reject(setup, manager, SPRING, 20, "Not yet.")
+    await roles.grant(setup, manager, Scope("acme", "spring"), "bob", Role.OBSERVER)
+    await _register(setup, people, 21)
+
+    with pytest.raises(IsStaff):
+        await contestants.reopen(setup, manager, SPRING, 8)
+    with pytest.raises(ContestFull):
+        await contestants.reopen(setup, manager, SPRING, 20)
+    assert sorted((row.user_id, row.status) for row in await _rows(setup)) == [
+        (8, "rejected"),
+        (20, "rejected"),
+        (21, "pending"),
+    ]
+
+
+async def test_reopening_needs_the_manager_role(
+    setup: Setup, people: Acme, spring: str, manager: Organiser
+) -> None:
+    await write_contest(people.fake, settings())
+    await _register(setup, people, 8)
+    await contestants.reject(setup, manager, SPRING, 8, "Not a student.")
+    await people.fake.orgs.grant_role(21, Scope("acme", "spring"), Role.OBSERVER)
+    observer = await organiser(setup, people.fake, 21, Scope("acme", "spring"))
+
+    with pytest.raises(Forbidden):
+        await contestants.reopen(setup, observer, SPRING, 8)
 
 
 async def test_removing_is_for_an_approved_contestant_and_takes_their_access_away(

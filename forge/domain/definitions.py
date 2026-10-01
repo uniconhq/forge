@@ -814,8 +814,7 @@ def starter_task(name: str) -> dict[str, bytes]:
     """The files a new task is created with: a `task.yaml` titled `name` that
     grades Python with `unicon/classic@v1` against the testcases in
     `data/testcases/`, a placeholder statement, one example testcase, `1.in`
-    with its answer `1.ans`, so the first save compiles a plan that grades,
-    and a placeholder file in `checker/` so git keeps the folder.
+    with its answer `1.ans`, so the first save compiles a plan that grades.
     """
     task = f"""\
 # The task's settings. The format is TASK-FORMAT.md, section 3.
@@ -849,5 +848,4 @@ limits:
         STATEMENT_FILE: b"Write the statement contestants read here.\n",
         "data/testcases/1.in": b"1 2\n",
         "data/testcases/1.ans": b"3\n",
-        "checker/.gitkeep": b"",
     }

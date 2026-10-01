@@ -5,7 +5,8 @@ against, each of which refuses with an error of its own.
 
 A registration is `pending` until an organiser approves or rejects it, or
 until the contest approves it on its own. Only a pending one is decided;
-`remove` ends an approved one and keeps what the contestant made. `pending`
+`reopen` takes a rejection back, leaving it pending again, and `remove` ends
+an approved one and keeps what the contestant made. `pending`
 and `approved` are the two that hold a place in the contest and make the
 person a contestant of it.
 

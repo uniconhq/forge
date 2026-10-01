@@ -78,7 +78,7 @@ forge/api/
   publications.py  save, list, and the Published, Draft, Activation and
                 Publication they return
   release.py    of_task, and the TaskRelease it returns with its Closed reason
-  contestants.py  register, mine, list, approve, reject, remove, extend, and the
+  contestants.py  register, mine, list, approve, reject, reopen, remove, extend, and the
                 Registration they return with its Status and WorkspaceState
   contest_home.py  contests, home, task, and the ContestSummary, ContestHome,
                 TaskEntry and TaskPage they return, with the Limits and Rate a
@@ -439,12 +439,18 @@ at once, and `status` reads the row for anyone observing the scope above. A
 contest or task asked for with no title, or a blank one, is titled by its
 name. A contest takes two steps, its place with a starter `contest.yaml` that is
 valid as written and its roles and protection; a task takes the same two,
-with `task.yaml`, `statement.md` and a placeholder in each of
-`data/testcases/` and `checker/`, its publications reserved in the second.
+with `task.yaml`, `statement.md` and an example testcase in
+`data/testcases/`, its publications reserved in the second, and a third
+that adds it to the end of the `tasks` list in `contest.yaml`.
 A contest or task the first try made before its record caught up is taken as
 made. A contest's tasks are the tasks there are at the forge, which
 `tasks.list` reads as the organiser; the `tasks` list in `contest.yaml`
-orders, labels and scores them, and creating a task does not touch it.
+orders, labels and scores them. The third step writes the new task's entry
+as the platform, with the next free letter as its label and 100 points,
+into the file's text so its comments and layout stay
+(`domain/contest_entries.py`); a `contest.yaml` that does not read, or a
+list written in flow style with items in it, is left alone and the task is
+made without an entry.
 
 Who may do what is decided once per request: `access.organiser` checks the
 session, reads the person's roles with their own credential, applies the
