@@ -268,7 +268,7 @@ async def test_a_record_carries_the_steps_of_its_kind(ctx: Context) -> None:
 
     record = provisioning.record_from(row)
 
-    assert record.steps == ("repo", "roles")
+    assert record.steps == ("repo", "roles", "contest_entry")
     assert (record.last_step, record.failed_step, record.retry_at) == (None, None, None)
 
 
@@ -276,11 +276,11 @@ def test_the_steps_of_a_kind_are_refused_when_the_work_does_not_match_them() -> 
     async def work(attempt: Attempt) -> None:
         return None
 
-    assert [step.name for step in provisioning.steps("task", {"roles": work, "repo": work})] == [
+    assert [step.name for step in provisioning.steps("contest", {"roles": work, "repo": work})] == [
         "repo",
         "roles",
     ]
     with pytest.raises(ValueError, match="does not match"):
-        provisioning.steps("task", {"repo": work})
+        provisioning.steps("contest", {"repo": work})
     with pytest.raises(ValueError, match="does not match"):
         provisioning.steps("task", {"repo": work, "roles": work, "extra": work})
