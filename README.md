@@ -308,7 +308,11 @@ everything else is built from it: the ids the tables store, `<org>`,
 `<org>/<contest>` and `<org>/<contest>/<task>` with each part a key; the
 org's name at the forge and its service account's, `unicon-ci-<org key>`;
 every repository's name, such as `<contest key>.<task key>.task`; and every
-role team's. The names people give them are labels in the `names` table,
+role team's. The Forgejo implementation lists an org's contests and a
+contest's tasks through Forgejo's repository search for names holding
+`.contest` or `.task`, checking each name it gets back, since the org also
+holds a repository for every contestant at every task and reading them all
+grew with each. The names people give them are labels in the `names` table,
 one row per thing, unique among the things of its kind in the same parent.
 So a rename will change one row and move nothing, and a name freed and taken
 again names a new thing that inherits no registration, grading or role of
