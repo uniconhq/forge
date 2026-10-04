@@ -896,6 +896,24 @@ it: `queued` five minutes after it was made (its start was lost),
 `dispatched` two hours after its run was started (no machine took it, or it
 never reached the harness), and `running` past its deadline.
 
+A `dispatched` grading can also have a run the CI lost: Woodpecker 3.18.1
+drops a run from its queue for good when the machine it handed the run to
+does not renew its claim within a minute, after a network drop or a machine
+that died during the checkout, and the pipeline goes on saying `pending`
+(woodpecker-ci/woodpecker#7063). Once a grading has been `dispatched` two
+minutes, reading it asks the CI where its run is (`grading.run_state`,
+`gradings.lost`): queued for a machine, taken by one, finished, or lost,
+told by the queue the run is in, not by its status, which is `pending`
+either way. A lost one reads as `system_error` with `LOST` as its reason;
+one still queued is left alone however long it waits, since at a
+contest's start a run waits minutes behind others. The CI is asked about a
+run at most once every fifteen seconds by a process, through the memo,
+and the Forgejo implementation reads the queue at most once every ten
+seconds for all runs, so contestants' pages polling every few seconds
+cost it little. Nothing is written when a grading is read; the reader's
+connection is let go of before the CI is asked, and a CI that does not
+answer loses nothing.
+
 **Starting a run.** Every new grading row hands `gradings.start` to
 `ctx.after_commit`, so its run is started right after the unit of work that
 made it commits, on a unit of work of its own: the CI asks the platform
@@ -1004,10 +1022,15 @@ start once it commits. It logs what it did as `reconcile.done`.
 **The organiser's controls.** Each takes the `Organiser` from
 `access.organiser` and needs manager at the grading's task; a grading whose
 task they do not observe is no such grading. `gradings.cancel` stops a
-grading that is not finished, at the CI too when a run of it is there
-(`WrongStatus` for a finished one). `gradings.retry` makes a new attempt of a
-finished one against the publication it graded against, while no other
-attempt of it is being graded (`Conflict`). `gradings.rejudge(task)` makes a
+grading that is not finished, at the CI too when a run of it is there,
+one that reads as `system_error` because it is overdue or lost while its
+row still waits included (`WrongStatus` for a finished one).
+`gradings.retry` makes a new attempt of a finished one against the
+publication it graded against, while no other attempt of it is being
+graded (`Conflict`). One that reads as finished only because it is overdue
+or lost is ended first with that reason written on its row, and its old
+run is cancelled at the CI once the retry has committed, so it does not
+keep a machine's containers going. `gradings.rejudge(task)` makes a
 new attempt of every submission's latest attempt at every stage the current
 publication has, against it, cancelling first one still being graded against
 an older publication and leaving one being graded against the current one,

@@ -17,6 +17,8 @@ from typing import Any, cast
 
 from forge.domain.clock import Clock
 
+MANY = 512
+
 
 @dataclass
 class Memo:
@@ -44,12 +46,27 @@ class Memo:
             answer = await work()
             if self._forgotten.get(name, 0) == began:
                 self._kept[name] = (self.clock.now() + keep, answer)
+            self._clear_stale()
             return answer
 
     def forget(self, name: str) -> None:
         """Drop the answer kept under `name`, and any being worked out now."""
         self._kept.pop(name, None)
         self._forgotten[name] = self._forgotten.get(name, 0) + 1
+
+    def _clear_stale(self) -> None:
+        """Drop the answers past their time once there are many of them, so
+        answers kept by name for each of many things, each grading's run,
+        do not pile up for as long as the process runs.
+        """
+        if len(self._kept) < MANY:
+            return
+        now = self.clock.now()
+        for name in [name for name, (until, _) in self._kept.items() if until <= now]:
+            del self._kept[name]
+            working = self._working.get(name)
+            if working is not None and not working.locked():
+                del self._working[name]
 
     def _fresh(self, name: str) -> bool:
         kept = self._kept.get(name)

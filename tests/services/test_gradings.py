@@ -8,8 +8,11 @@ once, with its key, to a run the CI holds that has not begun, and that fetch
 starts the run's clock. The callback takes reports only under the grading's
 own token, keeps a verdict that matches the schema and turns any other into
 a system error. A run that has not reported by its deadline reads as a
-system error. The organiser cancels, retries and rejudges, and the
-operator's reconcile gives a submission without gradings its rows.
+system error, and so does one whose run the CI has lost, found by asking
+the CI when the grading is read, a few times a minute at most, while one
+still waiting in its queue is left alone. The organiser cancels, retries
+and rejudges, a stuck grading included, whose old run is cancelled; and
+the operator's reconcile gives a submission without gradings its rows.
 """
 
 import asyncio
@@ -37,6 +40,8 @@ from forge.domain.errors import (
     WrongStatus,
 )
 from forge.domain.grading import (
+    LOST,
+    LOST_CHECK_AFTER,
     MACHINE_WAIT,
     NEVER_BEGAN,
     NEVER_STARTED,
@@ -46,6 +51,7 @@ from forge.domain.grading import (
     START_WAIT,
     GradingRun,
     GradingStatus,
+    RunState,
     callback_token,
     envelope_key,
     wall_seconds,
@@ -427,8 +433,6 @@ async def test_a_run_that_does_not_report_by_its_deadline_reads_as_a_system_erro
     assert result.status == GradingStatus.SYSTEM_ERROR
     with pytest.raises(GradingClosed):
         await _report(setup, row, {"event": "finished", "verdict": _verdict(envelope)})
-    with pytest.raises(WrongStatus):
-        await gradings.cancel(setup, manager, row.id)
     retried = await gradings.retry(setup, manager, row.id)
     assert retried.attempt == 2
 
@@ -737,3 +741,118 @@ async def test_a_start_the_ci_refuses_signs_the_org_account_in_again_and_starts(
     assert after.status == GradingStatus.DISPATCHED
     assert len(acme.fake.calls_to("start_run")) == 2
     assert len(acme.fake.calls_to("mint_ci_token")) == 1
+
+
+async def test_a_run_still_waiting_in_the_queue_is_left_alone_however_long(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    row = await _submit(setup, acme, entered)
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    clock.advance(LOST_CHECK_AFTER - timedelta(seconds=1))
+    await submissions.one(setup, entered.session, entered.task, 1)
+    assert acme.fake.calls_to("run_state") == []
+    clock.advance(timedelta(minutes=20))
+
+    [result] = (await submissions.one(setup, entered.session, entered.task, 1)).gradings
+    (listed,) = await gradings.list(setup, manager, entered.task)
+
+    assert result.status == GradingStatus.DISPATCHED
+    assert (listed.status, listed.error) == (GradingStatus.DISPATCHED, None)
+    assert (await _row(setup, row.id)).status == GradingStatus.DISPATCHED
+
+
+async def test_a_run_the_ci_lost_reads_as_a_system_error_saying_so_and_nothing_is_written(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    row = await _submit(setup, acme, entered)
+    run = RunId(str((await _row(setup, row.id)).run_id))
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    acme.fake.state.runs[run].ci_state = RunState.LOST
+    clock.advance(LOST_CHECK_AFTER)
+
+    [result] = (await submissions.one(setup, entered.session, entered.task, 1)).gradings
+    (listed,) = await gradings.list(setup, manager, entered.task)
+
+    assert result.status == GradingStatus.SYSTEM_ERROR
+    assert (listed.status, listed.error) == (GradingStatus.SYSTEM_ERROR, LOST)
+    after = await _row(setup, row.id)
+    assert (after.status, after.error) == (GradingStatus.DISPATCHED, None)
+
+
+async def test_the_ci_is_asked_about_a_run_at_most_once_while_its_answer_is_kept(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await _submit(setup, acme, entered)
+    clock.advance(LOST_CHECK_AFTER)
+
+    for _ in range(5):
+        await submissions.one(setup, entered.session, entered.task, 1)
+        clock.advance(timedelta(seconds=2))
+    assert len(acme.fake.calls_to("run_state")) == 1
+    clock.advance(gradings.RUN_STATE_KEPT)
+    await submissions.one(setup, entered.session, entered.task, 1)
+
+    assert len(acme.fake.calls_to("run_state")) == 2
+
+
+async def test_a_ci_that_does_not_say_where_a_run_is_loses_nothing(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _submit(setup, acme, entered)
+    clock.advance(LOST_CHECK_AFTER)
+
+    async def silent(run: RunId) -> RunState:
+        raise Unavailable("The CI did not answer.")
+
+    monkeypatch.setattr(acme.fake.grading, "run_state", silent)
+
+    [result] = (await submissions.one(setup, entered.session, entered.task, 1)).gradings
+    assert result.status == GradingStatus.DISPATCHED
+
+
+async def test_a_retry_of_a_lost_grading_ends_it_saying_why_and_cancels_its_run(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    row = await _submit(setup, acme, entered)
+    run = RunId(str((await _row(setup, row.id)).run_id))
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    acme.fake.state.runs[run].ci_state = RunState.LOST
+    clock.advance(LOST_CHECK_AFTER)
+
+    retried = await gradings.retry(setup, manager, row.id)
+
+    old, new = await _rows(setup)
+    assert (old.status, old.error) == (GradingStatus.SYSTEM_ERROR, LOST)
+    assert acme.fake.state.runs[run].cancelled is True
+    assert (new.id, new.attempt, new.status) == (retried.id, 2, GradingStatus.DISPATCHED)
+    assert new.run_id != run
+
+
+async def test_a_retry_of_a_run_past_its_deadline_cancels_the_run_still_at_the_ci(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    row, _ = await _running(setup, acme, entered)
+    run = RunId(str(row.run_id))
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    assert row.deadline_at is not None
+    clock.advance(row.deadline_at - clock.now())
+
+    await gradings.retry(setup, manager, row.id)
+
+    old, _ = await _rows(setup)
+    assert (old.status, old.error) == (GradingStatus.SYSTEM_ERROR, OVERDUE)
+    assert acme.fake.state.runs[run].cancelled is True
+
+
+async def test_an_organiser_cancels_a_grading_that_reads_as_stuck(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    row = await _submit(setup, acme, entered)
+    run = RunId(str((await _row(setup, row.id)).run_id))
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    clock.advance(MACHINE_WAIT)
+
+    cancelled = await gradings.cancel(setup, manager, row.id)
+
+    assert cancelled.status == GradingStatus.CANCELLED
+    assert acme.fake.state.runs[run].cancelled is True

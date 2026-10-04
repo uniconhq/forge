@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Protocol
 
-from forge.domain.grading import CiAnswer, CiRequest, ConfigAsk, GradingRun, RunPlaces
+from forge.domain.grading import CiAnswer, CiRequest, ConfigAsk, GradingRun, RunPlaces, RunState
 from forge.domain.identity import AsOrgAccount
 from forge.domain.ids import RunId, TaskId
 
@@ -53,6 +53,15 @@ class GradingPort(Protocol):
 
     async def cancel_run(self, run: RunId) -> None:
         """Stop the run at the CI. `NotFound` when there is no such run."""
+        ...
+
+    async def run_state(self, run: RunId) -> RunState:
+        """Where the CI has the run, as the CI's administrator, told by the
+        queue it is in rather than its status, which is the same for a run
+        waiting for a machine and a run the CI dropped. A run the CI does not
+        know is `lost`. The implementation may answer from a view of the
+        queue a few seconds old.
+        """
         ...
 
     async def read_config_request(self, request: CiRequest, *, now: datetime) -> ConfigAsk:
