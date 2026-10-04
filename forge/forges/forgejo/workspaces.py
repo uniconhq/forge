@@ -28,6 +28,7 @@ from forge.domain.publications import Publication, read_note
 from forge.domain.roles import Scope
 from forge.domain.submissions import Submitted, write_note
 from forge.domain.submissions import read_note as read_submission_note
+from forge.domain.uploads import Door
 from forge.forges.forgejo.repos import Repos
 from forge.forges.forgejo.teams import Teams
 from forge.forges.forgejo.users import Users
@@ -161,6 +162,12 @@ class ForgejoWorkspaces:
             path,
             at=f"{SUBMISSION_PREFIX}{number}",
             max_size=max_size,
+        )
+
+    async def download(self, as_: Identity, submission: SubmissionId, path: str) -> Door:
+        ref, task_name, number = parse_submission(submission)
+        return await self._repos.media_door(
+            as_, ref.org, ref.submission_repo(task_name), path, at=f"{SUBMISSION_PREFIX}{number}"
         )
 
     async def publish(self, task: TaskId, at: VersionId, note: str) -> PublicationId:

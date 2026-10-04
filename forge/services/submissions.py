@@ -40,10 +40,11 @@ saw fail, and submitting again finishes it.
 A contestant reads their own submissions back, newest first, each with its
 grading at every stage as that stage's `show` allows: status only, status
 and metrics, or everything. `files` gives the inputs a submission was made
-with, and `file` one of its files, so a page can put them back into the
-upload panel, of at most `FILE_READ_MAX` bytes (`file_too_large`), so a
-big file is never held in memory whole. `run_log` gives the log of a grading's run where the stage
-shows everything, of at most `RUN_LOG_MAX` bytes (`log_too_large`).
+with, and `download` the door to one of its files: where the proxy reads it
+from the forge and streams it to the person, so its bytes, two gigabytes or
+two, never pass through the platform. `run_log` gives the log of a grading's
+run where the stage shows everything, of at most `RUN_LOG_MAX` bytes
+(`log_too_large`).
 
 What the store or the forge says when it fails goes to the log, and the
 contestant is told only that it did not answer, refused the platform, or
@@ -66,7 +67,6 @@ from forge.domain import submissions as rules
 from forge.domain.definitions import SUBMISSION_CEILING, Show
 from forge.domain.errors import (
     Conflict,
-    FileTooLarge,
     Forbidden,
     InvalidIdempotencyKey,
     LogTooLarge,
@@ -86,7 +86,7 @@ from forge.domain.identity import AsUser
 from forge.domain.ids import SubmissionId, TaskId, WorkspaceId
 from forge.domain.sessions import Session
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
-from forge.domain.uploads import UploadStatus, pointer_text
+from forge.domain.uploads import Door, UploadStatus, pointer_text
 from forge.log import get_logger
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
@@ -106,7 +106,8 @@ FORGE_UNAVAILABLE = "The forge did not answer; try again in a moment."
 FORGE_MISCONFIGURED = "The forge refused the platform's own registration."
 FORGE_REFUSED = "The forge refused the submission; submit again, or tell the organisers."
 SUBMISSION_FILE = rules.SUBMISSION_FILE
-FILE_READ_MAX = 64 * 1024 * 1024
+DOCUMENT_MAX = 1024 * 1024
+"""The most of a `submission.json` read; the platform writes a few hundred bytes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,9 +258,11 @@ async def files(ctx: Context, session: Session, task: TaskId, number: int) -> Su
 
 
 @action
-async def file(ctx: Context, session: Session, task: TaskId, number: int, path: str) -> bytes:
-    """One file of one of the signed-in person's own submissions, by the path
-    `files` names it by.
+async def download(ctx: Context, session: Session, task: TaskId, number: int, path: str) -> Door:
+    """Where one file of one of the signed-in person's own submissions is
+    read, by the path `files` names it by, and what to present there, for the
+    proxy to fetch it and stream it to them. `NotFound` for a submission that
+    is not theirs or a path it does not name.
     """
     submission, user = await _own(ctx, session, task, number)
     content = await _file(ctx, user, submission, SUBMISSION_FILE)
@@ -275,7 +278,9 @@ async def file(ctx: Context, session: Session, task: TaskId, number: int, path: 
     }
     if path not in named:
         raise NotFound("The submission has no such file.")
-    return await _file(ctx, user, submission, path)
+    door = await ctx.forge.workspaces.download(user, submission, path)
+    log.info("submissions.download_opened", submission=submission, user_id=user.user_id)
+    return door
 
 
 @action
@@ -654,16 +659,9 @@ async def _own(
 async def _file(ctx: Context, user: AsUser, submission: SubmissionId, path: str) -> bytes:
     try:
         return await ctx.forge.workspaces.read_submission_file(
-            user, submission, path, max_size=FILE_READ_MAX
+            user, submission, path, max_size=DOCUMENT_MAX
         )
-    except Rejected as exc:
-        log.warning("submissions.file_too_large", submission=submission, detail=exc.detail)
-        raise FileTooLarge(
-            f"The file is larger than the {FILE_READ_MAX} bytes read back; choose it again "
-            "from your own copy.",
-            limit=FILE_READ_MAX,
-        ) from None
-    except (NotFound, Forbidden) as exc:
+    except (NotFound, Forbidden, Rejected) as exc:
         log.warning("submissions.file_unreadable", submission=submission, detail=exc.detail)
         raise NotFound("The submission has no such file.") from exc
     except PortError as exc:

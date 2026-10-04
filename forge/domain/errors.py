@@ -355,14 +355,6 @@ class LogTooLarge(ServiceError):
     code = "log_too_large"
 
 
-class FileTooLarge(ServiceError):
-    """A submitted file is larger than the platform reads back to the person
-    who submitted it. `limit` is the most read, in bytes.
-    """
-
-    code = "file_too_large"
-
-
 class InvalidIdempotencyKey(ServiceError):
     """A submit's idempotency key is missing or not the short random text a
     browser makes once per submit.
