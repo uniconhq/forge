@@ -1,6 +1,6 @@
 """Grading runs at the CI: activating a task once, then starting runs as the
-org account the caller hands in, finding one already started, reading and
-cancelling runs as the CI's administrator, and the two things the CI and
+org account the caller hands in, cancelling runs as the CI's administrator,
+and the two things the CI and
 the platform say to each other about a run: the CI's signed question of
 what a run is, and the answer with its steps. The CI admits only accounts
 it was told about, so the org account's user there is made by the CI's
@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Protocol
 
-from forge.domain.grading import CiAnswer, CiRequest, ConfigAsk, GradingRun, Run, RunPlaces
+from forge.domain.grading import CiAnswer, CiRequest, ConfigAsk, GradingRun, RunPlaces
 from forge.domain.identity import AsOrgAccount
 from forge.domain.ids import RunId, TaskId
 
@@ -29,6 +29,13 @@ class GradingPort(Protocol):
         """
         ...
 
+    async def deactivate(self, as_: AsOrgAccount, task: TaskId) -> None:
+        """Switch the CI off for the task and have it forget the task, as the
+        task's org account. A task the CI does not know changes nothing.
+        `Forbidden` when `as_` is another org's account.
+        """
+        ...
+
     def run_variables(self, run: GradingRun) -> Mapping[str, str]:
         """The variables `run` is started with, the same every time for the
         same run. No call is made.
@@ -38,24 +45,10 @@ class GradingPort(Protocol):
     async def start_run(self, as_: AsOrgAccount, run: GradingRun) -> RunId:
         """Start `run` at the CI as the task's org account, with its variables,
         pinned to the machines carrying its label. `Rejected` when the CI
-        answers without a run, which runs nothing, though the CI may keep a
-        run that ended at once; `Unavailable` when no answer came back, which
-        may have started one; `NotFound` when the
-        task is not activated at the CI; `Forbidden` when `as_` is another
-        org's account.
+        answers without a run; `Unavailable` when no answer came back;
+        `NotFound` when the task is not activated at the CI; `Forbidden` when
+        `as_` is another org's account.
         """
-        ...
-
-    async def find_run(self, as_: AsOrgAccount, run: GradingRun, *, since: datetime) -> Run | None:
-        """The newest run of the task started since `since` with `run`'s
-        grading id, with where it stands, or none, as the task's org account.
-        This is how a start whose answer was lost is found before another is
-        sent.
-        """
-        ...
-
-    async def read_run(self, run: RunId) -> Run:
-        """`NotFound` when there is no such run."""
         ...
 
     async def cancel_run(self, run: RunId) -> None:
@@ -83,8 +76,8 @@ class GradingPort(Protocol):
         ...
 
     def run_places(self, run: GradingRun) -> RunPlaces:
-        """What the run's envelope says of where it is at the forge and on
-        the machine. No call is made.
+        """Where the run is at the forge and on the machine, which the CI's
+        answer and the envelope are made from. No call is made.
         """
         ...
 
@@ -94,15 +87,15 @@ class GradingPort(Protocol):
         """
         ...
 
+    async def delete_ci_user(self, username: str) -> None:
+        """Remove the account's user at the CI, as the CI's administrator. A
+        user not there changes nothing.
+        """
+        ...
+
     async def mint_ci_token(self, username: str, forge_password: str) -> str:
         """Sign the account in at the CI through the host, unattended, with
         its password at the host, and mint the credential the CI takes from
         it afterwards. `Forbidden` when the host refuses the password.
-        """
-        ...
-
-    async def ci_user_is_alive(self, as_: AsOrgAccount) -> bool:
-        """Whether the CI still answers the org account under its credential.
-        The call itself is what keeps the account's copy at the CI fresh.
         """
         ...

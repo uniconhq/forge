@@ -17,7 +17,8 @@ from sqlalchemy import select
 from forge.db.tables import Contestant, OrgAccount
 from forge.domain.errors import ContestantConflict, Forbidden, NotFound, SoleAdmin
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import ContestId, OrgName
+from forge.domain.ids import ContestId, OrgId
+from forge.domain.names import ScopeNames
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.forges.fake import FakeForge
 from forge.log import JsonFormatter
@@ -26,7 +27,7 @@ from forge.runtime.setup import Setup
 from forge.services import access, org_accounts, roles, sessions
 from forge.services.access import Organiser
 from forge.services.roles import Holder
-from forge.testing import logged
+from forge.testing import logged, name_places
 
 ACME = Scope("acme")
 SPRING = Scope("acme", "spring")
@@ -35,17 +36,18 @@ AUTUMN = Scope("acme", "autumn")
 
 
 @pytest.fixture
-async def acme(fake: FakeForge) -> FakeForge:
+async def acme(fake: FakeForge, setup: Setup) -> FakeForge:
     """The org acme with its contests spring and autumn and spring's task sum,
     and carol and dan as two more people besides ada and bob.
     """
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
-    await fake.orgs.create_roles(OrgName("acme"))
-    spring = await fake.content.create_contest(OrgName("acme"), "spring", {})
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
+    await fake.orgs.create_roles(OrgId("acme"))
+    spring = await fake.content.create_contest(OrgId("acme"), "spring", {})
     await fake.content.create_task(spring, "sum", {})
-    await fake.content.create_contest(OrgName("acme"), "autumn", {})
+    await fake.content.create_contest(OrgId("acme"), "autumn", {})
     fake.add_user(9, "carol")
     fake.add_user(10, "dan")
+    await name_places(setup, "acme", "acme/spring", "acme/spring/sum", "acme/autumn")
     fake.reset_calls()
     return fake
 
@@ -69,9 +71,9 @@ async def _register(ctx: Context, user_id: int, contest: str, status: str) -> No
 
 async def _service_account(ctx: Context, fake: FakeForge, org: str) -> int:
     """The org's service account, made at the fake and recorded in its row."""
-    await org_accounts.ensure_row(ctx, OrgName(org))
+    await org_accounts.ensure_row(ctx, OrgId(org))
     account = fake.add_user(20, f"unicon-ci-{org}")
-    row = (await ctx.db.execute(select(OrgAccount).where(OrgAccount.org_name == org))).scalar_one()
+    row = (await ctx.db.execute(select(OrgAccount).where(OrgAccount.org_id == org))).scalar_one()
     row.forge_user_id = account.id
     await ctx.db.flush()
     return account.id
@@ -106,9 +108,14 @@ async def test_holders_are_everyone_with_a_role_there_each_once_at_their_highest
     found = await roles.holders(ctx, organiser, SPRING)
 
     assert found == (
-        Holder(user=acme.users[7], role=Role.ADMIN, at=ACME),
-        Holder(user=acme.users[8], role=Role.MANAGER, at=SPRING),
-        Holder(user=acme.users[9], role=Role.OBSERVER, at=ACME),
+        Holder(user=acme.users[7], role=Role.ADMIN, at=ACME, at_names=ScopeNames("acme")),
+        Holder(
+            user=acme.users[8],
+            role=Role.MANAGER,
+            at=SPRING,
+            at_names=ScopeNames("acme", "spring"),
+        ),
+        Holder(user=acme.users[9], role=Role.OBSERVER, at=ACME, at_names=ScopeNames("acme")),
     )
 
 
@@ -545,7 +552,7 @@ async def test_a_contestant_elsewhere_may_be_given_a_role(ctx: Context, acme: Fa
 async def test_a_role_at_the_contest_its_tasks_or_its_org_stands_in_the_way_of_registering(
     ctx: Context, acme: FakeForge, scope: Scope, expected: bool
 ) -> None:
-    await acme.orgs.create_org(OrgName("other"), description="Other")
+    await acme.orgs.create_org(OrgId("other"), description="Other")
     await acme.orgs.grant_role(8, scope, Role.OBSERVER)
 
     assert await roles.holds_role_in_contest(ctx, 8, ContestId("acme/spring")) is expected

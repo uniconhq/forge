@@ -8,23 +8,23 @@ from typing import Protocol
 
 from forge.domain.content import Change, ConflictToken, File, Files, FileSet, TreeEntry
 from forge.domain.identity import Identity
-from forge.domain.ids import ContestId, OrgName, TaskId, VersionId
+from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
 
 ContentPlace = ContestId | TaskId
 
 
 class ContentPort(Protocol):
-    async def create_contest(self, org: OrgName, name: str, files: Files) -> ContestId:
-        """Make a contest under the org with its starter files, as the
-        platform, and nothing else: `secure` gives it its roles and its
-        protection. `Conflict` when the name is taken.
+    async def create_contest(self, org: OrgId, key: str, files: Files) -> ContestId:
+        """Make the contest filed under `key` in the org with its starter
+        files, as the platform, and nothing else: `secure` gives it its roles
+        and its protection. `Conflict` when the key is taken.
         """
         ...
 
-    async def create_task(self, contest: ContestId, name: str, files: Files) -> TaskId:
-        """Make a task under the contest with its starter files, as the
-        platform, and nothing else: `secure` gives it its roles and its
-        protection. `Conflict` when the name is taken.
+    async def create_task(self, contest: ContestId, key: str, files: Files) -> TaskId:
+        """Make the task filed under `key` in the contest with its starter
+        files, as the platform, and nothing else: `secure` gives it its roles
+        and its protection. `Conflict` when the key is taken.
         """
         ...
 
@@ -37,16 +37,24 @@ class ContentPort(Protocol):
         """
         ...
 
+    async def delete_place(self, place: ContentPlace) -> None:
+        """Remove the contest or task, as the platform: its files and history
+        and the roles of its own that `secure` made. A contest's roles reach
+        its tasks too, so this is for a contest with no tasks. A place not
+        there changes nothing.
+        """
+        ...
+
     async def exists(self, place: ContentPlace) -> bool:
         """Whether the contest or task is there, read as the platform."""
         ...
 
-    async def list_contests(self, as_: Identity, org: OrgName) -> tuple[ContestId, ...]:
-        """Every contest in the org the identity may read, by name."""
+    async def list_contests(self, as_: Identity, org: OrgId) -> tuple[ContestId, ...]:
+        """Every contest in the org the identity may read."""
         ...
 
     async def list_tasks(self, as_: Identity, contest: ContestId) -> tuple[TaskId, ...]:
-        """Every task in the contest the identity may read, by name."""
+        """Every task in the contest the identity may read."""
         ...
 
     async def read_file(

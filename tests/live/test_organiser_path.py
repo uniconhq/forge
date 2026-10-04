@@ -23,8 +23,9 @@ import httpx
 import pytest
 
 from forge.domain.errors import NotFound
-from forge.domain.ids import ContestId, OrgName, TaskId
-from forge.domain.registration import Status, WorkspaceState
+from forge.domain.ids import ContestId, OrgId, TaskId
+from forge.domain.names import Named, UserOwner
+from forge.domain.registration import Status
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.runtime.setup import Setup
@@ -39,9 +40,7 @@ from forge.services import (
     sessions,
     tasks,
 )
-from forge.services.provisioning import Record
 from forge.services.publications import Draft, Published
-from forge.testing import tick
 from tests.live.conftest import (
     CI_PUBLIC_URL,
     LIVE,
@@ -88,11 +87,6 @@ def contestant(admin: httpx.Client, stamp: str) -> Iterator[dict[str, Any]]:
     delete_user(admin, made["login"])
 
 
-async def _ready(setup: Setup, record: Record | None) -> None:
-    assert record is not None
-    assert (record.status, record.error) == ("ready", None), record
-
-
 async def _signed_in(setup: Setup, admin: httpx.Client, person: dict[str, Any]) -> Session:
     async with setup.unit_of_work() as ctx:
         return await sessions.create(
@@ -129,20 +123,14 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
 ) -> None:
     session = await _signed_in(live_setup, admin, person)
 
-    await orgs.create(live_setup, session, OrgName(org), description="Live organiser path")
-    await tick(live_setup, "provisioning")
-    await _ready(live_setup, await orgs.status(live_setup, session, OrgName(org)))
+    await orgs.create(live_setup, session, OrgId(org), description="Live organiser path")
 
     organiser = await access.organiser(live_setup, session, Scope(org), Role.MANAGER)
-    await contests.create(live_setup, organiser, OrgName(org), "spring", title="Spring")
-    await tick(live_setup, "provisioning")
+    await contests.create(live_setup, organiser, OrgId(org), "spring", title="Spring")
     contest = ContestId(f"{org}/spring")
-    await _ready(live_setup, await contests.status(live_setup, organiser, contest))
     await tasks.create(live_setup, organiser, contest, "sum", title="Sum of Two")
-    await tick(live_setup, "provisioning")
     task = TaskId(f"{org}/spring/sum")
-    await _ready(live_setup, await tasks.status(live_setup, organiser, task))
-    assert await tasks.list(live_setup, organiser, contest) == (task,)
+    assert await tasks.list(live_setup, organiser, contest) == (Named(task, "sum"),)
 
     starter = await files.read(live_setup, organiser, task, "task.yaml")
     saved = await files.write(
@@ -155,7 +143,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     )
 
     assert isinstance(saved, Published)
-    assert (saved.number, saved.grading_changed, saved.activation) == (1, False, "done")
+    assert (saved.number, saved.grading_changed) == (1, False)
     repo = f"/api/v1/repos/{org}/spring.sum.task"
     tags = {tag["name"]: tag for tag in admin.get(f"{repo}/tags").json()}
     assert set(tags) == {"published/1"}
@@ -204,16 +192,18 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     registered = await contestants.register(live_setup, entrant, contest)
     assert registered.status is Status.PENDING
     approved = await contestants.approve(live_setup, organiser, contest, int(contestant["id"]))
-    assert approved.workspace is WorkspaceState.PREPARING
-    for _ in range(2):
-        await tick(live_setup, "provisioning")
+    assert approved.status is Status.APPROVED
 
-    login = str(contestant["login"])
-    desk, place = f"spring.{login.lower()}.desk", f"spring.sum.{login.lower()}.sub"
-    assert _permission(admin, org, desk, login) == "write"
+    login, owner = str(contestant["login"]), f"u{contestant['id']}"
+    place = f"spring.sum.{owner}.sub"
+    assert admin.get(f"/api/v1/repos/{org}/{place}").status_code == 404
+    workspace = live_setup.forge.workspaces.workspace_of(contest, UserOwner(int(contestant["id"])))
+    await live_setup.forge.workspaces.open_submission_place(
+        workspace, task, [int(contestant["id"])]
+    )
     assert _permission(admin, org, place, login) == "write"
     mine = await contestants.mine(live_setup, entrant, contest)
-    assert mine is not None and mine.workspace is WorkspaceState.READY
+    assert mine is not None and mine.status is Status.APPROVED
     home = await contest_home.home(live_setup, entrant, contest)
     assert [entry.task for entry in home.tasks] == [task]
     page = await contest_home.task(live_setup, entrant, task)
@@ -221,18 +211,6 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     assert page.statement == public.statement
     assert page.limits.submissions == 50
 
-    await tasks.create(live_setup, organiser, contest, "later", title="Later")
-    await tick(live_setup, "provisioning")
-    later = TaskId(f"{org}/spring/later")
-    starter = await files.read(live_setup, organiser, later, "statement.md")
-    published = await files.write(
-        live_setup, organiser, later, "statement.md", b"Later.\n", starter.token
-    )
-    assert isinstance(published, Published)
-    await tick(live_setup, "provisioning")
-    assert _permission(admin, org, f"spring.later.{login.lower()}.sub", login) == "write"
-
     removed = await contestants.remove(live_setup, organiser, contest, int(contestant["id"]))
     assert removed.status is Status.REMOVED
-    for repo in (desk, place, f"spring.later.{login.lower()}.sub"):
-        assert _permission(admin, org, repo, login) == "none"
+    assert _permission(admin, org, place, login) == "none"

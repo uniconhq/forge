@@ -23,13 +23,12 @@ from forge.domain.submissions import (
     write_note,
 )
 from forge.domain.uploads import (
-    PART_SIZE,
-    SINGLE_REQUEST_MAX,
+    POINTER_MAX,
     accepts,
+    digest_problem,
     filename_problem,
-    in_one_request,
-    part_size,
-    parts_of,
+    is_pointer,
+    pointer_text,
 )
 from forge.domain.yaml_models import InvalidDefinition
 from forge.testing import PRIMITIVES
@@ -39,7 +38,6 @@ BASE = f"""\
 name: unicon/probe
 version: v1
 image: ghcr.io/uniconhq/primitive-probe@{DIGEST}
-entrypoint: [/probe]
 limits: {{time_ms: 1, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1}}
 """
 
@@ -71,10 +69,10 @@ def test_the_three_primitives_read_as_the_contract_declares_them() -> None:
             "limits_from.time_ms.input",
         ),
         ("outputs:\n  kind: {type: list}\n", "outputs.kind.type"),
-        ("schema_version: 2\n", "schema_version"),
+        ("schema_version: 3\n", "schema_version"),
         ("colour: red\n", "colour"),
     ],
-    ids=["enum-without-values", "values-on-text", "limit-from-text", "unknown-type", "v2", "key"],
+    ids=["enum-without-values", "values-on-text", "limit-from-text", "unknown-type", "v3", "key"],
 )
 def test_a_declaration_that_breaks_the_contract_is_refused_at_its_path(
     extra: str, path: str
@@ -85,7 +83,7 @@ def test_a_declaration_that_breaks_the_contract_is_refused_at_its_path(
 
 
 def test_a_declaration_names_its_image_by_digest_and_may_say_its_version() -> None:
-    assert parse_primitive(BASE + "schema_version: 3\n").schema_version == 3
+    assert parse_primitive(BASE + "schema_version: 4\n").schema_version == 4
     local = BASE.replace("ghcr.io/uniconhq", "localhost:5000")
     assert parse_primitive(local).image.startswith("localhost:5000/")
     with pytest.raises(InvalidDefinition) as refused:
@@ -106,6 +104,7 @@ def test_a_declaration_names_its_image_by_digest_and_may_say_its_version() -> No
         ("what?.py", False),
         (" main.py", False),
         ("x" * 256, False),
+        (".gitattributes", False),
     ],
 )
 def test_a_file_name_is_one_plain_name(name: str, fine: bool) -> None:
@@ -122,17 +121,41 @@ def test_accept_takes_endings_and_content_types() -> None:
     assert not accepts(("text/plain",), "x.txt", "text/html")
 
 
-def test_a_large_file_goes_in_parts_of_exact_lengths() -> None:
-    assert in_one_request(SINGLE_REQUEST_MAX) and not in_one_request(SINGLE_REQUEST_MAX + 1)
-    size = SINGLE_REQUEST_MAX + 5
-    parts = parts_of(size)
-    whole = SINGLE_REQUEST_MAX // PART_SIZE
-    assert [part.number for part in parts] == list(range(1, whole + 2))
-    assert [part.length for part in parts] == [PART_SIZE] * whole + [5]
-    assert sum(part.length for part in parts) == size
-    huge = 100 * 1024**3
-    assert part_size(huge) > PART_SIZE and len(parts_of(huge)) <= 1000
-    assert sum(part.length for part in parts_of(huge)) == huge
+def test_a_pointer_is_the_three_lines_git_lfs_reads() -> None:
+    digest, size = "b" * 64, 4096
+    written = pointer_text(digest, size)
+    assert written == (
+        b"version https://git-lfs.github.com/spec/v1\n"
+        b"oid sha256:" + digest.encode() + b"\n"
+        b"size 4096\n"
+    )
+    assert is_pointer(written)
+
+
+def test_what_counts_as_a_pointer_is_what_a_checkout_would_act_on() -> None:
+    # Anything a checkout would resolve against the org's shared store,
+    # however malformed after its first line, has to be refused as typed
+    # content; what git-lfs would treat as an ordinary file does not.
+    assert is_pointer(b"version https://git-lfs.github.com/spec/v1\nnonsense\n")
+    assert is_pointer(b"version https://hawser.github.com/spec/v1\n")
+    assert is_pointer(b"  version https://git-lfs.github.com/spec/v1  \noid sha256:x\n")
+    assert is_pointer(b"\n\nversion https://git-lfs.github.com/spec/v1\noid sha256:x\n")
+    assert is_pointer(b"version http://git-media.io/v/2\noid sha256:x\n")
+    assert is_pointer(
+        b"version https://git-lfs.github.com/spec/v1\noid sha256:x\nsize 1\n" + b" " * POINTER_MAX
+    )
+    assert not is_pointer(b"print('hello')\n")
+    assert not is_pointer(b"version 1\n")
+    assert not is_pointer(b"# version https://git-lfs.github.com/spec/v1\n")
+    assert not is_pointer(b" " * POINTER_MAX + b"version https://git-lfs.github.com/spec/v1\n")
+
+
+def test_a_digest_is_lowercase_hex_of_the_right_length() -> None:
+    assert digest_problem("a" * 64) is None
+    assert digest_problem("A" * 64) is not None
+    assert digest_problem("a" * 63) is not None
+    assert digest_problem("g" * 64) is not None
+    assert digest_problem("") is not None
 
 
 TASK = parse_task(
@@ -169,7 +192,7 @@ def test_a_submission_lays_out_its_files_and_names_them_in_submission_json() -> 
         "files/weights/b.bin": W1,
     }
     assert json.loads(layout.document) == {
-        "schema_version": 3,
+        "schema_version": 4,
         "inputs": {
             "submission": {"files": ["files/submission/main.py"], "language": "cpp"},
             "weights": {"files": ["files/weights/a.bin", "files/weights/b.bin"]},
@@ -265,17 +288,16 @@ def test_a_key_is_short_random_text_and_its_note_reads_back() -> None:
     assert read_note("idempotency_key: 7") is None
 
 
-def test_a_gradings_secrets_are_its_own_runs_and_only_the_hash_is_kept() -> None:
+def test_a_gradings_secrets_are_its_own_and_only_the_hash_is_kept() -> None:
     key = b"\x01" * 32
     one, two = uuid.uuid4(), uuid.uuid4()
 
-    token = callback_token(key, one, run=0)
-    assert token == callback_token(key, one, run=0)
-    assert token != callback_token(key, two, run=0)
-    assert token != callback_token(key, one, run=1)
-    assert token != callback_token(b"\x02" * 32, one, run=0)
-    assert token != envelope_key(key, one, run=0)
-    assert envelope_key(key, one, run=0) != envelope_key(key, one, run=1)
+    token = callback_token(key, one)
+    assert token == callback_token(key, one)
+    assert token != callback_token(key, two)
+    assert token != callback_token(b"\x02" * 32, one)
+    assert token != envelope_key(key, one)
+    assert envelope_key(key, one) != envelope_key(key, two)
     assert "=" not in token and len(token) == 43
     assert len(token_hash(token)) == 32
     assert token_hash(token) != token.encode()

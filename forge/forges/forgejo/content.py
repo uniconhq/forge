@@ -3,15 +3,15 @@ org, made bare and then secured, read and written through the contents API as
 the calling identity. Securing a repository attaches the role teams of its
 contest and, for a task, of the task itself, refuses force-pushes to its
 default branch, and for a task reserves the `published/` tags for the
-platform account; each is checked first, so the nightly pass can run it over
-every repository and put back only what is missing.
+platform account; each is checked first and only what is missing is made.
+Deleting one removes its own role teams and then the repository.
 """
 
 from collections.abc import Mapping
 
 from forge.domain.content import Change, ConflictToken, File, Files, FileSet, TreeEntry
 from forge.domain.identity import PLATFORM, Identity
-from forge.domain.ids import ContestId, OrgName, TaskId, VersionId
+from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
 from forge.domain.roles import Scope
 from forge.forges.forgejo.repos import Repos
 from forge.forges.forgejo.teams import Teams
@@ -33,14 +33,14 @@ class ForgejoContent:
         self._repos = repos
         self._teams = teams
 
-    async def create_contest(self, org: OrgName, name: str, files: Files) -> ContestId:
-        ref = ContestRef(org, name)
+    async def create_contest(self, org: OrgId, key: str, files: Files) -> ContestId:
+        ref = ContestRef(org, key)
         await self._repos.create(PLATFORM, org, ref.repo, files, private=True)
         return ref.id
 
-    async def create_task(self, contest: ContestId, name: str, files: Files) -> TaskId:
+    async def create_task(self, contest: ContestId, key: str, files: Files) -> TaskId:
         parent = parse_contest(contest)
-        ref = TaskRef(parent.org, parent.contest, name)
+        ref = TaskRef(parent.org, parent.contest, key)
         await self._repos.create(PLATFORM, parent.org, ref.repo, files, private=True)
         return ref.id
 
@@ -53,10 +53,19 @@ class ForgejoContent:
             put_back += await self._repos.reserve_versions(owner, name, PUBLISHED_PREFIX)
         return put_back
 
+    async def delete_place(self, place: ContentPlace) -> None:
+        """The place's own role teams first, the reverse of the order they
+        were made in, then its repository, which takes its protections and
+        its attachment to the teams of the contest above it.
+        """
+        owner, name = location(place)
+        await self._teams.delete_scope(_scope(place))
+        await self._repos.delete(owner, name)
+
     async def exists(self, place: ContentPlace) -> bool:
         return await self._repos.exists(*location(place))
 
-    async def list_contests(self, as_: Identity, org: OrgName) -> tuple[ContestId, ...]:
+    async def list_contests(self, as_: Identity, org: OrgId) -> tuple[ContestId, ...]:
         names = sorted(str(repo["name"]) for repo in await self._repos.under(org, as_))
         return tuple(
             ContestRef(org, name.removesuffix(f".{CONTEST}")).id

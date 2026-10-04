@@ -47,6 +47,14 @@ def test_the_sign_up_url_is_the_hosts_while_sign_up_is_open(setup: Setup, fake: 
     assert sign_in.sign_up_url(setup=setup) is None
 
 
+def test_the_forge_url_is_the_hosts_whether_or_not_sign_up_is_open(
+    setup: Setup, fake: FakeForge
+) -> None:
+    assert sign_in.forge_url(setup=setup) == "http://forge.test"
+    fake.identity.sign_ups_open = False
+    assert sign_in.forge_url(setup=setup) == "http://forge.test"
+
+
 async def test_a_real_answer_produces_a_session_for_the_right_user(
     setup: Setup, ctx: Context, fake: FakeForge
 ) -> None:

@@ -8,25 +8,25 @@ from dataclasses import dataclass
 
 from forge.domain.errors import Forbidden, SessionExpired, Unavailable
 from forge.domain.identity import AsUser, User
-from forge.domain.roles import RoleGrant
+from forge.domain.roles import HeldRole
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import sessions
+from forge.services import names, sessions
 
 log = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
 class Me:
-    """The signed-in user and their roles at every scope. `degraded` is set
-    when the host did not answer and the identity comes from the session
-    alone.
+    """The signed-in user and their roles at every scope, each with the names
+    of where it is held. `degraded` is set when the host did not answer and
+    the identity comes from the session alone.
     """
 
     user: User
-    roles: tuple[RoleGrant, ...]
+    roles: tuple[HeldRole, ...]
     degraded: bool
 
 
@@ -45,7 +45,7 @@ async def whoami(ctx: Context, session: Session) -> Me:
         roles = await ctx.forge.orgs.roles_of(AsUser(user.id, credential))
     except Unavailable:
         return Me(user=user, roles=(), degraded=True)
-    return Me(user=user, roles=roles, degraded=False)
+    return Me(user=user, roles=await names.held_roles(ctx, roles), degraded=False)
 
 
 @action

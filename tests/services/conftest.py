@@ -1,21 +1,24 @@
-"""What the organiser-path tests share: the org acme provisioned through the
-poller with ada as its admin and its service account made, the built-in
+"""What the organiser-path tests share: the org acme made with ada as its
+admin and its service account made, the built-in
 workflow `unicon/classic@v1` public at the fake as bootstrap makes it, a
-contest and a task made the way an organiser makes them, and a checked
-`Organiser` for anyone. For the contestant's side: a session for anyone,
+contest and a task made the way an organiser makes them, a checked
+`Organiser` for anyone, and what the fake holds, to compare before and after
+a create that failed. For the contestant's side: a session for anyone,
 the contest's settings written as a test needs them, a task made and one
 published by a save of its starter, a contestant entered in a running
-contest with their place to submit made, and a file uploaded as a browser
-uploads one.
+contest, and a file uploaded as a browser uploads one.
 """
 
+import copy
+import hashlib
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
 from forge.domain.content import Edit
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import ContestId, OrgName, TaskId
+from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.roles import Role, Scope, task_id_of
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
@@ -32,9 +35,9 @@ from forge.services import (
 )
 from forge.services.access import Organiser
 from forge.services.publications import Published
-from forge.testing import seed_classic, tick
+from forge.testing import seed_classic
 
-ACME = OrgName("acme")
+ACME = OrgId("acme")
 SPRING = ContestId("acme/spring")
 SUM = TaskId("acme/spring/sum")
 
@@ -64,6 +67,29 @@ async def organiser(
     return await access.organiser(setup, await signed_in(setup, fake, user_id), scope, role)
 
 
+def forge_state(fake: FakeForge) -> dict[str, Any]:
+    """Everything a create could make or change at the fake forge and CI:
+    each org with its roles, labels, service account's place and event push,
+    the users, the files of every place, the accounts' credentials at the
+    forge and the CI, the CI's users and the tasks it has activated.
+    """
+    state = fake.state
+    return copy.deepcopy(
+        {
+            "orgs": {
+                name: (org.roles, org.labels, org.account_members, org.event_push)
+                for name, org in state.orgs.items()
+            },
+            "users": state.users,
+            "places": {key: repo.files for key, repo in state.repos.items()},
+            "tokens": state.tokens,
+            "ci_users": state.ci_users,
+            "ci_tokens": state.ci_tokens,
+            "activated": state.activated,
+        }
+    )
+
+
 async def write_contest(fake: FakeForge, content: str, contest: ContestId = SPRING) -> None:
     """The contest's `contest.yaml` replaced by `content`, as an admin's save
     would leave it; acme/spring's unless another is named.
@@ -80,9 +106,8 @@ async def write_contest(fake: FakeForge, content: str, contest: ContestId = SPRI
 
 
 async def make_task(setup: Setup, acme: Acme, name: str) -> TaskId:
-    """Another task of acme/spring, made through the poller and not yet saved."""
+    """Another task of acme/spring, made and not yet saved."""
     await tasks.create(setup, acme.ada, SPRING, name, title=name.title())
-    await tick(setup, "provisioning")
     return task_id_of(Scope("acme", "spring", name))
 
 
@@ -104,7 +129,7 @@ async def publish(setup: Setup, acme: Acme, task: TaskId, extra: bytes = b"") ->
 
 @dataclass(frozen=True, slots=True)
 class Acme:
-    """The provisioned org, with ada (7) its admin as an `Organiser`."""
+    """The org, with ada (7) its admin as an `Organiser`."""
 
     fake: FakeForge
     ada: Organiser
@@ -112,8 +137,7 @@ class Acme:
 
 @pytest.fixture
 async def acme(setup: Setup, fake: FakeForge) -> Acme:
-    record = await orgs.create_by_operator(setup, ACME, description="Acme", admin_username="ada")
-    assert record.status == "ready"
+    await orgs.create_by_operator(setup, ACME, description="Acme", admin_username="ada")
     await seed_classic(fake)
     ada = await organiser(setup, fake, 7, Scope("acme"), Role.MANAGER)
     fake.reset_calls()
@@ -122,26 +146,24 @@ async def acme(setup: Setup, fake: FakeForge) -> Acme:
 
 @pytest.fixture
 async def spring(setup: Setup, acme: Acme) -> ContestId:
-    """The contest acme/spring, made through the poller."""
+    """The contest acme/spring."""
     await contests.create(setup, acme.ada, ACME, "spring", title="Spring 2026")
-    await tick(setup, "provisioning")
     acme.fake.reset_calls()
     return SPRING
 
 
 @pytest.fixture
 async def sum_task(setup: Setup, acme: Acme, spring: ContestId) -> TaskId:
-    """The task acme/spring/sum, made through the poller and not yet saved."""
+    """The task acme/spring/sum, made and not yet saved."""
     await tasks.create(setup, acme.ada, spring, "sum", title="Sum of Two")
-    await tick(setup, "provisioning")
     acme.fake.reset_calls()
     return SUM
 
 
 @dataclass(frozen=True, slots=True)
 class Entered:
-    """bob (8), approved in acme/spring, running and public, with his desk
-    open and his place to submit the published task sum made.
+    """bob (8), approved in acme/spring, running and public, with the task
+    sum published. His place to submit it is made at his first submit.
     """
 
     session: Session
@@ -156,8 +178,6 @@ async def entered(setup: Setup, acme: Acme, sum_task: TaskId) -> Entered:
     await contestants.register(setup, bob, SPRING)
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
     await contestants.approve(setup, manager, SPRING, 8)
-    for _ in range(3):
-        await tick(setup, "provisioning")
     acme.fake.reset_calls()
     return Entered(bob, sum_task)
 
@@ -172,12 +192,19 @@ async def upload(
     input: str = "submission",
     filename: str = "main.py",
 ) -> uploads.Upload:
-    """A file uploaded the way a browser does: a slot, the bytes posted with
-    its form, and the upload completed.
+    """A file uploaded the way a browser does: a slot, the bytes sent
+    through the door, and the upload completed.
     """
     slot = await uploads.slot(
-        setup, session, task, input=input, filename=filename, size=len(content)
+        setup,
+        session,
+        task,
+        input=input,
+        filename=filename,
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
     )
-    assert isinstance(slot, uploads.PostSlot)
-    fake.objects.post(slot.fields, content)
+    if not slot.ready:
+        door = await uploads.door(setup, session, slot.id, length=len(content))
+        fake.uploads.send(door.path, door.authorization, content)
     return await uploads.complete(setup, session, task, slot.id)

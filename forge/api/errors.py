@@ -10,6 +10,7 @@ from forge.domain.errors import (
     ContestantConflict,
     ContestFull,
     DomainNotAllowed,
+    FileTooLarge,
     Forbidden,
     FreshSignInRequired,
     GradingClosed,
@@ -50,7 +51,6 @@ from forge.domain.errors import (
     UploadLimit,
     UploadNotReady,
     UploadNotYours,
-    WorkspaceNotReady,
     WrongInviteCode,
     WrongStatus,
 )
@@ -66,6 +66,7 @@ __all__ = [
     "ContestFull",
     "ContestantConflict",
     "DomainNotAllowed",
+    "FileTooLarge",
     "Forbidden",
     "FreshSignInRequired",
     "GradingClosed",
@@ -107,7 +108,6 @@ __all__ = [
     "UploadLimit",
     "UploadNotReady",
     "UploadNotYours",
-    "WorkspaceNotReady",
     "WrongInviteCode",
     "WrongStatus",
 ]

@@ -33,23 +33,26 @@ from forge.domain.definitions import (
 from forge.domain.errors import NotFound
 from forge.domain.identity import User
 from forge.domain.ids import ContestId, TaskId
+from forge.domain.names import ScopeNames
 from forge.domain.registration import Status
-from forge.domain.roles import contest_id_of, task_scope
+from forge.domain.roles import contest_id_of, contest_scope, task_scope
 from forge.domain.sessions import Session
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import contestants, published, release
+from forge.services import contestants, names, published, release
 from forge.services.contestants import Registration
 from forge.services.release import TaskRelease
 
 
 @dataclass(frozen=True, slots=True)
 class ContestSummary:
-    """A contest in the list: what it is called, when it runs, and the
-    person's own registration status, if they have one.
+    """A contest in the list: where it is, by the names of its org and
+    itself, what it is called, when it runs, and the person's own
+    registration status, if they have one.
     """
 
     contest: ContestId
+    where: ScopeNames
     name: str
     start: datetime
     end: datetime
@@ -78,10 +81,12 @@ class ContestHome:
     the contest, which keeps them from entering it; `registration_open` says
     whether the window is open now, and `invite_only` and `asks_code` what
     the register form needs; `deadline` is the contest's end plus the person's own
-    extension, and `now` the server's clock when this was read.
+    extension, and `now` the server's clock when this was read. `where` is
+    the contest by the names of its org and itself.
     """
 
     contest: ContestId
+    where: ScopeNames
     name: str
     description: str
     start: datetime
@@ -129,14 +134,17 @@ async def contests(ctx: Context, session: Session) -> tuple[ContestSummary, ...]
         ).scalars()
     }
     found = []
-    for contest, settings in await published.every_contest(ctx):
+    every = await published.every_contest(ctx)
+    where = await names.places_named(ctx, [contest for contest, _ in every])
+    for contest, settings in every:
         row = rows.get(contest)
-        if rules.contest_visible_to(
+        if contest in where and rules.contest_visible_to(
             settings, has_session=True, is_contestant=_approved(row), is_organiser=False
         ):
             found.append(
                 ContestSummary(
                     contest=contest,
+                    where=where[contest],
                     name=settings.name,
                     start=settings.start,
                     end=settings.end,
@@ -170,6 +178,7 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
     entry = settings.registration
     return ContestHome(
         contest=contest,
+        where=await names.scope_names(ctx, contest_scope(contest)),
         name=settings.name,
         description=settings.description,
         start=settings.start,
@@ -177,7 +186,7 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
         state=settings.state,
         submissions_closed=settings.submissions_closed,
         registration=(
-            await contestants.registration_of(ctx, person.row, _session_user(session))
+            contestants.registration_of(person.row, _session_user(session))
             if person.row is not None
             else None
         ),

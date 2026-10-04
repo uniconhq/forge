@@ -71,13 +71,24 @@ class Repos:
                 raise
         await self.write_files(as_, owner, name, files, message=CREATE_MESSAGE)
 
+    async def delete(self, owner: str, name: str) -> None:
+        """Delete the repository, as the platform, with everything in it. One
+        not there changes nothing.
+        """
+        try:
+            await self._http.call(PLATFORM, "DELETE", f"/api/v1/repos/{owner}/{name}")
+        except NotFound:
+            return
+
     async def protect_branch(self, owner: str, name: str) -> bool:
-        """Refuse force-pushes to the default branch, so nothing written can
-        be rewritten, and say whether that had to be put back.
+        """Protect the default branch, which is what refuses a force-push to
+        it, so nothing written can be rewritten, and say whether that had to
+        be put back. Forgejo has no switch for force-pushes: a protected
+        branch refuses them all.
         """
         path = f"/api/v1/repos/{owner}/{name}/branch_protections"
         try:
-            found = json_of(await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}"))
+            await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}")
         except NotFound:
             await self._http.call(
                 PLATFORM,
@@ -86,17 +97,11 @@ class Repos:
                 json={
                     "branch_name": DEFAULT_BRANCH,
                     "enable_push": True,
-                    "enable_force_push": False,
                     "block_on_rejected_reviews": False,
                 },
             )
             return True
-        if not found.get("enable_force_push"):
-            return False
-        await self._http.call(
-            PLATFORM, "PATCH", f"{path}/{DEFAULT_BRANCH}", json={"enable_force_push": False}
-        )
-        return True
+        return False
 
     async def write_files(
         self, as_: Identity, owner: str, name: str, files: Files, *, message: str
@@ -232,15 +237,16 @@ class Repos:
             token=ConflictToken(str(entry["sha"])),
         )
 
-    async def read_raw(self, as_: Identity, owner: str, name: str, path: str, *, at: str) -> bytes:
+    async def read_raw(
+        self, as_: Identity, owner: str, name: str, path: str, *, at: str, max_size: int
+    ) -> bytes:
         """One file's bytes at a version, big files included, through the
-        media endpoint, which has no cap on size and resolves a file kept in
-        the large-file store.
+        media endpoint, which resolves a file kept in the large-file store.
+        `Rejected` for one over `max_size` bytes, read no further.
         """
-        found = await self._http.call(
-            as_, "GET", f"/api/v1/repos/{owner}/{name}/media/{path}", params={"ref": at}
+        return await self._http.read_capped(
+            as_, f"/api/v1/repos/{owner}/{name}/media/{path}", params={"ref": at}, max_size=max_size
         )
-        return found.content
 
     async def write_file(
         self,

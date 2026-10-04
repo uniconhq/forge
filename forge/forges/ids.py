@@ -14,11 +14,14 @@ in a fixed word that says what it is:
     <owner>/<name>.workflow
     unicon/<name>.primitive
 
-The owner of a workspace is the contestant's username, lower cased, or
-`team.<team-id>`, and is read back as everything between the second dot and
-the final word. A workspace is per contest, so its desk carries the contest
-too: the same person in two contests of one org has two desks, and closing
-one contest's workspace leaves the other's alone.
+The owner of a workspace is `u<user-id>` for a contestant, or
+`team.<team-id>` for a team once teams come with feature 14, and is read
+back as everything between the second dot and the final word. Never a
+username: a person can change theirs and someone else can then take it, and
+the workspace would follow the name.
+A workspace is per contest, so its desk carries the contest too: the same
+person in two contests of one org has two desks, and closing one contest's
+workspace leaves the other's alone.
 """
 
 import uuid
@@ -35,7 +38,7 @@ from forge.domain.ids import (
     WorkflowId,
     WorkspaceId,
 )
-from forge.domain.names import TEAM_PREFIX, TeamOwner, UserOwner, WorkspaceOwner
+from forge.domain.names import TEAM_PREFIX, USER_PREFIX, TeamOwner, UserOwner, WorkspaceOwner
 
 PLATFORM_ORG = "unicon"
 WORKSPACE_MARK = "@"
@@ -152,14 +155,18 @@ def parse_workspace(value: WorkspaceId) -> WorkspaceRef:
 
 def owner_from_segment(segment: str) -> WorkspaceOwner:
     """The owner a workspace segment names: a team by its id after the team
-    prefix, otherwise a contestant by their username.
+    prefix, the shape feature 14's team workspaces use, and a contestant by
+    their user id after the user prefix. Anything else names no workspace.
     """
     if segment.startswith(TEAM_PREFIX):
         try:
             return TeamOwner(uuid.UUID(segment.removeprefix(TEAM_PREFIX)))
         except ValueError:
             raise MalformedId(f"{segment} is not a team") from None
-    return UserOwner(segment)
+    user = segment.removeprefix(USER_PREFIX)
+    if segment.startswith(USER_PREFIX) and user.isdigit():
+        return UserOwner(int(user))
+    raise MalformedId(f"{segment} is not a workspace owner")
 
 
 def is_workspace(value: str) -> bool:

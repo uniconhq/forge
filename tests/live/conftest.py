@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from forge.domain.identity import AsUser, Credential
+from forge.domain.keys import key_from_name
 from forge.forges.forgejo import ForgejoConfig, ForgejoForge
 from forge.runtime.setup import Setup
 from forge.settings import Settings
@@ -97,7 +98,10 @@ async def live_setup(migrated_database_url: str, admin: httpx.Client) -> AsyncIt
         internal_url="http://backend:8000",
     )
     built = Setup.build(
-        settings, callback_path=CALLBACK_PATH, forge=ForgejoForge(forge_config(admin))
+        settings,
+        callback_path=CALLBACK_PATH,
+        forge=ForgejoForge(forge_config(admin)),
+        keys=key_from_name,
     )
     try:
         yield built

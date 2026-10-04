@@ -57,6 +57,10 @@ class _Stored:
 async def create(
     ctx: Context, *, user: User, credential: Credential, ip: str | None, user_agent: str | None
 ) -> Session:
+    """A new session for the user, after sweeping the rows that ended long
+    ago, which every sign-in does so the table stays small.
+    """
+    await sweep(ctx)
     now = ctx.now
     row = SessionRow(
         user_id=user.id,
@@ -168,8 +172,7 @@ async def list_for(ctx: Context, session: Session) -> list[SessionInfo]:
 
 async def sweep(ctx: Context) -> int:
     """Delete rows that ended longer ago than the hard lifetime, so the table
-    holds only sessions someone could still be shown. A timed pass, run on the
-    pass's unit of work.
+    holds only sessions someone could still be shown.
     """
     now, settings = ctx.now, ctx.settings
     cutoff = now - settings.session_hard_ttl

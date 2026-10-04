@@ -37,10 +37,10 @@ def test_contest_and_task_names_end_in_their_word() -> None:
 
 
 def test_workspace_names_carry_the_owner_between_the_second_dot_and_the_word() -> None:
-    person = WorkspaceRef("acme", "spring", UserOwner("Ada.Lovelace"))
-    assert person.desk_repo == "spring.ada.lovelace.desk"
-    assert WorkspaceRef("acme", "autumn", UserOwner("ada")).desk_repo != person.desk_repo
-    assert person.submission_repo("sum") == "spring.sum.ada.lovelace.sub"
+    person = WorkspaceRef("acme", "spring", UserOwner(7))
+    assert person.desk_repo == "spring.u7.desk"
+    assert WorkspaceRef("acme", "autumn", UserOwner(7)).desk_repo != person.desk_repo
+    assert person.submission_repo("sum") == "spring.sum.u7.sub"
     team = WorkspaceRef("acme", "spring", TeamOwner(TEAM))
     assert team.submission_repo("sum") == f"spring.sum.team.{TEAM}.sub"
 
@@ -48,7 +48,7 @@ def test_workspace_names_carry_the_owner_between_the_second_dot_and_the_word() -
 def test_ids_round_trip() -> None:
     contest = ContestRef("acme", "spring")
     task = TaskRef("acme", "spring", "sum")
-    workspace = WorkspaceRef("acme", "spring", UserOwner("ada"))
+    workspace = WorkspaceRef("acme", "spring", UserOwner(7))
     assert parse_contest(contest.id) == contest
     assert parse_task(task.id) == task
     assert parse_workspace(workspace.id) == workspace
@@ -58,7 +58,7 @@ def test_ids_round_trip() -> None:
 
 
 def test_a_workspace_id_is_told_apart_from_a_task_id() -> None:
-    assert is_workspace(WorkspaceRef("acme", "spring", UserOwner("ada")).id)
+    assert is_workspace(WorkspaceRef("acme", "spring", UserOwner(7)).id)
     assert not is_workspace(TaskRef("acme", "spring", "sum").id)
     with pytest.raises(MalformedId):
         parse_workspace(WorkspaceId("acme/spring/sum"))
@@ -67,15 +67,16 @@ def test_a_workspace_id_is_told_apart_from_a_task_id() -> None:
 def test_a_workspace_owner_round_trips_through_its_segment() -> None:
     team = TeamOwner(TEAM)
     assert owner_from_segment(team.segment) == team
-    assert owner_from_segment(UserOwner("Ada.Lovelace").segment) == UserOwner("ada.lovelace")
-    with pytest.raises(MalformedId):
-        owner_from_segment("team.not-a-uuid")
+    assert owner_from_segment(UserOwner(7).segment) == UserOwner(7)
+    for segment in ("team.not-a-uuid", "ada", "u", "u7x", "u-7"):
+        with pytest.raises(MalformedId):
+            owner_from_segment(segment)
 
 
 def test_a_place_is_located_at_its_repository() -> None:
     assert location("acme/spring") == ("acme", "spring.contest")
     assert location("acme/spring/sum") == ("acme", "spring.sum.task")
-    assert location("acme/spring/@ada") == ("acme", "spring.ada.desk")
+    assert location("acme/spring/@u7") == ("acme", "spring.u7.desk")
 
 
 def test_an_id_from_elsewhere_is_refused() -> None:
@@ -87,6 +88,6 @@ def test_an_id_from_elsewhere_is_refused() -> None:
 
 def test_a_task_is_read_back_from_its_repository() -> None:
     assert task_of_repo("acme", "spring.sum.task") == TaskRef("acme", "spring", "sum")
-    for name in ("spring.contest", "spring.sum.bob.sub", "sum.task", "spring.sum.task.x", ".task"):
+    for name in ("spring.contest", "spring.sum.u8.sub", "sum.task", "spring.sum.task.x", ".task"):
         with pytest.raises(MalformedId):
             task_of_repo("acme", name)

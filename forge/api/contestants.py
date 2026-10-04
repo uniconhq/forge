@@ -3,7 +3,7 @@ signed-in person, and listing and deciding the registrations, for an
 organiser the host's guard produced.
 """
 
-from forge.domain.registration import Status, WorkspaceState
+from forge.domain.registration import Status
 from forge.services.contestants import (
     Registration,
     approve,
@@ -19,7 +19,6 @@ from forge.services.contestants import (
 __all__ = [
     "Registration",
     "Status",
-    "WorkspaceState",
     "approve",
     "extend",
     "list",

@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from forge.domain.errors import Conflict, Forbidden
+from forge.domain.errors import Conflict, Forbidden, Rejected
 from forge.domain.identity import PLATFORM, Credential, User
 from forge.forges.fake.state import State
 from forge.port.identity import AccountVisibility, SignedIn
@@ -33,6 +33,9 @@ class FakeIdentity:
 
     def sign_up_url(self) -> str | None:
         return f"{self._public_url}/user/sign_up" if self.sign_ups_open else None
+
+    def public_url(self) -> str:
+        return self._public_url
 
     def consent_redirect(self, sign_in_url: str) -> str:
         """Follow the sign-in URL the way a browser would: the signed-in user
@@ -153,12 +156,19 @@ class FakeIdentity:
         self._state.revoke_credentials(user_id)
 
     async def delete_user(self, user_id: int) -> None:
+        """Refused while the user is an org's service account in its place
+        there, as a real forge refuses to delete a member of a team.
+        """
         self._state.record("delete_user", PLATFORM, user_id=user_id)
         self._state.check_up()
         username = self._state.username(user_id)
+        if any(user_id in org.account_members for org in self._state.orgs.values()):
+            raise Rejected(f"{username} still has a place in an org")
         del self._state.users[user_id]
         self._state.passwords.pop(user_id, None)
         self._state.revoke_credentials(user_id)
+        for token in [token for token, owner in self._state.tokens.items() if owner == user_id]:
+            del self._state.tokens[token]
         for org in self._state.orgs.values():
             for members in org.roles.values():
                 members.discard(user_id)

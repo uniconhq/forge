@@ -1,9 +1,9 @@
 """A primitive's declaration, its `primitive.yaml` (the runner's
-`primitive.schema.json`, version 3): its name and version, the image it runs
-from by digest and the program the container runs, whether it takes a batch
-of inputs in one run, the container's limits for one run or one item of a
-batch, the limits it raises from a numeric input, and its inputs and outputs
-with their types. The compiler reads one for every `use:` a workflow names
+`primitive.schema.json`, version 4): its name and version, the image it runs
+from by digest, whose own entrypoint is the program a step runs, whether it
+takes a batch of inputs in one run, the container's limits for one run or one
+item of a batch, the limits it raises from a numeric input, and its inputs
+and outputs with their types. The compiler reads one for every `use:` a workflow names
 and writes what it says into each step of the plan; the harness never reads
 it.
 
@@ -29,7 +29,7 @@ from forge.domain.yaml_models import (
 )
 
 DECLARATION_FILE = "primitive.yaml"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$")
 LIMIT_NAMES = ("time_ms", "cpu_ms", "memory_mb", "pids", "output_mb")
@@ -113,14 +113,13 @@ LimitName = Literal["time_ms", "cpu_ms", "memory_mb", "pids", "output_mb"]
 class PrimitiveDeclaration(Model):
     """A `primitive.yaml`. `name` is `unicon/<name>`, the platform's own org
     being the only one that holds primitives; `schema_version` may be given
-    and is then 3.
+    and is then 4.
     """
 
-    schema_version: Literal[3] | None = None
+    schema_version: Literal[4] | None = None
     name: Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_-]*$")]
     version: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")]
     image: Image
-    entrypoint: tuple[Annotated[str, Field(min_length=1)], ...] = Field(min_length=1)
     batch: Annotated[bool, Field(strict=True)] = False
     limits: Limits
     limits_from: dict[LimitName, LimitFrom] = Field(default_factory=dict)

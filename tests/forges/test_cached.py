@@ -3,7 +3,7 @@ caches only the reads that grow with the forge while the flag is off.
 """
 
 from forge.domain.identity import AsUser
-from forge.domain.ids import OrgName
+from forge.domain.ids import OrgId
 from forge.domain.roles import Role, Scope
 from forge.forges.cached import Cache, CachedForge
 from forge.forges.fake import FakeForge
@@ -23,7 +23,7 @@ async def test_a_cached_read_is_served_from_memory(fake: FakeForge) -> None:
 
 
 async def test_a_write_through_the_area_drops_its_entry(fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     cached = CachedForge(fake, enabled=True)
 
     ada = _ada(fake)

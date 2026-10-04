@@ -25,6 +25,7 @@ from forge.port.objects import ObjectStore
 from forge.port.orgs import OrgPort
 from forge.port.primitives import PrimitivePort
 from forge.port.threads import ThreadPort
+from forge.port.uploads import UploadPort
 from forge.port.workflows import WorkflowPort
 from forge.port.workspaces import WorkspacePort
 
@@ -39,6 +40,7 @@ __all__ = [
     "PrimitivePort",
     "SignedIn",
     "ThreadPort",
+    "UploadPort",
     "WorkflowPort",
     "WorkspacePort",
 ]
@@ -77,6 +79,9 @@ class Forge(Protocol):
 
     @property
     def objects(self) -> ObjectStore: ...
+
+    @property
+    def uploads(self) -> UploadPort: ...
 
     @property
     def name(self) -> str:

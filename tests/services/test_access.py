@@ -10,7 +10,7 @@ import pytest
 
 from forge.domain.errors import Forbidden, SessionExpired
 from forge.domain.identity import User
-from forge.domain.ids import OrgName
+from forge.domain.ids import OrgId
 from forge.domain.roles import RANK, Role, RoleGrant, Scope
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
@@ -29,7 +29,7 @@ async def _session(ctx: Context, fake: FakeForge, user_id: int) -> Session:
 async def test_an_org_admin_is_an_organiser_at_every_scope_below(
     ctx: Context, fake: FakeForge
 ) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme"), Role.ADMIN)
     session = await _session(ctx, fake, 7)
 
@@ -47,7 +47,7 @@ async def test_an_org_admin_is_an_organiser_at_every_scope_below(
 async def test_a_contest_manager_reaches_its_tasks_and_not_the_org_or_a_sibling(
     ctx: Context, fake: FakeForge
 ) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme", "spring"), Role.MANAGER)
     session = await _session(ctx, fake, 7)
 
@@ -69,7 +69,7 @@ async def test_a_contest_manager_reaches_its_tasks_and_not_the_org_or_a_sibling(
 async def test_someone_holding_no_role_is_refused_at_every_scope_naming_it(
     ctx: Context, fake: FakeForge, scope: Scope
 ) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme"), Role.ADMIN)
     session = await _session(ctx, fake, 8)
 
@@ -94,7 +94,7 @@ async def test_a_credential_the_forge_refuses_ends_the_session(
 async def test_one_org_role_is_seen_at_a_contest_and_a_task_inside_the_org(
     ctx: Context, fake: FakeForge, held: Role
 ) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme"), held)
     session = await _session(ctx, fake, 7)
 

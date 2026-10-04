@@ -119,6 +119,11 @@ class FakeWorkflows:
             if repo.marked == WORKFLOW and repo.owner == username
         )
 
+    async def workflow_key(self, workflow: WorkflowId) -> str:
+        self._state.record("workflow_key", PLATFORM, workflow=workflow)
+        self._state.check_up()
+        return str(self._repo(workflow).id)
+
     def _repo(self, workflow: WorkflowId) -> Repo:
         ref = parse_workflow(workflow)
         return self._state.repo(ref.owner, ref.repo)

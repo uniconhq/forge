@@ -53,7 +53,6 @@ S3_VARIABLES = {
     "region": "UNICON_S3_REGION",
     "access_key": "UNICON_S3_ACCESS_KEY",
     "secret_key": "UNICON_S3_SECRET_KEY",
-    "uploads_bucket": "UNICON_S3_UPLOADS_BUCKET",
     "results_bucket": "UNICON_S3_RESULTS_BUCKET",
 }
 
@@ -93,10 +92,11 @@ class ForgejoSettings(BaseModel):
 
 
 class S3Settings(BaseModel):
-    """Where the object store is and the key the platform signs in to it
-    with, each read from the variable `S3_VARIABLES` names. `endpoint` is the
-    store's internal address; the region is `garage` and the buckets
-    `unicon-uploads` and `unicon-results` unless given.
+    """Where the grading run log store is and the key the platform signs in
+    to it with, each read from the variable `S3_VARIABLES` names. `endpoint`
+    is the store's internal address; the region is `garage` and the bucket
+    `unicon-results` unless given. What people upload goes into the forge's
+    own store and is none of this (`port/uploads.py`).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -105,7 +105,6 @@ class S3Settings(BaseModel):
     region: str = "garage"
     access_key: str
     secret_key: SecretStr
-    uploads_bucket: str = "unicon-uploads"
     results_bucket: str = "unicon-results"
 
     @field_validator("*")

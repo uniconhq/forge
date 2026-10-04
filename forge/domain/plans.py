@@ -1,13 +1,14 @@
 """The plan a save compiles for each stage of a task, and what a publication
 compares to say whether it changed how the task grades.
 
-A plan is what grading reads (the runner's `plan.schema.json`, version 3):
+A plan is what grading reads (the runner's `plan.schema.json`, version 4):
 flat and fully resolved, so the harness never reads a workflow or a
 primitive's declaration. It names the harness image, the stage, the test
 list and the steps in the order they run, each with its primitive's image by
-digest, its entrypoint and its limits, and the verdict block that says which
-step outputs fill the verdict. It is written into the task repo as
-`plans/<stage>.json` in the commit a publication names.
+digest and its limits, and the verdict block that says which step outputs
+fill the verdict. A step's container runs its image's own entrypoint. It is
+written into the task repo as `plans/<stage>.json` in the commit a
+publication names.
 
 The compiler takes the stage's workflow step by step. Each `use:` is the
 primitive whose declaration the save read, as the organiser saving, at the
@@ -77,7 +78,7 @@ HARNESS_IMAGE = (
     "@sha256:2f73048019369c3ce58c9165e8ca2f45dbdc6815792ca2eb88c922896f7d8400"
 )
 
-SCHEMA_VERSION: Literal[3] = 3
+SCHEMA_VERSION: Literal[4] = 4
 STEP_ID = r"^[a-z0-9][a-z0-9_-]*$"
 PRIMITIVE = r"^[a-z0-9][a-z0-9_-]*@[A-Za-z0-9][A-Za-z0-9._-]*$"
 TEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -144,7 +145,6 @@ class PlanStep(Model):
     id: Annotated[str, Field(pattern=STEP_ID)]
     primitive: Annotated[str, Field(pattern=PRIMITIVE)]
     image: Image
-    entrypoint: tuple[Annotated[str, Field(min_length=1)], ...] = Field(min_length=1)
     limits: StepLimits
     inputs: Inputs | None = None
     test: Annotated[str, Field(pattern=TEST_ID.pattern)] | None = None
@@ -176,9 +176,9 @@ class VerdictBlock(Model):
 
 
 class Plan(Model):
-    """One stage's plan, in the shape of the runner's plan schema version 3."""
+    """One stage's plan, in the shape of the runner's plan schema version 4."""
 
-    schema_version: Literal[3] = SCHEMA_VERSION
+    schema_version: Literal[4] = SCHEMA_VERSION
     harness_image: Image
     stage: Annotated[str, Field(min_length=1)]
     tests: tuple[Annotated[str, Field(pattern=TEST_ID.pattern)], ...] = ()
@@ -392,7 +392,6 @@ class _Stage:
             "id": step.id,
             "primitive": f"{declaration.short_name}@{declaration.version}",
             "image": declaration.image,
-            "entrypoint": declaration.entrypoint,
         }
         if tests is None:
             inputs = self._inputs(where, step, declaration, None)
