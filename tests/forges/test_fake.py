@@ -9,12 +9,12 @@ from collections.abc import Awaitable, Callable
 import pytest
 
 from forge.domain.content import ConflictToken
-from forge.domain.errors import Conflict, Forbidden, NotFound
+from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected
 from forge.domain.grading import GradingRun
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Platform
 from forge.domain.ids import (
     ContestId,
-    OrgName,
+    OrgId,
     PublicationId,
     SubmissionId,
     TaskId,
@@ -35,13 +35,13 @@ def _as(fake: FakeForge, user_id: int) -> AsUser:
 
 
 async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme"), Role.ADMIN)
-    contest = await fake.content.create_contest(OrgName("acme"), "spring", {"contest.yaml": b"x"})
+    contest = await fake.content.create_contest(OrgId("acme"), "spring", {"contest.yaml": b"x"})
     task = await fake.content.create_task(contest, "sum", {"task.yaml": b"y"})
     head = await fake.content.list_files(PLATFORM, task)
     publication = await fake.workspaces.publish(task, head.version, "grading_changed: false\n")
-    workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8])
+    workspace = await fake.workspaces.open_workspace(contest, UserOwner(8), [8])
     await fake.workspaces.open_submission_place(workspace, task, [8])
     bob = _as(fake, 8)
     submission = await fake.workspaces.record_submission(
@@ -81,8 +81,8 @@ async def test_a_malformed_id_names_nothing(
 
 
 async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
-    contest = await fake.content.create_contest(OrgName("acme"), "spring", {})
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
+    contest = await fake.content.create_contest(OrgId("acme"), "spring", {})
     task = await fake.content.create_task(contest, "sum", {})
     acme = AsOrgAccount("acme", forge_token="f", ci_token="c")
 
@@ -92,7 +92,7 @@ async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> 
         task=task,
         publication=PublicationId(f"{task}#1"),
         publication_version=VersionId("0" * 40),
-        submission=SubmissionId("acme/spring/@bob/sum#1"),
+        submission=SubmissionId("acme/spring/@u8/sum#1"),
         submission_version=VersionId("1" * 40),
         envelope_url="http://machines.test/envelope",
         compute="pool:platform",
@@ -106,10 +106,10 @@ async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> 
 
 
 async def test_every_call_is_recorded_with_its_identity(fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme"), Role.MANAGER)
     ada = _as(fake, 7)
-    contest = await fake.content.create_contest(OrgName("acme"), "spring", {})
+    contest = await fake.content.create_contest(OrgId("acme"), "spring", {})
     await fake.content.write_file(ada, contest, "contest.yaml", b"x", message="Edit", expected=None)
 
     assert fake.calls_to("write_file")[-1].identity == ada
@@ -119,10 +119,10 @@ async def test_every_call_is_recorded_with_its_identity(fake: FakeForge) -> None
 
 
 async def test_a_stale_conflict_check_is_refused(fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme"), Role.MANAGER)
     ada = _as(fake, 7)
-    contest = await fake.content.create_contest(OrgName("acme"), "spring", {"contest.yaml": b"one"})
+    contest = await fake.content.create_contest(OrgId("acme"), "spring", {"contest.yaml": b"one"})
     first = await fake.content.read_file(ada, contest, "contest.yaml")
     await fake.content.write_file(
         ada, contest, "contest.yaml", b"two", message="Edit", expected=first.token
@@ -151,7 +151,7 @@ async def test_a_protected_version_by_anyone_but_the_platform_is_refused(fake: F
 
 
 async def test_only_the_platform_creates_a_repository(fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme"), Role.ADMIN)
 
     for owner in ("ada", "acme"):
@@ -200,7 +200,7 @@ async def test_a_persons_workflow_is_theirs_to_read_name_a_version_of_and_share(
 
 
 async def test_an_org_workflow_reaches_the_org_roles_and_nobody_else(fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     fake.add_user(9, "eve")
     fake.add_user(10, "cat")
     await fake.orgs.grant_role(7, Scope("acme"), Role.MANAGER)
@@ -230,9 +230,9 @@ async def test_an_org_workflow_reaches_the_org_roles_and_nobody_else(fake: FakeF
 
 
 async def test_a_read_without_access_is_refused(fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme"), Role.ADMIN)
-    contest = await fake.content.create_contest(OrgName("acme"), "spring", {"contest.yaml": b"x"})
+    contest = await fake.content.create_contest(OrgId("acme"), "spring", {"contest.yaml": b"x"})
 
     with pytest.raises(Forbidden):
         await fake.content.read_file(_as(fake, 8), contest, "contest.yaml")
@@ -243,15 +243,15 @@ async def test_a_read_without_access_is_refused(fake: FakeForge) -> None:
 async def test_a_contest_manager_reads_a_clarification_and_a_stranger_does_not(
     fake: FakeForge,
 ) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     fake.add_user(9, "eve")
     await fake.orgs.grant_role(9, Scope("acme", "spring"), Role.MANAGER)
-    contest = await fake.content.create_contest(OrgName("acme"), "spring", {})
-    workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8])
+    contest = await fake.content.create_contest(OrgId("acme"), "spring", {})
+    workspace = await fake.workspaces.open_workspace(contest, UserOwner(8), [8])
     bob = _as(fake, 8)
     await fake.threads.post_thread(bob, workspace, ThreadKind.CLARIFICATION, title="Q", body="?")
-    autumn = await fake.content.create_contest(OrgName("acme"), "autumn", {})
-    other = await fake.workspaces.open_workspace(autumn, UserOwner("bob"), [8])
+    autumn = await fake.content.create_contest(OrgId("acme"), "autumn", {})
+    other = await fake.workspaces.open_workspace(autumn, UserOwner(8), [8])
     assert await fake.threads.list_threads(bob, other, ThreadKind.CLARIFICATION) == ()
 
     assert len(await fake.threads.list_threads(bob, workspace, ThreadKind.CLARIFICATION)) == 1
@@ -289,9 +289,9 @@ async def test_deleting_a_user_removes_them_and_what_they_own(fake: FakeForge) -
 
 
 async def test_a_deleted_users_questions_still_read_as_nobodys(fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
-    contest = await fake.content.create_contest(OrgName("acme"), "spring", {})
-    workspace = await fake.workspaces.open_workspace(contest, UserOwner("bob"), [8])
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
+    contest = await fake.content.create_contest(OrgId("acme"), "spring", {})
+    workspace = await fake.workspaces.open_workspace(contest, UserOwner(8), [8])
     bob = _as(fake, 8)
     thread = await fake.threads.post_thread(
         bob, workspace, ThreadKind.CLARIFICATION, title="Q", body="?"
@@ -310,8 +310,8 @@ async def test_a_deleted_users_questions_still_read_as_nobodys(fake: FakeForge) 
 async def test_a_service_account_is_made_placed_and_signed_in_at_the_ci(
     fake: FakeForge,
 ) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
-    await fake.orgs.create_roles(OrgName("acme"))
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
+    await fake.orgs.create_roles(OrgId("acme"))
 
     account = await fake.identity.create_user(
         "unicon-ci-acme", "unicon-ci-acme@unicon.invalid", "pw-1", must_change_password=False
@@ -324,8 +324,8 @@ async def test_a_service_account_is_made_placed_and_signed_in_at_the_ci(
         await fake.identity.find_user_by_username("nobody")
     assert "pw-1" not in str(fake.calls_to("create_user")[0].arguments)
 
-    assert await fake.orgs.ensure_account_membership(OrgName("acme"), account.id) is True
-    assert await fake.orgs.ensure_account_membership(OrgName("acme"), account.id) is False
+    assert await fake.orgs.ensure_account_membership(OrgId("acme"), account.id) is True
+    assert await fake.orgs.ensure_account_membership(OrgId("acme"), account.id) is False
     assert fake.state.orgs["acme"].account_members == {account.id}
 
     token = await fake.identity.mint_token("unicon-ci-acme", "pw-1", name="unicon", scopes=["a"])
@@ -341,19 +341,11 @@ async def test_a_service_account_is_made_placed_and_signed_in_at_the_ci(
     assert await fake.grading.create_ci_user("unicon-ci-acme") == 1
     assert await fake.grading.create_ci_user("unicon-ci-acme") == 1
     ci_token = await fake.grading.mint_ci_token("unicon-ci-acme", "pw-2")
-    acme = AsOrgAccount("acme", forge_token=token, ci_token=ci_token)
-    assert await fake.grading.ci_user_is_alive(acme) is True
-    fake.ci_dead.add("unicon-ci-acme")
-    assert await fake.grading.ci_user_is_alive(acme) is False
-    renewed = await fake.grading.mint_ci_token("unicon-ci-acme", "pw-2")
-    assert await fake.grading.ci_user_is_alive(
-        AsOrgAccount("acme", forge_token=token, ci_token=renewed)
-    )
-    assert fake.calls_to("ci_user_is_alive")[0].identity == acme
+    assert fake.state.ci_tokens[ci_token] == "unicon-ci-acme"
 
 
 async def test_anyones_roles_are_read_as_the_platform(fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(8, Scope("acme"), Role.OBSERVER)
     await fake.orgs.grant_role(8, Scope("acme", "spring", "sum"), Role.MANAGER)
 
@@ -370,7 +362,7 @@ async def test_anyones_roles_are_read_as_the_platform(fake: FakeForge) -> None:
 async def test_holders_are_listed_whatever_their_name_and_every_one_can_be_revoked(
     fake: FakeForge,
 ) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     lookalike = fake.add_user(9, "unicon-ci-acme")
     await fake.orgs.grant_role(7, Scope("acme"), Role.ADMIN)
     await fake.orgs.grant_role(lookalike.id, Scope("acme"), Role.ADMIN)
@@ -383,14 +375,14 @@ async def test_holders_are_listed_whatever_their_name_and_every_one_can_be_revok
 
 
 async def test_an_event_push_is_made_once_per_url(fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
 
-    await fake.orgs.create_event_push(OrgName("acme"), url="http://backend/events", secret="s1")
-    await fake.orgs.create_event_push(OrgName("acme"), url="http://backend/events", secret="s2")
+    await fake.orgs.create_event_push(OrgId("acme"), url="http://backend/events", secret="s1")
+    await fake.orgs.create_event_push(OrgId("acme"), url="http://backend/events", secret="s2")
 
     assert fake.state.orgs["acme"].event_push == ("http://backend/events", "s1")
     assert "s1" not in str(fake.calls_to("create_event_push")[0].arguments)
-    await fake.orgs.update_org(OrgName("acme"), description="Acme Corp", display_name="ACME")
+    await fake.orgs.update_org(OrgId("acme"), description="Acme Corp", display_name="ACME")
     assert (fake.state.orgs["acme"].description, fake.state.orgs["acme"].display_name) == (
         "Acme Corp",
         "ACME",
@@ -398,8 +390,8 @@ async def test_an_event_push_is_made_once_per_url(fake: FakeForge) -> None:
 
 
 async def _contest_and_task(fake: FakeForge) -> tuple[ContestId, TaskId]:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
-    contest = await fake.content.create_contest(OrgName("acme"), "spring", {"contest.yaml": b"c"})
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
+    contest = await fake.content.create_contest(OrgId("acme"), "spring", {"contest.yaml": b"c"})
     task = await fake.content.create_task(contest, "sum", {"task.yaml": b"t", "data/a.in": b"1"})
     return contest, task
 
@@ -430,15 +422,15 @@ async def test_contests_and_tasks_are_there_and_listed_as_the_reader_sees_them(
     fake: FakeForge,
 ) -> None:
     contest, task = await _contest_and_task(fake)
-    other = await fake.content.create_contest(OrgName("acme"), "autumn", {})
+    other = await fake.content.create_contest(OrgId("acme"), "autumn", {})
     await fake.content.secure(contest)
     await fake.content.secure(other)
     await fake.orgs.grant_role(8, Scope("acme", "autumn"), Role.OBSERVER)
 
     assert await fake.content.exists(task) is True
     assert await fake.content.exists(TaskId("acme/spring/nope")) is False
-    assert await fake.content.list_contests(PLATFORM, OrgName("acme")) == (other, contest)
-    assert await fake.content.list_contests(_as(fake, 8), OrgName("acme")) == (other,)
+    assert await fake.content.list_contests(PLATFORM, OrgId("acme")) == (other, contest)
+    assert await fake.content.list_contests(_as(fake, 8), OrgId("acme")) == (other,)
     assert await fake.content.list_tasks(PLATFORM, contest) == (task,)
     assert await fake.content.list_tasks(_as(fake, 8), contest) == ()
 
@@ -509,3 +501,38 @@ async def test_a_publication_names_a_version_with_its_note_and_numbers_follow(
     assert second.version == fake.state.repos[("acme", "spring.sum.task")].head
     with pytest.raises(NotFound):
         await fake.workspaces.publish(task, VersionId("nowhere"), "")
+
+
+async def test_a_workspace_repo_someone_else_is_in_is_refused(fake: FakeForge) -> None:
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
+    contest = await fake.content.create_contest(OrgId("acme"), "spring", {"contest.yaml": b"x"})
+    await fake.workspaces.open_workspace(contest, UserOwner(8), [8])
+    fake.state.repos[("acme", "spring.u8.desk")].writers.add(7)
+
+    with pytest.raises(Conflict, match="other collaborators"):
+        await fake.workspaces.open_workspace(contest, UserOwner(8), [8])
+
+
+async def test_the_fake_refuses_to_delete_an_org_with_a_place_or_an_account_in_its_place() -> None:
+    fake = FakeForge()
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
+    await fake.content.create_contest(OrgId("acme"), "spring", {"contest.yaml": b"name: S\n"})
+    account = await fake.identity.create_user(
+        "unicon-ci-acme", "ci@unicon.invalid", "pw", must_change_password=False
+    )
+    await fake.orgs.ensure_account_membership(OrgId("acme"), account.id)
+
+    with pytest.raises(Rejected):
+        await fake.orgs.delete_org(OrgId("acme"))
+    with pytest.raises(Rejected):
+        await fake.identity.delete_user(account.id)
+
+    await fake.content.delete_place(ContestId("acme/spring"))
+    await fake.orgs.remove_account_membership(OrgId("acme"), account.id)
+    await fake.identity.delete_user(account.id)
+    await fake.orgs.delete_org(OrgId("acme"))
+    await fake.orgs.delete_org(OrgId("acme"))
+    await fake.content.delete_place(ContestId("acme/spring"))
+
+    assert fake.state.orgs == {}
+    assert fake.state.repos == {}

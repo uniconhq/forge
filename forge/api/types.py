@@ -1,12 +1,15 @@
-"""The shared types the actions take and return, and `scope_of_place`, the
-scope a contest or task id names, which is how a host reads the names back
-out of the ids `contests.list` and `tasks.list` return.
+"""The shared types the actions take and return. The ids are opaque and built
+from keys, never from names: a host never reads a name out of one. The
+records that are shown to a person carry their names, as `Named`,
+`ScopeNames` and `HeldRole`, and `names.scope_at` turns the names in an
+address into a scope.
 """
 
 from forge.domain.content import ConflictToken, Edit
 from forge.domain.identity import User
-from forge.domain.ids import ContestId, OrgName, PublicationId, TaskId, VersionId
-from forge.domain.roles import Role, RoleGrant, Scope, ScopeKind, scope_of_place
+from forge.domain.ids import ContestId, OrgId, PublicationId, TaskId, VersionId
+from forge.domain.names import Named, ScopeNames
+from forge.domain.roles import HeldRole, Role, RoleGrant, Scope, ScopeKind
 from forge.domain.sessions import Session
 from forge.domain.yaml_models import Problem
 
@@ -14,16 +17,18 @@ __all__ = [
     "ConflictToken",
     "ContestId",
     "Edit",
-    "OrgName",
+    "HeldRole",
+    "Named",
+    "OrgId",
     "Problem",
     "PublicationId",
     "Role",
     "RoleGrant",
     "Scope",
     "ScopeKind",
+    "ScopeNames",
     "Session",
     "TaskId",
     "User",
     "VersionId",
-    "scope_of_place",
 ]

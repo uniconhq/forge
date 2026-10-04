@@ -16,7 +16,7 @@ import pytest
 
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import AsUser
-from forge.domain.ids import OrgName
+from forge.domain.ids import OrgId
 from forge.domain.roles import Role, Scope
 from forge.domain.workflows import Visibility
 from forge.forges.forgejo import ForgejoForge
@@ -56,8 +56,8 @@ def acting(admin: httpx.Client, people: dict[str, dict[str, Any]]) -> dict[str, 
 
 async def _org_with_roles(forge: ForgejoForge, org: str, people: dict[str, dict[str, Any]]) -> None:
     with contextlib.suppress(Conflict):
-        await forge.orgs.create_org(OrgName(org), description="Live workflows")
-    await forge.orgs.create_roles(OrgName(org))
+        await forge.orgs.create_org(OrgId(org), description="Live workflows")
+    await forge.orgs.create_roles(OrgId(org))
     await forge.orgs.grant_role(int(people["manager"]["id"]), Scope(org), Role.MANAGER)
     await forge.orgs.grant_role(int(people["observer"]["id"]), Scope(org), Role.OBSERVER)
 

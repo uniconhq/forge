@@ -1,6 +1,6 @@
-"""One row per org: its service account at the forge and at the CI. The
-two credentials and the secret the org's event push is signed with are
-AES-256-GCM ciphertext under `UNICON_TOKEN_ENCRYPTION_KEY`, the way a
+"""One row per org, by its id: its service account at the forge and at the
+CI. The two credentials and the secret the org's event push is signed with
+are AES-256-GCM ciphertext under `UNICON_TOKEN_ENCRYPTION_KEY`, the way a
 session's credential is, so a copy of the table hands out no access. The
 account's password at the forge is never written: the package sets a fresh
 one with its administrator rights whenever it has to sign the account in
@@ -21,14 +21,13 @@ class OrgAccount(Base, Timestamped):
     __tablename__ = "org_accounts"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=new_id)
-    org_name: Mapped[str]
+    org_id: Mapped[str]
     forge_user_id: Mapped[int | None] = mapped_column(BigInteger)
     username: Mapped[str]
     forge_token: Mapped[bytes]
     ci_token: Mapped[bytes]
     ci_user_id: Mapped[int | None] = mapped_column(BigInteger)
     event_secret: Mapped[bytes]
-    last_kept_alive_at: Mapped[datetime | None]
-    keepalive_error: Mapped[str | None]
+    ci_signed_in_at: Mapped[datetime | None]
 
-    __table_args__ = (UniqueConstraint("org_name"),)
+    __table_args__ = (UniqueConstraint("org_id"),)

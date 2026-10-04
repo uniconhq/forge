@@ -7,9 +7,7 @@ before anything is written, in this order, stopping at the first:
 
 1. the task is open by the server's clock plus the person's own extension
    (`task_closed`, or `archived` for a contest that is);
-2. they are an approved contestant (`not_approved`);
-3. their desk is open and their place to submit the task is made
-   (`workspace_not_ready`).
+2. they are an approved contestant (`not_approved`).
 
 A task that is not released, or a contest the person may not see, is no
 such task, the same answer as one that is not there. An archived contest is
@@ -23,22 +21,34 @@ from dataclasses import dataclass
 from forge.db.tables import Contestant
 from forge.domain import release as rules
 from forge.domain.definitions import ContestDefinition, State
-from forge.domain.errors import Archived, NotApproved, NotFound, TaskClosed, WorkspaceNotReady
+from forge.domain.errors import (
+    Archived,
+    NotApproved,
+    NotFound,
+    PortError,
+    TaskClosed,
+    Unavailable,
+)
 from forge.domain.ids import TaskId, WorkspaceId
+from forge.domain.names import UserOwner
 from forge.domain.registration import Status
 from forge.domain.release import Closed
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
+from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import contestants, published, release, sessions, workspaces
+from forge.services import contestants, published, release, sessions
 from forge.services.published import PublishedTask
+
+log = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
 class Entrant:
     """A signed-in person at a released task: their session, checked again,
-    the contest's settings, the task as its latest publication froze it, and
-    their registration for the contest, if any.
+    the contest's settings, the task as its latest publication froze it,
+    their registration for the contest, if any, and the workspace it gives
+    them, whose parts are made when they are first needed.
     """
 
     session: Session
@@ -46,13 +56,7 @@ class Entrant:
     settings: ContestDefinition
     published: PublishedTask
     row: Contestant | None
-
-    @property
-    def workspace(self) -> WorkspaceId | None:
-        """The workspace the registration names, once its desk is open."""
-        if self.row is None or self.row.workspace_id is None:
-            return None
-        return WorkspaceId(self.row.workspace_id)
+    workspace: WorkspaceId | None
 
 
 async def entrant(ctx: Context, session: Session, task: TaskId) -> Entrant:
@@ -73,13 +77,17 @@ async def entrant(ctx: Context, session: Session, task: TaskId) -> Entrant:
     found = await published.task(ctx, task, settings)
     if found is None or not rules.released(settings, found.definition, ctx.now):
         raise NotFound(published.NO_SUCH_TASK)
-    return Entrant(fresh, task, settings, found, person.row)
+    workspace = (
+        ctx.forge.workspaces.workspace_of(contest, UserOwner(fresh.user_id))
+        if person.row is not None
+        else None
+    )
+    return Entrant(fresh, task, settings, found, person.row, workspace)
 
 
 async def refuse(ctx: Context, entrant: Entrant) -> tuple[Contestant, WorkspaceId]:
     """The approved contestant's row and workspace, once the task is open to
-    them and their place to submit it is made; each rule's own refusal
-    otherwise.
+    them; each rule's own refusal otherwise.
     """
     openness = rules.openness(
         entrant.settings,
@@ -102,7 +110,40 @@ async def refuse(ctx: Context, entrant: Entrant) -> tuple[Contestant, WorkspaceI
     row = entrant.row
     if row is None or row.status != Status.APPROVED:
         raise NotApproved("Only an approved contestant of the contest submits to its tasks.")
-    workspace = entrant.workspace
-    if workspace is None or not await workspaces.place_ready(ctx, row, entrant.task):
-        raise WorkspaceNotReady("Your place to submit this task is still being made.")
-    return row, workspace
+    assert entrant.workspace is not None
+    return row, entrant.workspace
+
+
+async def open_place(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -> None:
+    """Make the contestant's place to submit the task, as the platform, while
+    they are still approved: their row is held until the unit of work ends,
+    so a removal waits for this, then takes the access away again.
+
+    Both the first slot asked for a file and the first submit call this: an
+    object belongs to a repository at the forge, so the place has to be there
+    before any bytes can be sent, and making it twice is making it once.
+    """
+    user_id = entrant.session.user_id
+    row = entrant.row
+    if row is not None:
+        await ctx.db.refresh(row, with_for_update=True)
+    if row is None or row.status != Status.APPROVED:
+        raise NotApproved("Only an approved contestant of the contest submits to its tasks.")
+    try:
+        await ctx.forge.workspaces.open_submission_place(workspace, entrant.task, [user_id])
+    except PortError as exc:
+        log.warning(
+            "submitters.place_failed",
+            task=entrant.task,
+            error=type(exc).__name__,
+            detail=exc.detail,
+        )
+        raise Unavailable("The forge did not answer; try again in a moment.") from None
+    log.info("submitters.place_opened", task=entrant.task, user_id=user_id)
+
+
+def place_of(ctx: Context, task: TaskId, user_id: int) -> WorkspaceId:
+    """The id of the person's workspace in the task's contest. No call is
+    made; the id comes from the contest and the person.
+    """
+    return ctx.forge.workspaces.workspace_of(contest_id_of(task_scope(task)), UserOwner(user_id))

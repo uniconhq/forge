@@ -1,7 +1,6 @@
 """One row per person per contest, from the registration request to removal.
 A registration before approval has no object at the forge, which is why the
-row exists. `workspace_id` is the workspace the forge handed out when the
-contestant's workspace was opened, and none until then.
+row exists.
 """
 
 import uuid
@@ -31,7 +30,6 @@ class Contestant(Base, Timestamped):
     decided_by_user_id: Mapped[int | None] = mapped_column(BigInteger)
     reason: Mapped[str | None]
     time_extension_seconds: Mapped[int] = mapped_column(server_default=text("0"))
-    workspace_id: Mapped[str | None]
 
     __table_args__ = (
         CheckConstraint(f"status in {STATUSES}", name="status"),

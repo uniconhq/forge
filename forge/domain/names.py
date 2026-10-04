@@ -1,10 +1,11 @@
 """The names people give things, and the rules they follow. A name is lower
 case letters, digits, hyphens and underscores, starts with a letter or a
-digit, and is at most 24 characters for a contest or task, 30 for an org and
-40 for anything else. It is a handle, not a title: it names a repository and
-sits in a URL, and the dot that joins repository segments cannot be in it.
-An org's name is shorter because its service account's, `unicon-ci-<org>`,
-is a name too and must keep within 40.
+digit, and is at most 24 characters for a contest or task and 40 for
+anything else, an org included. It is a handle, not a title: it sits in a URL, and the
+title people read is in the thing's own settings. An org, a contest and a
+task are filed under a key (`forge.domain.keys`), and their name is only a
+label for it; the rules also hold for a key, so a test that files a thing
+under its name gets a key the forge takes.
 """
 
 import re
@@ -19,7 +20,6 @@ OTHER_MAX = 40
 
 TEAM_PREFIX = "team."
 SERVICE_ACCOUNT_PREFIX = "unicon-ci-"
-ORG_MAX = OTHER_MAX - len(SERVICE_ACCOUNT_PREFIX)
 
 
 def validate_name(value: str, *, max_length: int = OTHER_MAX) -> str:
@@ -35,7 +35,7 @@ def validate_contest_or_task_name(value: str) -> str:
 
 
 def validate_org_name(value: str) -> str:
-    return validate_name(value, max_length=ORG_MAX)
+    return validate_name(value, max_length=OTHER_MAX)
 
 
 def service_account_name(org: str) -> str:
@@ -54,20 +54,29 @@ def is_service_account(username: str) -> bool:
     return username.lower().startswith(SERVICE_ACCOUNT_PREFIX)
 
 
+USER_PREFIX = "u"
+
+
 @dataclass(frozen=True, slots=True)
 class UserOwner:
-    """A workspace owned by one contestant, named by their username."""
+    """A workspace owned by one contestant, named by their user id: `u<id>`.
+    Not by their username, which they can change at the forge and which
+    another person can take once it is free, and who would then be handed
+    this workspace.
+    """
 
-    username: str
+    user_id: int
 
     @property
     def segment(self) -> str:
-        return self.username.lower()
+        return f"{USER_PREFIX}{self.user_id}"
 
 
 @dataclass(frozen=True, slots=True)
 class TeamOwner:
-    """A workspace owned by a team, named by the team's id."""
+    """A workspace owned by a team, named by the team's id. No team exists
+    yet: this is the owner feature 14's team workspaces use.
+    """
 
     team_id: uuid.UUID
 
@@ -77,3 +86,27 @@ class TeamOwner:
 
 
 WorkspaceOwner = UserOwner | TeamOwner
+
+
+@dataclass(frozen=True, slots=True)
+class Named:
+    """An org, a contest or a task by its id, with the name people call it."""
+
+    id: str
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeNames:
+    """The names of the org, the contest and the task a scope reaches, as far
+    down as it does, in the shape of an address: `acme`, `acme/spring`,
+    `acme/spring/sum`.
+    """
+
+    org: str
+    contest: str | None = None
+    task: str | None = None
+
+    @property
+    def path(self) -> str:
+        return "/".join(part for part in (self.org, self.contest, self.task) if part)

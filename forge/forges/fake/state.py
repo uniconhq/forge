@@ -14,7 +14,6 @@ from typing import Any
 from forge.domain.clock import Clock, SystemClock
 from forge.domain.content import Change, ConflictToken, Files
 from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
-from forge.domain.grading import Run
 from forge.domain.identity import AsUser, Credential, Identity, Platform, User
 from forge.domain.ids import AgentId, RunId, ThreadId, VersionId
 from forge.domain.roles import RANK, Role, Scope
@@ -46,6 +45,7 @@ class Repo:
 
     owner: str
     name: str
+    id: int = 0
     private: bool = True
     files: dict[str, bytes] = field(default_factory=dict)
     tokens: dict[str, ConflictToken] = field(default_factory=dict)
@@ -72,12 +72,13 @@ class Repo:
 @dataclass
 class StartedRun:
     """A run the fake CI was asked to start: the task it is of, the variables
-    it was started with, and when.
+    it was started with, when, and whether it was cancelled.
     """
 
     task: str
     variables: dict[str, str]
     at: datetime
+    cancelled: bool = False
 
 
 @dataclass
@@ -100,9 +101,9 @@ class State:
         self.users: dict[int, User] = {}
         self.orgs: dict[str, Org] = {}
         self.repos: dict[tuple[str, str], Repo] = {}
+        self.next_repo_id = 0
         self.threads: dict[ThreadId, Thread] = {}
-        self.runs: dict[RunId, Run] = {}
-        self.started: dict[RunId, StartedRun] = {}
+        self.runs: dict[RunId, StartedRun] = {}
         self.ci_key = secrets.token_bytes(32)
         self.refuse_starts = 0
         self.lose_start_answer = False
@@ -115,8 +116,9 @@ class State:
         self.passwords: dict[int, str] = {}
         self.tokens: dict[str, int] = {}
         self.ci_users: dict[str, int] = {}
+        self.activated: set[str] = set()
         self.ci_tokens: dict[str, str] = {}
-        self.ci_dead: set[str] = set()
+        self.revoked_ci_tokens: set[str] = set()
         self.unverified: set[str] = set()
         self.refreshes = 0
         self.refuse_refresh = False
@@ -180,7 +182,8 @@ class State:
             raise Forbidden(f"only the platform may create {owner}/{name}")
         if (owner, name) in self.repos:
             raise Conflict(f"{owner}/{name} already exists")
-        repo = Repo(owner=owner, name=name, scope=scope, marked=marked)
+        self.next_repo_id += 1
+        repo = Repo(owner=owner, name=name, id=self.next_repo_id, scope=scope, marked=marked)
         self.repos[(owner, name)] = repo
         if files:
             self.commit(repo, files, "Create", None)

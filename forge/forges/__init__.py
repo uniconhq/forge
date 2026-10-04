@@ -50,9 +50,7 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
                 region=s3.region,
                 access_key=s3.access_key,
                 secret_key=s3.secret_key.get_secret_value(),
-                uploads_bucket=s3.uploads_bucket,
                 results_bucket=s3.results_bucket,
-                public_url=str(settings.public_url),
                 machine_url=str(settings.machine_url),
             ),
         )

@@ -1,9 +1,9 @@
-"""The grading area over Woodpecker: activating a task's repository once and
-starting runs as the org account the caller hands in, finding a run by its
-grading id, reading and cancelling runs as the CI's administrator, the
-configuration extension's signed question and the answer to it, and the org
-account's own user and token at the CI, made by the administrator and the
-sign-in dance.
+"""The grading area over Woodpecker: activating a task's repository once,
+deactivating it again, and starting runs as the org account the caller
+hands in, finding a run by its grading id, reading and cancelling runs as
+the CI's administrator, the configuration extension's signed question and
+the answer to it, and the org account's own user and token at the CI, made
+and deleted by the administrator and signed in by the sign-in dance.
 
 A run is a manual pipeline on the task's repository, started on `main`,
 since the CI starts a run only on a branch, with the run's variables:
@@ -51,7 +51,7 @@ import json
 import re
 import time
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -65,9 +65,7 @@ from forge.domain.grading import (
     CiRequest,
     ConfigAsk,
     GradingRun,
-    Run,
     RunPlaces,
-    RunStatus,
 )
 from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, Identity
 from forge.domain.ids import RunId, TaskId
@@ -109,22 +107,6 @@ FILTER_SOCKET = "unix:///run/unicon/docker.sock"
 
 PUBLIC_KEY_PATH = "/api/signature/public-key"
 KEY_REFETCH_SECONDS = 60.0
-FIND_PAGE_SIZE = 50
-FIND_PAGES = 20
-
-STATUS = {
-    "pending": RunStatus.PENDING,
-    "blocked": RunStatus.PENDING,
-    "created": RunStatus.PENDING,
-    "running": RunStatus.RUNNING,
-    "started": RunStatus.RUNNING,
-    "success": RunStatus.SUCCEEDED,
-    "failure": RunStatus.FAILED,
-    "error": RunStatus.FAILED,
-    "killed": RunStatus.CANCELLED,
-    "declined": RunStatus.CANCELLED,
-    "skipped": RunStatus.CANCELLED,
-}
 
 
 class WoodpeckerGrading:
@@ -159,6 +141,22 @@ class WoodpeckerGrading:
         )
         await self._delete_ci_webhooks(ref.org, ref.repo)
 
+    async def deactivate(self, as_: AsOrgAccount, task: TaskId) -> None:
+        """As the org account, which activated the repository: Woodpecker
+        asks the forge to drop its webhook with the credential of whoever
+        deactivates, and the org account's is the one kept fresh. `remove`
+        has the CI forget the repository rather than keep it switched off.
+        """
+        ref = parse_task(task)
+        account = _acting_for(as_, ref.org)
+        try:
+            repo = await self._lookup(account, ref.org, ref.repo)
+            await self._ci.call(
+                account, "DELETE", f"/api/repos/{repo['id']}", params={"remove": "true"}
+            )
+        except NotFound:
+            return
+
     def run_variables(self, run: GradingRun) -> Mapping[str, str]:
         workspace, task, _ = parse_submission(run.submission)
         return {
@@ -184,45 +182,6 @@ class WoodpeckerGrading:
         if not isinstance(body, dict) or not isinstance(body.get("number"), int):
             raise Rejected(f"the CI answered {started.status_code} without a run")
         return RunId(f"{repo['id']}/{body['number']}")
-
-    async def find_run(self, as_: AsOrgAccount, run: GradingRun, *, since: datetime) -> Run | None:
-        """Woodpecker lists a repository's runs newest first, each with the
-        variables it was started with and its status; `after` leaves out the
-        ones made before `since`.
-        """
-        ref = parse_task(run.task)
-        account = _acting_for(as_, ref.org)
-        repo = await self._lookup(account, ref.org, ref.repo)
-        after = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for page in range(1, FIND_PAGES + 1):
-            listed = await self._ci.call(
-                account,
-                "GET",
-                f"/api/repos/{repo['id']}/pipelines",
-                params={"page": page, "perPage": FIND_PAGE_SIZE, "after": after},
-            )
-            pipelines = listed.json() if listed.content else []
-            if not isinstance(pipelines, list):
-                raise Rejected("the CI listed its runs in a shape this package does not read")
-            for pipeline in pipelines:
-                variables = pipeline.get("variables") or {}
-                if variables.get(GRADING_VARIABLE) == str(run.grading):
-                    found = RunId(f"{repo['id']}/{pipeline['number']}")
-                    return Run(id=found, status=_status(found, pipeline))
-            if len(pipelines) < FIND_PAGE_SIZE:
-                return None
-        return None
-
-    async def read_run(self, run: RunId) -> Run:
-        repo_id, number = _parse_run(run)
-        state = json_of(
-            await self._ci.call(CI_ADMIN, "GET", f"/api/repos/{repo_id}/pipelines/{number}")
-        )
-        reported = str(state.get("status"))
-        if reported not in STATUS:
-            log.warning("grading.unknown_status", run=run, status=reported)
-            raise Rejected(f"the CI reports a run status this package does not know: {reported}")
-        return Run(id=run, status=STATUS[reported])
 
     async def cancel_run(self, run: RunId) -> None:
         repo_id, number = _parse_run(run)
@@ -290,7 +249,13 @@ class WoodpeckerGrading:
                     sha=places.submission["commit"],
                     ref=f"refs/tags/{places.submission['tag']}",
                     path=SUBMISSION_CHECKOUT,
-                    lfs=False,
+                    # Every file a contestant uploads is an object in the
+                    # forge's large-file store, and the commit holds a
+                    # pointer to it, so this checkout pulls them as the
+                    # task's does. Both share the org's store on the
+                    # machine, so a file is downloaded once however many
+                    # runs name it.
+                    lfs=True,
                     cache=cache,
                 ),
             ],
@@ -337,15 +302,23 @@ class WoodpeckerGrading:
             )
         return int(found["id"])
 
+    async def delete_ci_user(self, username: str) -> None:
+        """Woodpecker deletes a user's own org along with it, and when that
+        org is gone already it answers 404 and keeps the user (measured on
+        3.18.1), so a 404 is believed only once the user reads as gone too.
+        """
+        path = f"/api/users/{username}"
+        try:
+            await self._ci.call(CI_ADMIN, "DELETE", path)
+        except NotFound:
+            try:
+                await self._ci.call(CI_ADMIN, "GET", path)
+            except NotFound:
+                return
+            raise Rejected(f"the CI answered 404 to deleting {username} and kept it") from None
+
     async def mint_ci_token(self, username: str, forge_password: str) -> str:
         return await self._login.mint_token(username, forge_password)
-
-    async def ci_user_is_alive(self, as_: AsOrgAccount) -> bool:
-        try:
-            await self._ci.call(as_, "GET", "/api/user")
-        except Forbidden:
-            return False
-        return True
 
     async def _verify(self, request: CiRequest, now: datetime) -> None:
         """Check the request against the CI's key, reading the key again once
@@ -395,16 +368,6 @@ class WoodpeckerGrading:
                 await self._forge.call(
                     PLATFORM, "DELETE", f"/api/v1/repos/{org}/{repo}/hooks/{hook['id']}"
                 )
-
-
-def _status(run: RunId, pipeline: Mapping[str, Any]) -> RunStatus:
-    """A listed run's status; one this package does not know is taken as
-    still to begin, and read again by the overdue pass.
-    """
-    reported = str(pipeline.get("status"))
-    if reported not in STATUS:
-        log.warning("grading.unknown_status", run=run, status=reported)
-    return STATUS.get(reported, RunStatus.PENDING)
 
 
 def _verify_with(key: Ed25519PublicKey, request: CiRequest, now: datetime) -> None:

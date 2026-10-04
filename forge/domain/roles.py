@@ -6,18 +6,23 @@ covers every task in it. Admin outranks manager, which outranks observer.
 A contest and a task are each named two ways: as a `Scope`, where roles are
 held, and as the id the port hands out, `<org>/<contest>` and
 `<org>/<contest>/<task>`, which is what the tables store and what a place
-with files is called. `contest_id_of`, `task_id_of`, `place_of` and their
-inverses turn one into the other, and `workflow_id_of` gives the id a
-workflow reference is read by; together they are the one place outside the
-forge implementations that knows those shapes.
+with files is called. Both are made of keys (`forge.domain.keys`), never of
+the names people gave them, so a role, a row and a repository stay with
+the thing they were made for whatever it is called. A scope found from the
+names in an address carries those names as its `label`, for the messages a
+person reads; the label takes no part in comparing scopes.
+`contest_id_of`, `task_id_of`, `place_of` and their inverses turn one into
+the other; together they are the one place outside the forge
+implementations that knows those shapes.
 """
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from forge.domain.errors import NotFound
-from forge.domain.ids import ContestId, PrimitiveId, TaskId, WorkflowId
+from forge.domain.ids import ContestId, PrimitiveId, TaskId
+from forge.domain.names import ScopeNames
 from forge.domain.workflow_definition import WorkflowRef
 
 
@@ -38,11 +43,14 @@ class ScopeKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Scope:
-    """An org, a contest in an org, or a task in a contest."""
+    """An org, a contest in an org, or a task in a contest, by their keys,
+    with the names they were found by as `label` when they were.
+    """
 
     org: str
     contest: str | None = None
     task: str | None = None
+    label: str | None = field(default=None, compare=False)
 
     @property
     def kind(self) -> ScopeKind:
@@ -54,6 +62,14 @@ class Scope:
 
     @property
     def name(self) -> str:
+        """The names it was found by, or its keys when it was not found by
+        name.
+        """
+        return self.label or self.path
+
+    @property
+    def path(self) -> str:
+        """Its keys joined, the shape of the id of what it names."""
         return "/".join(part for part in (self.org, self.contest, self.task) if part)
 
     def lineage(self) -> tuple[Scope, ...]:
@@ -81,6 +97,17 @@ class Scope:
 class RoleGrant:
     scope: Scope
     role: Role
+
+
+@dataclass(frozen=True, slots=True)
+class HeldRole:
+    """A role someone holds, at a scope, with the names of everything the
+    scope reaches, for showing it to a person.
+    """
+
+    scope: Scope
+    role: Role
+    names: ScopeNames
 
 
 def holds(grants: Iterable[RoleGrant], scope: Scope, role: Role) -> bool:
@@ -145,13 +172,6 @@ def scope_of_place(place: str) -> Scope:
     if len(parts) not in (2, 3) or not all(parts):
         raise NotFound(f"{place} is neither a contest nor a task")
     return Scope(*parts)
-
-
-def workflow_id_of(ref: WorkflowRef) -> WorkflowId:
-    """The id of the workflow a reference names, `<owner>/<name>`; the
-    version is given to the read beside it.
-    """
-    return WorkflowId(f"{ref.owner}/{ref.name}")
 
 
 PRIMITIVE_OWNER = "unicon"

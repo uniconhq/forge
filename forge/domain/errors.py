@@ -284,12 +284,6 @@ class NotApproved(SubmitRefused):
     code = "not_approved"
 
 
-class WorkspaceNotReady(SubmitRefused):
-    """The contestant's place to submit the task is still being made."""
-
-    code = "workspace_not_ready"
-
-
 class SubmissionLimit(SubmitRefused):
     """The contestant has made every submission the task allows. `limit` is
     how many that is.
@@ -361,6 +355,14 @@ class LogTooLarge(ServiceError):
     code = "log_too_large"
 
 
+class FileTooLarge(ServiceError):
+    """A submitted file is larger than the platform reads back to the person
+    who submitted it. `limit` is the most read, in bytes.
+    """
+
+    code = "file_too_large"
+
+
 class InvalidIdempotencyKey(ServiceError):
     """A submit's idempotency key is missing or not the short random text a
     browser makes once per submit.
@@ -389,8 +391,7 @@ class InvalidToken(ServiceError):
 
 class GradingClosed(ServiceError):
     """The grading takes no more from its run: it is not the run's to report
-    on now, because it finished, was cancelled or requeued, or its deadline
-    passed.
+    on now, because it finished or was cancelled, or its deadline passed.
     """
 
     code = "grading_closed"

@@ -1,9 +1,11 @@
-"""Creating an org is a request answered at once and ten recorded steps the
-poller runs; its name leaves room for its service account's; a failure at
-any step is named and a rerun does not repeat the steps before it; the
-service account's password is never written or logged; the setting closes
-creation to everyone but the operator; and an org's admin, not its manager,
-changes what the org says about itself.
+"""Creating an org makes everything it needs before the request answers; its
+name leaves room for its service account's; a failure at any step fails the
+request, records nothing, removes what the earlier steps made at the forge
+and the CI, and leaves the name free for the next try, and so does a commit
+that fails after every step; a removal that fails is logged and the step's
+own error is raised; the service account's password is never written or
+logged; the setting closes creation to everyone but the operator; and an
+org's admin, not its manager, changes what the org says about itself.
 """
 
 import logging
@@ -12,45 +14,45 @@ from typing import Any
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, Unavailable
-from forge.domain.ids import OrgName
+from forge.domain.errors import (
+    Conflict,
+    Forbidden,
+    InvalidName,
+    NotFound,
+    Rejected,
+    Unavailable,
+)
+from forge.domain.ids import OrgId
+from forge.domain.keys import key_from_name
+from forge.domain.names import Named
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
 from forge.log import JsonFormatter
 from forge.runtime.context import Context
-from forge.runtime.setup import MAKERS, Setup
-from forge.services import access, org_accounts, orgs, provisioning, sessions
-from forge.services.provisioning import Record
+from forge.runtime.setup import Setup
+from forge.services import access, making, names, org_accounts, orgs, sessions
 from forge.settings import Settings
-from forge.testing import APP_URL, CALLBACK_PATH, FORGE_URL, FakeClock
+from forge.testing import APP_URL, CALLBACK_PATH, FORGE_URL, FakeClock, logged
+from tests.services.conftest import forge_state
 
-ACME = OrgName("acme")
+ACME = OrgId("acme")
 STEPS = [
-    "account_row",
-    "org",
-    "roles",
-    "labels",
-    "event_push",
-    "first_admin",
-    "service_account",
-    "service_token",
-    "ci_user",
-    "ci_login",
+    ("orgs", "create_org"),
+    ("orgs", "create_roles"),
+    ("orgs", "create_thread_labels"),
+    ("orgs", "create_event_push"),
+    ("orgs", "grant_role"),
+    ("identity", "create_user"),
+    ("orgs", "ensure_account_membership"),
+    ("identity", "mint_token"),
+    ("grading", "create_ci_user"),
+    ("grading", "mint_ci_token"),
 ]
-OPERATIONS = [
-    "create_org",
-    "create_roles",
-    "create_thread_labels",
-    "create_event_push",
-    "grant_role",
-    "create_user",
-    "ensure_account_membership",
-    "mint_token",
-    "create_ci_user",
-    "mint_ci_token",
-]
+OPERATIONS = [operation for _, operation in STEPS]
+REMOVALS = ["delete_ci_user", "remove_account_membership", "delete_user", "delete_org"]
 
 
 @pytest.fixture
@@ -61,37 +63,21 @@ async def ada(setup: Setup, fake: FakeForge) -> Session:
         )
 
 
-async def _tick(setup: Setup) -> int:
-    return await provisioning.poller(MAKERS).tick(setup.unit_of_work)
-
-
-async def _record(setup: Setup, name: str) -> Record:
+async def _nothing_recorded(setup: Setup, name: str) -> None:
     async with setup.unit_of_work() as ctx:
-        record = await provisioning.record_of(ctx, "org", name)
-    assert record is not None
-    return record
+        assert await names.org_id(ctx, name) is None
+        assert await org_accounts.org_ids(ctx) == ()
 
 
-async def test_create_answers_at_once_and_the_poller_makes_the_org(
-    setup: Setup, fake: FakeForge, ada: Session
+async def test_create_makes_the_org_before_it_answers(
+    setup: Setup, fake: FakeForge, ada: Session, caplog: pytest.LogCaptureFixture
 ) -> None:
-    record = await orgs.create(setup, ada, ACME, description="Acme")
+    caplog.set_level(logging.INFO)
+    made = await orgs.create(setup, ada, ACME, description="Acme")
 
-    assert (record.status, record.kind, record.target_id) == ("pending", "org", "acme")
-    assert [call.operation for call in fake.calls] == ["name_taken"]
-    fake.reset_calls()
-
-    assert await _tick(setup) == 1
-
-    done = await _record(setup, "acme")
-    assert (done.status, done.last_step, done.attempts, done.error) == (
-        "ready",
-        "ci_login",
-        1,
-        None,
-    )
-    assert (done.steps, done.failed_step, done.retry_at) == (tuple(STEPS), None, None)
-    assert [call.operation for call in fake.calls] == OPERATIONS
+    assert made == Named(ACME, "acme")
+    assert [call.operation for call in fake.calls] == ["name_taken", *OPERATIONS]
+    assert logged(caplog, "orgs.undone") == []
     org = fake.state.orgs["acme"]
     assert org.roles_ready is True
     assert org.labels == {"announcement", "clarification", "answered"}
@@ -107,34 +93,11 @@ async def test_create_answers_at_once_and_the_poller_makes_the_org(
     assert identity.org == "acme"
     assert fake.state.tokens[identity.forge_token] == account.id
     assert fake.state.ci_tokens[identity.ci_token] == "unicon-ci-acme"
-    assert await _tick(setup) == 0
-
-
-async def test_the_status_follows_the_row_for_the_person_who_asked(
-    setup: Setup, fake: FakeForge, ada: Session
-) -> None:
-    async with setup.unit_of_work() as ctx:
-        bob = await sessions.create(
-            ctx, user=fake.users[8], credential=fake.mint(8), ip=None, user_agent=None
-        )
-    assert await orgs.status(setup, ada, ACME) is None
-    await orgs.create(setup, ada, ACME, description="Acme")
-    pending = await orgs.status(setup, ada, ACME)
-    assert pending is not None
-    assert pending.status == "pending"
-    assert await orgs.status(setup, bob, ACME) is None
-    await _tick(setup)
-    ready = await orgs.status(setup, ada, ACME)
-    assert ready is not None
-    assert ready.status == "ready"
 
 
 async def test_a_second_create_of_the_same_name_is_a_conflict(setup: Setup, ada: Session) -> None:
     await orgs.create(setup, ada, ACME, description="Acme")
-    with pytest.raises(Conflict, match="being made"):
-        await orgs.create(setup, ada, ACME, description="Again")
-    await _tick(setup)
-    with pytest.raises(Conflict, match="already exists"):
+    with pytest.raises(Conflict, match="'acme' is taken"):
         await orgs.create(setup, ada, ACME, description="Again")
 
 
@@ -142,20 +105,18 @@ async def test_an_invalid_name_is_refused_before_anything_is_written(
     setup: Setup, ada: Session
 ) -> None:
     with pytest.raises(InvalidName):
-        await orgs.create(setup, ada, OrgName("Acme!"), description="Acme")
-    async with setup.unit_of_work() as ctx:
-        assert await provisioning.record_of(ctx, "org", "Acme!") is None
+        await orgs.create(setup, ada, OrgId("Acme!"), description="Acme")
+    await _nothing_recorded(setup, "Acme!")
 
 
-async def test_an_org_name_leaves_room_for_its_service_accounts(setup: Setup, ada: Session) -> None:
-    longest = OrgName("a" * 30)
+async def test_an_org_name_is_at_most_40_characters(setup: Setup, ada: Session) -> None:
+    longest = OrgId("a" * 40)
 
-    with pytest.raises(InvalidName, match="longer than 30"):
-        await orgs.create(setup, ada, OrgName("a" * 31), description="Too long")
-    await orgs.create(setup, ada, longest, description="Just right")
-    await _tick(setup)
+    with pytest.raises(InvalidName, match="longer than 40"):
+        await orgs.create(setup, ada, OrgId("a" * 41), description="Too long")
+    made = await orgs.create(setup, ada, longest, description="Just right")
 
-    assert (await _record(setup, longest)).status == "ready"
+    assert made.name == longest
 
 
 async def test_a_name_a_person_or_an_org_has_at_the_forge_is_refused_at_once(
@@ -164,13 +125,12 @@ async def test_a_name_a_person_or_an_org_has_at_the_forge_is_refused_at_once(
     fake.add_user(30, "Taken")
 
     with pytest.raises(Conflict, match="taken at the forge"):
-        await orgs.create(setup, ada, OrgName("taken"), description="Taken")
+        await orgs.create(setup, ada, OrgId("taken"), description="Taken")
     with pytest.raises(Conflict, match="taken at the forge"):
         await orgs.create_by_operator(
-            setup, OrgName("taken"), description="Taken", admin_username="ada"
+            setup, OrgId("taken"), description="Taken", admin_username="ada"
         )
-    async with setup.unit_of_work() as ctx:
-        assert await provisioning.record_of(ctx, "org", "taken") is None
+    await _nothing_recorded(setup, "taken")
     assert fake.calls_to("create_org") == []
 
 
@@ -184,7 +144,9 @@ async def closed_setup(
         forge_public_url=FORGE_URL,
         org_creation_open=False,
     )
-    built = Setup.build(settings, callback_path=CALLBACK_PATH, forge=fake, clock=clock)
+    built = Setup.build(
+        settings, callback_path=CALLBACK_PATH, forge=fake, clock=clock, keys=key_from_name
+    )
     try:
         yield built
     finally:
@@ -203,11 +165,11 @@ async def test_with_creation_closed_only_the_operator_makes_an_org(
         await orgs.create(closed_setup, session, ACME, description="Acme")
     assert fake.calls == []
 
-    record = await orgs.create_by_operator(
+    made = await orgs.create_by_operator(
         closed_setup, ACME, description="Acme", admin_username="Bob"
     )
 
-    assert (record.status, record.last_step, record.attempts) == ("ready", "ci_login", 1)
+    assert made == Named(ACME, "acme")
     assert 8 in fake.state.orgs["acme"].roles[(Scope("acme"), Role.ADMIN)]
     async with closed_setup.unit_of_work() as ctx:
         assert (await org_accounts.identity(ctx, ACME)).org == "acme"
@@ -216,96 +178,132 @@ async def test_with_creation_closed_only_the_operator_makes_an_org(
 async def test_the_operator_must_name_a_user_the_forge_knows(setup: Setup) -> None:
     with pytest.raises(NotFound, match="no user named 'nobody'"):
         await orgs.create_by_operator(setup, ACME, description="Acme", admin_username="nobody")
-    async with setup.unit_of_work() as ctx:
-        assert await provisioning.record_of(ctx, "org", "acme") is None
+    await _nothing_recorded(setup, "acme")
 
 
-async def test_an_operators_org_that_fails_halfway_is_left_for_the_poller(
-    setup: Setup, fake: FakeForge, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    original = fake.grading.create_ci_user
-
-    async def broken(username: str) -> int:
-        raise Unavailable("the CI went away")
-
-    monkeypatch.setattr(fake.grading, "create_ci_user", broken)
-    failed = await orgs.create_by_operator(setup, ACME, description="Acme", admin_username="ada")
-    assert (failed.status, failed.last_step, failed.failed_step) == (
-        "failed",
-        "service_token",
-        "ci_user",
-    )
-    assert failed.error == "the forge or the CI did not answer"
-
-    monkeypatch.setattr(fake.grading, "create_ci_user", original)
-    await _tick(setup)
-
-    assert (await _record(setup, "acme")).status == "ready"
-
-
-@pytest.mark.parametrize(
-    ("step", "area", "operation"),
-    [
-        ("org", "orgs", "create_org"),
-        ("roles", "orgs", "create_roles"),
-        ("labels", "orgs", "create_thread_labels"),
-        ("event_push", "orgs", "create_event_push"),
-        ("first_admin", "orgs", "grant_role"),
-        ("service_account", "identity", "create_user"),
-        ("service_token", "identity", "mint_token"),
-        ("ci_user", "grading", "create_ci_user"),
-        ("ci_login", "grading", "mint_ci_token"),
-    ],
-)
-async def test_a_failure_at_any_step_is_named_and_a_rerun_does_not_repeat_earlier_steps(
+@pytest.mark.parametrize(("area", "operation"), STEPS)
+async def test_a_failure_at_any_step_removes_what_the_earlier_ones_made_and_the_next_try_works(
     setup: Setup,
     fake: FakeForge,
     ada: Session,
     monkeypatch: pytest.MonkeyPatch,
-    step: str,
+    caplog: pytest.LogCaptureFixture,
     area: str,
     operation: str,
 ) -> None:
+    caplog.set_level(logging.INFO)
     target = getattr(fake, area)
     original = getattr(target, operation)
+    before = forge_state(fake)
 
     async def broken(*args: Any, **kwargs: Any) -> Any:
         raise Unavailable("the forge went away")
 
     monkeypatch.setattr(target, operation, broken)
-    await orgs.create(setup, ada, ACME, description="Acme")
-    await _tick(setup)
+    with pytest.raises(Unavailable) as failed:
+        await orgs.create(setup, ada, ACME, description="Acme")
 
-    failed = await _record(setup, "acme")
-    assert failed.status == "failed"
-    assert failed.error == "the forge or the CI did not answer"
-    assert failed.failed_step == step
-    assert failed.last_step == STEPS[STEPS.index(step) - 1]
-    assert failed.steps == tuple(STEPS)
-    assert failed.retry_at is not None
-    assert failed.attempts == 1
+    assert failed.value.detail == making.NO_ANSWER
+    assert forge_state(fake) == before
+    await _nothing_recorded(setup, "acme")
+    assert logged(caplog, "orgs.undo_left") == []
+    assert len(logged(caplog, "orgs.undone")) == (0 if operation == "create_org" else 1)
 
     monkeypatch.setattr(target, operation, original)
-    fake.reset_calls()
-    await _tick(setup)
+    made = await orgs.create(setup, ada, ACME, description="Acme")
 
-    done = await _record(setup, "acme")
-    assert (done.status, done.last_step, done.attempts, done.error) == (
-        "ready",
-        "ci_login",
-        2,
-        None,
+    assert made == Named(ACME, "acme")
+    async with setup.unit_of_work() as ctx:
+        assert (await org_accounts.identity(ctx, ACME)).org == "acme"
+
+
+async def test_the_org_is_undone_in_the_reverse_of_the_order_it_was_made(
+    setup: Setup, fake: FakeForge, ada: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(*args: Any, **kwargs: Any) -> Any:
+        raise Unavailable("the CI went away")
+
+    monkeypatch.setattr(fake.grading, "mint_ci_token", broken)
+    with pytest.raises(Unavailable):
+        await orgs.create(setup, ada, ACME, description="Acme")
+
+    assert fake.calls_to("create_user")
+    assert [call.operation for call in fake.calls if call.operation in REMOVALS] == REMOVALS
+    assert fake.calls_to("delete_ci_user")[0].arguments == {"username": "unicon-ci-acme"}
+    (deleted,) = fake.calls_to("delete_user")
+    assert deleted.arguments["user_id"] not in fake.state.users
+    assert fake.calls_to("delete_org")[0].arguments == {"name": "acme"}
+
+
+async def test_an_error_that_is_not_the_forges_is_raised_as_it_is_and_still_undoes(
+    setup: Setup, fake: FakeForge, ada: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = forge_state(fake)
+    bug = RuntimeError("a bug halfway")
+
+    async def broken(*args: Any, **kwargs: Any) -> Any:
+        raise bug
+
+    monkeypatch.setattr(fake.identity, "mint_token", broken)
+    with pytest.raises(RuntimeError) as failed:
+        await orgs.create(setup, ada, ACME, description="Acme")
+
+    assert failed.value is bug
+    assert forge_state(fake) == before
+
+
+async def test_a_removal_that_fails_is_logged_and_the_steps_own_error_is_raised(
+    setup: Setup,
+    fake: FakeForge,
+    ada: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+
+    async def refused(*args: Any, **kwargs: Any) -> Any:
+        raise Rejected("the CI said no")
+
+    async def down(*args: Any, **kwargs: Any) -> Any:
+        raise Unavailable("the forge went away")
+
+    monkeypatch.setattr(fake.grading, "mint_ci_token", refused)
+    monkeypatch.setattr(fake.orgs, "delete_org", down)
+    with pytest.raises(Rejected) as failed:
+        await orgs.create(setup, ada, ACME, description="Acme")
+
+    assert failed.value.detail == making.SAID[Rejected]
+    (left,) = logged(caplog, "orgs.undo_left")
+    assert (left["level"], left["kind"], left["key"], left["org"], left["error"]) == (
+        "WARNING",
+        "org",
+        "acme",
+        "acme",
+        "Unavailable",
     )
-    later = [call.operation for call in fake.calls]
-    assert operation in later
-    earlier_steps = OPERATIONS[: OPERATIONS.index(operation)]
-    repeated = [name for name in later if name in earlier_steps]
-    if operation == "mint_token":
-        assert repeated == ["ensure_account_membership"]
-    else:
-        assert repeated == []
-    if step in ("service_token", "ci_login"):
-        assert later[0] == "set_password"
+    assert logged(caplog, "orgs.undone") == []
+    assert "acme" in fake.state.orgs
+    assert all(user.username != "unicon-ci-acme" for user in fake.state.users.values())
+    assert fake.state.ci_users == {}
+    await _nothing_recorded(setup, "acme")
+
+
+async def test_a_commit_that_fails_after_every_step_removes_what_they_made(
+    setup: Setup, fake: FakeForge, ada: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = forge_state(fake)
+
+    async def refuse(self: AsyncSession) -> None:
+        raise RuntimeError("the database went away at commit")
+
+    monkeypatch.setattr(AsyncSession, "commit", refuse)
+    with pytest.raises(RuntimeError, match="went away at commit"):
+        await orgs.create(setup, ada, ACME, description="Acme")
+    monkeypatch.undo()
+
+    assert fake.calls_to("mint_ci_token")
+    assert forge_state(fake) == before
+    await _nothing_recorded(setup, "acme")
 
 
 async def test_the_service_accounts_password_is_never_written_or_logged(
@@ -313,7 +311,6 @@ async def test_the_service_accounts_password_is_never_written_or_logged(
 ) -> None:
     caplog.set_level(logging.DEBUG)
     await orgs.create(setup, ada, ACME, description="Acme")
-    await _tick(setup)
     account = fake.state.user_named("unicon-ci-acme")
     password = fake.state.passwords[account.id]
     assert len(password) >= 24
@@ -326,9 +323,8 @@ async def test_the_service_accounts_password_is_never_written_or_logged(
     async with setup.unit_of_work() as ctx:
         identity = await org_accounts.identity(ctx, ACME)
         rows = (await ctx.db.execute(text("select * from org_accounts"))).mappings().all()
-        jobs = (await ctx.db.execute(text("select * from provisioning"))).mappings().all()
     (row,) = rows
-    for value in [*row.values(), *jobs[0].values()]:
+    for value in row.values():
         blob = value if isinstance(value, bytes) else str(value).encode()
         assert password.encode() not in blob
         assert identity.forge_token.encode() not in blob
@@ -382,44 +378,30 @@ async def test_a_service_account_name_someone_else_took_is_refused_and_not_adopt
 ) -> None:
     squatter = fake.add_user(40, "Unicon-CI-acme")
     fake.state.passwords[squatter.id] = "the squatter's own"
-    await orgs.create(setup, ada, ACME, description="Acme")
-    await _tick(setup)
 
-    failed = await _record(setup, "acme")
-    assert (failed.status, failed.last_step, failed.failed_step) == (
-        "failed",
-        "first_admin",
-        "service_account",
-    )
-    assert failed.error == "the forge already holds something by this name"
+    with pytest.raises(Conflict):
+        await orgs.create(setup, ada, ACME, description="Acme")
+
+    await _nothing_recorded(setup, "acme")
+    assert fake.state.users[squatter.id] == squatter
     assert fake.state.passwords[squatter.id] == "the squatter's own"
     assert fake.calls_to("set_password") == []
     assert fake.calls_to("ensure_account_membership") == []
+    assert fake.calls_to("delete_user") == []
+    assert "acme" not in fake.state.orgs
 
 
 async def test_a_name_someone_took_between_the_check_and_the_step_is_refused(
-    setup: Setup, fake: FakeForge, ada: Session
+    setup: Setup, fake: FakeForge, ada: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    await orgs.create(setup, ada, ACME, description="Acme")
-    fake.add_user(31, "acme")
+    async def taken_meanwhile(name: str) -> bool:
+        fake.add_user(31, "acme")
+        return False
 
-    await _tick(setup)
+    monkeypatch.setattr(fake.orgs, "name_taken", taken_meanwhile)
 
-    failed = await _record(setup, "acme")
-    assert (failed.status, failed.failed_step) == ("failed", "org")
-    assert failed.error == "the forge already holds something by this name"
+    with pytest.raises(Conflict):
+        await orgs.create(setup, ada, ACME, description="Acme")
+
     assert "acme" not in fake.state.orgs
     assert fake.calls_to("create_roles") == []
-
-
-async def test_an_org_an_earlier_try_made_is_taken_as_made(
-    setup: Setup, fake: FakeForge, ada: Session
-) -> None:
-    await orgs.create(setup, ada, ACME, description="Acme")
-    await fake.orgs.create_org(ACME, description="Acme")
-
-    await _tick(setup)
-
-    done = await _record(setup, "acme")
-    assert done.status == "ready"
-    assert [call.operation for call in fake.calls_to("platform_owns")] == ["platform_owns"]

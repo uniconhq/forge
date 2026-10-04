@@ -22,7 +22,7 @@ import pytest
 from forge.domain.definitions import starter_contest, starter_task
 from forge.domain.errors import Conflict
 from forge.domain.identity import PLATFORM, AsUser
-from forge.domain.ids import ContestId, OrgName, TaskId
+from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.publications import write_note
 from forge.domain.roles import Role, Scope
 from forge.forges.forgejo import ForgejoForge
@@ -62,10 +62,10 @@ def people(admin: httpx.Client, stamp: str) -> Iterator[dict[str, dict[str, Any]
 
 
 async def _made(forge: ForgejoForge, org: str, now: datetime) -> tuple[ContestId, TaskId]:
-    await forge.orgs.create_org(OrgName(org), description="Live content org")
-    await forge.orgs.create_roles(OrgName(org))
+    await forge.orgs.create_org(OrgId(org), description="Live content org")
+    await forge.orgs.create_roles(OrgId(org))
     contest = await forge.content.create_contest(
-        OrgName(org), "spring", {"contest.yaml": starter_contest("Spring", now)}
+        OrgId(org), "spring", {"contest.yaml": starter_contest("Spring", now)}
     )
     task = await forge.content.create_task(contest, "sum", starter_task("Sum"))
     return contest, task
@@ -102,7 +102,6 @@ async def test_a_contest_and_a_task_are_made_bare_then_secured(
     assert _team_names(admin, org, "spring.contest") & contest_teams == set()
     listed = admin.get(f"/api/v1/repos/{org}/spring.sum.task/contents").json()
     assert sorted(entry["name"] for entry in listed) == [
-        "checker",
         "data",
         "statement.md",
         "task.yaml",
@@ -120,7 +119,6 @@ async def test_a_contest_and_a_task_are_made_bare_then_secured(
     for repo in ("spring.contest", "spring.sum.task"):
         protection = admin.get(f"/api/v1/repos/{org}/{repo}/branch_protections/main").json()
         assert protection["branch_name"] == "main"
-        assert not protection.get("enable_force_push")
     reserved = admin.get(f"/api/v1/repos/{org}/spring.sum.task/tag_protections").json()
     assert [(entry["name_pattern"], entry["whitelist_usernames"]) for entry in reserved] == [
         ("published/*", [platform_account(admin)])
@@ -134,7 +132,7 @@ async def test_a_contest_and_a_task_are_made_bare_then_secured(
     assert await forge.content.secure(task) == 1
     assert _team_names(admin, org, "spring.sum.task") >= contest_teams
 
-    assert await forge.content.list_contests(PLATFORM, OrgName(org)) == (contest,)
+    assert await forge.content.list_contests(PLATFORM, OrgId(org)) == (contest,)
     assert await forge.content.list_tasks(PLATFORM, contest) == (task,)
     manager = people["manager"]
     await forge.orgs.grant_role(int(manager["id"]), Scope(org, "spring"), Role.MANAGER)

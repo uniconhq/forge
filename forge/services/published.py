@@ -29,32 +29,29 @@ from forge.domain.errors import NotFound, PortError
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.publications import Publication
-from forge.domain.roles import task_scope
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import org_accounts
+from forge.services import names, org_accounts
 
 log = get_logger(__name__)
 
-NO_SUCH_CONTEST = "There is no such contest."
-NO_SUCH_TASK = "There is no such task."
+NO_SUCH_CONTEST = names.NO_SUCH_CONTEST
+NO_SUCH_TASK = names.NO_SUCH_TASK
 
 
 @dataclass(frozen=True, slots=True)
 class PublishedTask:
-    """A task as its latest publication froze it, with its place in the
-    contest's `tasks` list when the contest gives it one.
+    """A task as its latest publication froze it, by its name, with its place
+    in the contest's `tasks` list, which names it, when the contest gives it
+    one.
     """
 
     id: TaskId
+    name: str
     publication: Publication
     definition: TaskDefinition
     entry: ContestTask | None
-
-    @property
-    def name(self) -> str:
-        return str(task_scope(self.id).task)
 
     @property
     def label(self) -> str:
@@ -82,12 +79,17 @@ async def contest(ctx: Context, contest: ContestId) -> ContestDefinition:
 
 
 async def task(
-    ctx: Context, task: TaskId, settings: ContestDefinition | None = None
+    ctx: Context, task: TaskId, settings: ContestDefinition | None = None, name: str | None = None
 ) -> PublishedTask | None:
     """The task as its latest publication froze it, placed in the contest's
     `tasks` list when `settings` are given, or none while it has no
-    publication or is not there at all.
+    publication, no name or is not there at all. `name` saves reading it
+    again when the caller has it.
     """
+    if name is None:
+        name = (await names.names_of(ctx, [task])).get(task)
+        if name is None:
+            return None
     try:
         publications = await ctx.forge.workspaces.list_publications(task)
     except NotFound:
@@ -101,7 +103,7 @@ async def task(
     except InvalidDefinition:
         return None
     entries = {entry.id: entry for entry in settings.tasks} if settings is not None else {}
-    return PublishedTask(task, latest, definition, entries.get(str(task_scope(task).task)))
+    return PublishedTask(task, name, latest, definition, entries.get(name))
 
 
 async def tasks(
@@ -112,8 +114,8 @@ async def tasks(
     """
     found = [
         published
-        for task_id in await ctx.forge.content.list_tasks(PLATFORM, contest)
-        if (published := await task(ctx, task_id, settings)) is not None
+        for each in await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
+        if (published := await task(ctx, TaskId(each.id), settings, each.name)) is not None
     ]
     order = {entry.id: index for index, entry in enumerate(settings.tasks)}
     return sorted(
@@ -140,7 +142,7 @@ async def every_contest(ctx: Context) -> list[tuple[ContestId, ContestDefinition
     logged, so one broken place does not hide the rest.
     """
     found: list[tuple[ContestId, ContestDefinition]] = []
-    for org in await org_accounts.org_names(ctx):
+    for org in await org_accounts.org_ids(ctx):
         try:
             contests = await ctx.forge.content.list_contests(PLATFORM, org)
         except PortError as exc:

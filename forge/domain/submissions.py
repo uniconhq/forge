@@ -1,6 +1,6 @@
 """A submission: what a contestant gives for each of a task's contestant
 inputs, checked against those inputs, and the one commit it becomes in their
-place to submit the task (the runner's `submission.schema.json`, version 3):
+place to submit the task (the runner's `submission.schema.json`, version 4):
 
 - `files/<input id>/<file name>` for every file of a `code`, `file` or
   `file[]` input, and nothing else;
@@ -8,7 +8,7 @@ place to submit the task (the runner's `submission.schema.json`, version 3):
   input, the language chosen, or giving a text, number or true-or-false
   input its value.
 
-    {"schema_version": 3, "inputs": {
+    {"schema_version": 4, "inputs": {
       "submission": {"files": ["files/submission/main.py"], "language": "python"},
       "alpha": {"value": 0.5}}}
 
@@ -39,7 +39,7 @@ from forge.domain.uploads import FILE_INPUTS
 from forge.domain.workflow_definition import InputType
 from forge.domain.yaml_models import is_number
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SUBMISSION_FILE = "submission.json"
 FILES_FOLDER = "files"
 TEXT_MAX = 64 * 1024

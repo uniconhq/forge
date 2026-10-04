@@ -17,6 +17,7 @@ from forge.forges.fake.objects import FakeObjects
 from forge.forges.fake.orgs import FakeOrgs
 from forge.forges.fake.state import Call, State
 from forge.forges.fake.threads import FakeThreads
+from forge.forges.fake.uploads import FakeUploads
 from forge.forges.fake.workflows import FakePrimitives, FakeWorkflows
 from forge.forges.fake.workspaces import FakeWorkspaces
 
@@ -38,7 +39,8 @@ class FakeForge:
         self.orgs = FakeOrgs(self.state)
         self.content = FakeContent(self.state)
         self.grading = FakeGrading(self.state)
-        self.workspaces = FakeWorkspaces(self.state)
+        self.uploads = FakeUploads()
+        self.workspaces = FakeWorkspaces(self.state, self.uploads)
         self.threads = FakeThreads(self.state)
         self.workflows = FakeWorkflows(self.state)
         self.primitives = FakePrimitives(self.state)
@@ -133,10 +135,3 @@ class FakeForge:
     @lose_submission_answer.setter
     def lose_submission_answer(self, value: bool) -> None:
         self.state.lose_submission_answer = value
-
-    @property
-    def ci_dead(self) -> set[str]:
-        """The usernames whose CI sign-in has gone: the CI no longer answers
-        their token until the sign-in dance is run for them again.
-        """
-        return self.state.ci_dead

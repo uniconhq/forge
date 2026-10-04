@@ -2,7 +2,7 @@
 breaks a rule is refused with that rule's code; one that breaks none is one
 pending row, and nothing is written at the forge. Two registrations for the
 last place leave one row. A contest set to approve on its own approves at
-once and asks for the workspace. An organiser managing the contest approves,
+once. An organiser managing the contest approves,
 rejects with a reason, reopens a rejection, removes and extends, each only
 from the statuses it is allowed from; anyone observing it lists the registrations, and nobody
 else does.
@@ -14,7 +14,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from forge.db.tables import Contestant, Invite, Provisioning
+from forge.db.tables import Contestant
 from forge.domain.errors import (
     AlreadyRegistered,
     ContestantConflict,
@@ -31,13 +31,13 @@ from forge.domain.errors import (
     WrongInviteCode,
     WrongStatus,
 )
-from forge.domain.registration import Status, WorkspaceState
+from forge.domain.ids import TaskId, WorkspaceId
+from forge.domain.registration import Status
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.runtime.setup import Setup
 from forge.services import contestants, contests, roles
 from forge.services.access import Organiser
-from forge.testing import tick
 from tests.services.conftest import ACME, SPRING, Acme, organiser, signed_in, write_contest
 
 READS = {"read_file", "find_user", "roles_of_user"}
@@ -96,11 +96,7 @@ async def test_a_passing_registration_is_one_pending_row_and_writes_nothing_at_t
 
     registered = await _register(setup, people, 8)
 
-    assert (registered.status, registered.user_id, registered.workspace) == (
-        Status.PENDING,
-        8,
-        None,
-    )
+    assert (registered.status, registered.user_id) == (Status.PENDING, 8)
     assert registered.user is not None and registered.user.username == "bob"
     (row,) = await _rows(setup)
     assert (row.contest_id, row.status, row.eligibility) == ("acme/spring", "pending", {})
@@ -148,31 +144,16 @@ async def test_a_person_breaking_no_rule_passes_every_one_and_keeps_what_let_the
     await write_contest(
         people.fake,
         settings(
-            mode="invite-only",
             eligibility="{invite_code: sesame, email_pattern: '.*@u\\.nus\\.edu'}",
             capacity="1",
         ),
     )
-    async with setup.unit_of_work() as ctx:
-        ctx.db.add(
-            Invite(
-                scope_kind="contest",
-                scope_id="acme/spring",
-                target_user_id=20,
-                grants={"contestant": True},
-                token_hash=b"\x01" * 32,
-                invited_by_user_id=7,
-                expires_at=ctx.now + timedelta(days=1),
-                status="accepted",
-                accepted_by_user_id=20,
-            )
-        )
 
     registered = await _register(setup, people, 20, invite_code="sesame")
 
     assert registered.status is Status.PENDING
     (row,) = await _rows(setup)
-    assert row.eligibility == {"invited": True, "invite_code": True, "email": "cyd@u.nus.edu"}
+    assert row.eligibility == {"invite_code": True, "email": "cyd@u.nus.edu"}
 
 
 async def test_an_address_the_forge_never_confirmed_does_not_let_anyone_in(
@@ -240,21 +221,18 @@ async def test_a_contest_the_person_may_not_see_is_no_such_contest(
         await _register(setup, people, 8)
 
 
-async def test_a_contest_that_approves_on_its_own_approves_at_once_and_asks_for_the_workspace(
+async def test_a_contest_that_approves_on_its_own_approves_at_once(
     setup: Setup, people: Acme, spring: str
 ) -> None:
     await write_contest(people.fake, settings(approval="auto"))
+    people.fake.reset_calls()
 
     registered = await _register(setup, people, 8)
 
-    assert (registered.status, registered.workspace) == (Status.APPROVED, WorkspaceState.PREPARING)
+    assert registered.status == Status.APPROVED
     (row,) = await _rows(setup)
     assert (row.decided_by_user_id, row.decided_at) == (None, row.registered_at)
-    async with setup.unit_of_work() as ctx:
-        (asked,) = (
-            await ctx.db.execute(select(Provisioning).where(Provisioning.kind == "workspace"))
-        ).scalars()
-    assert (asked.kind, asked.target_id, asked.status) == ("workspace", str(row.id), "pending")
+    assert {call.operation for call in people.fake.calls} <= READS
 
 
 async def test_a_role_cannot_be_given_to_someone_who_registered(
@@ -267,7 +245,7 @@ async def test_a_role_cannot_be_given_to_someone_who_registered(
         await roles.grant(setup, manager, Scope("acme", "spring"), "bob", Role.OBSERVER)
 
 
-async def test_an_organiser_approves_and_the_workspace_is_asked_for(
+async def test_an_organiser_approves(
     setup: Setup, people: Acme, spring: str, manager: Organiser
 ) -> None:
     await write_contest(people.fake, settings())
@@ -275,7 +253,7 @@ async def test_an_organiser_approves_and_the_workspace_is_asked_for(
 
     approved = await contestants.approve(setup, manager, SPRING, 8)
 
-    assert (approved.status, approved.workspace) == (Status.APPROVED, WorkspaceState.PREPARING)
+    assert approved.status == Status.APPROVED
     (row,) = await _rows(setup)
     assert row.decided_by_user_id == 7
     with pytest.raises(WrongStatus) as refused:
@@ -362,15 +340,17 @@ async def test_removing_is_for_an_approved_contestant_and_takes_their_access_awa
     with pytest.raises(WrongStatus):
         await contestants.remove(setup, manager, SPRING, 8)
     await contestants.approve(setup, manager, SPRING, 8)
-    await tick(setup, "provisioning")
-    desk = people.fake.state.repos[("acme", "spring.bob.desk")]
-    assert 8 in desk.writers
+    await people.fake.workspaces.open_submission_place(
+        WorkspaceId("acme/spring/@u8"), TaskId("acme/spring/sum"), [8]
+    )
+    place = people.fake.state.repos[("acme", "spring.sum.u8.sub")]
+    assert 8 in place.writers
 
     removed = await contestants.remove(setup, manager, SPRING, 8)
 
-    assert (removed.status, removed.workspace) == (Status.REMOVED, None)
-    assert 8 not in desk.writers
-    assert ("acme", "spring.bob.desk") in people.fake.state.repos
+    assert removed.status == Status.REMOVED
+    assert 8 not in place.writers
+    assert ("acme", "spring.sum.u8.sub") in people.fake.state.repos
 
 
 async def test_an_extension_is_set_on_the_row_and_replaces_the_last_one(
@@ -411,9 +391,9 @@ async def test_observers_list_the_registrations_and_only_managers_decide(
 
     listed = await contestants.list(setup, observer, SPRING)
 
-    assert [(entry.user_id, entry.status, entry.workspace) for entry in listed] == [
-        (8, Status.PENDING, None),
-        (20, Status.APPROVED, WorkspaceState.PREPARING),
+    assert [(entry.user_id, entry.status) for entry in listed] == [
+        (8, Status.PENDING),
+        (20, Status.APPROVED),
     ]
     assert listed[1].user is not None and listed[1].user.email == "cyd@u.nus.edu"
     with pytest.raises(Forbidden):
@@ -426,7 +406,6 @@ async def test_an_organiser_of_another_contest_decides_nothing_here(
     await write_contest(people.fake, settings())
     await _register(setup, people, 8)
     await contests.create(setup, people.ada, ACME, "autumn")
-    await tick(setup, "provisioning")
     await roles.grant(setup, manager, Scope("acme"), "dee", Role.OBSERVER)
     await roles.revoke(setup, manager, Scope("acme"), 21)
     await roles.grant(setup, people.ada, Scope("acme", "autumn"), "dee", Role.MANAGER)

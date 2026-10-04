@@ -1,8 +1,6 @@
 """The save that publishes. A valid save writes the organiser's files and one
 plan per stage as one change and publishes exactly that change, numbered
-after the last, with a note that reads back; the first publication activates
-the task at the CI and no later one does unless that record was lost, and an
-activation that fails is left pending for the poller. A save another save
+after the last, with a note that reads back. A save another save
 landed under is kept as a draft, and so, always, is a save asked to be. A
 save inside `plans/` and a manager's change to an admin-only setting are
 refused with nothing written. A save that does not check is a draft: its
@@ -23,18 +21,17 @@ from forge.domain.errors import (
     Conflict,
     Forbidden,
     ReservedPath,
-    Unavailable,
 )
-from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser
+from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.plans import Plan
 from forge.domain.roles import Role, Scope
 from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
-from forge.services import provisioning, publications, tasks
+from forge.services import publications, tasks
 from forge.services.access import Organiser
 from forge.services.publications import Draft, Published
-from forge.testing import CLASSIC, PRIMITIVES, tick
+from forge.testing import CLASSIC, PRIMITIVES
 from tests.services.conftest import SPRING, Acme, organiser
 
 RUNNING = b"""\
@@ -121,87 +118,15 @@ async def test_a_valid_save_is_one_change_with_its_plans_and_that_change_is_publ
     assert (listed.grading_changed, listed.changes) == (False, ())
 
 
-async def test_the_first_publication_activates_the_task_and_later_ones_do_not(
+async def test_each_publication_is_numbered_after_the_last_and_none_touches_the_ci(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     first = await _save(setup, acme, sum_task, {"statement.md": b"One.\n"})
     second = await _save(setup, acme, sum_task, {"statement.md": b"Two.\n"})
 
     assert isinstance(first, Published) and isinstance(second, Published)
-    assert (first.activation, second.activation) == ("done", "not_needed")
     assert (first.number, second.number) == (1, 2)
-    (activated,) = acme.fake.calls_to("activate")
-    assert isinstance(activated.identity, AsOrgAccount)
-    assert activated.identity.org == "acme"
-    assert activated.arguments == {"task": sum_task}
-
-
-async def test_an_activation_that_fails_is_left_pending_and_the_poller_makes_it(
-    setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    original = acme.fake.grading.activate
-
-    async def broken(*args: Any, **kwargs: Any) -> None:
-        raise Unavailable("the CI went away")
-
-    monkeypatch.setattr(acme.fake.grading, "activate", broken)
-    first = await _save(setup, acme, sum_task, {"statement.md": b"One.\n"})
-    await tick(setup, "provisioning")
-    second = await _save(setup, acme, sum_task, {"statement.md": b"Two.\n"})
-
-    assert isinstance(first, Published) and isinstance(second, Published)
-    assert (first.activation, second.activation) == ("pending", "pending")
-    assert acme.fake.state.repos[("acme", "spring.sum.task")].versions.keys() == {
-        "published/1",
-        "published/2",
-    }
-    async with setup.unit_of_work() as ctx:
-        waiting = await provisioning.record_of(ctx, "activation", sum_task)
-    assert waiting is not None
-    assert (waiting.status, waiting.failed_step, waiting.error) == (
-        "failed",
-        "activate",
-        "the forge or the CI did not answer",
-    )
-    assert waiting.steps == ("activate",)
-
-    monkeypatch.setattr(acme.fake.grading, "activate", original)
-    await tick(setup, "provisioning")
-
-    async with setup.unit_of_work() as ctx:
-        done = await provisioning.record_of(ctx, "activation", sum_task)
-    assert done is not None
-    assert done.status == "ready"
-    assert len(acme.fake.calls_to("activate")) == 1
-    third = await _save(setup, acme, sum_task, {"statement.md": b"Three.\n"})
-    assert isinstance(third, Published)
-    assert third.activation == "not_needed"
-
-
-async def test_an_activation_whose_record_was_lost_is_made_by_the_next_save(
-    setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    original = acme.fake.grading.activate
-
-    async def broken(*args: Any, **kwargs: Any) -> None:
-        raise Unavailable("the CI went away")
-
-    monkeypatch.setattr(acme.fake.grading, "activate", broken)
-    edits = await _edits(acme, sum_task, {"statement.md": b"One.\n"})
-    with pytest.raises(RuntimeError, match="lost"):
-        async with setup.unit_of_work() as ctx:
-            first = await publications.save(ctx, acme.ada, sum_task, edits)
-            assert isinstance(first, Published) and first.activation == "pending"
-            raise RuntimeError("the commit was lost")
-    monkeypatch.setattr(acme.fake.grading, "activate", original)
-
-    second = await _save(setup, acme, sum_task, {"statement.md": b"Two.\n"})
-    third = await _save(setup, acme, sum_task, {"statement.md": b"Three.\n"})
-
-    assert isinstance(second, Published) and isinstance(third, Published)
-    assert (second.number, second.activation) == (2, "done")
-    assert third.activation == "not_needed"
-    assert len(acme.fake.calls_to("activate")) == 1
+    assert acme.fake.calls_to("activate") == []
 
 
 async def test_a_save_that_changes_nothing_since_the_publication_publishes_nothing_new(

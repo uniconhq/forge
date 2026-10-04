@@ -21,6 +21,7 @@ from forge.forges.forgejo.primitives import ForgejoPrimitives
 from forge.forges.forgejo.repos import Repos
 from forge.forges.forgejo.teams import Teams
 from forge.forges.forgejo.threads import ForgejoThreads
+from forge.forges.forgejo.uploads import ForgejoUploads
 from forge.forges.forgejo.users import Users
 from forge.forges.forgejo.workflows import ForgejoWorkflows
 from forge.forges.forgejo.workspaces import ForgejoWorkspaces
@@ -101,6 +102,7 @@ class ForgejoForge:
         )
         self.workspaces = ForgejoWorkspaces(repos, users, teams)
         self.threads = ForgejoThreads(http)
+        self.uploads = ForgejoUploads(http)
         self.workflows = ForgejoWorkflows(repos, users)
         self.primitives = ForgejoPrimitives(repos)
         self.computes = WoodpeckerComputes(ci)

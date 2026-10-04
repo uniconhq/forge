@@ -10,8 +10,13 @@ steps in order, and refuses before anything is written.
    them, is checked: `task.yaml` validates, every file it names is there,
    every workflow it names and every primitive their steps use is read at
    its version as the organiser saving, and one plan per stage compiles over
-   the files of that state. A state that fails is kept as a draft:
-   the organiser's files are written as one change, nothing is published,
+   the files of that state. A workflow is named `<owner>/<name>`, the owner
+   an org by its name or a person by their username; when the latest
+   publication used a workflow of that name and it is now another workflow,
+   by the forge's own id for it, the state is refused at that line, since
+   the owner may have been renamed and the name taken by someone else. A
+   state that fails is kept as a draft: the organiser's files are written
+   as one change, nothing is published,
    and the last publication keeps grading. The errors are not stored;
    `check` works them out again whenever the task's state is asked for.
 3. What the save changes about how the task grades is worked out against
@@ -25,25 +30,27 @@ steps in order, and refuses before anything is written.
    change, as the organiser, so the history is theirs and a publication
    never catches a task half saved.
 5. That change is named as the next publication, as the platform, with a
-   note saying whether it changed how the task grades and what. When another
+   note saying whether it changed how the task grades and what, and which
+   workflow each workflow name was. When another
    save landed between the check and the write, the change holds files this
    save never checked, so it is kept as a draft instead, saying so, and the
    next save checks and publishes the task as it then stands.
-6. The task is activated at the CI as the org's account, once
-   (`activations`): at its first publication, or at the next one when the
-   record of it was lost. An activation that fails does not undo the
-   publication, and the result says it is pending.
-7. Every approved contestant of the contest who has no place to submit the
-   task yet is given one (`workspaces`), by the poller, so a task published
-   after its contestants were approved reaches them too.
 """
 
 import builtins
 import hashlib
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from forge.domain.content import ConflictToken, Edit, FileSet, check_path, has_path
+from forge.domain.content import (
+    ConflictToken,
+    Edit,
+    FileSet,
+    Uploaded,
+    WrittenEdit,
+    check_path,
+    has_path,
+)
 from forge.domain.definitions import (
     ADMIN_ONLY_FILES,
     CONTEST_FILE,
@@ -57,8 +64,10 @@ from forge.domain.errors import (
     AdminOnly,
     ConfirmationRequired,
     Forbidden,
+    InvalidInputs,
     NotFound,
     ReservedPath,
+    UploadNotReady,
 )
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import PublicationId, TaskId, VersionId
@@ -79,20 +88,30 @@ from forge.domain.roles import (
     holds,
     primitive_id_of,
     task_scope,
-    workflow_id_of,
 )
-from forge.domain.workflow_definition import WorkflowDefinition, WorkflowRef, parse_workflow
+from forge.domain.uploads import (
+    ATTRIBUTES_FILE,
+    UploadStatus,
+    pointer_text,
+    read_pointer,
+    refuse_pointer,
+)
+from forge.domain.workflow_definition import (
+    WORKFLOW_FILE,
+    WorkflowDefinition,
+    WorkflowRef,
+    parse_workflow,
+)
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
+from forge.port.uploads import TaskPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import activations, workspaces
+from forge.services import names, uploads
 from forge.services.access import Organiser, require
-from forge.services.activations import Activation
 
 log = get_logger(__name__)
 
-WORKFLOW_FILE = "workflow.yaml"
 SAVE_MESSAGE = "Save"
 CHANGED_CONTENT = "new:"
 LANDED_UNDER = (
@@ -103,17 +122,14 @@ LANDED_UNDER = (
 
 @dataclass(frozen=True, slots=True)
 class Published:
-    """A save that published: the publication and its number, whether it
-    changed how the task grades and what, and where the task's activation at
-    the CI stands: done by this save, pending with the poller, or not needed
-    because an earlier publication did it.
+    """A save that published: the publication and its number, and whether it
+    changed how the task grades and what.
     """
 
     publication: PublicationId
     number: int
     grading_changed: bool
     changes: tuple[str, ...]
-    activation: Activation
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,12 +148,14 @@ class Draft:
 @dataclass(frozen=True, slots=True)
 class Checked:
     """What checking a state found: the task's settings and one plan per
-    stage when it is valid, and every problem when it is not.
+    stage when it is valid, and every problem when it is not, with which
+    workflow each workflow name it uses is, by the forge's own id for it.
     """
 
     definition: TaskDefinition | None
     plans: Mapping[str, Plan]
     errors: tuple[Problem, ...]
+    workflows: Mapping[str, str] = field(default_factory=dict)
 
 
 @action
@@ -162,14 +180,15 @@ async def save(
     require(organiser, scope, Role.MANAGER)
     _refuse_reserved(changes)
     as_ = organiser.identity
+    written = await _resolve(ctx, organiser, task, changes)
     head = await ctx.forge.content.list_files(as_, task)
     if not holds(organiser.grants, scope, Role.ADMIN):
-        await _refuse_admin_only(ctx, organiser, task, head, changes)
+        await _refuse_admin_only(ctx, organiser, task, head, written)
     said = message or SAVE_MESSAGE
 
-    checked = await check(ctx, as_, task, head, changes)
+    checked = await check(ctx, as_, task, head, written)
     if checked.errors:
-        version = await _write(ctx, as_, task, head, changes, {}, said)
+        version = await _write(ctx, as_, task, head, written, {}, said)
         return _draft(organiser, task, version, checked.errors, ())
 
     publications = await ctx.forge.workspaces.list_publications(task)
@@ -177,10 +196,10 @@ async def save(
     changed: tuple[str, ...] = ()
     if latest is not None:
         before, published_files = await _published_snapshot(ctx, as_, task, latest)
-        after = await _saved_snapshot(ctx, as_, task, head, changes, checked, published_files)
+        after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
         changed = grading_changes(before, after)
     if keep_as_draft:
-        version = await _write(ctx, as_, task, head, changes, {}, said)
+        version = await _write(ctx, as_, task, head, written, {}, said)
         return _draft(organiser, task, version, (), changed)
     if changed and not confirm and await _contest_running(ctx, task):
         raise ConfirmationRequired(
@@ -190,16 +209,14 @@ async def save(
         )
 
     plans = await _plan_files(ctx, as_, task, head, checked)
-    version = await _write(ctx, as_, task, head, changes, plans, said)
-    written = {*changes, *plans}
-    if version != head.version and await _landed_under(ctx, as_, task, head, version, written):
+    version = await _write(ctx, as_, task, head, written, plans, said)
+    touched = {*written, *plans}
+    if version != head.version and await _landed_under(ctx, as_, task, head, version, touched):
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
     if latest is not None and version == latest.version:
-        return await _reached(
-            ctx, task, latest.id, latest.number, latest.grading_changed, latest.changes
-        )
+        return Published(latest.id, latest.number, latest.grading_changed, latest.changes)
     publication = await ctx.forge.workspaces.publish(
-        task, version, write_note(bool(changed), changed)
+        task, version, write_note(bool(changed), changed, checked.workflows)
     )
     number = await _number_of(ctx, task, publication)
     log.info(
@@ -211,47 +228,31 @@ async def save(
         grading_changed=bool(changed),
         user_id=organiser.user.id,
     )
-    return await _reached(ctx, task, publication, number, bool(changed), changed)
-
-
-async def _reached(
-    ctx: Context,
-    task: TaskId,
-    publication: PublicationId,
-    number: int,
-    grading_changed: bool,
-    changes: tuple[str, ...],
-) -> Published:
-    """The latest publication, once what every publication leads to is made
-    sure of: the task's activation at the CI, and a place to submit it for
-    every approved contestant.
-    """
-    activation = await activations.ensure(ctx, task)
-    await workspaces.place_for_everyone(ctx, task)
-    return Published(publication, number, grading_changed, changes, activation)
+    return Published(publication, number, bool(changed), changed)
 
 
 async def check(
-    ctx: Context, as_: Identity, task: TaskId, head: FileSet, changes: Mapping[str, Edit]
+    ctx: Context, as_: Identity, task: TaskId, head: FileSet, written: Mapping[str, WrittenEdit]
 ) -> Checked:
-    """Check the state a save leaves, the files at `head` with `changes` over
+    """Check the state a save leaves, the files at `head` with `written` over
     them, reading what it needs as `as_`: `task.yaml` validates, every file
     it names is in the state, every workflow it names and every primitive
     their steps use is read at its version, and the plans compile over the
     files of the state. Every problem carries its YAML path.
     """
-    text = await _content(ctx, as_, task, TASK_FILE, head, changes)
+    text = await _content(ctx, as_, task, TASK_FILE, head, written)
     if text is None:
         return Checked(None, {}, (Problem(path="", message="The task has no task.yaml."),))
     try:
         definition = parse_task(text)
     except InvalidDefinition as invalid:
         return Checked(None, {}, tuple(invalid.errors))
-    present = {*head.tokens, *changes}
+    present = {*head.tokens, *written}
     problems = definition.missing_files(lambda path: has_path(present, path))
     problems.extend(definition.oversized())
-    workflows, unreadable = await _workflows(ctx, as_, definition)
+    workflows, pins, unreadable = await _workflows(ctx, as_, definition)
     problems.extend(unreadable)
+    problems.extend(await _moved_workflows(ctx, task, definition, pins))
     if not unreadable:
         primitives, unresolved = await _primitives(ctx, as_, definition, workflows)
         problems.extend(unresolved)
@@ -269,39 +270,42 @@ async def check(
             problems.extend(error for error in invalid.errors if error["path"] not in reported)
         else:
             if not problems:
-                return Checked(definition, plans, ())
-    return Checked(definition, {}, tuple(problems))
+                return Checked(definition, plans, (), pins)
+    return Checked(definition, {}, tuple(problems), pins)
 
 
 async def _refuse_admin_only(
-    ctx: Context, organiser: Organiser, task: TaskId, head: FileSet, changes: Mapping[str, Edit]
+    ctx: Context,
+    organiser: Organiser,
+    task: TaskId,
+    head: FileSet,
+    written: Mapping[str, WrittenEdit],
 ) -> None:
     as_ = organiser.identity
     keys = (
         admin_only_changes(
             "task",
             await _content(ctx, as_, task, TASK_FILE, head, {}),
-            changes[TASK_FILE].content,
+            written[TASK_FILE].content,
         )
-        if TASK_FILE in changes
+        if TASK_FILE in written
         else []
     )
     for path in ADMIN_ONLY_FILES:
-        if path in changes and changes[path].content != await _content(
+        if path in written and written[path].content != await _content(
             ctx, as_, task, path, head, {}
         ):
             keys.append(path)
     if keys:
         log.info("publications.refused", task=task, keys=keys, user_id=organiser.user.id)
-        raise AdminOnly(
-            f"Only an admin of {task_scope(task).name} may change {', '.join(keys)}.", keys=keys
-        )
+        scope = await names.labelled(ctx, task_scope(task))
+        raise AdminOnly(f"Only an admin of {scope.name} may change {', '.join(keys)}.", keys=keys)
 
 
-def _refuse_reserved(changes: Mapping[str, Edit]) -> None:
-    for path in changes:
+def _refuse_reserved(written: Mapping[str, Edit]) -> None:
+    for path in written:
         check_path(path)
-    reserved = sorted(path for path in changes if is_reserved(path))
+    reserved = sorted(path for path in written if is_reserved(path))
     if reserved:
         raise ReservedPath(
             "Only the compiler writes inside plans/; save the task's other files.",
@@ -315,13 +319,13 @@ async def _content(
     task: TaskId,
     path: str,
     head: FileSet,
-    changes: Mapping[str, Edit],
+    written: Mapping[str, WrittenEdit],
 ) -> bytes | None:
     """A file's content in the state: the save's when it writes the file,
     otherwise the head's, or none when neither has it.
     """
-    if path in changes:
-        return changes[path].content
+    if path in written:
+        return written[path].content
     if path not in head.tokens:
         return None
     return (await ctx.forge.content.read_file(as_, task, path, at=head.version)).content
@@ -329,17 +333,21 @@ async def _content(
 
 async def _workflows(
     ctx: Context, as_: Identity, definition: TaskDefinition
-) -> tuple[dict[str, WorkflowDefinition], tuple[Problem, ...]]:
-    """Every workflow the task needs, read at its version as `as_`, and a
-    problem for each that cannot be read or does not validate.
+) -> tuple[dict[str, WorkflowDefinition], dict[str, str], tuple[Problem, ...]]:
+    """Every workflow the task needs, read at its version as `as_`, which
+    workflow each name is, by the forge's own id for it, and a problem for
+    each that cannot be read or does not validate.
     """
     found: dict[str, WorkflowDefinition] = {}
+    pins: dict[str, str] = {}
     problems: tuple[Problem, ...] = ()
     for ref, at in definition.workflow_refs():
+        workflow = await names.workflow_id(ctx, ref)
         try:
             file = await ctx.forge.workflows.read_workflow_file(
-                as_, workflow_id_of(ref), ref.version, WORKFLOW_FILE
+                as_, workflow, ref.version, WORKFLOW_FILE
             )
+            pins[f"{ref.owner}/{ref.name}"] = await ctx.forge.workflows.workflow_key(workflow)
         except NotFound, Forbidden:
             message = (
                 f"The workflow {ref} cannot be read: it is not there at that version, "
@@ -352,7 +360,28 @@ async def _workflows(
         except InvalidDefinition as invalid:
             message = f"The workflow {ref} is not valid: {invalid.detail}"
             problems = (*problems, Problem(path=at, message=message))
-    return found, problems
+    return found, pins, problems
+
+
+async def _moved_workflows(
+    ctx: Context, task: TaskId, definition: TaskDefinition, pins: Mapping[str, str]
+) -> builtins.list[Problem]:
+    """A problem at each workflow name the latest publication used for
+    another workflow than the one it names now.
+    """
+    publications = await ctx.forge.workspaces.list_publications(task)
+    pinned = publications[-1].workflows if publications else {}
+    problems: builtins.list[Problem] = []
+    for ref, at in definition.workflow_refs():
+        name = f"{ref.owner}/{ref.name}"
+        if name in pinned and name in pins and pins[name] != pinned[name]:
+            message = (
+                f"{name} now names a different workflow than the one this task was "
+                "published with, as happens when its owner is renamed and someone else "
+                "takes the name. Name the workflow you mean by its owner's name now."
+            )
+            problems.append(Problem(path=at, message=message))
+    return problems
 
 
 async def _primitives(
@@ -412,7 +441,7 @@ async def _primitive(
             return declaration, None
     try:
         await ctx.forge.workflows.read_workflow_file(
-            as_, workflow_id_of(use), use.version, WORKFLOW_FILE
+            as_, await names.workflow_id(ctx, use), use.version, WORKFLOW_FILE
         )
     except NotFound, Forbidden:
         return None, (
@@ -450,7 +479,7 @@ async def _saved_snapshot(
     as_: Identity,
     task: TaskId,
     head: FileSet,
-    changes: Mapping[str, Edit],
+    written: Mapping[str, WrittenEdit],
     checked: Checked,
     published: FileSet,
 ) -> Snapshot:
@@ -463,9 +492,9 @@ async def _saved_snapshot(
     data: dict[str, str] = {}
     for named in checked.definition.named_files():
         for path, token in head.under(named).items():
-            if path not in changes:
+            if path not in written:
                 data[path] = str(token)
-        for path, edit in changes.items():
+        for path, edit in written.items():
             if has_path((path,), named):
                 data[path] = await _digest(ctx, as_, task, path, edit.content, published)
     return Snapshot(
@@ -520,19 +549,19 @@ async def _write(
     as_: Identity,
     task: TaskId,
     head: FileSet,
-    changes: Mapping[str, Edit],
+    written: Mapping[str, WrittenEdit],
     plans: Mapping[str, bytes | None],
     message: str,
 ) -> VersionId:
     """Write the organiser's files and the plans as one change as `as_`, and
     return its version; with nothing to write, the head is the version.
     """
-    files: dict[str, bytes | None] = {path: edit.content for path, edit in changes.items()}
+    files: dict[str, bytes | None] = {path: edit.content for path, edit in written.items()}
     files.update(plans)
     if not files:
         return head.version
     expected: dict[str, ConflictToken | None] = {path: head.tokens.get(path) for path in plans}
-    expected.update({path: edit.token for path, edit in changes.items()})
+    expected.update({path: edit.token for path, edit in written.items()})
     return await ctx.forge.content.save_files(as_, task, files, expected=expected, message=message)
 
 
@@ -588,3 +617,70 @@ async def list(ctx: Context, organiser: Organiser, task: TaskId) -> tuple[Public
     """
     require(organiser, task_scope(task), Role.OBSERVER)
     return await ctx.forge.workspaces.list_publications(task)
+
+
+async def _held_pointer(
+    ctx: Context, organiser: Organiser, task: TaskId, path: str, content: bytes
+) -> bytes | None:
+    """The pointer `content` is, written afresh, when it is exactly one the
+    platform writes and the task's store holds its object, asked as the
+    organiser; none otherwise.
+    """
+    named = read_pointer(content)
+    if named is None or path == ATTRIBUTES_FILE or path.endswith(f"/{ATTRIBUTES_FILE}"):
+        return None
+    digest, size = named
+    if not await uploads.holds_object(ctx, TaskPlace(task), organiser.identity, digest, size):
+        return None
+    return pointer_text(digest, size)
+
+
+async def _resolve(
+    ctx: Context, organiser: Organiser, task: TaskId, changes: Mapping[str, Edit]
+) -> Mapping[str, WrittenEdit]:
+    """Every edit as bytes the write can carry: an edit naming an upload
+    becomes the pointer to it, and the upload is marked as taken by this
+    save, while typed content that would read as a pointer is refused,
+    unless it is exactly a pointer to an object the task already holds, as
+    a rollback or a file saved back unchanged writes.
+
+    A pointer names bytes by their hash alone, and a grading machine serves
+    one from the org's shared store without asking the forge, so the only
+    pointers in any repository are the ones written here, for objects the
+    forge has confirmed belong to it.
+    """
+    named = {
+        path: edit.content.upload
+        for path, edit in changes.items()
+        if isinstance(edit.content, Uploaded)
+    }
+    rows = await uploads.for_save(ctx, organiser.identity.user_id, task, set(named.values()))
+    resolved: dict[str, WrittenEdit] = {}
+    for path, edit in changes.items():
+        if isinstance(edit.content, Uploaded):
+            row = rows.get(edit.content.upload)
+            if row is None or row.status not in (UploadStatus.WAITING, UploadStatus.VERIFIED):
+                raise InvalidInputs(
+                    "That upload is not one of yours for this task to write.",
+                    errors=[{"input": path, "message": "No such upload."}],
+                )
+            if row.repo_path != path:
+                raise InvalidInputs(
+                    f"That upload was asked for {row.repo_path}, not {path}.",
+                    errors=[{"input": path, "message": "The upload is for another path."}],
+                )
+            if not await uploads.holds(ctx, TaskPlace(task), organiser.identity, row):
+                raise UploadNotReady(
+                    "The file has not arrived yet; it cannot be saved until it has.",
+                    uploads=[str(row.id)],
+                )
+            row.status = UploadStatus.CONSUMED
+            resolved[path] = WrittenEdit(pointer_text(row.digest, row.size), edit.token)
+            continue
+        held = await _held_pointer(ctx, organiser, task, path, edit.content)
+        if held is None:
+            refuse_pointer(path, edit.content)
+        resolved[path] = WrittenEdit(held or edit.content, edit.token)
+    if named:
+        await ctx.db.flush()
+    return resolved

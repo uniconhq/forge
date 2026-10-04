@@ -6,11 +6,10 @@ the host's image:
   not the hosting process's, so the command is the package's own; a
   deployment runs it once, before the host starts.
 - `reconcile` gives every submission at the forge that has no grading its
-  gradings, over the running contests, or with `--all` over every contest of
-  every org the platform made, which is what a restore runs once the
-  database is back. It reads every `UNICON_*` setting, as the host does,
-  runs no background loop, and writes what it did as the log record
-  `reconcile.done`.
+  gradings, over every contest of every org the platform made, and starts
+  their runs, which is what a restore runs once the database is back. It
+  reads every `UNICON_*` setting, as the host does, and writes what it did
+  as the log record `reconcile.done`.
 """
 
 import argparse
@@ -31,16 +30,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="unicon-forge", description="The Unicon contest API")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("migrate", help="bring the database up to the latest migration")
-    reconciling = commands.add_parser(
+    commands.add_parser(
         "reconcile", help="give every submission at the forge without gradings its gradings"
-    )
-    reconciling.add_argument(
-        "--all", action="store_true", help="every contest, not only the running ones"
     )
     arguments = parser.parse_args(argv)
     if arguments.command == "reconcile":
         log.setup()
-        asyncio.run(_reconcile(every_contest=arguments.all), loop_factory=_loop_factory())
+        asyncio.run(_reconcile(), loop_factory=_loop_factory())
         return 0
     upgrade_to_head(str(load_database_settings().database_url))
     return 0
@@ -53,11 +49,11 @@ def _loop_factory() -> Callable[[], asyncio.AbstractEventLoop] | None:
     return asyncio.SelectorEventLoop if sys.platform == "win32" else None
 
 
-async def _reconcile(*, every_contest: bool) -> reconcile.Reconciled:
+async def _reconcile() -> reconcile.Reconciled:
     setup = Setup.build(load_settings(), callback_path=CALLBACK_PATH)
     try:
         async with setup.unit_of_work() as ctx:
-            return await reconcile.reconcile(ctx, every_contest=every_contest)
+            return await reconcile.reconcile(ctx)
     finally:
         await setup.stop()
 

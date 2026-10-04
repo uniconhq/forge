@@ -43,7 +43,7 @@ def test_reconcile_runs_the_pass_once_and_logs_what_it_did(
     root = logging.getLogger()
     handlers, level = root.handlers[:], root.level
     try:
-        assert main(["reconcile", "--all"]) == 0
+        assert main(["reconcile"]) == 0
     finally:
         root.handlers[:] = handlers
         root.setLevel(level)

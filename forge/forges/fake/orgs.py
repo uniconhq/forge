@@ -1,8 +1,8 @@
 """The org area in memory."""
 
-from forge.domain.errors import Conflict
+from forge.domain.errors import Conflict, Rejected
 from forge.domain.identity import PLATFORM, AsUser, User
-from forge.domain.ids import OrgName
+from forge.domain.ids import OrgId
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.forges.fake.state import Org, State
 
@@ -13,27 +13,19 @@ class FakeOrgs:
     def __init__(self, state: State) -> None:
         self._state = state
 
-    async def name_taken(self, name: OrgName) -> bool:
+    async def name_taken(self, name: str) -> bool:
         self._state.record("name_taken", PLATFORM, name=name)
         self._state.check_up()
         return self._taken(name)
 
-    async def platform_owns(self, name: OrgName) -> bool:
-        """The fake makes an org only through `create_org`, as the platform,
-        so every org it holds is the platform's.
-        """
-        self._state.record("platform_owns", PLATFORM, name=name)
-        self._state.check_up()
-        return name in self._state.orgs
-
-    async def create_org(self, name: OrgName, *, description: str) -> None:
+    async def create_org(self, name: OrgId, *, description: str) -> None:
         self._state.record("create_org", PLATFORM, name=name)
         self._state.check_up()
         if self._taken(name):
             raise Conflict(f"user already exists [name: {name}]")
         self._state.orgs[name] = Org(name, description)
 
-    async def create_roles(self, name: OrgName) -> None:
+    async def create_roles(self, name: OrgId) -> None:
         self._state.record("create_roles", PLATFORM, name=name)
         self._state.check_up()
         org = self._state.org(name)
@@ -41,12 +33,12 @@ class FakeOrgs:
             org.roles.setdefault((Scope(name), role), set())
         org.roles_ready = True
 
-    async def create_thread_labels(self, name: OrgName) -> None:
+    async def create_thread_labels(self, name: OrgId) -> None:
         self._state.record("create_thread_labels", PLATFORM, name=name)
         self._state.check_up()
         self._state.org(name).labels.update(LABELS)
 
-    async def create_event_push(self, name: OrgName, *, url: str, secret: str) -> None:
+    async def create_event_push(self, name: OrgId, *, url: str, secret: str) -> None:
         self._state.record("create_event_push", PLATFORM, name=name, url=url)
         self._state.check_up()
         org = self._state.org(name)
@@ -54,7 +46,7 @@ class FakeOrgs:
             return
         org.event_push = (url, secret)
 
-    async def ensure_account_membership(self, name: OrgName, user_id: int) -> bool:
+    async def ensure_account_membership(self, name: OrgId, user_id: int) -> bool:
         self._state.record("ensure_account_membership", PLATFORM, name=name, user_id=user_id)
         self._state.check_up()
         org = self._state.org(name)
@@ -64,8 +56,27 @@ class FakeOrgs:
         org.account_members.add(user_id)
         return True
 
+    async def remove_account_membership(self, name: OrgId, user_id: int) -> None:
+        self._state.record("remove_account_membership", PLATFORM, name=name, user_id=user_id)
+        self._state.check_up()
+        org = self._state.orgs.get(name)
+        if org is not None:
+            org.account_members.discard(user_id)
+
+    async def delete_org(self, name: OrgId) -> None:
+        """Refused while a place is still in the org, as a real forge refuses
+        an org that owns anything.
+        """
+        self._state.record("delete_org", PLATFORM, name=name)
+        self._state.check_up()
+        if name not in self._state.orgs:
+            return
+        if any(repo.owner == name for repo in self._state.repos.values()):
+            raise Rejected(f"the org {name} still holds places")
+        del self._state.orgs[name]
+
     async def update_org(
-        self, name: OrgName, *, description: str, display_name: str | None = None
+        self, name: OrgId, *, description: str, display_name: str | None = None
     ) -> None:
         self._state.record("update_org", PLATFORM, name=name)
         self._state.check_up()

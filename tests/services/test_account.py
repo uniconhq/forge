@@ -18,7 +18,7 @@ from forge.domain.errors import (
     SoleAdmin,
 )
 from forge.domain.identity import AsUser
-from forge.domain.ids import OrgName
+from forge.domain.ids import OrgId
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.domain.workflows import Visibility
@@ -65,7 +65,7 @@ async def test_both_actions_need_a_session_under_five_minutes_old(
 async def test_a_delete_that_would_orphan_a_scope_is_refused_naming_it(
     ctx: Context, fake: FakeForge
 ) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme", "spring"), Role.ADMIN)
     session = await _signed_in(ctx, fake)
 
@@ -78,7 +78,7 @@ async def test_a_delete_that_would_orphan_a_scope_is_refused_naming_it(
 async def test_an_admin_inherited_from_the_org_keeps_the_scope_covered(
     ctx: Context, fake: FakeForge
 ) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme", "spring"), Role.ADMIN)
     await fake.orgs.grant_role(8, Scope("acme"), Role.ADMIN)
     session = await _signed_in(ctx, fake)
@@ -102,7 +102,7 @@ async def test_a_delete_that_would_orphan_a_shared_workflow_is_refused(
 
 
 async def test_a_delete_removes_roles_first_then_the_account(ctx: Context, fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgName("acme"), description="Acme")
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
     await fake.orgs.grant_role(7, Scope("acme"), Role.MANAGER)
     session = await _signed_in(ctx, fake)
 
