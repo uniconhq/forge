@@ -1,8 +1,10 @@
 """What a signed-in person reads of the contests they may see: the list of
-them, a contest's home and a task's page. It is all read live from the forge
-on every request, as the platform, with the contest's visibility and the
-release rules applied first (`published`), and nothing is kept. Each lets go
-of its connection to the database before it reads the forge.
+them, a contest's home and a task's page. It is read from the forge as the
+platform, with the contest's visibility and the release rules applied first
+(`published`). The list starts from every published contest as this process
+read it at most half a minute ago, shared by everyone, and is then filtered
+for the person; a home and a task's page are read live. Each lets go of its
+connection to the database before it reads the forge.
 
 A person sees a published contest that is `public` or `signed-in`, and a
 `hidden` one only once they are its approved contestant; organisers see
@@ -136,7 +138,7 @@ async def contests(ctx: Context, session: Session) -> tuple[ContestSummary, ...]
     }
     await ctx.let_go()
     found = []
-    every = await published.every_contest(ctx)
+    every = await published.every_contest_kept(ctx)
     where = await names.places_named(ctx, [contest for contest, _ in every])
     for contest, settings in every:
         row = rows.get(contest)

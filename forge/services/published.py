@@ -14,6 +14,7 @@ answer as one that is not there, so its errors reach nobody but the log.
 """
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 from forge.domain.definitions import (
     CONTEST_FILE,
@@ -141,12 +142,34 @@ async def statement(ctx: Context, published: PublishedTask) -> str:
     return found.content.decode("utf-8", errors="replace")
 
 
+EVERY_CONTEST_KEPT = timedelta(seconds=30)
+EVERY_CONTEST = "published.every_contest"
+
+
+async def every_contest_kept(ctx: Context) -> list[tuple[ContestId, ContestDefinition]]:
+    """`every_contest` as this process read it at most `EVERY_CONTEST_KEPT`
+    ago, for the lists of contests people open: it costs the forge two reads
+    an org whoever asks, and is read as the platform, so one answer serves
+    everybody, and each person's own filtering happens after. A change to a
+    contest's settings saved through this process shows at once
+    (`forget_contests`); one saved through another shows within that time.
+    """
+    return await ctx.memo.remembered(EVERY_CONTEST, EVERY_CONTEST_KEPT, lambda: every_contest(ctx))
+
+
+def forget_contests(ctx: Context) -> None:
+    """Drop this process's copy of `every_contest`, after a contest's settings
+    changed at the forge.
+    """
+    ctx.memo.forget(EVERY_CONTEST)
+
+
 async def every_contest(ctx: Context) -> list[tuple[ContestId, ContestDefinition]]:
     """Every contest of every org the platform made, with its settings, newest
-    start first. An org or a contest the forge fails on is left out and
-    logged, so one broken place does not hide the rest. The list of orgs is
-    read first and the connection let go of, so the two forge reads an org
-    hold none.
+    start first, read live. An org or a contest the forge fails on is left
+    out and logged, so one broken place does not hide the rest. The list of
+    orgs is read first and the connection let go of, so the two forge reads
+    an org hold none.
     """
     found: list[tuple[ContestId, ContestDefinition]] = []
     orgs = await org_accounts.org_ids(ctx)

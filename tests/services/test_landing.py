@@ -2,10 +2,10 @@
 published, each with the tasks released now, and a released task's
 statement. A contest that is not public and a task that is not visible are
 no such contest or task, as for one that is not there, and everything is
-read as the platform. The list is kept five seconds.
+read as the platform. The list starts from every contest as this process
+read it at most half a minute ago, and a contest's settings saved through
+the platform show there at once.
 """
-
-from datetime import timedelta
 
 import pytest
 
@@ -14,7 +14,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.roles import Role, Scope
 from forge.runtime.setup import Setup
-from forge.services import contests, landing
+from forge.services import contests, files, landing, published
 from forge.testing import FakeClock
 from tests.services.conftest import (
     ACME,
@@ -85,7 +85,7 @@ async def test_any_other_task_is_no_such_task(
         await landing.statement(setup, TaskId(task))
 
 
-async def test_the_list_is_kept_five_seconds_and_read_again_after(
+async def test_the_list_is_kept_half_a_minute_and_read_again_after(
     setup: Setup, acme: Acme, public: TaskId, clock: FakeClock
 ) -> None:
     first = await landing.contests(setup)
@@ -93,9 +93,28 @@ async def test_the_list_is_kept_five_seconds_and_read_again_after(
     acme.fake.reset_calls()
 
     kept = await landing.contests(setup)
-    clock.advance(timedelta(seconds=5))
+    assert acme.fake.calls_to("list_contests") == []
+    clock.advance(published.EVERY_CONTEST_KEPT)
     after = await landing.contests(setup)
 
     assert kept == first
     assert after == ()
     assert acme.fake.calls_to("list_contests") != []
+
+
+async def test_settings_saved_through_the_platform_show_at_once(
+    setup: Setup, acme: Acme, public: TaskId
+) -> None:
+    assert await landing.contests(setup) != ()
+    current = await acme.fake.content.read_file(PLATFORM, SPRING, "contest.yaml")
+
+    await files.write(
+        setup,
+        acme.ada,
+        SPRING,
+        "contest.yaml",
+        RUNNING.format(visibility="signed-in").encode(),
+        current.token,
+    )
+
+    assert await landing.contests(setup) == ()

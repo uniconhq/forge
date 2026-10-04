@@ -748,10 +748,16 @@ to them in the contest's order; and `task`, a visible task's statement,
 limits and the inputs a contestant gives, with the labels, languages, file
 types and sizes a submit panel shows, and nothing else of what it holds. A visitor with no session reads
 `landing`: the public contests, one with its released tasks, and a released
-task's statement. The list of public contests is kept by each process for
-five seconds (`ctx.memo`, `forge/runtime/memo.py`), since anyone may ask for
-it and it reads every org's contests; visitors arriving while it is read wait
-for that one read. All of it is read live as the platform from the latest
+task's statement. Both lists of contests, a signed-in person's and a
+visitor's, start from every published contest as the process read it at
+most thirty seconds ago (`published.every_contest_kept`, kept in
+`ctx.memo`, `forge/runtime/memo.py`), since reading it costs the forge two
+calls an org and it is read as the platform, so one answer serves
+everybody and each person's filtering comes after; people arriving while
+it is read wait for that one read. A contest's settings saved through the
+process drop its copy at once (`published.forget_contests`); another
+process's copy lasts its thirty seconds. The operator's reconcile reads the
+list live. Everything else is read live as the platform from the latest
 publication of each task, with the contest's visibility and the release
 rules applied first, and a contest or task the reader may not see is no
 such contest or task, the same answer as one that is not there.
