@@ -3,8 +3,7 @@ back. `submit` runs in this order and stops at the first refusal, each with a
 code of its own, before anything is written:
 
 1. The task is open by the server's clock plus the contestant's own
-   extension, they are approved, and their place to submit it is made
-   (`submitters.refuse`).
+   extension, and they are approved (`submitters.refuse`).
 2. They have submissions left (`submission_limit`), counted from the
    submissions at the forge, and the task's rate holds (`rate_limited`),
    counted from the grading rows of their submissions within its window.
@@ -14,12 +13,16 @@ code of its own, before anything is written:
    the task's `max_size` (`too_large`).
 5. What is given fits the task's contestant inputs (`invalid_inputs`).
 
-Then the files go into the contestant's place to submit the task as one
-commit, as the contestant, under `files/<input>/<name>` beside
+Then, while a contestant has no submission of the task, their place to
+submit it is made, as the platform, or finished when a try stopped halfway;
+every part of making it is safe to run again. The files go into it as one commit, as the
+contestant, under `files/<input>/<name>` beside
 `submission.json`; the commit is named `submission/<n>` as the platform,
 with the next number on a collision; one `queued` grading row is inserted per
 stage graded on submit, against the task's current publication, attempt 1,
-with the hash of its callback token; and the uploads are marked consumed.
+with the hash of its callback token, whose runs start once the submit
+commits; and the uploads are marked consumed, their objects removed once it
+commits.
 
 Submits of one workspace to one task happen one after another, under a
 Postgres advisory lock held until the unit of work ends, so the limits are
@@ -30,15 +33,16 @@ but the rows did not, because the unit of work failed after them or the
 answer to naming the submission was lost, the submission is found at the
 forge by the key its protected version's note carries, and only its rows are
 inserted. A submit whose commit landed but whose version was never named
-leaves a commit that is no submission, and the next try makes one. What is
-left is a submission named at the forge whose rows never landed and whose
-submit is never tried again; the reconcile pass inserts its grading.
+leaves a commit that is no submission, and the next try makes one. A
+submission named at the forge whose rows never landed is one the contestant
+saw fail, and submitting again finishes it.
 
 A contestant reads their own submissions back, newest first, each with its
 grading at every stage as that stage's `show` allows: status only, status
 and metrics, or everything. `files` gives the inputs a submission was made
 with, and `file` one of its files, so a page can put them back into the
-upload panel. `run_log` gives the log of a grading's run where the stage
+upload panel, of at most `FILE_READ_MAX` bytes (`file_too_large`), so a
+big file is never held in memory whole. `run_log` gives the log of a grading's run where the stage
 shows everything, of at most `RUN_LOG_MAX` bytes (`log_too_large`).
 
 What the store or the forge says when it fails goes to the log, and the
@@ -47,7 +51,6 @@ refused the submission, in fixed words.
 """
 
 import builtins
-import hashlib
 import json
 import uuid
 from collections.abc import Mapping, Sequence
@@ -63,6 +66,7 @@ from forge.domain import submissions as rules
 from forge.domain.definitions import SUBMISSION_CEILING, Show
 from forge.domain.errors import (
     Conflict,
+    FileTooLarge,
     Forbidden,
     InvalidIdempotencyKey,
     LogTooLarge,
@@ -76,16 +80,15 @@ from forge.domain.errors import (
     Unavailable,
     UploadNotReady,
     UploadNotYours,
-    WorkspaceNotReady,
 )
 from forge.domain.grading import RUN_LOG_MAX, GradingStatus, log_key
 from forge.domain.identity import AsUser
 from forge.domain.ids import SubmissionId, TaskId, WorkspaceId
 from forge.domain.sessions import Session
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
-from forge.domain.uploads import UploadStatus
+from forge.domain.uploads import UploadStatus, pointer_text
 from forge.log import get_logger
-from forge.port.objects import Store
+from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import gradings, sessions, submitters, uploads
@@ -97,11 +100,13 @@ SUBMIT_LOCK = 0x5355424D
 """The first key of every lock on a workspace's submits of a task, the second
 being the workspace and task hashed by Postgres."""
 NO_SUCH_SUBMISSION = "There is no such submission."
+LOG_STORE_UNAVAILABLE = "The run log could not be read; try again in a moment."
 NO_LOG = "This submission has no log you may read."
 FORGE_UNAVAILABLE = "The forge did not answer; try again in a moment."
 FORGE_MISCONFIGURED = "The forge refused the platform's own registration."
 FORGE_REFUSED = "The forge refused the submission; submit again, or tell the organisers."
 SUBMISSION_FILE = rules.SUBMISSION_FILE
+FILE_READ_MAX = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,7 +180,7 @@ async def submit(
         if again is not None:
             return again
     _, workspace = await submitters.refuse(ctx, entrant)
-    made = await _listed(ctx, workspace, task)
+    made = await _listed(ctx, workspace, task) or ()
     limits = entrant.published.definition.limits
     if len(made) >= limits.submissions:
         raise SubmissionLimit(
@@ -184,15 +189,19 @@ async def submit(
         )
     await _refuse_rate(ctx, entrant, workspace)
     chosen = await _chosen(ctx, entrant, inputs)
+    if not made and not chosen:
+        # Naming an upload means a slot made the place already, so only a
+        # submission of nothing but typed values has one to make here.
+        await submitters.open_place(ctx, entrant, workspace)
     layout = rules.lay_out(
         entrant.published.definition.inputs.contestant,
         inputs,
         {upload.id: _uploaded(upload) for upload in chosen.values()},
     )
     files = {SUBMISSION_FILE: layout.document}
-    for path, upload in layout.files.items():
-        files[path] = await _bytes(ctx, chosen[upload])
     user = AsUser(entrant.session.user_id, await sessions.credential_for(ctx, entrant.session.id))
+    for path, upload in layout.files.items():
+        files[path] = await _pointer(ctx, entrant, user, chosen[upload])
     recorded = await _record(ctx, user, workspace, task, files, idempotency_key)
     gradings = _insert(ctx, entrant, workspace, recorded, idempotency_key, at=ctx.now)
     for used in chosen.values():
@@ -206,7 +215,7 @@ async def submit(
         gradings=len(gradings),
         user_id=entrant.session.user_id,
     )
-    return _submission(entrant, recorded.number, ctx.now, gradings)
+    return _submission(ctx, entrant, recorded.number, ctx.now, gradings)
 
 
 @action
@@ -295,20 +304,34 @@ async def run_log(
     grading = str(shown[0].id)
     try:
         return await ctx.forge.objects.read(
-            Store.RESULTS, log_key(shown[0].id, shown[0].attempt), max_size=RUN_LOG_MAX
+            log_key(shown[0].id, shown[0].attempt), max_size=RUN_LOG_MAX
         )
     except NotFound as exc:
         log.warning("submissions.log_missing", task=task, number=number)
         raise NotFound(NO_LOG) from exc
     except Misconfigured as exc:
-        raise uploads.store_failure(exc, "submissions.log_unreadable", grading=grading) from None
+        raise _log_failure(exc, grading) from None
     except Rejected as exc:
         log.warning("submissions.log_too_large", grading=grading, detail=exc.detail)
         raise LogTooLarge(
             f"The run log is larger than the {RUN_LOG_MAX} bytes shown.", limit=RUN_LOG_MAX
         ) from None
     except PortError as exc:
-        raise uploads.store_failure(exc, "submissions.log_unreadable", grading=grading) from None
+        raise _log_failure(exc, grading) from None
+
+
+def _log_failure(exc: PortError, grading: str) -> PortError:
+    """What a caller is told when the log store fails, in fixed words. What
+    the store said goes to the log; S3's own codes name buckets and keys,
+    which is nothing a contestant should read.
+    """
+    log.warning(
+        "submissions.log_unreadable",
+        grading=grading,
+        error=type(exc).__name__,
+        detail=exc.detail,
+    )
+    return Unavailable(LOG_STORE_UNAVAILABLE)
 
 
 async def _hold(ctx: Context, workspace: WorkspaceId, task: TaskId) -> None:
@@ -346,7 +369,8 @@ async def _again(
         log.info("submissions.repeated", task=entrant.task, number=number)
         return (await _read(ctx, entrant, workspace, number))[0]
     found = next(
-        (made for made in await _listed(ctx, workspace, entrant.task) if made.key == key), None
+        (made for made in await _listed(ctx, workspace, entrant.task) or () if made.key == key),
+        None,
     )
     if found is None:
         return None
@@ -356,17 +380,19 @@ async def _again(
     gradings = _insert(ctx, entrant, workspace, found, key, at=found.at)
     await ctx.db.flush()
     log.info("submissions.recovered", task=entrant.task, number=found.number)
-    return _submission(entrant, found.number, found.at, gradings)
+    return _submission(ctx, entrant, found.number, found.at, gradings)
 
 
-async def _listed(ctx: Context, workspace: WorkspaceId, task: TaskId) -> tuple[Submitted, ...]:
-    """Every submission the workspace made for the task at the forge, none
-    while its place to submit is not there.
+async def _listed(
+    ctx: Context, workspace: WorkspaceId, task: TaskId
+) -> tuple[Submitted, ...] | None:
+    """Every submission the workspace made for the task at the forge, or
+    none while its place to submit is not made.
     """
     try:
         return await ctx.forge.workspaces.list_submissions(workspace, task)
     except NotFound:
-        return ()
+        return None
     except PortError as exc:
         raise _forge_failure(exc, "submissions.list_failed", task=task) from None
 
@@ -438,7 +464,7 @@ async def _chosen(
 
 
 def _size(row: UploadRow) -> int:
-    return row.actual_size or 0
+    return row.size
 
 
 def _uploaded(row: UploadRow) -> UploadedFile:
@@ -447,32 +473,19 @@ def _uploaded(row: UploadRow) -> UploadedFile:
     )
 
 
-async def _bytes(ctx: Context, row: UploadRow) -> bytes:
-    """The upload's bytes, once they are the ones that were checked; one
-    whose object is gone, or grew, is refused like one that changed.
+async def _pointer(ctx: Context, entrant: Entrant, as_: AsUser, row: UploadRow) -> bytes:
+    """What the commit holds in place of the file: the pointer to the object
+    the forge keeps. The forge is asked once more, here, that the place still
+    holds it, so a submission never commits a pointer to bytes that are not
+    there.
     """
-    try:
-        content: bytes | None = await ctx.forge.objects.read(
-            Store.UPLOADS, row.object_key, max_size=row.actual_size
-        )
-    except NotFound:
-        content = None
-    except Misconfigured as exc:
-        raise uploads.store_failure(exc, "submissions.upload_unread", upload=str(row.id)) from None
-    except Rejected:
-        content = None
-    except PortError as exc:
-        raise uploads.store_failure(exc, "submissions.upload_unread", upload=str(row.id)) from None
-    if (
-        content is None
-        or len(content) != row.actual_size
-        or hashlib.sha256(content).digest() != row.digest
-    ):
-        log.warning("submissions.upload_changed", upload=str(row.id))
+    place = SubmissionPlace(entrant.workspace, entrant.task) if entrant.workspace else None
+    if place is None or not await uploads.holds(ctx, place, as_, row):
+        log.warning("submissions.upload_gone", upload=str(row.id))
         raise UploadNotReady(
-            "An upload changed after it was checked; upload it again.", uploads=[str(row.id)]
+            "An upload is no longer at the forge; upload it again.", uploads=[str(row.id)]
         )
-    return content
+    return pointer_text(row.digest, row.size)
 
 
 async def _record(
@@ -488,9 +501,6 @@ async def _record(
     """
     try:
         return await ctx.forge.workspaces.record_submission(user, workspace, task, files, key=key)
-    except NotFound as exc:
-        log.warning("submissions.place_missing", task=task, detail=exc.detail)
-        raise WorkspaceNotReady("Your place to submit this task is still being made.") from exc
     except Forbidden as exc:
         log.warning("submissions.refused_at_forge", task=task, detail=exc.detail)
         raise Forbidden("Your place to submit this task does not take your submissions.") from exc
@@ -558,12 +568,16 @@ async def _read(
     for row in rows:
         grouped.setdefault(row.submission_number, []).append(row)
     return [
-        _submission(entrant, found, min(row.submitted_at for row in grouped[found]), grouped[found])
+        _submission(
+            ctx, entrant, found, min(row.submitted_at for row in grouped[found]), grouped[found]
+        )
         for found in sorted(grouped, reverse=True)
     ]
 
 
-def _submission(entrant: Entrant, number: int, at: datetime, rows: Sequence[Grading]) -> Submission:
+def _submission(
+    ctx: Context, entrant: Entrant, number: int, at: datetime, rows: Sequence[Grading]
+) -> Submission:
     stages = entrant.published.definition.stages_resolved()
     order = {stage.id: index for index, stage in enumerate(stages)}
     shows = {stage.id: stage.show for stage in stages}
@@ -572,7 +586,7 @@ def _submission(entrant: Entrant, number: int, at: datetime, rows: Sequence[Grad
         if row.stage not in latest or row.attempt > latest[row.stage].attempt:
             latest[row.stage] = row
     results = tuple(
-        _result(row, shows.get(row.stage, Show.HIDDEN))
+        _result(row, gradings.status_of(ctx, row), shows.get(row.stage, Show.HIDDEN))
         for row in sorted(
             latest.values(), key=lambda row: (order.get(row.stage, len(order)), row.stage)
         )
@@ -580,7 +594,7 @@ def _submission(entrant: Entrant, number: int, at: datetime, rows: Sequence[Grad
     return Submission(entrant.task, number, at, results)
 
 
-def _result(row: Grading, show: Show) -> Result:
+def _result(row: Grading, status: GradingStatus, show: Show) -> Result:
     """The grading as the contestant may see it under the stage's `show`. A
     system error's summary is written for staff, so it is never shown.
     """
@@ -596,7 +610,7 @@ def _result(row: Grading, show: Show) -> Result:
         id=row.id,
         stage=row.stage,
         attempt=row.attempt,
-        status=GradingStatus(row.status),
+        status=status,
         show=show,
         outcome=str(outcome) if outcome is not None else None,
         metrics=dict(metrics) if isinstance(metrics, dict) else None,
@@ -639,7 +653,16 @@ async def _own(
 
 async def _file(ctx: Context, user: AsUser, submission: SubmissionId, path: str) -> bytes:
     try:
-        return await ctx.forge.workspaces.read_submission_file(user, submission, path)
+        return await ctx.forge.workspaces.read_submission_file(
+            user, submission, path, max_size=FILE_READ_MAX
+        )
+    except Rejected as exc:
+        log.warning("submissions.file_too_large", submission=submission, detail=exc.detail)
+        raise FileTooLarge(
+            f"The file is larger than the {FILE_READ_MAX} bytes read back; choose it again "
+            "from your own copy.",
+            limit=FILE_READ_MAX,
+        ) from None
     except (NotFound, Forbidden) as exc:
         log.warning("submissions.file_unreadable", submission=submission, detail=exc.detail)
         raise NotFound("The submission has no such file.") from exc

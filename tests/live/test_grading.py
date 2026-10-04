@@ -11,11 +11,9 @@ removed afterwards.
 """
 
 import base64
-import dataclasses
 import hashlib
-import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -28,10 +26,11 @@ from sqlalchemy import select
 
 from forge.db.tables import Grading
 from forge.domain.errors import Forbidden
-from forge.domain.grading import ENDED, CiRequest, GradingStatus, RunStatus
+from forge.domain.grading import CiRequest, GradingStatus
 from forge.domain.ids import (
     ContestId,
-    OrgName,
+    OrgId,
+    RunId,
     SubmissionId,
     TaskId,
     VersionId,
@@ -44,16 +43,13 @@ from forge.runtime.setup import Setup
 from forge.services import (
     access,
     contests,
-    dispatch,
     files,
     gradings,
-    org_accounts,
     orgs,
     sessions,
     tasks,
 )
 from forge.services.publications import Published
-from forge.testing import tick
 from tests.live.conftest import LIVE, credential_of, delete_org, delete_user, make_user, needs_ci
 
 pytestmark = [*LIVE, needs_ci]
@@ -126,7 +122,7 @@ async def test_the_cis_key_is_read_and_a_request_it_did_not_sign_is_refused(
     assert isinstance(forge.grading._key, Ed25519PublicKey)
 
 
-async def test_a_queued_grading_is_started_as_the_org_account_and_found_by_its_id(
+async def test_a_grading_is_started_as_the_org_account_once_its_row_commits(
     live_setup: Setup,
     admin: httpx.Client,
     ci: httpx.Client,
@@ -134,14 +130,11 @@ async def test_a_queued_grading_is_started_as_the_org_account_and_found_by_its_i
     grader: dict[str, Any],
 ) -> None:
     session = await _signed_in(live_setup, admin, grader)
-    await orgs.create(live_setup, session, OrgName(grading_org), description="Live grading")
-    await tick(live_setup, "provisioning")
+    await orgs.create(live_setup, session, OrgId(grading_org), description="Live grading")
     organiser = await access.organiser(live_setup, session, Scope(grading_org), Role.MANAGER)
-    await contests.create(live_setup, organiser, OrgName(grading_org), "spring", title="Spring")
-    await tick(live_setup, "provisioning")
+    await contests.create(live_setup, organiser, OrgId(grading_org), "spring", title="Spring")
     contest = ContestId(f"{grading_org}/spring")
     await tasks.create(live_setup, organiser, contest, "sum", title="Sum")
-    await tick(live_setup, "provisioning")
     task = TaskId(f"{grading_org}/spring/sum")
     starter = await files.read(live_setup, organiser, task, "task.yaml")
     saved = await files.write(
@@ -152,8 +145,8 @@ async def test_a_queued_grading_is_started_as_the_org_account_and_found_by_its_i
         starter.content.replace(b"value: 2.0", b"value: 3.0"),
         starter.token,
     )
-    assert isinstance(saved, Published) and saved.activation == "done", saved
-    workspace = WorkspaceId(f"{grading_org}/spring/@nobody")
+    assert isinstance(saved, Published), saved
+    workspace = WorkspaceId(f"{grading_org}/spring/@u999999")
     async with live_setup.unit_of_work() as ctx:
         row = gradings.new_row(
             ctx,
@@ -170,38 +163,18 @@ async def test_a_queued_grading_is_started_as_the_org_account_and_found_by_its_i
         )
         grading = row.id
 
-    await tick(live_setup, "gradings.dispatch")
-
     async with live_setup.unit_of_work() as ctx:
         after = (await ctx.db.execute(select(Grading).where(Grading.id == grading))).scalar_one()
         run = await gradings.run_of(ctx, after)
-        account = await org_accounts.identity(ctx, OrgName(grading_org))
         expected = dict(ctx.forge.grading.run_variables(run))
-    forge = live_setup.forge.grading
-    since = after.queued_at - timedelta(minutes=2)
     assert expected["UNICON_COMPUTE"] == "pool:platform"
-    assert expected["UNICON_SUBMISSION_REPO"] == f"{grading_org}/spring.sum.nobody.sub"
-    assert (
-        await forge.find_run(account, dataclasses.replace(run, grading=uuid.uuid4()), since=since)
-        is None
-    )
-    found = await forge.find_run(account, run, since=since)
-    assert found is not None
-    if after.status == GradingStatus.QUEUED:
-        assert (after.wait_reason, after.start_failures) == (dispatch.NO_RUN, 1)
-        assert after.retry_at is not None and after.run_id is None
-        assert found.status in ENDED
-    else:
-        assert after.status == GradingStatus.DISPATCHED, (after.status, after.wait_reason)
-        assert found.id == after.run_id
-    repo_id, number = found.id.split("/")
+    if after.status == GradingStatus.SYSTEM_ERROR:
+        assert (after.error, after.run_id) == (gradings.NO_RUN, None)
+        return
+    assert after.status == GradingStatus.DISPATCHED, (after.status, after.error)
+    assert after.run_id is not None
+    repo_id, number = after.run_id.split("/")
     pipeline = ci.get(f"/api/repos/{repo_id}/pipelines/{number}").json()
     assert pipeline["variables"] == expected
     assert pipeline["event"] == "manual" and pipeline["branch"] == "main"
-    future = datetime.now(UTC) + timedelta(hours=1)
-    assert await forge.find_run(account, run, since=future) is None
-    state = await forge.read_run(found.id)
-    assert state.status == found.status
-    if state.status not in ENDED:
-        await forge.cancel_run(found.id)
-        assert (await forge.read_run(found.id)).status is RunStatus.CANCELLED
+    await live_setup.forge.grading.cancel_run(RunId(after.run_id))

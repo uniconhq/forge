@@ -48,6 +48,7 @@ from forge.db.tables import Contestant
 from forge.domain.errors import ContestantConflict, Forbidden, NotFound, SoleAdmin
 from forge.domain.identity import User
 from forge.domain.ids import ContestId
+from forge.domain.names import ScopeNames
 from forge.domain.registration import REGISTERED
 from forge.domain.roles import (
     RANK,
@@ -64,26 +65,27 @@ from forge.domain.roles import (
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import org_accounts
+from forge.services import names, org_accounts
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
 
 ROLE_CHANGES_LOCK = 0x524F4C45
 """The first key of every lock on an org's roles, the second being the
-org's name hashed by Postgres; a timed pass's single key never meets it."""
+org's id hashed by Postgres."""
 
 
 @dataclass(frozen=True, slots=True)
 class Holder:
     """Someone holding `role` at a scope, held directly at `at`, which is that
-    scope or a broader one. A person holding one role at two scopes is shown
-    at the broader.
+    scope or a broader one, named `at_names`. A person holding one role at
+    two scopes is shown at the broader.
     """
 
     user: User
     role: Role
     at: Scope
+    at_names: ScopeNames
 
 
 @action
@@ -94,13 +96,15 @@ async def holders(ctx: Context, organiser: Organiser, scope: Scope) -> tuple[Hol
     """
     require(organiser, scope, Role.OBSERVER)
     accounts = await org_accounts.service_account_ids(ctx)
+    lineage = scope.lineage()
+    named = await names.scopes_named(ctx, lineage)
     found: dict[int, Holder] = {}
-    for at in scope.lineage():
+    for at in lineage:
         for role in Role:
             for user in await ctx.forge.orgs.holders_of(at, role):
                 held = found.get(user.id)
                 if user.id not in accounts and (held is None or RANK[role] > RANK[held.role]):
-                    found[user.id] = Holder(user=user, role=role, at=at)
+                    found[user.id] = Holder(user=user, role=role, at=at, at_names=named[at])
     return tuple(
         sorted(
             found.values(), key=lambda holder: (-RANK[holder.role], holder.user.username.lower())
@@ -246,14 +250,16 @@ async def _refuse_if_contestant(ctx: Context, user: User, scope: Scope) -> None:
         statement = statement.where(Contestant.contest_id == contest_id_of(scope))
     contests = sorted((await ctx.db.execute(statement)).scalars())
     if contests:
+        where = await names.places_named(ctx, contests)
+        named = sorted(where[contest].path if contest in where else contest for contest in contests)
         raise ContestantConflict(
-            f"{user.username} is a contestant in {', '.join(contests)} and cannot also "
+            f"{user.username} is a contestant in {', '.join(named)} and cannot also "
             f"hold a role at {scope.name}.",
-            contests=contests,
+            contests=named,
         )
 
 
 def _logged(event: str, organiser: Organiser, user_id: int, scope: Scope, role: Role) -> None:
     log.info(
-        event, user_id=user_id, by_user_id=organiser.user.id, scope=scope.name, role=role.value
+        event, user_id=user_id, by_user_id=organiser.user.id, scope=scope.path, role=role.value
     )

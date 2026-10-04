@@ -21,7 +21,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.workflow_definition import InputType
 from forge.runtime.setup import Setup
 from forge.services import contest_home, contestants, contests
-from forge.testing import FakeClock, register_contestant, tick
+from forge.testing import FakeClock, register_contestant
 from tests.services.conftest import (
     ACME,
     RUNNING,
@@ -184,7 +184,6 @@ async def test_the_list_holds_every_contest_the_person_sees_with_their_status(
     manager = await organiser(setup, acme.fake, 7, Scope("acme"), Role.MANAGER)
     for name in ("autumn", "winter", "draft"):
         await contests.create(setup, manager, ACME, name)
-    await tick(setup, "provisioning")
     await write_contest(acme.fake, RUNNING.format(visibility="public"))
     await write_contest(acme.fake, RUNNING.format(visibility="signed-in"), ContestId("acme/autumn"))
     await write_contest(acme.fake, RUNNING.format(visibility="hidden"), ContestId("acme/winter"))

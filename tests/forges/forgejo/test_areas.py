@@ -11,7 +11,7 @@ import pytest
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, Misconfigured, NotFound, Rejected
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
-from forge.domain.ids import ContestId, OrgName, TaskId, VersionId, WorkflowId, WorkspaceId
+from forge.domain.ids import ContestId, OrgId, TaskId, VersionId, WorkflowId, WorkspaceId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
@@ -35,9 +35,9 @@ async def test_an_org_agent_is_enrolled_under_its_org(
     recorder.on("POST", "/api/orgs/42/agents", ok({"id": 9, "token": "t"}))
     recorder.on("POST", "/api/agents", ok({"id": 10, "token": "g"}))
 
-    org_agent = await forgejo.computes.enrol_agent(OrgName("acme"), "box")
+    org_agent = await forgejo.computes.enrol_agent(OrgId("acme"), "box")
     global_agent = await forgejo.computes.enrol_agent(None, "pool")
-    await forgejo.computes.revoke_agent(OrgName("acme"), org_agent.agent)
+    await forgejo.computes.revoke_agent(OrgId("acme"), org_agent.agent)
 
     assert (org_agent.agent, org_agent.token) == ("9", "t")
     assert global_agent.agent == "10"
@@ -50,7 +50,7 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
-    for repo in ("spring.bob.desk", "spring.sum.bob.sub"):
+    for repo in ("spring.u8.desk", "spring.sum.u8.sub"):
         recorder.on("GET", f"/api/v1/repos/acme/{repo}", ok({}, 404))
         recorder.on("GET", f"/api/v1/repos/acme/{repo}/branches/main", ok({}, 404))
         recorder.on("GET", f"/api/v1/repos/acme/{repo}/branch_protections/main", ok({}, 404))
@@ -70,37 +70,30 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
         ),
     )
 
-    workspace = await forgejo.workspaces.open_workspace(
-        ContestId("acme/spring"), UserOwner("Bob"), [8]
-    )
+    workspace = await forgejo.workspaces.open_workspace(ContestId("acme/spring"), UserOwner(8), [8])
     await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
 
-    assert workspace == WorkspaceId("acme/spring/@bob")
+    assert workspace == WorkspaceId("acme/spring/@u8")
     calls = recorder.calls()
-    for repo in ("spring.bob.desk", "spring.sum.bob.sub"):
+    for repo in ("spring.u8.desk", "spring.sum.u8.sub"):
         assert f"PUT /api/v1/teams/1/repos/acme/{repo}" in calls
         assert f"PUT /api/v1/teams/2/repos/acme/{repo}" in calls
         assert f"PUT /api/v1/repos/acme/{repo}/collaborators/bob" in calls
-    assert "POST /api/v1/repos/acme/spring.sum.bob.sub/tag_protections" in calls
-    assert "POST /api/v1/repos/acme/spring.bob.desk/tag_protections" not in calls
-    assert calls.index("POST /api/v1/repos/acme/spring.sum.bob.sub/tag_protections") < calls.index(
-        "PUT /api/v1/repos/acme/spring.sum.bob.sub/collaborators/bob"
+    assert "POST /api/v1/repos/acme/spring.sum.u8.sub/tag_protections" in calls
+    assert "POST /api/v1/repos/acme/spring.u8.desk/tag_protections" not in calls
+    assert calls.index("POST /api/v1/repos/acme/spring.sum.u8.sub/tag_protections") < calls.index(
+        "PUT /api/v1/repos/acme/spring.sum.u8.sub/collaborators/bob"
     )
-    assert recorder.sent("POST", "/api/v1/repos/acme/spring.sum.bob.sub/tag_protections") == [
+    assert recorder.sent("POST", "/api/v1/repos/acme/spring.sum.u8.sub/tag_protections") == [
         {"name_pattern": "submission/*", "whitelist_usernames": ["platform-account"]}
     ]
-    assert recorder.sent("PUT", "/api/v1/repos/acme/spring.bob.desk/collaborators/bob") == [
+    assert recorder.sent("PUT", "/api/v1/repos/acme/spring.u8.desk/collaborators/bob") == [
         {"permission": "write"}
     ]
     assert recorder.calls().count("POST /api/v1/orgs/acme/repos") == 2
     assert set(recorder.headers("POST", "/api/v1/orgs/acme/repos")) == {"token admin"}
-    assert recorder.sent("POST", "/api/v1/repos/acme/spring.bob.desk/branch_protections") == [
-        {
-            "branch_name": "main",
-            "enable_push": True,
-            "enable_force_push": False,
-            "block_on_rejected_reviews": False,
-        }
+    assert recorder.sent("POST", "/api/v1/repos/acme/spring.u8.desk/branch_protections") == [
+        {"branch_name": "main", "enable_push": True, "block_on_rejected_reviews": False}
     ]
 
 
@@ -108,11 +101,11 @@ async def test_a_workspace_opened_again_keeps_what_is_there(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
-    recorder.on("GET", "/api/v1/repos/acme/spring.bob.desk", ok({"id": 3}))
+    recorder.on("GET", "/api/v1/repos/acme/spring.u8.desk", ok({"id": 3}))
     recorder.on(
         "GET",
-        "/api/v1/repos/acme/spring.bob.desk/branch_protections/main",
-        ok({"enable_force_push": False}),
+        "/api/v1/repos/acme/spring.u8.desk/branch_protections/main",
+        ok({"branch_name": "main"}),
     )
     recorder.on(
         "GET",
@@ -128,17 +121,32 @@ async def test_a_workspace_opened_again_keeps_what_is_there(
         ),
     )
 
-    workspace = await forgejo.workspaces.open_workspace(
-        ContestId("acme/spring"), UserOwner("bob"), [8]
-    )
+    workspace = await forgejo.workspaces.open_workspace(ContestId("acme/spring"), UserOwner(8), [8])
 
     calls = recorder.calls()
     assert "POST /api/v1/orgs/acme/repos" not in calls
-    assert "POST /api/v1/repos/acme/spring.bob.desk/branch_protections" not in calls
+    assert "POST /api/v1/repos/acme/spring.u8.desk/branch_protections" not in calls
     assert not [call for call in calls if call.startswith("PUT /api/v1/teams/")]
-    assert "PUT /api/v1/repos/acme/spring.bob.desk/collaborators/bob" in calls
+    assert "PUT /api/v1/repos/acme/spring.u8.desk/collaborators/bob" in calls
     with pytest.raises(NotFound):
         await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/autumn/sum"), [8])
+
+
+async def test_a_workspace_repo_someone_else_is_in_is_refused_and_not_shared(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    recorder.on("GET", "/api/v1/repos/acme/spring.u8.desk", ok({"id": 3}))
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.u8.desk/collaborators",
+        ok([{**USER, "id": 7, "login": "ada"}, {**USER, "id": 8, "login": "Bob"}]),
+    )
+
+    with pytest.raises(Conflict, match="ada"):
+        await forgejo.workspaces.open_workspace(ContestId("acme/spring"), UserOwner(8), [8])
+
+    assert not [call for call in recorder.calls() if call.startswith("PUT ")]
 
 
 async def test_a_file_is_read_with_a_token_and_written_back_with_it(
@@ -225,9 +233,9 @@ async def test_an_org_is_created_limited_with_its_four_teams_and_labels(
     recorder.on("POST", "/api/v1/orgs/acme/teams", ok({"id": 1}))
     recorder.on("GET", "/api/v1/orgs/acme/teams/search", ok({"data": []}))
 
-    await forgejo.orgs.create_org(OrgName("acme"), description="Acme")
-    await forgejo.orgs.create_roles(OrgName("acme"))
-    await forgejo.orgs.create_thread_labels(OrgName("acme"))
+    await forgejo.orgs.create_org(OrgId("acme"), description="Acme")
+    await forgejo.orgs.create_roles(OrgId("acme"))
+    await forgejo.orgs.create_thread_labels(OrgId("acme"))
 
     assert recorder.sent("POST", "/api/v1/orgs")[0]["visibility"] == "limited"
     teams = [body["name"] for body in recorder.sent("POST", "/api/v1/orgs/acme/teams")]
@@ -289,8 +297,8 @@ async def test_roles_and_labels_that_exist_are_kept_on_a_rerun(
     )
     recorder.on("GET", "/api/v1/orgs/acme/labels", ok([{"id": 1, "name": "announcement"}]))
 
-    await forgejo.orgs.create_roles(OrgName("acme"))
-    await forgejo.orgs.create_thread_labels(OrgName("acme"))
+    await forgejo.orgs.create_roles(OrgId("acme"))
+    await forgejo.orgs.create_thread_labels(OrgId("acme"))
 
     assert recorder.sent("POST", "/api/v1/orgs/acme/teams") == []
     labels = [body["name"] for body in recorder.sent("POST", "/api/v1/orgs/acme/labels")]
@@ -300,7 +308,7 @@ async def test_roles_and_labels_that_exist_are_kept_on_a_rerun(
 async def test_a_submission_is_written_as_the_contestant_and_named_at_that_commit(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
-    repo = "/api/v1/repos/acme/spring.sum.bob.sub"
+    repo = "/api/v1/repos/acme/spring.sum.u8.sub"
     created = "2026-09-30T10:00:00Z"
     first = {"name": "submission/1", "commit": {"sha": "c-1", "created": created}}
     second = {
@@ -322,14 +330,14 @@ async def test_a_submission_is_written_as_the_contestant_and_named_at_that_commi
 
     submission = await forgejo.workspaces.record_submission(
         bob,
-        WorkspaceId("acme/spring/@bob"),
+        WorkspaceId("acme/spring/@u8"),
         TaskId("acme/spring/sum"),
         {"main.py": b"x"},
         key="key-12345678",
     )
 
     assert (submission.id, submission.number, submission.version) == (
-        "acme/spring/@bob/sum#2",
+        "acme/spring/@u8/sum#2",
         2,
         "c-bob",
     )
@@ -356,7 +364,7 @@ async def test_a_submission_is_written_as_the_contestant_and_named_at_that_commi
 async def test_a_submission_number_another_took_first_is_taken_by_the_next(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
-    repo = "/api/v1/repos/acme/spring.sum.bob.sub"
+    repo = "/api/v1/repos/acme/spring.sum.u8.sub"
     commit = {"sha": "c-bob", "created": "2026-09-30T10:00:00Z"}
     raced = {"name": "submission/1", "commit": {"sha": "c-other", "created": commit["created"]}}
     mine = {"name": "submission/2", "message": "idempotency_key: key-12345678\n", "commit": commit}
@@ -367,7 +375,7 @@ async def test_a_submission_number_another_took_first_is_taken_by_the_next(
 
     submission = await forgejo.workspaces.record_submission(
         AsUser(8, _credential()),
-        WorkspaceId("acme/spring/@bob"),
+        WorkspaceId("acme/spring/@u8"),
         TaskId("acme/spring/sum"),
         {"main.py": b"x"},
         key="key-12345678",
@@ -385,7 +393,7 @@ async def test_a_submission_number_another_took_first_is_taken_by_the_next(
 async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_through_media(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
-    repo = "/api/v1/repos/acme/spring.sum.bob.sub"
+    repo = "/api/v1/repos/acme/spring.sum.u8.sub"
     commit = {"sha": "c-2", "created": "2026-09-30T10:00:00Z"}
     recorder.on(
         "GET",
@@ -403,19 +411,23 @@ async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_thr
         ),
     )
     recorder.on("GET", f"{repo}/media/files/submission/main.py", httpx.Response(200, content=b"x"))
-    workspace, task = WorkspaceId("acme/spring/@bob"), TaskId("acme/spring/sum")
+    workspace, task = WorkspaceId("acme/spring/@u8"), TaskId("acme/spring/sum")
 
     listed = await forgejo.workspaces.list_submissions(workspace, task)
     content = await forgejo.workspaces.read_submission_file(
-        AsUser(8, _credential()), listed[1].id, "files/submission/main.py"
+        AsUser(8, _credential()), listed[1].id, "files/submission/main.py", max_size=1
     )
+    with pytest.raises(Rejected, match="larger than 0 bytes"):
+        await forgejo.workspaces.read_submission_file(
+            AsUser(8, _credential()), listed[1].id, "files/submission/main.py", max_size=0
+        )
 
     assert [(made.number, made.version, made.key) for made in listed] == [
         (1, "c-1", None),
         (2, "c-2", "k-2222222"),
     ]
     assert content == b"x"
-    [read] = [request for request in recorder.seen if "/media/" in request.url.path]
+    read = next(request for request in recorder.seen if "/media/" in request.url.path)
     assert read.url.params["ref"] == "submission/2"
     assert read.headers["Authorization"] == "Bearer access"
 
@@ -492,7 +504,7 @@ async def test_a_task_is_made_bare_and_secured_with_what_is_missing(
     for team in (1, 2, 4, 5, 6):
         recorder.on("GET", f"/api/v1/teams/{team}/repos/acme/spring.sum.task", ok({}, 404))
     recorder.on("GET", "/api/v1/teams/3/repos/acme/spring.sum.task", ok({"id": 9}))
-    recorder.on("GET", f"{repo}/branch_protections/main", ok({"enable_force_push": True}))
+    recorder.on("GET", f"{repo}/branch_protections/main", ok({"branch_name": "main"}))
     recorder.on(
         "GET",
         f"{repo}/tag_protections",
@@ -511,13 +523,11 @@ async def test_a_task_is_made_bare_and_secured_with_what_is_missing(
     assert attached == [
         f"PUT /api/v1/teams/{team}/repos/acme/spring.sum.task" for team in (1, 2, 4, 5, 6)
     ]
-    assert recorder.sent("PATCH", f"{repo}/branch_protections/main") == [
-        {"enable_force_push": False}
-    ]
+    assert f"POST {repo}/branch_protections" not in recorder.calls()
     assert recorder.sent("PATCH", f"{repo}/tag_protections/7") == [
         {"name_pattern": "published/*", "whitelist_usernames": ["platform-account"]}
     ]
-    assert put_back == 7
+    assert put_back == 6
 
 
 async def test_a_save_is_one_commit_carrying_each_files_blob(
@@ -597,8 +607,8 @@ async def test_contests_and_tasks_are_listed_from_what_the_caller_sees(
             [
                 {"name": "spring.contest"},
                 {"name": "spring.sum.task"},
-                {"name": "spring.ada.desk"},
-                {"name": "spring.sum.ada.sub"},
+                {"name": "spring.u7.desk"},
+                {"name": "spring.sum.u7.sub"},
                 {"name": "autumn.contest"},
                 {"name": "autumn.sum.task"},
                 {"name": "classic.workflow"},
@@ -607,7 +617,7 @@ async def test_contests_and_tasks_are_listed_from_what_the_caller_sees(
     )
     ada = AsUser(7, _credential())
 
-    contests = await forgejo.content.list_contests(ada, OrgName("acme"))
+    contests = await forgejo.content.list_contests(ada, OrgId("acme"))
     tasks = await forgejo.content.list_tasks(ada, ContestId("acme/spring"))
 
     assert contests == ("acme/autumn", "acme/spring")
@@ -618,7 +628,7 @@ async def test_contests_and_tasks_are_listed_from_what_the_caller_sees(
 async def test_a_write_the_host_refuses_as_moved_is_read_again_and_repeated(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
-    repo = "/api/v1/repos/acme/spring.sum.bob.sub"
+    repo = "/api/v1/repos/acme/spring.sum.u8.sub"
     recorder.on("GET", f"{repo}/branches/main", ok({"commit": {"id": "head-0"}}))
     recorder.on("GET", f"{repo}/git/trees/main", ok({"tree": []}))
     recorder.on(
@@ -632,13 +642,13 @@ async def test_a_write_the_host_refuses_as_moved_is_read_again_and_repeated(
 
     submission = await forgejo.workspaces.record_submission(
         AsUser(8, _credential()),
-        WorkspaceId("acme/spring/@bob"),
+        WorkspaceId("acme/spring/@u8"),
         TaskId("acme/spring/sum"),
         {"main.py": b"x"},
         key="key-12345678",
     )
 
-    assert submission.id == "acme/spring/@bob/sum#1"
+    assert submission.id == "acme/spring/@u8/sum#1"
     assert recorder.calls().count(f"POST {repo}/contents") == 2
     assert recorder.calls().count(f"GET {repo}/git/trees/main") == 2
     assert recorder.sent("POST", f"{repo}/tags")[0]["target"] == "c-2"
@@ -773,6 +783,7 @@ async def test_a_sign_in_exchanges_the_code_and_reads_the_nonce(
     form = recorder.seen[0].content.decode()
     assert "code_verifier=v" in form and "client_secret=secret" in form
     assert forgejo.identity.sign_up_url() == "http://forge.test/user/sign_up"
+    assert forgejo.identity.public_url() == "http://forge.test"
 
 
 async def test_a_deleted_person_loses_what_they_own_and_keeps_what_others_read(
@@ -807,8 +818,8 @@ async def test_an_event_push_is_made_once_for_the_org(
         ok([{"id": 3, "config": {"url": url}}]),
     )
 
-    await forgejo.orgs.create_event_push(OrgName("acme"), url=url, secret="s3cret")
-    await forgejo.orgs.create_event_push(OrgName("acme"), url=url, secret="s3cret")
+    await forgejo.orgs.create_event_push(OrgId("acme"), url=url, secret="s3cret")
+    await forgejo.orgs.create_event_push(OrgId("acme"), url=url, secret="s3cret")
 
     assert recorder.calls().count("POST /api/v1/orgs/acme/hooks") == 1
     (sent,) = recorder.sent("POST", "/api/v1/orgs/acme/hooks")
@@ -829,10 +840,93 @@ async def test_the_service_account_is_put_in_its_place_once(
     recorder.on("GET", "/api/v1/teams/5/members", ok([]), ok([SERVICE_ACCOUNT]))
     recorder.on("GET", "/api/v1/users/search", ok({"data": [SERVICE_ACCOUNT]}))
 
-    assert await forgejo.orgs.ensure_account_membership(OrgName("acme"), 9) is True
-    assert await forgejo.orgs.ensure_account_membership(OrgName("acme"), 9) is False
+    assert await forgejo.orgs.ensure_account_membership(OrgId("acme"), 9) is True
+    assert await forgejo.orgs.ensure_account_membership(OrgId("acme"), 9) is False
 
     assert recorder.calls().count("PUT /api/v1/teams/5/members/unicon-ci-acme") == 1
+
+
+async def test_the_service_account_leaves_its_place_found_by_its_id(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on(
+        "GET",
+        "/api/v1/orgs/acme/teams/search",
+        ok({"data": [{"id": 5, "name": "acme-ci"}, {"id": 1, "name": "acme-admin"}]}),
+        ok({"data": []}),
+    )
+    recorder.on("GET", "/api/v1/teams/5/members", ok([USER, SERVICE_ACCOUNT]))
+
+    await forgejo.orgs.remove_account_membership(OrgId("acme"), 9)
+    await forgejo.orgs.remove_account_membership(OrgId("acme"), 9)
+
+    deletions = [call for call in recorder.calls() if call.startswith("DELETE")]
+    assert deletions == ["DELETE /api/v1/teams/5/members/unicon-ci-acme"]
+
+
+async def test_an_org_is_deleted_and_one_not_there_is_no_error(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/orgs/acme/repos", ok([]), ok([]), ok({}, 404))
+    recorder.on("DELETE", "/api/v1/orgs/acme", httpx.Response(204), ok({}, 404))
+
+    await forgejo.orgs.delete_org(OrgId("acme"))
+    await forgejo.orgs.delete_org(OrgId("acme"))
+    await forgejo.orgs.delete_org(OrgId("acme"))
+
+    assert recorder.headers("DELETE", "/api/v1/orgs/acme") == ["token admin"] * 2
+
+
+async def test_an_org_that_still_holds_a_place_is_refused(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/orgs/acme/repos", ok([{"name": "spring.contest"}]))
+
+    with pytest.raises(Rejected):
+        await forgejo.orgs.delete_org(OrgId("acme"))
+
+    assert "DELETE /api/v1/orgs/acme" not in recorder.calls()
+
+
+async def test_a_place_is_deleted_with_its_own_teams_and_no_others(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on(
+        "GET",
+        "/api/v1/orgs/acme/teams/search",
+        ok(
+            {
+                "data": [
+                    {"id": 1, "name": "acme.spring-admin"},
+                    {"id": 2, "name": "acme.spring-manager"},
+                    {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
+                ]
+            }
+        ),
+    )
+    recorder.on("DELETE", "/api/v1/repos/acme/spring.sum.task", httpx.Response(204))
+
+    await forgejo.content.delete_place(TaskId("acme/spring/sum"))
+
+    deletions = [call for call in recorder.calls() if call.startswith("DELETE")]
+    assert deletions == [
+        "DELETE /api/v1/teams/4",
+        "DELETE /api/v1/teams/5",
+        "DELETE /api/v1/teams/6",
+        "DELETE /api/v1/repos/acme/spring.sum.task",
+    ]
+
+
+async def test_a_place_not_there_is_no_error(forgejo: ForgejoForge, recorder: Recorder) -> None:
+    recorder.on("GET", "/api/v1/orgs/acme/teams/search", ok({"data": []}))
+    recorder.on("DELETE", "/api/v1/repos/acme/spring.contest", ok({}, 404))
+
+    await forgejo.content.delete_place(ContestId("acme/spring"))
+
+    assert recorder.calls().count("DELETE /api/v1/repos/acme/spring.contest") == 1
 
 
 async def test_a_role_is_revoked_from_its_own_team_and_no_other(
@@ -918,18 +1012,12 @@ async def test_an_account_is_created_given_a_password_and_a_token(
     assert recorder.headers("POST", "/api/v1/users/unicon-ci-acme/tokens") == [f"Basic {basic}"]
 
 
-async def test_the_ci_user_is_found_or_made_and_asked_whether_it_is_alive(
-    forgejo: ForgejoForge, recorder: Recorder
-) -> None:
+async def test_the_ci_user_is_found_or_made(forgejo: ForgejoForge, recorder: Recorder) -> None:
     recorder.on("GET", "/api/users/unicon-ci-acme", ok({}, 404), ok({"id": 4}))
     recorder.on("POST", "/api/users", ok({"id": 4}))
-    recorder.on("GET", "/api/user", ok({"login": "unicon-ci-acme"}), ok({}, 401))
 
     assert await forgejo.grading.create_ci_user("unicon-ci-acme") == 4
     assert await forgejo.grading.create_ci_user("unicon-ci-acme") == 4
-    assert await forgejo.grading.ci_user_is_alive(ACME) is True
-    assert await forgejo.grading.ci_user_is_alive(ACME) is False
 
     assert recorder.sent("POST", "/api/users") == [{"login": "unicon-ci-acme"}]
     assert recorder.headers("POST", "/api/users") == ["Bearer ci-admin"]
-    assert recorder.headers("GET", "/api/user") == ["Bearer ci-acme"] * 2

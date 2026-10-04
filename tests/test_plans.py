@@ -1,5 +1,5 @@
-"""The compiler: one flat plan per stage in the runner's plan shape version 3,
-every step carrying its primitive's image, entrypoint and limits, every
+"""The compiler: one flat plan per stage in the runner's plan shape version 4,
+every step carrying its primitive's image and limits, every
 `foreach` expanded over the task's actual tests and folded where the
 primitive batches, every value resolved, the verdict block from the
 workflow's outputs, the same bytes every time; what it refuses, each at its
@@ -81,7 +81,7 @@ def test_the_starter_task_compiles_to_one_flat_plan_over_classic() -> None:
     plan = document(plans["default"])
 
     assert (plan["schema_version"], plan["harness_image"], plan["stage"]) == (
-        3,
+        4,
         HARNESS_IMAGE,
         "default",
     )
@@ -91,7 +91,6 @@ def test_the_starter_task_compiles_to_one_flat_plan_over_classic() -> None:
         "id": "compile",
         "primitive": "compile@v1",
         "image": image("compile"),
-        "entrypoint": ["/usr/local/bin/compile"],
         "limits": {
             "time_ms": 60000,
             "cpu_ms": 60000,
@@ -504,7 +503,6 @@ version: v1
 image: ghcr.io/uniconhq/primitive-probe@sha256:"""
             + b"1" * 64
             + b"""
-entrypoint: [/probe]
 limits: {time_ms: 1, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1}
 inputs:
   sentence: {type: text}
@@ -619,16 +617,16 @@ def conforms(plan: dict[str, Any]) -> None:
     step one of its three shapes, every value one of its six.
     """
     assert set(plan) == {"schema_version", "harness_image", "stage", "tests", "steps", "verdict"}
-    assert plan["schema_version"] == 3
+    assert plan["schema_version"] == 4
     assert IMAGE.match(plan["harness_image"])
     tests = plan["tests"]
     seen = set()
     for step in plan["steps"]:
-        base = {"id", "primitive", "image", "entrypoint", "limits"}
+        base = {"id", "primitive", "image", "limits"}
         assert set(step) in (base | {"inputs"}, base | {"inputs", "test"}, base | {"batch"})
         assert STEP_ID.match(step["id"]) and IMAGE.match(step["image"])
         assert "/" not in step["primitive"] and "@" in step["primitive"]
-        assert step["entrypoint"] and set(step["limits"]) == LIMITS
+        assert set(step["limits"]) == LIMITS
         assert (step["id"], step.get("test")) not in seen
         seen.add((step["id"], step.get("test")))
         for item in step.get("batch") or [{"test": step.get("test"), "inputs": step["inputs"]}]:

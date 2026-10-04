@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from forge.domain.identity import AsUser, Credential, User
-from forge.domain.ids import OrgName
+from forge.domain.ids import OrgId
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.port import Forge
 from forge.port.identity import AccountVisibility, IdentityPort, SignedIn
@@ -72,6 +72,9 @@ class CachedIdentity:
 
     def sign_up_url(self) -> str | None:
         return self._inner.sign_up_url()
+
+    def public_url(self) -> str:
+        return self._inner.public_url()
 
     async def complete_sign_in(self, *, code: str, verifier: str) -> SignedIn:
         return await self._inner.complete_sign_in(code=code, verifier=verifier)
@@ -140,29 +143,37 @@ class CachedOrgs:
         self._cache = cache
         self._enabled = enabled
 
-    async def name_taken(self, name: OrgName) -> bool:
+    async def name_taken(self, name: str) -> bool:
         return await self._inner.name_taken(name)
 
-    async def platform_owns(self, name: OrgName) -> bool:
-        return await self._inner.platform_owns(name)
-
-    async def create_org(self, name: OrgName, *, description: str) -> None:
+    async def create_org(self, name: OrgId, *, description: str) -> None:
         await self._inner.create_org(name, description=description)
 
-    async def create_roles(self, name: OrgName) -> None:
+    async def create_roles(self, name: OrgId) -> None:
         await self._inner.create_roles(name)
 
-    async def create_thread_labels(self, name: OrgName) -> None:
+    async def create_thread_labels(self, name: OrgId) -> None:
         await self._inner.create_thread_labels(name)
 
-    async def create_event_push(self, name: OrgName, *, url: str, secret: str) -> None:
+    async def create_event_push(self, name: OrgId, *, url: str, secret: str) -> None:
         await self._inner.create_event_push(name, url=url, secret=secret)
 
-    async def ensure_account_membership(self, name: OrgName, user_id: int) -> bool:
+    async def ensure_account_membership(self, name: OrgId, user_id: int) -> bool:
         return await self._inner.ensure_account_membership(name, user_id)
 
+    async def remove_account_membership(self, name: OrgId, user_id: int) -> None:
+        await self._inner.remove_account_membership(name, user_id)
+
+    async def delete_org(self, name: OrgId) -> None:
+        """Every role read is dropped: the org's roles go with it, and the
+        cache does not know who held them.
+        """
+        await self._inner.delete_org(name)
+        self._cache.drop("roles_of")
+        self._cache.drop("holders_of")
+
     async def update_org(
-        self, name: OrgName, *, description: str, display_name: str | None = None
+        self, name: OrgId, *, description: str, display_name: str | None = None
     ) -> None:
         await self._inner.update_org(name, description=description, display_name=display_name)
 
@@ -221,6 +232,7 @@ class CachedForge:
         self.grading = inner.grading
         self.computes = inner.computes
         self.objects = inner.objects
+        self.uploads = inner.uploads
 
     @property
     def name(self) -> str:

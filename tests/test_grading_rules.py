@@ -1,7 +1,7 @@
 """The rules a grading run keeps to, without a database: the package's copy of
 the runner's contract files is the runner's own and checks what it should,
 a report reads as one or is refused, a verdict is kept only when it matches
-its schema and its grading, and the run's clock agrees with the CI's.
+its schema, and the run's clock agrees with the CI's.
 """
 
 import json
@@ -21,7 +21,6 @@ from forge.domain.grading import (
     WALL_CEILING,
     log_key,
     run_deadline,
-    start_retry_wait,
     wall_seconds,
 )
 from forge.domain.plans import Plan
@@ -38,7 +37,7 @@ IMAGE = "ghcr.io/uniconhq/primitive-compile@sha256:" + "0" * 64
 @pytest.mark.parametrize("contract", CONTRACTS)
 def test_the_contract_files_are_the_runners_own(contract: str) -> None:
     published = RUNNER / "schemas" / f"{contract}.schema.json"
-    assert json.loads(schema_text(contract)) == json.loads(published.read_text(encoding="utf-8"))
+    assert schema_text(contract) == published.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(
@@ -51,67 +50,48 @@ def test_the_runners_examples_keep_the_contracts(contract: str) -> None:
 
 
 def test_a_document_that_breaks_a_contract_says_where() -> None:
-    assert violation({"schema_version": 3}, "verdict") == (
-        "at the top: 'grading_id' is a required property"
+    assert violation({"schema_version": 4}, "verdict") == (
+        "at the top: 'outcome' is a required property"
     )
 
 
 def _verdict(**changes: Any) -> dict[str, Any]:
     verdict: dict[str, Any] = {
-        "schema_version": 3,
-        "grading_id": str(GRADING),
-        "submission": {
-            "org": "acme",
-            "repo": "spring.sum.bob.sub",
-            "tag": "submission/1",
-            "commit": "1" * 40,
-        },
-        "stage": "default",
-        "attempt": 1,
-        "task": {"org": "acme", "repo": "spring.sum.task"},
-        "publication": {"tag": "published/1", "commit": "2" * 40},
+        "schema_version": 4,
         "outcome": "wrong_answer",
         "metrics": {"points": 0},
         "tests": [
             {"id": "1", "outcome": "wrong_answer", "time_ms": 3, "memory_kb": None, "metrics": {}}
         ],
         "summary": "0 of 1 tests accepted.",
-        "resources": {"wall_ms": 10, "cpu_ms": None, "peak_memory_kb": None},
         "log": None,
-        "started_at": "2026-09-26T12:00:00Z",
-        "finished_at": "2026-09-26T12:00:01Z",
     }
     verdict.update(changes)
     return verdict
 
 
-def test_a_verdict_of_this_grading_is_kept() -> None:
-    assert verdict_problem(_verdict(), grading=GRADING, stage="default", attempt=1) is None
+def test_a_verdict_that_keeps_its_schema_is_kept() -> None:
+    assert verdict_problem(_verdict()) is None
 
 
 @pytest.mark.parametrize(
-    ("changes", "stage", "attempt", "problem"),
+    ("changes", "problem"),
     [
-        ({"outcome": "great"}, "default", 1, "verdict.schema.json"),
-        ({"metrics": {"Points": 1}}, "default", 1, "verdict.schema.json"),
-        ({"outcome": "system_error"}, "default", 1, "verdict.schema.json"),
-        ({"grading_id": str(uuid.uuid4())}, "default", 1, "another grading"),
-        ({}, "public", 1, "another stage or attempt"),
-        ({}, "default", 2, "another stage or attempt"),
-        ({"summary": "x" * VERDICT_MAX}, "default", 1, "more than the"),
-        ({"metrics": {"points": math.nan}}, "default", 1, "not a JSON document"),
+        ({"outcome": "great"}, "verdict.schema.json"),
+        ({"metrics": {"Points": 1}}, "verdict.schema.json"),
+        ({"outcome": "system_error"}, "verdict.schema.json"),
+        ({"grading_id": "0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31"}, "verdict.schema.json"),
+        ({"summary": "x" * VERDICT_MAX}, "more than the"),
+        ({"metrics": {"points": math.nan}}, "not a JSON document"),
     ],
 )
-def test_a_verdict_that_is_not_one_to_keep_says_why(
-    changes: dict[str, Any], stage: str, attempt: int, problem: str
-) -> None:
-    found = verdict_problem(_verdict(**changes), grading=GRADING, stage=stage, attempt=attempt)
+def test_a_verdict_that_is_not_one_to_keep_says_why(changes: dict[str, Any], problem: str) -> None:
+    found = verdict_problem(_verdict(**changes))
     assert found is not None and problem in found
 
 
 def test_a_verdict_that_is_not_an_object_is_not_kept() -> None:
-    found = verdict_problem("accepted", grading=GRADING, stage="default", attempt=1)
-    assert found is not None
+    assert verdict_problem("accepted") is not None
 
 
 def test_the_three_reports_read() -> None:
@@ -151,7 +131,6 @@ def _plan(*limits: int) -> Plan:
                     "id": f"s{index}",
                     "primitive": "compile@v1",
                     "image": IMAGE,
-                    "entrypoint": ["/bin/x"],
                     "limits": {
                         "time_ms": time_ms,
                         "cpu_ms": time_ms,
@@ -177,12 +156,6 @@ def test_the_wall_clock_is_the_steps_limits_with_a_margin_and_never_past_the_cei
 def test_a_runs_deadline_is_its_wall_clock_and_the_time_kept_for_reporting() -> None:
     fetched = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
     assert run_deadline(fetched, 100) == fetched + timedelta(seconds=100) + REPORT_ALLOWANCE
-
-
-def test_a_failed_start_waits_longer_each_time_up_to_five_minutes() -> None:
-    waits = [start_retry_wait(failures).total_seconds() for failures in range(1, 9)]
-    assert waits == [5, 10, 20, 40, 80, 160, 300, 300]
-    assert start_retry_wait(10_000) == timedelta(minutes=5)
 
 
 def test_a_log_is_kept_by_grading_and_attempt() -> None:

@@ -1,6 +1,7 @@
 """The grading area over Woodpecker, asserted without one: a task activated
 once and its runs started as the org account with the run's variables, a
-start answered without a run refused, a run found by its grading id, the
+task deactivated and forgotten as the org account, the org account's CI user
+deleted, a start answered without a run refused, a run found by its grading id, the
 extension's request checked against the CI's key as RFC 9421 lays it out,
 and the answer with its three steps.
 """
@@ -18,9 +19,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from forge.domain.errors import Forbidden, Rejected, Unavailable
-from forge.domain.grading import CiRequest, GradingRun, Run, RunStatus
+from forge.domain.grading import CiRequest, GradingRun
 from forge.domain.identity import AsOrgAccount
-from forge.domain.ids import PublicationId, RunId, SubmissionId, TaskId, VersionId
+from forge.domain.ids import PublicationId, SubmissionId, TaskId, VersionId
 from forge.forges.forgejo import ForgejoForge, grading
 from tests.forges.forgejo.conftest import Recorder, ok
 
@@ -38,7 +39,7 @@ RUN = GradingRun(
     task=TaskId("acme/spring/sum"),
     publication=PublicationId("acme/spring/sum#3"),
     publication_version=VersionId(TASK_COMMIT),
-    submission=SubmissionId("acme/spring/@bob/sum#2"),
+    submission=SubmissionId("acme/spring/@u8/sum#2"),
     submission_version=VersionId(SUBMISSION_COMMIT),
     envelope_url=f"http://proxy/api/v1/gradings/{GRADING}/envelope?key=k",
     compute="pool:platform",
@@ -48,7 +49,7 @@ VARIABLES = {
     "UNICON_GRADING_ID": str(GRADING),
     "UNICON_ENVELOPE_URL": RUN.envelope_url,
     "UNICON_PUBLICATION_COMMIT": TASK_COMMIT,
-    "UNICON_SUBMISSION_REPO": "acme/spring.sum.bob.sub",
+    "UNICON_SUBMISSION_REPO": "acme/spring.sum.u8.sub",
     "UNICON_SUBMISSION_COMMIT": SUBMISSION_COMMIT,
     "UNICON_COMPUTE": "pool:platform",
 }
@@ -139,6 +140,44 @@ async def test_a_task_is_activated_once_as_the_org_account(
     assert "DELETE /api/v1/repos/acme/spring.sum.task/hooks/2" not in recorder.calls()
 
 
+async def test_a_task_is_deactivated_and_forgotten_as_the_org_account(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/repos/lookup/acme/spring.sum.task", ok({"id": 5}), ok({}, 404))
+
+    await forgejo.grading.deactivate(ACME, TaskId("acme/spring/sum"))
+    await forgejo.grading.deactivate(ACME, TaskId("acme/spring/sum"))
+
+    assert recorder.calls().count("DELETE /api/repos/5") == 1
+    (deleted,) = [request for request in recorder.seen if request.method == "DELETE"]
+    assert deleted.url.params["remove"] == "true"
+    assert deleted.headers["Authorization"] == "Bearer ci-acme"
+    with pytest.raises(Forbidden):
+        await forgejo.grading.deactivate(ACME, TaskId("other/spring/sum"))
+
+
+async def test_the_ci_user_is_deleted_as_the_administrator(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("DELETE", "/api/users/unicon-ci-acme", httpx.Response(204), ok({}, 404))
+    recorder.on("GET", "/api/users/unicon-ci-acme", ok({}, 404))
+
+    await forgejo.grading.delete_ci_user("unicon-ci-acme")
+    await forgejo.grading.delete_ci_user("unicon-ci-acme")
+
+    assert recorder.headers("DELETE", "/api/users/unicon-ci-acme") == ["Bearer ci-admin"] * 2
+
+
+async def test_a_ci_user_the_ci_keeps_after_a_404_is_refused(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("DELETE", "/api/users/unicon-ci-acme", ok({}, 404))
+    recorder.on("GET", "/api/users/unicon-ci-acme", ok({"id": 4}))
+
+    with pytest.raises(Rejected):
+        await forgejo.grading.delete_ci_user("unicon-ci-acme")
+
+
 async def test_a_run_is_started_on_main_as_the_org_account_with_its_variables(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
@@ -176,39 +215,6 @@ async def test_a_start_for_another_org_is_forbidden(forgejo: ForgejoForge) -> No
 
     with pytest.raises(Forbidden):
         await forgejo.grading.start_run(other, RUN)
-
-
-async def test_a_run_is_found_by_its_grading_id_among_the_runs_since(
-    forgejo: ForgejoForge, recorder: Recorder
-) -> None:
-    recorder.on("GET", "/api/repos/lookup/acme/spring.sum.task", ok({"id": 5}))
-    recorder.on(
-        "GET",
-        "/api/repos/5/pipelines",
-        ok(
-            [
-                {"number": 9, "variables": {"UNICON_GRADING_ID": str(uuid.uuid4())}},
-                {"number": 7, "status": "pending", "variables": VARIABLES},
-                {"number": 6},
-            ]
-        ),
-    )
-
-    found = await forgejo.grading.find_run(ACME, RUN, since=NOW)
-
-    assert found == Run(id=RunId("5/7"), status=RunStatus.PENDING)
-    [listing] = [request for request in recorder.seen if request.url.path.endswith("/pipelines")]
-    assert listing.url.params["after"] == "2026-09-30T12:00:00Z"
-    assert listing.headers["Authorization"] == "Bearer ci-acme"
-
-
-async def test_no_run_is_found_when_none_carries_the_grading_id(
-    forgejo: ForgejoForge, recorder: Recorder
-) -> None:
-    recorder.on("GET", "/api/repos/lookup/acme/spring.sum.task", ok({"id": 5}))
-    recorder.on("GET", "/api/repos/5/pipelines", ok([{"number": 1, "variables": {}}]))
-
-    assert await forgejo.grading.find_run(ACME, RUN, since=NOW) is None
 
 
 async def test_a_signed_request_reads_as_the_run_it_asks_about(
@@ -357,11 +363,11 @@ async def test_the_answer_is_two_full_clone_steps_and_the_harness(
                 "name": "submission",
                 "image": CLONE,
                 "settings": {
-                    "remote": "http://forgejo:3000/acme/spring.sum.bob.sub.git",
+                    "remote": "http://forgejo:3000/acme/spring.sum.u8.sub.git",
                     "sha": SUBMISSION_COMMIT,
                     "ref": "refs/tags/submission/2",
                     "path": "/woodpecker/submission",
-                    "lfs": False,
+                    "lfs": True,
                 },
                 "volumes": ["unicon-lfs-acme:/lfs-cache"],
             },
@@ -395,7 +401,7 @@ def test_the_envelope_places_name_the_task_the_publication_and_the_submission(
     assert places.publication == {"tag": "published/3", "commit": TASK_COMMIT}
     assert places.submission == {
         "org": "acme",
-        "repo": "spring.sum.bob.sub",
+        "repo": "spring.sum.u8.sub",
         "tag": "submission/2",
         "commit": SUBMISSION_COMMIT,
     }

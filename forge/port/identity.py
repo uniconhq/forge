@@ -36,6 +36,12 @@ class IdentityPort(Protocol):
         """
         ...
 
+    def public_url(self) -> str:
+        """Where a browser reaches the host's own pages, sign-in and the
+        account settings, with no trailing slash.
+        """
+        ...
+
     async def complete_sign_in(self, *, code: str, verifier: str) -> SignedIn:
         """Exchange the code the host sent back and read who signed in.
         `Forbidden` when the code or the verifier is not accepted;

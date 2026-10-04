@@ -17,7 +17,8 @@ code of its own (`forge.domain.registration` holds the rules):
    (`already_registered`).
 5. The invite, the code and the email address the contest asks for
    (`invite_required`, `wrong_invite_code`, `domain_not_allowed`), where the
-   address is one the forge has confirmed is theirs.
+   address is one the forge has confirmed is theirs. Nothing makes invites
+   yet, so an invite-only contest refuses everyone.
 6. A place is free (`contest_full`). The places are counted under an
    advisory lock on the contest, a lock Postgres holds against a name, since
    there is no contest row to lock, so the last place goes once.
@@ -26,29 +27,29 @@ The row is written pending with what let it through. With `approval: auto`
 a registration that passed is approved in the same call.
 
 An organiser managing the contest decides a registration: `approve` turns a
-pending one approved and asks for the contestant's workspace, `reject`
+pending one approved, `reject`
 records the decision with a reason the person reads, `reopen` takes a
 rejection back and leaves the registration pending again, `remove` ends an
 approved one, taking the contestant's access to their workspace away and
 keeping what is in it, and `extend` gives one person more time, which every
-deadline check adds. Anyone observing the contest lists the registrations,
-each with where the contestant's workspace stands.
+deadline check adds. Anyone observing the contest lists the registrations.
+A contestant's workspace is made a part at a time when it is first needed:
+the place to submit a task at their first submit to it.
 """
 
-import builtins
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, text
 
-from forge.db.tables import Contestant, Invite
+from forge.db.tables import Contestant
 from forge.domain import registration as rules
 from forge.domain import release
-from forge.domain.definitions import Approval, ContestDefinition, RegistrationMode
+from forge.domain.definitions import Approval, ContestDefinition
 from forge.domain.errors import AlreadyRegistered, ContestFull, IsStaff, NotFound
 from forge.domain.identity import User
 from forge.domain.ids import ContestId
-from forge.domain.registration import Status, WorkspaceState
+from forge.domain.registration import Status
 from forge.domain.roles import Role, contest_scope
 from forge.domain.sessions import Session
 from forge.log import get_logger
@@ -62,17 +63,13 @@ log = get_logger(__name__)
 PLACES_LOCK = 0x504C4143
 """The first key of every lock on a contest's places, the second being the
 contest's id hashed by Postgres."""
-INVITE_ACCEPTED = "accepted"
 
 
 @dataclass(frozen=True, slots=True)
 class Registration:
     """One person's registration for a contest. `user` is who they are at the
     forge, or none once their account is gone. `decided_at` and `reason` are
-    the last decision and, for a rejection, why. `workspace` is where the
-    workspace of an approved contestant stands, and none for anyone else;
-    `workspace_error` is why the last try at making part of it failed, in the
-    platform's words, while it is still being made.
+    the last decision and, for a rejection, why.
     """
 
     contest: ContestId
@@ -83,8 +80,6 @@ class Registration:
     decided_at: datetime | None
     reason: str | None
     time_extension: timedelta
-    workspace: WorkspaceState | None
-    workspace_error: str | None
 
 
 @action
@@ -113,7 +108,7 @@ async def register(
         settings.registration,
         emails=await _confirmed_emails(ctx, user.id, settings),
         invite_code=invite_code,
-        invited=await _invited(ctx, contest, user.id, settings),
+        invited=False,
     )
     await _refuse_full(ctx, contest, settings)
     row = Contestant(
@@ -128,7 +123,7 @@ async def register(
     log.info("contestants.registered", contest=contest, user_id=user.id)
     if settings.registration.approval is Approval.AUTO:
         await _approve(ctx, row, decided_by=None)
-    return await registration_of(ctx, row, user)
+    return registration_of(row, user)
 
 
 @action
@@ -137,13 +132,13 @@ async def mine(ctx: Context, session: Session, contest: ContestId) -> Registrati
     row = await row_of(ctx, contest, session.user_id)
     if row is None:
         return None
-    return await registration_of(ctx, row, User(id=session.user_id, username=session.username))
+    return registration_of(row, User(id=session.user_id, username=session.username))
 
 
 @action
 async def list(ctx: Context, organiser: Organiser, contest: ContestId) -> tuple[Registration, ...]:
-    """Every registration for the contest, oldest first, each with where the
-    contestant's workspace stands. Needs the observer role at the contest.
+    """Every registration for the contest, oldest first. Needs the observer
+    role at the contest.
     """
     require(organiser, contest_scope(contest), Role.OBSERVER)
     rows = (
@@ -153,23 +148,17 @@ async def list(ctx: Context, organiser: Organiser, contest: ContestId) -> tuple[
             .order_by(Contestant.registered_at, Contestant.id)
         )
     ).scalars()
-    found = builtins.list(rows)
-    ready = await workspaces.readiness(ctx, found)
-    return tuple(
-        [_registration_of(row, await _user(ctx, row.user_id), ready.get(row.id)) for row in found]
-    )
+    return tuple([registration_of(row, await _user(ctx, row.user_id)) for row in rows])
 
 
 @action
 async def approve(
     ctx: Context, organiser: Organiser, contest: ContestId, user_id: int
 ) -> Registration:
-    """Approve a pending registration and ask for the contestant's workspace.
-    Needs the manager role at the contest.
-    """
+    """Approve a pending registration. Needs the manager role at the contest."""
     row = await _decided(ctx, organiser, contest, user_id, (Status.PENDING,), "approved")
     await _approve(ctx, row, decided_by=organiser.user.id)
-    return await registration_of(ctx, row, await _user(ctx, user_id))
+    return registration_of(row, await _user(ctx, user_id))
 
 
 @action
@@ -184,7 +173,7 @@ async def reject(
     _decide(ctx, row, Status.REJECTED, decided_by=organiser.user.id, reason=checked)
     await ctx.db.flush()
     log.info("contestants.rejected", contest=contest, user_id=user_id, by=organiser.user.id)
-    return await registration_of(ctx, row, await _user(ctx, user_id))
+    return registration_of(row, await _user(ctx, user_id))
 
 
 @action
@@ -211,7 +200,7 @@ async def reopen(
     row.reason = None
     await ctx.db.flush()
     log.info("contestants.reopened", contest=contest, user_id=user_id, by=organiser.user.id)
-    return await registration_of(ctx, row, await _user(ctx, user_id))
+    return registration_of(row, await _user(ctx, user_id))
 
 
 @action
@@ -227,7 +216,7 @@ async def remove(
     await ctx.db.flush()
     await workspaces.close(ctx, row)
     log.info("contestants.removed", contest=contest, user_id=user_id, by=organiser.user.id)
-    return await registration_of(ctx, row, await _user(ctx, user_id))
+    return registration_of(row, await _user(ctx, user_id))
 
 
 @action
@@ -249,7 +238,7 @@ async def extend(
         seconds=row.time_extension_seconds,
         by=organiser.user.id,
     )
-    return await registration_of(ctx, row, await _user(ctx, user_id))
+    return registration_of(row, await _user(ctx, user_id))
 
 
 async def row_of(ctx: Context, contest: ContestId, user_id: int) -> Contestant | None:
@@ -271,7 +260,6 @@ def time_extension(row: Contestant | None) -> timedelta:
 async def _approve(ctx: Context, row: Contestant, *, decided_by: int | None) -> None:
     _decide(ctx, row, Status.APPROVED, decided_by=decided_by, reason=None)
     await ctx.db.flush()
-    await workspaces.request(ctx, row)
     log.info("contestants.approved", contest=row.contest_id, user_id=row.user_id, by=decided_by)
 
 
@@ -346,29 +334,6 @@ async def _confirmed_emails(
     return await ctx.forge.identity.verified_emails(user_id)
 
 
-async def _invited(
-    ctx: Context, contest: ContestId, user_id: int, settings: ContestDefinition
-) -> bool:
-    """Whether the person accepted an invite to the contest, asked only of an
-    invite-only contest.
-    """
-    if settings.registration.mode is not RegistrationMode.INVITE_ONLY:
-        return False
-    found = (
-        await ctx.db.execute(
-            select(Invite.id)
-            .where(
-                Invite.scope_kind == "contest",
-                Invite.scope_id == contest,
-                Invite.status == INVITE_ACCEPTED,
-                Invite.accepted_by_user_id == user_id,
-            )
-            .limit(1)
-        )
-    ).first()
-    return found is not None
-
-
 async def _user(ctx: Context, user_id: int) -> User | None:
     try:
         return await ctx.forge.identity.find_user(user_id)
@@ -376,15 +341,7 @@ async def _user(ctx: Context, user_id: int) -> User | None:
         return None
 
 
-async def registration_of(ctx: Context, row: Contestant, user: User | None) -> Registration:
-    """The registration a row records, with where its workspace stands."""
-    ready = await workspaces.readiness(ctx, [row])
-    return _registration_of(row, user, ready.get(row.id))
-
-
-def _registration_of(
-    row: Contestant, user: User | None, ready: workspaces.Readiness | None
-) -> Registration:
+def registration_of(row: Contestant, user: User | None) -> Registration:
     return Registration(
         contest=ContestId(row.contest_id),
         user_id=row.user_id,
@@ -394,6 +351,4 @@ def _registration_of(
         decided_at=row.decided_at,
         reason=row.reason,
         time_extension=time_extension(row),
-        workspace=ready.workspace if ready is not None else None,
-        workspace_error=ready.error if ready is not None else None,
     )

@@ -2,6 +2,6 @@
 `Organiser` it returns for the other organiser actions to take.
 """
 
-from forge.services.access import Organiser, organiser
+from forge.services.access import Organiser, organiser, organiser_at
 
-__all__ = ["Organiser", "organiser"]
+__all__ = ["Organiser", "organiser", "organiser_at"]

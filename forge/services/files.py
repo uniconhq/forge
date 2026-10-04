@@ -13,11 +13,22 @@ chosen version is written back as a new change through the same write, so a
 task's rollback is a save too and the history stays whole.
 """
 
-from forge.domain.content import Change, ConflictToken, Edit, File, TreeEntry, check_path
+import uuid
+
+from forge.domain.content import (
+    Change,
+    ConflictToken,
+    Edit,
+    File,
+    TreeEntry,
+    Uploaded,
+    check_path,
+)
 from forge.domain.definitions import CONTEST_FILE, admin_only_changes, parse_contest
 from forge.domain.errors import AdminOnly, NotFound
 from forge.domain.ids import ContestId, TaskId, VersionId
-from forge.domain.roles import Role, ScopeKind, holds, scope_of_place
+from forge.domain.roles import Role, ScopeKind, holds, scope_of_place, task_scope
+from forge.domain.uploads import refuse_pointer
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -97,6 +108,7 @@ async def write(
             message=message,
         )
     contest = ContestId(place)
+    refuse_pointer(path, content)
     if path == CONTEST_FILE:
         parse_contest(content)
         if not holds(organiser.grants, scope, Role.ADMIN):
@@ -158,3 +170,38 @@ async def _current(ctx: Context, organiser: Organiser, place: ContestId, path: s
         return (await ctx.forge.content.read_file(organiser.identity, place, path)).content
     except NotFound:
         return None
+
+
+@action
+async def write_upload(
+    ctx: Context,
+    organiser: Organiser,
+    task: TaskId,
+    path: str,
+    upload: uuid.UUID,
+    expected: ConflictToken | None,
+    *,
+    message: str | None = None,
+    confirm: bool = False,
+    keep_as_draft: bool = False,
+) -> Published | Draft:
+    """Put a file the organiser uploaded into the task at `path`, as a save
+    like any other: the commit carries the pointer to it beside the
+    organiser's other files and the compiled plans, so a task is never half
+    changed. The bytes went to the forge before this, through the upload
+    door (`services.uploads.task_file_slot`).
+
+    Only a task takes one. A contest's files are the ones people type, and
+    nothing it holds is large enough to need the store.
+    """
+    require(organiser, task_scope(task), Role.MANAGER)
+    check_path(path)
+    return await publications.save(
+        ctx,
+        organiser,
+        task,
+        {path: Edit(Uploaded(upload), expected)},
+        confirm=confirm,
+        keep_as_draft=keep_as_draft,
+        message=message,
+    )

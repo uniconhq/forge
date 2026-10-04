@@ -1,17 +1,17 @@
 """The org area over Forgejo. An org is a `limited` organization owned by the
 platform account, with the three role teams, the org account's team, the
 labels threads are marked with, and one org-level webhook signed with the
-org's own secret. Each is a separate operation, safe to run again, so
-provisioning can record and resume them one by one.
+org's own secret, each made by an operation of its own. Deleting the org
+takes all of them with it.
 """
 
 from typing import Any
 
-from forge.domain.errors import NotFound
+from forge.domain.errors import NotFound, Rejected
 from forge.domain.identity import PLATFORM, AsUser, User
-from forge.domain.ids import OrgName
+from forge.domain.ids import OrgId
 from forge.domain.roles import Role, RoleGrant, Scope
-from forge.forges.forgejo.http import Http
+from forge.forges.forgejo.http import Http, list_of
 from forge.forges.forgejo.labels import LABELS
 from forge.forges.forgejo.teams import Teams, ci_team_name, scope_of_team, team_name
 from forge.forges.forgejo.users import Users, user_from
@@ -29,7 +29,7 @@ class ForgejoOrgs:
         self._users = users
         self._platform_account = platform_account
 
-    async def name_taken(self, name: OrgName) -> bool:
+    async def name_taken(self, name: str) -> bool:
         """Forgejo answers a user's and an org's name alike at `/users/<name>`,
         since an org is a kind of user there.
         """
@@ -39,24 +39,7 @@ class ForgejoOrgs:
             return False
         return True
 
-    async def platform_owns(self, name: OrgName) -> bool:
-        """An org is owned by whoever is in its Owners team; the platform
-        account puts itself there by creating the org and is the only one
-        there. A user of that name has no org, and answers no.
-        """
-        try:
-            await self._http.call(PLATFORM, "GET", f"/api/v1/orgs/{name}")
-        except NotFound:
-            return False
-        owners = await self._teams.find(name, OWNERS_TEAM)
-        if owners is None:
-            return False
-        return any(
-            str(member["login"]) == self._platform_account
-            for member in await self._teams.members(int(owners["id"]))
-        )
-
-    async def create_org(self, name: OrgName, *, description: str) -> None:
+    async def create_org(self, name: OrgId, *, description: str) -> None:
         await self._http.call(
             PLATFORM,
             "POST",
@@ -69,10 +52,10 @@ class ForgejoOrgs:
             },
         )
 
-    async def create_roles(self, name: OrgName) -> None:
+    async def create_roles(self, name: OrgId) -> None:
         await self._teams.ensure_role_teams(name)
 
-    async def create_thread_labels(self, name: OrgName) -> None:
+    async def create_thread_labels(self, name: OrgId) -> None:
         present = {
             str(label["name"])
             for label in await self._http.get_all(PLATFORM, f"/api/v1/orgs/{name}/labels")
@@ -87,7 +70,7 @@ class ForgejoOrgs:
                 json={"name": label, "color": colour},
             )
 
-    async def create_event_push(self, name: OrgName, *, url: str, secret: str) -> None:
+    async def create_event_push(self, name: OrgId, *, url: str, secret: str) -> None:
         """One org-level webhook to `url`, kept if one is already there. Forgejo
         allows a webhook only to the hosts `ALLOWED_HOST_LIST` names, which is
         why the URL is the platform's internal one.
@@ -107,7 +90,7 @@ class ForgejoOrgs:
             },
         )
 
-    async def ensure_account_membership(self, name: OrgName, user_id: int) -> bool:
+    async def ensure_account_membership(self, name: OrgId, user_id: int) -> bool:
         team = await self._teams.find(name, ci_team_name(name))
         if team is None:
             await self._teams.ensure_role_teams(name)
@@ -119,8 +102,40 @@ class ForgejoOrgs:
         await self._teams.add_member(int(team["id"]), await self._users.username_of(user_id))
         return True
 
+    async def remove_account_membership(self, name: OrgId, user_id: int) -> None:
+        """Forgejo refuses to delete a user who is in a team, so the account
+        leaves the org account's team first. The member is found by id in
+        the team's listing and removed by the login listed with it.
+        """
+        team = await self._teams.find(name, ci_team_name(name))
+        if team is None:
+            return
+        for member in await self._teams.members(int(team["id"])):
+            if int(member["id"]) == user_id:
+                await self._teams.remove_member(int(team["id"]), str(member["login"]))
+
+    async def delete_org(self, name: OrgId) -> None:
+        """Forgejo removes an org's teams with their members, its labels and
+        its hooks along with it. It refuses an org that still owns a
+        repository with a server error (measured on 15.0.8), which reads as
+        a forge that is down, so the repositories are asked for first and
+        any there is `Rejected`. An org's address answers 404 for a user, so
+        this never reaches a person's account.
+        """
+        try:
+            held = list_of(
+                await self._http.call(
+                    PLATFORM, "GET", f"/api/v1/orgs/{name}/repos", params={"limit": 1}
+                )
+            )
+            if held:
+                raise Rejected(f"the org {name} still owns repositories")
+            await self._http.call(PLATFORM, "DELETE", f"/api/v1/orgs/{name}")
+        except NotFound:
+            return
+
     async def update_org(
-        self, name: OrgName, *, description: str, display_name: str | None = None
+        self, name: OrgId, *, description: str, display_name: str | None = None
     ) -> None:
         change: dict[str, Any] = {"description": description}
         if display_name is not None:

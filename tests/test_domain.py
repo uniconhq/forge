@@ -27,10 +27,8 @@ from forge.domain.roles import (
     scope_of_place,
     task_id_of,
     task_scope,
-    workflow_id_of,
 )
 from forge.domain.sessions import SessionTimes, is_expired, is_fresh, refresh_due
-from forge.domain.workflow_definition import parse_workflow_ref
 
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
 IDLE = timedelta(days=14)
@@ -185,7 +183,3 @@ def test_a_contest_id_is_not_a_task_and_a_task_id_is_not_a_contest() -> None:
         contest_scope(ContestId("acme/spring/sum"))
     with pytest.raises(NotFound):
         task_scope(TaskId("acme/spring"))
-
-
-def test_a_workflow_reference_gives_the_id_it_is_read_by() -> None:
-    assert workflow_id_of(parse_workflow_ref("unicon/classic@v1")) == "unicon/classic"

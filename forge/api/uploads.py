@@ -1,18 +1,18 @@
-"""A contestant's files on their way to a submission: a slot to upload one
-file, the upload's completion, and the types they come back as.
+"""Files on their way into a repository at the forge: a slot to upload one,
+the upload's completion, the door the proxy asks about, and the types they
+come back as.
 """
 
-from forge.domain.uploads import UploadStatus
-from forge.port.objects import FinishedPart
-from forge.services.uploads import PartsSlot, PostSlot, SlotPart, Upload, complete, slot
+from forge.domain.uploads import Door, UploadStatus
+from forge.services.uploads import Slot, Upload, complete, door, slot, task_file_slot
 
 __all__ = [
-    "FinishedPart",
-    "PartsSlot",
-    "PostSlot",
-    "SlotPart",
+    "Door",
+    "Slot",
     "Upload",
     "UploadStatus",
     "complete",
+    "door",
     "slot",
+    "task_file_slot",
 ]

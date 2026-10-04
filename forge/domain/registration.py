@@ -60,15 +60,6 @@ REGISTERED = (Status.PENDING, Status.APPROVED)
 """The statuses that hold a place and make the person a contestant."""
 
 
-class WorkspaceState(StrEnum):
-    """Where an approved contestant's workspace stands: being made, or ready
-    with a place to submit every published task.
-    """
-
-    PREPARING = "preparing"
-    READY = "ready"
-
-
 def window_open(rules: Registration, now: datetime) -> bool:
     """Whether the registration window is open now."""
     opened = rules.opens is None or now >= rules.opens

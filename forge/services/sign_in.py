@@ -2,7 +2,8 @@
 redirect and what checks the answer; `complete`, an action, exchanges the
 code the host sends back, checks the state and the nonce, creates the
 session, and ends the one the browser had before, together. `sign_up_url`
-is where a person creates an account at the host.
+is where a person creates an account at the host, and `forge_url` where a
+browser reaches the host's own pages.
 """
 
 import base64
@@ -66,6 +67,13 @@ def sign_up_url(*, setup: ActionSetup | None = None) -> str | None:
     is closed.
     """
     return setup_or_held(setup).forge.identity.sign_up_url()
+
+
+def forge_url(*, setup: ActionSetup | None = None) -> str:
+    """Where a browser reaches the host's own pages: sign-in, sign-up and
+    the account settings, which the platform links to and does not serve.
+    """
+    return setup_or_held(setup).forge.identity.public_url()
 
 
 @action

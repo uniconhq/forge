@@ -34,6 +34,10 @@ class ForgejoWorkflows:
         self._repos = repos
         self._users = users
 
+    async def workflow_key(self, workflow: WorkflowId) -> str:
+        ref = parse_workflow(workflow)
+        return str((await self._repos.record(ref.owner, ref.repo))["id"])
+
     async def create_workflow(
         self, as_: Identity, owner: str, name: str, files: Files, visibility: Visibility
     ) -> WorkflowId:

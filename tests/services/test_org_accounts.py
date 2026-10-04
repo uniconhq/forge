@@ -1,137 +1,112 @@
-"""The nightly pass calls the CI as every org account and signs in again
-the ones the CI no longer answers, records a failure without stopping,
-and puts an account back in its place in its org; the account's identity
-and event secret are read from its row.
+"""An org account's identity is read from its row, signed in at the CI again
+first once its last sign-in there is older than two thirds of the session's
+hard lifetime, 20 days by default, by one caller at a time; a credential the
+CI refused is signed in again once however many callers were refused; the
+account's event secret is read from its row too.
 """
 
+import asyncio
 import logging
+from datetime import timedelta
 
 import pytest
 
 from forge.domain.errors import NotFound, Unavailable
 from forge.domain.identity import AsOrgAccount
-from forge.domain.ids import OrgName
+from forge.domain.ids import OrgId
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
 from forge.runtime.context import Context
-from forge.runtime.setup import MAKERS, Setup
-from forge.services import org_accounts, orgs, provisioning, sessions
+from forge.runtime.setup import Setup
+from forge.services import org_accounts, orgs, sessions
 from forge.testing import FakeClock, logged
 
-ACME = OrgName("acme")
-BETA = OrgName("beta")
+ACME = OrgId("acme")
 
 
 @pytest.fixture
-async def provisioned(setup: Setup, fake: FakeForge) -> None:
-    """Two orgs made through the poller, `acme` and `beta`."""
+async def made(setup: Setup, fake: FakeForge) -> None:
+    """The org `acme`, made."""
     async with setup.unit_of_work() as ctx:
         session: Session = await sessions.create(
             ctx, user=fake.users[7], credential=fake.mint(7), ip=None, user_agent=None
         )
     await orgs.create(setup, session, ACME, description="Acme")
-    await orgs.create(setup, session, BETA, description="Beta")
-    assert await provisioning.poller(MAKERS).tick(setup.unit_of_work) == 2
     fake.reset_calls()
 
 
-async def _identity(setup: Setup, org: OrgName) -> AsOrgAccount:
+async def _identity(setup: Setup, org: OrgId) -> AsOrgAccount:
     async with setup.unit_of_work() as ctx:
         return await org_accounts.identity(ctx, org)
 
 
-async def test_keepalive_calls_the_ci_as_each_account_and_records_when(
-    setup: Setup, fake: FakeForge, provisioned: None, clock: FakeClock
+async def test_a_fresh_sign_in_is_handed_out_as_it_is(
+    setup: Setup, fake: FakeForge, made: None, clock: FakeClock
 ) -> None:
-    acme, beta = await _identity(setup, ACME), await _identity(setup, BETA)
+    first = await _identity(setup, ACME)
+    clock.advance(timedelta(days=20))
 
-    async with setup.unit_of_work() as ctx:
-        alive = await org_accounts.keepalive(ctx)
-
-    assert alive == 2
-    assert [call.identity for call in fake.calls] == [acme, beta]
-    assert [call.operation for call in fake.calls] == ["ci_user_is_alive"] * 2
-    async with setup.unit_of_work() as ctx:
-        rows = await org_accounts._rows(ctx)
-        assert [(row.last_kept_alive_at, row.keepalive_error) for row in rows] == [
-            (clock.now(), None),
-            (clock.now(), None),
-        ]
+    assert await _identity(setup, ACME) == first
+    assert fake.calls == []
 
 
-async def test_an_account_the_ci_no_longer_answers_is_signed_in_again(
-    setup: Setup, fake: FakeForge, provisioned: None, caplog: pytest.LogCaptureFixture
+async def test_an_account_last_signed_in_long_ago_signs_in_again_first(
+    setup: Setup, fake: FakeForge, made: None, clock: FakeClock, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.INFO)
     before = await _identity(setup, ACME)
-    fake.ci_dead.add("unicon-ci-acme")
+    clock.advance(timedelta(days=21))
 
-    async with setup.unit_of_work() as ctx:
-        alive = await org_accounts.keepalive(ctx)
-
-    assert alive == 2
-    assert [call.operation for call in fake.calls] == [
-        "ci_user_is_alive",
-        "set_password",
-        "mint_ci_token",
-        "ci_user_is_alive",
-    ]
     after = await _identity(setup, ACME)
+
+    assert [call.operation for call in fake.calls] == ["set_password", "mint_ci_token"]
     assert after.ci_token != before.ci_token
     assert after.forge_token == before.forge_token
     assert fake.state.ci_tokens[after.ci_token] == "unicon-ci-acme"
-    assert "unicon-ci-acme" not in fake.ci_dead
     assert [record["org"] for record in logged(caplog, "org_accounts.signed_in_again")] == ["acme"]
+    fake.reset_calls()
+    assert await _identity(setup, ACME) == after
+    assert fake.calls == []
 
 
-async def test_a_keepalive_that_fails_is_recorded_and_the_pass_goes_on(
+async def test_two_callers_at_once_sign_the_account_in_once(
+    setup: Setup, fake: FakeForge, made: None, clock: FakeClock
+) -> None:
+    clock.advance(timedelta(days=21))
+
+    first, second = await asyncio.gather(_identity(setup, ACME), _identity(setup, ACME))
+
+    assert first == second
+    assert len(fake.calls_to("mint_ci_token")) == 1
+
+
+async def test_a_sign_in_that_fails_fails_the_caller_and_is_tried_again_next_time(
     setup: Setup,
     fake: FakeForge,
-    provisioned: None,
-    caplog: pytest.LogCaptureFixture,
+    made: None,
+    clock: FakeClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    original = fake.grading.mint_ci_token
+
     async def broken(username: str, forge_password: str) -> str:
         raise Unavailable("the CI went away")
 
+    clock.advance(timedelta(days=21))
     monkeypatch.setattr(fake.grading, "mint_ci_token", broken)
-    fake.ci_dead.add("unicon-ci-acme")
+    with pytest.raises(Unavailable):
+        await _identity(setup, ACME)
 
-    async with setup.unit_of_work() as ctx:
-        alive = await org_accounts.keepalive(ctx)
-
-    assert alive == 1
-    async with setup.unit_of_work() as ctx:
-        acme, beta = await org_accounts._rows(ctx)
-        assert acme.keepalive_error == "Unavailable: the CI went away"
-        assert acme.last_kept_alive_at is not None
-        assert beta.keepalive_error is None
-    (failure,) = logged(caplog, "org_accounts.keepalive_failed")
-    assert (failure["org"], failure["error"]) == ("acme", "Unavailable")
-
-
-async def test_the_nightly_pass_restores_a_missing_account_membership(
-    setup: Setup, fake: FakeForge, provisioned: None, caplog: pytest.LogCaptureFixture
-) -> None:
-    caplog.set_level(logging.INFO)
-    account = fake.state.user_named("unicon-ci-acme")
-    fake.state.orgs["acme"].account_members.discard(account.id)
-    (nightly,) = [timed for timed in setup._loops.passes if timed.name == "drift.nightly"]
-
-    assert await nightly.tick(setup.unit_of_work) is True
-
-    assert account.id in fake.state.orgs["acme"].account_members
-    assert [record["org"] for record in logged(caplog, "org_accounts.membership_restored")] == [
-        "acme"
-    ]
-    (summary,) = logged(caplog, "drift.nightly")
-    assert (summary["membership_restored"], summary["accounts_alive"]) == (1, 2)
+    monkeypatch.setattr(fake.grading, "mint_ci_token", original)
+    await _identity(setup, ACME)
+    assert len(fake.calls_to("mint_ci_token")) == 1
 
 
 async def test_the_identity_and_the_event_secret_come_from_the_row(ctx: Context) -> None:
     with pytest.raises(NotFound):
-        await org_accounts.identity(ctx, OrgName("nowhere"))
+        await org_accounts.identity(ctx, OrgId("nowhere"))
     with pytest.raises(NotFound):
-        await org_accounts.event_secret_of(ctx, OrgName("nowhere"))
+        await org_accounts.event_secret_of(ctx, OrgId("nowhere"))
 
     await org_accounts.ensure_row(ctx, ACME)
     secret = await org_accounts.event_secret_of(ctx, ACME)
@@ -141,3 +116,37 @@ async def test_the_identity_and_the_event_secret_come_from_the_row(ctx: Context)
         await org_accounts.identity(ctx, ACME)
     await org_accounts.ensure_row(ctx, ACME)
     assert await org_accounts.event_secret_of(ctx, ACME) == secret
+
+
+async def test_a_shorter_session_lifetime_signs_the_account_in_sooner(
+    setup: Setup,
+    fake: FakeForge,
+    made: None,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shorter = setup.settings.model_copy(update={"session_hard_ttl": timedelta(days=6)})
+    monkeypatch.setattr(setup, "_settings", shorter)
+    clock.advance(timedelta(days=4, seconds=1))
+
+    await _identity(setup, ACME)
+
+    assert [call.operation for call in fake.calls] == ["set_password", "mint_ci_token"]
+
+
+async def test_a_refused_credential_is_renewed_once_for_every_caller_it_failed(
+    setup: Setup, fake: FakeForge, made: None
+) -> None:
+    refused = await _identity(setup, ACME)
+    fake.state.revoked_ci_tokens.add(refused.ci_token)
+
+    async def renewed() -> AsOrgAccount:
+        async with setup.unit_of_work() as ctx:
+            return await org_accounts.renew(ctx, refused)
+
+    first, second = await asyncio.gather(renewed(), renewed())
+
+    assert first == second
+    assert first.ci_token != refused.ci_token
+    assert len(fake.calls_to("mint_ci_token")) == 1
+    assert await _identity(setup, ACME) == first

@@ -1,7 +1,8 @@
 """Workspaces, submissions and publications. A workspace is where one
-contestant, or the group entering together, works for one contest: a desk
-their questions live in and a place to submit each task to, made one part
-at a time so a part that fails is made again alone. A submission and a
+contestant works for one contest: a desk their questions live in and a place
+to submit each task to, made one part at a time so a part that fails is made
+again alone. A workspace owned by a group, which feature 14 adds, has the
+same shape under a group owner. A submission and a
 publication are protected versions that only the platform may create. A
 publication names a version a save already wrote and carries a note, the
 short document `forge.domain.publications` writes and reads.
@@ -76,10 +77,11 @@ class WorkspacePort(Protocol):
         ...
 
     async def read_submission_file(
-        self, as_: Identity, submission: SubmissionId, path: str
+        self, as_: Identity, submission: SubmissionId, path: str, *, max_size: int
     ) -> bytes:
         """One file of a submission, at the version it was made with, read as
-        `as_`. `NotFound` when the submission has no such file.
+        `as_`. `NotFound` when the submission has no such file; `Rejected`
+        when it is larger than `max_size` bytes, without reading it whole.
         """
         ...
 
