@@ -220,9 +220,10 @@ def accepts(accept: tuple[str, ...] | None, name: str, content_type: str | None)
 
 @dataclass(frozen=True, slots=True)
 class Door:
-    """Where one upload's bytes go at the forge, and what to present there.
-    The proxy puts the browser's body through `path` with `authorization`
-    in place of whatever the browser sent, so neither reaches the browser.
+    """Where at the forge the proxy sends one file's bytes or reads them
+    from, and what to present there: an upload's body goes through `path`,
+    and a download is streamed back from it, with `authorization` in place of
+    whatever the browser sent, so neither reaches the browser.
     """
 
     path: str

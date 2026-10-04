@@ -16,6 +16,7 @@ import base64
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 from forge.domain.content import (
     Change,
@@ -29,6 +30,7 @@ from forge.domain.content import (
 from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
 from forge.domain.identity import PLATFORM, Identity, Platform
 from forge.domain.ids import VersionId
+from forge.domain.uploads import Door
 from forge.forges.forgejo.http import Http, json_of, list_of
 
 DEFAULT_BRANCH = "main"
@@ -235,6 +237,19 @@ class Repos:
             path=path,
             content=base64.b64decode(entry.get("content") or ""),
             token=ConflictToken(str(entry["sha"])),
+        )
+
+    async def media_door(self, as_: Identity, owner: str, name: str, path: str, *, at: str) -> Door:
+        """Where one file's bytes at a version are read whole, big files
+        included, and what to present there as `as_`: the media endpoint,
+        which resolves a file kept in the large-file store and answers a
+        range. Nothing is called; this is the address, for the proxy to fetch
+        from, with the path and the version encoded the way the request line
+        carries them.
+        """
+        return Door(
+            path=f"/api/v1/repos/{owner}/{name}/media/{quote(path)}?ref={quote(at, safe='')}",
+            authorization=await self._http.authorization(as_),
         )
 
     async def read_raw(
