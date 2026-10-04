@@ -43,7 +43,8 @@ from forge.db.tables import Grading
 from forge.domain.contracts import violation
 from forge.domain.errors import UniconError
 from forge.domain.grading import CiRequest, GradingStatus
-from forge.domain.ids import ContestId, OrgName, TaskId
+from forge.domain.ids import ContestId, OrgId, TaskId
+from forge.domain.keys import key_from_name
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, Scope
 from forge.forges.forgejo import ForgejoForge
@@ -62,7 +63,7 @@ from forge.services import (
 )
 from forge.services.publications import Published
 from forge.settings import Settings
-from forge.testing import APP_URL, CALLBACK_PATH, tick
+from forge.testing import CALLBACK_PATH
 from tests.live.conftest import (
     FORGE_PUBLIC_URL,
     LIVE,
@@ -198,7 +199,6 @@ async def grading_setup(
     assert HARNESS_IMAGE and CLONE_IMAGE and S3_ENDPOINT and S3_ACCESS_KEY and S3_SECRET_KEY
     settings = Settings.for_tests(
         database_url=migrated_database_url,
-        public_url=APP_URL,
         machine_url=platform.url,
         forge_public_url=FORGE_PUBLIC_URL,
         internal_url="http://backend:8000",
@@ -211,15 +211,14 @@ async def grading_setup(
         region="garage",
         access_key=S3_ACCESS_KEY,
         secret_key=S3_SECRET_KEY,
-        uploads_bucket="unicon-uploads",
         results_bucket="unicon-results",
-        public_url=APP_URL,
         machine_url=platform.url,
     )
     built = Setup.build(
         settings,
         callback_path=CALLBACK_PATH,
         forge=ForgejoForge(dataclasses.replace(config, storage=storage)),
+        keys=key_from_name,
     )
     platform.setup = built
     try:
@@ -272,27 +271,25 @@ async def test_a_run_goes_from_its_queued_row_to_its_verdict(
             ip=None,
             user_agent=None,
         )
-    await orgs.create(setup, session, OrgName(run_org), description="Live grading run")
-    await tick(setup, "provisioning")
+    await orgs.create(setup, session, OrgId(run_org), description="Live grading run")
     organiser = await access.organiser(setup, session, Scope(run_org), Role.MANAGER)
-    await contests.create(setup, organiser, OrgName(run_org), "spring", title="Spring")
-    await tick(setup, "provisioning")
+    await contests.create(setup, organiser, OrgId(run_org), "spring", title="Spring")
     contest = ContestId(f"{run_org}/spring")
     await tasks.create(setup, organiser, contest, "sum", title="Sum")
-    await tick(setup, "provisioning")
     task = TaskId(f"{run_org}/spring/sum")
     starter = await files.read(setup, organiser, task, "task.yaml")
     saved = await files.write(
         setup, organiser, task, "task.yaml", starter.content + b"\n", starter.token
     )
-    assert isinstance(saved, Published) and saved.activation == "done", saved
+    assert isinstance(saved, Published), saved
 
     forge = setup.forge
-    login = str(contestant["login"])
-    workspace = await forge.workspaces.open_workspace(contest, UserOwner(login), [contestant["id"]])
+    workspace = await forge.workspaces.open_workspace(
+        contest, UserOwner(int(contestant["id"])), [contestant["id"]]
+    )
     await forge.workspaces.open_submission_place(workspace, task, [contestant["id"]])
     document = {
-        "schema_version": 3,
+        "schema_version": 4,
         "inputs": {"submission": {"files": ["files/submission/main.py"], "language": "python"}},
     }
     submitted = await forge.workspaces.record_submission(
@@ -328,11 +325,9 @@ async def test_a_run_goes_from_its_queued_row_to_its_verdict(
         grading = row.id
     assert publication.id == current.publication.id
 
-    await tick(setup, "gradings.dispatch")
-
     found = await _row(setup, grading)
     assert ("POST", gradings.CI_CONFIG_PATH, 200) in platform.seen, platform.seen
-    assert found.status == GradingStatus.DISPATCHED, (found.status, found.wait_reason)
+    assert found.status == GradingStatus.DISPATCHED, (found.status, found.error)
     for _ in range(100):
         state = _run(ci, found)
         if GradingStatus(found.status) in (GradingStatus.DONE, GradingStatus.SYSTEM_ERROR):

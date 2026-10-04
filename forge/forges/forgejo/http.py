@@ -126,6 +126,36 @@ class Http:
             return response
         raise refusal(response)
 
+    async def read_capped(
+        self, as_: Identity, path: str, *, params: Params | None, max_size: int
+    ) -> bytes:
+        """The body of a GET as `as_`, read only while it stays within
+        `max_size` bytes: `Rejected` past that, before the rest is read, so a
+        big file never sits in memory whole. Not retried.
+        """
+        headers = {"Authorization": await self._auth.header(as_)}
+        try:
+            async with (
+                self._in_flight,
+                self._client.stream("GET", path, params=params, headers=headers) as response,
+            ):
+                if response.status_code >= SERVER_ERROR:
+                    raise Unavailable(f"{path} answered {response.status_code}")
+                if not response.is_success:
+                    await response.aread()
+                    raise refusal(response)
+                declared = response.headers.get("content-length")
+                if declared is not None and declared.isdigit() and int(declared) > max_size:
+                    raise Rejected(f"{path} is larger than {max_size} bytes")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > max_size:
+                        raise Rejected(f"{path} is larger than {max_size} bytes")
+                return bytes(body)
+        except httpx.HTTPError as exc:
+            raise Unavailable(f"no answer from {path}: {type(exc).__name__}") from exc
+
     async def get_all(self, as_: Identity, path: str, **params: str | int) -> list[dict[str, Any]]:
         """Every page of a list endpoint."""
         collected: list[dict[str, Any]] = []

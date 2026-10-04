@@ -1,28 +1,28 @@
 """A grading from its queued row to its verdict, over a real Postgres and the
-fake. The dispatcher starts each run once, as the org account, pinned to the
-platform pool, with the variables the extension checks, and puts a failed
-start back in the queue with a reason and a wait; a start whose answer was
-lost is found rather than sent again. The extension answers the three steps
-only for a signed request naming a grading being started with those
-variables. The envelope is served once, with its key, to a run the CI holds
-that has not begun, and that fetch starts the run's clock. The callback takes reports only
-under the grading's own token, keeps a verdict that matches the schema and
-turns any other into a system error. A run that died goes back to the queue
-once, and the second time is a system error. The organiser cancels, retries
-and rejudges, and the reconcile pass gives a submission without gradings its
-rows.
+fake. The submit that makes a grading starts its run once it commits, once,
+as the org account, pinned to the platform pool, with the variables the
+extension checks; a start that fails ends the grading in a system error
+saying why. The extension answers the three steps only for a signed request
+naming a grading being started with those variables. The envelope is served
+once, with its key, to a run the CI holds that has not begun, and that fetch
+starts the run's clock. The callback takes reports only under the grading's
+own token, keeps a verdict that matches the schema and turns any other into
+a system error. A run that has not reported by its deadline reads as a
+system error. The organiser cancels, retries and rejudges, and the
+operator's reconcile gives a submission without gradings its rows.
 """
 
 import asyncio
 import json
 import uuid
+from collections.abc import Callable, Coroutine
 from datetime import timedelta
 from typing import Any
 
 import pytest
 from sqlalchemy import delete, select, update
 
-from forge.db.tables import Contestant, Grading
+from forge.db.tables import Grading
 from forge.domain.contracts import violation
 from forge.domain.errors import (
     CiRequestRefused,
@@ -37,26 +37,28 @@ from forge.domain.errors import (
     WrongStatus,
 )
 from forge.domain.grading import (
+    MACHINE_WAIT,
+    NEVER_BEGAN,
+    NEVER_STARTED,
+    OVERDUE,
     REPORT_ALLOWANCE,
     RUN_LOG_MAX,
-    RUN_TIMEOUT,
+    START_WAIT,
     GradingRun,
     GradingStatus,
-    RunStatus,
     callback_token,
     envelope_key,
     wall_seconds,
 )
 from forge.domain.identity import PLATFORM, AsOrgAccount, User
-from forge.domain.ids import RunId
+from forge.domain.ids import OrgId, RunId
 from forge.domain.plans import Plan
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.submissions import SubmittedInput
-from forge.port.objects import Store
 from forge.runtime.setup import Setup
-from forge.services import dispatch, gradings, reconcile, runs, submissions, uploads
+from forge.services import gradings, org_accounts, reconcile, runs, submissions
 from forge.services.access import Organiser
-from forge.testing import FakeClock, tick
+from forge.testing import FakeClock
 from tests.services.conftest import Acme, Entered, organiser, publish, upload
 
 KEY = "key-0001-aaaa"
@@ -105,19 +107,41 @@ async def _variables(setup: Setup, row: Grading) -> dict[str, str]:
 
 
 def _key(setup: Setup, row: Grading) -> str:
-    return envelope_key(setup.settings.token_encryption_key_bytes, row.id, run=row.requeues)
+    return envelope_key(setup.settings.token_encryption_key_bytes, row.id)
 
 
 def _token(setup: Setup, row: Grading) -> str:
-    return callback_token(setup.settings.token_encryption_key_bytes, row.id, run=row.requeues)
+    return callback_token(setup.settings.token_encryption_key_bytes, row.id)
 
 
 async def _running(setup: Setup, acme: Acme, entered: Entered) -> tuple[Grading, dict[str, Any]]:
     """A grading dispatched and its envelope fetched, and the envelope."""
     row = await _submit(setup, acme, entered)
-    await tick(setup, "gradings.dispatch")
     document = await runs.envelope(setup, row.id, _key(setup, row))
     return await _row(setup, row.id), document
+
+
+Start = Callable[[Setup, Grading], Coroutine[Any, Any, None]]
+
+
+@pytest.fixture
+def unstarted(monkeypatch: pytest.MonkeyPatch) -> Start:
+    """Gradings left `queued` when the submit commits, for a test of what the
+    CI asks while a start is under way, and the start itself, run when the
+    test says.
+    """
+    real = gradings.start
+
+    async def later(ctx: Any, grading: uuid.UUID) -> None:
+        return None
+
+    monkeypatch.setattr(gradings, "start", later)
+
+    async def start(setup: Setup, row: Grading) -> None:
+        async with setup.unit_of_work() as ctx:
+            await real(ctx, row.id)
+
+    return start
 
 
 def _held(acme: Acme, scope: Scope, role: Role) -> Organiser:
@@ -133,23 +157,14 @@ def _held(acme: Acme, scope: Scope, role: Role) -> Organiser:
 
 def _verdict(envelope: dict[str, Any], **changes: Any) -> dict[str, Any]:
     verdict = {
-        "schema_version": 3,
-        "grading_id": envelope["grading_id"],
-        "submission": envelope["submission"],
-        "stage": envelope["stage"],
-        "attempt": envelope["attempt"],
-        "task": envelope["task"],
-        "publication": envelope["publication"],
+        "schema_version": 4,
         "outcome": "accepted",
         "metrics": {"points": 1},
         "tests": [
             {"id": "1", "outcome": "accepted", "time_ms": 12, "memory_kb": 900, "metrics": {}}
         ],
         "summary": "1 of 1 tests accepted.",
-        "resources": {"wall_ms": 3000, "cpu_ms": None, "peak_memory_kb": None},
         "log": envelope["log_put"].split("?", 1)[0],
-        "started_at": "2026-09-26T12:00:00Z",
-        "finished_at": "2026-09-26T12:00:03Z",
     }
     verdict.update(changes)
     return verdict
@@ -161,18 +176,15 @@ async def _report(setup: Setup, row: Grading, document: dict[str, Any]) -> Gradi
     )
 
 
-async def test_a_queued_grading_becomes_one_run_as_the_org_account_on_the_platform_pool(
+async def test_a_submit_starts_one_run_as_the_org_account_on_the_platform_pool(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
     row = await _submit(setup, acme, entered)
 
-    await tick(setup, "gradings.dispatch")
-
     after = await _row(setup, row.id)
     assert after.status == GradingStatus.DISPATCHED
     assert after.run_id is not None
-    assert (after.dispatched_at, after.deadline_at) == (clock.now(), clock.now() + RUN_TIMEOUT)
-    assert after.wait_reason == dispatch.WAITING_FOR_MACHINE
+    assert (after.dispatched_at, after.deadline_at) == (clock.now(), None)
     [started] = acme.fake.calls_to("start_run")
     assert isinstance(started.identity, AsOrgAccount)
     assert started.identity.org == "acme"
@@ -187,12 +199,16 @@ async def test_a_queued_grading_becomes_one_run_as_the_org_account_on_the_platfo
     )
 
 
-async def test_two_pollers_at_once_start_the_run_once(
-    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+async def test_two_starts_at_once_leave_one_run_and_cancel_the_other(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    monkeypatch: pytest.MonkeyPatch,
+    unstarted: Start,
 ) -> None:
-    """The first poller is held inside its start, its row taken on its own
-    connection, while a second one ticks on another; the second finds nothing
-    to take, and once the first commits nothing is left for a third.
+    """The first start is held inside its call to the CI, which holds no
+    lock, so a second starts a run too; whichever records its run second
+    finds the grading dispatched and cancels its own.
     """
     row = await _submit(setup, acme, entered)
     starting, release = asyncio.Event(), asyncio.Event()
@@ -204,83 +220,61 @@ async def test_two_pollers_at_once_start_the_run_once(
         return await start(as_, run)
 
     monkeypatch.setattr(acme.fake.grading, "start_run", held_start)
-    first = asyncio.create_task(dispatch.poller().tick(setup.unit_of_work))
+    first = asyncio.create_task(unstarted(setup, row))
     await asyncio.wait_for(starting.wait(), timeout=10)
-
-    second = await dispatch.poller().tick(setup.unit_of_work)
+    second = asyncio.create_task(unstarted(setup, row))
     release.set()
-
-    assert (await first, second) == (1, 0)
-    assert await dispatch.poller().tick(setup.unit_of_work) == 0
-    assert len(acme.fake.calls_to("start_run")) == 1
-    assert (await _row(setup, row.id)).status == GradingStatus.DISPATCHED
-
-
-async def test_a_start_without_a_run_waits_with_a_reason_and_a_later_try_starts_it(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
-) -> None:
-    row = await _submit(setup, acme, entered)
-    acme.fake.state.refuse_starts = 2
-
-    await tick(setup, "gradings.dispatch")
-    first = await _row(setup, row.id)
-    assert (first.status, first.wait_reason, first.start_failures) == (
-        GradingStatus.QUEUED,
-        dispatch.NO_RUN,
-        1,
-    )
-    assert first.retry_at == clock.now() + timedelta(seconds=5)
-    await tick(setup, "gradings.dispatch")
-    assert len(acme.fake.calls_to("start_run")) == 1
-
-    clock.advance(timedelta(seconds=5))
-    await tick(setup, "gradings.dispatch")
-    second = await _row(setup, row.id)
-    assert (second.start_failures, second.retry_at) == (2, clock.now() + timedelta(seconds=10))
-
-    clock.advance(timedelta(seconds=10))
-    await tick(setup, "gradings.dispatch")
-    third = await _row(setup, row.id)
-    assert (third.status, third.start_failures, third.retry_at) == (
-        GradingStatus.DISPATCHED,
-        0,
-        None,
-    )
-
-
-async def test_a_start_whose_answer_was_lost_is_found_and_not_sent_again(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
-) -> None:
-    row = await _submit(setup, acme, entered)
-    acme.fake.state.lose_start_answer = True
-
-    await tick(setup, "gradings.dispatch")
-    lost = await _row(setup, row.id)
-    assert (lost.status, lost.wait_reason) == (GradingStatus.DISPATCHING, dispatch.NO_ANSWER)
-
-    clock.advance(timedelta(seconds=5))
-    await tick(setup, "gradings.dispatch")
-
-    found = await _row(setup, row.id)
-    assert found.status == GradingStatus.DISPATCHED
-    assert len(acme.fake.calls_to("start_run")) == 1
-    assert found.run_id == next(iter(acme.fake.state.started))
-
-
-async def test_a_ci_that_does_not_answer_leaves_the_grading_queued(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    row = await _submit(setup, acme, entered)
-    acme.fake.unavailable = True
-
-    await tick(setup, "gradings.dispatch")
+    await asyncio.gather(first, second)
 
     after = await _row(setup, row.id)
-    assert (after.status, after.wait_reason) == (GradingStatus.QUEUED, dispatch.NO_ANSWER)
+    assert after.status == GradingStatus.DISPATCHED
+    assert len(acme.fake.calls_to("start_run")) == 2
+    assert [made for made, run in acme.fake.state.runs.items() if not run.cancelled] == [
+        RunId(str(after.run_id))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("trouble", "reason"),
+    [
+        ("refused", gradings.NO_RUN),
+        ("answer_lost", gradings.NO_ANSWER),
+        ("down", gradings.NO_ANSWER),
+    ],
+)
+async def test_a_start_that_fails_is_a_system_error_saying_why_and_a_retry_starts_again(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    monkeypatch: pytest.MonkeyPatch,
+    trouble: str,
+    reason: str,
+) -> None:
+    original = acme.fake.grading.start_run
+
+    async def down(*args: Any, **kwargs: Any) -> RunId:
+        raise Unavailable("the CI went away")
+
+    match trouble:
+        case "refused":
+            acme.fake.state.refuse_starts = 1
+        case "answer_lost":
+            acme.fake.state.lose_start_answer = True
+        case _:
+            monkeypatch.setattr(acme.fake.grading, "start_run", down)
+    row = await _submit(setup, acme, entered)
+    monkeypatch.setattr(acme.fake.grading, "start_run", original)
+
+    assert (row.status, row.error, row.run_id) == (GradingStatus.SYSTEM_ERROR, reason, None)
+    with pytest.raises(GradingClosed):
+        await runs.envelope(setup, row.id, _key(setup, row))
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    retried = await gradings.retry(setup, manager, row.id)
+    assert (await _row(setup, retried.id)).status == GradingStatus.DISPATCHED
 
 
 async def test_the_extension_answers_the_three_steps_for_a_grading_being_started(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, unstarted: Start
 ) -> None:
     row = await _submit(setup, acme, entered)
     variables = await _variables(setup, row)
@@ -312,7 +306,7 @@ async def test_the_extension_answers_the_three_steps_for_a_grading_being_started
     ["another_key", "body_changed", "stale", "unknown_grading", "variables_disagree"],
 )
 async def test_the_extension_refuses_what_it_should_not_answer(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, change: str
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, unstarted: Start, change: str
 ) -> None:
     row = await _submit(setup, acme, entered)
     variables = await _variables(setup, row)
@@ -345,11 +339,11 @@ async def test_the_extension_refuses_what_it_should_not_answer(
 
 
 async def test_the_extension_refuses_a_grading_whose_run_was_started_already(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, unstarted: Start
 ) -> None:
     row = await _submit(setup, acme, entered)
     variables = await _variables(setup, row)
-    await tick(setup, "gradings.dispatch")
+    await unstarted(setup, row)
 
     with pytest.raises(CiRequestRefused):
         await runs.config(
@@ -361,7 +355,6 @@ async def test_the_envelope_is_the_runs_served_once_and_its_fetch_starts_the_clo
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
     row = await _submit(setup, acme, entered)
-    await tick(setup, "gradings.dispatch")
     clock.advance(timedelta(minutes=40))
 
     document = await runs.envelope(setup, row.id, _key(setup, row))
@@ -387,10 +380,10 @@ async def test_the_envelope_is_the_runs_served_once_and_its_fetch_starts_the_clo
         "task": "/woodpecker/task",
         "submission": "/woodpecker/submission",
     }
-    assert document["submission"]["repo"] == "spring.sum.bob.sub"
-    assert document["publication"] == {"tag": "published/1", "commit": publication.version}
+    assert document["submission"]["repo"] == "spring.sum.u8.sub"
+    assert (document["stage"], document["attempt"]) == ("default", 1)
     acme.fake.objects.put(document["log_put"], b"the log")
-    assert acme.fake.objects.objects[Store.RESULTS][f"logs/{row.id}/1.log"] == b"the log"
+    assert acme.fake.objects.objects[f"logs/{row.id}/1.log"] == b"the log"
 
     clock.advance(timedelta(seconds=30))
     with pytest.raises(GradingClosed):
@@ -399,12 +392,12 @@ async def test_the_envelope_is_the_runs_served_once_and_its_fetch_starts_the_clo
 
 
 async def test_the_envelope_needs_its_key_and_a_run_the_ci_holds(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, unstarted: Start
 ) -> None:
     row = await _submit(setup, acme, entered)
     with pytest.raises(GradingClosed):
         await runs.envelope(setup, row.id, _key(setup, row))
-    await tick(setup, "gradings.dispatch")
+    await unstarted(setup, row)
 
     with pytest.raises(NotFound):
         await runs.envelope(setup, row.id, "wrong")
@@ -412,36 +405,32 @@ async def test_the_envelope_needs_its_key_and_a_run_the_ci_holds(
         await runs.envelope(setup, uuid.uuid4(), _key(setup, row))
 
     await runs.envelope(setup, row.id, _key(setup, row))
-    clock.advance(RUN_TIMEOUT)
+    clock.advance(timedelta(hours=1))
     with pytest.raises(GradingClosed):
         await runs.envelope(setup, row.id, _key(setup, row))
 
 
-async def test_a_run_that_lost_its_envelope_is_requeued_and_its_next_run_fetches_its_own(
+async def test_a_run_that_does_not_report_by_its_deadline_reads_as_a_system_error(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
-    row = await _submit(setup, acme, entered)
-    await tick(setup, "gradings.dispatch")
-    await runs.envelope(setup, row.id, _key(setup, row))
-    with pytest.raises(GradingClosed):
-        await runs.envelope(setup, row.id, _key(setup, row))
-    running = await _row(setup, row.id)
-    assert running.deadline_at is not None
-    acme.fake.grading.finish(RunId(str(running.run_id)), RunStatus.FAILED)
-    clock.set(running.deadline_at)
+    row, envelope = await _running(setup, acme, entered)
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    assert row.deadline_at is not None
+    (before,) = await gradings.list(setup, manager, entered.task)
+    assert before.status == GradingStatus.RUNNING
 
-    await tick(setup, "gradings.overdue")
-    await tick(setup, "gradings.dispatch")
+    clock.set(row.deadline_at)
 
-    again = await _row(setup, row.id)
-    assert (again.status, again.requeues) == (GradingStatus.DISPATCHED, 1)
-    with pytest.raises(NotFound):
-        await runs.envelope(setup, row.id, _key(setup, row))
-    document = await runs.envelope(setup, row.id, _key(setup, again))
-    assert document["callback"]["token"] == _token(setup, again)
-    assert (await _row(setup, row.id)).status == GradingStatus.RUNNING
+    (after,) = await gradings.list(setup, manager, entered.task)
+    assert (after.status, after.error) == (GradingStatus.SYSTEM_ERROR, OVERDUE)
+    [result] = (await submissions.one(setup, entered.session, entered.task, 1)).gradings
+    assert result.status == GradingStatus.SYSTEM_ERROR
     with pytest.raises(GradingClosed):
-        await runs.envelope(setup, row.id, _key(setup, again))
+        await _report(setup, row, {"event": "finished", "verdict": _verdict(envelope)})
+    with pytest.raises(WrongStatus):
+        await gradings.cancel(setup, manager, row.id)
+    retried = await gradings.retry(setup, manager, row.id)
+    assert retried.attempt == 2
 
 
 async def test_a_valid_verdict_lands_on_the_row_with_its_log_and_the_contestant_reads_it(
@@ -501,7 +490,7 @@ async def test_a_run_log_over_the_ceiling_is_refused_and_a_failing_store_is_not_
     monkeypatch.setattr(acme.fake.objects, "read", down)
     with pytest.raises(Unavailable) as failed:
         await submissions.run_log(setup, session, task, 1)
-    assert failed.value.detail == uploads.STORE_UNAVAILABLE
+    assert failed.value.detail == submissions.LOG_STORE_UNAVAILABLE
 
 
 async def test_a_malformed_verdict_leaves_the_grading_in_system_error(
@@ -519,20 +508,6 @@ async def test_a_malformed_verdict_leaves_the_grading_in_system_error(
     assert after.error is not None and "verdict.schema.json" in after.error
     with pytest.raises(NotFound):
         await submissions.run_log(setup, entered.session, entered.task, 1)
-
-
-async def test_a_verdict_for_another_grading_is_a_system_error(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    row, envelope = await _running(setup, acme, entered)
-
-    await _report(
-        setup,
-        row,
-        {"event": "finished", "verdict": _verdict(envelope, grading_id=str(uuid.uuid4()))},
-    )
-
-    assert (await _row(setup, row.id)).status == GradingStatus.SYSTEM_ERROR
 
 
 async def test_a_system_error_verdict_is_kept_as_one(
@@ -570,12 +545,12 @@ async def test_a_report_needs_this_gradings_token(
 
 
 async def test_a_report_is_refused_once_the_grading_takes_none(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, unstarted: Start
 ) -> None:
     row = await _submit(setup, acme, entered)
     with pytest.raises(GradingClosed):
         await _report(setup, row, {"event": "started"})
-    await tick(setup, "gradings.dispatch")
+    await unstarted(setup, row)
     envelope = await runs.envelope(setup, row.id, _key(setup, row))
     running = await _row(setup, row.id)
     assert running.deadline_at is not None
@@ -585,76 +560,17 @@ async def test_a_report_is_refused_once_the_grading_takes_none(
         await _report(setup, row, {"event": "finished", "verdict": _verdict(envelope)})
 
 
-async def test_a_run_waiting_for_a_machine_past_its_deadline_is_looked_at_again(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
-) -> None:
-    row = await _submit(setup, acme, entered)
-    await tick(setup, "gradings.dispatch")
-    clock.advance(RUN_TIMEOUT)
-
-    await tick(setup, "gradings.overdue")
-
-    after = await _row(setup, row.id)
-    assert (after.status, after.wait_reason) == (
-        GradingStatus.DISPATCHED,
-        dispatch.WAITING_FOR_MACHINE,
-    )
-    assert after.deadline_at == clock.now() + timedelta(minutes=5)
-
-
-async def test_a_run_that_died_is_requeued_once_and_the_second_death_is_a_system_error(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
-) -> None:
-    row = await _submit(setup, acme, entered)
-    await tick(setup, "gradings.dispatch")
-    first_run = RunId(str((await _row(setup, row.id)).run_id))
-    acme.fake.grading.finish(first_run, RunStatus.FAILED)
-    clock.advance(RUN_TIMEOUT)
-
-    await tick(setup, "gradings.overdue")
-
-    requeued = await _row(setup, row.id)
-    assert (requeued.status, requeued.requeues, requeued.wait_reason) == (
-        GradingStatus.QUEUED,
-        1,
-        dispatch.REQUEUED,
-    )
-    await tick(setup, "gradings.dispatch")
-    again = await _row(setup, row.id)
-    assert again.status == GradingStatus.DISPATCHED
-    assert again.run_id != first_run
-    assert len(acme.fake.calls_to("start_run")) == 2
-    assert again.callback_token_hash != row.callback_token_hash
-    with pytest.raises(NotFound):
-        await runs.envelope(setup, row.id, _key(setup, row))
-
-    await runs.envelope(setup, row.id, _key(setup, again))
-    running = await _row(setup, row.id)
-    with pytest.raises(InvalidToken):
-        await _report(setup, row, {"event": "started"})
-    await _report(setup, running, {"event": "started"})
-    assert running.deadline_at is not None
-    acme.fake.grading.finish(RunId(str(running.run_id)), RunStatus.RUNNING)
-    clock.set(running.deadline_at)
-    await tick(setup, "gradings.overdue")
-
-    dead = await _row(setup, row.id)
-    assert (dead.status, dead.error) == (GradingStatus.SYSTEM_ERROR, dispatch.DIED_TWICE)
-    assert acme.fake.state.runs[RunId(str(running.run_id))].status is RunStatus.CANCELLED
-
-
 async def test_an_organiser_cancels_a_grading_at_the_ci_too(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     row = await _submit(setup, acme, entered)
-    await tick(setup, "gradings.dispatch")
     run = RunId(str((await _row(setup, row.id)).run_id))
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
 
     cancelled = await gradings.cancel(setup, manager, row.id)
 
     assert cancelled.status == GradingStatus.CANCELLED
-    assert acme.fake.state.runs[run].status is RunStatus.CANCELLED
+    assert acme.fake.state.runs[run].cancelled is True
     with pytest.raises(WrongStatus) as refused:
         await gradings.cancel(setup, manager, row.id)
     assert refused.value.extra == {"current": "cancelled"}
@@ -697,13 +613,14 @@ async def test_a_retry_makes_a_new_attempt_and_keeps_the_old(
         GradingStatus.QUEUED,
         row.publication_id,
     )
+    assert (await _row(setup, retried.id)).status == GradingStatus.DISPATCHED
     old, new = await _rows(setup)
     assert (old.id, old.status, old.verdict) == (row.id, GradingStatus.DONE, _verdict(envelope))
     assert new.id == retried.id and new.idempotency_key is None
     with pytest.raises(Conflict):
         await gradings.retry(setup, manager, row.id)
     [result] = (await submissions.one(setup, entered.session, entered.task, 1)).gradings
-    assert (result.attempt, result.status) == (2, GradingStatus.QUEUED)
+    assert (result.attempt, result.status) == (2, GradingStatus.DISPATCHED)
 
 
 async def test_a_rejudge_grades_every_submission_again_against_the_current_publication(
@@ -713,7 +630,6 @@ async def test_a_rejudge_grades_every_submission_again_against_the_current_publi
     await _report(setup, first, {"event": "finished", "verdict": _verdict(envelope)})
     clock.advance(timedelta(seconds=31))
     second = await _submit(setup, acme, entered, key="key-0002-bbbb")
-    await tick(setup, "gradings.dispatch")
     republished = await publish(setup, acme, entered.task, b"\n")
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
 
@@ -727,9 +643,9 @@ async def test_a_rejudge_grades_every_submission_again_against_the_current_publi
     rows = await _rows(setup)
     assert [(row.submission_number, row.attempt, row.status) for row in rows] == [
         (1, 1, GradingStatus.DONE),
-        (1, 2, GradingStatus.QUEUED),
+        (1, 2, GradingStatus.DISPATCHED),
         (2, 1, GradingStatus.CANCELLED),
-        (2, 2, GradingStatus.QUEUED),
+        (2, 2, GradingStatus.DISPATCHED),
     ]
     assert {row.publication_id for row in rows if row.attempt == 2} == {republished.publication}
     assert rows[0].verdict == _verdict(envelope)
@@ -740,72 +656,84 @@ async def test_a_rejudge_grades_every_submission_again_against_the_current_publi
     assert second.submission_number == 2
 
 
-async def test_the_reconcile_pass_gives_a_submission_without_gradings_its_rows(
-    setup: Setup, acme: Acme, entered: Entered
+async def test_the_reconcile_gives_a_submission_without_gradings_its_rows_and_starts_them(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
     row = await _submit(setup, acme, entered)
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(delete(Grading))
+    clock.advance(timedelta(days=3))
 
-    await tick(setup, "gradings.reconcile")
+    async with setup.unit_of_work() as ctx:
+        done = await reconcile.reconcile(ctx)
 
+    assert (done.contests, done.submissions, done.inserted) == (1, 1, 1)
     [made] = await _rows(setup)
     assert (made.submission_id, made.idempotency_key, made.status, made.attempt) == (
         row.submission_id,
         KEY,
-        GradingStatus.QUEUED,
+        GradingStatus.DISPATCHED,
         1,
     )
-    await tick(setup, "gradings.reconcile")
+    async with setup.unit_of_work() as ctx:
+        again = await reconcile.reconcile(ctx)
+    assert again.inserted == 0
     assert len(await _rows(setup)) == 1
 
 
-async def test_a_full_reconcile_rebuilds_the_gradings_of_a_contest_that_is_over(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+async def test_a_grading_whose_run_was_never_started_reads_as_a_system_error(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, unstarted: Start
 ) -> None:
-    await _submit(setup, acme, entered)
-    async with setup.unit_of_work() as ctx:
-        await ctx.db.execute(delete(Grading))
-    clock.advance(timedelta(days=3))
+    row = await _submit(setup, acme, entered)
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    clock.advance(START_WAIT)
 
-    async with setup.unit_of_work() as ctx:
-        timed = await reconcile.reconcile(ctx, every_contest=False)
-    assert (timed.contests, timed.inserted) == (0, 0)
-    async with setup.unit_of_work() as ctx:
-        full = await reconcile.reconcile(ctx, every_contest=True)
+    (late,) = await gradings.list(setup, manager, entered.task)
+    retried = await gradings.retry(setup, manager, row.id)
+    await unstarted(setup, row)
 
-    assert (full.contests, full.submissions, full.inserted) == (1, 1, 1)
-    assert len(await _rows(setup)) == 1
+    assert (late.status, late.error) == (GradingStatus.SYSTEM_ERROR, NEVER_STARTED)
+    assert retried.attempt == 2
+    assert acme.fake.calls_to("start_run") == []
 
 
-async def test_the_reconcile_pass_waits_for_the_contestant_with_the_longest_extension(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+async def test_a_grading_whose_turn_comes_late_in_a_long_batch_is_started_all_the_same(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, unstarted: Start
 ) -> None:
-    await _submit(setup, acme, entered)
-    async with setup.unit_of_work() as ctx:
-        await ctx.db.execute(delete(Grading))
-    clock.advance(timedelta(days=3))
-    async with setup.unit_of_work() as ctx:
-        await ctx.db.execute(
-            update(Contestant).values(time_extension_seconds=int(timedelta(days=3).total_seconds()))
-        )
+    row = await _submit(setup, acme, entered)
+    clock.advance(START_WAIT)
 
-    async with setup.unit_of_work() as ctx:
-        timed = await reconcile.reconcile(ctx, every_contest=False)
+    await unstarted(setup, row)
 
-    assert (timed.contests, timed.inserted) == (1, 1)
+    after = await _row(setup, row.id)
+    assert after.status == GradingStatus.DISPATCHED
+    assert len(acme.fake.calls_to("start_run")) == 1
 
 
-async def test_a_grading_whose_start_is_refused_twenty_times_is_a_system_error(
+async def test_a_run_no_machine_took_reads_as_a_system_error_and_gets_no_envelope(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
     row = await _submit(setup, acme, entered)
-    acme.fake.state.refuse_starts = dispatch.REFUSALS
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    clock.advance(MACHINE_WAIT)
 
-    for _ in range(dispatch.REFUSALS):
-        await tick(setup, "gradings.dispatch")
-        clock.advance(timedelta(minutes=5))
+    (late,) = await gradings.list(setup, manager, entered.task)
+
+    assert (late.status, late.error) == (GradingStatus.SYSTEM_ERROR, NEVER_BEGAN)
+    with pytest.raises(GradingClosed):
+        await runs.envelope(setup, row.id, _key(setup, row))
+
+
+async def test_a_start_the_ci_refuses_signs_the_org_account_in_again_and_starts(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    async with setup.unit_of_work() as ctx:
+        lost = await org_accounts.identity(ctx, OrgId("acme"))
+    acme.fake.state.revoked_ci_tokens.add(lost.ci_token)
+
+    row = await _submit(setup, acme, entered)
 
     after = await _row(setup, row.id)
-    assert (after.status, after.error) == (GradingStatus.SYSTEM_ERROR, dispatch.GAVE_UP)
-    assert len(acme.fake.calls_to("start_run")) == dispatch.REFUSALS
+    assert after.status == GradingStatus.DISPATCHED
+    assert len(acme.fake.calls_to("start_run")) == 2
+    assert len(acme.fake.calls_to("mint_ci_token")) == 1

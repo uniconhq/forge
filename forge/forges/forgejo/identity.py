@@ -23,6 +23,9 @@ class ForgejoIdentity:
     def sign_up_url(self) -> str | None:
         return f"{self._public_url}{SIGN_UP_PATH}" if self._sign_ups_open else None
 
+    def public_url(self) -> str:
+        return self._public_url
+
     async def complete_sign_in(self, *, code: str, verifier: str) -> SignedIn:
         return await self._oauth.complete_sign_in(code=code, verifier=verifier)
 

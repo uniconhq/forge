@@ -1,18 +1,9 @@
 """The package set up for one process: the settings, the forge behind the
-port picked by `UNICON_FORGE`, the database, the clock, and the background
-loops. `start` builds the one setup the process holds and every action opens
-its unit of work on it; `ready` asks its database; `stop` tears it down;
-`public_url` is where the platform is served.
-
-The loops are the session sweeper, the `provisioning` poller, the nightly
-drift pass, the hourly sweep of uploads no submit used, the
-`gradings.dispatch` poller that starts grading runs, the `gradings.overdue`
-pass over runs past their deadline, and the `gradings.reconcile` pass that
-gives every submission its gradings. `MAKERS` is what
-the poller hands each kind of row to: the org, the contest and the task,
-each made by the service of that name, a
-contestant's workspace and the place they submit one task to, both made by
-`workspaces`, and a task's activation at the CI.
+port picked by `UNICON_FORGE`, the database and the clock. `start` builds
+the one setup the process holds and every action opens its unit of work on
+it; `ready` asks its database; `stop` tears it down; `public_url` is where
+the platform is served. Nothing runs in the background: every piece of work
+is done by the request that asks for it.
 """
 
 import asyncio
@@ -20,7 +11,7 @@ import uuid
 import weakref
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from pydantic import HttpUrl
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -35,42 +26,21 @@ from forge.db.engine import (
 )
 from forge.domain.clock import Clock, SystemClock
 from forge.domain.errors import NotReady
+from forge.domain.keys import KeyMaker, random_key
 from forge.log import get_logger
 from forge.port import Forge
-from forge.runtime.background import Loops, Poller, TimedPass
-from forge.runtime.context import ActionSetup, Context, transaction
+from forge.runtime.context import ActionSetup, AfterCommit, AfterRollback, Context, transaction
 from forge.runtime.held import held, hold, holding, release, setup_or_held
 from forge.runtime.memo import Memo
-from forge.services import (
-    activations,
-    contests,
-    dispatch,
-    drift,
-    orgs,
-    provisioning,
-    reconcile,
-    sessions,
-    tasks,
-    uploads,
-    workspaces,
-)
 from forge.settings import Settings, load_settings
 
 log = get_logger(__name__)
 
 READY_TIMEOUT_SECONDS = 2.0
-SESSION_SWEEP_INTERVAL = timedelta(hours=1)
-DRIFT_INTERVAL = timedelta(hours=24)
-UPLOAD_SWEEP_INTERVAL = timedelta(hours=1)
-
-MAKERS: dict[str, provisioning.RowWork] = {
-    orgs.KIND: orgs.provision,
-    contests.KIND: contests.provision,
-    tasks.KIND: tasks.provision,
-    workspaces.KIND: workspaces.provision,
-    workspaces.PLACE_KIND: workspaces.provision_place,
-    activations.KIND: activations.provision,
-}
+AT_ONCE_AFTER_COMMIT = 8
+"""How many pieces of work left for after a commit run at once, so a rejudge
+of hundreds starts its runs in a fraction of the time and still leaves the
+pool of connections to everyone else."""
 
 
 class Setup:
@@ -83,6 +53,7 @@ class Setup:
         probe_engine: AsyncEngine,
         transactions: TransactionFactory,
         clock: Clock,
+        keys: KeyMaker = random_key,
     ) -> None:
         self._settings = settings
         self._forge = forge
@@ -90,7 +61,7 @@ class Setup:
         self._probe_engine = probe_engine
         self._transactions = transactions
         self._clock = clock
-        self._loops = Loops()
+        self._keys = keys
         self._memo = Memo(clock)
         self._refreshing: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
             weakref.WeakValueDictionary()
@@ -104,11 +75,14 @@ class Setup:
         callback_path: str,
         forge: Forge | None = None,
         clock: Clock | None = None,
+        keys: KeyMaker = random_key,
     ) -> Setup:
         """Assemble the package. `callback_path` is the hosting process's own
         route that the host sends a browser back to after sign-in; it is
         joined to the public URL. `forge`, when given, is used as it is, in
-        place of the one the settings pick.
+        place of the one the settings pick. `keys` makes the key each newly
+        named org, contest and task is filed under: a random one, unless a
+        test files things under their names.
         """
         if not callback_path.startswith("/"):
             raise ValueError(f"callback_path is not a path: {callback_path}")
@@ -123,15 +97,7 @@ class Setup:
             probe_engine=new_probe_engine(str(settings.database_url)),
             transactions=new_transaction_factory(engine),
             clock=clock or SystemClock(),
-        )
-        setup._loops.add(
-            TimedPass("sessions.sweep", sessions.sweep, SESSION_SWEEP_INTERVAL),
-            provisioning.poller(MAKERS),
-            TimedPass("drift.nightly", drift.nightly, DRIFT_INTERVAL),
-            TimedPass("uploads.sweep", uploads.sweep, UPLOAD_SWEEP_INTERVAL),
-            dispatch.poller(),
-            TimedPass("gradings.overdue", dispatch.overdue, dispatch.OVERDUE_INTERVAL),
-            TimedPass("gradings.reconcile", reconcile.timed, reconcile.INTERVAL),
+            keys=keys,
         )
         return setup
 
@@ -151,18 +117,42 @@ class Setup:
     async def unit_of_work(self) -> AsyncIterator[Context]:
         """One transaction and the context over it: committed when the block
         ends, rolled back when it raises, and closed either way. A commit that
-        fails raises out of the block.
+        fails raises out of the block. Once it has committed, the work the
+        block left for then runs, each on a unit of work of its own and up to
+        `AT_ONCE_AFTER_COMMIT` at a time; one that fails is logged, since
+        what the block did has landed. When it rolls back instead, the work
+        left for that runs, the latest first, before the error goes on.
         """
-        async with transaction(self._transactions) as db:
-            yield Context(
-                db=db,
-                forge=self._forge,
-                settings=self._settings,
-                clock=self._clock,
-                _transactions=self._transactions,
-                _refresh_lock=self.refresh_lock,
-                memo=self._memo,
-            )
+        later: list[AfterCommit] = []
+        undo: list[AfterRollback] = []
+        try:
+            async with transaction(self._transactions) as db:
+                yield Context(
+                    db=db,
+                    forge=self._forge,
+                    settings=self._settings,
+                    clock=self._clock,
+                    _transactions=self._transactions,
+                    _refresh_lock=self.refresh_lock,
+                    memo=self._memo,
+                    make_key=self._keys,
+                    committed=later,
+                    rolled_back=undo,
+                )
+        except Exception:
+            await _after_rollback(undo)
+            raise
+        if later:
+            room = asyncio.Semaphore(AT_ONCE_AFTER_COMMIT)
+            await asyncio.gather(*(self._after_commit(work, room) for work in later))
+
+    async def _after_commit(self, work: AfterCommit, room: asyncio.Semaphore) -> None:
+        async with room:
+            try:
+                async with self.unit_of_work() as ctx:
+                    await work(ctx)
+            except Exception:
+                log.exception("setup.after_commit_failed")
 
     def refresh_lock(self, session_id: uuid.UUID) -> asyncio.Lock:
         """The one lock this setup's units of work take while refreshing the
@@ -175,25 +165,6 @@ class Setup:
             self._refreshing[session_id] = lock
         return lock
 
-    def start_background(self) -> None:
-        self._loops.start(self.unit_of_work)
-
-    async def tick(self, name: str) -> None:
-        """Run one tick of the poller or timed pass named `name` now, as the
-        loop would. `ValueError` naming the loops there are for any other
-        name.
-        """
-        loops: dict[str, Poller | TimedPass] = {
-            poller.name: poller for poller in self._loops.pollers
-        }
-        loops.update({timed.name: timed for timed in self._loops.passes})
-        loop = loops.get(name)
-        if loop is None:
-            raise ValueError(
-                f"there is no poller or timed pass named {name!r}; there are {sorted(loops)}"
-            )
-        await loop.tick(self.unit_of_work)
-
     async def ready(self) -> None:
         """Raise `NotReady` unless the database answers within two seconds.
         The cause is logged and kept out of the error.
@@ -205,26 +176,31 @@ class Setup:
             raise NotReady("The database did not answer.") from exc
 
     async def stop(self) -> None:
-        await self._loops.stop()
         await self._forge.aclose()
         await self._probe_engine.dispose()
         await self._engine.dispose()
 
 
-def start(*, callback_path: str, background: bool = True) -> None:
-    """Build the setup the process holds from the `UNICON_*` settings and
-    start its background loops. `callback_path` is the hosting process's
-    sign-in callback route, the one thing the package cannot know on its own;
-    it is joined to `UNICON_PUBLIC_URL`. With `background` off no poller or
-    timed pass runs, for a one-off command that must not tick one as a side
-    effect. Call it once, from inside the running event loop.
+async def _after_rollback(undo: list[AfterRollback]) -> None:
+    """Each piece of work left for a rollback, the latest first; one that
+    fails is logged and the rest still run.
+    """
+    for work in reversed(undo):
+        try:
+            await work()
+        except Exception:
+            log.exception("setup.after_rollback_failed")
+
+
+def start(*, callback_path: str) -> None:
+    """Build the setup the process holds from the `UNICON_*` settings.
+    `callback_path` is the hosting process's sign-in callback route, the one
+    thing the package cannot know on its own; it is joined to
+    `UNICON_PUBLIC_URL`. Call it once, from inside the running event loop.
     """
     if holding():
         raise RuntimeError("forge.api.start was already called")
-    setup = Setup.build(load_settings(), callback_path=callback_path)
-    hold(setup)
-    if background:
-        setup.start_background()
+    hold(Setup.build(load_settings(), callback_path=callback_path))
 
 
 async def ready() -> None:
@@ -233,7 +209,7 @@ async def ready() -> None:
 
 
 async def stop() -> None:
-    """Stop the background loops and close every connection."""
+    """Close every connection."""
     await release().stop()
 
 

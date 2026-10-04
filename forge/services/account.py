@@ -23,7 +23,7 @@ from forge.log import get_logger
 from forge.port import Forge
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import roles, sessions
+from forge.services import names, roles, sessions
 from forge.services.passwords import new_password
 
 log = get_logger(__name__)
@@ -78,7 +78,7 @@ def _require_fresh(ctx: Context, session: Session) -> None:
 
 async def _refuse_if_sole_admin(ctx: Context, user_id: int, grants: tuple[RoleGrant, ...]) -> None:
     alone = [
-        grant.scope
+        await names.labelled(ctx, grant.scope)
         for grant in grants
         if grant.role is Role.ADMIN and await roles.admins_of(ctx, grant.scope) == {user_id}
     ]

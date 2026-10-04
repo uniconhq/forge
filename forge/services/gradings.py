@@ -1,14 +1,17 @@
 """The gradings of submissions: the rows a submit, a retry, a rejudge and the
-reconcile pass make, what a run of one is in the port's words, and the
-organiser's controls over them.
+operator's reconcile make, starting each one's run at the CI, what a run of
+one is in the port's words, and the organiser's controls over them.
 
 A grading is one row per submission, stage and attempt, and nothing about
 one is ever edited into another: a retry and a rejudge make new attempts,
 each a new row with a new id and so new secrets, and the old rows stay as
 they were, so what was graded when stays readable. Each row is inserted
-`queued` with the SHA-256 of its first run's callback token, and a grading
-that goes back to the queue after a run died is given its next run's
-(`renew_token`).
+`queued` with the SHA-256 of its run's callback token, and its run is
+started as soon as the unit of work that made it commits (`start`), since
+the CI asks the platform about the grading while the start is under way. A
+start the CI refuses, or does not answer, ends the grading in
+`system_error` saying why: whoever reads it sees that at once and tries
+again, a contestant by submitting, an organiser with `retry`.
 
 An organiser managing the task reads its gradings and acts on one:
 
@@ -40,11 +43,17 @@ from sqlalchemy import select, tuple_
 
 from forge.db.tables import Grading
 from forge.domain.definitions import TaskDefinition, Trigger
-from forge.domain.errors import Conflict, NotFound, PortError, Unavailable, WrongStatus
+from forge.domain.errors import (
+    Conflict,
+    Forbidden,
+    NotFound,
+    PortError,
+    Rejected,
+    Unavailable,
+    WrongStatus,
+)
 from forge.domain.grading import (
     AT_THE_CI,
-    ENDED,
-    FIND_MARGIN,
     FINISHED,
     PLATFORM_POOL,
     UNFINISHED,
@@ -52,10 +61,12 @@ from forge.domain.grading import (
     GradingStatus,
     callback_token,
     envelope_key,
+    overdue,
     token_hash,
 )
+from forge.domain.identity import AsOrgAccount
 from forge.domain.ids import (
-    OrgName,
+    OrgId,
     PublicationId,
     RunId,
     SubmissionId,
@@ -79,6 +90,13 @@ log = get_logger(__name__)
 NO_SUCH_GRADING = "There is no such grading."
 LIST_LIMIT = 500
 
+ACCOUNT_NOT_READY = "The org's grading account is not ready."
+NOT_ACTIVATED = "The task is not taken for grading at the CI."
+REFUSED = "The CI refused the org's grading account."
+NO_RUN = "The CI answered without starting a run."
+NO_ANSWER = "The CI did not answer."
+PUBLICATION_GONE = "The publication it grades against is gone."
+
 CI_CONFIG_PATH = "/api/v1/ci/config"
 """Where the CI asks what a run is, the configuration extension, under the
 platform's internal URL."""
@@ -92,9 +110,9 @@ CALLBACK_PATH = "/api/v1/gradings/{grading}/callback"
 @dataclass(frozen=True, slots=True)
 class GradingRecord:
     """One grading as an organiser reads it: which submission, stage and
-    attempt, against which publication, where it stands and why it waits,
-    the verdict as it came back, whether its log was written, the last
-    progress its run reported, and its times.
+    attempt, against which publication, where it stands, the verdict as it
+    came back, whether its log was written, the last progress its run
+    reported, and its times.
     """
 
     id: uuid.UUID
@@ -106,14 +124,11 @@ class GradingRecord:
     stage: str
     attempt: int
     status: GradingStatus
-    wait_reason: str | None
     error: str | None
     verdict: dict[str, Any] | None
     log: bool
     progress: dict[str, Any] | None
-    requeues: int
     queued_at: datetime
-    retry_at: datetime | None
     dispatched_at: datetime | None
     started_at: datetime | None
     finished_at: datetime | None
@@ -152,7 +167,8 @@ def new_row(
     key: str | None,
 ) -> Grading:
     """A new `queued` grading, added to the unit of work, with the hash of
-    its first run's callback token.
+    its run's callback token, whose run starts once the unit of work
+    commits.
     """
     row = Grading(
         id=new_id(),
@@ -168,29 +184,142 @@ def new_row(
         idempotency_key=key,
         status=GradingStatus.QUEUED,
         queued_at=ctx.now,
-        requeues=0,
     )
-    renew_token(ctx, row)
+    row.callback_token_hash = token_hash(callback_token_of(ctx, row))
     ctx.db.add(row)
+    grading = row.id
+
+    async def start_it(later: Context) -> None:
+        await start(later, grading)
+
+    ctx.after_commit(start_it)
     return row
 
 
-def renew_token(ctx: Context, row: Grading) -> None:
-    """Keep on the row the SHA-256 of the callback token of its run to come,
-    the one numbered by how often it went back to the queue.
-    """
-    token = callback_token(ctx.settings.token_encryption_key_bytes, row.id, run=row.requeues)
-    row.callback_token_hash = token_hash(token)
-
-
 def callback_token_of(ctx: Context, row: Grading) -> str:
-    """The token the grading's current run reports back with."""
-    return callback_token(ctx.settings.token_encryption_key_bytes, row.id, run=row.requeues)
+    """The token the grading's run reports back with."""
+    return callback_token(ctx.settings.token_encryption_key_bytes, row.id)
 
 
 def envelope_key_of(ctx: Context, row: Grading) -> str:
-    """The key the URL of the envelope of the grading's current run carries."""
-    return envelope_key(ctx.settings.token_encryption_key_bytes, row.id, run=row.requeues)
+    """The key the URL of the envelope of the grading's run carries."""
+    return envelope_key(ctx.settings.token_encryption_key_bytes, row.id)
+
+
+async def start(ctx: Context, grading: uuid.UUID) -> None:
+    """Start the run of a grading that is still `queued`, as its org's
+    account, and record it: the grading is then `dispatched`, waiting for a
+    machine. A start that fails ends the grading in `system_error`, saying
+    why in the platform's words; what the CI said goes to the log.
+
+    The call to the CI holds neither a connection nor a lock, since the CI
+    asks the platform about the grading while the start is under way, and a
+    rush of starts must leave it a connection to answer on. So what the
+    start needs is read and that much committed, the run is started, and
+    only then is the row taken and the run recorded, or the run cancelled
+    when the grading moved on meanwhile. The work after a commit owns its
+    unit of work, which is what lets it commit partway.
+
+    A grading of a long batch, a rejudge or a reconcile pass, may already
+    read as overdue by the time its turn comes; it is started all the same,
+    since its row still says `queued`, unless an organiser has made a later
+    attempt of it meanwhile.
+    """
+    row = await find(ctx, grading)
+    if row is None or row.status != GradingStatus.QUEUED:
+        return
+    if await _superseded(ctx, row):
+        log.info("gradings.start_superseded", grading=str(grading))
+        return
+    try:
+        account = await org_accounts.identity(ctx, org_of(row))
+    except (NotFound, CannotDecrypt) as exc:
+        await _not_started(ctx, grading, exc, ACCOUNT_NOT_READY)
+        return
+    except PortError as exc:
+        await _not_started(ctx, grading, exc, NO_ANSWER)
+        return
+    try:
+        run = await run_of(ctx, row)
+    except NotFound as exc:
+        await _not_started(ctx, grading, exc, PUBLICATION_GONE)
+        return
+    except PortError as exc:
+        await _not_started(ctx, grading, exc, NO_ANSWER)
+        return
+    await ctx.db.commit()
+    try:
+        found = await _start_run(ctx, account, run)
+    except (PortError, CannotDecrypt) as exc:
+        reason = _start_failure(exc) if isinstance(exc, PortError) else ACCOUNT_NOT_READY
+        await _not_started(ctx, grading, exc, reason)
+        return
+    row = await find(ctx, grading, lock=True)
+    if row is None or row.status != GradingStatus.QUEUED or await _superseded(ctx, row):
+        log.info("gradings.start_overtaken", grading=str(grading), run=found)
+        await _cancel_quietly(ctx, found)
+        return
+    row.status = GradingStatus.DISPATCHED
+    row.run_id = found
+    row.dispatched_at = ctx.now
+    log.info("gradings.dispatched", grading=str(row.id), run=found)
+
+
+async def _superseded(ctx: Context, row: Grading) -> bool:
+    """Whether a later attempt of the same submission and stage exists."""
+    later = await ctx.db.scalar(
+        select(Grading.id)
+        .where(
+            Grading.submission_id == row.submission_id,
+            Grading.stage == row.stage,
+            Grading.attempt > row.attempt,
+        )
+        .limit(1)
+    )
+    return later is not None
+
+
+async def _start_run(ctx: Context, account: AsOrgAccount, run: GradingRun) -> RunId:
+    """Start the run, and when the CI refuses the org's account, sign it in
+    again and try once more, so a login the CI lost heals at the next start.
+    Nothing is held while the CI is called.
+    """
+    try:
+        return await ctx.forge.grading.start_run(account, run)
+    except Forbidden:
+        account = await org_accounts.renew(ctx, account)
+        await ctx.db.commit()
+        return await ctx.forge.grading.start_run(account, run)
+
+
+async def _not_started(ctx: Context, grading: uuid.UUID, exc: Exception, reason: str) -> None:
+    """End the grading in `system_error` with `reason`, unless it moved on
+    meanwhile.
+    """
+    log.warning(
+        "gradings.start_failed", grading=str(grading), error=type(exc).__name__, detail=str(exc)
+    )
+    row = await find(ctx, grading, lock=True)
+    if row is not None and row.status == GradingStatus.QUEUED:
+        finish(row, GradingStatus.SYSTEM_ERROR, ctx.now, error=reason)
+
+
+async def _cancel_quietly(ctx: Context, run: RunId) -> None:
+    try:
+        await ctx.forge.grading.cancel_run(run)
+    except PortError as exc:
+        log.warning("gradings.cancel_failed", run=run, error=type(exc).__name__)
+
+
+def _start_failure(exc: PortError) -> str:
+    match exc:
+        case Forbidden():
+            return REFUSED
+        case Rejected():
+            return NO_RUN
+        case NotFound():
+            return NOT_ACTIVATED
+    return NO_ANSWER
 
 
 def queue_submission(
@@ -276,17 +405,35 @@ async def run_of(ctx: Context, row: Grading) -> GradingRun:
     )
 
 
-def org_of(row: Grading) -> OrgName:
-    return OrgName(task_scope(TaskId(row.task_id)).org)
+def org_of(row: Grading) -> OrgId:
+    return OrgId(task_scope(TaskId(row.task_id)).org)
 
 
 def finish(row: Grading, status: GradingStatus, now: datetime, *, error: str | None = None) -> None:
     """End the grading with `status`, waiting for nothing more."""
     row.status = status
     row.finished_at = now
-    row.wait_reason = None
-    row.retry_at = None
     row.error = error
+
+
+def overdue_of(ctx: Context, row: Grading) -> str | None:
+    """Why the grading is past what its state may take, or none."""
+    return overdue(
+        GradingStatus(row.status),
+        created_at=row.queued_at,
+        dispatched_at=row.dispatched_at,
+        deadline=row.deadline_at,
+        now=ctx.now,
+    )
+
+
+def status_of(ctx: Context, row: Grading) -> GradingStatus:
+    """Where the grading stands now: one past what its state may take is a
+    system error (`grading.overdue`).
+    """
+    if overdue_of(ctx, row) is not None:
+        return GradingStatus.SYSTEM_ERROR
+    return GradingStatus(row.status)
 
 
 @action
@@ -307,17 +454,15 @@ async def cancel(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Grad
     there. `WrongStatus` for one that is finished.
     """
     row = await _managed(ctx, organiser, grading)
-    status = GradingStatus(row.status)
+    status = status_of(ctx, row)
     if status in FINISHED:
         raise WrongStatus(f"The grading is {status.value} already.", current=status.value)
     if status in AT_THE_CI and row.run_id is not None:
         await _cancel_run(ctx, RunId(row.run_id))
-    elif status is GradingStatus.DISPATCHING:
-        await _cancel_lost_start(ctx, row)
     finish(row, GradingStatus.CANCELLED, ctx.now)
     await ctx.db.flush()
     log.info("gradings.cancelled", grading=str(row.id), user_id=organiser.user.id)
-    return record(row)
+    return record(ctx, row)
 
 
 @action
@@ -329,15 +474,15 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     found = await _managed(ctx, organiser, grading, lock=False)
     attempts = await _attempts(ctx, [(found.submission_id, found.stage)])
     row = next(attempt for attempt in attempts if attempt.id == grading)
-    status = GradingStatus(row.status)
+    status = status_of(ctx, row)
     if status not in FINISHED:
         raise WrongStatus(f"The grading is {status.value}, not finished.", current=status.value)
-    if any(GradingStatus(other.status) in UNFINISHED for other in attempts):
+    if any(status_of(ctx, other) in UNFINISHED for other in attempts):
         raise Conflict("Another attempt of this grading is still being graded.")
     made = _next_attempt(ctx, row, PublicationId(row.publication_id), attempts)
     await ctx.db.flush()
     log.info("gradings.retried", grading=str(row.id), attempt=made.attempt)
-    return record(made)
+    return record(ctx, made)
 
 
 @action
@@ -374,7 +519,7 @@ async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
         if row.stage not in stages:
             passed_over += 1
             continue
-        if GradingStatus(row.status) in UNFINISHED:
+        if status_of(ctx, row) in UNFINISHED:
             if row.publication_id == current.publication.id:
                 left_running += 1
                 continue
@@ -415,10 +560,11 @@ async def list(
         .scalars()
         .all()
     )
-    return tuple(record(row) for row in rows)
+    return tuple(record(ctx, row) for row in rows)
 
 
-def record(row: Grading) -> GradingRecord:
+def record(ctx: Context, row: Grading) -> GradingRecord:
+    late = overdue_of(ctx, row)
     return GradingRecord(
         id=row.id,
         task=TaskId(row.task_id),
@@ -428,15 +574,12 @@ def record(row: Grading) -> GradingRecord:
         publication=PublicationId(row.publication_id),
         stage=row.stage,
         attempt=row.attempt,
-        status=GradingStatus(row.status),
-        wait_reason=row.wait_reason,
-        error=row.error,
+        status=GradingStatus.SYSTEM_ERROR if late is not None else GradingStatus(row.status),
+        error=late or row.error,
         verdict=row.verdict,
         log=row.log_key is not None,
         progress=row.progress,
-        requeues=row.requeues,
         queued_at=row.queued_at,
-        retry_at=row.retry_at,
         dispatched_at=row.dispatched_at,
         started_at=row.started_at,
         finished_at=row.finished_at,
@@ -508,24 +651,6 @@ async def _cancel_run(ctx: Context, run: RunId) -> None:
         raise Unavailable("The CI did not stop the grading's run; try again.") from exc
 
 
-async def _cancel_lost_start(ctx: Context, row: Grading) -> None:
-    """Stop the run a start whose answer was lost may have made, when the CI
-    has one. Nothing is refused for it: a run of a cancelled grading is
-    refused its envelope, and so grades nothing.
-    """
-    try:
-        account = await org_accounts.identity(ctx, org_of(row))
-        run = await ctx.forge.grading.find_run(
-            account, await run_of(ctx, row), since=row.queued_at - FIND_MARGIN
-        )
-        if run is not None and run.status not in ENDED:
-            await ctx.forge.grading.cancel_run(run.id)
-    except (PortError, CannotDecrypt) as exc:
-        log.warning(
-            "gradings.lost_start_not_stopped", grading=str(row.id), error=type(exc).__name__
-        )
-
-
 async def _stop_quietly(ctx: Context, row: Grading) -> None:
     """Cancel an unfinished grading a rejudge replaces, its run at the CI
     too when there is one; a run the CI does not stop is refused its
@@ -534,8 +659,6 @@ async def _stop_quietly(ctx: Context, row: Grading) -> None:
     try:
         if GradingStatus(row.status) in AT_THE_CI and row.run_id is not None:
             await ctx.forge.grading.cancel_run(RunId(row.run_id))
-        elif GradingStatus(row.status) is GradingStatus.DISPATCHING:
-            await _cancel_lost_start(ctx, row)
     except PortError as exc:
         log.warning(
             "gradings.replaced_run_not_stopped", grading=str(row.id), error=type(exc).__name__

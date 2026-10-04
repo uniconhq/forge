@@ -18,8 +18,8 @@ import httpx
 import pytest
 
 from forge.domain.errors import Conflict, Forbidden, NotFound
-from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser
-from forge.domain.ids import OrgName
+from forge.domain.identity import PLATFORM, AsUser
+from forge.domain.ids import OrgId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
@@ -79,8 +79,8 @@ def account_name(admin: httpx.Client, org: str) -> Iterator[str]:
 
 async def _org_exists(forge: ForgejoForge, org: str) -> None:
     with contextlib.suppress(Conflict):
-        await forge.orgs.create_org(OrgName(org), description="Live test org")
-    await forge.orgs.create_roles(OrgName(org))
+        await forge.orgs.create_org(OrgId(org), description="Live test org")
+    await forge.orgs.create_roles(OrgId(org))
 
 
 async def test_a_user_is_found_deactivated_and_reactivated(
@@ -101,13 +101,13 @@ async def test_a_user_is_found_deactivated_and_reactivated(
 async def test_an_org_with_its_roles_and_a_contest_with_its_files(
     forge: ForgejoForge, org: str, user: dict[str, Any], person: AsUser
 ) -> None:
-    await forge.orgs.create_org(OrgName(org), description="Live test org")
+    await forge.orgs.create_org(OrgId(org), description="Live test org")
     with pytest.raises(Conflict):
-        await forge.orgs.create_org(OrgName(org), description="again")
-    await forge.orgs.create_roles(OrgName(org))
-    await forge.orgs.create_roles(OrgName(org))
-    await forge.orgs.create_thread_labels(OrgName(org))
-    await forge.orgs.create_thread_labels(OrgName(org))
+        await forge.orgs.create_org(OrgId(org), description="again")
+    await forge.orgs.create_roles(OrgId(org))
+    await forge.orgs.create_roles(OrgId(org))
+    await forge.orgs.create_thread_labels(OrgId(org))
+    await forge.orgs.create_thread_labels(OrgId(org))
 
     user_id = int(user["id"])
     await forge.orgs.grant_role(user_id, Scope(org), Role.ADMIN)
@@ -117,7 +117,7 @@ async def test_an_org_with_its_roles_and_a_contest_with_its_files(
     ]
 
     contest = await forge.content.create_contest(
-        OrgName(org), "spring", {"contest.yaml": b"name: Spring\n"}
+        OrgId(org), "spring", {"contest.yaml": b"name: Spring\n"}
     )
     task = await forge.content.create_task(contest, "sum", {"task.yaml": b"name: Sum\n"})
     await forge.content.secure(contest)
@@ -195,13 +195,11 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
     person = as_person(admin, contestant)
     member = [int(contestant["id"])]
     try:
-        contest = await forge.content.create_contest(
-            OrgName(org), "autumn", {"contest.yaml": b"x\n"}
-        )
+        contest = await forge.content.create_contest(OrgId(org), "autumn", {"contest.yaml": b"x\n"})
         task = await forge.content.create_task(contest, "sum", {"task.yaml": b"y\n"})
         for _ in range(2):
             workspace = await forge.workspaces.open_workspace(
-                contest, UserOwner(contestant["login"]), member
+                contest, UserOwner(int(contestant["id"])), member
             )
             await forge.workspaces.open_submission_place(workspace, task, member)
 
@@ -220,19 +218,19 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
             (1, "live-key-one"),
             (2, "live-key-two"),
         ]
-        assert await forge.workspaces.read_submission_file(person, first.id, "main.py") == (
-            b"print(1)\n"
-        )
+        assert await forge.workspaces.read_submission_file(
+            person, first.id, "main.py", max_size=64
+        ) == (b"print(1)\n")
         assert (
             await forge.workspaces.read_submission_file(
-                person, second.id, "files/submission/sum.py"
+                person, second.id, "files/submission/sum.py", max_size=64
             )
             == b"print(2)\n"
         )
         with pytest.raises(NotFound):
-            await forge.workspaces.read_submission_file(person, second.id, "main.py")
+            await forge.workspaces.read_submission_file(person, second.id, "main.py", max_size=64)
 
-        repo = f"/api/v1/repos/{org}/autumn.sum.{contestant['login'].lower()}.sub"
+        repo = f"/api/v1/repos/{org}/autumn.sum.u{contestant['id']}.sub"
         tags = {tag["name"]: tag["commit"]["sha"] for tag in admin.get(f"{repo}/tags").json()}
         commits = admin.get(f"{repo}/commits", params={"sha": "main"}).json()
         by_sha = {commit["sha"]: commit for commit in commits}
@@ -254,9 +252,9 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
 async def test_the_same_person_has_a_workspace_in_each_contest_of_the_org(
     forge: ForgejoForge, org: str, user: dict[str, Any], person: AsUser
 ) -> None:
-    first = await forge.content.create_contest(OrgName(org), "one", {"contest.yaml": b"x\n"})
-    second = await forge.content.create_contest(OrgName(org), "two", {"contest.yaml": b"x\n"})
-    owner = UserOwner(user["login"])
+    first = await forge.content.create_contest(OrgId(org), "one", {"contest.yaml": b"x\n"})
+    second = await forge.content.create_contest(OrgId(org), "two", {"contest.yaml": b"x\n"})
+    owner = UserOwner(int(user["id"]))
 
     in_first = await forge.workspaces.open_workspace(first, owner, [int(user["id"])])
     in_second = await forge.workspaces.open_workspace(second, owner, [int(user["id"])])
@@ -269,7 +267,7 @@ async def test_the_same_person_has_a_workspace_in_each_contest_of_the_org(
 
 
 async def test_threads_are_posted_answered_and_closed(forge: ForgejoForge, org: str) -> None:
-    contest = await forge.content.create_contest(OrgName(org), "winter", {"contest.yaml": b"x\n"})
+    contest = await forge.content.create_contest(OrgId(org), "winter", {"contest.yaml": b"x\n"})
     thread = await forge.threads.post_thread(
         PLATFORM, contest, ThreadKind.ANNOUNCEMENT, title="Welcome", body="Hello"
     )
@@ -313,9 +311,9 @@ async def test_a_deleted_user_is_gone_and_their_questions_still_read(
 ) -> None:
     leaver = make_user(admin, f"leaver-{stamp}")
     person = as_person(admin, leaver)
-    contest = await forge.content.create_contest(OrgName(org), "leaving", {"contest.yaml": b"x\n"})
+    contest = await forge.content.create_contest(OrgId(org), "leaving", {"contest.yaml": b"x\n"})
     workspace = await forge.workspaces.open_workspace(
-        contest, UserOwner(leaver["login"]), [int(leaver["id"])]
+        contest, UserOwner(int(leaver["id"])), [int(leaver["id"])]
     )
     thread = await forge.threads.post_thread(
         person, workspace, ThreadKind.CLARIFICATION, title="Before I go", body="?"
@@ -344,8 +342,8 @@ async def test_an_org_gets_one_event_push_however_often_it_is_asked(
     await _org_exists(forge, org)
     url = f"http://backend/api/v1/events/forge/{org}"
 
-    await forge.orgs.create_event_push(OrgName(org), url=url, secret="live-secret")
-    await forge.orgs.create_event_push(OrgName(org), url=url, secret="live-secret")
+    await forge.orgs.create_event_push(OrgId(org), url=url, secret="live-secret")
+    await forge.orgs.create_event_push(OrgId(org), url=url, secret="live-secret")
 
     hooks = [
         hook
@@ -378,8 +376,8 @@ async def test_the_service_account_is_made_placed_and_given_a_token(
             account_name, f"{account_name}@unicon.invalid", password, must_change_password=False
         )
     assert await forge.identity.find_user_by_username(account_name) == account
-    assert await forge.orgs.ensure_account_membership(OrgName(org), account.id) is True
-    assert await forge.orgs.ensure_account_membership(OrgName(org), account.id) is False
+    assert await forge.orgs.ensure_account_membership(OrgId(org), account.id) is True
+    assert await forge.orgs.ensure_account_membership(OrgId(org), account.id) is False
     token = await forge.identity.mint_token(
         account_name, password, name="unicon", scopes=["read:user", "read:organization"]
     )
@@ -439,32 +437,25 @@ async def test_the_ci_user_is_created_and_the_sign_in_dance_yields_a_token(
     )
     assert me.status_code == 200, me.text
     assert me.json()["login"] == account_name
-    alive = AsOrgAccount(org, forge_token="unused", ci_token=token)
-    assert await forge.grading.ci_user_is_alive(alive) is True
-    assert (
-        await forge.grading.ci_user_is_alive(
-            AsOrgAccount(org, forge_token="unused", ci_token="not-a-token")
-        )
-        is False
-    )
 
     with pytest.raises(Forbidden):
         await forge.grading.mint_ci_token(account_name, "wrong")
     renewed = "live-" + secrets.token_urlsafe(12)
     await forge.identity.set_password(account.id, renewed)
     second = await forge.grading.mint_ci_token(account_name, renewed)
-    assert await forge.grading.ci_user_is_alive(
-        AsOrgAccount(org, forge_token="unused", ci_token=second)
+    again = httpx.get(
+        f"{CI_URL.rstrip('/')}/api/user", headers={"Authorization": f"Bearer {second}"}, timeout=30
     )
+    assert again.status_code == 200, again.text
 
 
 async def test_a_role_team_made_a_repository_admin_is_given_write_back(
     forge: ForgejoForge, admin: httpx.Client, stamp: str
 ) -> None:
     org = f"live-perm-{stamp}"
-    await forge.orgs.create_org(OrgName(org), description="Live permission check")
+    await forge.orgs.create_org(OrgId(org), description="Live permission check")
     try:
-        await forge.orgs.create_roles(OrgName(org))
+        await forge.orgs.create_roles(OrgId(org))
         teams = {team["name"]: team for team in admin.get(f"/api/v1/orgs/{org}/teams").json()}
         widened = teams[f"{org}-admin"]
         assert widened["permission"] == "write"
@@ -475,26 +466,13 @@ async def test_a_role_team_made_a_repository_admin_is_given_write_back(
         assert patched.status_code == 200, patched.text
         assert admin.get(f"/api/v1/teams/{widened['id']}").json()["permission"] == "admin"
 
-        await forge.orgs.create_roles(OrgName(org))
+        await forge.orgs.create_roles(OrgId(org))
 
         after = {team["name"]: team for team in admin.get(f"/api/v1/orgs/{org}/teams").json()}
         assert after[f"{org}-admin"]["permission"] == "write"
         assert after[f"{org}-manager"]["permission"] == "write"
         assert after[f"{org}-observer"]["permission"] == "read"
         assert after[f"{org}-ci"]["permission"] == "admin"
-    finally:
-        delete_org(admin, org)
-
-
-async def test_the_platform_owns_the_orgs_it_made_and_no_one_elses_name(
-    forge: ForgejoForge, admin: httpx.Client, stamp: str, user: dict[str, Any]
-) -> None:
-    org = f"live-own-{stamp}"
-    await forge.orgs.create_org(OrgName(org), description="Live ownership check")
-    try:
-        assert await forge.orgs.platform_owns(OrgName(org)) is True
-        assert await forge.orgs.platform_owns(OrgName(str(user["login"]))) is False
-        assert await forge.orgs.platform_owns(OrgName(f"nobody-{stamp}")) is False
     finally:
         delete_org(admin, org)
 

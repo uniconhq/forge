@@ -43,7 +43,6 @@ def environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "UNICON_MACHINE_URL",
         "UNICON_HARNESS_IMAGE",
         "UNICON_S3_REGION",
-        "UNICON_S3_UPLOADS_BUCKET",
         "UNICON_S3_RESULTS_BUCKET",
     ]:
         monkeypatch.delenv(name, raising=False)
@@ -216,11 +215,7 @@ def test_the_object_store_travels_with_forgejo_and_defaults_its_region_and_bucke
     assert settings.s3 is not None
     assert str(settings.s3.endpoint) == "http://garage:3900/"
     assert settings.s3.secret_key.get_secret_value() == "s3-secret"
-    assert (settings.s3.region, settings.s3.uploads_bucket, settings.s3.results_bucket) == (
-        "garage",
-        "unicon-uploads",
-        "unicon-results",
-    )
+    assert (settings.s3.region, settings.s3.results_bucket) == ("garage", "unicon-results")
 
 
 def test_forgejo_without_the_object_store_names_its_variables(

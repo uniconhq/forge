@@ -5,7 +5,9 @@ is refused. Two files with the same content carry the same token, which is
 how a comparison between two versions tells a changed file from one left as
 it was without reading either.
 
-An `Edit` is one file as a save writes it, with the token it was read with;
+An `Edit` is one file as a save writes it, with the token it was read with:
+either the bytes the save carries, or an `Uploaded` naming a file already at
+the forge, whose pointer the save writes instead;
 a `FileSet` is every file of a place at one version, by path, with its
 token. `check_path` is the rule every path a person names passes before it
 reaches the port: plain segments joined by `/`, relative to the place.
@@ -13,6 +15,7 @@ reaches the port: plain segments joined by `/`, relative to the place.
 is under it.
 """
 
+import uuid
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -88,9 +91,31 @@ class Change:
 
 
 @dataclass(frozen=True, slots=True)
+class Uploaded:
+    """A file whose content is an upload already at the forge: the save
+    writes the pointer to it rather than any bytes, and the bytes went in
+    through the upload door before the save (`services.uploads`).
+    """
+
+    upload: uuid.UUID
+
+
+@dataclass(frozen=True, slots=True)
 class Edit:
-    """One file as a save writes it: its new content, and the token it was
+    """One file as a save writes it: its new content, either typed text the
+    save carries or an upload the forge already holds, and the token it was
     read with, or none for a file the save creates.
+    """
+
+    content: bytes | Uploaded
+    token: ConflictToken | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WrittenEdit:
+    """One file as the write carries it, once an edit naming an upload has
+    become the pointer to it. Everything past the save's first step works on
+    these, so nothing below it has to ask where a file's bytes came from.
     """
 
     content: bytes

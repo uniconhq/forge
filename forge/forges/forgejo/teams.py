@@ -116,6 +116,19 @@ class Teams:
     async def remove_member(self, team_id: int, username: str) -> None:
         await self._http.call(PLATFORM, "DELETE", f"/api/v1/teams/{team_id}/members/{username}")
 
+    async def delete_scope(self, scope: Scope) -> None:
+        """Delete the role teams of a contest or a task, each one that is
+        there.
+        """
+        for role in Role:
+            team = await self.find(scope.org, team_name(scope, role))
+            if team is None:
+                continue
+            try:
+                await self._http.call(PLATFORM, "DELETE", f"/api/v1/teams/{team['id']}")
+            except NotFound:
+                continue
+
     async def attach_scope(self, scope: Scope, repo: str) -> int:
         """Put a repository under the role teams of its scope and of every
         contest above it, creating the teams as needed, so a contest's roles

@@ -33,6 +33,9 @@ class InputType(StrEnum):
     JUPYTER = "jupyter"
 
 
+WORKFLOW_FILE = "workflow.yaml"
+"""The file at the root of a workflow that defines it."""
+
 VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 VERSION_MAX = 40
 
@@ -174,4 +177,62 @@ def parse_workflow(text: bytes | str) -> WorkflowDefinition:
     """The `workflow.yaml` in `text`. Raises `InvalidDefinition` listing every
     problem with its YAML path.
     """
-    return validate(WorkflowDefinition, "workflow.yaml", load_mapping("workflow.yaml", text))
+    return validate(WorkflowDefinition, WORKFLOW_FILE, load_mapping(WORKFLOW_FILE, text))
+
+
+def starter_workflow(owner: str, name: str) -> dict[str, bytes]:
+    """The files a new workflow is created with: a `workflow.yaml` named
+    `owner/name` at version `v1`, with the inputs, steps and outputs of
+    `unicon/classic@v1`, so it is valid from its first commit and a person
+    starts from a workflow that grades and changes what they need.
+    """
+    workflow = f"""# {owner}/{name}, a workflow. It starts as the steps of unicon/classic@v1:
+# compile the submission once, run the binary on every testcase under the
+# task's limits, and diff each run's output against that testcase's
+# answer. The format is TASK-FORMAT.md section 6.3.
+name: {owner}/{name}
+version: v1
+
+inputs:
+  - id: submission
+    type: code
+  - id: testcases
+    type: file[]
+  - id: time_limit
+    type: number
+  - id: memory_limit
+    type: number
+
+steps:
+  - id: compile
+    use: unicon/compile@v1
+    with:
+      source: ${{{{ inputs.submission }}}}
+      language: ${{{{ inputs.submission.language }}}}
+
+  - id: run
+    use: unicon/sandbox-run@v1
+    foreach: ${{{{ inputs.testcases }}}}
+    with:
+      binary: ${{{{ steps.compile.binary }}}}
+      input: ${{{{ item.input }}}}
+      time_limit: ${{{{ inputs.time_limit }}}}
+      memory_limit: ${{{{ inputs.memory_limit }}}}
+
+  - id: check
+    use: unicon/diff-check@v1
+    foreach: ${{{{ inputs.testcases }}}}
+    with:
+      actual: ${{{{ steps.run.output }}}}
+      expected: ${{{{ item.answer }}}}
+
+outputs:
+  outcome: ${{{{ steps.check.outcome }}}}
+  metrics:
+    points: ${{{{ steps.check.points }}}}
+  tests:
+    time_ms: ${{{{ steps.run.time_ms }}}}
+    memory_kb: ${{{{ steps.run.memory_kb }}}}
+  summary: ${{{{ steps.compile.compile_log }}}}
+"""
+    return {WORKFLOW_FILE: workflow.encode()}

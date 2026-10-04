@@ -83,20 +83,38 @@ class ForgejoWorkspaces:
         and only then give the members write access, so nobody can write a
         place whose submissions anyone may name. Each leaves what is already
         right alone.
+
+        A repository that is there and has a collaborator who is not one of
+        the members is somebody else's, and is refused with `Conflict` rather
+        than shared: the name is the owner's id, so this only happens if
+        something other than this code made or changed it.
         """
-        if not await self._repos.exists(ref.org, repo):
+        usernames = [await self._users.username_of(member) for member in member_ids]
+        if await self._repos.exists(ref.org, repo):
+            await self._refuse_if_someone_elses(ref.org, repo, usernames)
+        else:
             try:
                 await self._repos.create(PLATFORM, ref.org, repo, {}, private=True)
             except Conflict:
                 if not await self._repos.exists(ref.org, repo):
                     raise
+                await self._refuse_if_someone_elses(ref.org, repo, usernames)
         await self._repos.protect_branch(ref.org, repo)
         await self._teams.attach_scope(Scope(ref.org, ref.contest), repo)
         if reserve:
             await self._repos.reserve_versions(ref.org, repo, SUBMISSION_PREFIX)
-        for member in member_ids:
-            username = await self._users.username_of(member)
+        for username in usernames:
             await self._repos.add_collaborator(ref.org, repo, username, permission=WRITE)
+
+    async def _refuse_if_someone_elses(self, org: str, repo: str, usernames: list[str]) -> None:
+        members = {username.lower() for username in usernames}
+        others = sorted(
+            str(person["login"])
+            for person in await self._repos.collaborators(org, repo)
+            if str(person["login"]).lower() not in members
+        )
+        if others:
+            raise Conflict(f"{org}/{repo} already has other collaborators: {', '.join(others)}")
 
     async def close_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
         ref = parse_workspace(workspace)
@@ -133,11 +151,16 @@ class ForgejoWorkspaces:
         raise NotFound(f"the submission {number} is not listed after it was made")
 
     async def read_submission_file(
-        self, as_: Identity, submission: SubmissionId, path: str
+        self, as_: Identity, submission: SubmissionId, path: str, *, max_size: int
     ) -> bytes:
         ref, task_name, number = parse_submission(submission)
         return await self._repos.read_raw(
-            as_, ref.org, ref.submission_repo(task_name), path, at=f"{SUBMISSION_PREFIX}{number}"
+            as_,
+            ref.org,
+            ref.submission_repo(task_name),
+            path,
+            at=f"{SUBMISSION_PREFIX}{number}",
+            max_size=max_size,
         )
 
     async def publish(self, task: TaskId, at: VersionId, note: str) -> PublicationId:
@@ -162,6 +185,7 @@ class ForgejoWorkspaces:
                     version=VersionId(str(commit["sha"])),
                     grading_changed=note.grading_changed,
                     changes=note.changes,
+                    workflows=note.workflows,
                     at=datetime.fromisoformat(str(commit["created"])),
                 )
             )

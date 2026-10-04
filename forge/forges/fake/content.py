@@ -17,7 +17,7 @@ from forge.domain.content import (
 )
 from forge.domain.errors import Conflict, NotFound
 from forge.domain.identity import PLATFORM, Identity
-from forge.domain.ids import ContestId, OrgName, TaskId, VersionId
+from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
 from forge.domain.roles import Role, Scope
 from forge.forges.fake.state import Repo, State, token_of
 from forge.forges.ids import (
@@ -36,19 +36,19 @@ class FakeContent:
     def __init__(self, state: State) -> None:
         self._state = state
 
-    async def create_contest(self, org: OrgName, name: str, files: Files) -> ContestId:
-        self._state.record("create_contest", PLATFORM, org=org, name=name)
+    async def create_contest(self, org: OrgId, key: str, files: Files) -> ContestId:
+        self._state.record("create_contest", PLATFORM, org=org, key=key)
         self._state.check_up()
         self._state.org(org)
-        ref = ContestRef(org, name)
-        self._state.create_repo(PLATFORM, org, ref.repo, files, scope=Scope(org, name))
+        ref = ContestRef(org, key)
+        self._state.create_repo(PLATFORM, org, ref.repo, files, scope=Scope(org, key))
         return ref.id
 
-    async def create_task(self, contest: ContestId, name: str, files: Files) -> TaskId:
-        self._state.record("create_task", PLATFORM, contest=contest, name=name)
+    async def create_task(self, contest: ContestId, key: str, files: Files) -> TaskId:
+        self._state.record("create_task", PLATFORM, contest=contest, key=key)
         self._state.check_up()
         parent = parse_contest(contest)
-        ref = TaskRef(parent.org, parent.contest, name)
+        ref = TaskRef(parent.org, parent.contest, key)
         self._state.create_repo(
             PLATFORM, ref.org, ref.repo, files, scope=Scope(ref.org, ref.contest, ref.task)
         )
@@ -72,6 +72,17 @@ class FakeContent:
             put_back += 1
         return put_back
 
+    async def delete_place(self, place: ContentPlace) -> None:
+        self._state.record("delete_place", PLATFORM, place=place)
+        self._state.check_up()
+        owner, name = location(place)
+        repo = self._state.repos.pop((owner, name), None)
+        org = self._state.orgs.get(owner)
+        if repo is None or repo.scope is None or org is None:
+            return
+        for role in Role:
+            org.roles.pop((repo.scope, role), None)
+
     async def exists(self, place: ContentPlace) -> bool:
         self._state.record("exists", PLATFORM, place=place)
         self._state.check_up()
@@ -81,7 +92,7 @@ class FakeContent:
             return False
         return True
 
-    async def list_contests(self, as_: Identity, org: OrgName) -> tuple[ContestId, ...]:
+    async def list_contests(self, as_: Identity, org: OrgId) -> tuple[ContestId, ...]:
         self._state.record("list_contests", as_, org=org)
         self._state.check_up()
         self._state.org(org)

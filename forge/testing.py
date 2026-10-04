@@ -6,19 +6,26 @@ pytest configuration or `pytest_plugins = ["forge.testing"]` in a conftest.
 without it every test that needs one is skipped.
 
 A test calls an action with `ctx` to run it inside the test's unit of work,
-or with `setup` to have it open and commit one of its own. A dependant that
+or with `setup` to have it open and commit one of its own. The setup files
+every org, contest and task a test names under its name, so the ids a test
+writes down read as the names it made things with, `acme/spring/sum`; a
+deployment files them under random keys. A test of the difference asks for
+`setup_with_random_keys`, a setup over the same forge and database that
+makes random keys as a deployment does, or `held_setup_with_random_keys`
+for a dependant's. A dependant that
 calls actions with neither, as the backend does, asks for `held_setup`, which
 makes `setup` the one forge holds for the test and lets go of it afterwards.
 
 A dependant imports `forge.api` and this module and nothing else of the
 package, so this module also re-exports what a dependant's test needs to
 arrange the fake: `FakeForge`, `Settings` for a settings override, and the
-domain types a test builds, `OrgName`, `AsUser` and `Visibility`, and `Setup`
+domain types a test builds, `OrgId`, `AsUser` and `Visibility`, and `Setup`
 to type the setup a fixture hands over. `logged` reads back the records a
-test caused, in the shape they are written. `tick` runs one tick of a poller
-or a timed pass by name, so a test moves provisioning along the way the setup
-would; `register_contestant` writes the row that makes someone a contestant,
-for a test of what registration decides; and `seed_classic` puts the
+test caused, in the shape they are written. `register_contestant` writes
+the row that makes someone a contestant, for a test of what registration
+decides; `name_places` gives the org,
+contest and task ids a test made straight at the fake the names a route
+finds them by, each its own last part; and `seed_classic` puts the
 built-in workflow `unicon/classic@v1` at the fake the way deploy's bootstrap
 puts it at a real forge, from `CLASSIC`, a copy of that file,
 `deploy/workflows/classic/workflow.yaml`. The package's own tests check the
@@ -36,10 +43,11 @@ import psycopg
 import pytest
 
 from forge.db.migrations import upgrade_to_head
-from forge.db.tables import Contestant
+from forge.db.tables import Contestant, Name
 from forge.domain.clock import FakeClock
 from forge.domain.identity import PLATFORM, AsUser
-from forge.domain.ids import ContestId, OrgName
+from forge.domain.ids import ContestId, OrgId
+from forge.domain.keys import key_from_name, random_key
 from forge.domain.workflows import Visibility
 from forge.forges.fake import FakeForge
 from forge.log import JsonFormatter
@@ -59,15 +67,15 @@ __all__ = [
     "AsUser",
     "FakeClock",
     "FakeForge",
-    "OrgName",
+    "OrgId",
     "Settings",
     "Setup",
     "Visibility",
     "logged",
+    "name_places",
     "register_contestant",
     "seed_classic",
     "seed_primitives",
-    "tick",
 ]
 
 SERVER_URL_VARIABLE = "UNICON_TEST_DATABASE_URL"
@@ -147,7 +155,6 @@ PRIMITIVES: dict[str, bytes] = {
     "compile": _declared(
         "compile",
         """\
-entrypoint: [/usr/local/bin/compile]
 batch: false
 limits: {time_ms: 60000, cpu_ms: 60000, memory_mb: 1024, pids: 128, output_mb: 64}
 limits_from: {}
@@ -163,7 +170,6 @@ outputs:
     "sandbox-run": _declared(
         "sandbox-run",
         """\
-entrypoint: [/usr/local/bin/sandbox-run]
 batch: true
 limits: {time_ms: 5000, cpu_ms: 5000, memory_mb: 256, pids: 128, output_mb: 64}
 limits_from:
@@ -185,7 +191,6 @@ outputs:
     "diff-check": _declared(
         "diff-check",
         """\
-entrypoint: [/usr/local/bin/diff-check]
 batch: true
 limits: {time_ms: 5000, cpu_ms: 5000, memory_mb: 256, pids: 32, output_mb: 1}
 limits_from: {}
@@ -236,14 +241,6 @@ def logged(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]
     ]
 
 
-async def tick(setup: Setup, name: str) -> None:
-    """One tick of the setup's poller or timed pass named `name`, such as
-    `provisioning` or `drift.nightly`, on a unit of work of its own.
-    `ValueError` naming the loops there are for any other name.
-    """
-    await setup.tick(name)
-
-
 async def register_contestant(
     setup: Setup,
     contest: ContestId,
@@ -265,6 +262,17 @@ async def register_contestant(
                 time_extension_seconds=int(time_extension.total_seconds()),
             )
         )
+
+
+async def name_places(setup: Setup, *ids: str) -> None:
+    """Name each org, contest or task id after its last part, committed at
+    once, as a create would have when it filed the thing under its name.
+    """
+    kinds = {1: "org", 2: "contest", 3: "task"}
+    async with setup.unit_of_work() as ctx:
+        for place in ids:
+            parent, _, name = place.rpartition("/")
+            ctx.db.add(Name(id=place, kind=kinds[place.count("/") + 1], parent=parent, name=name))
 
 
 def _server_url() -> str:
@@ -322,7 +330,25 @@ def fake(clock: FakeClock) -> FakeForge:
 
 @pytest.fixture
 async def setup(settings: Settings, fake: FakeForge, clock: FakeClock) -> AsyncIterator[Setup]:
-    built = Setup.build(settings, callback_path=CALLBACK_PATH, forge=fake, clock=clock)
+    built = Setup.build(
+        settings, callback_path=CALLBACK_PATH, forge=fake, clock=clock, keys=key_from_name
+    )
+    try:
+        yield built
+    finally:
+        await built.stop()
+
+
+@pytest.fixture
+async def setup_with_random_keys(
+    settings: Settings, fake: FakeForge, clock: FakeClock
+) -> AsyncIterator[Setup]:
+    """A setup that files what it names under random keys, as a deployment
+    does, so a test can tell a name from the key it is filed under.
+    """
+    built = Setup.build(
+        settings, callback_path=CALLBACK_PATH, forge=fake, clock=clock, keys=random_key
+    )
     try:
         yield built
     finally:
@@ -337,6 +363,18 @@ def held_setup(setup: Setup) -> Iterator[Setup]:
     hold(setup)
     try:
         yield setup
+    finally:
+        release()
+
+
+@pytest.fixture
+def held_setup_with_random_keys(setup_with_random_keys: Setup) -> Iterator[Setup]:
+    """`setup_with_random_keys`, held as the process's own for the test, as
+    `held_setup` holds `setup`.
+    """
+    hold(setup_with_random_keys)
+    try:
+        yield setup_with_random_keys
     finally:
         release()
 

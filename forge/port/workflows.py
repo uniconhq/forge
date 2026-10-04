@@ -25,8 +25,9 @@ class WorkflowPort(Protocol):
         """Make a workflow under `owner`, an org or a user, as the platform,
         with its files written as `as_`, who must be able to write under that
         owner: the user themself, or at an org a manager or admin there.
-        Whether `as_` may create under `owner` at all is the caller's rule;
-        the host checks only the write. `Conflict` when the name is taken.
+        Whether `as_` may create under `owner` at all is the caller's rule,
+        which `forge.services.workflows` keeps; the host checks only the
+        write. `Conflict` when the name is taken.
         """
         ...
 
@@ -83,4 +84,12 @@ class WorkflowPort(Protocol):
 
     async def workflows_owned_by(self, user_id: int) -> tuple[Workflow, ...]:
         """Every workflow the user owns, with its visibility."""
+        ...
+
+    async def workflow_key(self, workflow: WorkflowId) -> str:
+        """The host's own id for the workflow, read as the platform. It stays
+        with the workflow when it or its owner is renamed and never names
+        another, so a name that has come to mean another workflow is told by
+        it. `NotFound` when there is no such workflow.
+        """
         ...

@@ -13,7 +13,7 @@ import hashlib
 import hmac
 
 from forge.domain.errors import Forbidden, NotFound
-from forge.domain.ids import OrgName
+from forge.domain.ids import OrgId
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -29,7 +29,7 @@ SIGNATURE_HEADERS = ("X-Forgejo-Signature", "X-Gitea-Signature")
 
 
 @action
-async def check(ctx: Context, org: OrgName, body: bytes, signature: str) -> None:
+async def check(ctx: Context, org: OrgId, body: bytes, signature: str) -> None:
     """Refuse the event with `Forbidden` unless `signature` is the org's
     secret over `body`, including for an org that has no secret.
     """

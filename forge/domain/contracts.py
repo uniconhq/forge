@@ -1,5 +1,5 @@
 """The runner's contract files, as the package holds them: `schemas/` is a
-copy of the five schemas a runner release publishes, at `schema_version` 3,
+copy of the five schemas a runner release publishes, at `schema_version` 4,
 the plan, the envelope, the verdict, the primitive and the submission. The
 package checks what a run sends back, and what it hands a run, against
 them; its tests check the copy against the runner's own when that repo is
@@ -13,7 +13,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 CONTRACTS = ("plan", "envelope", "verdict", "primitive", "submission")
 MESSAGE_LIMIT = 300
 

@@ -16,10 +16,11 @@ from forge.domain import release as rules
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import NotFound
 from forge.domain.ids import ContestId, TaskId
-from forge.domain.roles import contest_id_of, task_scope
+from forge.domain.names import ScopeNames
+from forge.domain.roles import contest_id_of, contest_scope, task_scope
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import published
+from forge.services import names, published
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,11 +37,13 @@ class PublicTask:
 
 @dataclass(frozen=True, slots=True)
 class PublicContest:
-    """A public contest: what it is called, what it says of itself, when it
-    runs, and its released tasks.
+    """A public contest: where it is, by the names of its org and itself,
+    what it is called, what it says of itself, when it runs, and its
+    released tasks.
     """
 
     contest: ContestId
+    where: ScopeNames
     name: str
     description: str
     start: datetime
@@ -66,10 +69,12 @@ async def contests(ctx: Context) -> tuple[PublicContest, ...]:
     """
 
     async def read() -> tuple[PublicContest, ...]:
+        public = [pair for pair in await published.every_contest(ctx) if _public(pair[1])]
+        where = await names.places_named(ctx, [contest for contest, _ in public])
         return tuple(
-            _contest(contest, settings, ())
-            for contest, settings in await published.every_contest(ctx)
-            if _public(settings)
+            _contest(contest, where[contest], settings, ())
+            for contest, settings in public
+            if contest in where
         )
 
     return await ctx.memo.remembered("landing.contests", PUBLIC_LIST_KEPT, read)
@@ -85,7 +90,8 @@ async def contest(ctx: Context, contest: ContestId) -> PublicContest:
         for task in await published.tasks(ctx, contest, settings)
         if rules.visible(settings, task.definition, now)
     )
-    return _contest(contest, settings, tasks)
+    where = await names.scope_names(ctx, contest_scope(contest))
+    return _contest(contest, where, settings, tasks)
 
 
 @action
@@ -120,10 +126,14 @@ async def _public_settings(ctx: Context, contest: ContestId, missing: str) -> Co
 
 
 def _contest(
-    contest: ContestId, settings: ContestDefinition, tasks: tuple[PublicTask, ...]
+    contest: ContestId,
+    where: ScopeNames,
+    settings: ContestDefinition,
+    tasks: tuple[PublicTask, ...],
 ) -> PublicContest:
     return PublicContest(
         contest=contest,
+        where=where,
         name=settings.name,
         description=settings.description,
         start=settings.start,

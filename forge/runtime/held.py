@@ -11,10 +11,8 @@ from forge.runtime.context import ActionSetup
 
 class HeldSetup(ActionSetup, Protocol):
     """What the process does with the setup it holds, beyond what an action
-    takes from it: start its loops, ask it whether it is ready, stop it.
+    takes from it: ask it whether it is ready, and stop it.
     """
-
-    def start_background(self) -> None: ...
 
     async def ready(self) -> None: ...
 

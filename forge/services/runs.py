@@ -7,8 +7,8 @@ since a grading's id alone proves nothing.
 CI (the port checks the signature), names the grading in the run's
 variables, and every other variable must be the one the platform starts
 that grading's run with. The grading must be one whose run is being
-started, `queued` or `dispatching`: the CI asks while the platform's start
-is under way, before its answer comes back. The answer is the three steps
+started, `queued`: the CI asks while the platform's start is under way,
+before its answer comes back. The answer is the three steps
 every run has, from the plan of the grading's stage in the publication it
 grades against, which names the harness image by digest; it writes
 nothing, so it never waits on the start that is holding the row. Anything
@@ -17,29 +17,28 @@ take an empty answer as leave to run what it found in the repository, and
 the reason goes to the log.
 
 `envelope` is the one document the harness downloads, the runner's
-`envelope.schema.json` version 3, served once: only with the envelope key of
-the grading's current run, and only while the grading is `dispatched`, the CI
+`envelope.schema.json` version 4, served once: only with the envelope key of
+the grading's run, and only while the grading is `dispatched`, the CI
 holding a run that has not begun. That fetch is the run beginning: the
 grading becomes `running` and its deadline is written, the envelope's wall
 clock and the time kept for reporting from now. Any later fetch is refused,
 since the envelope's URL is a variable of the run that anyone who reads the
 task's runs at the CI can see, and the envelope hands out the callback
 token. A harness whose fetch lost its answer ends its run without a
-report, and the overdue pass requeues the grading once its deadline passes,
-with a fresh machine and the secrets of its next run, whose envelope is
-served once the same way. The envelope carries the callback token, the
+report, and the grading reads as a system error once its deadline passes,
+for an organiser to retry. The envelope carries the callback token, the
 callback URL, and a URL the harness writes its log with, signed for the
 machine URL until the deadline.
 
-`callback` takes a report under the callback token of the grading's current
-run, compared by its SHA-256 with the row's in constant time, so another
-grading's token, or an earlier run's, is refused like a wrong one. A report
-comes only from a `running` grading before its deadline. `started` confirms
-the run began, `progress` is kept on the row, and `finished` carries the
-verdict: one that matches the runner's `verdict.schema.json`, names this
-grading and is within `VERDICT_MAX` is kept with its log key and the
-grading is `done`, or `system_error` when the verdict says so; any other
-leaves the grading in `system_error` with the reason, and is taken, since
+`callback` takes a report under the callback token of the grading's run,
+compared by its SHA-256 with the row's in constant time, so another
+grading's token is refused like a wrong one, and the token is what says
+which grading a report is for. A report comes only from a `running` grading
+before its deadline. `started` confirms the run began, `progress` is kept on
+the row, and `finished` carries the verdict: one that matches the runner's
+`verdict.schema.json` and is within `VERDICT_MAX` is kept with its log key
+and the grading is `done`, or `system_error` when the verdict says so; any
+other leaves the grading in `system_error` with the reason, and is taken, since
 sending it again would not mend it. A kept verdict sent again, because its
 answer was lost, is answered the same.
 
@@ -69,7 +68,6 @@ from forge.domain.errors import (
     Unavailable,
 )
 from forge.domain.grading import (
-    WAITING,
     CiAnswer,
     CiRequest,
     GradingRun,
@@ -84,14 +82,13 @@ from forge.domain.ids import TaskId
 from forge.domain.plans import Plan, plan_path
 from forge.domain.reports import Event, read_report, verdict_problem
 from forge.log import get_logger
-from forge.port.objects import Store
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import gradings
 
 log = get_logger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 REFUSED = "The platform does not answer this request."
 NOT_TAKING = "The grading takes no reports or envelope now."
 WRONG_TOKEN = "The report's token is not this grading's."
@@ -117,7 +114,7 @@ async def config(ctx: Context, request: CiRequest) -> CiAnswer:
     if row is None or row.task_id != ask.task:
         log.warning("runs.config_refused", reason="no_grading", task=ask.task)
         raise CiRequestRefused(REFUSED)
-    if GradingStatus(row.status) not in WAITING:
+    if row.status != GradingStatus.QUEUED:
         log.warning("runs.config_refused", reason="not_starting", grading=str(row.id))
         raise CiRequestRefused(REFUSED)
     run = await _run(ctx, row, CiRequestRefused(REFUSED))
@@ -152,18 +149,16 @@ async def envelope(ctx: Context, grading: uuid.UUID, key: str) -> dict[str, Any]
     if row is None:
         log.info("runs.envelope_refused", grading=str(grading), reason="key")
         raise NotFound(gradings.NO_SUCH_GRADING)
-    _refuse_closed(row)
+    _refuse_closed(ctx, row)
     run = await _run(ctx, row, GradingClosed(NOT_TAKING))
     wall = wall_seconds(await _plan(ctx, row, run, GradingClosed(NOT_TAKING)))
     row.status = GradingStatus.RUNNING
     row.started_at = ctx.now
     row.deadline_at = run_deadline(ctx.now, wall)
-    row.wait_reason = None
     await ctx.db.flush()
     log.info("runs.started", grading=str(row.id), run=row.run_id)
     places = ctx.forge.grading.run_places(run)
     log_put = ctx.forge.objects.put_url(
-        Store.RESULTS,
         log_key(row.id, row.attempt),
         expires_in=max(row.deadline_at - ctx.now, SHORTEST_URL),
     )
@@ -173,8 +168,6 @@ async def envelope(ctx: Context, grading: uuid.UUID, key: str) -> dict[str, Any]
         "submission": dict(places.submission),
         "stage": row.stage,
         "attempt": row.attempt,
-        "task": dict(places.task),
-        "publication": dict(places.publication),
         "checkouts": dict(places.checkouts),
         "callback": {
             "url": gradings.callback_url(ctx, row.id),
@@ -230,7 +223,7 @@ async def callback(
 
 
 def _finished(ctx: Context, row: Grading, verdict: Any) -> None:
-    problem = verdict_problem(verdict, grading=row.id, stage=row.stage, attempt=row.attempt)
+    problem = verdict_problem(verdict)
     if problem is not None:
         log.warning("runs.verdict_refused", grading=str(row.id), problem=problem)
         gradings.finish(row, GradingStatus.SYSTEM_ERROR, ctx.now, error=problem)
@@ -252,13 +245,12 @@ def _carries(row: Grading, given: bytes) -> bool:
     return kept is not None and hmac.compare_digest(given, kept)
 
 
-def _refuse_closed(row: Grading) -> None:
+def _refuse_closed(ctx: Context, row: Grading) -> None:
     """Refuse the envelope of a grading that is not `dispatched`: the CI holds
-    no run of it, or its run fetched the envelope already. A run that waited
-    for a machine past the deadline its start was given has not begun, and
-    is served.
+    no run of it, its run fetched the envelope already, or no machine took
+    it in time (`grading.overdue`).
     """
-    status = GradingStatus(row.status)
+    status = gradings.status_of(ctx, row)
     if status is not GradingStatus.DISPATCHED:
         log.info("runs.envelope_refused", grading=str(row.id), reason="closed", status=status)
         raise GradingClosed(NOT_TAKING)

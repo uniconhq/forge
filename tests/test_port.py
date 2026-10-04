@@ -32,6 +32,7 @@ AREAS = {
     "grading": port.GradingPort,
     "computes": port.ComputePort,
     "objects": port.ObjectStore,
+    "uploads": port.UploadPort,
 }
 
 

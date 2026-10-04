@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from datetime import datetime
 
 from forge.domain.content import Files
-from forge.domain.errors import Conflict, NotFound, Unavailable
+from forge.domain.errors import Conflict, NotFound, Rejected, Unavailable
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import (
     ContestId,
@@ -22,6 +22,7 @@ from forge.domain.roles import Scope
 from forge.domain.submissions import Submitted, write_note
 from forge.domain.submissions import read_note as read_submission_note
 from forge.forges.fake.state import Repo, State
+from forge.forges.fake.uploads import FakeUploads, repo_of
 from forge.forges.ids import (
     PUBLISHED_PREFIX,
     SUBMISSION_PREFIX,
@@ -34,14 +35,16 @@ from forge.forges.ids import (
     publication_id,
     submission_id,
 )
+from forge.port.uploads import SubmissionPlace
 
 SUBMIT_MESSAGE = "Submit"
 NUMBERING_ATTEMPTS = 3
 
 
 class FakeWorkspaces:
-    def __init__(self, state: State) -> None:
+    def __init__(self, state: State, uploads: FakeUploads) -> None:
         self._state = state
+        self._uploads = uploads
 
     async def open_workspace(
         self, contest: ContestId, owner: WorkspaceOwner, member_ids: Sequence[int]
@@ -78,12 +81,15 @@ class FakeWorkspaces:
         self, ref: WorkspaceRef, name: str, member_ids: Sequence[int], *, reserve: bool = False
     ) -> None:
         """One repository of the workspace, its submissions reserved before
-        anyone may write it, as the Forgejo implementation does.
+        anyone may write it, and one that is there with someone else in it
+        refused, as the Forgejo implementation does.
         """
         scope = Scope(ref.org, ref.contest)
         repo = self._state.repos.get((ref.org, name))
         if repo is None:
             repo = self._state.create_repo(PLATFORM, ref.org, name, {}, scope=scope)
+        elif repo.writers - set(member_ids):
+            raise Conflict(f"{ref.org}/{name} already has other collaborators")
         repo.rewrites_refused = True
         repo.teams.add(scope)
         if reserve:
@@ -144,7 +150,7 @@ class FakeWorkspaces:
         raise Conflict(f"could not number the next submission in {ref.submission_repo(task_name)}")
 
     async def read_submission_file(
-        self, as_: Identity, submission: SubmissionId, path: str
+        self, as_: Identity, submission: SubmissionId, path: str, *, max_size: int
     ) -> bytes:
         self._state.record("read_submission_file", as_, submission=submission, path=path)
         self._state.check_up()
@@ -154,7 +160,15 @@ class FakeWorkspaces:
         files = self._state.version_files(repo, f"{SUBMISSION_PREFIX}{number}")
         if path not in files:
             raise NotFound(f"{submission} has no file {path}")
-        return files[path]
+        # A read gives the object's bytes for a pointer the place holds, as
+        # Forgejo's media endpoint does, and the file itself otherwise.
+        content = self._uploads.resolve(
+            repo_of(SubmissionPlace(ref.id, TaskId(f"{ref.org}/{ref.contest}/{task_name}"))),
+            files[path],
+        )
+        if len(content) > max_size:
+            raise Rejected(f"{path} is larger than {max_size} bytes")
+        return content
 
     async def publish(self, task: TaskId, at: VersionId, note: str) -> PublicationId:
         self._state.record("publish", PLATFORM, task=task, at=at)
@@ -185,6 +199,7 @@ class FakeWorkspaces:
                     version=VersionId(repo.versions[name]),
                     grading_changed=note.grading_changed,
                     changes=note.changes,
+                    workflows=note.workflows,
                     at=self._state.published_at.get((task, number), self._state.clock.now()),
                 )
             )

@@ -1,10 +1,13 @@
 """The setup and the actions over it: an action handed a setup opens, commits
 and closes a transaction of its own, saves nothing when it raises or its
 commit fails, runs inside a caller's unit of work when handed one, and uses
-the setup the process holds when handed neither. `start`, `ready` and `stop`
-build, ask and tear down that one setup, and a setup started without its
-background runs no loop; a database that does not answer is `NotReady`, with
-the cause in the log and not in the error.
+the setup the process holds when handed neither. Work a unit of work leaves
+for after its commit runs then, on a unit of work of its own, and never when
+it rolls back; work it leaves for a rollback runs, the latest first, when it
+raises or its commit fails, never when it commits, and one that fails is
+logged without hiding the error. `start`, `ready` and `stop` build, ask and tear down that one
+setup; a database that does not answer is `NotReady`, with the cause in the
+log and not in the error.
 """
 
 import uuid
@@ -20,7 +23,7 @@ from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.runtime.held import held, holding
+from forge.runtime.held import holding
 from forge.runtime.setup import Setup
 from forge.services import identity, sessions, sign_in
 from forge.settings import TEST_VALUES, Settings
@@ -116,7 +119,7 @@ async def test_an_own_transaction_rolls_back_on_a_raise_and_lands_apart_from_the
         await identity.current(setup, session.id)
 
 
-async def test_the_setup_sweeps_ended_sessions_on_a_timed_pass(
+async def test_a_sign_in_sweeps_the_sessions_that_ended_long_ago(
     setup: Setup, ctx: Context, fake: FakeForge, clock: FakeClock
 ) -> None:
     session = await _signed_in(ctx, fake)
@@ -124,11 +127,131 @@ async def test_the_setup_sweeps_ended_sessions_on_a_timed_pass(
     await ctx.db.commit()
     clock.advance(setup.settings.session_hard_ttl + timedelta(days=1))
 
-    (sweep,) = [timed for timed in setup._loops.passes if timed.name == "sessions.sweep"]
-    assert await sweep.tick(setup.unit_of_work)
+    async with setup.unit_of_work() as later:
+        await _signed_in(later, fake)
 
     with pytest.raises(Unauthenticated):
         await identity.current(setup, session.id)
+
+
+async def test_work_left_for_after_the_commit_runs_on_a_unit_of_work_of_its_own(
+    setup: Setup, fake: FakeForge
+) -> None:
+    seen: list[int] = []
+
+    async def count_sessions(later: Context) -> None:
+        found = await sessions.list_for(later, await _signed_in(later, fake))
+        seen.append(len(found))
+
+    async with setup.unit_of_work() as ctx:
+        await _signed_in(ctx, fake)
+        ctx.after_commit(count_sessions)
+        assert seen == []
+
+    assert seen == [2]
+
+
+async def test_work_left_for_after_the_commit_does_not_run_when_the_unit_of_work_rolls_back(
+    setup: Setup,
+) -> None:
+    ran: list[bool] = []
+
+    async def note(later: Context) -> None:
+        ran.append(True)
+
+    with pytest.raises(RuntimeError, match="halfway"):
+        async with setup.unit_of_work() as ctx:
+            ctx.after_commit(note)
+            raise RuntimeError("halfway")
+
+    assert ran == []
+
+
+async def test_work_after_the_commit_that_fails_is_logged_and_the_commit_stands(
+    setup: Setup, fake: FakeForge, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def fail(later: Context) -> None:
+        raise RuntimeError("after")
+
+    async with setup.unit_of_work() as ctx:
+        session = await _signed_in(ctx, fake)
+        ctx.after_commit(fail)
+
+    assert (await identity.current(setup, session.id)).id == session.id
+    assert logged(caplog, "setup.after_commit_failed")
+
+
+async def test_work_left_for_a_rollback_runs_the_latest_first_and_the_error_goes_on(
+    setup: Setup,
+) -> None:
+    ran: list[str] = []
+
+    async def first() -> None:
+        ran.append("first")
+
+    async def second() -> None:
+        ran.append("second")
+
+    with pytest.raises(RuntimeError, match="halfway"):
+        async with setup.unit_of_work() as ctx:
+            ctx.after_rollback(first)
+            ctx.after_rollback(second)
+            raise RuntimeError("halfway")
+
+    assert ran == ["second", "first"]
+
+
+async def test_work_left_for_a_rollback_runs_when_the_commit_fails(
+    setup: Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[bool] = []
+
+    async def note() -> None:
+        ran.append(True)
+
+    with pytest.raises(RuntimeError, match="went away at commit"):
+        async with setup.unit_of_work() as ctx:
+            ctx.after_rollback(note)
+            monkeypatch.setattr(ctx.db, "commit", _refuse_to_commit)
+
+    assert ran == [True]
+
+
+async def test_work_left_for_a_rollback_does_not_run_when_the_unit_of_work_commits(
+    setup: Setup,
+) -> None:
+    ran: list[bool] = []
+
+    async def note() -> None:
+        ran.append(True)
+
+    async with setup.unit_of_work() as ctx:
+        ctx.after_rollback(note)
+
+    assert ran == []
+
+
+async def test_work_for_a_rollback_that_fails_is_logged_and_the_rest_and_the_error_stand(
+    setup: Setup, caplog: pytest.LogCaptureFixture
+) -> None:
+    ran: list[bool] = []
+    error = Conflict("the step's own")
+
+    async def note() -> None:
+        ran.append(True)
+
+    async def fail() -> None:
+        raise RuntimeError("the undo went wrong")
+
+    with pytest.raises(Conflict) as raised:
+        async with setup.unit_of_work() as ctx:
+            ctx.after_rollback(note)
+            ctx.after_rollback(fail)
+            raise error
+
+    assert raised.value is error
+    assert ran == [True]
+    assert logged(caplog, "setup.after_rollback_failed")
 
 
 async def test_an_action_handed_neither_uses_the_setup_the_process_holds(
@@ -218,25 +341,3 @@ async def test_a_database_that_does_not_answer_is_not_ready_and_only_the_log_say
     assert refused.value.extra == {}
     (record,) = logged(caplog, "setup.not_ready")
     assert record["error"]
-
-
-async def test_start_without_background_runs_no_loop(
-    migrated_database_url: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    values = {
-        **TEST_VALUES,
-        "database_url": migrated_database_url,
-        "public_url": APP_URL,
-        "forge_public_url": FORGE_URL,
-    }
-    for name, value in values.items():
-        monkeypatch.setenv(f"UNICON_{name.upper()}", str(value))
-
-    forge.api.start(callback_path=CALLBACK_PATH, background=False)
-    try:
-        held_setup = held()
-        assert isinstance(held_setup, Setup)
-        assert held_setup._loops.running is False
-        await sessions.revoke_all(7)
-    finally:
-        await forge.api.stop()

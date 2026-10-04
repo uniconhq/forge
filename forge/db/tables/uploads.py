@@ -1,5 +1,11 @@
-"""Files a browser uploaded to the object store that are not yet part of a
-submission. The expiry lets a sweeper remove what was never used.
+"""Files on their way into a repository at the forge, and the record of the
+ones a commit took. The bytes are never here and never pass through the
+platform: the row says what was declared, and the forge says whether it
+holds it (`forge.services.uploads`).
+
+A row whose upload no commit took is removed once the expiry passes, the
+next time its owner asks for a slot; the bytes it named are the forge's to
+collect once nothing points at them.
 """
 
 import uuid
@@ -11,8 +17,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from forge.db.base import Base, Timestamped
 from forge.domain.ids import new_id
 
-PURPOSES = ("submission", "asset")
-STATUSES = ("presigned", "uploaded", "verified", "consumed", "rejected", "expired")
+PURPOSES = ("submission", "task_file")
+STATUSES = ("waiting", "verified", "consumed")
 
 
 class Upload(Base, Timestamped):
@@ -23,14 +29,16 @@ class Upload(Base, Timestamped):
     purpose: Mapped[str]
     task_id: Mapped[str | None]
     input_id: Mapped[str | None]
-    object_key: Mapped[str] = mapped_column(unique=True)
+    repo_path: Mapped[str | None]
+    """Where in the task's own repository an organiser's file goes. None for
+    a submission's file, whose path comes from its input and name."""
     filename: Mapped[str]
     content_type: Mapped[str | None]
-    declared_size: Mapped[int] = mapped_column(BigInteger)
-    actual_size: Mapped[int | None] = mapped_column(BigInteger)
-    digest: Mapped[bytes | None]
+    size: Mapped[int] = mapped_column(BigInteger)
+    digest: Mapped[str]
+    """The file's SHA-256 in lowercase hex, as the browser declared it and
+    as the forge checked it when the bytes arrived."""
     status: Mapped[str]
-    multipart_upload_id: Mapped[str | None]
     consumed_by: Mapped[str | None]
     expires_at: Mapped[datetime]
 

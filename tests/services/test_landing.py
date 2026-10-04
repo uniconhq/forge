@@ -15,7 +15,7 @@ from forge.domain.ids import ContestId, TaskId
 from forge.domain.roles import Role, Scope
 from forge.runtime.setup import Setup
 from forge.services import contests, landing
-from forge.testing import FakeClock, tick
+from forge.testing import FakeClock
 from tests.services.conftest import (
     ACME,
     RUNNING,
@@ -35,7 +35,6 @@ async def public(setup: Setup, acme: Acme, sum_task: TaskId) -> TaskId:
     """
     manager = await organiser(setup, acme.fake, 7, Scope("acme"), Role.MANAGER)
     await contests.create(setup, manager, ACME, "autumn")
-    await tick(setup, "provisioning")
     await write_contest(acme.fake, RUNNING.format(visibility="public"))
     await write_contest(acme.fake, RUNNING.format(visibility="signed-in"), ContestId("acme/autumn"))
     hidden = await make_task(setup, acme, "hidden")

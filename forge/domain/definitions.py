@@ -493,11 +493,17 @@ def parse_rate(value: object) -> Rate:
 DEFAULT_SUBMISSIONS = 50
 DEFAULT_RATE = Rate(1, timedelta(seconds=30))
 DEFAULT_MAX_SIZE = parse_size("10MB")
-SUBMISSION_CEILING = parse_size("64MB")
-"""The most any submission may be, whatever a task allows. A submit reads
-its files whole and writes them to the forge in one request, so the ceiling
-is what bounds the memory one submit takes; a larger one waits for files to
-be streamed into the submission repo."""
+FILE_CEILING = parse_size("2GB")
+"""The most any one file may be, whatever a task allows. It is the forge's
+own limit on an object in its large-file store (Forgejo:
+`[server] LFS_MAX_FILE_SIZE`), which refuses a larger one itself, so a task
+allowing more would only promise what the forge then takes back."""
+SUBMISSION_CEILING = parse_size("2GB")
+"""The most any submission may be, whatever a task allows. No submission
+passes through the platform's memory any more, so what this bounds is the
+disk one person's submissions take in the store every contest shares; it is
+also what the open-upload allowance is counted against (`domain.uploads`).
+Raising it costs disk and nothing else."""
 
 
 class Limits(Model):
@@ -680,20 +686,32 @@ class TaskDefinition(Model):
         )
 
     def oversized(self) -> list[Problem]:
-        """A problem at every size limit above `SUBMISSION_CEILING`: the
-        task's `limits.max_size` and each contestant input's `max_size`.
+        """A problem at every size limit the platform cannot keep: the task's
+        `limits.max_size` above `SUBMISSION_CEILING`, and each contestant
+        input's `max_size` above `FILE_CEILING`, which is one file's limit at
+        the forge.
         """
-        message = (
-            f"Must be at most {format_size(SUBMISSION_CEILING)}, the largest submission "
-            "the platform takes."
-        )
         problems: list[Problem] = []
         if self.limits.max_size > SUBMISSION_CEILING:
-            problems.append(Problem(path="limits.max_size", message=message))
+            problems.append(
+                Problem(
+                    path="limits.max_size",
+                    message=(
+                        f"Must be at most {format_size(SUBMISSION_CEILING)}, the largest "
+                        "submission the platform takes."
+                    ),
+                )
+            )
         for index, entry in enumerate(self.inputs.contestant):
-            if entry.max_size is not None and entry.max_size > SUBMISSION_CEILING:
+            if entry.max_size is not None and entry.max_size > FILE_CEILING:
                 problems.append(
-                    Problem(path=f"inputs.contestant[{index}].max_size", message=message)
+                    Problem(
+                        path=f"inputs.contestant[{index}].max_size",
+                        message=(
+                            f"Must be at most {format_size(FILE_CEILING)}, the largest file "
+                            "the platform takes."
+                        ),
+                    )
                 )
         return problems
 

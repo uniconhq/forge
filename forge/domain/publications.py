@@ -2,15 +2,20 @@
 publication is a protected version of a task at the commit a valid save
 wrote; it is what grading reads, and the latest one is what grades. Its note
 is a short YAML document the package writes when it publishes and reads back
-when it lists them: whether the publication changed how the task grades, and
-what changed, in words a person reads.
+when it lists them: whether the publication changed how the task grades,
+what changed, in words a person reads, and which workflow each workflow
+name the task used was, by the forge's own id for it, so a later save can
+tell when the same name has come to mean another workflow.
 
     grading_changed: true
     changes:
     - plans/default.json changed
+    workflows:
+      acme/sorting: "412"
 """
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 
 import yaml
@@ -30,17 +35,23 @@ class Publication:
     grading_changed: bool
     changes: tuple[str, ...]
     at: datetime
+    workflows: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
 class Note:
     grading_changed: bool
     changes: tuple[str, ...]
+    workflows: Mapping[str, str] = field(default_factory=dict)
 
 
-def write_note(grading_changed: bool, changes: tuple[str, ...]) -> str:
+def write_note(
+    grading_changed: bool, changes: tuple[str, ...], workflows: Mapping[str, str] | None = None
+) -> str:
     """The note a publication is made with."""
-    document = {"grading_changed": grading_changed, "changes": list(changes)}
+    document: dict[str, object] = {"grading_changed": grading_changed, "changes": list(changes)}
+    if workflows:
+        document["workflows"] = dict(sorted(workflows.items()))
     return yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
 
 
@@ -56,4 +67,10 @@ def read_note(text: str | None) -> Note:
         return Note(False, ())
     changes = document.get("changes")
     listed = tuple(str(change) for change in changes) if isinstance(changes, list) else ()
-    return Note(document.get("grading_changed") is True, listed)
+    workflows = document.get("workflows")
+    pinned = (
+        {str(name): str(key) for name, key in workflows.items()}
+        if isinstance(workflows, dict)
+        else {}
+    )
+    return Note(document.get("grading_changed") is True, listed, pinned)
