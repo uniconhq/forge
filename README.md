@@ -384,7 +384,11 @@ variable named.
 when the value is empty, forged, signed under another key or older than the
 session's hard lifetime, so a forged id is refused without a database read.
 `sign_in_value(attempt)` and `sign_in_attempt(value)` do the same for what
-checks a sign-in's answer, for `UNICON_SIGN_IN_TTL`. `policy()` says whether
+checks a sign-in's answer, for `UNICON_SIGN_IN_TTL`. A cookie signed up to
+two seconds in the future still reads, since another process's clock may
+be a second ahead or the machine's may be stepped back after it signed;
+every refusal is logged as `cookies.refused` with its reason and never the
+value. `policy()` says whether
 the cookies are `Secure` and how long each lives. The host keeps the cookie
 names, `HttpOnly`, `SameSite` and the `Set-Cookie` header itself, because
 those are HTTP.
