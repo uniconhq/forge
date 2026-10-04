@@ -436,12 +436,39 @@ one the browser had before, together.
 Every other service function is a building block, called only from inside
 the package. Its first parameter is a `Context`: the transaction of the
 unit of work, the forge, the settings and the clock. A building block never
-commits `ctx.db`. Session bookkeeping runs in short transactions of its
-own, opened with `ctx.own_transaction()`, which commits when its block ends
-and rolls back when it raises, so a refused request still records what it
-learned whatever the action does next. The setup holds one lock per session
-for refreshing its credential, taken as `ctx.refresh_lock(session_id)`, so
-two requests in one process refresh it once. Work that may start only once
+commits `ctx.db`.
+
+A unit of work holds one pooled connection from its first query until it
+ends, and never asks for a second while it holds it: a request that did
+would wait on the pool while keeping a connection from it, and a few dozen
+at once lock the whole pool up. So the few writes that must land whatever
+the action does go to `ctx.after_end(work)`, which runs each on a unit of
+work of its own once this one has ended, committed or rolled back, and its
+connection is back: noting that a session was used, and ending one whose
+credential the forge refused. Refreshing a session's credential, which asks
+the forge and then compare-and-sets the stored value, is done before the
+route's action opens its unit of work, by `identity.current`, which the
+host's guard calls on every request (`sessions.keep_fresh`): each read and
+write there is a transaction of its own and none is open while the forge is
+asked, and the action then reads a credential good for minutes yet. The
+setup holds one lock per session for that refresh, taken as
+`ctx.refresh_lock(session_id)`, so two requests in one process refresh it
+once. An action that has only read may hand its connection back before a
+slow call to the forge with `await ctx.let_go()`; the next query takes one
+again in a transaction of its own. One that has written or holds a lock
+keeps its connection, so its all or nothing stands. The pages people open
+most do this: `/me`, the organiser's guard, the list of contests, a
+contest's home and a task's page. `tests/services/test_one_connection.py`
+runs the main request paths on a pool of one connection that waits a
+second, so a path that nests a checkout fails there at once.
+
+Each process keeps `UNICON_DATABASE_POOL_SIZE` connections (20),
+`UNICON_DATABASE_POOL_OVERFLOW` more in a rush (10), and a request that
+finds them all taken waits `UNICON_DATABASE_POOL_WAIT` seconds (10) and
+fails. The deployment runs one backend process beside Forgejo and
+Woodpecker on a Postgres that allows 100 connections, three of them kept
+for its superuser; more backend processes keep their pools' sum under what
+the others leave. Work that may start only once
 the unit of work has committed is handed to `ctx.after_commit(work)`: when
 the unit of work commits, `Setup.unit_of_work` runs each piece on a unit of
 work of its own, and one that fails goes to the log as

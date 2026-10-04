@@ -88,9 +88,10 @@ async def reader(ctx: Context, session: Session, contest: ContestId) -> Reader:
     """The signed-in person as the contest's reads see them, their roles read
     once.
     """
+    row = await contestants.row_of(ctx, contest, session.user_id)
+    await ctx.let_go()
     return Reader(
-        row=await contestants.row_of(ctx, contest, session.user_id),
-        organises=await roles.holds_role_in_contest(ctx, session.user_id, contest),
+        row=row, organises=await roles.holds_role_in_contest(ctx, session.user_id, contest)
     )
 
 
@@ -103,6 +104,7 @@ async def seen(
     """
     settings = await published.contest(ctx, contest)
     person = await reader(ctx, session, contest)
+    await ctx.let_go()
     if not sees(settings, person):
         raise NotFound(published.NO_SUCH_CONTEST)
     return settings, person

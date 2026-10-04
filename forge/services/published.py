@@ -84,12 +84,14 @@ async def task(
     """The task as its latest publication froze it, placed in the contest's
     `tasks` list when `settings` are given, or none while it has no
     publication, no name or is not there at all. `name` saves reading it
-    again when the caller has it.
+    again when the caller has it. The connection is let go of before the
+    forge is read.
     """
     if name is None:
         name = (await names.names_of(ctx, [task])).get(task)
         if name is None:
             return None
+    await ctx.let_go()
     try:
         publications = await ctx.forge.workspaces.list_publications(task)
     except NotFound:
@@ -110,11 +112,14 @@ async def tasks(
     ctx: Context, contest: ContestId, settings: ContestDefinition
 ) -> list[PublishedTask]:
     """Every task of the contest with a publication, in the order its `tasks`
-    list gives, and after those the rest by name.
+    list gives, and after those the rest by name. The connection is let go of
+    once the names are read, before each task is read at the forge.
     """
+    named = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
+    await ctx.let_go()
     found = [
         published
-        for each in await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
+        for each in named
         if (published := await task(ctx, TaskId(each.id), settings, each.name)) is not None
     ]
     order = {entry.id: index for index, entry in enumerate(settings.tasks)}
@@ -139,10 +144,14 @@ async def statement(ctx: Context, published: PublishedTask) -> str:
 async def every_contest(ctx: Context) -> list[tuple[ContestId, ContestDefinition]]:
     """Every contest of every org the platform made, with its settings, newest
     start first. An org or a contest the forge fails on is left out and
-    logged, so one broken place does not hide the rest.
+    logged, so one broken place does not hide the rest. The list of orgs is
+    read first and the connection let go of, so the two forge reads an org
+    hold none.
     """
     found: list[tuple[ContestId, ContestDefinition]] = []
-    for org in await org_accounts.org_ids(ctx):
+    orgs = await org_accounts.org_ids(ctx)
+    await ctx.let_go()
+    for org in orgs:
         try:
             contests = await ctx.forge.content.list_contests(PLATFORM, org)
         except PortError as exc:

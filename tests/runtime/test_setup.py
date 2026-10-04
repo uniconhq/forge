@@ -5,9 +5,12 @@ the setup the process holds when handed neither. Work a unit of work leaves
 for after its commit runs then, on a unit of work of its own, and never when
 it rolls back; work it leaves for a rollback runs, the latest first, when it
 raises or its commit fails, never when it commits, and one that fails is
-logged without hiding the error. `start`, `ready` and `stop` build, ask and tear down that one
-setup; a database that does not answer is `NotReady`, with the cause in the
-log and not in the error.
+logged without hiding the error. Work left for its end runs either way, once
+its connection is back in the pool, and an action that has only read can
+hand its connection back partway while one that has written keeps it.
+`start`, `ready` and `stop` build, ask and tear down that one setup; a
+database that does not answer is `NotReady`, with the cause in the log and
+not in the error.
 """
 
 import uuid
@@ -64,7 +67,7 @@ async def test_an_action_handed_a_setup_commits_its_own_transaction(
     await sessions.revoke_all(setup, 7)
 
     with pytest.raises(SessionExpired):
-        await identity.current(setup, session.id)
+        await identity.current(session.id, setup=setup)
 
 
 async def test_an_action_that_raises_saves_nothing(
@@ -75,7 +78,7 @@ async def test_an_action_that_raises_saves_nothing(
     with pytest.raises(Conflict):
         await _revoke_then_refuse(setup, session.id)
 
-    assert (await identity.current(setup, session.id)).id == session.id
+    assert (await identity.current(session.id, setup=setup)).id == session.id
 
 
 async def test_a_commit_that_fails_raises_out_of_the_action_and_saves_nothing(
@@ -86,7 +89,7 @@ async def test_a_commit_that_fails_raises_out_of_the_action_and_saves_nothing(
     with pytest.raises(RuntimeError, match="at commit"):
         await _revoke_then_fail_to_commit(setup, session.id, monkeypatch)
 
-    assert (await identity.current(setup, session.id)).id == session.id
+    assert (await identity.current(session.id, setup=setup)).id == session.id
 
 
 async def test_an_action_handed_a_context_runs_inside_the_callers_unit_of_work(
@@ -97,26 +100,76 @@ async def test_an_action_handed_a_context_runs_inside_the_callers_unit_of_work(
     await sessions.revoke_all(ctx, 7)
     await ctx.db.rollback()
 
-    assert (await identity.current(setup, session.id)).id == session.id
+    assert (await identity.current(session.id, setup=setup)).id == session.id
 
 
-async def test_an_own_transaction_rolls_back_on_a_raise_and_lands_apart_from_the_unit_of_work(
+async def test_work_left_for_the_end_lands_when_the_unit_of_work_rolls_back(
     setup: Setup, ctx: Context, fake: FakeForge
 ) -> None:
     session = await _signed_in(ctx, fake)
 
     with pytest.raises(RuntimeError, match="halfway"):
-        async with ctx.own_transaction() as own:
-            await own.execute(
-                update(SessionRow).where(SessionRow.id == session.id).values(revoked_at=ctx.now)
-            )
+        async with setup.unit_of_work() as own:
+            sessions.revoke_at_end(own, session.id)
             raise RuntimeError("halfway")
-    assert (await identity.current(setup, session.id)).id == session.id
 
-    await sessions.revoke_now(ctx, session.id)
-    await ctx.db.rollback()
     with pytest.raises(SessionExpired):
-        await identity.current(setup, session.id)
+        await identity.current(session.id, setup=setup)
+
+
+async def test_work_left_for_the_end_runs_after_a_commit_once_the_connection_is_back(
+    settings: Settings, fake: FakeForge, clock: FakeClock
+) -> None:
+    one = Setup.build(
+        settings.model_copy(
+            update={
+                "database_pool_size": 1,
+                "database_pool_overflow": 0,
+                "database_pool_wait": timedelta(seconds=1),
+            }
+        ),
+        callback_path=CALLBACK_PATH,
+        forge=fake,
+        clock=clock,
+    )
+    try:
+        async with one.unit_of_work() as ctx:
+            session = await _signed_in(ctx, fake)
+            await sessions.authenticate(ctx, session.id)
+            sessions.revoke_at_end(ctx, session.id)
+        with pytest.raises(SessionExpired):
+            await identity.current(session.id, setup=one)
+    finally:
+        await one.stop()
+
+
+async def test_an_action_that_has_only_read_lets_go_of_its_connection(
+    setup: Setup, ctx: Context, fake: FakeForge
+) -> None:
+    session = await _signed_in(ctx, fake)
+
+    async with setup.unit_of_work() as own:
+        await sessions.authenticate(own, session.id)
+        assert own.db.in_transaction()
+        await own.let_go()
+        assert not own.db.in_transaction()
+
+
+async def test_an_action_that_has_written_keeps_its_connection(
+    setup: Setup, ctx: Context, fake: FakeForge
+) -> None:
+    session = await _signed_in(ctx, fake)
+
+    with pytest.raises(Conflict):
+        async with setup.unit_of_work() as own:
+            await own.db.execute(
+                update(SessionRow).where(SessionRow.id == session.id).values(revoked_at=own.now)
+            )
+            await own.let_go()
+            assert own.db.in_transaction()
+            raise Conflict("refused after writing")
+
+    assert (await identity.current(session.id, setup=setup)).id == session.id
 
 
 async def test_a_sign_in_sweeps_the_sessions_that_ended_long_ago(
@@ -131,7 +184,7 @@ async def test_a_sign_in_sweeps_the_sessions_that_ended_long_ago(
         await _signed_in(later, fake)
 
     with pytest.raises(Unauthenticated):
-        await identity.current(setup, session.id)
+        await identity.current(session.id, setup=setup)
 
 
 async def test_work_left_for_after_the_commit_runs_on_a_unit_of_work_of_its_own(
@@ -177,7 +230,7 @@ async def test_work_after_the_commit_that_fails_is_logged_and_the_commit_stands(
         session = await _signed_in(ctx, fake)
         ctx.after_commit(fail)
 
-    assert (await identity.current(setup, session.id)).id == session.id
+    assert (await identity.current(session.id, setup=setup)).id == session.id
     assert logged(caplog, "setup.after_commit_failed")
 
 
