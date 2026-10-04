@@ -126,6 +126,12 @@ class Http:
             return response
         raise refusal(response)
 
+    async def authorization(self, as_: Identity) -> str:
+        """The `Authorization` value a call as `as_` carries, for a request
+        someone else makes on its behalf.
+        """
+        return await self._auth.header(as_)
+
     async def read_capped(
         self, as_: Identity, path: str, *, params: Params | None, max_size: int
     ) -> bytes:
