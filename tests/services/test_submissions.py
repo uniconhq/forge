@@ -545,12 +545,13 @@ async def test_a_contestant_reads_their_own_submissions_as_each_stage_shows_them
     assert files.inputs == {
         "submission": {"files": ["files/submission/main.py"], "language": "python"}
     }
-    assert (
-        await submissions.file(setup, entered.session, entered.task, 2, "files/submission/main.py")
-        == b"print(2)\n"
+    door = await submissions.download(
+        setup, entered.session, entered.task, 2, "files/submission/main.py"
     )
+    assert door.path.endswith("/media/files/submission/main.py?ref=submission%2F2")
+    assert await acme.fake.workspaces.fetch(door) == b"print(2)\n"
     with pytest.raises(NotFound):
-        await submissions.file(setup, entered.session, entered.task, 2, "submission.json")
+        await submissions.download(setup, entered.session, entered.task, 2, "submission.json")
     with pytest.raises(NotFound):
         await submissions.one(setup, entered.session, entered.task, 3)
 
@@ -561,6 +562,8 @@ async def test_a_contestant_reads_their_own_submissions_as_each_stage_shows_them
         await submissions.one(setup, cyd, entered.task, 1)
     with pytest.raises(NotFound):
         await submissions.files(setup, cyd, entered.task, 1)
+    with pytest.raises(NotFound):
+        await submissions.download(setup, cyd, entered.task, 1, "files/submission/main.py")
 
 
 async def test_a_system_error_shows_its_outcome_and_never_its_summary(

@@ -4,9 +4,10 @@ written and keeps its note beside it, as a tag with a message does.
 
 from collections.abc import Sequence
 from datetime import datetime
+from urllib.parse import quote
 
 from forge.domain.content import Files
-from forge.domain.errors import Conflict, NotFound, Rejected, Unavailable
+from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import (
     ContestId,
@@ -21,6 +22,7 @@ from forge.domain.publications import Publication, read_note
 from forge.domain.roles import Scope
 from forge.domain.submissions import Submitted, write_note
 from forge.domain.submissions import read_note as read_submission_note
+from forge.domain.uploads import Door
 from forge.forges.fake.state import Repo, State
 from forge.forges.fake.uploads import FakeUploads, repo_of
 from forge.forges.ids import (
@@ -45,6 +47,7 @@ class FakeWorkspaces:
     def __init__(self, state: State, uploads: FakeUploads) -> None:
         self._state = state
         self._uploads = uploads
+        self._downloads: dict[str, tuple[Identity, SubmissionId, str]] = {}
 
     async def open_workspace(
         self, contest: ContestId, owner: WorkspaceOwner, member_ids: Sequence[int]
@@ -169,6 +172,25 @@ class FakeWorkspaces:
         if len(content) > max_size:
             raise Rejected(f"{path} is larger than {max_size} bytes")
         return content
+
+    async def download(self, as_: Identity, submission: SubmissionId, path: str) -> Door:
+        self._state.record("download", as_, submission=submission, path=path)
+        ref, task_name, number = parse_submission(submission)
+        address = (
+            f"/api/v1/repos/{ref.org}/{ref.submission_repo(task_name)}/media/{quote(path)}"
+            f"?ref={quote(f'{SUBMISSION_PREFIX}{number}', safe='')}"
+        )
+        self._downloads[address] = (as_, submission, path)
+        return Door(path=address, authorization=f"fake {address}")
+
+    async def fetch(self, door: Door) -> bytes:
+        """What the proxy gets for a download door: the file's bytes, read
+        as the person the door was opened for, as Forgejo checks it.
+        """
+        as_, submission, path = self._downloads[door.path]
+        if door.authorization != f"fake {door.path}":
+            raise Forbidden("not the credential this door was opened with")
+        return await self.read_submission_file(as_, submission, path, max_size=2**63)
 
     async def publish(self, task: TaskId, at: VersionId, note: str) -> PublicationId:
         self._state.record("publish", PLATFORM, task=task, at=at)

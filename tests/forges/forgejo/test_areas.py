@@ -417,6 +417,11 @@ async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_thr
     content = await forgejo.workspaces.read_submission_file(
         AsUser(8, _credential()), listed[1].id, "files/submission/main.py", max_size=1
     )
+    door = await forgejo.workspaces.download(
+        AsUser(8, _credential()), listed[1].id, "files/submission/my main.py"
+    )
+    assert door.path == (f"{repo}/media/files/submission/my%20main.py?ref=submission%2F2")
+    assert door.authorization == "Bearer access"
     with pytest.raises(Rejected, match="larger than 0 bytes"):
         await forgejo.workspaces.read_submission_file(
             AsUser(8, _credential()), listed[1].id, "files/submission/main.py", max_size=0

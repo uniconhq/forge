@@ -24,6 +24,7 @@ from forge.domain.ids import (
 from forge.domain.names import WorkspaceOwner
 from forge.domain.publications import Publication
 from forge.domain.submissions import Submitted
+from forge.domain.uploads import Door
 
 
 class WorkspacePort(Protocol):
@@ -82,6 +83,14 @@ class WorkspacePort(Protocol):
         """One file of a submission, at the version it was made with, read as
         `as_`. `NotFound` when the submission has no such file; `Rejected`
         when it is larger than `max_size` bytes, without reading it whole.
+        """
+        ...
+
+    async def download(self, as_: Identity, submission: SubmissionId, path: str) -> Door:
+        """Where one file of a submission is read whole, at the version it
+        was made with, and what to present there as `as_`, for the proxy to
+        fetch it from and stream to the person. Nothing is called and nothing
+        is read: the forge checks `as_` may read it when the proxy asks.
         """
         ...
 
