@@ -690,6 +690,7 @@ async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_thr
         ),
     )
     recorder.on("GET", f"{repo}/media/files/submission/main.py", httpx.Response(200, content=b"x"))
+    recorder.on("GET", f"{repo}/raw/files/submission/main.py", httpx.Response(200, content=b"p"))
     workspace, task = WorkspaceId("acme/spring/@u8"), TaskId("acme/spring/sum")
 
     listed = await forgejo.workspaces.list_submissions(workspace, task)
@@ -713,6 +714,12 @@ async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_thr
     assert content == b"x"
     read = next(request for request in recorder.seen if "/media/" in request.url.path)
     assert read.url.params["ref"] == "submission/2"
+    blob = await forgejo.workspaces.read_submission_blob(
+        AsUser(8, _credential()), listed[1].id, "files/submission/main.py", max_size=1
+    )
+    assert blob == b"p"
+    raw = next(request for request in recorder.seen if "/raw/" in request.url.path)
+    assert raw.url.params["ref"] == "submission/2"
     assert read.headers["Authorization"] == "Bearer access"
 
 

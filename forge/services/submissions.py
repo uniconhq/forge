@@ -35,7 +35,16 @@ forge by the key its protected version's note carries, and only its rows are
 inserted. A submit whose commit landed but whose version was never named
 leaves a commit that is no submission, and the next try makes one. A
 submission named at the forge whose rows never landed is one the contestant
-saw fail, and submitting again finishes it.
+saw fail, and submitting again finishes it: a retry with its key, or any
+later submit of the task, inserts its rows. A submission found this way
+also has the uploads it used marked consumed, so they stop counting against
+what the person may hold and no later submit can name them: each file of it
+is a large-file pointer naming a SHA-256, and for each one, the oldest of the
+person's checked uploads for the task with that digest is the one taken.
+What it used is read from the submission itself and never from the request,
+since a retry may carry the same key with other uploads. A later submit that
+is refused rolls its finishing back with the rest, and the next one finishes
+it again.
 
 A contestant reads their own submissions back, newest first, each with its
 grading at every stage as that stage's `show` allows: status only, status
@@ -86,7 +95,14 @@ from forge.domain.identity import AsUser
 from forge.domain.ids import SubmissionId, TaskId, WorkspaceId
 from forge.domain.sessions import Session
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
-from forge.domain.uploads import Door, UploadStatus, pointer_text
+from forge.domain.uploads import (
+    POINTER_MAX,
+    Door,
+    UploadPurpose,
+    UploadStatus,
+    pointer_text,
+    read_pointer,
+)
 from forge.log import get_logger
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
@@ -195,6 +211,7 @@ async def submit(
             return again
     _, workspace = await submitters.refuse(ctx, entrant)
     made = await _listed(ctx, workspace, task) or ()
+    await _finish_unrecorded(ctx, entrant, workspace, made)
     limits = entrant.published.definition.limits
     if len(made) >= limits.submissions:
         raise SubmissionLimit(
@@ -284,13 +301,7 @@ async def download(ctx: Context, session: Session, task: TaskId, number: int, pa
         document = _document(content)
     except ValueError as exc:
         raise NotFound(NO_SUCH_SUBMISSION) from exc
-    named = {
-        name
-        for given in document.values()
-        if isinstance(given, dict)
-        for name in given.get("files") or ()
-    }
-    if path not in named:
+    if path not in _paths(document):
         raise NotFound("The submission has no such file.")
     door = await ctx.forge.workspaces.download(user, submission, path)
     log.info("submissions.download_opened", submission=submission, user_id=user.user_id)
@@ -410,10 +421,97 @@ async def _again(
     existing = await _read(ctx, entrant, workspace, found.number)
     if existing:
         return existing[0]
-    gradings = _insert(ctx, entrant, workspace, found, key, at=found.at)
+    gradings = await _recover(ctx, entrant, workspace, found)
+    return _submission(ctx, entrant, found.number, found.at, gradings)
+
+
+async def _finish_unrecorded(
+    ctx: Context, entrant: Entrant, workspace: WorkspaceId, made: Sequence[Submitted]
+) -> None:
+    """Give every submission at the forge that has no grading row its rows,
+    and mark consumed the uploads it used, before the limits are counted and
+    the uploads named are checked.
+    """
+    if not made:
+        return
+    graded = set(
+        (
+            await ctx.db.execute(
+                select(Grading.submission_id)
+                .where(Grading.workspace_id == workspace, Grading.task_id == entrant.task)
+                .distinct()
+            )
+        ).scalars()
+    )
+    for found in made:
+        if found.id not in graded:
+            await _recover(ctx, entrant, workspace, found)
+
+
+async def _recover(
+    ctx: Context, entrant: Entrant, workspace: WorkspaceId, found: Submitted
+) -> builtins.list[Grading]:
+    """The rows of a submission the forge holds and the database does not,
+    inserted with the key its note carries, and the uploads it used marked
+    consumed.
+    """
+    gradings = _insert(ctx, entrant, workspace, found, found.key, at=found.at)
+    await _consume_used(ctx, entrant, found)
     await ctx.db.flush()
     log.info("submissions.recovered", task=entrant.task, number=found.number)
-    return _submission(ctx, entrant, found.number, found.at, gradings)
+    return gradings
+
+
+async def _consume_used(ctx: Context, entrant: Entrant, found: Submitted) -> None:
+    """Mark consumed, by `found`, the person's uploads its files point at:
+    for each pointer, the oldest checked upload of theirs for the task with
+    its digest. A submission whose `submission.json` does not read marks
+    nothing, and its uploads lapse as any unused one does.
+    """
+    user = AsUser(entrant.session.user_id, await sessions.credential_for(ctx, entrant.session.id))
+    try:
+        document = _document(await _file(ctx, user, found.id, SUBMISSION_FILE))
+    except NotFound, ValueError:
+        log.warning("submissions.recovered_unreadable", submission=found.id)
+        return
+    digests: builtins.list[str] = []
+    for path in sorted(_paths(document)):
+        try:
+            blob = await ctx.forge.workspaces.read_submission_blob(
+                user, found.id, path, max_size=POINTER_MAX
+            )
+        except NotFound, Forbidden, Rejected:
+            continue
+        except PortError as exc:
+            raise _forge_failure(exc, "submissions.file_failed", submission=found.id) from None
+        named = read_pointer(blob)
+        if named is not None:
+            digests.append(named[0])
+    if not digests:
+        return
+    rows = (
+        await ctx.db.execute(
+            select(UploadRow)
+            .where(
+                UploadRow.owner_user_id == entrant.session.user_id,
+                UploadRow.task_id == entrant.task,
+                UploadRow.purpose == UploadPurpose.SUBMISSION,
+                UploadRow.status == UploadStatus.VERIFIED,
+                UploadRow.digest.in_(set(digests)),
+            )
+            .order_by(UploadRow.created_at, UploadRow.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars()
+    waiting: dict[str, builtins.list[UploadRow]] = {}
+    for row in rows:
+        waiting.setdefault(row.digest, []).append(row)
+    for digest in digests:
+        if waiting.get(digest):
+            used = waiting[digest].pop(0)
+            used.status = UploadStatus.CONSUMED
+            used.consumed_by = found.id
 
 
 async def _listed(
@@ -565,7 +663,7 @@ def _insert(
     entrant: Entrant,
     workspace: WorkspaceId,
     recorded: Submitted,
-    key: str,
+    key: str | None,
     *,
     at: datetime,
 ) -> builtins.list[Grading]:
@@ -716,6 +814,17 @@ async def _file(ctx: Context, user: AsUser, submission: SubmissionId, path: str)
         raise NotFound("The submission has no such file.") from exc
     except PortError as exc:
         raise _forge_failure(exc, "submissions.file_failed", submission=submission) from None
+
+
+def _paths(document: Mapping[str, Any]) -> set[str]:
+    """The path of every file a submission's inputs name."""
+    return {
+        name
+        for given in document.values()
+        if isinstance(given, dict)
+        for name in given.get("files") or ()
+        if isinstance(name, str)
+    }
 
 
 def _document(content: bytes) -> dict[str, Any]:

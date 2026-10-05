@@ -245,6 +245,101 @@ async def test_a_retry_after_the_answer_was_lost_finds_the_submission_and_adds_i
     )
 
 
+async def _statuses(setup: Setup) -> dict[str, tuple[str, str | None]]:
+    async with setup.unit_of_work() as ctx:
+        rows = (await ctx.db.execute(select(UploadRow))).scalars()
+        return {str(row.id): (row.status, row.consumed_by) for row in rows}
+
+
+async def _lost(setup: Setup, acme: Acme, entered: Entered, *named: Any) -> None:
+    """A submit of `named` whose submission lands at the forge and whose rows
+    do not."""
+    acme.fake.lose_submission_answer = True
+    with pytest.raises(Unavailable):
+        await submissions.submit(
+            setup, entered.session, entered.task, code(*named), idempotency_key=KEY
+        )
+    assert await _gradings(setup) == []
+
+
+async def test_a_recovered_submission_consumes_the_uploads_its_own_files_point_at(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    used = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
+    await _lost(setup, acme, entered, used.id)
+    assert (await _statuses(setup))[str(used.id)] == ("verified", None)
+    # The retry carries the same key and another file: what the submission
+    # used is read from the submission, never from the retry.
+    other = await upload(setup, acme.fake, entered.session, entered.task, b"x\n", filename="b.py")
+
+    again = await submissions.submit(
+        setup, entered.session, entered.task, code(other.id), idempotency_key=KEY
+    )
+
+    assert again.number == 1
+    assert await _statuses(setup) == {
+        str(used.id): ("consumed", "acme/spring/@u8/sum#1"),
+        str(other.id): ("verified", None),
+    }
+
+
+async def test_of_two_uploads_of_one_file_a_recovered_submission_consumes_the_oldest(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    first = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
+    await _lost(setup, acme, entered, first.id)
+    clock.advance(timedelta(seconds=1))
+    second = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
+
+    await submissions.submit(setup, entered.session, entered.task, code(), idempotency_key=KEY)
+
+    assert await _statuses(setup) == {
+        str(first.id): ("consumed", "acme/spring/@u8/sum#1"),
+        str(second.id): ("verified", None),
+    }
+    clock.advance(timedelta(seconds=31))
+    later = await submissions.submit(
+        setup, entered.session, entered.task, code(second.id), idempotency_key="key-0002-bbbb"
+    )
+    assert later.number == 2
+
+
+async def test_a_later_submit_cannot_name_an_upload_an_unrecorded_submission_used(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    used = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
+    await _lost(setup, acme, entered, used.id)
+    clock.advance(timedelta(seconds=31))
+
+    # A new key finds no submission of its own, but the one at the forge
+    # without rows is finished first, so its upload is taken.
+    with pytest.raises(UploadNotReady):
+        await submissions.submit(
+            setup, entered.session, entered.task, code(used.id), idempotency_key="key-0002-bbbb"
+        )
+    assert len(acme.fake.calls_to("record_submission")) == 1
+
+    # The refusal rolled the finishing back with it; the next submit that
+    # passes finishes it for good, beside its own.
+    other = await upload(setup, acme.fake, entered.session, entered.task, b"x\n", filename="b.py")
+    later = await submissions.submit(
+        setup, entered.session, entered.task, code(other.id), idempotency_key="key-0003-cccc"
+    )
+
+    assert later.number == 2
+    rows = await _gradings(setup)
+    assert [(row.submission_number, row.idempotency_key) for row in rows] == [
+        (1, KEY),
+        (2, "key-0003-cccc"),
+    ]
+    assert await _statuses(setup) == {
+        str(used.id): ("consumed", "acme/spring/@u8/sum#1"),
+        str(other.id): ("consumed", "acme/spring/@u8/sum#2"),
+    }
+    mine = await submissions.mine(setup, entered.session, entered.task)
+    assert [made.number for made in mine] == [2, 1]
+
+
 async def test_a_retry_whose_rows_carry_no_key_finds_them_by_the_submission(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:

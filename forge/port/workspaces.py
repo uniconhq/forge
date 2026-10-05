@@ -96,6 +96,16 @@ class WorkspacePort(Protocol):
         """
         ...
 
+    async def read_submission_blob(
+        self, as_: Identity, submission: SubmissionId, path: str, *, max_size: int
+    ) -> bytes:
+        """One file of a submission as its commit holds it, read as `as_`:
+        the large-file pointer, for a file kept in the large-file store, and
+        never the bytes it names. `NotFound` and `Rejected` as
+        `read_submission_file` gives them.
+        """
+        ...
+
     async def download(self, as_: Identity, submission: SubmissionId, path: str) -> Door:
         """Where one file of a submission is read whole, at the version it
         was made with, and what to present there as `as_`, for the proxy to
