@@ -152,11 +152,16 @@ class Settings(BaseSettings):
     where grading machines reach the platform, for the envelope, the callback
     and the log they write, the public URL unless given. `org_creation_open`
     says whether any signed-in user may create an org, or only the operator.
-    `s3`, the object store's settings, is required with `forgejo`; the fake
-    keeps its store in memory. `harness_image` is the harness every plan
-    names, by digest, and `clone_image` the image the CI checks a task and a
-    submission out with, by digest, each the one of the runner release the
-    package pins unless given.
+    `places_ahead` says whether a contestant's place to submit each task is
+    made once they are approved and once the task is first published, so the
+    first uploads at a contest's start find them made; off, each is made at
+    the contestant's first upload to the task, and nobody who never submits
+    costs the forge a repository. `s3`, the object store's settings, is
+    required with `forgejo`; the fake keeps its store in memory.
+    `harness_image` is the harness every plan names, by digest, and
+    `clone_image` the image the CI checks a task and a submission out with,
+    by digest, each the one of the runner release the package pins unless
+    given.
 
     `database_pool_size` connections to the database stay open in each
     process, `database_pool_overflow` more are opened in a rush, and a
@@ -188,6 +193,7 @@ class Settings(BaseSettings):
     session_signing_key: SecretStr
     cookie_secure: bool | None = None
     org_creation_open: bool = True
+    places_ahead: bool = True
 
     forge: ForgeKind = "forgejo"
     forge_public_url: HttpUrl | None = None
@@ -330,7 +336,9 @@ class Settings(BaseSettings):
     @classmethod
     def for_tests(cls, **overrides: Any) -> Self:
         """A complete configuration against the in-memory forge that reads
-        nothing from the environment.
+        nothing from the environment. Places are not made ahead, since that
+        work runs beside the test and would race what it checks; a test of it
+        turns it on.
         """
         values: dict[str, Any] = {**TEST_VALUES}
         values.update(overrides)
@@ -370,6 +378,7 @@ TEST_VALUES: dict[str, Any] = {
     "session_signing_key": TEST_KEY,
     "forge": "fake",
     "forge_public_url": "http://localhost:3300",
+    "places_ahead": False,
 }
 
 

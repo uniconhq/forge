@@ -35,6 +35,9 @@ steps in order, and refuses before anything is written.
    save landed between the check and the write, the change holds files this
    save never checked, so it is kept as a draft instead, saying so, and the
    next save checks and publishes the task as it then stands.
+6. A task's first publication starts making its place to submit for every
+   approved contestant, once the save has committed and without the save
+   waiting for it (`places`).
 """
 
 import builtins
@@ -107,7 +110,7 @@ from forge.log import get_logger
 from forge.port.uploads import TaskPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import names, uploads
+from forge.services import names, places, uploads
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -219,6 +222,8 @@ async def save(
         task, version, write_note(bool(changed), changed, checked.workflows)
     )
     number = await _number_of(ctx, task, publication)
+    if latest is None:
+        places.ahead_at(ctx, task)
     log.info(
         "publications.published",
         task=task,

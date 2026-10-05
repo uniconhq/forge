@@ -233,7 +233,8 @@ members read access to it, which at Forgejo lets them post and comment on
 issues there and close their own but not edit anyone else's comments or
 labels, `workspaces.open_submission_place` makes the
 place to submit one task, reserves its submissions for the platform and only
-then gives them write access there, and `workspaces.close_workspace` takes
+then gives them write access there, so a place whose members can all write it
+already is finished and asks nothing more, and `workspaces.close_workspace` takes
 the access away and keeps everything in it. `workspaces.workspace_of` names
 a contestant's workspace from the contest and the person without a call,
 whether any part of it is made or not, so the package stores no workspace
@@ -504,7 +505,15 @@ raised or its commit failed, each piece runs once the transaction is rolled
 back, the latest first, before the error goes on; one that fails goes to the
 log as `setup.after_rollback_failed` and the error is raised as it was.
 Nothing runs when it commits, or when the request is cancelled. A create
-leaves the removal of what it made there (below).
+leaves the removal of what it made there (below). Work the person who asked
+does not wait on is handed to `ctx.in_background(work)`: it starts on a unit
+of work of its own once the unit of work commits, and the request answers
+without waiting for it. One that fails goes to the log as
+`setup.background_failed`; nothing starts when it rolls back; `stop` cuts
+short whatever is running, and `Setup.settle()` waits for it, for a test.
+Only work that something else finishes when it never runs goes there: the
+places made ahead (below), which a contestant's first upload makes itself
+when it finds one missing.
 
 Making something at the forge is several calls, and a create makes every
 one of them inside the request, on its unit of work, before it answers. A
@@ -755,12 +764,25 @@ year). A decision from any other status is `wrong_status`, naming the
 status. `list` gives every registration of the contest to anyone observing
 it, oldest first; `mine` gives a person their own.
 
-Approval makes nothing at the forge. A contestant's workspace is made a part
-at a time when it is first needed: their place to submit a task is made at
-their first submit to it (below). Its id comes from the contest and the
-person's user id (`workspaces.workspace_of`), so the contestant's row holds
-no workspace. Removing a contestant takes their access to whichever parts
-were made away and keeps what is in them.
+A contestant's workspace is made a part at a time. With
+`UNICON_PLACES_AHEAD` on, the default, approving someone starts making their
+place to submit every task the contest has published, and a task's first
+publication starts making it for everyone approved, each once the request
+has committed and without the request waiting (`services/places.py`). The
+work takes two turns in a process, apart from the four the first uploads
+take, so a crowd approved at once never holds an upload back; the tasks it
+makes places at are read once a minute per contest, and a contest that is
+archived or over gets none. A place is made by the same steps as at a first
+upload, holding nothing while the forge works, then the contestant's row is
+held and read again and someone removed meanwhile has the access taken back.
+A forge that fails stops the rest of that piece of work, in the log as
+`places.ahead_stopped`. Whatever is not made ahead, by a restart, a forge
+that failed or the setting off, is made at the contestant's first upload to
+the task (below), which finds a place made ahead finished in one call. Off,
+nobody who never submits costs the forge a repository. The workspace's id
+comes from the contest and the person's user id (`workspaces.workspace_of`),
+so the contestant's row holds no workspace. Removing a contestant takes
+their access to whichever parts were made away and keeps what is in them.
 
 What a signed-in person reads of a contest is `contest_home`: `contests`,
 every contest they see with their own status; `home`, a contest's dates,
