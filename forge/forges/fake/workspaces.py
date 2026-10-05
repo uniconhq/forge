@@ -17,7 +17,7 @@ from forge.domain.ids import (
     VersionId,
     WorkspaceId,
 )
-from forge.domain.names import WorkspaceOwner
+from forge.domain.names import TeamOwner, WorkspaceOwner
 from forge.domain.publications import Publication, read_note
 from forge.domain.roles import Scope
 from forge.domain.submissions import Submitted, write_note
@@ -102,6 +102,12 @@ class FakeWorkspaces:
         """
         scope = Scope(ref.org, ref.contest)
         repo = self._state.repos.get((ref.org, name))
+        if repo is not None and isinstance(ref.owner, TeamOwner):
+            repo.writers.intersection_update(member_ids)
+            repo.readers.intersection_update(member_ids)
+        holding = set() if repo is None else repo.readers if read_only else repo.writers
+        if repo is not None and member_ids and set(member_ids) <= holding:
+            return
         if repo is None:
             repo = self._state.create_repo(PLATFORM, ref.org, name, {}, scope=scope)
         elif (repo.writers | repo.readers) - set(member_ids):
@@ -120,6 +126,7 @@ class FakeWorkspaces:
         self._state.record(
             "close_workspace", PLATFORM, workspace=workspace, member_ids=list(member_ids)
         )
+        self._state.check_up()
         for repo in self._workspace_repos(parse_workspace(workspace)):
             repo.writers.difference_update(member_ids)
             repo.readers.difference_update(member_ids)
@@ -131,6 +138,8 @@ class FakeWorkspaces:
         self._state.check_up()
         ref = parse_workspace(workspace)
         for repo in self._workspace_repos(ref):
+            repo.writers.intersection_update(member_ids)
+            repo.readers.intersection_update(member_ids)
             if repo.name == ref.desk_repo:
                 self._open(ref, repo.name, member_ids, read_only=True)
             else:

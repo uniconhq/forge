@@ -1,17 +1,21 @@
 """Clarifications: a contestant's question and the organisers' answer,
 private to the asker and the organisers, held at the forge as a thread
-labelled `clarification` on the desk of the contestant's own workspace,
-which is what keeps everyone else out of it. Nothing about one is stored in
+labelled `clarification` on the desk of the workspace the contestant works
+in, their own or their team's, which is what keeps everyone else out of it;
+a team's members all read and follow up its questions, and a question is
+named by its desk: the asker's user id, or `team.<id>` for a team's. Nothing about one is stored in
 the database: the thread is the record.
 
 - `ask`: an approved contestant asks, as themselves; their desk is made by
-  their first question, as the platform, with them a reader on it, which at
+  their first question, as the platform, with them, or every member of their
+  team, a reader on it, which at
   the forge lets them post and comment and close their own question but not
   touch an organiser's reply or a label. The platform labels the question.
   A question may name a task released to them, kept as a marker in its body
   that is checked against the contest whenever it is read, since the asker
   can edit their own question at the forge.
-- `mine`: the contestant's own questions, with every message under them.
+- `mine`: the questions on the contestant's desk, their team's included,
+  with every message under them.
 - `follow_up`: the contestant comments again, as themselves; on an answered
   question the platform then takes the mark off and opens it, so the
   follow-up lands back with the organisers instead of starting a thread with
@@ -36,7 +40,6 @@ is made as the organiser, so the record says who answered.
 
 import re
 import uuid
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -44,7 +47,13 @@ from sqlalchemy import select
 
 from forge.db.tables import Contestant
 from forge.domain import release as rules
-from forge.domain.errors import Conflict, Forbidden, NotApproved, NotFound, SessionExpired
+from forge.domain.errors import (
+    Forbidden,
+    NotApproved,
+    NotFound,
+    SessionExpired,
+    TeamChanged,
+)
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId, TaskId, ThreadId, WorkspaceId
 from forge.domain.names import ScopeNames, TeamOwner, UserOwner, WorkspaceOwner
@@ -127,14 +136,9 @@ async def ask(
     await ctx.let_go()
     workspace = await ctx.forge.workspaces.open_workspace(contest, standing.owner, standing.members)
     if isinstance(standing.owner, TeamOwner):
-        owner = standing.owner
-
-        async def again(members: Sequence[int]) -> None:
-            await ctx.forge.workspaces.open_workspace(contest, owner, members)
-
-        current = await teams.settle(ctx, owner.team_id, workspace, standing.members, again)
+        current = await teams.settle(ctx, standing.owner.team_id, workspace, standing.members)
         if session.user_id not in current:
-            raise Conflict("Your team changed while your question was asked; ask again.")
+            raise TeamChanged("Your team changed while your question was asked; ask again.")
     thread = await ctx.forge.threads.post_thread(
         as_, workspace, ThreadKind.CLARIFICATION, title=title, body=body
     )
@@ -314,7 +318,7 @@ async def answer_publicly(
         scope,
         title=title,
         body=body,
-        answers=AnsweredQuestion(asker, number),
+        answers=AnsweredQuestion(_asker(_owner(asker)), number),
     )
 
 
@@ -344,7 +348,7 @@ def _owner(asker: str) -> WorkspaceOwner:
     """The desk a question's key names: a person's by their user id, or a
     team's by `team.<id>`. `NotFound` for anything else.
     """
-    if asker.isdigit():
+    if asker.isascii() and asker.isdigit():
         return UserOwner(int(asker))
     if asker.startswith("team."):
         try:

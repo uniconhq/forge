@@ -3,7 +3,7 @@ it may hear.
 
 `stream` is what the host serves as one Server-Sent Events connection per
 open tab. It checks the session, reads who the session speaks for
-(`audience`: the person, every role they hold and the contests where they
+(`audience`: the person, every role they hold, the teams they are in and the contests where they
 are an approved contestant), subscribes to this process's broker and hands
 on each nudge that audience hears, or `None` every `HEARTBEAT` so the host
 can write a keepalive and find out whether the browser is still there. Its

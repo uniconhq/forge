@@ -13,12 +13,10 @@ import pytest
 
 from forge.db.tables import Team as TeamRow
 from forge.domain.errors import (
-    Conflict,
     Forbidden,
     InTeam,
     NotApproved,
     NotFound,
-    SubmissionLimit,
     SubmittedAlone,
     TeamFull,
     TeamHasSubmissions,
@@ -94,8 +92,9 @@ async def test_a_team_submits_as_one_and_every_member_sees_every_submission(
     team = await teams.create(setup, bob, SPRING, "Adders")
     assert (team.name, team.leader, [m.user_id for m in team.members]) == ("Adders", 8, [8])
 
-    asked = await teams.request(setup, carol, SPRING, team.id)
-    assert [m.user_id for m in asked.pending] == [20]
+    await teams.request(setup, carol, SPRING, team.id)
+    mine = await teams.mine(setup, bob, SPRING)
+    assert mine.team is not None and [m.user_id for m in mine.team.pending] == [20]
     joined = await teams.approve(setup, bob, SPRING, team.id, 20)
     assert sorted(m.user_id for m in joined.members) == [8, 20]
 
@@ -107,8 +106,8 @@ async def test_a_team_submits_as_one_and_every_member_sees_every_submission(
     owner = TeamOwner(team.id)
     assert _repo(acme.fake, owner, entered.task).writers == {8, 20}
     for person in (bob, carol):
-        mine = await submissions.mine(setup, person, entered.task)
-        assert [made.number for made in mine] == [2, 1]
+        seen = await submissions.mine(setup, person, entered.task)
+        assert [made.number for made in seen] == [2, 1]
     assert _repo(acme.fake, UserOwner(8), entered.task) is None
 
 
@@ -127,7 +126,6 @@ async def test_the_task_limits_count_once_for_the_whole_team(
 
     with pytest.raises(RateLimited):
         await _submit(setup, acme, carol, entered.task, "key-0002-bbbb")
-    assert SubmissionLimit is not None
 
 
 async def test_a_member_joining_later_reaches_what_the_team_made_at_once(
@@ -234,9 +232,7 @@ async def test_who_may_join_and_who_may_run_a_team(
     assert (await teams.mine(setup, carol, SPRING)).requested == ()
 
 
-async def test_a_contest_without_teams_has_none(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
+async def test_a_contest_without_teams_has_none(setup: Setup, acme: Acme, entered: Entered) -> None:
     with pytest.raises(TeamsOff):
         await teams.create(setup, entered.session, SPRING, "Adders")
 
@@ -244,7 +240,7 @@ async def test_a_contest_without_teams_has_none(
 async def test_organisers_make_delete_move_and_lead(
     setup: Setup, acme: Acme, entered: Entered, crowd: dict[str, Session]
 ) -> None:
-    bob, carol = crowd["bob"], crowd["carol"]
+    carol = crowd["carol"]
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
     first = await teams.organise_create(setup, manager, SPRING, "First", leader="bob")
     second = await teams.organise_create(setup, manager, SPRING, "Second")
@@ -269,7 +265,6 @@ async def test_organisers_make_delete_move_and_lead(
     await teams.organise_remove(setup, manager, SPRING, second.id, 20)
     observer = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.OBSERVER)
     assert [team.name for team in await teams.every(setup, observer, SPRING)] == ["First"]
-    assert bob is not None
 
 
 async def test_a_contestant_removed_from_the_contest_leaves_their_team(
@@ -302,19 +297,14 @@ async def test_a_place_made_with_old_members_is_put_in_step_with_the_team(
         team.id,
     )
     workspace = acme.fake.workspaces.workspace_of(SPRING, TeamOwner(team.id))
-    opened: list[list[int]] = []
-
-    async def again(members: Any) -> None:
-        opened.append(list(members))
-        await acme.fake.workspaces.open_submission_place(workspace, entered.task, members)
 
     # Made as if carol had not joined yet and dan were still in.
-    await acme.fake.workspaces.open_submission_place(workspace, entered.task, [8, 21])
+    await acme.fake.workspaces.open_submission_place(workspace, entered.task, [8])
+    _repo(acme.fake, TeamOwner(team.id), entered.task).writers.add(21)
     async with setup.unit_of_work() as ctx:
-        current = await teams.settle(ctx, team.id, workspace, (8, 21), again)
+        current = await teams.settle(ctx, team.id, workspace, (8, 21))
 
     assert sorted(current) == [8, 20]
-    assert opened == [[8, 20]]
     assert _repo(acme.fake, TeamOwner(team.id), entered.task).writers == {8, 20}
 
 
@@ -325,4 +315,41 @@ async def test_a_members_stream_hears_of_the_teams_gradings(
     heard = await live.audience(setup, crowd["bob"])
     assert heard.teams == frozenset({str(team.id)})
     assert ContestId("acme/spring") in heard.contests
-    assert Conflict is not None
+
+
+async def test_someone_out_of_a_deleted_team_uploads_on_their_own(
+    setup: Setup, acme: Acme, entered: Entered, crowd: dict[str, Session]
+) -> None:
+    bob = crowd["bob"]
+    await teams.create(setup, bob, SPRING, "Adders")
+    await upload(setup, acme.fake, bob, entered.task, b"print(1)\n")
+    await teams.leave(setup, bob, SPRING)
+
+    await upload(setup, acme.fake, bob, entered.task, b"print(2)\n", filename="b.py")
+
+    assert _repo(acme.fake, UserOwner(8), entered.task).writers == {8}
+
+
+async def test_teams_stand_once_the_contest_ends(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], clock: FakeClock
+) -> None:
+    team = await teams.create(setup, crowd["bob"], SPRING, "Adders")
+    clock.advance(timedelta(hours=4))
+    with pytest.raises(Forbidden):
+        await teams.request(setup, crowd["carol"], SPRING, team.id)
+    with pytest.raises(Forbidden):
+        await teams.leave(setup, crowd["bob"], SPRING)
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+    moved = await teams.organise_move(setup, manager, SPRING, 20, team.id)
+    assert sorted(m.user_id for m in moved.members) == [8, 20]
+
+
+async def test_a_requester_sees_the_team_and_not_who_else_asked(
+    setup: Setup, acme: Acme, crowd: dict[str, Session]
+) -> None:
+    bob, carol, dan = crowd["bob"], crowd["carol"], crowd["dan"]
+    team = await teams.create(setup, bob, SPRING, "Adders")
+    await teams.invite(setup, bob, SPRING, team.id, "dan")
+    asked = await teams.request(setup, carol, SPRING, team.id)
+    assert asked.pending == ()
+    assert dan is not None

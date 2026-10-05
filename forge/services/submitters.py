@@ -19,6 +19,8 @@ submit.
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy import select
+
 from forge.db.tables import Contestant
 from forge.domain import release as rules
 from forge.domain.definitions import ContestDefinition, State
@@ -28,6 +30,7 @@ from forge.domain.errors import (
     NotFound,
     PortError,
     TaskClosed,
+    TeamChanged,
     Unavailable,
 )
 from forge.domain.ids import TaskId, WorkspaceId
@@ -119,6 +122,24 @@ async def refuse(ctx: Context, entrant: Entrant) -> tuple[Contestant, WorkspaceI
         raise NotApproved(NOT_APPROVED)
     assert entrant.workspace is not None
     return row, entrant.workspace
+
+
+async def hold_standing(ctx: Context, entrant: Entrant) -> None:
+    """Hold the person's registration until the unit of work ends, so no
+    change of team passes this submit, and refuse with `Conflict` when the
+    workspace they work in changed since the entrant was read: a person
+    joining a team, leaving one or being moved waits for the submit, and a
+    submit that started before such a change is asked again.
+    """
+    if entrant.row is None:
+        return
+    await ctx.db.execute(
+        select(Contestant.id).where(Contestant.id == entrant.row.id).with_for_update(read=True)
+    )
+    contest = contest_id_of(task_scope(entrant.task))
+    standing = await teams.standing(ctx, contest, entrant.session.user_id)
+    if ctx.forge.workspaces.workspace_of(contest, standing.owner) != entrant.workspace:
+        raise TeamChanged("Your team changed while you submitted; submit again.")
 
 
 PLACES_AT_ONCE = 4

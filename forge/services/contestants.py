@@ -36,7 +36,8 @@ keeping what is in it, and taking them out of their team, and `extend`
 gives one person more time, which every deadline check adds. Anyone
 observing the contest lists the registrations.
 A contestant's workspace is made a part at a time: the place to submit each
-task once they are approved, without the approval waiting for it, or else at
+task once they are approved (their team's, in a contest with teams), without
+the approval waiting for it, or else at
 their first upload to it (`places`).
 """
 

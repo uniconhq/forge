@@ -42,7 +42,6 @@ makes no more (`ctx.stopping`).
 import asyncio
 import uuid
 import weakref
-from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import timedelta
 
@@ -51,8 +50,8 @@ from sqlalchemy import select
 from forge.db.tables import Contestant
 from forge.db.tables import Team as TeamRow
 from forge.domain.definitions import ContestDefinition, State
-from forge.domain.errors import Conflict, NotFound, PortError, Unavailable
-from forge.domain.ids import ContestId, TaskId, WorkspaceId
+from forge.domain.errors import NotFound, PortError, TeamChanged, Unavailable
+from forge.domain.ids import ContestId, TaskId
 from forge.domain.names import TeamOwner
 from forge.domain.registration import Status
 from forge.domain.roles import contest_id_of, task_scope
@@ -100,25 +99,25 @@ async def make(
     """Make the contestant's place to submit `task`, their team's when they
     are in one, the forge's part inside `turn`, then hold their row and read
     it again. False, with the access just given taken back, when they are no
-    longer approved by then. `Conflict` when they left their team while it
-    was made. `PortError` when the forge fails, with the row not held.
+    longer approved by then. `TeamChanged` when they left their team while
+    it was made. `PortError` when the forge fails, with the row not held.
     """
     contest = ContestId(row.contest_id)
     standing = await teams.standing(ctx, contest, row.user_id)
     workspace = ctx.forge.workspaces.workspace_of(contest, standing.owner)
     await ctx.let_go()
     async with turn if turn is not None else nullcontext():
-        await ctx.forge.workspaces.open_submission_place(workspace, task, standing.members)
+        await ctx.forge.workspaces.open_submission_place(workspace, task, list(standing.members))
+    await ctx.db.refresh(row, with_for_update=True)
     members = standing.members
     if isinstance(standing.owner, TeamOwner):
-        members = await _settle(ctx, standing.owner, workspace, task, standing.members)
-    await ctx.db.refresh(row, with_for_update=True)
+        members = await teams.settle(ctx, standing.owner.team_id, workspace, standing.members)
     if row.status != Status.APPROVED:
         await workspaces.close(ctx, row)
         log.info("places.taken_back", task=task, user_id=row.user_id)
         return False
     if row.user_id not in members:
-        raise Conflict("Your team changed while your place to submit was made; try again.")
+        raise TeamChanged("Your team changed while your place to submit was made; try again.")
     return True
 
 
@@ -141,17 +140,8 @@ async def make_for_team(
     await ctx.let_go()
     async with turn if turn is not None else nullcontext():
         await ctx.forge.workspaces.open_submission_place(workspace, task, members)
-    await _settle(ctx, owner, workspace, task, members)
+    await teams.settle(ctx, team, workspace, members)
     return True
-
-
-async def _settle(
-    ctx: Context, owner: TeamOwner, workspace: WorkspaceId, task: TaskId, made_with: Sequence[int]
-) -> tuple[int, ...]:
-    async def again(members: Sequence[int]) -> None:
-        await ctx.forge.workspaces.open_submission_place(workspace, task, members)
-
-    return await teams.settle(ctx, owner.team_id, workspace, made_with, again)
 
 
 def ahead_for(ctx: Context, row: Contestant) -> None:

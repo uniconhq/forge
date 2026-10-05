@@ -59,12 +59,6 @@ def upgrade() -> None:
             "status in ('invited', 'requested', 'member', 'left')",
             name=op.f("ck_team_members_status"),
         ),
-        sa.ForeignKeyConstraint(
-            ["team_id"],
-            ["teams.id"],
-            name=op.f("fk_team_members_team_id"),
-            ondelete="CASCADE",
-        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_team_members")),
     )
     op.create_index(

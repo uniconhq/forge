@@ -541,7 +541,9 @@ async def _asked_before(
         UploadRow.purpose == purpose,
     )
     if since is not None:
-        query = query.where(UploadRow.created_at >= since)
+        # Asked for at `expires_at` less the lifetime, by the same clock as
+        # `since`; the row's own `created_at` is the database's.
+        query = query.where(UploadRow.expires_at > since + rules.LIFETIME)
     found = await ctx.db.scalar(query.limit(1))
     return found is not None
 

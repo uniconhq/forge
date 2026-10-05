@@ -65,15 +65,18 @@ class WorkspacePort(Protocol):
         ...
 
     async def share_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
-        """Give the members the access the workspace's members hold, on every
-        part of it already made: read on the desk and write on each place to
-        submit, each part finished first as making it would. A part made
-        later is made with whoever is a member then. It can be run again.
+        """Make the members exactly the people who reach the workspace, on
+        every part of it already made: read on the desk and write on each
+        place to submit, each part finished first as making it would, and
+        anyone else given access there before taken off. A part made later is
+        made with whoever is a member then. It can be run again. A member
+        whose account is gone is passed over.
         """
         ...
 
     async def close_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
-        """Take the members' access away and keep the contents."""
+        """Take the members' access away and keep the contents. A member whose
+        account is gone has no access left to take."""
         ...
 
     async def list_submissions(self, workspace: WorkspaceId, task: TaskId) -> tuple[Submitted, ...]:

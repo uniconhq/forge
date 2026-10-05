@@ -8,7 +8,7 @@ members have nothing at the forge either, which is why the rows exist.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, text
+from sqlalchemy import BigInteger, CheckConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.db.base import Base, Timestamped
@@ -35,7 +35,9 @@ class TeamMember(Base, Timestamped):
     __tablename__ = "team_members"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=new_id)
-    team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    team_id: Mapped[uuid.UUID]
+    """The team, which may be gone: a deleted team's members keep their rows,
+    `left`, so each person's own work afterwards is told from the team's."""
     contest_id: Mapped[str]
     user_id: Mapped[int] = mapped_column(BigInteger)
     status: Mapped[str]

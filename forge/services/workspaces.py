@@ -3,7 +3,8 @@ is where a contestant works for one contest: a desk their questions live in,
 and one place per task to submit to. The place to submit a task is made once
 they are approved or at the task's first publication (`places`), or else at
 their first upload or submit to it (`submissions`), and its name comes from
-the contest and the contestant's user id, so nothing about it is stored.
+the contest and the contestant's user id, or their team's id, so nothing
+about it is stored.
 Closing it takes their access away from whichever parts were made and keeps
 what is in them.
 """

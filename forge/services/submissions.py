@@ -206,6 +206,7 @@ async def submit(
         opened = True
     if workspace is not None:
         await _hold(ctx, workspace, task)
+        await submitters.hold_standing(ctx, entrant)
         again = await _again(ctx, entrant, workspace, idempotency_key)
         if again is not None:
             return again

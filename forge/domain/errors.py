@@ -487,3 +487,11 @@ class TeamHasSubmissions(ServiceError):
     """
 
     code = "team_has_submissions"
+
+
+class TeamChanged(ServiceError):
+    """The person's team changed while what they asked for was being done,
+    so it is asked again.
+    """
+
+    code = "team_changed"

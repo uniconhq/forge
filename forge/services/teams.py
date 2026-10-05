@@ -28,27 +28,31 @@ finished only once every member can write it.
 A change takes the contestant row of each person it moves, then the team
 rows it touches in the order of their ids, so two changes of one person or
 one team happen one after another and a removal from the contest never
-passes a join.
+passes a join; a first upload making a place and a submit take the same
+rows in the same order. A contestant's changes stop once the contest ends
+or is archived, since a team's membership stands from then on; organisers
+can still mend teams, and let members go after teams are turned off.
 """
 
 import builtins
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from forge.db.tables import Contestant, Grading, TeamMember
 from forge.db.tables import Team as TeamRow
 from forge.domain import teams as rules
-from forge.domain.definitions import ContestDefinition
+from forge.domain.definitions import ContestDefinition, State
 from forge.domain.errors import (
     Forbidden,
     InTeam,
     NotApproved,
     NotFound,
+    PortError,
     SubmittedAlone,
     TeamHasSubmissions,
     TeamNameTaken,
@@ -184,7 +188,10 @@ async def request(ctx: Context, session: Session, contest: ContestId, team: uuid
         log.info("teams.requested", team=str(found.id), user_id=session.user_id)
     else:
         raise InTeam("You have asked to join this team already.")
-    return await _view(ctx, found)
+    shown = await _view(ctx, found)
+    if session.user_id not in {member.user_id for member in shown.members}:
+        shown = replace(shown, pending=())
+    return shown
 
 
 @action
@@ -206,7 +213,7 @@ async def leave(ctx: Context, session: Session, contest: ContestId) -> None:
     """Leave the team the signed-in person is in. Their access to its
     workspace goes; what the team made stays the team's.
     """
-    await _contestant_settings(ctx, session, contest, need_approved=False)
+    await _contestant_settings(ctx, session, contest, need_approved=False, even_off=True)
     await _hold_people(ctx, contest, [session.user_id])
     row = await _membership(ctx, contest, session.user_id)
     if row is None:
@@ -318,9 +325,10 @@ async def organise_delete(
     ctx: Context, organiser: Organiser, contest: ContestId, team: uuid.UUID
 ) -> None:
     """Delete a team that has submitted nothing, taking every member's access
-    to its workspace away. Needs the manager role at the contest.
+    to its workspace away. Needs the manager role at the contest, and works
+    with teams turned off since, so its members can be let go.
     """
-    await _organiser_settings(ctx, organiser, contest)
+    await _organiser_settings(ctx, organiser, contest, even_off=True)
     members = [row.user_id for row in await _rows(ctx, team, [MemberStatus.MEMBER])]
     await _hold_people(ctx, contest, sorted(members))
     found = await _hold_team(ctx, contest, team)
@@ -329,8 +337,7 @@ async def organise_delete(
     current = await member_ids(ctx, found.id)
     if current:
         await ctx.forge.workspaces.close_workspace(_workspace(ctx, found), current)
-    await ctx.db.delete(found)
-    await ctx.db.flush()
+    await _end_team(ctx, found)
     log.info("teams.deleted", team=str(team), contest=contest, by_user_id=organiser.user.id)
 
 
@@ -373,9 +380,9 @@ async def organise_remove(
     ctx: Context, organiser: Organiser, contest: ContestId, team: uuid.UUID, user_id: int
 ) -> Team:
     """Take someone out of a team, or drop their request or invitation.
-    Needs the manager role at the contest.
+    Needs the manager role at the contest, with teams on or turned off since.
     """
-    await _organiser_settings(ctx, organiser, contest)
+    await _organiser_settings(ctx, organiser, contest, even_off=True)
     await _hold_people(ctx, contest, [user_id])
     found = await _hold_team(ctx, contest, team)
     await _take_out(ctx, found, user_id)
@@ -513,17 +520,14 @@ async def workspaces_of(ctx: Context, contest: ContestId) -> builtins.list[Works
 
 
 async def settle(
-    ctx: Context,
-    team: uuid.UUID,
-    workspace: WorkspaceId,
-    made_with: Sequence[int],
-    again: Callable[[Sequence[int]], Awaitable[object]],
+    ctx: Context, team: uuid.UUID, workspace: WorkspaceId, made_with: Sequence[int]
 ) -> tuple[int, ...]:
     """After a part of the team's workspace was made with `made_with` and no
-    lock held, hold the team and bring the part in step with whoever is a
-    member now: the access of anyone who left meanwhile taken away, and the
-    part made `again` with the members when someone joined meanwhile. The
-    members now.
+    lock held, hold the team and, when its members have changed meanwhile,
+    make exactly the members now the people who reach every part of it, so
+    someone who joined is added and someone who left, or was left behind by
+    a change that failed halfway, is taken off. The members now. The caller
+    holds whatever contestant rows it needs first.
     """
     held = (
         await ctx.db.execute(
@@ -534,14 +538,9 @@ async def settle(
         )
     ).scalar_one_or_none()
     current = tuple(await member_ids(ctx, team)) if held is not None else ()
-    gone = sorted(set(made_with) - set(current))
-    if gone:
-        # Taken first: the forge refuses to finish a part that someone who is
-        # not a member can reach.
-        await ctx.forge.workspaces.close_workspace(workspace, gone)
-        log.info("teams.access_taken_back", team=str(team), user_ids=gone)
-    if set(current) - set(made_with):
-        await again(current)
+    if set(current) != set(made_with):
+        await ctx.forge.workspaces.share_workspace(workspace, current)
+        log.info("teams.access_settled", team=str(team), members=list(current))
     return current
 
 
@@ -552,8 +551,12 @@ async def on_removed(ctx: Context, row: Contestant) -> None:
     contest = ContestId(row.contest_id)
     membership = await _membership(ctx, contest, row.user_id)
     if membership is not None:
-        team = await _hold_team(ctx, contest, membership.team_id)
-        await _remove(ctx, team, membership)
+        try:
+            team = await _hold_team(ctx, contest, membership.team_id)
+        except NotFound:
+            team = None
+        if team is not None:
+            await _remove(ctx, team, membership)
     await _drop_pending(ctx, contest, row.user_id)
 
 
@@ -565,24 +568,35 @@ def is_on(settings: ContestDefinition) -> bool:
 
 
 async def _contestant_settings(
-    ctx: Context, session: Session, contest: ContestId, *, need_approved: bool = True
+    ctx: Context,
+    session: Session,
+    contest: ContestId,
+    *,
+    need_approved: bool = True,
+    even_off: bool = False,
 ) -> ContestDefinition:
     """The contest's settings, once it is one the person sees, its teams are
-    on, and, unless told otherwise, the person is its approved contestant.
+    on unless `even_off`, it has not ended or been archived, since a team's
+    membership stands from then on, and, unless told otherwise, the person
+    is its approved contestant.
     """
     settings, person = await release.seen(ctx, session, contest)
-    _refuse_off(settings)
+    if not even_off:
+        _refuse_off(settings)
+    if settings.state is State.ARCHIVED or ctx.now >= settings.end:
+        raise Forbidden("Teams stand as they are once the contest ends; ask the organisers.")
     if need_approved and (person.row is None or person.row.status != Status.APPROVED):
         raise NotApproved("Only an approved contestant of the contest is in a team.")
     return settings
 
 
 async def _organiser_settings(
-    ctx: Context, organiser: Organiser, contest: ContestId
+    ctx: Context, organiser: Organiser, contest: ContestId, *, even_off: bool = False
 ) -> ContestDefinition:
     require(organiser, contest_scope(contest), Role.MANAGER)
     settings = await published.contest(ctx, contest)
-    _refuse_off(settings)
+    if not even_off:
+        _refuse_off(settings)
     return settings
 
 
@@ -733,6 +747,8 @@ async def _flush_once(ctx: Context) -> None:
         async with ctx.db.begin_nested():
             await ctx.db.flush()
     except IntegrityError as exc:
+        if "ix_teams_contest_id_name" not in str(exc.orig):
+            raise
         raise TeamNameTaken("This contest has a team of that name already.") from exc
 
 
@@ -762,6 +778,8 @@ async def _admit(ctx: Context, team: TeamRow, row: TeamMember, settings: Contest
         team.leader_user_id = row.user_id
     await ctx.db.flush()
     await _drop_pending(ctx, ContestId(team.contest_id), row.user_id)
+    if not current:
+        _ahead(ctx, team)
 
 
 async def _take_out(ctx: Context, team: TeamRow, user_id: int) -> None:
@@ -789,8 +807,28 @@ async def _remove(ctx: Context, team: TeamRow, row: TeamMember) -> None:
     if team.leader_user_id == row.user_id:
         team.leader_user_id = remaining[0] if remaining else None
     if not remaining and not await _submitted(ctx, ContestId(team.contest_id), team.id):
-        await ctx.db.delete(team)
+        await _end_team(ctx, team)
         log.info("teams.emptied", team=str(team.id))
+    await ctx.db.flush()
+
+
+async def _end_team(ctx: Context, team: TeamRow) -> None:
+    """Delete a team, its members' rows kept `left`, with when, so each
+    person's own uploads afterwards are told from the team's, and the
+    people asking or asked in dropped.
+    """
+    await ctx.db.execute(
+        update(TeamMember)
+        .where(TeamMember.team_id == team.id, TeamMember.status == MemberStatus.MEMBER)
+        .values(status=MemberStatus.LEFT, left_at=ctx.now)
+    )
+    await ctx.db.execute(
+        delete(TeamMember).where(
+            TeamMember.team_id == team.id,
+            TeamMember.status.in_([status.value for status in rules.PENDING]),
+        )
+    )
+    await ctx.db.delete(team)
     await ctx.db.flush()
 
 
@@ -814,9 +852,13 @@ def _ahead(ctx: Context, team: TeamRow) -> None:
 
 
 async def _user(ctx: Context, user_id: int) -> User | None:
+    """Who someone is at the forge, or none when their account is gone or
+    the forge did not answer: a name shown never fails a change already
+    made at the forge.
+    """
     try:
         return await ctx.forge.identity.find_user(user_id)
-    except NotFound:
+    except PortError:
         return None
 
 
