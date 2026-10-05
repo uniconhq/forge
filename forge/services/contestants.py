@@ -33,8 +33,9 @@ rejection back and leaves the registration pending again, `remove` ends an
 approved one, taking the contestant's access to their workspace away and
 keeping what is in it, and `extend` gives one person more time, which every
 deadline check adds. Anyone observing the contest lists the registrations.
-A contestant's workspace is made a part at a time when it is first needed:
-the place to submit a task at their first submit to it.
+A contestant's workspace is made a part at a time: the place to submit each
+task once they are approved, without the approval waiting for it, or else at
+their first upload to it (`places`).
 """
 
 from dataclasses import dataclass
@@ -55,7 +56,7 @@ from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import published, roles, workspaces
+from forge.services import places, published, roles, workspaces
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -260,6 +261,7 @@ def time_extension(row: Contestant | None) -> timedelta:
 async def _approve(ctx: Context, row: Contestant, *, decided_by: int | None) -> None:
     _decide(ctx, row, Status.APPROVED, decided_by=decided_by, reason=None)
     await ctx.db.flush()
+    places.ahead_for(ctx, row)
     log.info("contestants.approved", contest=row.contest_id, user_id=row.user_id, by=decided_by)
 
 
