@@ -266,21 +266,59 @@ async def test_the_same_person_has_a_workspace_in_each_contest_of_the_org(
     assert len(await forge.threads.list_threads(person, in_second, ThreadKind.CLARIFICATION)) == 1
 
 
-async def test_threads_are_posted_answered_and_closed(forge: ForgejoForge, org: str) -> None:
+async def test_threads_are_posted_edited_answered_and_closed(forge: ForgejoForge, org: str) -> None:
     contest = await forge.content.create_contest(OrgId(org), "winter", {"contest.yaml": b"x\n"})
     thread = await forge.threads.post_thread(
         PLATFORM, contest, ThreadKind.ANNOUNCEMENT, title="Welcome", body="Hello"
     )
-    await forge.threads.edit_thread(PLATFORM, thread, title="Welcome all", body="Hello all")
-    await forge.threads.comment(PLATFORM, thread, "Noted", answered=True)
+    await forge.threads.edit_thread(PLATFORM, thread.id, title="Welcome all", body="Hello all")
+    await forge.threads.comment(PLATFORM, thread.id, "Noted")
+    await forge.threads.mark_answered(PLATFORM, thread.id)
+    await forge.threads.mark_answered(PLATFORM, thread.id)
 
     (listed,) = await forge.threads.list_threads(PLATFORM, contest, ThreadKind.ANNOUNCEMENT)
-    assert listed.id == thread
+    assert (listed.id, listed.place, listed.number) == (thread.id, contest, thread.number)
     assert listed.title == "Welcome all"
-    assert listed.answered is True
-    assert listed.closed is True
+    assert (listed.answered, listed.closed) == (True, True)
     assert [comment.body for comment in listed.comments] == ["Noted"]
     assert await forge.threads.list_threads(PLATFORM, contest, ThreadKind.CLARIFICATION) == ()
+
+    await forge.threads.unmark_answered(PLATFORM, thread.id)
+    await forge.threads.unmark_answered(PLATFORM, thread.id)
+    read = await forge.threads.read_thread(PLATFORM, thread.id)
+    assert (read.answered, read.closed) == (False, False)
+    await forge.threads.close_thread(PLATFORM, thread.id)
+    assert (await forge.threads.read_thread(PLATFORM, thread.id)).closed is True
+
+
+async def test_the_org_search_finds_the_open_questions_and_a_contestant_reopens_theirs(
+    forge: ForgejoForge, org: str, admin: httpx.Client, stamp: str
+) -> None:
+    asker = make_user(admin, f"asker-{stamp}")
+    person = as_person(admin, asker)
+    contest = await forge.content.create_contest(OrgId(org), "asking", {"contest.yaml": b"x\n"})
+    workspace = await forge.workspaces.open_workspace(
+        contest, UserOwner(int(asker["id"])), [int(asker["id"])]
+    )
+    thread = await forge.threads.post_thread(
+        person, workspace, ThreadKind.CLARIFICATION, title="Input size?", body="How big?"
+    )
+
+    found = await forge.threads.search_threads(PLATFORM, OrgId(org), ThreadKind.CLARIFICATION)
+    assert [entry.id for entry in found] == [thread.id]
+    assert found[0].place == workspace
+
+    await forge.threads.mark_answered(PLATFORM, thread.id)
+    assert await forge.threads.search_threads(PLATFORM, OrgId(org), ThreadKind.CLARIFICATION) == ()
+    everything = await forge.threads.search_threads(
+        PLATFORM, OrgId(org), ThreadKind.CLARIFICATION, open_only=False
+    )
+    assert [entry.id for entry in everything] == [thread.id]
+
+    await forge.threads.comment(person, thread.id, "One more thing")
+    await forge.threads.unmark_answered(person, thread.id)
+    again = await forge.threads.read_thread(person, thread.id)
+    assert (again.answered, again.closed) == (False, False)
 
 
 async def test_workflows_are_created_versioned_searched_and_copied(
@@ -318,8 +356,8 @@ async def test_a_deleted_user_is_gone_and_their_questions_still_read(
     thread = await forge.threads.post_thread(
         person, workspace, ThreadKind.CLARIFICATION, title="Before I go", body="?"
     )
-    await forge.threads.comment(PLATFORM, thread, "An answer")
-    await forge.threads.comment(person, thread, "Thanks")
+    await forge.threads.comment(PLATFORM, thread.id, "An answer")
+    await forge.threads.comment(person, thread.id, "Thanks")
     await forge.workflows.create_workflow(
         person, leaver["login"], "private", {"workflow.yaml": b"steps: []\n"}, Visibility.PRIVATE
     )

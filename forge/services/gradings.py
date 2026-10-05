@@ -89,6 +89,8 @@ from forge.domain.ids import (
     WorkspaceId,
     new_id,
 )
+from forge.domain.live import Nudge, NudgeKind
+from forge.domain.names import UserOwner
 from forge.domain.publications import Publication
 from forge.domain.roles import Role, holds, task_scope
 from forge.domain.submissions import Submitted
@@ -205,6 +207,7 @@ def new_row(
     )
     row.callback_token_hash = token_hash(callback_token_of(ctx, row))
     ctx.db.add(row)
+    changed(ctx, row)
     grading = row.id
 
     async def start_it(later: Context) -> None:
@@ -280,6 +283,7 @@ async def start(ctx: Context, grading: uuid.UUID) -> None:
     row.status = GradingStatus.DISPATCHED
     row.run_id = found
     row.dispatched_at = ctx.now
+    changed(ctx, row)
     log.info("gradings.dispatched", grading=str(row.id), run=found)
 
 
@@ -319,7 +323,7 @@ async def _not_started(ctx: Context, grading: uuid.UUID, exc: Exception, reason:
     )
     row = await find(ctx, grading, lock=True)
     if row is not None and row.status == GradingStatus.QUEUED:
-        finish(row, GradingStatus.SYSTEM_ERROR, ctx.now, error=reason)
+        finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=reason)
 
 
 async def _cancel_quietly(ctx: Context, run: RunId) -> None:
@@ -427,11 +431,31 @@ def org_of(row: Grading) -> OrgId:
     return OrgId(task_scope(TaskId(row.task_id)).org)
 
 
-def finish(row: Grading, status: GradingStatus, now: datetime, *, error: str | None = None) -> None:
+def finish(ctx: Context, row: Grading, status: GradingStatus, *, error: str | None = None) -> None:
     """End the grading with `status`, waiting for nothing more."""
     row.status = status
-    row.finished_at = now
+    row.finished_at = ctx.now
     row.error = error
+    changed(ctx, row)
+
+
+def changed(ctx: Context, row: Grading) -> None:
+    """Nudge whoever may hear of the grading that it moved, once the unit of
+    work commits: the contestant whose workspace it grades, and the
+    organisers who observe its task. Every write of a grading's status or
+    progress calls this, which is what moves a contestant's submissions
+    while they watch; a grading is the platform's own and no push from the
+    forge will ever name one.
+    """
+    owner = ctx.forge.workspaces.owner_of(WorkspaceId(row.workspace_id))
+    ctx.nudge(
+        Nudge(
+            NudgeKind.GRADING,
+            str(row.id),
+            user=owner.user_id if isinstance(owner, UserOwner) else None,
+            scope=task_scope(TaskId(row.task_id)),
+        )
+    )
 
 
 def overdue_of(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> str | None:
@@ -517,7 +541,7 @@ async def cancel(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Grad
         raise WrongStatus(f"The grading is {stored.value} already.", current=stored.value)
     if stored in AT_THE_CI and row.run_id is not None:
         await _cancel_run(ctx, RunId(row.run_id))
-    finish(row, GradingStatus.CANCELLED, ctx.now)
+    finish(ctx, row, GradingStatus.CANCELLED)
     await ctx.db.flush()
     log.info("gradings.cancelled", grading=str(row.id), user_id=organiser.user.id)
     return record(ctx, row)
@@ -540,7 +564,7 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
         raise Conflict("Another attempt of this grading is still being graded.")
     stored = GradingStatus(row.status)
     if stored in UNFINISHED:
-        finish(row, GradingStatus.SYSTEM_ERROR, ctx.now, error=overdue_of(ctx, row, gone))
+        finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=overdue_of(ctx, row, gone))
     if row.run_id is not None and stored not in (GradingStatus.DONE, GradingStatus.CANCELLED):
         _cancel_after_commit(ctx, RunId(row.run_id))
     made = _next_attempt(ctx, row, PublicationId(row.publication_id), attempts)
@@ -740,4 +764,4 @@ async def _stop_quietly(ctx: Context, row: Grading) -> None:
         log.warning(
             "gradings.replaced_run_not_stopped", grading=str(row.id), error=type(exc).__name__
         )
-    finish(row, GradingStatus.CANCELLED, ctx.now)
+    finish(ctx, row, GradingStatus.CANCELLED)

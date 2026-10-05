@@ -14,7 +14,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from pydantic import HttpUrl
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from forge import forges
 from forge.db.engine import (
@@ -28,8 +29,10 @@ from forge.db.engine import (
 from forge.domain.clock import Clock, SystemClock
 from forge.domain.errors import NotReady
 from forge.domain.keys import KeyMaker, random_key
+from forge.domain.live import CHANNEL, Nudge
 from forge.log import get_logger
 from forge.port import Forge
+from forge.runtime.broker import Broker
 from forge.runtime.context import ActionSetup, AfterCommit, AfterRollback, Context, transaction
 from forge.runtime.held import held, hold, holding, release, setup_or_held
 from forge.runtime.memo import Memo
@@ -64,6 +67,7 @@ class Setup:
         self._clock = clock
         self._keys = keys
         self._memo = Memo(clock)
+        self._broker = Broker(str(settings.database_url))
         self._refreshing: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
             weakref.WeakValueDictionary()
         )
@@ -121,6 +125,10 @@ class Setup:
     def clock(self) -> Clock:
         return self._clock
 
+    @property
+    def broker(self) -> Broker:
+        return self._broker
+
     @asynccontextmanager
     async def unit_of_work(self) -> AsyncIterator[Context]:
         """One transaction and the context over it: committed when the block
@@ -132,13 +140,14 @@ class Setup:
         it rolls back instead, the work left for that runs, the latest first,
         then the work left for its end, before the error goes on. Either way
         the block's own connection is back in the pool before any of it runs.
+        The nudges the block left are published just before it commits.
         """
         later: list[AfterCommit] = []
         undo: list[AfterRollback] = []
         ended: list[AfterCommit] = []
         try:
             async with transaction(self._transactions) as db:
-                yield Context(
+                ctx = Context(
                     db=db,
                     forge=self._forge,
                     settings=self._settings,
@@ -150,6 +159,8 @@ class Setup:
                     rolled_back=undo,
                     ended=ended,
                 )
+                yield ctx
+                await _publish(db, ctx.nudges)
         except Exception:
             await _after_rollback(undo)
             await self._run_after(ended)
@@ -191,9 +202,21 @@ class Setup:
             raise NotReady("The database did not answer.") from exc
 
     async def stop(self) -> None:
+        await self._broker.stop()
         await self._forge.aclose()
         await self._probe_engine.dispose()
         await self._engine.dispose()
+
+
+async def _publish(db: AsyncSession, nudges: list[Nudge]) -> None:
+    """Every nudge in one statement, on the transaction about to commit."""
+    if nudges:
+        await db.execute(
+            text(
+                "SELECT pg_notify(:channel, payload) FROM unnest(CAST(:payloads AS text[])) payload"
+            ),
+            {"channel": CHANNEL, "payloads": [nudge.payload() for nudge in nudges]},
+        )
 
 
 async def _after_rollback(undo: list[AfterRollback]) -> None:
