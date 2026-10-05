@@ -31,6 +31,17 @@ was made, since its run is started as soon as it is committed; one
 `dispatched` `MACHINE_WAIT` after its run was started, a run no machine took
 or that never reached the harness; and one `running` past its deadline,
 whose token is refused from then on.
+
+A `dispatched` grading may also have a run the CI has lost: Woodpecker
+3.18.1 drops a run from its queue for good when the machine it handed the
+run to does not renew its claim within a minute, after a dropped network
+or a machine that died during the checkout, and leaves the pipeline saying
+`pending` (woodpecker-ci/woodpecker#7063). Waiting long is not being lost:
+at a contest's start a run can wait a quarter of an hour behind others. So
+the CI is asked where the run is (`RunState`), once the grading has been
+`dispatched` `LOST_CHECK_AFTER`, by the queue it is in and not the
+pipeline's status, which says `pending` either way; a run the CI no longer
+holds reads as a system error, `LOST`, like an overdue one.
 """
 
 import base64
@@ -71,9 +82,23 @@ BASE_WALL = timedelta(seconds=60)
 STEP_OVERHEAD = timedelta(seconds=15)
 START_WAIT = timedelta(minutes=5)
 MACHINE_WAIT = timedelta(hours=2)
+LOST_CHECK_AFTER = timedelta(minutes=2)
 NEVER_STARTED = "Its run was never started."
 NEVER_BEGAN = "Its run did not begin within two hours of being started."
 OVERDUE = "Its run did not report before its deadline."
+LOST = "The grading machine lost its run before it began."
+
+
+class RunState(StrEnum):
+    """Where the CI has a run: `queued`, waiting for a machine; `taken` by a
+    machine; `finished`; or `lost`, a run the CI says is unfinished and holds
+    in no queue, or does not know at all.
+    """
+
+    QUEUED = "queued"
+    TAKEN = "taken"
+    FINISHED = "finished"
+    LOST = "lost"
 
 
 class GradingStatus(StrEnum):
@@ -107,9 +132,10 @@ def overdue(
     dispatched_at: datetime | None,
     deadline: datetime | None,
     now: datetime,
+    lost: bool = False,
 ) -> str | None:
     """Why a grading is past what its state may take at `now`, or none while
-    it is not.
+    it is not. `lost` says the CI was asked and holds the run no more.
     """
     match status:
         case GradingStatus.QUEUED if now >= created_at + START_WAIT:
@@ -118,9 +144,24 @@ def overdue(
             dispatched_at is not None and now >= dispatched_at + MACHINE_WAIT
         ):
             return NEVER_BEGAN
+        case GradingStatus.DISPATCHED if lost:
+            return LOST
         case GradingStatus.RUNNING if deadline is not None and now >= deadline:
             return OVERDUE
     return None
+
+
+def worth_asking(status: GradingStatus, dispatched_at: datetime | None, now: datetime) -> bool:
+    """Whether to ask the CI whether it still holds a grading's run: one
+    `dispatched` for `LOST_CHECK_AFTER`, long enough for the CI to have
+    queued it and a machine's claim on it to have lapsed, and not yet past
+    `MACHINE_WAIT`, which says it is overdue without asking.
+    """
+    return (
+        status is GradingStatus.DISPATCHED
+        and dispatched_at is not None
+        and dispatched_at + LOST_CHECK_AFTER <= now < dispatched_at + MACHINE_WAIT
+    )
 
 
 @dataclass(frozen=True, slots=True)

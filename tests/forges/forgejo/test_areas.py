@@ -602,22 +602,35 @@ async def test_the_files_at_a_version_are_read_page_by_page(
     assert pages == ["1", "2"]
 
 
-async def test_contests_and_tasks_are_listed_from_what_the_caller_sees(
+async def test_contests_and_tasks_are_listed_by_a_search_of_what_the_caller_sees(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
+    """A search matches the part anywhere in a name, so the answer is checked
+    name by name; the org's number is read once.
+    """
+    recorder.on("GET", "/api/v1/orgs/acme", ok({"id": 42}))
     recorder.on(
         "GET",
-        "/api/v1/orgs/acme/repos",
+        "/api/v1/repos/search",
         ok(
-            [
-                {"name": "spring.contest"},
-                {"name": "spring.sum.task"},
-                {"name": "spring.u7.desk"},
-                {"name": "spring.sum.u7.sub"},
-                {"name": "autumn.contest"},
-                {"name": "autumn.sum.task"},
-                {"name": "classic.workflow"},
-            ]
+            {
+                "ok": True,
+                "data": [
+                    {"name": "spring.contest"},
+                    {"name": "autumn.contest"},
+                    {"name": "spring.contest.task"},
+                ],
+            }
+        ),
+        ok(
+            {
+                "ok": True,
+                "data": [
+                    {"name": "spring.sum.task"},
+                    {"name": "autumn.sum.task"},
+                    {"name": "spring.task.u7.sub"},
+                ],
+            }
         ),
     )
     ada = AsUser(7, _credential())
@@ -627,7 +640,18 @@ async def test_contests_and_tasks_are_listed_from_what_the_caller_sees(
 
     assert contests == ("acme/autumn", "acme/spring")
     assert tasks == ("acme/spring/sum",)
-    assert set(recorder.headers("GET", "/api/v1/orgs/acme/repos")) == {"Bearer access"}
+    searches = [
+        dict(request.url.params)
+        for request in recorder.seen
+        if request.url.path == "/api/v1/repos/search"
+    ]
+    assert [(search["q"], search["uid"], search["exclusive"]) for search in searches] == [
+        (".contest", "42", "true"),
+        (".task", "42", "true"),
+    ]
+    assert set(recorder.headers("GET", "/api/v1/repos/search")) == {"Bearer access"}
+    assert recorder.calls().count("GET /api/v1/orgs/acme") == 1
+    assert "GET /api/v1/orgs/acme/repos" not in recorder.calls()
 
 
 async def test_a_write_the_host_refuses_as_moved_is_read_again_and_repeated(

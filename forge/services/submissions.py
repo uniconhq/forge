@@ -572,26 +572,48 @@ async def _read(
     grouped: dict[int, builtins.list[Grading]] = {}
     for row in rows:
         grouped.setdefault(row.submission_number, []).append(row)
+    gone = await gradings.lost(
+        ctx, [row for found in grouped.values() for row in _latest(found).values()]
+    )
     return [
         _submission(
-            ctx, entrant, found, min(row.submitted_at for row in grouped[found]), grouped[found]
+            ctx,
+            entrant,
+            found,
+            min(row.submitted_at for row in grouped[found]),
+            grouped[found],
+            gone,
         )
         for found in sorted(grouped, reverse=True)
     ]
 
 
-def _submission(
-    ctx: Context, entrant: Entrant, number: int, at: datetime, rows: Sequence[Grading]
-) -> Submission:
-    stages = entrant.published.definition.stages_resolved()
-    order = {stage.id: index for index, stage in enumerate(stages)}
-    shows = {stage.id: stage.show for stage in stages}
+def _latest(rows: Sequence[Grading]) -> dict[str, Grading]:
+    """The latest attempt of each stage among `rows`."""
     latest: dict[str, Grading] = {}
     for row in rows:
         if row.stage not in latest or row.attempt > latest[row.stage].attempt:
             latest[row.stage] = row
+    return latest
+
+
+def _submission(
+    ctx: Context,
+    entrant: Entrant,
+    number: int,
+    at: datetime,
+    rows: Sequence[Grading],
+    lost: frozenset[uuid.UUID] = frozenset(),
+) -> Submission:
+    """The submission as its owner reads it, each stage by its latest
+    attempt, with `lost` naming the gradings whose runs the CI has lost.
+    """
+    stages = entrant.published.definition.stages_resolved()
+    order = {stage.id: index for index, stage in enumerate(stages)}
+    shows = {stage.id: stage.show for stage in stages}
+    latest = _latest(rows)
     results = tuple(
-        _result(row, gradings.status_of(ctx, row), shows.get(row.stage, Show.HIDDEN))
+        _result(row, gradings.status_of(ctx, row, lost), shows.get(row.stage, Show.HIDDEN))
         for row in sorted(
             latest.values(), key=lambda row: (order.get(row.stage, len(order)), row.stage)
         )

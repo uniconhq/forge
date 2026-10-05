@@ -16,6 +16,8 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     HttpUrl,
+    NonNegativeInt,
+    PositiveInt,
     PostgresDsn,
     SecretStr,
     field_validator,
@@ -155,6 +157,20 @@ class Settings(BaseSettings):
     names, by digest, and `clone_image` the image the CI checks a task and a
     submission out with, by digest, each the one of the runner release the
     package pins unless given.
+
+    `database_pool_size` connections to the database stay open in each
+    process, `database_pool_overflow` more are opened in a rush, and a
+    request that finds them all taken waits `database_pool_wait` and fails.
+    A unit of work holds one connection and lets go of it before a slow call
+    where it can, so a request keeps one for milliseconds and 30 serve a
+    contest; ten seconds is long enough to ride out a rush and short enough
+    that a stuck pool shows as an error rather than a page that hangs. The
+    database server must have room for every process's pool at once: the
+    deployment runs one backend process, Forgejo and Woodpecker share the
+    server, and Postgres allows 100 connections with three kept for its
+    superuser, so 30 leaves the forge, the CI, the readiness probe and an
+    operator's command more than half. A deployment that runs more backend
+    processes keeps their pools' sum under that.
     """
 
     model_config = SettingsConfigDict(env_prefix="UNICON_", extra="ignore")
@@ -163,6 +179,9 @@ class Settings(BaseSettings):
     internal_url: HttpUrl
     machine_url: HttpUrl
     database_url: PostgresDsn
+    database_pool_size: PositiveInt = 20
+    database_pool_overflow: NonNegativeInt = 10
+    database_pool_wait: timedelta = timedelta(seconds=10)
     token_encryption_key: SecretStr
     session_signing_key: SecretStr
     cookie_secure: bool | None = None
@@ -264,7 +283,12 @@ class Settings(BaseSettings):
         return not_blank(value)
 
     @field_validator(
-        "session_hard_ttl", "session_idle_ttl", "sign_in_ttl", "fresh_sign_in_window", mode="before"
+        "session_hard_ttl",
+        "session_idle_ttl",
+        "sign_in_ttl",
+        "fresh_sign_in_window",
+        "database_pool_wait",
+        mode="before",
     )
     @classmethod
     def _seconds(cls, value: Any) -> Any:

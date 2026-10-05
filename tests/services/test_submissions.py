@@ -46,7 +46,7 @@ from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import pointer_text
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
-from forge.services import contestants, publications, submissions, uploads
+from forge.services import contestants, identity, publications, submissions, uploads
 from forge.testing import FakeClock
 from tests.services.conftest import (
     RUNNING,
@@ -316,6 +316,7 @@ async def test_a_closed_or_archived_task_is_refused_first(
 
     await write_contest(acme.fake, RUNNING.format(visibility="public"))
     clock.advance(timedelta(hours=3))
+    await identity.current(entered.session.id, setup=setup)
     with pytest.raises(TaskClosed) as ended:
         await submissions.submit(
             setup, entered.session, entered.task, code(made.id), idempotency_key=KEY

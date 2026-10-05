@@ -32,7 +32,7 @@ from forge.domain.uploads import refuse_pointer
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import publications
+from forge.services import publications, published
 from forge.services.access import Organiser, require
 from forge.services.publications import Draft, Published
 
@@ -127,6 +127,8 @@ async def write(
         message=message or f"Update {path}",
         expected=expected,
     )
+    if path == CONTEST_FILE:
+        published.forget_contests(ctx)
     log.info("files.written", place=place, path=path, version=version, user_id=organiser.user.id)
     return version
 
