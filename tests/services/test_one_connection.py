@@ -7,12 +7,14 @@ a task's page, an upload's slot, door and completion, a submit and the
 start of its grading after the commit, reading it back, the organiser's
 guard and their list of gradings, and a credential the forge refuses.
 Each request is the guard's `identity.current` and then one action, the way
-the backend calls them.
+the backend calls them. A first upload slot holds no connection at all
+while the forge makes the person's place, which takes it seconds.
 """
 
 import hashlib
 from collections.abc import AsyncIterator
 from datetime import timedelta
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -169,3 +171,29 @@ async def test_the_pool_of_one_refuses_a_second_connection_while_one_is_held(one
         with pytest.raises(sqlalchemy.exc.TimeoutError):
             async with one.unit_of_work() as inner:
                 await inner.db.execute(text("select 1"))
+
+
+async def test_a_first_slot_holds_no_connection_while_the_forge_makes_the_place(
+    one: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = acme.fake.workspaces.open_submission_place
+
+    async def needing_a_connection(*args: Any, **kwargs: Any) -> None:
+        async with one.unit_of_work() as other:
+            await other.db.execute(text("select 1"))
+        await real(*args, **kwargs)
+
+    monkeypatch.setattr(acme.fake.workspaces, "open_submission_place", needing_a_connection)
+    session = await identity.current(entered.session.id, setup=one)
+
+    slot = await uploads.slot(
+        one,
+        session,
+        entered.task,
+        input="submission",
+        filename="main.py",
+        size=len(SOURCE),
+        sha256=hashlib.sha256(SOURCE).hexdigest(),
+    )
+
+    assert not slot.ready

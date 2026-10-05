@@ -788,9 +788,10 @@ one asked for included (`upload_limit`, with `limit` and `bytes`). The count
 is taken under an advisory lock on the person and the task, held until the
 unit of work ends, so two slots asked at once cannot both pass.
 
-It then makes the person's place to submit the task, if no slot of theirs for
-it has been kept before, since an object belongs to a place and there has to
-be one to put it in; asks the forge whether the place already holds that
+Before any of that, it makes the person's place to submit the task, if no
+slot of theirs for it has been kept before, since an object belongs to a
+place and there has to be one to put it in. It asks with no connection held
+(below); then it asks the forge whether the place already holds that
 object, which answers a `Slot` that is `ready` with nothing to send; and
 otherwise records an `uploads` row and answers the address to send the file
 to.
@@ -838,9 +839,11 @@ bytes are read back and checked against the digest the upload was verified
 with. At a contestant's first submit to the task, their place to submit it
 is made, as the platform, once they are found approved and before their
 submissions are counted, which is the one thing a later refusal leaves at
-the forge. It is made under a lock on their `contestants` row, so a removal
-waits for it and then takes the access away again, and one removed by then
-is `not_approved`. Then the files go in as one commit as the
+the forge. The place is made first, holding nothing, since it takes the
+forge seconds; then their `contestants` row is held and read again, and
+someone removed meanwhile has the access just given taken away again and is
+`not_approved`. A removal that comes after takes away a place already
+there, so either way the access is gone once both are done. Then the files go in as one commit as the
 contestant, `files/<input id>/<file name>` beside `submission.json`, named
 `submission/<n>` as the platform; one `queued` grading row is inserted per
 stage graded on submit, against the task's current publication, attempt 1,

@@ -37,10 +37,12 @@ from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import contestants, published, release, sessions
+from forge.services import contestants, published, release, sessions, workspaces
 from forge.services.published import PublishedTask
 
 log = get_logger(__name__)
+
+NOT_APPROVED = "Only an approved contestant of the contest submits to its tasks."
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,15 +111,23 @@ async def refuse(ctx: Context, entrant: Entrant) -> tuple[Contestant, WorkspaceI
             )
     row = entrant.row
     if row is None or row.status != Status.APPROVED:
-        raise NotApproved("Only an approved contestant of the contest submits to its tasks.")
+        raise NotApproved(NOT_APPROVED)
     assert entrant.workspace is not None
     return row, entrant.workspace
 
 
 async def open_place(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -> None:
-    """Make the contestant's place to submit the task, as the platform, while
-    they are still approved: their row is held until the unit of work ends,
-    so a removal waits for this, then takes the access away again.
+    """Make the contestant's place to submit the task, as the platform, and
+    make sure they are still approved once it is made.
+
+    The place is made first, holding nothing: making it takes the forge
+    seconds, and a row held that long keeps a connection from everyone else,
+    so a burst of first uploads once ran the pool dry. A removal can land
+    while it is made, so the person's row is then held and read again, and
+    one no longer approved has the access just given taken away again before
+    they are refused. Whichever ends first, the access is gone once both
+    have: a removal that held the row first is seen here and undone again,
+    and one that comes after takes away a place that is already there.
 
     Both the first slot asked for a file and the first submit call this: an
     object belongs to a repository at the forge, so the place has to be there
@@ -125,10 +135,9 @@ async def open_place(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -> 
     """
     user_id = entrant.session.user_id
     row = entrant.row
-    if row is not None:
-        await ctx.db.refresh(row, with_for_update=True)
     if row is None or row.status != Status.APPROVED:
-        raise NotApproved("Only an approved contestant of the contest submits to its tasks.")
+        raise NotApproved(NOT_APPROVED)
+    await ctx.let_go()
     try:
         await ctx.forge.workspaces.open_submission_place(workspace, entrant.task, [user_id])
     except PortError as exc:
@@ -139,6 +148,11 @@ async def open_place(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -> 
             detail=exc.detail,
         )
         raise Unavailable("The forge did not answer; try again in a moment.") from None
+    await ctx.db.refresh(row, with_for_update=True)
+    if row.status != Status.APPROVED:
+        await workspaces.close(ctx, row)
+        log.info("submitters.place_taken_back", task=entrant.task, user_id=user_id)
+        raise NotApproved(NOT_APPROVED)
     log.info("submitters.place_opened", task=entrant.task, user_id=user_id)
 
 

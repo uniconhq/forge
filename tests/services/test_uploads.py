@@ -48,6 +48,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import UploadStatus
 from forge.domain.workflows import Visibility
+from forge.forges.ids import parse_task, parse_workspace
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
 from forge.services import contestants, publications, submissions, uploads
@@ -603,3 +604,38 @@ async def test_a_refusal_at_the_forge_is_not_told_as_a_failure(
         )
 
     assert told.value.detail == uploads.FORGE_REFUSED
+
+
+async def test_a_removal_while_the_place_is_made_takes_the_access_back(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+    real = acme.fake.workspaces.open_submission_place
+
+    async def made_then_removed(*args: Any, **kwargs: Any) -> None:
+        await real(*args, **kwargs)
+        await contestants.remove(setup, manager, SPRING, 8)
+
+    monkeypatch.setattr(acme.fake.workspaces, "open_submission_place", made_then_removed)
+
+    with pytest.raises(NotApproved):
+        await uploads.slot(
+            setup,
+            entered.session,
+            entered.task,
+            input="submission",
+            filename="main.py",
+            size=len(SOURCE),
+            sha256=_digest(SOURCE),
+        )
+
+    assert await _rows(setup) == []
+    made = [
+        call.operation
+        for call in acme.fake.state.calls
+        if call.operation in ("open_submission_place", "close_workspace")
+    ]
+    assert made == ["open_submission_place", "close_workspace", "close_workspace"]
+    ref = parse_workspace(_place(acme, entered).workspace)
+    repo = acme.fake.state.repo(ref.org, ref.submission_repo(parse_task(entered.task).task))
+    assert 8 not in repo.writers
