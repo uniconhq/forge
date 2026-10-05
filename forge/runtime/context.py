@@ -4,7 +4,8 @@ only start once the unit of work has committed, `after_rollback` for undoing
 what it did outside the database when it rolls back instead, `after_end` for
 the few writes that must land whatever the unit of work does, `let_go` for
 an action that has only read to hand its connection back before a slow
-call, `refresh_lock`,
+call, `nudge` for a live update sent when the unit of work commits,
+`refresh_lock`,
 the setup's lock on refreshing one session's credential, `memo`, the answers the setup keeps
 for a few seconds, and `make_key`, which makes the key a newly named org,
 contest or task is filed under. The action that opened the unit
@@ -27,7 +28,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from forge.db.engine import TransactionFactory, wrote
 from forge.domain.clock import Clock
 from forge.domain.keys import KeyMaker, random_key
+from forge.domain.live import Nudge
 from forge.port import Forge
+from forge.runtime.broker import Broker
 from forge.runtime.memo import Memo
 from forge.settings import Settings
 
@@ -63,6 +66,7 @@ class Context:
     committed: list[AfterCommit] = field(default_factory=list, repr=False, kw_only=True)
     rolled_back: list[AfterRollback] = field(default_factory=list, repr=False, kw_only=True)
     ended: list[AfterCommit] = field(default_factory=list, repr=False, kw_only=True)
+    nudges: list[Nudge] = field(default_factory=list, repr=False, kw_only=True)
 
     @property
     def now(self) -> datetime:
@@ -102,6 +106,14 @@ class Context:
         """
         self.rolled_back.append(work)
 
+    def nudge(self, nudge: Nudge) -> None:
+        """Tell the streams that hear it that something changed, once this
+        unit of work commits: the nudges are published in its own
+        transaction just before the commit, so Postgres delivers them with
+        it and never for a unit of work that rolls back.
+        """
+        self.nudges.append(nudge)
+
     def after_end(self, work: AfterCommit) -> None:
         """Run `work` once this unit of work has ended, committed or rolled
         back, on a unit of work of its own, for a write that must land
@@ -137,3 +149,6 @@ class ActionSetup(Protocol):
     def unit_of_work(self) -> AbstractAsyncContextManager[Context]: ...
 
     def refresh_lock(self, session_id: uuid.UUID) -> asyncio.Lock: ...
+
+    @property
+    def broker(self) -> Broker: ...

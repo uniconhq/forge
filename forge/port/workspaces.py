@@ -44,6 +44,16 @@ class WorkspacePort(Protocol):
         """
         ...
 
+    def owner_of(self, workspace: WorkspaceId) -> WorkspaceOwner:
+        """Whose the workspace is, the inverse of `workspace_of`. No call is
+        made.
+        """
+        ...
+
+    def contest_of(self, workspace: WorkspaceId) -> ContestId:
+        """The contest the workspace is in. No call is made."""
+        ...
+
     async def open_submission_place(
         self, workspace: WorkspaceId, task: TaskId, member_ids: Sequence[int]
     ) -> None:

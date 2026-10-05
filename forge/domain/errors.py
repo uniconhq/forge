@@ -231,6 +231,14 @@ class ContestFull(RegistrationRefused):
     code = "contest_full"
 
 
+class InvalidMessage(ServiceError):
+    """An announcement's or a clarification's title or text that is empty or
+    too long. `field` names which.
+    """
+
+    code = "invalid_message"
+
+
 class WrongStatus(ServiceError):
     """A decision the thing's status does not allow, such as approving a
     registration already rejected or cancelling a grading that is done.
