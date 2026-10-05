@@ -8,7 +8,8 @@ the registration is approved.
 code of its own (`forge.domain.registration` holds the rules):
 
 1. The contest is one the person may see: published, and `public` or
-   `signed-in`. Any other is no such contest.
+   `signed-in`, or `hidden` for someone who has accepted an invite to it.
+   Any other is no such contest.
 2. The registration window is open (`registration_closed`).
 3. The person holds no role at the contest, at one of its tasks or at its org
    (`is_staff`), read under the org's lock on role changes, so a grant and a
@@ -17,8 +18,8 @@ code of its own (`forge.domain.registration` holds the rules):
    (`already_registered`).
 5. The invite, the code and the email address the contest asks for
    (`invite_required`, `wrong_invite_code`, `domain_not_allowed`), where the
-   address is one the forge has confirmed is theirs. Nothing makes invites
-   yet, so an invite-only contest refuses everyone.
+   invite is one they have accepted (`invites`) and the address is one the
+   forge has confirmed is theirs.
 6. A place is free (`contest_full`). The places are counted under an
    advisory lock on the contest, a lock Postgres holds against a name, since
    there is no contest row to lock, so the last place goes once.
@@ -56,7 +57,7 @@ from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import places, published, roles, workspaces
+from forge.services import invites, places, published, roles, workspaces
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -93,8 +94,9 @@ async def register(
     """
     scope = contest_scope(contest)
     settings = await published.contest(ctx, contest)
+    invited = await invites.accepted_place(ctx, contest, session.user_id)
     if not release.contest_visible_to(
-        settings, has_session=True, is_contestant=False, is_organiser=False
+        settings, has_session=True, is_contestant=invited, is_organiser=False
     ):
         raise NotFound(published.NO_SUCH_CONTEST)
     rules.refuse_closed(settings.registration, ctx.now)
@@ -109,7 +111,7 @@ async def register(
         settings.registration,
         emails=await _confirmed_emails(ctx, user.id, settings),
         invite_code=invite_code,
-        invited=False,
+        invited=invited,
     )
     await _refuse_full(ctx, contest, settings)
     row = Contestant(

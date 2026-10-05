@@ -8,6 +8,7 @@ address into a scope.
 from forge.domain.content import ConflictToken, Edit
 from forge.domain.identity import User
 from forge.domain.ids import ContestId, OrgId, PublicationId, TaskId, VersionId
+from forge.domain.invites import Grant, InviteStatus, MailStatus
 from forge.domain.names import Named, ScopeNames
 from forge.domain.roles import HeldRole, Role, RoleGrant, Scope, ScopeKind
 from forge.domain.sessions import Session
@@ -17,7 +18,10 @@ __all__ = [
     "ConflictToken",
     "ContestId",
     "Edit",
+    "Grant",
     "HeldRole",
+    "InviteStatus",
+    "MailStatus",
     "Named",
     "OrgId",
     "Problem",
