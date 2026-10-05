@@ -16,6 +16,8 @@ read their own submissions there and are told it is archived when they
 submit.
 """
 
+import asyncio
+import weakref
 from dataclasses import dataclass
 
 from forge.db.tables import Contestant
@@ -116,6 +118,21 @@ async def refuse(ctx: Context, entrant: Entrant) -> tuple[Contestant, WorkspaceI
     return row, entrant.workspace
 
 
+PLACES_AT_ONCE = 4
+_making: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _room() -> asyncio.Semaphore:
+    """The process's turns at making places, one set per event loop."""
+    loop = asyncio.get_running_loop()
+    room = _making.get(loop)
+    if room is None:
+        room = _making[loop] = asyncio.Semaphore(PLACES_AT_ONCE)
+    return room
+
+
 async def open_place(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -> None:
     """Make the contestant's place to submit the task, as the platform, and
     make sure they are still approved once it is made.
@@ -132,6 +149,14 @@ async def open_place(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -> 
     Both the first slot asked for a file and the first submit call this: an
     object belongs to a repository at the forge, so the place has to be there
     before any bytes can be sent, and making it twice is making it once.
+
+    At most `PLACES_AT_ONCE` are made at a time in a process, the rest waiting
+    their turn in order. Making one is about seven calls to the forge, and a
+    burst of a hundred first uploads at once otherwise shares the forge
+    client's few calls between them all, so every place is finished together
+    at the end, past the proxy's minute; in turns, the first finish in
+    seconds. One still waiting when the proxy gives up is made all the same,
+    so asking again is answered at once.
     """
     user_id = entrant.session.user_id
     row = entrant.row
@@ -139,7 +164,8 @@ async def open_place(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -> 
         raise NotApproved(NOT_APPROVED)
     await ctx.let_go()
     try:
-        await ctx.forge.workspaces.open_submission_place(workspace, entrant.task, [user_id])
+        async with _room():
+            await ctx.forge.workspaces.open_submission_place(workspace, entrant.task, [user_id])
     except PortError as exc:
         log.warning(
             "submitters.place_failed",

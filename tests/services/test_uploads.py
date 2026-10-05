@@ -51,7 +51,7 @@ from forge.domain.workflows import Visibility
 from forge.forges.ids import parse_task, parse_workspace
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
-from forge.services import contestants, publications, submissions, uploads
+from forge.services import contestants, publications, submissions, submitters, uploads
 from forge.testing import CLASSIC, FakeClock
 from tests.services.conftest import SPRING, Acme, Entered, organiser, signed_in, upload
 
@@ -639,3 +639,22 @@ async def test_a_removal_while_the_place_is_made_takes_the_access_back(
     ref = parse_workspace(_place(acme, entered).workspace)
     repo = acme.fake.state.repo(ref.org, ref.submission_repo(parse_task(entered.task).task))
     assert 8 not in repo.writers
+
+
+async def test_places_are_made_a_few_at_a_time_in_turn() -> None:
+    making = most = 0
+    finished: list[int] = []
+
+    async def make(index: int) -> None:
+        nonlocal making, most
+        async with submitters._room():
+            making += 1
+            most = max(most, making)
+            await asyncio.sleep(0.01)
+            making -= 1
+        finished.append(index)
+
+    await asyncio.gather(*(make(index) for index in range(10)))
+
+    assert most == submitters.PLACES_AT_ONCE
+    assert finished == list(range(10))
