@@ -4,7 +4,8 @@ commit fails, runs inside a caller's unit of work when handed one, and uses
 the setup the process holds when handed neither. Work a unit of work leaves
 for after its commit runs then, on a unit of work of its own, and never when
 it rolls back. Work it leaves for the background starts then too, and
-nobody waits for it: it fails into the log, and `stop` cuts it short. Work
+nobody waits for it: it fails into the log, and `stop` tells it the process
+is stopping and cuts it short after a grace. Work
 it leaves for a rollback runs, the latest first, when it
 raises or its commit fails, never when it commits, and one that fails is
 logged without hiding the error. Work left for its end runs either way, once
@@ -27,6 +28,7 @@ from forge.db.tables import Session as SessionRow
 from forge.domain.errors import Conflict, NotReady, SessionExpired, Unauthenticated
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
+from forge.runtime import setup as runtime_setup
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.runtime.held import holding
@@ -262,9 +264,32 @@ async def test_work_in_the_background_that_fails_is_logged(
     assert logged(caplog, "setup.background_failed")
 
 
-async def test_stop_cuts_short_the_work_running_in_the_background(
+async def test_stop_lets_work_in_the_background_finish_what_it_is_doing(
     settings: Settings, fake: FakeForge, clock: FakeClock
 ) -> None:
+    started = asyncio.Event()
+    told: list[bool] = []
+
+    async def brief(later: Context) -> None:
+        started.set()
+        await asyncio.sleep(0.2)
+        told.append(later.stopping())
+
+    built = Setup.build(settings, callback_path=CALLBACK_PATH, forge=fake, clock=clock)
+    async with built.unit_of_work() as ctx:
+        ctx.in_background(brief)
+        assert not ctx.stopping()
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    await built.stop()
+
+    assert told == [True]
+
+
+async def test_stop_cuts_short_the_work_running_in_the_background_past_its_grace(
+    settings: Settings, fake: FakeForge, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runtime_setup, "STOP_GRACE_SECONDS", 0.1)
     started = asyncio.Event()
     cut: list[bool] = []
 

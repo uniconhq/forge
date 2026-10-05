@@ -180,6 +180,44 @@ async def test_a_place_its_members_can_write_already_is_finished_and_left_alone(
     ]
 
 
+async def test_a_branch_protected_by_another_maker_meanwhile_counts_as_protected(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    repo = "/api/v1/repos/acme/spring.sum.u8.sub"
+    recorder.on("GET", f"{repo}/collaborators/bob/permission", ok({}, 404))
+    recorder.on("GET", repo, ok({}, 404))
+    recorder.on(
+        "GET",
+        f"{repo}/branch_protections/main",
+        ok({}, 404),
+        ok({"branch_name": "main"}),
+    )
+    recorder.on(
+        "POST",
+        f"{repo}/branch_protections",
+        ok({"message": "Branch protection already exist"}, 403),
+    )
+    recorder.on(
+        "GET",
+        "/api/v1/orgs/acme/teams/search",
+        ok(
+            {
+                "data": [
+                    {"id": 1, "name": "acme.spring-admin"},
+                    {"id": 2, "name": "acme.spring-manager"},
+                    {"id": 3, "name": "acme.spring-observer"},
+                ]
+            }
+        ),
+    )
+    workspace = forgejo.workspaces.workspace_of(ContestId("acme/spring"), UserOwner(8))
+
+    await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
+
+    assert f"PUT {repo}/collaborators/bob" in recorder.calls()
+
+
 async def test_a_place_a_member_only_reads_is_made_up_to_writing(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:

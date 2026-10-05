@@ -42,6 +42,9 @@ from forge.settings import Settings, load_settings
 log = get_logger(__name__)
 
 READY_TIMEOUT_SECONDS = 2.0
+STOP_GRACE_SECONDS = 10.0
+"""How long `stop` lets work in the background finish what it is doing
+before it cancels it."""
 AT_ONCE_AFTER_COMMIT = 8
 """How many pieces of work left for after a commit run at once, so a rejudge
 of hundreds starts its runs in a fraction of the time and still leaves the
@@ -73,6 +76,7 @@ class Setup:
             weakref.WeakValueDictionary()
         )
         self._background: set[asyncio.Task[None]] = set()
+        self._stopping = False
 
     @classmethod
     def build(
@@ -162,6 +166,7 @@ class Setup:
                     make_key=self._keys,
                     committed=later,
                     background=background,
+                    _stopping=lambda: self._stopping,
                     rolled_back=undo,
                     ended=ended,
                 )
@@ -229,6 +234,13 @@ class Setup:
             raise NotReady("The database did not answer.") from exc
 
     async def stop(self) -> None:
+        """Tear the setup down. Work in the background is told the process is
+        stopping (`Context.stopping`) and given `STOP_GRACE_SECONDS` to
+        finish what it is doing, then cancelled.
+        """
+        self._stopping = True
+        if self._background:
+            await asyncio.wait(self._background, timeout=STOP_GRACE_SECONDS)
         for task in self._background:
             task.cancel()
         await asyncio.gather(*self._background, return_exceptions=True)

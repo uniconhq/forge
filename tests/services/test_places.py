@@ -1,9 +1,10 @@
 """Making places ahead: approving someone makes their place at every task the
 contest has published, a task's first publication makes it for everyone
 approved, both once the request has committed and in turns of their own,
-none for a contest that is over, and someone removed while their place is
-made has the access taken back. A forge that fails stops the rest, which the
-contestant's first upload makes.
+none at a hidden task or for a contest that is a draft or over, and someone
+removed while their place is made has the access taken back. A person the
+forge refuses is passed over; a forge that does not answer stops the rest,
+which the contestant's first upload makes.
 """
 
 import asyncio
@@ -14,7 +15,7 @@ from typing import Any
 import pytest
 
 from forge.domain.clock import FakeClock
-from forge.domain.errors import Unavailable
+from forge.domain.errors import Conflict, Unavailable
 from forge.domain.ids import TaskId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, Scope
@@ -176,6 +177,119 @@ async def test_a_forge_that_fails_stops_the_rest_and_the_first_upload_makes_the_
         sha256=hashlib.sha256(SOURCE).hexdigest(),
     )
 
+    assert _writers(acme.fake, sum_task, 8) == {8}
+
+
+async def test_a_hidden_task_gets_no_places_ahead(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await _approve(setup, acme, 8)
+    await setup.settle()
+
+    await publish(setup, acme, sum_task, b"hidden: true\n")
+    await setup.settle()
+    shown = await make_task(setup, acme, "product")
+    await publish(setup, acme, shown)
+    await setup.settle()
+    acme.fake.add_user(20, "cyd")
+    await _approve(setup, acme, 20)
+    await setup.settle()
+
+    assert _writers(acme.fake, sum_task, 8) is None
+    assert _writers(acme.fake, sum_task, 20) is None
+    assert _writers(acme.fake, shown, 8) == {8}
+    assert _writers(acme.fake, shown, 20) == {20}
+
+
+async def test_a_draft_contest_gets_no_places_ahead(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await _approve(setup, acme, 8)
+    await setup.settle()
+    await write_contest(
+        acme.fake, RUNNING.format(visibility="public").replace("published", "draft")
+    )
+
+    await publish(setup, acme, sum_task)
+    await setup.settle()
+
+    assert _made(acme.fake) == []
+
+
+async def test_a_person_the_forge_refuses_is_passed_over_and_the_rest_are_made(
+    setup: Setup,
+    acme: Acme,
+    sum_task: TaskId,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    acme.fake.add_user(20, "cyd")
+    await _approve(setup, acme, 8)
+    await _approve(setup, acme, 20)
+    await setup.settle()
+    real = acme.fake.workspaces.open_submission_place
+
+    async def refuse_bob(workspace: Any, task: Any, member_ids: list[int]) -> None:
+        if member_ids == [8]:
+            raise Conflict("somebody else's repository")
+        await real(workspace, task, member_ids)
+
+    monkeypatch.setattr(acme.fake.workspaces, "open_submission_place", refuse_bob)
+
+    await publish(setup, acme, sum_task)
+    await setup.settle()
+
+    assert _writers(acme.fake, sum_task, 8) is None
+    assert _writers(acme.fake, sum_task, 20) == {20}
+    assert logged(caplog, "places.ahead_passed_over")
+
+
+async def test_someone_removed_while_a_new_tasks_place_is_made_has_the_access_taken_back(
+    setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await _approve(setup, acme, 8)
+    await setup.settle()
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+    real = acme.fake.workspaces.open_submission_place
+
+    async def made_then_removed(*args: Any, **kwargs: Any) -> None:
+        await real(*args, **kwargs)
+        await contestants.remove(setup, manager, SPRING, 8)
+
+    monkeypatch.setattr(acme.fake.workspaces, "open_submission_place", made_then_removed)
+
+    await publish(setup, acme, sum_task)
+    await setup.settle()
+
+    assert _writers(acme.fake, sum_task, 8) == set()
+
+
+async def test_a_first_upload_to_a_place_made_ahead_is_answered(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await publish(setup, acme, sum_task)
+    await setup.settle()
+    await _approve(setup, acme, 8)
+    await setup.settle()
+    assert _writers(acme.fake, sum_task, 8) == {8}
+    bob = await signed_in(setup, acme.fake, 8)
+
+    slot = await uploads.slot(
+        setup,
+        bob,
+        sum_task,
+        input="submission",
+        filename="main.py",
+        size=len(SOURCE),
+        sha256=hashlib.sha256(SOURCE).hexdigest(),
+    )
+
+    assert slot.id
     assert _writers(acme.fake, sum_task, 8) == {8}
 
 

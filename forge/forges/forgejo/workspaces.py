@@ -4,7 +4,8 @@ its organisers can read it, with the members as write collaborators. Each is
 made on its own, and every part of making one checks before it acts, so a
 try that stopped halfway is finished by the next. The members are given
 their access last, so a repository whose members all hold it is finished,
-and making it again costs one call a member. A submission and a
+and making it again costs two calls a member: their name, and what they may
+do there. A submission and a
 publication are tags under a reserved prefix that only the platform account
 may create, each pointing at the exact commit the files went in with. A
 publication is an annotated tag whose message is its note.

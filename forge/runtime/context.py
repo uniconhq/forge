@@ -68,6 +68,7 @@ class Context:
     rolled_back: list[AfterRollback] = field(default_factory=list, repr=False, kw_only=True)
     ended: list[AfterCommit] = field(default_factory=list, repr=False, kw_only=True)
     nudges: list[Nudge] = field(default_factory=list, repr=False, kw_only=True)
+    _stopping: Callable[[], bool] = field(default=lambda: False, repr=False, kw_only=True)
 
     @property
     def now(self) -> datetime:
@@ -108,6 +109,12 @@ class Context:
         partway to let go of its connection before a slow call.
         """
         self.background.append(work)
+
+    def stopping(self) -> bool:
+        """Whether the process is stopping, for work in the background to
+        finish what it is doing and start nothing more.
+        """
+        return self._stopping()
 
     def after_rollback(self, work: AfterRollback) -> None:
         """Run `work` if this unit of work rolls back, whether something in
