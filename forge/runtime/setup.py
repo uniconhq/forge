@@ -2,8 +2,9 @@
 port picked by `UNICON_FORGE`, the database and the clock. `start` builds
 the one setup the process holds and every action opens its unit of work on
 it; `ready` asks its database; `stop` tears it down; `public_url` is where
-the platform is served. Nothing runs in the background: every piece of work
-is done by the request that asks for it.
+the platform is served. Every piece of work is done by the request that asks
+for it, but for the few a request starts on its way out without waiting
+(`Context.in_background`), which `stop` cuts short. Nothing runs on a timer.
 """
 
 import asyncio
@@ -41,6 +42,9 @@ from forge.settings import Settings, load_settings
 log = get_logger(__name__)
 
 READY_TIMEOUT_SECONDS = 2.0
+STOP_GRACE_SECONDS = 10.0
+"""How long `stop` lets work in the background finish what it is doing
+before it cancels it."""
 AT_ONCE_AFTER_COMMIT = 8
 """How many pieces of work left for after a commit run at once, so a rejudge
 of hundreds starts its runs in a fraction of the time and still leaves the
@@ -71,6 +75,8 @@ class Setup:
         self._refreshing: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
             weakref.WeakValueDictionary()
         )
+        self._background: set[asyncio.Task[None]] = set()
+        self._stopping = False
 
     @classmethod
     def build(
@@ -136,13 +142,16 @@ class Setup:
         fails raises out of the block. Once it has committed, the work the
         block left for then runs, with the work left for its end, each on a
         unit of work of its own and up to `AT_ONCE_AFTER_COMMIT` at a time;
-        one that fails is logged, since what the block did has landed. When
-        it rolls back instead, the work left for that runs, the latest first,
-        then the work left for its end, before the error goes on. Either way
-        the block's own connection is back in the pool before any of it runs.
+        one that fails is logged, since what the block did has landed. The
+        work it left for the background starts then too, and the block ends
+        without waiting for it. When it rolls back instead, the work left for
+        that runs, the latest first, then the work left for its end, before
+        the error goes on. Either way the block's own connection is back in
+        the pool before any of it runs.
         The nudges the block left are published just before it commits.
         """
         later: list[AfterCommit] = []
+        background: list[AfterCommit] = []
         undo: list[AfterRollback] = []
         ended: list[AfterCommit] = []
         try:
@@ -156,6 +165,8 @@ class Setup:
                     memo=self._memo,
                     make_key=self._keys,
                     committed=later,
+                    background=background,
+                    _stopping=lambda: self._stopping,
                     rolled_back=undo,
                     ended=ended,
                 )
@@ -165,6 +176,8 @@ class Setup:
             await _after_rollback(undo)
             await self._run_after(ended)
             raise
+        for work in background:
+            self._start(work)
         await self._run_after(later + ended)
 
     async def _run_after(self, work: list[AfterCommit]) -> None:
@@ -179,6 +192,25 @@ class Setup:
                     await work(ctx)
             except Exception:
                 log.exception("setup.after_commit_failed")
+
+    def _start(self, work: AfterCommit) -> None:
+        task = asyncio.create_task(self._in_background(work))
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _in_background(self, work: AfterCommit) -> None:
+        try:
+            async with self.unit_of_work() as ctx:
+                await work(ctx)
+        except Exception:
+            log.exception("setup.background_failed")
+
+    async def settle(self) -> None:
+        """Wait until no work started in the background is running, work
+        that work started included.
+        """
+        while self._background:
+            await asyncio.gather(*self._background, return_exceptions=True)
 
     def refresh_lock(self, session_id: uuid.UUID) -> asyncio.Lock:
         """The one lock this setup's units of work take while refreshing the
@@ -202,6 +234,16 @@ class Setup:
             raise NotReady("The database did not answer.") from exc
 
     async def stop(self) -> None:
+        """Tear the setup down. Work in the background is told the process is
+        stopping (`Context.stopping`) and given `STOP_GRACE_SECONDS` to
+        finish what it is doing, then cancelled.
+        """
+        self._stopping = True
+        if self._background:
+            await asyncio.wait(self._background, timeout=STOP_GRACE_SECONDS)
+        for task in self._background:
+            task.cancel()
+        await asyncio.gather(*self._background, return_exceptions=True)
         await self._broker.stop()
         await self._forge.aclose()
         await self._probe_engine.dispose()

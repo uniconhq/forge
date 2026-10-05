@@ -155,7 +155,7 @@ async def slot(
         # not, means an earlier slot made it, so a submission of twenty files
         # costs one call between them and not one each. Two first slots at
         # once both make it, which is making it once.
-        await submitters.open_place(ctx, entrant, workspace)
+        await submitters.open_place(ctx, entrant)
     await _clear_lapsed(ctx, entrant.session.user_id, UploadPurpose.SUBMISSION)
     await _refuse_open(
         ctx,

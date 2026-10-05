@@ -186,7 +186,7 @@ async def submit(
         # checked against first, and before the hold below, since making it
         # takes the forge seconds and the hold keeps the connection.
         await submitters.refuse(ctx, entrant)
-        await submitters.open_place(ctx, entrant, workspace)
+        await submitters.open_place(ctx, entrant)
         opened = True
     if workspace is not None:
         await _hold(ctx, workspace, task)
@@ -207,7 +207,7 @@ async def submit(
         # Naming an upload means a slot made the place already, and a first
         # submission of typed values made it before the hold; one whose
         # gradings are all gone still has its place made here.
-        await submitters.open_place(ctx, entrant, workspace)
+        await submitters.open_place(ctx, entrant)
     layout = rules.lay_out(
         entrant.published.definition.inputs.contestant,
         inputs,
