@@ -22,6 +22,8 @@ forge/
     actions.py       the @action mark
     held.py          the one setup the process holds
     memo.py          answers the setup keeps for a few seconds
+    broker.py        the process's live-update streams and the one connection
+                     that listens for the nudges every process publishes
     setup.py         the package set up for one process; start, ready, stop and now
   domain/            the types and their rules, the definition files, the plans,
                      a publication and its note, the release rules,
@@ -89,8 +91,16 @@ forge/api/
                 ContestVisibility of a contest
   landing.py    contests, contest, statement, and the PublicContest, PublicTask
                 and PublicStatement they return
-  events.py     check, EVENTS_PATH, where the door is, and SIGNATURE_HEADERS, the
-                headers the signature comes in
+  events.py     check and publish, EVENTS_PATH, where the door is, and
+                SIGNATURE_HEADERS and KIND_HEADERS, the headers the signature
+                and the event's kind come in
+  announcements.py  post, edit, close, manage, contest, task, and the
+                Announcement and AnsweredQuestion they return
+  clarifications.py  ask, mine, follow_up, inbox, of_contest, reply, mark,
+                unmark, answer_publicly, and the Clarification and Message
+                they return
+  live.py       stream, the nudges one session hears, and the Nudge and
+                NudgeKind it yields
   uploads.py    slot, task_file_slot, complete, door, the Slot a slot is, the
                 Upload complete returns with its UploadStatus, and the Door
                 the proxy is answered with
@@ -420,7 +430,9 @@ hosting process calls are actions, marked `@action` from
 | `contestants` | `register`, `mine`, `list`, `approve`, `reject`, `reopen`, `remove`, `extend` |
 | `contest_home` | `contests`, `home`, `task` |
 | `landing` | `contests`, `contest`, `statement` |
-| `events` | `check` |
+| `events` | `check`, `publish` |
+| `announcements` | `post`, `edit`, `close`, `manage`, `contest`, `task` |
+| `clarifications` | `ask`, `mine`, `follow_up`, `inbox`, `of_contest`, `reply`, `mark`, `unmark`, `answer_publicly` |
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
 | `submissions` | `submit`, `mine`, `one`, `files`, `file`, `run_log` |
@@ -770,6 +782,88 @@ publication of each task, with the contest's visibility and the release
 rules applied first, and a contest or task the reader may not see is no
 such contest or task, the same answer as one that is not there.
 
+## Announcements and clarifications
+
+Both are threads at the forge, through the port's `threads` area, and
+nothing about either is kept in the database: the thread is the record.
+
+An **announcement** is an organiser's message to a contest or one of its
+tasks, a thread labelled `announcement` on the contest's or the task's own
+repository. A manager there posts, edits and closes one, each as
+themselves with their own credential, so the forge's record says who wrote
+it (`announcements.post`, `edit`, `close`); an observer reads every one,
+closed ones included (`manage`). There is no delete: a message people have
+read is closed and stays readable. A signed-in person reads the open
+announcements of a contest they see and of each task released to them
+(`contest`), and of one released task (`task`), read live as the platform,
+since a contestant reaches no repository at the forge; a task not released
+to them contributes nothing.
+
+A **clarification** is a contestant's question, a thread labelled
+`clarification` on the desk of their own workspace, which is what keeps it
+private to them and the organisers who reach the desk through the
+contest's roles. An approved contestant asks as themselves, and their first
+question makes the desk, as the platform (`clarifications.ask`); a question
+may name a task released to them. They read their own questions with every
+message (`mine`), and comment again on one (`follow_up`), which on an
+answered question takes the mark off and opens it, so the follow-up lands
+back with the organisers in the same thread. A manager at the contest
+replies, which leaves it open (`reply`); marks it answered, which labels it
+`answered` and closes it, with or without a reply (`mark`); and takes that
+back (`unmark`). Marking or unmarking twice changes nothing, so a retry is
+always safe and a reply is never posted twice. The inbox is one search at
+the forge for the org's open clarifications, as the organiser, for anyone
+holding a role anywhere in the org, each shown only where they observe the
+contest (`inbox`); an answered question is closed precisely because the
+forge's search cannot ask for a label's absence. `of_contest` is every
+question of one contest, answered ones included. An answer made public is
+an ordinary announcement on the question's task, or its contest, posted as
+the organiser with a line the platform adds pointing at the question
+(`answer_publicly`); readers learn that it answers a question and an
+organiser which, and the question stays private. Text a person writes
+never carries such a line: `announcements.checked` takes any out. A title
+is at most 200 characters and a text at most 20,000, and an empty or
+longer one is `InvalidMessage`, naming which.
+
+## Live updates
+
+A page that shows something that can change while it is open hears of the
+change and asks for the thing again; nothing that changed travels on the
+stream. A nudge (`domain/live.py`) is a kind, `grading`, `announcement` or
+`clarification`, and an id, with who may hear it: the one person it
+concerns, the organisers who observe a scope or a broader one, and the
+approved contestants of a contest. `resync` tells a page that nudges may
+have been missed.
+
+A unit of work nudges with `ctx.nudge(...)`, and the setup publishes every
+nudge the unit of work left in one `pg_notify` on its own transaction, just
+before the commit, so Postgres delivers them with it and never for a unit
+of work that rolls back. Every write of a grading's status or progress
+nudges its contestant and its task's organisers (`gradings.changed`, from
+`new_row`, the start, `finish`, the envelope and the progress callback),
+which is what moves a submissions list while its owner watches. A thread's
+changes come from the forge: the host answers the forge's push as soon as
+`events.check` passes, then hands the body to `events.publish`, which reads
+it through the port and nudges a clarification's asker and its contest's
+organisers, an announcement of a contest its contestants and organisers,
+and one of a task its organisers and, only once the task is released, its
+contestants. An event about anything else, or naming a place in another
+org than the one whose secret signed it, nudges nobody.
+
+Each process keeps one broker (`runtime/broker.py`), with one connection
+outside the pool that listens on `unicon_live`, opened when the first
+stream subscribes and closed when the last leaves, so whichever process
+published a nudge, every process's streams hear it. `live.stream(session)`
+is what the host serves as one Server-Sent Events connection per session:
+it checks the session, reads its audience (the person, every role they hold
+and the contests where they are an approved contestant), and yields each
+nudge that audience hears, or `None` every fifteen seconds for a keepalive.
+It holds no database connection while it waits, checks the session again
+every minute and ends once the session has, and reads the audience again
+every five minutes. A stream that falls 256 nudges behind is emptied and
+told to resync. When the listening connection drops it is opened again a
+second later and every stream is told to resync.
+
 ## Uploads
 
 A person's files go from the browser into the forge's own large-file store
@@ -1064,6 +1158,7 @@ structured members in `extra`:
 | `ContestantConflict` | `contestant_conflict` | `contests` |
 | `SharedWorkflowOwner` | `shared_workflow_owner` | `workflows` |
 | `WrongStatus` | `wrong_status` | `current`, the registration's or the grading's status |
+| `InvalidMessage` | `invalid_message` | `field`, `title` or `body` |
 | `TaskClosed` | `task_closed` | `reason`, `ended` or `submissions_closed` |
 | `SubmissionLimit` | `submission_limit` | `limit`, the submissions allowed |
 | `RateLimited` | `rate_limited` | `rate`, such as `1 per 30s`, and `retry_at` |
