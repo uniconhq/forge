@@ -89,7 +89,7 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
         {"name_pattern": "submission/*", "whitelist_usernames": ["platform-account"]}
     ]
     assert recorder.sent("PUT", "/api/v1/repos/acme/spring.u8.desk/collaborators/bob") == [
-        {"permission": "write"}
+        {"permission": "read"}
     ]
     assert recorder.calls().count("POST /api/v1/orgs/acme/repos") == 2
     assert set(recorder.headers("POST", "/api/v1/orgs/acme/repos")) == {"token admin"}
@@ -284,6 +284,33 @@ async def test_a_thread_is_posted_with_the_label_of_its_kind(
     ]
 
 
+async def test_a_thread_whose_label_did_not_hold_is_labelled_by_the_platform(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on(
+        "GET",
+        "/api/v1/orgs/acme/labels",
+        ok([{"id": 4, "name": "clarification"}]),
+        ok([{"id": 9, "name": "clarification"}]),
+    )
+    recorder.on("POST", "/api/v1/repos/acme/spring.u8.desk/issues", ok(_issue(3, labels=[])))
+    recorder.on(
+        "POST",
+        "/api/v1/repos/acme/spring.u8.desk/issues/3/labels",
+        ok([{"id": 9, "name": "clarification"}]),
+    )
+    workspace = forgejo.workspaces.workspace_of(ContestId("acme/spring"), UserOwner(8))
+
+    thread = await forgejo.threads.post_thread(
+        PLATFORM, workspace, ThreadKind.CLARIFICATION, title="t", body="b"
+    )
+
+    assert thread.kind is ThreadKind.CLARIFICATION
+    assert recorder.sent("POST", "/api/v1/repos/acme/spring.u8.desk/issues/3/labels") == [
+        {"labels": [9]}
+    ]
+
+
 def _issue(number: int, *labels: str, state: str = "open", **extra: object) -> dict[str, object]:
     return {
         "number": number,
@@ -377,7 +404,10 @@ def test_an_event_about_a_thread_reads_as_the_change(
     forgejo: ForgejoForge, kind: str, repository: str, expected: tuple[object, ...]
 ) -> None:
     body = json.dumps(
-        {"repository": {"name": repository, "owner": {"login": "acme"}}, "issue": {"number": 5}}
+        {
+            "repository": {"name": repository, "owner": {"login": "acme"}},
+            "issue": {"number": 5, "labels": [{"name": expected[0]}]},
+        }
     ).encode()
 
     change = forgejo.threads.read_event(kind, body)
@@ -396,7 +426,23 @@ def test_an_event_about_a_thread_reads_as_the_change(
         (
             "issues",
             b'{"repository": {"name": "x.workflow", "owner": {"login": "acme"}},'
-            b' "issue": {"number": 1}}',
+            b' "issue": {"number": 1, "labels": [{"name": "announcement"}]}}',
+        ),
+        (
+            "issues",
+            b'{"repository": {"name": "spring.contest", "owner": {"login": "acme"}},'
+            b' "issue": {"number": 1, "labels": []}}',
+        ),
+        (
+            "issue_comment",
+            b'{"repository": {"name": "spring.contest", "owner": {"login": "acme"}},'
+            b' "issue": {"number": 1, "labels": [{"name": "announcement"}],'
+            b' "pull_request": {"merged": false}}}',
+        ),
+        (
+            "issues",
+            b'{"repository": {"name": "spring.u8.desk", "owner": {"login": "acme"}},'
+            b' "issue": {"number": 1, "labels": [{"name": "announcement"}]}}',
         ),
     ],
 )

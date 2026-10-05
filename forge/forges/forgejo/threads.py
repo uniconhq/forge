@@ -14,7 +14,6 @@ its owner and name and the issue by its number, which is all a change needs.
 """
 
 import contextlib
-import json
 from datetime import datetime
 from typing import Any
 
@@ -29,11 +28,10 @@ from forge.forges.ids import (
     location,
     parse_thread,
     place_of_repo,
-    thread_change,
     thread_id,
+    thread_pushed,
 )
 
-THREAD_EVENTS = frozenset({"issues", "issue_comment"})
 SEARCH_PATH = "/api/v1/repos/issues/search"
 
 
@@ -59,6 +57,20 @@ class ForgejoThreads:
                 json={"title": title, "body": body, "labels": [label]},
             )
         )
+        if not any(str(found.get("name")) == kind.value for found in issue.get("labels") or []):
+            # Forgejo drops the labels of a poster who may only read the
+            # repository, as a contestant on their desk, and of a label id
+            # kept from before the label was made again.
+            self._labels.pop((org, kind.value), None)
+            label = await self._label(org, kind.value)
+            issue["labels"] = list_of(
+                await self._http.call(
+                    PLATFORM,
+                    "POST",
+                    f"/api/v1/repos/{org}/{repo}/issues/{issue['number']}/labels",
+                    json={"labels": [label]},
+                )
+            )
         return _thread(org, repo, issue, [])
 
     async def list_threads(
@@ -86,7 +98,13 @@ class ForgejoThreads:
         return await self._with_comments(as_, org, repo, issue)
 
     async def search_threads(
-        self, as_: Identity, org: OrgId, kind: ThreadKind, *, open_only: bool = True
+        self,
+        as_: Identity,
+        org: OrgId,
+        kind: ThreadKind,
+        *,
+        open_only: bool = True,
+        comments: bool = True,
     ) -> tuple[Thread, ...]:
         found = await self._http.get_all(
             as_,
@@ -103,7 +121,11 @@ class ForgejoThreads:
             if owner != org:
                 continue
             try:
-                threads.append(await self._with_comments(as_, owner, repo, issue))
+                threads.append(
+                    await self._with_comments(as_, owner, repo, issue)
+                    if comments
+                    else _thread(owner, repo, issue, [])
+                )
             except MalformedId:
                 continue
         return tuple(sorted(threads, key=lambda thread: thread.created_at))
@@ -141,15 +163,7 @@ class ForgejoThreads:
         await self._patch(as_, thread, {"state": "open"})
 
     def read_event(self, kind: str, body: bytes) -> ThreadChange | None:
-        if kind not in THREAD_EVENTS:
-            return None
-        try:
-            event = json.loads(body)
-            repository = event["repository"]
-            owner = str((repository.get("owner") or {}).get("login") or "")
-            return thread_change(owner, str(repository["name"]), int(event["issue"]["number"]))
-        except ValueError, KeyError, TypeError, AttributeError, MalformedId:
-            return None
+        return thread_pushed(kind, body)
 
     async def _with_comments(
         self, as_: Identity, org: str, repo: str, issue: dict[str, Any]

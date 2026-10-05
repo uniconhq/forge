@@ -6,7 +6,6 @@ repository's owner and name and the issue's number, so a test can hand the
 fake what the real forge would send.
 """
 
-import json
 from dataclasses import replace
 
 from forge.domain.errors import Forbidden, NotFound
@@ -14,9 +13,7 @@ from forge.domain.identity import Identity
 from forge.domain.ids import OrgId, ThreadId
 from forge.domain.threads import Comment, Thread, ThreadChange, ThreadKind, ThreadPlace
 from forge.forges.fake.state import State
-from forge.forges.ids import MalformedId, location, parse_thread, thread_change, thread_id
-
-THREAD_EVENTS = frozenset({"issues", "issue_comment"})
+from forge.forges.ids import location, parse_thread, thread_id, thread_pushed
 
 
 class FakeThreads:
@@ -33,7 +30,7 @@ class FakeThreads:
         self._state.record("post_thread", as_, place=place, kind=kind)
         self._state.check_up()
         repo = self._state.repo(*location(place))
-        self._state.require_write(as_, repo)
+        self._state.require_read(as_, repo)
         prefix = f"{repo.owner}/{repo.name}#"
         number = 1 + sum(1 for existing in self._state.threads if existing.startswith(prefix))
         made = Thread(
@@ -79,7 +76,13 @@ class FakeThreads:
             raise NotFound(f"no thread {thread}") from None
 
     async def search_threads(
-        self, as_: Identity, org: OrgId, kind: ThreadKind, *, open_only: bool = True
+        self,
+        as_: Identity,
+        org: OrgId,
+        kind: ThreadKind,
+        *,
+        open_only: bool = True,
+        comments: bool = True,
     ) -> tuple[Thread, ...]:
         self._state.record("search_threads", as_, org=org, kind=kind, open_only=open_only)
         self._state.check_up()
@@ -90,7 +93,7 @@ class FakeThreads:
             if owner != org or thread.kind is not kind or (open_only and thread.closed):
                 continue
             if user_id is None or self._state.may_read(user_id, self._state.repo(owner, name)):
-                found.append(thread)
+                found.append(thread if comments else replace(thread, comments=()))
         return tuple(sorted(found, key=lambda thread: thread.created_at))
 
     async def edit_thread(self, as_: Identity, thread: ThreadId, *, title: str, body: str) -> None:
@@ -126,15 +129,7 @@ class FakeThreads:
         self._state.threads[thread] = replace(found, answered=False, closed=False)
 
     def read_event(self, kind: str, body: bytes) -> ThreadChange | None:
-        if kind not in THREAD_EVENTS:
-            return None
-        try:
-            event = json.loads(body)
-            repository = event["repository"]
-            owner = str((repository.get("owner") or {}).get("login") or "")
-            return thread_change(owner, str(repository["name"]), int(event["issue"]["number"]))
-        except ValueError, KeyError, TypeError, AttributeError, MalformedId:
-            return None
+        return thread_pushed(kind, body)
 
     def _thread(self, as_: Identity, thread: ThreadId) -> Thread:
         found = self._state.threads.get(thread)

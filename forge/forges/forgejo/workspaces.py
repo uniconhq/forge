@@ -45,6 +45,7 @@ from forge.forges.ids import (
 )
 
 WRITE = "write"
+READ = "read"
 SUBMIT_MESSAGE = "Submit"
 NUMBERING_ATTEMPTS = 3
 
@@ -59,7 +60,7 @@ class ForgejoWorkspaces:
         self, contest: ContestId, owner: WorkspaceOwner, member_ids: Sequence[int]
     ) -> WorkspaceId:
         ref = _ref(contest, owner)
-        await self._open(ref, ref.desk_repo, member_ids)
+        await self._open(ref, ref.desk_repo, member_ids, permission=READ)
         return ref.id
 
     def workspace_of(self, contest: ContestId, owner: WorkspaceOwner) -> WorkspaceId:
@@ -82,15 +83,21 @@ class ForgejoWorkspaces:
         await self._open(ref, ref.submission_repo(task_ref.task), member_ids, reserve=True)
 
     async def _open(
-        self, ref: WorkspaceRef, repo: str, member_ids: Sequence[int], *, reserve: bool = False
+        self,
+        ref: WorkspaceRef,
+        repo: str,
+        member_ids: Sequence[int],
+        *,
+        reserve: bool = False,
+        permission: str = WRITE,
     ) -> None:
         """Make one repository of the workspace, empty and private, unless it
         is there: only the platform makes repositories, so one of that name
         is an earlier try's. Then refuse rewriting its history, attach the
         contest's roles, with `reserve` keep its submissions for the platform,
-        and only then give the members write access, so nobody can write a
-        place whose submissions anyone may name. Each leaves what is already
-        right alone.
+        and only then give the members access, write unless `permission` says
+        read, so nobody can write a place whose submissions anyone may name.
+        Each leaves what is already right alone.
 
         A repository that is there and has a collaborator who is not one of
         the members is somebody else's, and is refused with `Conflict` rather
@@ -112,7 +119,7 @@ class ForgejoWorkspaces:
         if reserve:
             await self._repos.reserve_versions(ref.org, repo, SUBMISSION_PREFIX)
         for username in usernames:
-            await self._repos.add_collaborator(ref.org, repo, username, permission=WRITE)
+            await self._repos.add_collaborator(ref.org, repo, username, permission=permission)
 
     async def _refuse_if_someone_elses(self, org: str, repo: str, usernames: list[str]) -> None:
         members = {username.lower() for username in usernames}
@@ -236,9 +243,13 @@ class ForgejoWorkspaces:
         )
 
     async def _workspace_repos(self, ref: WorkspaceRef) -> list[str]:
+        """The workspace's repositories, found through the forge's search for
+        the owner's part of their names, so closing one costs what it finds
+        and not a read of every repository in the org.
+        """
         return [
             str(repo["name"])
-            for repo in await self._repos.under(ref.org)
+            for repo in await self._repos.named_with(ref.org, f".{ref.owner.segment}.")
             if str(repo["name"]) == ref.desk_repo or ref.is_submission_repo(str(repo["name"]))
         ]
 

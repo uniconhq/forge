@@ -18,7 +18,7 @@ account's session never carries over into another's.
 
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -105,7 +105,9 @@ class CiLogin:
                 location = urljoin(location, response.headers["location"])
                 continue
             if response.status_code != OK:
-                raise Rejected(f"{location} answered {response.status_code} during the CI sign-in")
+                # The query can hold the OAuth code, and the detail is logged.
+                where = urlsplit(location)._replace(query="", fragment="").geturl()
+                raise Rejected(f"{where} answered {response.status_code} during the CI sign-in")
             location = await self._approve_consent(browser, location, response)
         raise Rejected("the CI sign-in did not settle")
 

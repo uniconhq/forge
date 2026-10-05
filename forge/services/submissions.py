@@ -175,6 +175,19 @@ async def submit(
         )
     entrant = await submitters.entrant(ctx, session, task)
     workspace = entrant.workspace
+    opened = False
+    if (
+        workspace is not None
+        and not any(given.uploads for given in inputs.values())
+        and not await _submitted_before(ctx, workspace, task)
+    ):
+        # A first submission of nothing but typed values names no upload, so
+        # no slot made its place; it is made here, by the rules a submit is
+        # checked against first, and before the hold below, since making it
+        # takes the forge seconds and the hold keeps the connection.
+        await submitters.refuse(ctx, entrant)
+        await submitters.open_place(ctx, entrant, workspace)
+        opened = True
     if workspace is not None:
         await _hold(ctx, workspace, task)
         again = await _again(ctx, entrant, workspace, idempotency_key)
@@ -190,9 +203,10 @@ async def submit(
         )
     await _refuse_rate(ctx, entrant, workspace)
     chosen = await _chosen(ctx, entrant, inputs)
-    if not made and not chosen:
-        # Naming an upload means a slot made the place already, so only a
-        # submission of nothing but typed values has one to make here.
+    if not made and not chosen and not opened:
+        # Naming an upload means a slot made the place already, and a first
+        # submission of typed values made it before the hold; one whose
+        # gradings are all gone still has its place made here.
         await submitters.open_place(ctx, entrant, workspace)
     layout = rules.lay_out(
         entrant.published.definition.inputs.contestant,
@@ -337,6 +351,20 @@ def _log_failure(exc: PortError, grading: str) -> PortError:
         detail=exc.detail,
     )
     return Unavailable(LOG_STORE_UNAVAILABLE)
+
+
+async def _submitted_before(ctx: Context, workspace: WorkspaceId, task: TaskId) -> bool:
+    """Whether the workspace has a grading at the task, and so a place to
+    submit it that some earlier submit made. Read without a lock: the
+    answer only saves a call to the forge, and a place made twice is made
+    once.
+    """
+    found = await ctx.db.scalar(
+        select(Grading.id)
+        .where(Grading.workspace_id == workspace, Grading.task_id == task)
+        .limit(1)
+    )
+    return found is not None
 
 
 async def _hold(ctx: Context, workspace: WorkspaceId, task: TaskId) -> None:

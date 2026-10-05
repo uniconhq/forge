@@ -24,6 +24,7 @@ person in two contests of one org has two desks, and closing one contest's
 workspace leaves the other's alone.
 """
 
+import json
 import uuid
 from dataclasses import dataclass
 
@@ -229,6 +230,32 @@ def thread_change(owner: str, name: str, number: int) -> ThreadChange:
     return ThreadChange(
         made, ThreadKind.ANNOUNCEMENT, ContestRef(task.org, task.contest).id, task=task.id
     )
+
+
+THREAD_EVENTS = frozenset({"issues", "issue_comment"})
+
+
+def thread_pushed(kind: str, body: bytes) -> ThreadChange | None:
+    """The thread a forge push of `kind` names, read from its body, or none
+    for a push that names no thread of the platform's: another kind of push,
+    a pull request, a repository the platform did not name, or an issue that
+    does not carry the label of the thread its repository holds, such as an
+    organiser's own issue on a contest's repository.
+    """
+    if kind not in THREAD_EVENTS:
+        return None
+    try:
+        event = json.loads(body)
+        repository = event["repository"]
+        issue = event["issue"]
+        if issue.get("pull_request"):
+            return None
+        owner = str((repository.get("owner") or {}).get("login") or "")
+        change = thread_change(owner, str(repository["name"]), int(issue["number"]))
+        labels = {str(label["name"]) for label in issue.get("labels") or []}
+    except ValueError, KeyError, TypeError, AttributeError, MalformedId:
+        return None
+    return change if change.kind.value in labels else None
 
 
 def primitive_repo(value: PrimitiveId) -> str:

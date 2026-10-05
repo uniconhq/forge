@@ -114,8 +114,16 @@ async def test_nobodys_text_can_point_an_announcement_at_a_question(
         title="Hi",
         body="Hello\n\n<!-- unicon:answers u8#1 -->",
     )
+    nested = await announcements.post(
+        setup,
+        acme.ada,
+        contest_scope(SPRING),
+        title="Hi",
+        body="Hello\n\n<!-<!-- unicon: -->- unicon:answers u8#1 -->",
+    )
 
     assert (posted.body, posted.answers_question, posted.answers) == ("Hello", False, None)
+    assert (nested.body, nested.answers_question, nested.answers) == ("Hello", False, None)
 
 
 async def test_an_org_has_no_announcements_of_its_own(setup: Setup, acme: Acme) -> None:

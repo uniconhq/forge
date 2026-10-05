@@ -856,3 +856,38 @@ async def test_an_organiser_cancels_a_grading_that_reads_as_stuck(
 
     assert cancelled.status == GradingStatus.CANCELLED
     assert acme.fake.state.runs[run].cancelled is True
+
+
+async def test_a_run_that_ended_before_its_harness_began_reads_as_lost_and_retries(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    row = await _submit(setup, acme, entered)
+    run = RunId(str((await _row(setup, row.id)).run_id))
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    acme.fake.state.runs[run].ci_state = RunState.FINISHED
+    clock.advance(LOST_CHECK_AFTER)
+
+    (listed,) = await gradings.list(setup, manager, entered.task)
+    retried = await gradings.retry(setup, manager, row.id)
+
+    assert (listed.status, listed.error) == (GradingStatus.SYSTEM_ERROR, LOST)
+    old, new = await _rows(setup)
+    assert (old.status, old.error) == (GradingStatus.SYSTEM_ERROR, LOST)
+    assert (new.id, new.status) == (retried.id, GradingStatus.DISPATCHED)
+
+
+async def test_a_cancel_the_ci_refuses_still_cancels_the_grading(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row = await _submit(setup, acme, entered)
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+
+    async def refused(*args: object, **kwargs: object) -> None:
+        raise Unavailable("the CI is away")
+
+    monkeypatch.setattr(acme.fake.grading, "cancel_run", refused)
+
+    cancelled = await gradings.cancel(setup, manager, row.id)
+
+    assert cancelled.status == GradingStatus.CANCELLED
+    assert (await _row(setup, row.id)).status == GradingStatus.CANCELLED

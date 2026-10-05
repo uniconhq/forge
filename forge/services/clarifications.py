@@ -5,12 +5,17 @@ which is what keeps everyone else out of it. Nothing about one is stored in
 the database: the thread is the record.
 
 - `ask`: an approved contestant asks, as themselves; their desk is made by
-  their first question, as the platform, with them a writer on it. A
-  question may name a task released to them.
+  their first question, as the platform, with them a reader on it, which at
+  the forge lets them post and comment and close their own question but not
+  touch an organiser's reply or a label. The platform labels the question.
+  A question may name a task released to them, kept as a marker in its body
+  that is checked against the contest whenever it is read, since the asker
+  can edit their own question at the forge.
 - `mine`: the contestant's own questions, with every message under them.
 - `follow_up`: the contestant comments again, as themselves; on an answered
-  question that takes the mark off and opens it, so the follow-up lands back
-  with the organisers instead of starting a thread with none of the history.
+  question the platform then takes the mark off and opens it, so the
+  follow-up lands back with the organisers instead of starting a thread with
+  none of the history.
 - `inbox`: every question still open across an org, in one search at the
   forge as the organiser, for anyone holding a role anywhere in the org, each
   shown only where they observe its contest.
@@ -38,7 +43,7 @@ from sqlalchemy import select
 from forge.db.tables import Contestant
 from forge.domain import release as rules
 from forge.domain.errors import Forbidden, NotApproved, NotFound, SessionExpired
-from forge.domain.identity import AsUser
+from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId, TaskId, ThreadId, WorkspaceId
 from forge.domain.names import ScopeNames, UserOwner
 from forge.domain.registration import Status
@@ -159,11 +164,14 @@ async def follow_up(
         raise NotApproved("Only an approved contestant of the contest asks it questions.")
     _, body = announcements.checked("-", body)
     as_ = AsUser(session.user_id, await sessions.credential_for(ctx, session.id))
+    await ctx.let_go()
     workspace = ctx.forge.workspaces.workspace_of(contest, UserOwner(session.user_id))
     thread = await _found(ctx, as_, ctx.forge.threads.thread_of(workspace, number))
     await ctx.forge.threads.comment(as_, thread.id, body)
     if thread.answered or thread.closed:
-        await ctx.forge.threads.unmark_answered(as_, thread.id)
+        # The asker only reads their desk, so the label is the platform's to
+        # take off.
+        await ctx.forge.threads.unmark_answered(PLATFORM, thread.id)
         log.info("clarifications.reopened", contest=contest, number=number, user_id=as_.user_id)
     return await _again(ctx, as_, thread)
 
@@ -188,12 +196,15 @@ async def inbox(ctx: Context, session: Session, org: str) -> tuple[Clarification
         raise Forbidden(f"This needs a role at {org}.")
     threads = [
         thread
-        for thread in await ctx.forge.threads.search_threads(
-            as_, OrgId(found), ThreadKind.CLARIFICATION
+        for thread, contest in _questions(
+            ctx,
+            await ctx.forge.threads.search_threads(
+                as_, OrgId(found), ThreadKind.CLARIFICATION, comments=False
+            ),
         )
-        if holds(grants, contest_scope(_contest_of(ctx, thread)), Role.OBSERVER)
+        if holds(grants, contest_scope(contest), Role.OBSERVER)
     ]
-    return await _shown(ctx, threads)
+    return await _shown(ctx, await _with_messages(ctx, as_, threads))
 
 
 @action
@@ -209,12 +220,19 @@ async def of_contest(
     await ctx.let_go()
     threads = [
         thread
-        for thread in await ctx.forge.threads.search_threads(
-            organiser.identity, OrgId(scope.org), ThreadKind.CLARIFICATION, open_only=False
+        for thread, asked_in in _questions(
+            ctx,
+            await ctx.forge.threads.search_threads(
+                organiser.identity,
+                OrgId(scope.org),
+                ThreadKind.CLARIFICATION,
+                open_only=False,
+                comments=False,
+            ),
         )
-        if _contest_of(ctx, thread) == contest
+        if asked_in == contest
     ]
-    return await _shown(ctx, threads)
+    return await _shown(ctx, await _with_messages(ctx, organiser.identity, threads))
 
 
 @action
@@ -276,8 +294,8 @@ async def answer_publicly(
     question, which stays where it is. Needs the manager role at that place.
     """
     thread = await _managed(ctx, organiser, contest, asker, number)
-    about = ABOUT.search(thread.body)
-    scope = task_scope(TaskId(about.group(1))) if about is not None else contest_scope(contest)
+    about = _about(thread, contest)
+    scope = task_scope(about) if about is not None else contest_scope(contest)
     return await announcements.post(
         ctx,
         organiser,
@@ -330,6 +348,42 @@ def _contest_of(ctx: Context, thread: Thread) -> ContestId:
     return ctx.forge.workspaces.contest_of(WorkspaceId(thread.place))
 
 
+def _questions(ctx: Context, threads: tuple[Thread, ...]) -> list[tuple[Thread, ContestId]]:
+    """The threads that are questions on a desk, each with its contest. One
+    labelled `clarification` anywhere else, by hand at the forge, is passed
+    over rather than failing the whole list.
+    """
+    kept = []
+    for thread in threads:
+        try:
+            kept.append((thread, _contest_of(ctx, thread)))
+        except NotFound:
+            continue
+    return kept
+
+
+async def _with_messages(ctx: Context, as_: AsUser, threads: list[Thread]) -> list[Thread]:
+    """Each thread read again with its messages, once the search has been
+    narrowed to the ones shown.
+    """
+    return [await ctx.forge.threads.read_thread(as_, thread.id) for thread in threads]
+
+
+def _about(thread: Thread, contest: ContestId) -> TaskId | None:
+    """The task a question names, from the marker the platform wrote into it,
+    or none when it names none or names anything that is not a task of its
+    own contest. The asker can edit their question at the forge, so the
+    marker is checked whenever it is read, never trusted.
+    """
+    found = ABOUT.search(thread.body)
+    if found is None:
+        return None
+    parts = found.group(1).split("/")
+    if len(parts) != 3 or not all(parts) or f"{parts[0]}/{parts[1]}" != contest:
+        return None
+    return TaskId(found.group(1))
+
+
 async def _shown(
     ctx: Context,
     threads: list[Thread] | tuple[Thread, ...],
@@ -343,21 +397,21 @@ async def _shown(
             thread,
             _contest_of(ctx, thread),
             ctx.forge.workspaces.owner_of(WorkspaceId(thread.place)),
-            ABOUT.search(thread.body),
         )
         for thread in threads
     ]
-    wanted = {contest for _, contest, _, _ in asked if contest not in (known or {})}
-    tasks = {about.group(1) for _, _, _, about in asked if about is not None}
+    about = [(thread, contest, owner, _about(thread, contest)) for thread, contest, owner in asked]
+    wanted = {contest for _, contest, _ in asked if contest not in (known or {})}
+    tasks = {task for _, _, _, task in about if task is not None}
     places: dict[str, ScopeNames] = {
         str(contest): where for contest, where in (known or {}).items()
     }
     if wanted or tasks:
         places.update(await names.places_named(ctx, [*wanted, *tasks]))
     shown = []
-    for thread, contest, owner, about in asked:
+    for thread, contest, owner, task in about:
         asker = owner.user_id if isinstance(owner, UserOwner) else 0
-        task_names = places.get(about.group(1)) if about is not None else None
+        task_names = places.get(task) if task is not None else None
         shown.append(
             Clarification(
                 contest=places.get(contest) or ScopeNames(contest_scope(contest).org),

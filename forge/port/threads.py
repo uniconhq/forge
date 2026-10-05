@@ -45,12 +45,19 @@ class ThreadPort(Protocol):
         ...
 
     async def search_threads(
-        self, as_: Identity, org: OrgId, kind: ThreadKind, *, open_only: bool = True
+        self,
+        as_: Identity,
+        org: OrgId,
+        kind: ThreadKind,
+        *,
+        open_only: bool = True,
+        comments: bool = True,
     ) -> tuple[Thread, ...]:
         """Every thread of the kind anywhere in the org that the identity may
         read, the open ones alone unless `open_only` is off, oldest first,
-        with its comments: one search at the forge, not a list built place
-        by place.
+        with its comments unless `comments` is off: one search at the forge,
+        not a list built place by place. Comments cost a call a thread, so a
+        caller that keeps a few of many reads those few again instead.
         """
         ...
 

@@ -57,7 +57,7 @@ class FakeWorkspaces:
         )
         self._state.check_up()
         ref = _ref(contest, owner)
-        self._open(ref, ref.desk_repo, member_ids)
+        self._open(ref, ref.desk_repo, member_ids, read_only=True)
         return ref.id
 
     def workspace_of(self, contest: ContestId, owner: WorkspaceOwner) -> WorkspaceId:
@@ -88,7 +88,13 @@ class FakeWorkspaces:
         self._open(ref, ref.submission_repo(task_ref.task), member_ids, reserve=True)
 
     def _open(
-        self, ref: WorkspaceRef, name: str, member_ids: Sequence[int], *, reserve: bool = False
+        self,
+        ref: WorkspaceRef,
+        name: str,
+        member_ids: Sequence[int],
+        *,
+        reserve: bool = False,
+        read_only: bool = False,
     ) -> None:
         """One repository of the workspace, its submissions reserved before
         anyone may write it, and one that is there with someone else in it
@@ -98,13 +104,17 @@ class FakeWorkspaces:
         repo = self._state.repos.get((ref.org, name))
         if repo is None:
             repo = self._state.create_repo(PLATFORM, ref.org, name, {}, scope=scope)
-        elif repo.writers - set(member_ids):
+        elif (repo.writers | repo.readers) - set(member_ids):
             raise Conflict(f"{ref.org}/{name} already has other collaborators")
         repo.rewrites_refused = True
         repo.teams.add(scope)
         if reserve:
             repo.reserved.add(SUBMISSION_PREFIX)
-        repo.writers.update(member_ids)
+        if read_only:
+            repo.writers.difference_update(member_ids)
+            repo.readers.update(member_ids)
+        else:
+            repo.writers.update(member_ids)
 
     async def close_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
         self._state.record(
@@ -112,6 +122,7 @@ class FakeWorkspaces:
         )
         for repo in self._workspace_repos(parse_workspace(workspace)):
             repo.writers.difference_update(member_ids)
+            repo.readers.difference_update(member_ids)
 
     async def list_submissions(self, workspace: WorkspaceId, task: TaskId) -> tuple[Submitted, ...]:
         self._state.record("list_submissions", PLATFORM, workspace=workspace, task=task)
