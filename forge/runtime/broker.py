@@ -8,17 +8,24 @@ the last one leaves, so a process nobody is watching holds nothing and a
 test or an operator's command never opens it. It is outside the pool,
 which is why a process uses one connection more than its pool while anyone
 is watching. When it drops it is opened again a second later, and every
-stream is told to `resync`, since nudges sent meanwhile were missed.
+stream is told to `resync`, since nudges sent meanwhile were missed. A
+stream that subscribed before the connection was listening is told the
+same once it is, for the nudges sent while it was opening.
 
 Each stream has a queue of `QUEUE_MOST` nudges. A stream that falls that
 far behind, because its browser stopped reading, has its queue emptied and
 is told to `resync` instead, so one slow reader never holds up the rest or
 grows without bound. A nudge goes only to a stream whose `Audience` hears
 it.
+
+A session holds at most `STREAMS_PER_SESSION` streams in a process, one for
+each tab it has open; opening one more ends the oldest, so a script cannot
+hold streams without bound and a tab reloaded many times leaves none behind.
 """
 
 import asyncio
 import contextlib
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
@@ -30,6 +37,7 @@ from forge.log import get_logger
 log = get_logger(__name__)
 
 QUEUE_MOST = 256
+STREAMS_PER_SESSION = 8
 RETRY_SECONDS = 1.0
 RESYNC = Nudge(NudgeKind.RESYNC, "")
 
@@ -37,44 +45,69 @@ RESYNC = Nudge(NudgeKind.RESYNC, "")
 @dataclass(eq=False)
 class Subscription:
     """One stream's place in the broker: who it speaks to, which its owner
-    may change, and the nudges waiting for it.
+    may change, the session it is for, the nudges waiting for it, whether it
+    subscribed before the broker was listening, and whether the broker has
+    ended it.
     """
 
     audience: Audience
+    session: uuid.UUID | None = None
     queue: asyncio.Queue[Nudge] = field(default_factory=lambda: asyncio.Queue(QUEUE_MOST))
+    early: bool = False
+    ended: bool = False
 
     def offer(self, nudge: Nudge) -> None:
-        if not hears(self.audience, nudge):
+        if self.ended or not hears(self.audience, nudge):
             return
         try:
             self.queue.put_nowait(nudge)
         except asyncio.QueueFull:
-            while not self.queue.empty():
-                self.queue.get_nowait()
+            self._drop_all()
             self.queue.put_nowait(RESYNC)
+
+    def end(self) -> None:
+        """End the stream: it is woken with a `resync` and finds itself
+        ended.
+        """
+        self.ended = True
+        self._drop_all()
+        self.queue.put_nowait(RESYNC)
+
+    def _drop_all(self) -> None:
+        while not self.queue.empty():
+            self.queue.get_nowait()
 
 
 class Broker:
     def __init__(self, database_url: str) -> None:
         self._url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
-        self._subscriptions: set[Subscription] = set()
+        self._subscriptions: dict[Subscription, None] = {}
         self._listening: asyncio.Task[None] | None = None
         self.ready = asyncio.Event()
 
     @contextlib.asynccontextmanager
-    async def subscription(self, audience: Audience) -> AsyncIterator[Subscription]:
+    async def subscription(
+        self, audience: Audience, *, session: uuid.UUID | None = None
+    ) -> AsyncIterator[Subscription]:
         """A stream's subscription for as long as the block runs, listening
-        from the first one on.
+        from the first one on. A session's oldest streams beyond
+        `STREAMS_PER_SESSION` are ended.
         """
-        subscription = Subscription(audience)
-        self._subscriptions.add(subscription)
-        if self._listening is None or self._listening.done():
+        starting = self._listening is None or self._listening.done()
+        subscription = Subscription(audience, session, early=starting or not self.ready.is_set())
+        if session is not None:
+            held = [each for each in self._subscriptions if each.session == session]
+            for oldest in held[: max(0, len(held) - STREAMS_PER_SESSION + 1)]:
+                oldest.end()
+                self._subscriptions.pop(oldest, None)
+        self._subscriptions[subscription] = None
+        if starting:
             self.ready.clear()
             self._listening = asyncio.create_task(self._listen())
         try:
             yield subscription
         finally:
-            self._subscriptions.discard(subscription)
+            self._subscriptions.pop(subscription, None)
             if not self._subscriptions:
                 await self.stop()
 
@@ -99,8 +132,10 @@ class Broker:
                 ) as connection:
                     await connection.execute(f"LISTEN {CHANNEL}")
                     self.ready.set()
-                    if missed:
-                        self.deliver(RESYNC)
+                    for subscription in list(self._subscriptions):
+                        if missed or subscription.early:
+                            subscription.early = False
+                            subscription.offer(RESYNC)
                     async for notify in connection.notifies():
                         nudge = read_payload(notify.payload)
                         if nudge is None:

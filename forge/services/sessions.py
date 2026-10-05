@@ -99,10 +99,12 @@ async def authenticate(ctx: Context, session_id: uuid.UUID) -> Session:
     return session
 
 
-async def check(ctx: Context, session_id: uuid.UUID) -> tuple[Session, bool]:
+async def check(ctx: Context, session_id: uuid.UUID, *, touch: bool = True) -> tuple[Session, bool]:
     """`authenticate`, and whether the session's credential is close enough
     to expiry for `keep_fresh` to refresh it, from the one read the host's
-    guard makes on every request.
+    guard makes on every request. With `touch` off the read is not counted
+    as the person being there, so a check made on their behalf, such as a
+    live stream's, never keeps an idle session alive.
     """
     now = ctx.now
     row = (
@@ -116,7 +118,7 @@ async def check(ctx: Context, session_id: uuid.UUID) -> tuple[Session, bool]:
         raise Unauthenticated("No session.")
     if is_expired(_times(row), now, ctx.settings.session_idle_ttl):
         raise SessionExpired("This session has ended.")
-    if needs_touch(row.last_seen_at, now):
+    if touch and needs_touch(row.last_seen_at, now):
         ctx.after_end(_touch(session_id, now))
     return _session(row), refresh_due(row.credential_expires_at, now)
 

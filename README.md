@@ -847,22 +847,30 @@ changes come from the forge: the host answers the forge's push as soon as
 it through the port and nudges a clarification's asker and its contest's
 organisers, an announcement of a contest its contestants and organisers,
 and one of a task its organisers and, only once the task is released, its
-contestants. An event about anything else, or naming a place in another
-org than the one whose secret signed it, nudges nobody.
+contestants. An event about anything else, about an issue that does not
+carry the label of the thread its repository holds, about a pull request,
+or naming a place in another org than the one whose secret signed it,
+nudges nobody.
 
 Each process keeps one broker (`runtime/broker.py`), with one connection
 outside the pool that listens on `unicon_live`, opened when the first
 stream subscribes and closed when the last leaves, so whichever process
 published a nudge, every process's streams hear it. `live.stream(session)`
-is what the host serves as one Server-Sent Events connection per session:
-it checks the session, reads its audience (the person, every role they hold
-and the contests where they are an approved contestant), and yields each
-nudge that audience hears, or `None` every fifteen seconds for a keepalive.
-It holds no database connection while it waits, checks the session again
-every minute and ends once the session has, and reads the audience again
-every five minutes. A stream that falls 256 nudges behind is emptied and
-told to resync. When the listening connection drops it is opened again a
-second later and every stream is told to resync.
+is what the host serves as one Server-Sent Events connection per open
+tab: it checks the session, reads its audience (the person, every role they
+hold and the contests where they are an approved contestant), yields `None`
+once it has subscribed, so the host can wait for that and have any refusal
+raised before it answers, and then each nudge that audience hears, or
+`None` every fifteen seconds for a keepalive. It holds no database
+connection while it waits, checks the session again every minute without
+counting that as the person being there, so an open tab never keeps an idle
+session alive, and ends once the session has; it reads the audience again
+every five minutes, keeping the roles it had when the forge does not
+answer. A stream that falls 256 nudges behind is emptied and told to
+resync, and so is every stream when the listening connection drops and is
+opened again a second later, and a stream that subscribed while the
+connection was still being opened. A session holds at most eight streams
+in a process; one more ends the oldest.
 
 ## Uploads
 

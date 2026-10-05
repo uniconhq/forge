@@ -5,24 +5,28 @@ the asker and the organisers of a clarification, the contestants of an
 announcement, and a task's contestants only once it is released. A session's
 stream hears what it may and nothing else, whichever process published it,
 carries a kind and an id and never what changed, says it is still there
-when nothing happens, and ends once its session has. A stream too slow to
-keep up is told to resync instead of holding the rest up.
+when nothing happens, and ends once its session has, without ever keeping
+an idle session alive itself. A stream opened before its process was
+listening, or too slow to keep up, is told to resync, and a session that
+opens too many streams has its oldest ended.
 """
 
 import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
+from datetime import timedelta
 
 import psycopg
 import pytest
 
+from forge.db.tables import Session as SessionRow
 from forge.domain.ids import OrgId
 from forge.domain.live import CHANNEL, Audience, Nudge, NudgeKind, read_payload
 from forge.domain.roles import Role, RoleGrant, Scope, contest_scope, task_scope
 from forge.domain.submissions import SubmittedInput
 from forge.forges.fake import FakeForge
-from forge.runtime.broker import QUEUE_MOST, Subscription
+from forge.runtime.broker import QUEUE_MOST, STREAMS_PER_SESSION, Subscription
 from forge.runtime.setup import Setup
 from forge.services import events, gradings, live, runs, sessions, submissions
 from forge.settings import Settings
@@ -172,6 +176,8 @@ async def test_a_stream_hears_what_another_process_publishes_and_a_stranger_does
         assert await anext(mine) is None
         assert await anext(theirs) is None
         await asyncio.wait_for(other.broker.ready.wait(), 5)
+        assert (await _first(mine)).kind is NudgeKind.RESYNC
+        assert (await _first(theirs)).kind is NudgeKind.RESYNC
 
         grading = await _submit(setup, acme, entered)
 
@@ -209,6 +215,51 @@ async def test_an_organisers_audience_holds_their_roles_and_a_contestants_their_
     assert (bob.user_id, bob.contests) == (8, frozenset({SPRING}))
     assert ada.contests == frozenset()
     assert RoleGrant(Scope("acme"), Role.ADMIN) in ada.grants
+
+
+async def test_a_session_opening_one_stream_too_many_ends_its_oldest(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    streams = [
+        live.stream(entered.session.id, setup=setup, heartbeat=0.05)
+        for _ in range(STREAMS_PER_SESSION + 1)
+    ]
+    try:
+        for stream in streams:
+            assert await anext(stream) is None
+
+        with pytest.raises(StopAsyncIteration):
+            async with asyncio.timeout(5):
+                while True:
+                    await anext(streams[0])
+        async with asyncio.timeout(5):
+            await anext(streams[1])
+    finally:
+        for stream in streams:
+            await stream.aclose()
+
+
+async def test_a_stream_never_keeps_an_idle_session_alive(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    stream = live.stream(entered.session.id, setup=setup, heartbeat=0.05, recheck=0.0)
+    try:
+        assert await anext(stream) is None
+        seen = await _last_seen(setup, entered.session.id)
+        clock.advance(timedelta(minutes=5))
+        for _ in range(3):
+            await anext(stream)
+    finally:
+        await stream.aclose()
+
+    assert await _last_seen(setup, entered.session.id) == seen
+
+
+async def _last_seen(setup: Setup, session_id: uuid.UUID) -> object:
+    async with setup.unit_of_work() as ctx:
+        row = await ctx.db.get(SessionRow, session_id)
+        assert row is not None
+        return row.last_seen_at
 
 
 def test_a_stream_too_slow_to_keep_up_is_told_to_resync() -> None:
