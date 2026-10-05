@@ -39,6 +39,7 @@ from forge.domain.ids import (
     WorkspaceId,
 )
 from forge.domain.names import TEAM_PREFIX, USER_PREFIX, TeamOwner, UserOwner, WorkspaceOwner
+from forge.domain.threads import ThreadChange, ThreadKind
 
 PLATFORM_ORG = "unicon"
 WORKSPACE_MARK = "@"
@@ -191,6 +192,43 @@ def location(place: str) -> tuple[str, str]:
         return contest.org, contest.repo
     task = parse_task(TaskId(place))
     return task.org, task.repo
+
+
+def place_of_repo(owner: str, name: str) -> ContestId | TaskId | WorkspaceId:
+    """The contest, task or workspace whose repository this is, the inverse
+    of `location`: a contest's or a task's own repository, or a workspace's
+    desk. `MalformedId` for any other repository.
+    """
+    stem, dot, word = name.rpartition(".")
+    if not dot or not owner or not stem:
+        raise MalformedId(f"{owner}/{name} holds no threads")
+    if word == CONTEST and "." not in stem:
+        return ContestRef(owner, stem).id
+    if word == TASK:
+        return task_of_repo(owner, name).id
+    contest, _, segment = stem.partition(".")
+    if word == DESK and contest and segment:
+        return WorkspaceRef(owner, contest, owner_from_segment(segment)).id
+    raise MalformedId(f"{owner}/{name} holds no threads")
+
+
+def thread_change(owner: str, name: str, number: int) -> ThreadChange:
+    """The change to the thread numbered `number` in the repository: an
+    announcement for a contest's or a task's own, a clarification for a
+    desk. `MalformedId` for any other repository.
+    """
+    place = place_of_repo(owner, name)
+    made = thread_id(owner, name, number)
+    if is_workspace(place):
+        workspace = parse_workspace(WorkspaceId(place))
+        contest = ContestRef(workspace.org, workspace.contest).id
+        return ThreadChange(made, ThreadKind.CLARIFICATION, contest, asker=workspace.owner)
+    if place.count("/") == 1:
+        return ThreadChange(made, ThreadKind.ANNOUNCEMENT, ContestId(place))
+    task = parse_task(TaskId(place))
+    return ThreadChange(
+        made, ThreadKind.ANNOUNCEMENT, ContestRef(task.org, task.contest).id, task=task.id
+    )
 
 
 def primitive_repo(value: PrimitiveId) -> str:
