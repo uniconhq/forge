@@ -190,6 +190,19 @@ class ForgejoWorkspaces:
             max_size=max_size,
         )
 
+    async def read_submission_blob(
+        self, as_: Identity, submission: SubmissionId, path: str, *, max_size: int
+    ) -> bytes:
+        ref, task_name, number = parse_submission(submission)
+        return await self._repos.read_blob(
+            as_,
+            ref.org,
+            ref.submission_repo(task_name),
+            path,
+            at=f"{SUBMISSION_PREFIX}{number}",
+            max_size=max_size,
+        )
+
     async def download(self, as_: Identity, submission: SubmissionId, path: str) -> Door:
         ref, task_name, number = parse_submission(submission)
         return await self._repos.media_door(
