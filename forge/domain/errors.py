@@ -403,3 +403,28 @@ class InvalidCallback(ServiceError):
     """
 
     code = "invalid_callback"
+
+
+class InvalidInvite(ServiceError):
+    """An invite that cannot be made as asked: naming both a username and an
+    address or neither, an address that is not one, a lifetime out of range,
+    or a grant that does not fit its scope.
+    """
+
+    code = "invalid_invite"
+
+
+class AlreadyInvited(ServiceError):
+    """The same person already holds a pending invite for the same grant at the
+    same scope, which can be sent again instead.
+    """
+
+    code = "already_invited"
+
+
+class InviteExpired(ServiceError):
+    """The invite's lifetime is over, so it can be neither accepted nor
+    declined.
+    """
+
+    code = "invite_expired"

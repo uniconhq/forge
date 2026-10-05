@@ -124,9 +124,9 @@ async def grant(
     if role is Role.ADMIN:
         _require_admin(organiser, scope, "grant admin")
     await one_change_at_a_time(ctx, scope.org)
-    await _require_scope(ctx, scope)
-    user = await _person_named(ctx, username)
-    await _refuse_service_account(ctx, user.id)
+    await require_scope(ctx, scope)
+    user = await person_named(ctx, username)
+    await refuse_service_account(ctx, user.id)
     held = _direct(await ctx.forge.orgs.roles_of_user(user.id), scope)
     if held == {role}:
         return
@@ -150,8 +150,8 @@ async def revoke(ctx: Context, organiser: Organiser, scope: Scope, user_id: int)
     """
     require(organiser, scope, Role.MANAGER)
     await one_change_at_a_time(ctx, scope.org)
-    await _require_scope(ctx, scope)
-    await _refuse_service_account(ctx, user_id)
+    await require_scope(ctx, scope)
+    await refuse_service_account(ctx, user_id)
     held = _direct(await ctx.forge.orgs.roles_of_user(user_id), scope)
     if Role.ADMIN in held:
         _require_admin(organiser, scope, "remove an admin")
@@ -159,6 +159,49 @@ async def revoke(ctx: Context, organiser: Organiser, scope: Scope, user_id: int)
     for role in sorted(held, key=RANK.__getitem__):
         await ctx.forge.orgs.revoke_role(user_id, scope, role)
         _logged("roles.revoked", organiser, user_id, scope, role)
+
+
+async def grant_invited(
+    ctx: Context, inviter_id: int, scope: Scope, user: User, role: Role, *, invite: str
+) -> None:
+    """Give `user` `role` at the scope because they accepted an invite from
+    `inviter_id`, by the rules a grant keeps, as long as the inviter may still
+    grant it: a manager there, and an admin for admin. Someone who holds the
+    role there already, or a higher one, keeps what they hold; an invite never
+    lowers a role. Run under the org's lock, which the caller holds.
+    """
+    await one_change_at_a_time(ctx, scope.org)
+    sent_by = await ctx.forge.orgs.roles_of_user(inviter_id)
+    least = Role.ADMIN if role is Role.ADMIN else Role.MANAGER
+    if not holds(sent_by, scope, least):
+        raise Forbidden(
+            "Whoever sent this invite may no longer grant that role; ask the organisers again."
+        )
+    await require_scope(ctx, scope)
+    await refuse_service_account(ctx, user.id)
+    grants = await ctx.forge.orgs.roles_of_user(user.id)
+    if holds(grants, scope, role):
+        return
+    replaced = _direct(grants, scope) - {role}
+    await _refuse_if_contestant(ctx, user, scope)
+    await ctx.forge.orgs.grant_role(user.id, scope, role)
+    log.info(
+        "roles.granted",
+        user_id=user.id,
+        by_user_id=inviter_id,
+        scope=scope.path,
+        role=role.value,
+        invite=invite,
+    )
+    for old in sorted(replaced, key=RANK.__getitem__):
+        await ctx.forge.orgs.revoke_role(user.id, scope, old)
+        log.info(
+            "roles.revoked",
+            user_id=user.id,
+            by_user_id=inviter_id,
+            scope=scope.path,
+            role=old.value,
+        )
 
 
 async def one_change_at_a_time(ctx: Context, org: str) -> None:
@@ -212,19 +255,19 @@ def _require_admin(organiser: Organiser, scope: Scope, doing: str) -> None:
         raise Forbidden(f"Only an admin of {scope.name} may {doing} there.")
 
 
-async def _require_scope(ctx: Context, scope: Scope) -> None:
+async def require_scope(ctx: Context, scope: Scope) -> None:
     if scope.kind is not ScopeKind.ORG and not await ctx.forge.content.exists(place_of(scope)):
         raise NotFound(f"There is no {scope.kind.value} {scope.name}.")
 
 
-async def _person_named(ctx: Context, username: str) -> User:
+async def person_named(ctx: Context, username: str) -> User:
     try:
         return await ctx.forge.identity.find_user_by_username(username)
     except NotFound as exc:
         raise NotFound(f"There is no user named {username!r} at the forge.") from exc
 
 
-async def _refuse_service_account(ctx: Context, user_id: int) -> None:
+async def refuse_service_account(ctx: Context, user_id: int) -> None:
     if user_id in await org_accounts.service_account_ids(ctx):
         raise Forbidden("That is an org's service account, which holds no role.")
 

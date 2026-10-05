@@ -42,7 +42,7 @@ from forge.domain.roles import contest_id_of, contest_scope, task_scope
 from forge.domain.sessions import Session
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import contestants, names, published, release
+from forge.services import contestants, invites, names, published, release
 from forge.services.contestants import Registration
 from forge.services.release import TaskRelease
 
@@ -136,6 +136,7 @@ async def contests(ctx: Context, session: Session) -> tuple[ContestSummary, ...]
             await ctx.db.execute(select(Contestant).where(Contestant.user_id == session.user_id))
         ).scalars()
     }
+    invited = await invites.accepted_places(ctx, session.user_id)
     await ctx.let_go()
     found = []
     every = await published.every_contest_kept(ctx)
@@ -143,7 +144,10 @@ async def contests(ctx: Context, session: Session) -> tuple[ContestSummary, ...]
     for contest, settings in every:
         row = rows.get(contest)
         if contest in where and rules.contest_visible_to(
-            settings, has_session=True, is_contestant=_approved(row), is_organiser=False
+            settings,
+            has_session=True,
+            is_contestant=_approved(row) or contest in invited,
+            is_organiser=False,
         ):
             found.append(
                 ContestSummary(

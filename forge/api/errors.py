@@ -2,6 +2,7 @@
 
 from forge.domain.errors import (
     AdminOnly,
+    AlreadyInvited,
     AlreadyRegistered,
     Archived,
     CiRequestRefused,
@@ -17,11 +18,13 @@ from forge.domain.errors import (
     InvalidExtension,
     InvalidIdempotencyKey,
     InvalidInputs,
+    InvalidInvite,
     InvalidMessage,
     InvalidName,
     InvalidPath,
     InvalidReason,
     InvalidToken,
+    InviteExpired,
     InviteRequired,
     IsStaff,
     LogTooLarge,
@@ -58,6 +61,7 @@ from forge.domain.yaml_models import InvalidDefinition
 
 __all__ = [
     "AdminOnly",
+    "AlreadyInvited",
     "AlreadyRegistered",
     "Archived",
     "CiRequestRefused",
@@ -74,11 +78,13 @@ __all__ = [
     "InvalidExtension",
     "InvalidIdempotencyKey",
     "InvalidInputs",
+    "InvalidInvite",
     "InvalidMessage",
     "InvalidName",
     "InvalidPath",
     "InvalidReason",
     "InvalidToken",
+    "InviteExpired",
     "InviteRequired",
     "IsStaff",
     "LogTooLarge",
