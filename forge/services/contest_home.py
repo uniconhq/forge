@@ -7,7 +7,8 @@ for the person; a home and a task's page are read live. Each lets go of its
 connection to the database before it reads the forge.
 
 A person sees a published contest that is `public` or `signed-in`, and a
-`hidden` one only once they are its approved contestant; organisers see
+`hidden` one once they are its approved contestant, or have accepted an invite
+to it and not registered; organisers see
 their own contests whatever their state. The home carries the contest's
 dates, the person's own registration, what the register form needs to know,
 the person's own deadline, which is the contest's end plus their extension,
@@ -146,7 +147,7 @@ async def contests(ctx: Context, session: Session) -> tuple[ContestSummary, ...]
         if contest in where and rules.contest_visible_to(
             settings,
             has_session=True,
-            is_contestant=_approved(row) or contest in invited,
+            is_contestant=_approved(row) or (row is None and contest in invited),
             is_organiser=False,
         ):
             found.append(

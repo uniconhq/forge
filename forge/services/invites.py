@@ -9,31 +9,42 @@ admin to invite an admin; a contestant's place is offered at a contest, by
 its managers. A username is looked up at the forge then and there, so the
 invite is that person's from the start; an address is matched later. The
 same pending invite twice is refused (`already_invited`), since the first
-can be sent again. Every change to invites at an org takes the org's lock
-on role changes, the one `roles` takes, so two organisers cannot both make
-the same invite and an acceptance never passes a grant or a removal.
+can be sent again, and an org makes at most `ORG_DAILY_MAX` invites in a
+day (`invite_limit`), so an org nobody vetted cannot turn the platform's
+mail server on strangers. Making, sending again, withdrawing, accepting
+and declining take the org's lock on role changes, the one `roles` takes,
+so two organisers cannot both make the same invite and an acceptance never
+passes a grant or a removal.
 
 The invite's mail goes out once the request that made it has committed, and
 the request answers without waiting for it (`Context.in_background`): a mail
 server that is slow or down never fails an organiser's click. The invite is
 the record, and its `mail_status` says what became of the mail. One that
-fails is `failed`; one a restart cut short stays `waiting`. Either way an
-organiser sends it again, which makes a new token, since the old one was
-never kept, and the earlier link stops working. A deployment with no mail
-server mails nothing (`off`), and the person finds the invite in Unicon once
-signed in, as everyone can.
+fails, for any reason, is `failed`; one a restart cut short stays
+`waiting`. Either way an organiser sends it again, which makes a new token,
+since the old one was never kept, so the earlier link stops working, and
+gives the invite its whole lifetime again from then, a lapsed one included;
+once a mail has gone, the next waits `SEND_AGAIN_AFTER`. At most
+`MAILS_AT_ONCE` mails are built and sent at a time in a process, and none
+holds a database connection while it talks to the forge or the mail
+server. A deployment with no mail server mails nothing (`off`), and the
+person finds the invite in Unicon once signed in, as everyone can.
 
 The person acts on their own invites only. An invite to an address becomes
 theirs when they list their invites, or open the link the mail carried, and
 the address is one the forge has confirmed belongs to them; matching then
 rather than at sign-in covers an address confirmed after the first sign-in
 and costs every sign-in nothing. Opening a link that is not theirs is no
-such invite. Accepting grants what the invite carries: an organiser role is
-granted as long as whoever sent the invite may still grant it, and never
-lowers a role the person holds; a contestant's place is eligibility, which
-lets them register for an invite-only or hidden contest (`contestants`).
-Declining grants nothing. Both close the invite, and a lapsed invite can do
-neither.
+such invite. An address counts only as far as the forge confirms it is
+theirs, so with Forgejo an email invite needs `REGISTER_EMAIL_CONFIRM` on
+wherever people sign themselves up, as an email pattern does. Accepting
+grants what the invite carries, as long as whoever sent it may still grant
+it: an organiser role, which never lowers a role the person holds, or a
+contestant's place, which is eligibility to register for an invite-only or
+hidden contest while they have no registration there (`contestants`), and
+which organisers can withdraw again until they register. Declining grants
+nothing. Both close the invite, and a lapsed invite can do neither; the
+person's list leaves lapsed ones out.
 """
 
 import builtins
@@ -41,17 +52,20 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 
 from forge.db.tables import Contestant
 from forge.db.tables import Invite as InviteRow
 from forge.domain import invites as rules
 from forge.domain.errors import (
     AlreadyInvited,
+    ContestantConflict,
     Forbidden,
     InvalidInvite,
+    InviteLimit,
     NotFound,
     PortError,
+    Unavailable,
 )
 from forge.domain.identity import User
 from forge.domain.invites import Grant, InviteStatus, MailStatus
@@ -65,12 +79,21 @@ from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import names, roles
 from forge.services.access import Organiser, require
+from forge.services.places import Turns
 
 log = get_logger(__name__)
 
 NO_SUCH_INVITE = "There is no such invite."
 LISTED_MAX = 500
 """The most invites one scope's list shows, newest first."""
+ORG_DAILY_MAX = 1000
+"""The most invites an org makes in a day, at all its scopes together: a
+course inviting its whole class fits, and an org made to send mail at
+strangers runs out."""
+SEND_AGAIN_AFTER = timedelta(minutes=10)
+"""How long after a mail went out the same invite may be mailed again."""
+MAILS_AT_ONCE = 4
+_mailing = Turns(MAILS_AT_ONCE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +145,7 @@ async def create(
         await roles.refuse_service_account(ctx, user.id)
         await _refuse_held(ctx, user, scope, grants)
     await _refuse_twice(ctx, scope, grants, user, address)
+    await _refuse_too_many(ctx, scope.org)
     token = rules.new_token()
     row = InviteRow(
         scope=scope.path,
@@ -132,6 +156,7 @@ async def create(
         invited_by_user_id=organiser.user.id,
         token_hash=rules.token_hash(token),
         status=InviteStatus.PENDING,
+        created_at=ctx.now,
         expires_at=ctx.now + standing,
         mail_status=MailStatus.WAITING if ctx.forge.mail.configured else MailStatus.OFF,
     )
@@ -169,16 +194,27 @@ async def at(ctx: Context, organiser: Organiser, scope: Scope) -> tuple[Invite, 
 
 @action
 async def send_again(ctx: Context, organiser: Organiser, scope: Scope, invite: uuid.UUID) -> Invite:
-    """Mail a pending invite again, with a new token in place of the old,
-    whose link stops working. Needs what making it needed.
+    """Mail a pending invite again, lapsed or not, with a new token in place
+    of the old, whose link stops working, and its whole lifetime again from
+    now. Needs what making it needed, and `SEND_AGAIN_AFTER` since the last
+    mail went out.
     """
     row = await _organisers(ctx, organiser, scope, invite)
-    rules.refuse_closed(InviteStatus(row.status), row.expires_at, ctx.now, "sent again")
+    if row.status != InviteStatus.PENDING:
+        rules.refuse_closed(InviteStatus(row.status), row.expires_at, ctx.now, "sent again")
     if not ctx.forge.mail.configured:
         raise InvalidInvite(
             "This deployment sends no mail; the person finds the invite in Unicon once signed in."
         )
+    if row.mailed_at is not None and ctx.now < row.mailed_at + SEND_AGAIN_AFTER:
+        retry_at = row.mailed_at + SEND_AGAIN_AFTER
+        raise InviteLimit(
+            f"This invite was mailed minutes ago; send it again after {retry_at:%H:%M} UTC.",
+            retry_at=retry_at.isoformat(),
+        )
     token = rules.new_token()
+    row.expires_at = ctx.now + (row.expires_at - row.created_at)
+    row.created_at = ctx.now
     row.token_hash = rules.token_hash(token)
     row.mail_status = MailStatus.WAITING
     row.mailed_at = None
@@ -190,11 +226,13 @@ async def send_again(ctx: Context, organiser: Organiser, scope: Scope, invite: u
 
 @action
 async def withdraw(ctx: Context, organiser: Organiser, scope: Scope, invite: uuid.UUID) -> Invite:
-    """Take back a pending invite, lapsed or not. Needs what making it
-    needed.
+    """Take back a pending invite, lapsed or not, or an accepted invite to a
+    contestant's place, which is eligibility until its person registers.
+    Needs what making it needed.
     """
     row = await _organisers(ctx, organiser, scope, invite)
-    if row.status != InviteStatus.PENDING:
+    accepted_place = row.status == InviteStatus.ACCEPTED and row.grants == Grant.CONTESTANT
+    if row.status != InviteStatus.PENDING and not accepted_place:
         rules.refuse_closed(InviteStatus(row.status), row.expires_at, ctx.now, "withdrawn")
     row.status = InviteStatus.WITHDRAWN
     row.decided_at = ctx.now
@@ -205,7 +243,7 @@ async def withdraw(ctx: Context, organiser: Organiser, scope: Scope, invite: uui
 
 @action
 async def mine(ctx: Context, session: Session) -> tuple[Invite, ...]:
-    """The signed-in person's pending invites, lapsed ones included, newest
+    """The signed-in person's pending invites that have not lapsed, newest
     first, once every pending invite to an address the forge has confirmed is
     theirs is made theirs.
     """
@@ -216,6 +254,7 @@ async def mine(ctx: Context, session: Session) -> tuple[Invite, ...]:
             .where(
                 InviteRow.user_id == session.user_id,
                 InviteRow.status == InviteStatus.PENDING,
+                InviteRow.expires_at > ctx.now,
             )
             .order_by(InviteRow.created_at.desc(), InviteRow.id)
         )
@@ -237,7 +276,8 @@ async def by_token(ctx: Context, session: Session, token: str) -> Invite:
     if row is None:
         raise NotFound(NO_SUCH_INVITE)
     if row.user_id is None and row.status == InviteStatus.PENDING:
-        await _attach(ctx, session.user_id)
+        if not await _attach(ctx, session.user_id):
+            raise Unavailable("The forge did not answer; try the link again in a moment.")
         await ctx.db.refresh(row)
     if row.user_id != session.user_id:
         raise NotFound(NO_SUCH_INVITE)
@@ -256,6 +296,10 @@ async def accept(ctx: Context, session: Session, invite: uuid.UUID) -> Invite:
         user = User(id=session.user_id, username=session.username)
         await roles.grant_invited(
             ctx, row.invited_by_user_id, _scope(row.scope), user, role, invite=str(row.id)
+        )
+    else:
+        await roles.refuse_unless_may_grant(
+            ctx, row.invited_by_user_id, _scope(row.scope), Role.MANAGER
         )
     row.status = InviteStatus.ACCEPTED
     row.decided_at = ctx.now
@@ -279,7 +323,8 @@ async def decline(ctx: Context, session: Session, invite: uuid.UUID) -> Invite:
 
 async def accepted_place(ctx: Context, contest: str, user_id: int) -> bool:
     """Whether the person has accepted an invite to a contestant's place in
-    the contest, which is the eligibility an invite-only contest asks for.
+    the contest, which is the eligibility an invite-only contest asks for,
+    and what shows them a hidden one while they have no registration there.
     """
     found = await ctx.db.scalar(
         select(InviteRow.id)
@@ -318,23 +363,31 @@ def _require_to_grant(organiser: Organiser, scope: Scope, grants: Grant) -> None
 
 
 async def _refuse_held(ctx: Context, user: User, scope: Scope, grants: Grant) -> None:
-    """Refuse inviting someone to what they hold already: the role there or
-    above, or a registration for the contest.
+    """Refuse inviting someone to what they hold already, or to what they
+    could not take: the role there or above, or a role in a contest they are
+    registered for; a registration for the contest, or a role at it.
     """
     role = grants.role
     if role is not None:
         if holds(await ctx.forge.orgs.roles_of_user(user.id), scope, role):
             raise InvalidInvite(f"{user.username} holds that role at {scope.name} already.")
+        try:
+            await roles.refuse_if_contestant(ctx, user, scope)
+        except ContestantConflict as exc:
+            raise InvalidInvite(exc.detail) from None
         return
+    contest = contest_id_of(scope)
     registered = await ctx.db.scalar(
         select(Contestant.id).where(
-            Contestant.contest_id == contest_id_of(scope),
+            Contestant.contest_id == contest,
             Contestant.user_id == user.id,
             Contestant.status.in_(REGISTERED),
         )
     )
     if registered is not None:
         raise InvalidInvite(f"{user.username} is registered for this contest already.")
+    if await roles.holds_role_in_contest(ctx, user.id, contest):
+        raise InvalidInvite(f"{user.username} holds a role at this contest, so cannot enter it.")
 
 
 async def _refuse_twice(
@@ -355,6 +408,27 @@ async def _refuse_twice(
     if found is not None:
         raise AlreadyInvited(
             "That person holds this invite already; send it again instead.", invite=str(found)
+        )
+
+
+async def _refuse_too_many(ctx: Context, org: str) -> None:
+    """`InviteLimit` once the org has made `ORG_DAILY_MAX` invites in the last
+    day, at all its scopes together.
+    """
+    since = ctx.now - timedelta(days=1)
+    made = await ctx.db.scalar(
+        select(func.count())
+        .select_from(InviteRow)
+        .where(
+            or_(InviteRow.scope == org, InviteRow.scope.startswith(f"{org}/", autoescape=True)),
+            InviteRow.created_at > since,
+        )
+    )
+    if (made or 0) >= ORG_DAILY_MAX:
+        retry_at = ctx.now + timedelta(hours=1)
+        raise InviteLimit(
+            f"This org has made {ORG_DAILY_MAX} invites in the last day; make more later.",
+            retry_at=retry_at.isoformat(),
         )
 
 
@@ -401,19 +475,19 @@ async def _persons(ctx: Context, session: Session, invite: uuid.UUID, doing: str
     return row
 
 
-async def _attach(ctx: Context, user_id: int) -> None:
+async def _attach(ctx: Context, user_id: int) -> bool:
     """Make the person's every pending invite to an address the forge has
-    confirmed is theirs. A forge that does not answer attaches nothing this
-    time, and the next look tries again.
+    confirmed is theirs. False when the forge did not answer, which attaches
+    nothing this time; the next look tries again.
     """
     try:
         emails = await ctx.forge.identity.verified_emails(user_id)
     except PortError as exc:
         log.warning("invites.emails_unread", user_id=user_id, error=type(exc).__name__)
-        return
+        return False
     addresses = sorted({email.strip().lower() for email in emails if email.strip()})
     if not addresses:
-        return
+        return True
     attached = await ctx.db.execute(
         update(InviteRow)
         .where(
@@ -426,6 +500,18 @@ async def _attach(ctx: Context, user_id: int) -> None:
     )
     for invite in attached.scalars():
         log.info("invites.matched", invite=str(invite), user_id=user_id)
+    return True
+
+
+async def forget_person(ctx: Context, user_id: int) -> None:
+    """Withdraw every pending invite to someone whose account is going, so
+    an invite to their address waits for whoever confirms it next.
+    """
+    await ctx.db.execute(
+        update(InviteRow)
+        .where(InviteRow.user_id == user_id, InviteRow.status == InviteStatus.PENDING)
+        .values(status=InviteStatus.WITHDRAWN, decided_at=ctx.now)
+    )
 
 
 def _mail_later(ctx: Context, row: InviteRow, token: str) -> None:
@@ -443,55 +529,85 @@ def _mail_later(ctx: Context, row: InviteRow, token: str) -> None:
 
 
 async def _send(ctx: Context, invite: uuid.UUID, hashed: bytes, token: str) -> None:
-    row = await ctx.db.get(InviteRow, invite)
-    if row is None or row.token_hash != hashed or row.mail_status != MailStatus.WAITING:
-        return
-    mail = await _mail(ctx, row, token)
-    await ctx.db.commit()
-    if mail is None:
+    """Mail the invite, if it is still pending under this token and waiting,
+    in one of the process's `MAILS_AT_ONCE` turns, and record what came of
+    it. What is needed is read first and the connection let go of before the
+    forge or the mail server is asked anything; a mail that cannot be built
+    or sent, for whatever reason, is `failed` and never left `waiting`.
+    """
+    async with _mailing():
+        row = await ctx.db.get(InviteRow, invite)
+        if (
+            row is None
+            or row.token_hash != hashed
+            or row.status != InviteStatus.PENDING
+            or row.mail_status != MailStatus.WAITING
+        ):
+            return
+        draft = _Draft(
+            invite=row.id,
+            scope=_scope(row.scope),
+            grants=Grant(row.grants),
+            email=row.email,
+            user_id=row.user_id,
+            invited_by=row.invited_by_user_id,
+            expires_at=row.expires_at,
+        )
+        await ctx.db.commit()
         status = MailStatus.FAILED
-    else:
         try:
-            await ctx.forge.mail.send(mail)
-            status = MailStatus.SENT
-        except PortError as exc:
+            mail = await _mail(ctx, draft, token)
+            await ctx.db.commit()
+            if mail is not None:
+                await ctx.forge.mail.send(mail)
+                status = MailStatus.SENT
+        except Exception as exc:
             log.warning("invites.mail_failed", invite=str(invite), error=type(exc).__name__)
-            status = MailStatus.FAILED
-    await ctx.db.execute(
-        update(InviteRow)
-        .where(InviteRow.id == invite, InviteRow.token_hash == hashed)
-        .values(mail_status=status, mailed_at=ctx.now if status is MailStatus.SENT else None)
-    )
-    log.info("invites.mailed", invite=str(invite), status=status.value)
+            await ctx.db.rollback()
+        await ctx.db.execute(
+            update(InviteRow)
+            .where(InviteRow.id == invite, InviteRow.token_hash == hashed)
+            .values(mail_status=status, mailed_at=ctx.now if status is MailStatus.SENT else None)
+        )
+        log.info("invites.mailed", invite=str(invite), status=status.value)
 
 
-async def _mail(ctx: Context, row: InviteRow, token: str) -> Mail | None:
+@dataclass(frozen=True, slots=True)
+class _Draft:
+    """What an invite's mail is written from, read before the forge is asked."""
+
+    invite: uuid.UUID
+    scope: Scope
+    grants: Grant
+    email: str | None
+    user_id: int | None
+    invited_by: int
+    expires_at: datetime
+
+
+async def _mail(ctx: Context, draft: _Draft, token: str) -> Mail | None:
     """The invite's mail, or none when there is no address to send it to: a
     username whose account has no confirmed address.
     """
-    address = row.email
+    address = draft.email
     if address is None:
-        assert row.user_id is not None
-        try:
-            emails = await ctx.forge.identity.verified_emails(row.user_id)
-        except PortError as exc:
-            log.warning("invites.address_unread", invite=str(row.id), error=type(exc).__name__)
-            return None
+        assert draft.user_id is not None
+        emails = await ctx.forge.identity.verified_emails(draft.user_id)
         if not emails:
-            log.info("invites.no_address", invite=str(row.id))
+            log.info("invites.no_address", invite=str(draft.invite))
             return None
         address = emails[0]
-    where = (await names.scope_names(ctx, _scope(row.scope))).path
-    inviter = await _user(ctx, row.invited_by_user_id)
+    where = (await names.scope_names(ctx, draft.scope)).path
+    inviter = await _user(ctx, draft.invited_by)
     by = inviter.username if inviter is not None else "An organiser"
-    what = _offer(Grant(row.grants), where)
+    what = _offer(draft.grants, where)
     link = f"{str(ctx.settings.public_url).rstrip('/')}/invites#{token}"
     text = (
         f"{by} has invited you to {what} on Unicon.\n\n"
         f"Open this link to accept or decline it:\n{link}\n\n"
         f"Sign in first, or make an account with this address if you have none; "
         f"the invite waits for you in Unicon either way.\n"
-        f"It lapses on {row.expires_at:%d %B %Y at %H:%M} UTC.\n"
+        f"It lapses on {draft.expires_at:%d %B %Y at %H:%M} UTC.\n"
     )
     return Mail(to=address, subject=f"You are invited to {what}", text=text)
 
@@ -508,9 +624,12 @@ def _scope(path: str) -> Scope:
 
 
 async def _user(ctx: Context, user_id: int) -> User | None:
+    """Who someone is at the forge, or none when their account is gone or
+    the forge did not answer, since a name shown is never worth a refusal.
+    """
     try:
         return await ctx.forge.identity.find_user(user_id)
-    except NotFound:
+    except PortError:
         return None
 
 

@@ -57,9 +57,14 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_invites")),
         sa.UniqueConstraint("token_hash", name=op.f("uq_invites_token_hash")),
     )
-    op.create_index("ix_invites_scope", "invites", ["scope"])
+    op.create_index("ix_invites_scope_created_at", "invites", ["scope", "created_at"])
     op.create_index("ix_invites_user_id_status", "invites", ["user_id", "status"])
-    op.create_index("ix_invites_email", "invites", ["email"])
+    op.create_index(
+        "ix_invites_email_unattached",
+        "invites",
+        ["email"],
+        postgresql_where=sa.text("user_id IS NULL AND status = 'pending'"),
+    )
 
 
 def downgrade() -> None:

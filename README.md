@@ -113,12 +113,15 @@ forge/api/
                 CiAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
                 ENVELOPE_PATH and CALLBACK_PATH, where each is served
   roles.py      holders, grant, revoke, and the Holder holders returns
+  invites.py    create, at, send_again, withdraw, mine, by_token, accept,
+                decline, and the Invite they return
   cookies.py    what goes into the two cookies and what comes out, and the policy
   log.py        setup, get_logger, and the Logger it returns
   errors.py     every error the package raises to its callers
   types.py      Session, User, Role, Scope, ScopeKind, RoleGrant, HeldRole,
                 Named, ScopeNames, OrgId, ContestId, TaskId, VersionId,
-                PublicationId, ConflictToken, Edit and Problem
+                PublicationId, ConflictToken, Edit, Problem, and an invite's
+                Grant, InviteStatus and MailStatus
 ```
 
 Each module only imports names written elsewhere in the package and lists
@@ -306,9 +309,10 @@ Garage with the Host header unchanged.
 The `mail` area (`port/mail.py`) hands one plain-text message to the mail
 server the forge sends its own mail through, which travels with the forge
 for the reason the object store does. The Forgejo implementation speaks SMTP
-with Python's `smtplib` on a thread, within 15 seconds; a server that does
-not answer or answers busy is `Unavailable`, and one that refuses the
-address or the login is `Rejected`. Without `settings.mail` the area says it
+with Python's `smtplib` on a thread, giving each step 15 seconds, to the
+one address the message names; a server that does not answer or answers
+busy is `Unavailable`, and one that refuses the address or the login, or
+whose encryption is not what the settings ask for, is `Rejected`. Without `settings.mail` the area says it
 is not configured and sends nothing. The fake keeps what it was handed in
 `fake.mail.sent`; `fake.mail.down`, `fake.mail.refusing` and
 `fake.mail.configured` stand for a server that does not answer, one that
@@ -835,32 +839,47 @@ a contest or a task. An invite is a row in `invites`, since it may name an
 address with no account behind it. `create` needs what granting it would:
 the manager role at the scope, admin to invite an admin, and a contestant's
 place only at a contest; a username is looked up at once, someone who holds
-the role or a registration already is refused (`invalid_invite`), and the
-same pending invite twice is `already_invited`. Every change takes the
-org's lock on role changes, the one `roles.grant` takes. `at` lists a
-scope's invites to its observers, newest first; `send_again` mails a
-pending one again with a new token, so the earlier link stops working; and
-`withdraw` takes one back.
+the role or a registration already, or could not take it (a role in a
+contest they are registered for, a place in one where they hold a role), is
+refused (`invalid_invite`), the same pending invite twice is
+`already_invited`, and an org makes at most 1000 invites a day
+(`invite_limit`). An address is one plain address and nothing else, so one
+invite mails one person. Making and changing invites take the org's lock
+on role changes, the one `roles.grant` takes. `at` lists a scope's invites
+to its observers, newest first, at most 500; `send_again` mails a pending
+one again, lapsed or not, with a new token, so the earlier link stops
+working, and its whole lifetime again from then, at most once every ten
+minutes (`invite_limit`) and only where there is a mail server
+(`invalid_invite`); and `withdraw` takes back a pending one, or an accepted
+contestant's place until its person registers.
 
 The mail goes out once the request that made the invite has committed, and
 the request answers without waiting (`ctx.in_background`), so a mail server
 that is slow or down never fails the click. The invite is the record, and
 its `mail_status` says what became of the mail: `waiting`, `sent`,
-`failed`, or `off` on a deployment without a mail server. A mail a restart
-cut short stays `waiting`, and an organiser sends it again. The mail
+`failed`, whatever stopped it, a username whose account has no confirmed
+address included, or `off` on a deployment without a mail server. A mail a
+restart cut short stays `waiting`, and an organiser sends it again. At most
+four mails are written and sent at a time in a process, and none holds a
+database connection while it asks the forge or the mail server. The mail
 carries a link to `/invites#<token>` on the app; the token is kept only as
 its SHA-256, and sits after the `#` so no server's log ever holds it.
 
-The person acts on their own invites only. `mine` lists their pending ones,
-lapsed ones flagged, once every pending invite to an address the forge has
-confirmed is theirs has been made theirs; `by_token` opens the invite a
-link carries when it is theirs and is `not_found` for anyone else; `accept`
+The person acts on their own invites only. `mine` lists their pending ones
+that have not lapsed, once every pending invite to an address the forge has
+confirmed is theirs has been made theirs; an address counts only as far as
+the forge confirms it, so with Forgejo that needs `REGISTER_EMAIL_CONFIRM`
+on wherever people sign themselves up. `by_token` opens the invite a link
+carries when it is theirs and is `not_found` for anyone else, or
+`forge_unavailable` when the forge could not say whose address it is; `accept`
 grants what the invite carries and `decline` grants nothing, both closing
 it, and a lapsed one does neither (`invite_expired`). An organiser role is
-granted by the rules a grant keeps, as long as whoever sent the invite may
-still grant it, and never lowers a role the person holds; a contestant's
-place is the eligibility an invite-only contest asks for, and shows a
-hidden contest to them. The rules are in `forge/domain/invites.py`.
+granted by the rules a grant keeps, and never lowers a role the person
+holds; a contestant's place is the eligibility an invite-only contest asks
+for, and shows a hidden contest to them until they register, when their
+registration decides. Either is taken only while whoever sent the invite
+may still grant it. Deleting an account withdraws the pending invites to
+it. The rules are in `forge/domain/invites.py`.
 
 ## Announcements and clarifications
 
