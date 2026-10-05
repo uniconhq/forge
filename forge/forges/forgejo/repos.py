@@ -90,22 +90,27 @@ class Repos:
         """Protect the default branch, which is what refuses a force-push to
         it, so nothing written can be rewritten, and say whether that had to
         be put back. Forgejo has no switch for force-pushes: a protected
-        branch refuses them all.
+        branch refuses them all. Forgejo refuses a second protection of the
+        branch, so one another maker put there meanwhile counts as there.
         """
         path = f"/api/v1/repos/{owner}/{name}/branch_protections"
         try:
             await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}")
         except NotFound:
-            await self._http.call(
-                PLATFORM,
-                "POST",
-                path,
-                json={
-                    "branch_name": DEFAULT_BRANCH,
-                    "enable_push": True,
-                    "block_on_rejected_reviews": False,
-                },
-            )
+            try:
+                await self._http.call(
+                    PLATFORM,
+                    "POST",
+                    path,
+                    json={
+                        "branch_name": DEFAULT_BRANCH,
+                        "enable_push": True,
+                        "block_on_rejected_reviews": False,
+                    },
+                )
+            except Forbidden, Conflict:
+                await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}")
+                return False
             return True
         return False
 
@@ -405,6 +410,22 @@ class Repos:
         await self._http.call(
             PLATFORM, "DELETE", f"/api/v1/repos/{owner}/{name}/collaborators/{username}"
         )
+
+    async def permission_of(self, owner: str, name: str, username: str) -> str | None:
+        """What `username` may do at the repository, `none` when nothing, or
+        none at all when the repository is not there.
+        """
+        try:
+            record = json_of(
+                await self._http.call(
+                    PLATFORM,
+                    "GET",
+                    f"/api/v1/repos/{owner}/{name}/collaborators/{username}/permission",
+                )
+            )
+        except NotFound:
+            return None
+        return str(record.get("permission"))
 
     async def collaborators(self, owner: str, name: str) -> list[dict[str, Any]]:
         return list_of(

@@ -16,8 +16,6 @@ read their own submissions there and are told it is archived when they
 submit.
 """
 
-import asyncio
-import weakref
 from dataclasses import dataclass
 
 from forge.db.tables import Contestant
@@ -39,7 +37,7 @@ from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import contestants, published, release, sessions, workspaces
+from forge.services import contestants, places, published, release, sessions
 from forge.services.published import PublishedTask
 
 log = get_logger(__name__)
@@ -119,40 +117,31 @@ async def refuse(ctx: Context, entrant: Entrant) -> tuple[Contestant, WorkspaceI
 
 
 PLACES_AT_ONCE = 4
-_making: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
-    weakref.WeakKeyDictionary()
-)
+_room = places.Turns(PLACES_AT_ONCE)
 
 
-def _room() -> asyncio.Semaphore:
-    """The process's turns at making places, one set per event loop."""
-    loop = asyncio.get_running_loop()
-    room = _making.get(loop)
-    if room is None:
-        room = _making[loop] = asyncio.Semaphore(PLACES_AT_ONCE)
-    return room
-
-
-async def open_place(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -> None:
+async def open_place(ctx: Context, entrant: Entrant) -> None:
     """Make the contestant's place to submit the task, as the platform, and
-    make sure they are still approved once it is made.
+    make sure they are still approved once it is made (`places.make`).
 
     The place is made first, holding nothing: making it takes the forge
-    seconds, and a row held that long keeps a connection from everyone else,
-    so a burst of first uploads once ran the pool dry. A removal can land
-    while it is made, so the person's row is then held and read again, and
-    one no longer approved has the access just given taken away again before
-    they are refused. Whichever ends first, the access is gone once both
-    have: a removal that held the row first is seen here and undone again,
-    and one that comes after takes away a place that is already there.
+    seconds in a rush, and a row held that long keeps a connection from
+    everyone else, so a burst of first uploads once ran the pool dry. A
+    removal can land while it is made, so the person's row is then held and
+    read again, and one no longer approved has the access just given taken
+    away again before they are refused. Whichever ends first, the access is
+    gone once both have: a removal that held the row first is seen here and
+    undone again, and one that comes after takes away a place that is
+    already there.
 
     Both the first slot asked for a file and the first submit call this: an
     object belongs to a repository at the forge, so the place has to be there
-    before any bytes can be sent, and making it twice is making it once.
+    before any bytes can be sent, and making it twice is making it once. A
+    place made ahead of time (`places`) costs one call to find finished.
 
     At most `PLACES_AT_ONCE` are made at a time in a process, the rest waiting
-    their turn in order. Making one is about seven calls to the forge, and a
-    burst of a hundred first uploads at once otherwise shares the forge
+    their turn in order. Making one is about fifteen calls to the forge, and
+    a burst of a hundred first uploads at once otherwise shares the forge
     client's few calls between them all, so every place is finished together
     at the end, past the proxy's minute; in turns, the first finish in
     seconds. One still waiting when the proxy gives up is made all the same,
@@ -162,10 +151,8 @@ async def open_place(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -> 
     row = entrant.row
     if row is None or row.status != Status.APPROVED:
         raise NotApproved(NOT_APPROVED)
-    await ctx.let_go()
     try:
-        async with _room():
-            await ctx.forge.workspaces.open_submission_place(workspace, entrant.task, [user_id])
+        approved = await places.make(ctx, row, entrant.task, _room())
     except PortError as exc:
         log.warning(
             "submitters.place_failed",
@@ -174,10 +161,7 @@ async def open_place(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -> 
             detail=exc.detail,
         )
         raise Unavailable("The forge did not answer; try again in a moment.") from None
-    await ctx.db.refresh(row, with_for_update=True)
-    if row.status != Status.APPROVED:
-        await workspaces.close(ctx, row)
-        log.info("submitters.place_taken_back", task=entrant.task, user_id=user_id)
+    if not approved:
         raise NotApproved(NOT_APPROVED)
     log.info("submitters.place_opened", task=entrant.task, user_id=user_id)
 
