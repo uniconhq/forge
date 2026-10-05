@@ -23,6 +23,7 @@ from forge.forges.fake import FakeForge
 from forge.forges.ids import parse_task, parse_workspace
 from forge.runtime.setup import Setup
 from forge.services import contestants, places, uploads
+from forge.services.turns import Turns
 from forge.settings import Settings
 from forge.testing import APP_URL, FORGE_URL, logged
 from tests.services.conftest import (
@@ -294,7 +295,7 @@ async def test_a_first_upload_to_a_place_made_ahead_is_answered(
 
 
 async def test_places_ahead_take_a_few_turns_of_their_own() -> None:
-    turns = places.Turns(places.AHEAD_AT_ONCE)
+    turns = Turns(places.AHEAD_AT_ONCE)
     making = most = 0
 
     async def make() -> None:
