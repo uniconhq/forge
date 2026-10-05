@@ -3,6 +3,7 @@ live forge accepts, asserted without one.
 """
 
 import base64
+import json
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -88,7 +89,7 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
         {"name_pattern": "submission/*", "whitelist_usernames": ["platform-account"]}
     ]
     assert recorder.sent("PUT", "/api/v1/repos/acme/spring.u8.desk/collaborators/bob") == [
-        {"permission": "write"}
+        {"permission": "read"}
     ]
     assert recorder.calls().count("POST /api/v1/orgs/acme/repos") == 2
     assert set(recorder.headers("POST", "/api/v1/orgs/acme/repos")) == {"token admin"}
@@ -266,16 +267,189 @@ async def test_a_thread_is_posted_with_the_label_of_its_kind(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/v1/orgs/acme/labels", ok([{"id": 4, "name": "announcement"}]))
-    recorder.on("POST", "/api/v1/repos/acme/spring.contest/issues", ok({"number": 12}))
+    recorder.on("POST", "/api/v1/repos/acme/spring.contest/issues", ok(_issue(12)))
 
     thread = await forgejo.threads.post_thread(
         PLATFORM, ContestId("acme/spring"), ThreadKind.ANNOUNCEMENT, title="t", body="b"
     )
 
-    assert thread == "acme/spring.contest#12"
+    assert (thread.id, thread.place, thread.number) == (
+        "acme/spring.contest#12",
+        "acme/spring",
+        12,
+    )
+    assert thread.kind is ThreadKind.ANNOUNCEMENT
     assert recorder.sent("POST", "/api/v1/repos/acme/spring.contest/issues") == [
         {"title": "t", "body": "b", "labels": [4]}
     ]
+
+
+async def test_a_thread_whose_label_did_not_hold_is_labelled_by_the_platform(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on(
+        "GET",
+        "/api/v1/orgs/acme/labels",
+        ok([{"id": 4, "name": "clarification"}]),
+        ok([{"id": 9, "name": "clarification"}]),
+    )
+    recorder.on("POST", "/api/v1/repos/acme/spring.u8.desk/issues", ok(_issue(3, labels=[])))
+    recorder.on(
+        "POST",
+        "/api/v1/repos/acme/spring.u8.desk/issues/3/labels",
+        ok([{"id": 9, "name": "clarification"}]),
+    )
+    workspace = forgejo.workspaces.workspace_of(ContestId("acme/spring"), UserOwner(8))
+
+    thread = await forgejo.threads.post_thread(
+        PLATFORM, workspace, ThreadKind.CLARIFICATION, title="t", body="b"
+    )
+
+    assert thread.kind is ThreadKind.CLARIFICATION
+    assert recorder.sent("POST", "/api/v1/repos/acme/spring.u8.desk/issues/3/labels") == [
+        {"labels": [9]}
+    ]
+
+
+def _issue(number: int, *labels: str, state: str = "open", **extra: object) -> dict[str, object]:
+    return {
+        "number": number,
+        "title": "t",
+        "body": "b",
+        "state": state,
+        "created_at": "2026-09-26T10:00:00+00:00",
+        "labels": [{"name": label} for label in labels or ("announcement",)],
+        "user": {"id": 7},
+        **extra,
+    }
+
+
+async def test_marking_labels_and_closes_and_unmarking_takes_both_back(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    """The label's id is read once for both, and a label already gone when
+    the mark is taken off is no error, so either can be repeated.
+    """
+    recorder.on("GET", "/api/v1/orgs/acme/labels", ok([{"id": 6, "name": "answered"}]))
+    recorder.on("DELETE", "/api/v1/repos/acme/spring.u8.desk/issues/3/labels/6", ok({}, 404))
+    thread = forgejo.threads.thread_of(WorkspaceId("acme/spring/@u8"), 3)
+
+    await forgejo.threads.mark_answered(PLATFORM, thread)
+    await forgejo.threads.unmark_answered(PLATFORM, thread)
+
+    assert recorder.sent("POST", "/api/v1/repos/acme/spring.u8.desk/issues/3/labels") == [
+        {"labels": [6]}
+    ]
+    assert recorder.sent("PATCH", "/api/v1/repos/acme/spring.u8.desk/issues/3") == [
+        {"state": "closed"},
+        {"state": "open"},
+    ]
+    assert recorder.calls().count("GET /api/v1/orgs/acme/labels") == 1
+
+
+async def test_the_org_search_keeps_its_own_orgs_open_clarifications_with_their_comments(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on(
+        "GET",
+        "/api/v1/repos/issues/search",
+        ok(
+            [
+                _issue(3, "clarification", repository={"owner": "acme", "name": "spring.u8.desk"}),
+                _issue(4, "clarification", repository={"owner": "other", "name": "x.u8.desk"}),
+            ]
+        ),
+    )
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.u8.desk/issues/3/comments",
+        ok([{"id": 1, "body": "A", "created_at": "2026-09-26T10:05:00+00:00", "user": {"id": 9}}]),
+    )
+
+    (found,) = await forgejo.threads.search_threads(
+        PLATFORM, OrgId("acme"), ThreadKind.CLARIFICATION
+    )
+
+    assert (found.place, found.number, found.kind) == (
+        "acme/spring/@u8",
+        3,
+        ThreadKind.CLARIFICATION,
+    )
+    assert [comment.body for comment in found.comments] == ["A"]
+    [search] = [
+        dict(request.url.params)
+        for request in recorder.seen
+        if request.url.path == "/api/v1/repos/issues/search"
+    ]
+    assert (search["state"], search["labels"], search["owner"]) == (
+        "open",
+        "clarification",
+        "acme",
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "repository", "expected"),
+    [
+        ("issues", "spring.contest", ("announcement", "acme/spring", None, None)),
+        (
+            "issue_comment",
+            "spring.sum.task",
+            ("announcement", "acme/spring", "acme/spring/sum", None),
+        ),
+        ("issue_comment", "spring.u8.desk", ("clarification", "acme/spring", None, 8)),
+    ],
+)
+def test_an_event_about_a_thread_reads_as_the_change(
+    forgejo: ForgejoForge, kind: str, repository: str, expected: tuple[object, ...]
+) -> None:
+    body = json.dumps(
+        {
+            "repository": {"name": repository, "owner": {"login": "acme"}},
+            "issue": {"number": 5, "labels": [{"name": expected[0]}]},
+        }
+    ).encode()
+
+    change = forgejo.threads.read_event(kind, body)
+
+    assert change is not None
+    asker = change.asker.user_id if isinstance(change.asker, UserOwner) else None
+    assert (change.kind.value, change.contest, change.task, asker) == expected
+    assert change.thread.endswith("#5")
+
+
+@pytest.mark.parametrize(
+    ("kind", "body"),
+    [
+        ("push", b'{"repository": {"name": "spring.contest", "owner": {"login": "acme"}}}'),
+        ("issues", b"not json"),
+        (
+            "issues",
+            b'{"repository": {"name": "x.workflow", "owner": {"login": "acme"}},'
+            b' "issue": {"number": 1, "labels": [{"name": "announcement"}]}}',
+        ),
+        (
+            "issues",
+            b'{"repository": {"name": "spring.contest", "owner": {"login": "acme"}},'
+            b' "issue": {"number": 1, "labels": []}}',
+        ),
+        (
+            "issue_comment",
+            b'{"repository": {"name": "spring.contest", "owner": {"login": "acme"}},'
+            b' "issue": {"number": 1, "labels": [{"name": "announcement"}],'
+            b' "pull_request": {"merged": false}}}',
+        ),
+        (
+            "issues",
+            b'{"repository": {"name": "spring.u8.desk", "owner": {"login": "acme"}},'
+            b' "issue": {"number": 1, "labels": [{"name": "announcement"}]}}',
+        ),
+    ],
+)
+def test_an_event_about_anything_else_reads_as_nothing(
+    forgejo: ForgejoForge, kind: str, body: bytes
+) -> None:
+    assert forgejo.threads.read_event(kind, body) is None
 
 
 async def test_roles_and_labels_that_exist_are_kept_on_a_rerun(
@@ -602,22 +776,35 @@ async def test_the_files_at_a_version_are_read_page_by_page(
     assert pages == ["1", "2"]
 
 
-async def test_contests_and_tasks_are_listed_from_what_the_caller_sees(
+async def test_contests_and_tasks_are_listed_by_a_search_of_what_the_caller_sees(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
+    """A search matches the part anywhere in a name, so the answer is checked
+    name by name; the org's number is read once.
+    """
+    recorder.on("GET", "/api/v1/orgs/acme", ok({"id": 42}))
     recorder.on(
         "GET",
-        "/api/v1/orgs/acme/repos",
+        "/api/v1/repos/search",
         ok(
-            [
-                {"name": "spring.contest"},
-                {"name": "spring.sum.task"},
-                {"name": "spring.u7.desk"},
-                {"name": "spring.sum.u7.sub"},
-                {"name": "autumn.contest"},
-                {"name": "autumn.sum.task"},
-                {"name": "classic.workflow"},
-            ]
+            {
+                "ok": True,
+                "data": [
+                    {"name": "spring.contest"},
+                    {"name": "autumn.contest"},
+                    {"name": "spring.contest.task"},
+                ],
+            }
+        ),
+        ok(
+            {
+                "ok": True,
+                "data": [
+                    {"name": "spring.sum.task"},
+                    {"name": "autumn.sum.task"},
+                    {"name": "spring.task.u7.sub"},
+                ],
+            }
         ),
     )
     ada = AsUser(7, _credential())
@@ -627,7 +814,18 @@ async def test_contests_and_tasks_are_listed_from_what_the_caller_sees(
 
     assert contests == ("acme/autumn", "acme/spring")
     assert tasks == ("acme/spring/sum",)
-    assert set(recorder.headers("GET", "/api/v1/orgs/acme/repos")) == {"Bearer access"}
+    searches = [
+        dict(request.url.params)
+        for request in recorder.seen
+        if request.url.path == "/api/v1/repos/search"
+    ]
+    assert [(search["q"], search["uid"], search["exclusive"]) for search in searches] == [
+        (".contest", "42", "true"),
+        (".task", "42", "true"),
+    ]
+    assert set(recorder.headers("GET", "/api/v1/repos/search")) == {"Bearer access"}
+    assert recorder.calls().count("GET /api/v1/orgs/acme") == 1
+    assert "GET /api/v1/orgs/acme/repos" not in recorder.calls()
 
 
 async def test_a_write_the_host_refuses_as_moved_is_read_again_and_repeated(

@@ -772,3 +772,13 @@ def test_a_size_limit_above_the_platform_ceiling_is_a_problem_at_its_path() -> N
         "inputs.contestant[0].max_size",
     ]
     assert parse_task(b"name: Small\nworkflow: unicon/classic@v1\n").oversized() == []
+
+
+def test_a_task_whose_stages_grade_nothing_on_submit_is_refused() -> None:
+    document = task_document()
+    document["stages"] = [{"id": "final", "trigger": "at_end"}]
+
+    with pytest.raises(InvalidDefinition) as error:
+        parse_task(yaml.safe_dump(document))
+
+    assert "stages" in refused(error), refused(error)

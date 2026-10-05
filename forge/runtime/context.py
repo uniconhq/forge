@@ -1,8 +1,11 @@
 """What a building block runs with: the transaction of the unit of work, the
-forge, the settings and the clock, `own_transaction` for the few writes that
-must land whatever the unit of work does, `after_commit` for work that may
+forge, the settings and the clock, `after_commit` for work that may
 only start once the unit of work has committed, `after_rollback` for undoing
-what it did outside the database when it rolls back instead, `refresh_lock`,
+what it did outside the database when it rolls back instead, `after_end` for
+the few writes that must land whatever the unit of work does, `let_go` for
+an action that has only read to hand its connection back before a slow
+call, `nudge` for a live update sent when the unit of work commits,
+`refresh_lock`,
 the setup's lock on refreshing one session's credential, `memo`, the answers the setup keeps
 for a few seconds, and `make_key`, which makes the key a newly named org,
 contest or task is filed under. The action that opened the unit
@@ -22,10 +25,12 @@ from typing import Protocol, runtime_checkable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.db.engine import TransactionFactory
+from forge.db.engine import TransactionFactory, wrote
 from forge.domain.clock import Clock
 from forge.domain.keys import KeyMaker, random_key
+from forge.domain.live import Nudge
 from forge.port import Forge
+from forge.runtime.broker import Broker
 from forge.runtime.memo import Memo
 from forge.settings import Settings
 
@@ -55,23 +60,30 @@ class Context:
     forge: Forge
     settings: Settings
     clock: Clock
-    _transactions: TransactionFactory = field(repr=False, kw_only=True)
     _refresh_lock: Callable[[uuid.UUID], asyncio.Lock] = field(repr=False, kw_only=True)
     memo: Memo = field(repr=False, kw_only=True)
     make_key: KeyMaker = field(default=random_key, repr=False, kw_only=True)
     committed: list[AfterCommit] = field(default_factory=list, repr=False, kw_only=True)
     rolled_back: list[AfterRollback] = field(default_factory=list, repr=False, kw_only=True)
+    ended: list[AfterCommit] = field(default_factory=list, repr=False, kw_only=True)
+    nudges: list[Nudge] = field(default_factory=list, repr=False, kw_only=True)
 
     @property
     def now(self) -> datetime:
         return self.clock.now()
 
-    def own_transaction(self) -> AbstractAsyncContextManager[AsyncSession]:
-        """A short transaction apart from `db`, committed when the block ends
-        and rolled back when it raises, for a write that must land whatever
-        the unit of work does afterwards.
+    async def let_go(self) -> None:
+        """Hand the connection back to the pool before a slow call to the
+        forge or the CI, in an action that has only read so far, so a page
+        that waits seconds on the forge does not keep a connection that whole
+        time. What was read stays usable, and the next query takes a
+        connection again in a transaction of its own. A unit of work that has
+        written or holds a lock keeps its connection, since ending its
+        transaction there would break its all or nothing, so an action called
+        inside another's unit of work may let go whatever its caller did.
         """
-        return transaction(self._transactions)
+        if not wrote(self.db):
+            await self.db.commit()
 
     def after_commit(self, work: AfterCommit) -> None:
         """Run `work` once this unit of work has committed, on a unit of work
@@ -93,6 +105,26 @@ class Context:
         cancelled, which leaves what it made like a crash would.
         """
         self.rolled_back.append(work)
+
+    def nudge(self, nudge: Nudge) -> None:
+        """Tell the streams that hear it that something changed, once this
+        unit of work commits: the nudges are published in its own
+        transaction just before the commit, so Postgres delivers them with
+        it and never for a unit of work that rolls back.
+        """
+        self.nudges.append(nudge)
+
+    def after_end(self, work: AfterCommit) -> None:
+        """Run `work` once this unit of work has ended, committed or rolled
+        back, on a unit of work of its own, for a write that must land
+        whatever the unit of work does: noting that a session was used, or
+        ending one the forge has refused, before the error that refusal
+        raises rolls the rest back. It runs once this unit of work has let
+        go of its connection, so it never waits on the pool while holding
+        one. Work that fails is logged; the unit of work's own answer or
+        error stands.
+        """
+        self.ended.append(work)
 
     def refresh_lock(self, session_id: uuid.UUID) -> asyncio.Lock:
         """The lock one process holds while it refreshes a session's
@@ -117,3 +149,6 @@ class ActionSetup(Protocol):
     def unit_of_work(self) -> AbstractAsyncContextManager[Context]: ...
 
     def refresh_lock(self, session_id: uuid.UUID) -> asyncio.Lock: ...
+
+    @property
+    def broker(self) -> Broker: ...

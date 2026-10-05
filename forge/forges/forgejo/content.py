@@ -66,7 +66,9 @@ class ForgejoContent:
         return await self._repos.exists(*location(place))
 
     async def list_contests(self, as_: Identity, org: OrgId) -> tuple[ContestId, ...]:
-        names = sorted(str(repo["name"]) for repo in await self._repos.under(org, as_))
+        names = sorted(
+            str(repo["name"]) for repo in await self._repos.named_with(org, f".{CONTEST}", as_)
+        )
         return tuple(
             ContestRef(org, name.removesuffix(f".{CONTEST}")).id
             for name in names
@@ -76,7 +78,8 @@ class ForgejoContent:
     async def list_tasks(self, as_: Identity, contest: ContestId) -> tuple[TaskId, ...]:
         parent = parse_contest(contest)
         found = []
-        for repo in sorted(str(repo["name"]) for repo in await self._repos.under(parent.org, as_)):
+        repos = await self._repos.named_with(parent.org, f".{TASK}", as_)
+        for repo in sorted(str(repo["name"]) for repo in repos):
             parts = repo.split(".")
             if len(parts) == 3 and parts[0] == parent.contest and parts[2] == TASK:
                 found.append(TaskRef(parent.org, parent.contest, parts[1]).id)

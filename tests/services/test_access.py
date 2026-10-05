@@ -15,6 +15,7 @@ from forge.domain.roles import RANK, Role, RoleGrant, Scope
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
 from forge.runtime.context import Context
+from forge.runtime.setup import Setup
 from forge.services import access, sessions
 
 
@@ -79,13 +80,13 @@ async def test_someone_holding_no_role_is_refused_at_every_scope_naming_it(
 
 
 async def test_a_credential_the_forge_refuses_ends_the_session(
-    ctx: Context, fake: FakeForge
+    setup: Setup, ctx: Context, fake: FakeForge
 ) -> None:
     session = await _session(ctx, fake, 7)
     fake.state.revoke_credentials(7)
 
     with pytest.raises(SessionExpired):
-        await access.organiser(ctx, session, Scope("acme"), Role.OBSERVER)
+        await access.organiser(setup, session, Scope("acme"), Role.OBSERVER)
     with pytest.raises(SessionExpired):
         await sessions.authenticate(ctx, session.id)
 

@@ -175,6 +175,19 @@ async def submit(
         )
     entrant = await submitters.entrant(ctx, session, task)
     workspace = entrant.workspace
+    opened = False
+    if (
+        workspace is not None
+        and not any(given.uploads for given in inputs.values())
+        and not await _submitted_before(ctx, workspace, task)
+    ):
+        # A first submission of nothing but typed values names no upload, so
+        # no slot made its place; it is made here, by the rules a submit is
+        # checked against first, and before the hold below, since making it
+        # takes the forge seconds and the hold keeps the connection.
+        await submitters.refuse(ctx, entrant)
+        await submitters.open_place(ctx, entrant, workspace)
+        opened = True
     if workspace is not None:
         await _hold(ctx, workspace, task)
         again = await _again(ctx, entrant, workspace, idempotency_key)
@@ -190,9 +203,10 @@ async def submit(
         )
     await _refuse_rate(ctx, entrant, workspace)
     chosen = await _chosen(ctx, entrant, inputs)
-    if not made and not chosen:
-        # Naming an upload means a slot made the place already, so only a
-        # submission of nothing but typed values has one to make here.
+    if not made and not chosen and not opened:
+        # Naming an upload means a slot made the place already, and a first
+        # submission of typed values made it before the hold; one whose
+        # gradings are all gone still has its place made here.
         await submitters.open_place(ctx, entrant, workspace)
     layout = rules.lay_out(
         entrant.published.definition.inputs.contestant,
@@ -337,6 +351,20 @@ def _log_failure(exc: PortError, grading: str) -> PortError:
         detail=exc.detail,
     )
     return Unavailable(LOG_STORE_UNAVAILABLE)
+
+
+async def _submitted_before(ctx: Context, workspace: WorkspaceId, task: TaskId) -> bool:
+    """Whether the workspace has a grading at the task, and so a place to
+    submit it that some earlier submit made. Read without a lock: the
+    answer only saves a call to the forge, and a place made twice is made
+    once.
+    """
+    found = await ctx.db.scalar(
+        select(Grading.id)
+        .where(Grading.workspace_id == workspace, Grading.task_id == task)
+        .limit(1)
+    )
+    return found is not None
 
 
 async def _hold(ctx: Context, workspace: WorkspaceId, task: TaskId) -> None:
@@ -572,26 +600,48 @@ async def _read(
     grouped: dict[int, builtins.list[Grading]] = {}
     for row in rows:
         grouped.setdefault(row.submission_number, []).append(row)
+    gone = await gradings.lost(
+        ctx, [row for found in grouped.values() for row in _latest(found).values()]
+    )
     return [
         _submission(
-            ctx, entrant, found, min(row.submitted_at for row in grouped[found]), grouped[found]
+            ctx,
+            entrant,
+            found,
+            min(row.submitted_at for row in grouped[found]),
+            grouped[found],
+            gone,
         )
         for found in sorted(grouped, reverse=True)
     ]
 
 
-def _submission(
-    ctx: Context, entrant: Entrant, number: int, at: datetime, rows: Sequence[Grading]
-) -> Submission:
-    stages = entrant.published.definition.stages_resolved()
-    order = {stage.id: index for index, stage in enumerate(stages)}
-    shows = {stage.id: stage.show for stage in stages}
+def _latest(rows: Sequence[Grading]) -> dict[str, Grading]:
+    """The latest attempt of each stage among `rows`."""
     latest: dict[str, Grading] = {}
     for row in rows:
         if row.stage not in latest or row.attempt > latest[row.stage].attempt:
             latest[row.stage] = row
+    return latest
+
+
+def _submission(
+    ctx: Context,
+    entrant: Entrant,
+    number: int,
+    at: datetime,
+    rows: Sequence[Grading],
+    lost: frozenset[uuid.UUID] = frozenset(),
+) -> Submission:
+    """The submission as its owner reads it, each stage by its latest
+    attempt, with `lost` naming the gradings whose runs the CI has lost.
+    """
+    stages = entrant.published.definition.stages_resolved()
+    order = {stage.id: index for index, stage in enumerate(stages)}
+    shows = {stage.id: stage.show for stage in stages}
+    latest = _latest(rows)
     results = tuple(
-        _result(row, gradings.status_of(ctx, row), shows.get(row.stage, Show.HIDDEN))
+        _result(row, gradings.status_of(ctx, row, lost), shows.get(row.stage, Show.HIDDEN))
         for row in sorted(
             latest.values(), key=lambda row: (order.get(row.stage, len(order)), row.stage)
         )
