@@ -155,6 +155,7 @@ async def envelope(ctx: Context, grading: uuid.UUID, key: str) -> dict[str, Any]
     row.status = GradingStatus.RUNNING
     row.started_at = ctx.now
     row.deadline_at = run_deadline(ctx.now, wall)
+    gradings.changed(ctx, row)
     await ctx.db.flush()
     log.info("runs.started", grading=str(row.id), run=row.run_id)
     places = ctx.forge.grading.run_places(run)
@@ -216,6 +217,7 @@ async def callback(
             row.started_at = row.started_at or ctx.now
         case Event.PROGRESS:
             row.progress = report.progress
+            gradings.changed(ctx, row)
         case Event.FINISHED:
             _finished(ctx, row, report.verdict)
     await ctx.db.flush()
@@ -226,16 +228,16 @@ def _finished(ctx: Context, row: Grading, verdict: Any) -> None:
     problem = verdict_problem(verdict)
     if problem is not None:
         log.warning("runs.verdict_refused", grading=str(row.id), problem=problem)
-        gradings.finish(row, GradingStatus.SYSTEM_ERROR, ctx.now, error=problem)
+        gradings.finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=problem)
         return
     row.verdict = verdict
     row.log_key = log_key(row.id, row.attempt) if verdict["log"] is not None else None
     if verdict["outcome"] == GradingStatus.SYSTEM_ERROR.value:
         gradings.finish(
-            row, GradingStatus.SYSTEM_ERROR, ctx.now, error=str(verdict["summary"])[:ERROR_LIMIT]
+            ctx, row, GradingStatus.SYSTEM_ERROR, error=str(verdict["summary"])[:ERROR_LIMIT]
         )
     else:
-        gradings.finish(row, GradingStatus.DONE, ctx.now)
+        gradings.finish(ctx, row, GradingStatus.DONE)
     log.info("runs.finished", grading=str(row.id), outcome=verdict["outcome"])
 
 

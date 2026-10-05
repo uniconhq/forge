@@ -63,6 +63,13 @@ class FakeWorkspaces:
     def workspace_of(self, contest: ContestId, owner: WorkspaceOwner) -> WorkspaceId:
         return _ref(contest, owner).id
 
+    def owner_of(self, workspace: WorkspaceId) -> WorkspaceOwner:
+        return parse_workspace(workspace).owner
+
+    def contest_of(self, workspace: WorkspaceId) -> ContestId:
+        found = parse_workspace(workspace)
+        return ContestId(f"{found.org}/{found.contest}")
+
     async def open_submission_place(
         self, workspace: WorkspaceId, task: TaskId, member_ids: Sequence[int]
     ) -> None:

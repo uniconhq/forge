@@ -296,8 +296,8 @@ async def test_a_deleted_users_questions_still_read_as_nobodys(fake: FakeForge) 
     thread = await fake.threads.post_thread(
         bob, workspace, ThreadKind.CLARIFICATION, title="Q", body="?"
     )
-    await fake.threads.comment(PLATFORM, thread, "A")
-    await fake.threads.comment(bob, thread, "Thanks")
+    await fake.threads.comment(PLATFORM, thread.id, "A")
+    await fake.threads.comment(bob, thread.id, "Thanks")
 
     await fake.identity.delete_user(8)
 

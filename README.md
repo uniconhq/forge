@@ -22,6 +22,8 @@ forge/
     actions.py       the @action mark
     held.py          the one setup the process holds
     memo.py          answers the setup keeps for a few seconds
+    broker.py        the process's live-update streams and the one connection
+                     that listens for the nudges every process publishes
     setup.py         the package set up for one process; start, ready, stop and now
   domain/            the types and their rules, the definition files, the plans,
                      a publication and its note, the release rules,
@@ -89,8 +91,16 @@ forge/api/
                 ContestVisibility of a contest
   landing.py    contests, contest, statement, and the PublicContest, PublicTask
                 and PublicStatement they return
-  events.py     check, EVENTS_PATH, where the door is, and SIGNATURE_HEADERS, the
-                headers the signature comes in
+  events.py     check and publish, EVENTS_PATH, where the door is, and
+                SIGNATURE_HEADERS and KIND_HEADERS, the headers the signature
+                and the event's kind come in
+  announcements.py  post, edit, close, manage, contest, task, and the
+                Announcement and AnsweredQuestion they return
+  clarifications.py  ask, mine, follow_up, inbox, of_contest, reply, mark,
+                unmark, answer_publicly, and the Clarification and Message
+                they return
+  live.py       stream, the nudges one session hears, and the Nudge and
+                NudgeKind it yields
   uploads.py    slot, task_file_slot, complete, door, the Slot a slot is, the
                 Upload complete returns with its UploadStatus, and the Door
                 the proxy is answered with
@@ -308,7 +318,11 @@ everything else is built from it: the ids the tables store, `<org>`,
 `<org>/<contest>` and `<org>/<contest>/<task>` with each part a key; the
 org's name at the forge and its service account's, `unicon-ci-<org key>`;
 every repository's name, such as `<contest key>.<task key>.task`; and every
-role team's. The names people give them are labels in the `names` table,
+role team's. The Forgejo implementation lists an org's contests and a
+contest's tasks through Forgejo's repository search for names holding
+`.contest` or `.task`, checking each name it gets back, since the org also
+holds a repository for every contestant at every task and reading them all
+grew with each. The names people give them are labels in the `names` table,
 one row per thing, unique among the things of its kind in the same parent.
 So a rename will change one row and move nothing, and a name freed and taken
 again names a new thing that inherits no registration, grading or role of
@@ -384,7 +398,11 @@ variable named.
 when the value is empty, forged, signed under another key or older than the
 session's hard lifetime, so a forged id is refused without a database read.
 `sign_in_value(attempt)` and `sign_in_attempt(value)` do the same for what
-checks a sign-in's answer, for `UNICON_SIGN_IN_TTL`. `policy()` says whether
+checks a sign-in's answer, for `UNICON_SIGN_IN_TTL`. A cookie signed up to
+two seconds in the future still reads, since another process's clock may
+be a second ahead or the machine's may be stepped back after it signed;
+every refusal is logged as `cookies.refused` with its reason and never the
+value. `policy()` says whether
 the cookies are `Secure` and how long each lives. The host keeps the cookie
 names, `HttpOnly`, `SameSite` and the `Set-Cookie` header itself, because
 those are HTTP.
@@ -412,7 +430,9 @@ hosting process calls are actions, marked `@action` from
 | `contestants` | `register`, `mine`, `list`, `approve`, `reject`, `reopen`, `remove`, `extend` |
 | `contest_home` | `contests`, `home`, `task` |
 | `landing` | `contests`, `contest`, `statement` |
-| `events` | `check` |
+| `events` | `check`, `publish` |
+| `announcements` | `post`, `edit`, `close`, `manage`, `contest`, `task` |
+| `clarifications` | `ask`, `mine`, `follow_up`, `inbox`, `of_contest`, `reply`, `mark`, `unmark`, `answer_publicly` |
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
 | `submissions` | `submit`, `mine`, `one`, `files`, `file`, `run_log` |
@@ -436,12 +456,39 @@ one the browser had before, together.
 Every other service function is a building block, called only from inside
 the package. Its first parameter is a `Context`: the transaction of the
 unit of work, the forge, the settings and the clock. A building block never
-commits `ctx.db`. Session bookkeeping runs in short transactions of its
-own, opened with `ctx.own_transaction()`, which commits when its block ends
-and rolls back when it raises, so a refused request still records what it
-learned whatever the action does next. The setup holds one lock per session
-for refreshing its credential, taken as `ctx.refresh_lock(session_id)`, so
-two requests in one process refresh it once. Work that may start only once
+commits `ctx.db`.
+
+A unit of work holds one pooled connection from its first query until it
+ends, and never asks for a second while it holds it: a request that did
+would wait on the pool while keeping a connection from it, and a few dozen
+at once lock the whole pool up. So the few writes that must land whatever
+the action does go to `ctx.after_end(work)`, which runs each on a unit of
+work of its own once this one has ended, committed or rolled back, and its
+connection is back: noting that a session was used, and ending one whose
+credential the forge refused. Refreshing a session's credential, which asks
+the forge and then compare-and-sets the stored value, is done before the
+route's action opens its unit of work, by `identity.current`, which the
+host's guard calls on every request (`sessions.keep_fresh`): each read and
+write there is a transaction of its own and none is open while the forge is
+asked, and the action then reads a credential good for minutes yet. The
+setup holds one lock per session for that refresh, taken as
+`ctx.refresh_lock(session_id)`, so two requests in one process refresh it
+once. An action that has only read may hand its connection back before a
+slow call to the forge with `await ctx.let_go()`; the next query takes one
+again in a transaction of its own. One that has written or holds a lock
+keeps its connection, so its all or nothing stands. The pages people open
+most do this: `/me`, the organiser's guard, the list of contests, a
+contest's home and a task's page. `tests/services/test_one_connection.py`
+runs the main request paths on a pool of one connection that waits a
+second, so a path that nests a checkout fails there at once.
+
+Each process keeps `UNICON_DATABASE_POOL_SIZE` connections (20),
+`UNICON_DATABASE_POOL_OVERFLOW` more in a rush (10), and a request that
+finds them all taken waits `UNICON_DATABASE_POOL_WAIT` seconds (10) and
+fails. The deployment runs one backend process beside Forgejo and
+Woodpecker on a Postgres that allows 100 connections, three of them kept
+for its superuser; more backend processes keep their pools' sum under what
+the others leave. Work that may start only once
 the unit of work has committed is handed to `ctx.after_commit(work)`: when
 the unit of work commits, `Setup.unit_of_work` runs each piece on a unit of
 work of its own, and one that fails goes to the log as
@@ -721,13 +768,101 @@ to them in the contest's order; and `task`, a visible task's statement,
 limits and the inputs a contestant gives, with the labels, languages, file
 types and sizes a submit panel shows, and nothing else of what it holds. A visitor with no session reads
 `landing`: the public contests, one with its released tasks, and a released
-task's statement. The list of public contests is kept by each process for
-five seconds (`ctx.memo`, `forge/runtime/memo.py`), since anyone may ask for
-it and it reads every org's contests; visitors arriving while it is read wait
-for that one read. All of it is read live as the platform from the latest
+task's statement. Both lists of contests, a signed-in person's and a
+visitor's, start from every published contest as the process read it at
+most thirty seconds ago (`published.every_contest_kept`, kept in
+`ctx.memo`, `forge/runtime/memo.py`), since reading it costs the forge two
+calls an org and it is read as the platform, so one answer serves
+everybody and each person's filtering comes after; people arriving while
+it is read wait for that one read. A contest's settings saved through the
+process drop its copy at once (`published.forget_contests`); another
+process's copy lasts its thirty seconds. The operator's reconcile reads the
+list live. Everything else is read live as the platform from the latest
 publication of each task, with the contest's visibility and the release
 rules applied first, and a contest or task the reader may not see is no
 such contest or task, the same answer as one that is not there.
+
+## Announcements and clarifications
+
+Both are threads at the forge, through the port's `threads` area, and
+nothing about either is kept in the database: the thread is the record.
+
+An **announcement** is an organiser's message to a contest or one of its
+tasks, a thread labelled `announcement` on the contest's or the task's own
+repository. A manager there posts, edits and closes one, each as
+themselves with their own credential, so the forge's record says who wrote
+it (`announcements.post`, `edit`, `close`); an observer reads every one,
+closed ones included (`manage`). There is no delete: a message people have
+read is closed and stays readable. A signed-in person reads the open
+announcements of a contest they see and of each task released to them
+(`contest`), and of one released task (`task`), read live as the platform,
+since a contestant reaches no repository at the forge; a task not released
+to them contributes nothing.
+
+A **clarification** is a contestant's question, a thread labelled
+`clarification` on the desk of their own workspace, which is what keeps it
+private to them and the organisers who reach the desk through the
+contest's roles. An approved contestant asks as themselves, and their first
+question makes the desk, as the platform (`clarifications.ask`); a question
+may name a task released to them. They read their own questions with every
+message (`mine`), and comment again on one (`follow_up`), which on an
+answered question takes the mark off and opens it, so the follow-up lands
+back with the organisers in the same thread. A manager at the contest
+replies, which leaves it open (`reply`); marks it answered, which labels it
+`answered` and closes it, with or without a reply (`mark`); and takes that
+back (`unmark`). Marking or unmarking twice changes nothing, so a retry is
+always safe and a reply is never posted twice. The inbox is one search at
+the forge for the org's open clarifications, as the organiser, for anyone
+holding a role anywhere in the org, each shown only where they observe the
+contest (`inbox`); an answered question is closed precisely because the
+forge's search cannot ask for a label's absence. `of_contest` is every
+question of one contest, answered ones included. An answer made public is
+an ordinary announcement on the question's task, or its contest, posted as
+the organiser with a line the platform adds pointing at the question
+(`answer_publicly`); readers learn that it answers a question and an
+organiser which, and the question stays private. Text a person writes
+never carries such a line: `announcements.checked` takes any out. A title
+is at most 200 characters and a text at most 20,000, and an empty or
+longer one is `InvalidMessage`, naming which.
+
+## Live updates
+
+A page that shows something that can change while it is open hears of the
+change and asks for the thing again; nothing that changed travels on the
+stream. A nudge (`domain/live.py`) is a kind, `grading`, `announcement` or
+`clarification`, and an id, with who may hear it: the one person it
+concerns, the organisers who observe a scope or a broader one, and the
+approved contestants of a contest. `resync` tells a page that nudges may
+have been missed.
+
+A unit of work nudges with `ctx.nudge(...)`, and the setup publishes every
+nudge the unit of work left in one `pg_notify` on its own transaction, just
+before the commit, so Postgres delivers them with it and never for a unit
+of work that rolls back. Every write of a grading's status or progress
+nudges its contestant and its task's organisers (`gradings.changed`, from
+`new_row`, the start, `finish`, the envelope and the progress callback),
+which is what moves a submissions list while its owner watches. A thread's
+changes come from the forge: the host answers the forge's push as soon as
+`events.check` passes, then hands the body to `events.publish`, which reads
+it through the port and nudges a clarification's asker and its contest's
+organisers, an announcement of a contest its contestants and organisers,
+and one of a task its organisers and, only once the task is released, its
+contestants. An event about anything else, or naming a place in another
+org than the one whose secret signed it, nudges nobody.
+
+Each process keeps one broker (`runtime/broker.py`), with one connection
+outside the pool that listens on `unicon_live`, opened when the first
+stream subscribes and closed when the last leaves, so whichever process
+published a nudge, every process's streams hear it. `live.stream(session)`
+is what the host serves as one Server-Sent Events connection per session:
+it checks the session, reads its audience (the person, every role they hold
+and the contests where they are an approved contestant), and yields each
+nudge that audience hears, or `None` every fifteen seconds for a keepalive.
+It holds no database connection while it waits, checks the session again
+every minute and ends once the session has, and reads the audience again
+every five minutes. A stream that falls 256 nudges behind is emptied and
+told to resync. When the listening connection drops it is opened again a
+second later and every stream is told to resync.
 
 ## Uploads
 
@@ -747,9 +882,10 @@ one asked for included (`upload_limit`, with `limit` and `bytes`). The count
 is taken under an advisory lock on the person and the task, held until the
 unit of work ends, so two slots asked at once cannot both pass.
 
-It then makes the person's place to submit the task, if no slot of theirs for
-it has been kept before, since an object belongs to a place and there has to
-be one to put it in; asks the forge whether the place already holds that
+Before any of that, it makes the person's place to submit the task, if no
+slot of theirs for it has been kept before, since an object belongs to a
+place and there has to be one to put it in. It asks with no connection held
+(below); then it asks the forge whether the place already holds that
 object, which answers a `Slot` that is `ready` with nothing to send; and
 otherwise records an `uploads` row and answers the address to send the file
 to.
@@ -797,9 +933,11 @@ bytes are read back and checked against the digest the upload was verified
 with. At a contestant's first submit to the task, their place to submit it
 is made, as the platform, once they are found approved and before their
 submissions are counted, which is the one thing a later refusal leaves at
-the forge. It is made under a lock on their `contestants` row, so a removal
-waits for it and then takes the access away again, and one removed by then
-is `not_approved`. Then the files go in as one commit as the
+the forge. The place is made first, holding nothing, since it takes the
+forge seconds; then their `contestants` row is held and read again, and
+someone removed meanwhile has the access just given taken away again and is
+`not_approved`. A removal that comes after takes away a place already
+there, so either way the access is gone once both are done. Then the files go in as one commit as the
 contestant, `files/<input id>/<file name>` beside `submission.json`, named
 `submission/<n>` as the platform; one `queued` grading row is inserted per
 stage graded on submit, against the task's current publication, attempt 1,
@@ -858,6 +996,24 @@ envelope and reports; its row keeps its status, and an organiser retries
 it: `queued` five minutes after it was made (its start was lost),
 `dispatched` two hours after its run was started (no machine took it, or it
 never reached the harness), and `running` past its deadline.
+
+A `dispatched` grading can also have a run the CI lost: Woodpecker 3.18.1
+drops a run from its queue for good when the machine it handed the run to
+does not renew its claim within a minute, after a network drop or a machine
+that died during the checkout, and the pipeline goes on saying `pending`
+(woodpecker-ci/woodpecker#7063). Once a grading has been `dispatched` two
+minutes, reading it asks the CI where its run is (`grading.run_state`,
+`gradings.lost`): queued for a machine, taken by one, finished, or lost,
+told by the queue the run is in, not by its status, which is `pending`
+either way. A lost one reads as `system_error` with `LOST` as its reason;
+one still queued is left alone however long it waits, since at a
+contest's start a run waits minutes behind others. The CI is asked about a
+run at most once every fifteen seconds by a process, through the memo,
+and the Forgejo implementation reads the queue at most once every ten
+seconds for all runs, so contestants' pages polling every few seconds
+cost it little. Nothing is written when a grading is read; the reader's
+connection is let go of before the CI is asked, and a CI that does not
+answer loses nothing.
 
 **Starting a run.** Every new grading row hands `gradings.start` to
 `ctx.after_commit`, so its run is started right after the unit of work that
@@ -967,10 +1123,15 @@ start once it commits. It logs what it did as `reconcile.done`.
 **The organiser's controls.** Each takes the `Organiser` from
 `access.organiser` and needs manager at the grading's task; a grading whose
 task they do not observe is no such grading. `gradings.cancel` stops a
-grading that is not finished, at the CI too when a run of it is there
-(`WrongStatus` for a finished one). `gradings.retry` makes a new attempt of a
-finished one against the publication it graded against, while no other
-attempt of it is being graded (`Conflict`). `gradings.rejudge(task)` makes a
+grading that is not finished, at the CI too when a run of it is there,
+one that reads as `system_error` because it is overdue or lost while its
+row still waits included (`WrongStatus` for a finished one).
+`gradings.retry` makes a new attempt of a finished one against the
+publication it graded against, while no other attempt of it is being
+graded (`Conflict`). One that reads as finished only because it is overdue
+or lost is ended first with that reason written on its row, and its old
+run is cancelled at the CI once the retry has committed, so it does not
+keep a machine's containers going. `gradings.rejudge(task)` makes a
 new attempt of every submission's latest attempt at every stage the current
 publication has, against it, cancelling first one still being graded against
 an older publication and leaving one being graded against the current one,
@@ -997,6 +1158,7 @@ structured members in `extra`:
 | `ContestantConflict` | `contestant_conflict` | `contests` |
 | `SharedWorkflowOwner` | `shared_workflow_owner` | `workflows` |
 | `WrongStatus` | `wrong_status` | `current`, the registration's or the grading's status |
+| `InvalidMessage` | `invalid_message` | `field`, `title` or `body` |
 | `TaskClosed` | `task_closed` | `reason`, `ended` or `submissions_closed` |
 | `SubmissionLimit` | `submission_limit` | `limit`, the submissions allowed |
 | `RateLimited` | `rate_limited` | `rate`, such as `1 per 30s`, and `retry_at` |

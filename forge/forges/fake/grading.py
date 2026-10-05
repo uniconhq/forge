@@ -31,6 +31,7 @@ from forge.domain.grading import (
     Enrolment,
     GradingRun,
     RunPlaces,
+    RunState,
 )
 from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount
 from forge.domain.ids import AgentId, OrgId, RunId, TaskId
@@ -94,6 +95,13 @@ class FakeGrading:
             self._state.lose_start_answer = False
             raise Unavailable("the CI's answer to the start was lost")
         return made
+
+    async def run_state(self, run: RunId) -> RunState:
+        self._state.record("run_state", CI_ADMIN, run=run)
+        found = self._state.runs.get(run)
+        if found is None:
+            return RunState.LOST
+        return RunState.FINISHED if found.cancelled else found.ci_state
 
     async def cancel_run(self, run: RunId) -> None:
         self._state.record("cancel_run", PLATFORM, run=run)

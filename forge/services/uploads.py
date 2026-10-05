@@ -149,20 +149,21 @@ async def slot(
         raise TooLarge(
             f"The file is larger than the {limit} bytes allowed.", limit=limit, input=whose
         )
+    if not await _asked_before(ctx, entrant.session.user_id, task, UploadPurpose.SUBMISSION):
+        # An object belongs to a repository at the forge, so the place has to
+        # be there before any bytes are sent. A row for this task, taken or
+        # not, means an earlier slot made it, so a submission of twenty files
+        # costs one call between them and not one each. Two first slots at
+        # once both make it, which is making it once.
+        await submitters.open_place(ctx, entrant, workspace)
     await _clear_lapsed(ctx, entrant.session.user_id, UploadPurpose.SUBMISSION)
-    asked_before = await _refuse_open(
+    await _refuse_open(
         ctx,
         entrant.session.user_id,
         task,
         size,
         rules.open_bytes(min(definition.limits.max_size, SUBMISSION_CEILING)),
     )
-    if not asked_before:
-        # An object belongs to a repository at the forge, so the place has to
-        # be there before any bytes are sent. A row for this task, taken or
-        # not, means an earlier slot made it, so a submission of twenty files
-        # costs one call between them and not one each.
-        await submitters.open_place(ctx, entrant, workspace)
     place = SubmissionPlace(workspace, task)
     as_ = AsUser(entrant.session.user_id, await sessions.credential_for(ctx, entrant.session.id))
     return await _record(
@@ -517,6 +518,24 @@ async def _clear_lapsed(ctx: Context, user_id: int, purpose: UploadPurpose) -> N
     await ctx.db.flush()
 
 
+async def _asked_before(ctx: Context, user_id: int, task: TaskId, purpose: UploadPurpose) -> bool:
+    """Whether any slot of this kind was ever kept for the person at the task,
+    taken or not, and so whether their place there is made already. Read
+    without a lock: the answer only saves a call to the forge, and a place
+    made twice is made once.
+    """
+    found = await ctx.db.scalar(
+        select(UploadRow.id)
+        .where(
+            UploadRow.owner_user_id == user_id,
+            UploadRow.task_id == task,
+            UploadRow.purpose == purpose,
+        )
+        .limit(1)
+    )
+    return found is not None
+
+
 async def _refuse_open(
     ctx: Context,
     user_id: int,
@@ -524,13 +543,11 @@ async def _refuse_open(
     size: int,
     most_bytes: int,
     purpose: UploadPurpose = UploadPurpose.SUBMISSION,
-) -> int:
+) -> None:
     """Refuse a slot that would take the person past what they may hold for
     the task before a submit uses it, once any other slot of theirs for the
     task has finished, and hold the next one off until this unit of work
-    ends. Answers how many rows they have for this task and purpose at all,
-    taken or not, which is nought exactly when no slot of that kind has ever
-    been kept for them, and so when the place may still need making.
+    ends.
 
     An organiser's files are counted on their own: a person who is both is
     not refused a file for their task because of what they hold to submit.
@@ -540,10 +557,9 @@ async def _refuse_open(
         {"space": UPLOAD_LOCK, "target": f"{user_id}|{task}|{purpose}"},
     )
     open_statuses = [status.value for status in rules.OPEN]
-    ever, count, summed = (
+    count, summed = (
         await ctx.db.execute(
             select(
-                func.count(),
                 func.count().filter(UploadRow.status.in_(open_statuses)),
                 func.coalesce(
                     func.sum(UploadRow.size).filter(UploadRow.status.in_(open_statuses)), 0
@@ -572,7 +588,6 @@ async def _refuse_open(
             limit=rules.OPEN_MAX,
             bytes=most_bytes,
         )
-    return int(ever)
 
 
 def _file_input(declared: Sequence[ContestantInput], input: str) -> ContestantInput:

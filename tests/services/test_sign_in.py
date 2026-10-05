@@ -91,8 +91,8 @@ async def test_a_sign_in_ends_the_session_the_browser_had(
     )
 
     with pytest.raises(SessionExpired):
-        await identity.current(setup, previous.id)
-    assert (await identity.current(setup, session.id)).user_id == 7
+        await identity.current(previous.id, setup=setup)
+    assert (await identity.current(session.id, setup=setup)).user_id == 7
 
 
 @pytest.mark.parametrize("tampered", ["state", "nonce", "missing"])
@@ -134,7 +134,7 @@ async def test_a_refused_sign_in_leaves_the_previous_session_working(
             previous_session_id=previous.id,
         )
 
-    assert (await identity.current(setup, previous.id)).id == previous.id
+    assert (await identity.current(previous.id, setup=setup)).id == previous.id
 
 
 async def test_a_spent_code_is_refused(setup: Setup, ctx: Context, fake: FakeForge) -> None:
@@ -153,9 +153,9 @@ async def test_a_spent_code_is_refused(setup: Setup, ctx: Context, fake: FakeFor
 async def test_a_credential_the_forge_refuses_ends_the_session_whatever_the_caller_does(
     setup: Setup, ctx: Context, fake: FakeForge
 ) -> None:
-    """The revocation is written in a transaction of its own, so the caller
-    rolling its unit of work back, which is what a raise makes it do, does
-    not bring the session back.
+    """The revocation is written once the caller's unit of work has ended, on
+    a unit of work of its own, so the caller rolling back, which is what a
+    raise makes it do, does not bring the session back.
     """
     started = sign_in.start("/", setup=setup)
     code, state = _answer(fake, started)
@@ -166,8 +166,7 @@ async def test_a_credential_the_forge_refuses_ends_the_session_whatever_the_call
     fake.state.revoke_credentials(7)
 
     with pytest.raises(SessionExpired):
-        await identity.whoami(ctx, session)
-    await ctx.db.rollback()
+        await identity.whoami(setup, session)
 
     with pytest.raises(SessionExpired):
-        await identity.current(ctx, session.id)
+        await identity.current(session.id, setup=setup)

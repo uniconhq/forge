@@ -1,9 +1,12 @@
 """The two cookies' contents: a signed session id that authenticates, and is
-refused when altered, signed under another key or too old; the sign-in
-attempt round-trips; a cookie signed before the signing moved into the
-package still reads; and the policy follows the settings.
+refused when altered, signed under another key or too old, each refusal
+logged with its reason; one signed a second in the future reads, and one
+signed further ahead does not; the sign-in attempt round-trips; a cookie
+signed before the signing moved into the package still reads; and the
+policy follows the settings.
 """
 
+import logging
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -18,7 +21,7 @@ from forge.runtime.setup import Setup
 from forge.services import cookies
 from forge.services.sign_in import SignInAttempt
 from forge.settings import Settings
-from forge.testing import CALLBACK_PATH
+from forge.testing import CALLBACK_PATH, logged
 
 OTHER_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE"
 
@@ -90,6 +93,38 @@ def test_a_session_cookie_older_than_the_hard_lifetime_is_refused(
     monkeypatch.setattr(time, "time", lambda: later)
 
     assert cookies.session_id(value, setup=setup) is None
+
+
+def test_a_cookie_signed_a_second_ahead_reads_and_one_further_ahead_does_not(
+    setup_of: MakeSetup, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    setup, session = setup_of(), _session()
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now + 1)
+    ahead = cookies.session_value(session, setup=setup)
+    attempt = cookies.sign_in_value(SignInAttempt("s", "v", "n", "/"), setup=setup)
+    monkeypatch.setattr(time, "time", lambda: now + 5)
+    far_ahead = cookies.session_value(session, setup=setup)
+    monkeypatch.setattr(time, "time", lambda: now)
+
+    assert cookies.session_id(ahead, setup=setup) == session.id
+    assert cookies.sign_in_attempt(attempt, setup=setup) is not None
+    assert cookies.session_id(far_ahead, setup=setup) is None
+    [refusal] = logged(caplog, "cookies.refused")
+    assert refusal["reason"] == "signed in the future"
+    assert far_ahead not in caplog.text
+
+
+def test_a_refused_cookie_is_logged_with_its_reason_and_not_its_value(
+    setup_of: MakeSetup, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    value = cookies.session_value(_session(), setup=setup_of(session_signing_key=OTHER_KEY))
+
+    assert cookies.session_id(value, setup=setup_of()) is None
+    [refusal] = logged(caplog, "cookies.refused")
+    assert (refusal["cookie"], refusal["reason"]) == ("session", "signature")
+    assert value not in caplog.text
 
 
 def test_a_cookie_signed_before_the_signing_moved_here_still_reads(setup_of: MakeSetup) -> None:
