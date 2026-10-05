@@ -61,7 +61,6 @@ from forge.domain.errors import (
     NotFound,
     PortError,
     Rejected,
-    Unavailable,
     WrongStatus,
 )
 from forge.domain.grading import (
@@ -482,11 +481,14 @@ def status_of(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> G
 
 
 async def lost(ctx: Context, rows: Iterable[Grading]) -> frozenset[uuid.UUID]:
-    """The gradings among `rows` whose run the CI no longer holds. Only a
-    grading worth asking about is asked about, each run at most once every
-    `RUN_STATE_KEPT` by this process, and the connection is let go of before
-    the CI is asked. A CI that does not answer loses nothing: the grading
-    reads as its row says.
+    """The gradings among `rows` whose run the CI no longer holds, or holds
+    as finished while the grading still waits for its envelope: a run that
+    ended before the harness began, its checkout failed or the run killed at
+    the CI, is as lost as one the CI dropped. Only a grading worth asking
+    about is asked about, each run at most once every `RUN_STATE_KEPT` by
+    this process, and the connection is let go of before the CI is asked. A
+    CI that does not answer loses nothing: the grading reads as its row
+    says.
     """
     asking = [
         (row.id, RunId(row.run_id))
@@ -499,7 +501,7 @@ async def lost(ctx: Context, rows: Iterable[Grading]) -> frozenset[uuid.UUID]:
     await ctx.let_go()
     found: set[uuid.UUID] = set()
     for grading, run in asking:
-        if await _run_state(ctx, grading, run) is RunState.LOST:
+        if await _run_state(ctx, grading, run) in (RunState.LOST, RunState.FINISHED):
             found.add(grading)
     return frozenset(found)
 
@@ -532,15 +534,16 @@ async def task_of(ctx: Context, grading: uuid.UUID) -> TaskId:
 
 @action
 async def cancel(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> GradingRecord:
-    """Stop a grading that is not finished, at the CI too when a run of it is
-    there. `WrongStatus` for one that is finished.
+    """Stop a grading that is not finished, and its run at the CI once the
+    stop has committed, holding nothing while the CI is called. `WrongStatus`
+    for one that is finished.
     """
     row = await _managed(ctx, organiser, grading)
     stored = GradingStatus(row.status)
     if stored in FINISHED:
         raise WrongStatus(f"The grading is {stored.value} already.", current=stored.value)
     if stored in AT_THE_CI and row.run_id is not None:
-        await _cancel_run(ctx, RunId(row.run_id))
+        _cancel_after_commit(ctx, RunId(row.run_id))
     finish(ctx, row, GradingStatus.CANCELLED)
     await ctx.db.flush()
     log.info("gradings.cancelled", grading=str(row.id), user_id=organiser.user.id)
@@ -596,6 +599,12 @@ async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
     if current is None:
         raise NotFound("The task has no publication to grade against.")
     stages = {stage.id for stage in current.definition.stages_resolved()}
+    # Which runs the CI has lost is asked before any row is held, since
+    # asking takes the CI's time.
+    gone = await lost(
+        ctx,
+        (await ctx.db.execute(select(Grading).where(Grading.task_id == task))).scalars().all(),
+    )
     rows = (
         (
             await ctx.db.execute(
@@ -619,12 +628,17 @@ async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
         if row.stage not in stages:
             passed_over += 1
             continue
-        if status_of(ctx, row) in UNFINISHED:
+        status = status_of(ctx, row, gone)
+        if status in UNFINISHED:
             if row.publication_id == current.publication.id:
                 left_running += 1
                 continue
-            await _stop_quietly(ctx, row)
+            _stop_quietly(ctx, row)
             cancelled += 1
+        elif GradingStatus(row.status) in UNFINISHED:
+            finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=overdue_of(ctx, row, gone))
+            if row.run_id is not None:
+                _cancel_after_commit(ctx, RunId(row.run_id))
         _next_attempt(ctx, row, current.publication.id, attempts[pair])
         queued += 1
     await ctx.db.flush()
@@ -741,27 +755,11 @@ def _next_attempt(
     )
 
 
-async def _cancel_run(ctx: Context, run: RunId) -> None:
-    """Stop the run at the CI; one the CI no longer has is stopped already."""
-    try:
-        await ctx.forge.grading.cancel_run(run)
-    except NotFound:
-        return
-    except PortError as exc:
-        log.warning("gradings.cancel_failed", run=run, error=type(exc).__name__, detail=exc.detail)
-        raise Unavailable("The CI did not stop the grading's run; try again.") from exc
-
-
-async def _stop_quietly(ctx: Context, row: Grading) -> None:
-    """Cancel an unfinished grading a rejudge replaces, its run at the CI
-    too when there is one; a run the CI does not stop is refused its
+def _stop_quietly(ctx: Context, row: Grading) -> None:
+    """Cancel an unfinished grading a rejudge replaces, and its run at the CI
+    once the rejudge has committed; a run the CI does not stop is refused its
     reports, since the grading is cancelled.
     """
-    try:
-        if GradingStatus(row.status) in AT_THE_CI and row.run_id is not None:
-            await ctx.forge.grading.cancel_run(RunId(row.run_id))
-    except PortError as exc:
-        log.warning(
-            "gradings.replaced_run_not_stopped", grading=str(row.id), error=type(exc).__name__
-        )
+    if GradingStatus(row.status) in AT_THE_CI and row.run_id is not None:
+        _cancel_after_commit(ctx, RunId(row.run_id))
     finish(ctx, row, GradingStatus.CANCELLED)
