@@ -229,7 +229,9 @@ publication, with a note, and `workspaces.list_publications` reads each back
 as a `Publication` with what its note says. A contestant's workspace is made
 one part at a time, each of which can be run again and keeps what is
 already right: `workspaces.open_workspace` makes the desk and gives the
-members write access to it, `workspaces.open_submission_place` makes the
+members read access to it, which at Forgejo lets them post and comment on
+issues there and close their own but not edit anyone else's comments or
+labels, `workspaces.open_submission_place` makes the
 place to submit one task, reserves its submissions for the platform and only
 then gives them write access there, and `workspaces.close_workspace` takes
 the access away and keeps everything in it. `workspaces.workspace_of` names
@@ -435,7 +437,7 @@ hosting process calls are actions, marked `@action` from
 | `clarifications` | `ask`, `mine`, `follow_up`, `inbox`, `of_contest`, `reply`, `mark`, `unmark`, `answer_publicly` |
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
-| `submissions` | `submit`, `mine`, `one`, `files`, `file`, `run_log` |
+| `submissions` | `submit`, `mine`, `one`, `files`, `download`, `run_log` |
 | `gradings` | `cancel`, `retry`, `rejudge`, `list`, `task_of` |
 | `runs` | `config`, `envelope`, `callback` |
 | `workflows` | `create` |
@@ -803,11 +805,16 @@ A **clarification** is a contestant's question, a thread labelled
 `clarification` on the desk of their own workspace, which is what keeps it
 private to them and the organisers who reach the desk through the
 contest's roles. An approved contestant asks as themselves, and their first
-question makes the desk, as the platform (`clarifications.ask`); a question
-may name a task released to them. They read their own questions with every
-message (`mine`), and comment again on one (`follow_up`), which on an
-answered question takes the mark off and opens it, so the follow-up lands
-back with the organisers in the same thread. A manager at the contest
+question makes the desk, as the platform (`clarifications.ask`), with them
+a reader on it, so they cannot change an organiser's reply or a label; the
+port puts the label on as the platform when Forgejo drops a reader's. A
+question may name a task released to them, kept as a line in its body that
+is checked against the question's contest whenever it is read, since the
+asker can edit their own question at the forge. They read their own
+questions with every message (`mine`), and comment again on one
+(`follow_up`), after which, on an answered question, the platform takes the
+mark off and opens it, so the follow-up lands back with the organisers in
+the same thread. A manager at the contest
 replies, which leaves it open (`reply`); marks it answered, which labels it
 `answered` and closes it, with or without a reply (`mark`); and takes that
 back (`unmark`). Marking or unmarking twice changes nothing, so a retry is
@@ -815,13 +822,15 @@ always safe and a reply is never posted twice. The inbox is one search at
 the forge for the org's open clarifications, as the organiser, for anyone
 holding a role anywhere in the org, each shown only where they observe the
 contest (`inbox`); an answered question is closed precisely because the
-forge's search cannot ask for a label's absence. `of_contest` is every
+forge's search cannot ask for a label's absence. An issue labelled
+`clarification` anywhere but a desk is passed over. `of_contest` is every
 question of one contest, answered ones included. An answer made public is
 an ordinary announcement on the question's task, or its contest, posted as
 the organiser with a line the platform adds pointing at the question
 (`answer_publicly`); readers learn that it answers a question and an
 organiser which, and the question stays private. Text a person writes
-never carries such a line: `announcements.checked` takes any out. A title
+never carries such a line: `announcements.checked` takes any out, again
+until none is left. A title
 is at most 200 characters and a text at most 20,000, and an empty or
 longer one is `InvalidMessage`, naming which.
 
@@ -847,22 +856,30 @@ changes come from the forge: the host answers the forge's push as soon as
 it through the port and nudges a clarification's asker and its contest's
 organisers, an announcement of a contest its contestants and organisers,
 and one of a task its organisers and, only once the task is released, its
-contestants. An event about anything else, or naming a place in another
-org than the one whose secret signed it, nudges nobody.
+contestants. An event about anything else, about an issue that does not
+carry the label of the thread its repository holds, about a pull request,
+or naming a place in another org than the one whose secret signed it,
+nudges nobody.
 
 Each process keeps one broker (`runtime/broker.py`), with one connection
 outside the pool that listens on `unicon_live`, opened when the first
 stream subscribes and closed when the last leaves, so whichever process
 published a nudge, every process's streams hear it. `live.stream(session)`
-is what the host serves as one Server-Sent Events connection per session:
-it checks the session, reads its audience (the person, every role they hold
-and the contests where they are an approved contestant), and yields each
-nudge that audience hears, or `None` every fifteen seconds for a keepalive.
-It holds no database connection while it waits, checks the session again
-every minute and ends once the session has, and reads the audience again
-every five minutes. A stream that falls 256 nudges behind is emptied and
-told to resync. When the listening connection drops it is opened again a
-second later and every stream is told to resync.
+is what the host serves as one Server-Sent Events connection per open
+tab: it checks the session, reads its audience (the person, every role they
+hold and the contests where they are an approved contestant), yields `None`
+once it has subscribed, so the host can wait for that and have any refusal
+raised before it answers, and then each nudge that audience hears, or
+`None` every fifteen seconds for a keepalive. It holds no database
+connection while it waits, checks the session again every minute without
+counting that as the person being there, so an open tab never keeps an idle
+session alive, and ends once the session has; it reads the audience again
+every five minutes, keeping the roles it had when the forge does not
+answer. A stream that falls 256 nudges behind is emptied and told to
+resync, and so is every stream when the listening connection drops and is
+opened again a second later, and a stream that subscribed while the
+connection was still being opened. A session holds at most eight streams
+in a process; one more ends the oldest.
 
 ## Uploads
 
@@ -908,13 +925,13 @@ completion it failed on leaves the upload `waiting`, to be completed again.
 for a file an organiser puts into a task, which the next save writes the
 pointer for (`files.write_upload`).
 
-An upload no submit used is removed, object and row, once its two days are
-over, the next time its owner asks for a slot: before the count is taken,
-`slot` removes the person's own lapsed, unused uploads, and leaves one whose
-object the store failed on for the next time. The object of an upload a
-submit used is removed once the submit commits (`uploads.forget`), since its
-bytes are in the submission's commit, and its row stays `consumed` as the
-record of what was submitted.
+An upload no submit used loses its row once its two days are over, the
+next time its owner asks for a slot: before the count is taken, `slot`
+removes the person's own lapsed, unused uploads, so they stop counting
+against what the person may hold. Their bytes are the forge's to collect
+once no commit names them. The row of an upload a submit used stays
+`consumed` as the record of what was submitted, and its bytes stay, since
+the submission's commit points at them.
 
 ## Submissions
 
@@ -929,11 +946,12 @@ window; every upload named is theirs for this task (`upload_not_yours`), a
 checked file no submission used (`upload_not_ready`), and each and all of
 them within the sizes allowed (`too_large`); and what is given fits the
 task's contestant inputs (`invalid_inputs`, each problem at its input). The
-bytes are read back and checked against the digest the upload was verified
-with. At a contestant's first submit to the task, their place to submit it
-is made, as the platform, once they are found approved and before their
-submissions are counted, which is the one thing a later refusal leaves at
-the forge. The place is made first, holding nothing, since it takes the
+forge is asked once more that the place still holds each upload's object,
+so a commit never points at bytes that are not there (`upload_not_ready`).
+A file upload made the contestant's place to submit the task already; a
+first submission of nothing but typed values makes it, as the platform,
+once they are found approved and before the submit's hold, which is the one
+thing a later refusal leaves at the forge. The place is made first, holding nothing, since it takes the
 forge seconds; then their `contestants` row is held and read again, and
 someone removed meanwhile has the access just given taken away again and is
 `not_approved`. A removal that comes after takes away a place already
@@ -968,7 +986,8 @@ every stage as that stage's `show` allows: `full` the outcome, metrics,
 summary, each test's row and whether there is a log, `metrics` the outcome
 and metrics, `hidden` the status alone. A `system_error`'s summary is written
 for staff and is never shown, whatever the stage's `show`. `files` gives the inputs one was made
-with, as its `submission.json` names them, and `file` one of those files.
+with, as its `submission.json` names them, and `download` a door to one of
+those files, which the proxy streams from the forge.
 `run_log` gives the bytes of the run log of the latest attempt at a stage,
 the first stage in the task's order with one unless a stage is named, only
 where that stage's `show` is `full`, and only when it is at most 9 MiB
@@ -1019,7 +1038,7 @@ answer loses nothing.
 `ctx.after_commit`, so its run is started right after the unit of work that
 made it commits, on a unit of work of its own: the CI asks the platform
 about the grading while the start is under way, and must find the row
-committed. Up to eight such starts run at once. `start` passes over a
+committed. Up to eight of one request's starts run at once. `start` passes over a
 grading that is not `queued`, reads what the start needs and commits that
 much, so the call to the CI holds no connection and no lock, and as the
 org's own account (`org_accounts.identity`)
@@ -1222,8 +1241,8 @@ There is no jobs table, and nothing in the package runs on a timer. Each
 piece of upkeep is done by a request that already touches what it keeps:
 `sessions.create`, at every sign-in, first deletes the session rows that
 ended longer ago than a session's hard lifetime (`sessions.sweep`);
-`uploads.slot` removes the person's own lapsed, unused uploads, and a submit
-removes the objects it used once it commits; and `org_accounts.identity`
+`uploads.slot` removes the rows of the person's own lapsed, unused uploads;
+and `org_accounts.identity`
 signs an org's account in at the CI again when its `ci_signed_in_at` is
 older than `SIGN_IN_SHARE`, two thirds, of the session's hard lifetime (20
 days by default), under a lock on its row so two callers sign it in once.
@@ -1296,10 +1315,11 @@ three primitives it uses from `PRIMITIVES`, each primitive repo's own
 `primitive.yaml` with an image of `PLACEHOLDER_DIGEST`, so a task's first
 save finds a workflow and every step's image; the package's tests check the
 copy against deploy's file when that repo is checked out beside this one.
-The fake's store is `fake.objects`: a test plays the browser with
-`post(slot.fields, content)` and `put_part(url, content)`, which answers the
-value `complete` takes for the part, and the grading machine with
-`put(url, content)`. `fake.racing_submissions = n` makes the next submission
+The fake's large-file store is `fake.uploads`: a test plays the browser
+through the door with `send`, handing back the address the door gave out,
+or puts an object straight into a place with `put`, and `forget` drops one
+the way the forge's collector would. The grading machine's results go to
+`fake.objects` with `put(url, content)`. `fake.racing_submissions = n` makes the next submission
 collide with `n` others for its number, and `fake.lose_submission_answer`
 names it and then fails as if the answer were lost. The fake CI signs the
 question it asks the extension with a key of its own:

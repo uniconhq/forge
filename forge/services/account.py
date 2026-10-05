@@ -22,7 +22,7 @@ from forge.domain.workflows import Visibility
 from forge.log import get_logger
 from forge.port import Forge
 from forge.runtime.actions import action
-from forge.runtime.context import Context
+from forge.runtime.context import AfterRollback, Context
 from forge.services import names, roles, sessions
 from forge.services.passwords import new_password
 
@@ -67,8 +67,18 @@ async def delete(ctx: Context, session: Session) -> None:
     await sessions.revoke_all(ctx, session.user_id)
     for grant in grants:
         await ctx.forge.orgs.revoke_role(session.user_id, grant.scope, grant.role)
+        # The forge refuses to delete someone who still holds a role, so the
+        # roles go first; if the delete then fails, they are given back.
+        ctx.after_rollback(_give_back(ctx, session.user_id, grant))
     await ctx.forge.identity.delete_user(session.user_id)
     log.info("account.deleted", user_id=session.user_id)
+
+
+def _give_back(ctx: Context, user_id: int, grant: RoleGrant) -> AfterRollback:
+    async def give_back() -> None:
+        await ctx.forge.orgs.grant_role(user_id, grant.scope, grant.role)
+
+    return give_back
 
 
 def _require_fresh(ctx: Context, session: Session) -> None:

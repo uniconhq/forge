@@ -16,15 +16,17 @@ from forge.domain.errors import (
     SessionExpired,
     SharedWorkflowOwner,
     SoleAdmin,
+    Unavailable,
 )
 from forge.domain.identity import AsUser
 from forge.domain.ids import OrgId
-from forge.domain.roles import Role, Scope
+from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.sessions import Session
 from forge.domain.workflows import Visibility
 from forge.forges.fake import FakeForge
 from forge.log import JsonFormatter
 from forge.runtime.context import Context
+from forge.runtime.setup import Setup
 from forge.services import account, sessions
 from forge.testing import FakeClock
 
@@ -138,3 +140,22 @@ async def test_a_service_account_name_and_a_blank_one_are_refused(ctx: Context) 
         await account.create(ctx, "unicon-ci-acme", email="x@example.test")
     with pytest.raises(InvalidName):
         await account.create(ctx, " ", email="x@example.test")
+
+
+async def test_a_delete_the_forge_refuses_gives_the_roles_back(
+    ctx: Context, setup: Setup, fake: FakeForge, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
+    await fake.orgs.grant_role(7, Scope("acme"), Role.MANAGER)
+    session = await _signed_in(ctx, fake)
+
+    async def refused(*args: object, **kwargs: object) -> None:
+        raise Unavailable("the forge is away")
+
+    monkeypatch.setattr(fake.identity, "delete_user", refused)
+
+    with pytest.raises(Unavailable):
+        await account.delete(setup, session)
+
+    held = await fake.orgs.roles_of(AsUser(7, fake.mint(7)))
+    assert RoleGrant(Scope("acme"), Role.MANAGER) in held
