@@ -272,3 +272,45 @@ def test_the_clone_image_is_the_pinned_one_unless_given_and_always_by_digest(
     with pytest.raises(SystemExit):
         load_settings()
     assert "UNICON_CLONE_IMAGE: Value error, is not an image by digest" in capsys.readouterr().err
+
+
+def test_there_is_no_mail_server_while_its_address_is_empty(
+    environment: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert load_settings().mail is None
+    # Compose passes every key, empty where .env leaves it so.
+    monkeypatch.setenv("UNICON_MAIL_SMTP_ADDR", "")
+    monkeypatch.setenv("UNICON_MAIL_SMTP_PORT", "587")
+    monkeypatch.setenv("UNICON_MAIL_FROM", "")
+    assert load_settings().mail is None
+
+
+def test_the_mail_server_encrypts_unless_told_and_blank_credentials_are_none(
+    environment: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UNICON_MAIL_SMTP_ADDR", "smtp.example.test")
+    monkeypatch.setenv("UNICON_MAIL_FROM", "Unicon <unicon@example.test>")
+    monkeypatch.setenv("UNICON_MAIL_SMTP_USER", "")
+    monkeypatch.setenv("UNICON_MAIL_SMTP_PASSWORD", " ")
+
+    mail = load_settings().mail
+
+    assert mail is not None
+    assert (mail.smtp_addr, mail.smtp_port, mail.protocol) == (
+        "smtp.example.test",
+        587,
+        "smtp+starttls",
+    )
+    assert (mail.user, mail.password) == (None, None)
+
+
+def test_a_mail_server_without_a_sender_is_named_by_its_variable(
+    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("UNICON_MAIL_SMTP_ADDR", "smtp.example.test")
+    monkeypatch.setenv("UNICON_MAIL_PROTOCOL", "smtp+starttls")
+
+    with pytest.raises(SystemExit):
+        load_settings()
+
+    assert "UNICON_MAIL_FROM: Field required" in capsys.readouterr().err

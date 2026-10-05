@@ -58,6 +58,17 @@ S3_VARIABLES = {
     "results_bucket": "UNICON_S3_RESULTS_BUCKET",
 }
 
+MAIL_VARIABLES = {
+    "smtp_addr": "UNICON_MAIL_SMTP_ADDR",
+    "smtp_port": "UNICON_MAIL_SMTP_PORT",
+    "protocol": "UNICON_MAIL_PROTOCOL",
+    "user": "UNICON_MAIL_SMTP_USER",
+    "password": "UNICON_MAIL_SMTP_PASSWORD",
+    "sender": "UNICON_MAIL_FROM",
+}
+
+MailProtocol = Literal["smtp", "smtps", "smtp+starttls"]
+
 
 class ForgejoSettings(BaseModel):
     """The settings of the Forgejo implementation, each read from the variable
@@ -115,11 +126,47 @@ class S3Settings(BaseModel):
         return not_blank(value)
 
 
+class MailSettings(BaseModel):
+    """The mail server invite mail goes through, the one the forge sends its
+    own mail through, each read from the variable `MAIL_VARIABLES` names.
+    The whole of it is absent while `UNICON_MAIL_SMTP_ADDR` is empty, and the
+    platform then sends no mail. `protocol` is `smtp+starttls` unless given,
+    `smtps` for a server that encrypts from the first byte, and plain `smtp`
+    only for a server on the deployment's own network.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    smtp_addr: str
+    smtp_port: PositiveInt = 587
+    protocol: MailProtocol = "smtp+starttls"
+    user: str | None = None
+    password: SecretStr | None = None
+    sender: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _blank_credentials_are_none(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        found = dict(data)
+        for name in ("user", "password"):
+            value = found.get(name)
+            if isinstance(value, str) and not value.strip():
+                found[name] = None
+        return found
+
+    @field_validator("smtp_addr", "sender")
+    @classmethod
+    def _no_blank_values(cls, value: Any) -> Any:
+        return not_blank(value)
+
+
 class NestedVariables(PydanticBaseSettingsSource):
     """Reads the variables a mapping names into one nested setting, so a
     group of settings travels together and every variable keeps its name:
-    the `UNICON_FORGE_*` and `UNICON_WOODPECKER_*` ones into `forgejo`, and
-    the `UNICON_S3_*` ones into `s3`.
+    the `UNICON_FORGE_*` and `UNICON_WOODPECKER_*` ones into `forgejo`, the
+    `UNICON_S3_*` ones into `s3`, and the `UNICON_MAIL_*` ones into `mail`.
     """
 
     def __init__(
@@ -158,7 +205,8 @@ class Settings(BaseSettings):
     the contestant's first upload to the task, and nobody who never submits
     costs the forge a repository. `s3`, the object store's settings, is
     required with `forgejo`; the fake keeps its store in memory.
-    `harness_image` is the harness every plan names, by digest, and
+    `mail`, the mail server's settings, is optional, and without it nothing
+    is mailed. `harness_image` is the harness every plan names, by digest, and
     `clone_image` the image the CI checks a task and a submission out with,
     by digest, each the one of the runner release the package pins unless
     given.
@@ -200,6 +248,7 @@ class Settings(BaseSettings):
     forge_cache: bool = False
     forgejo: ForgejoSettings | None = None
     s3: S3Settings | None = None
+    mail: MailSettings | None = None
     harness_image: str = HARNESS_IMAGE
     clone_image: str = CLONE_IMAGE
 
@@ -222,6 +271,7 @@ class Settings(BaseSettings):
             env_settings,
             NestedVariables(settings_cls, "forgejo", FORGEJO_VARIABLES),
             NestedVariables(settings_cls, "s3", S3_VARIABLES),
+            NestedVariables(settings_cls, "mail", MAIL_VARIABLES),
             dotenv_settings,
             file_secret_settings,
         )
@@ -236,6 +286,16 @@ class Settings(BaseSettings):
             if found.get(name) is None:
                 found[name] = data["public_url"]
         return found
+
+    @model_validator(mode="before")
+    @classmethod
+    def _mail_needs_its_server(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or not isinstance(data.get("mail"), dict):
+            return data
+        server = data["mail"].get("smtp_addr")
+        if server is None or (isinstance(server, str) and not server.strip()):
+            return {**data, "mail": None}
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -454,4 +514,6 @@ def _variable(location: tuple[int | str, ...]) -> str:
         return FORGEJO_VARIABLES.get(str(location[1]), "UNICON_FORGEJO")
     if head == "s3" and len(location) > 1:
         return S3_VARIABLES.get(str(location[1]), "UNICON_S3")
+    if head == "mail" and len(location) > 1:
+        return MAIL_VARIABLES.get(str(location[1]), "UNICON_MAIL")
     return head if head.startswith("UNICON_") else f"UNICON_{head.upper()}"
