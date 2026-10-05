@@ -19,7 +19,7 @@ import pytest
 
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, AsUser
-from forge.domain.ids import OrgId
+from forge.domain.ids import OrgId, ThreadId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
@@ -291,7 +291,7 @@ async def test_threads_are_posted_edited_answered_and_closed(forge: ForgejoForge
     assert (await forge.threads.read_thread(PLATFORM, thread.id)).closed is True
 
 
-async def test_the_org_search_finds_the_open_questions_and_a_contestant_reopens_theirs(
+async def test_the_org_search_finds_the_open_questions_and_a_follow_up_reopens_one(
     forge: ForgejoForge, org: str, admin: httpx.Client, stamp: str
 ) -> None:
     asker = make_user(admin, f"asker-{stamp}")
@@ -304,19 +304,26 @@ async def test_the_org_search_finds_the_open_questions_and_a_contestant_reopens_
         person, workspace, ThreadKind.CLARIFICATION, title="Input size?", body="How big?"
     )
 
-    found = await forge.threads.search_threads(PLATFORM, OrgId(org), ThreadKind.CLARIFICATION)
-    assert [entry.id for entry in found] == [thread.id]
-    assert found[0].place == workspace
+    # The org is the module's, and other tests leave questions in their own
+    # contests, so only what the search finds in this contest is counted.
+    async def searched(*, open_only: bool = True) -> list[ThreadId]:
+        found = await forge.threads.search_threads(
+            PLATFORM, OrgId(org), ThreadKind.CLARIFICATION, open_only=open_only
+        )
+        return [entry.id for entry in found if entry.place == workspace]
+
+    assert await searched() == [thread.id]
 
     await forge.threads.mark_answered(PLATFORM, thread.id)
-    assert await forge.threads.search_threads(PLATFORM, OrgId(org), ThreadKind.CLARIFICATION) == ()
-    everything = await forge.threads.search_threads(
-        PLATFORM, OrgId(org), ThreadKind.CLARIFICATION, open_only=False
-    )
-    assert [entry.id for entry in everything] == [thread.id]
+    assert await searched() == []
+    assert await searched(open_only=False) == [thread.id]
 
+    # The asker reads their desk and comments there; the label is the
+    # platform's to take off on a follow-up, as `clarifications` does.
     await forge.threads.comment(person, thread.id, "One more thing")
-    await forge.threads.unmark_answered(person, thread.id)
+    with pytest.raises(Forbidden):
+        await forge.threads.unmark_answered(person, thread.id)
+    await forge.threads.unmark_answered(PLATFORM, thread.id)
     again = await forge.threads.read_thread(person, thread.id)
     assert (again.answered, again.closed) == (False, False)
 
