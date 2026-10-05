@@ -422,6 +422,15 @@ class AlreadyInvited(ServiceError):
     code = "already_invited"
 
 
+class InviteLimit(ServiceError):
+    """An invite made or mailed again too often: an org past its invites for
+    the day, or an invite mailed again within minutes. `retry_at` is when to
+    ask again, in ISO 8601.
+    """
+
+    code = "invite_limit"
+
+
 class InviteExpired(ServiceError):
     """The invite's lifetime is over, so it can be neither accepted nor
     declined.

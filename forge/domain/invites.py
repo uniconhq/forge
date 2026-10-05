@@ -16,6 +16,7 @@ case, so an address nobody confirmed never matches.
 """
 
 import hashlib
+import re
 import secrets
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -29,6 +30,11 @@ LIFETIME = timedelta(days=14)
 """How long an invite stands unless the organiser says otherwise."""
 LONGEST_LIFETIME = timedelta(days=90)
 SHORTEST_LIFETIME = timedelta(hours=1)
+ADDRESS = re.compile(
+    r"[a-z0-9!#$%&'*+/=?^_`{|}~-]+(\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+    r"@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+"
+)
+"""One plain address, the dot-atom form of RFC 5322, lowered."""
 
 
 class Grant(StrEnum):
@@ -56,8 +62,9 @@ class InviteStatus(StrEnum):
 
 class MailStatus(StrEnum):
     """What became of an invite's mail: `waiting` until it is handed to the
-    mail server, `sent` once it took it, `failed` when it refused or did not
-    answer, and `off` where the deployment has no mail server. A mail still
+    mail server, `sent` once it took it, `failed` when it could not be sent,
+    the server refusing, not answering, or there being no address to send it
+    to, and `off` where the deployment has no mail server. A mail still
     `waiting` minutes on was cut short by a restart, and is sent again from
     the invite."""
 
@@ -78,18 +85,14 @@ def token_hash(token: str) -> bytes:
 
 def checked_email(value: str) -> str:
     """An address as an invite keeps it: trimmed and lowered. `InvalidInvite`
-    for one that cannot be an address: empty, too long, with spaces, or not
-    one `@` between a name and a domain with a dot in it.
+    for anything but one plain address: a name of the characters an address
+    may hold unquoted, one `@`, and a domain of letters, digits and hyphens
+    in two labels or more, at most `EMAIL_MAX` characters in all. A list of
+    addresses, a display name or anything in brackets is refused, since the
+    mail goes to exactly the address kept.
     """
     address = value.strip().lower()
-    name, at, domain = address.rpartition("@")
-    if (
-        not at
-        or not name
-        or "." not in domain.strip(".")
-        or len(address) > EMAIL_MAX
-        or any(character.isspace() for character in address)
-    ):
+    if len(address) > EMAIL_MAX or not ADDRESS.fullmatch(address):
         raise InvalidInvite("That is not an email address.")
     return address
 

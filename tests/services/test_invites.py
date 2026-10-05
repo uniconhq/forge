@@ -18,8 +18,10 @@ from forge.domain.errors import (
     Forbidden,
     InvalidInvite,
     InviteExpired,
+    InviteLimit,
     InviteRequired,
     NotFound,
+    Unavailable,
     WrongStatus,
 )
 from forge.domain.ids import ContestId
@@ -30,7 +32,7 @@ from forge.runtime.setup import Setup
 from forge.services import contestants, invites, release
 from forge.services.access import Organiser
 from forge.testing import APP_URL, FakeClock
-from tests.services.conftest import Acme, organiser, signed_in, write_contest
+from tests.services.conftest import RUNNING, Acme, organiser, signed_in, write_contest
 
 CONTEST = Scope("acme", "spring")
 
@@ -195,8 +197,7 @@ async def test_a_lapsed_or_decided_invite_does_nothing(
     carol = await signed_in(setup, acme.fake, 20)
     clock.advance(timedelta(hours=1))
 
-    [shown] = await invites.mine(setup, carol)
-    assert shown.expired
+    assert await invites.mine(setup, carol) == ()
     with pytest.raises(InviteExpired):
         await invites.accept(setup, carol, lapsing.id)
     with pytest.raises(InviteExpired):
@@ -277,7 +278,7 @@ async def test_accepting_never_lowers_a_role_held_already(setup: Setup, people: 
 
 
 async def test_a_mail_server_that_fails_leaves_the_invite_and_sending_again_makes_a_new_token(
-    setup: Setup, people: Acme
+    setup: Setup, people: Acme, clock: FakeClock
 ) -> None:
     acme = people
     manager = await _manager(setup, acme)
@@ -292,6 +293,7 @@ async def test_a_mail_server_that_fails_leaves_the_invite_and_sending_again_make
     await invites.send_again(setup, manager, CONTEST, made.id)
     await setup.settle()
     first = _token(acme)
+    clock.advance(invites.SEND_AGAIN_AFTER)
     await invites.send_again(setup, manager, CONTEST, made.id)
     await setup.settle()
 
@@ -347,3 +349,136 @@ async def _row(setup: Setup, user_id: int) -> Contestant:
 async def _seen(setup: Setup, session: Session) -> tuple[ContestDefinition, release.Reader]:
     async with setup.unit_of_work() as ctx:
         return await release.seen(ctx, session, ContestId("acme/spring"))
+
+
+async def test_a_registration_decides_once_there_is_one_and_an_accepted_place_can_be_withdrawn(
+    setup: Setup, people: Acme
+) -> None:
+    acme = people
+    await write_contest(acme.fake, INVITE_ONLY.format(visibility="hidden"))
+    manager = await _manager(setup, acme)
+    carol = await signed_in(setup, acme.fake, 20)
+    made = await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="carol")
+    await invites.accept(setup, carol, made.id)
+    await contestants.register(setup, carol, ContestId("acme/spring"))
+    await contestants.reject(setup, manager, ContestId("acme/spring"), 20, "No.")
+
+    # Rejected, she no longer sees the hidden contest, invite or not.
+    with pytest.raises(NotFound):
+        await _seen(setup, carol)
+
+    acme.fake.add_user(21, "dan", email="dan@uni.test")
+    dan = await signed_in(setup, acme.fake, 21)
+    offered = await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="dan")
+    await invites.accept(setup, dan, offered.id)
+    withdrawn = await invites.withdraw(setup, manager, CONTEST, offered.id)
+    assert withdrawn.status is InviteStatus.WITHDRAWN
+    with pytest.raises(NotFound):
+        await contestants.register(setup, dan, ContestId("acme/spring"))
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "a@b.test,victim@x.test",
+        "Foo <a@b.test>",
+        "<a@b.test",
+        "a@b@c.test",
+        "a@localhost",
+        "a b@c.test",
+        "a@-b.test",
+    ],
+)
+async def test_only_one_plain_address_is_taken(setup: Setup, people: Acme, address: str) -> None:
+    manager = await _manager(setup, people)
+    with pytest.raises(InvalidInvite):
+        await invites.create(setup, manager, CONTEST, Grant.OBSERVER, email=address)
+
+
+async def test_an_org_makes_so_many_invites_a_day_and_mails_one_again_after_a_while(
+    setup: Setup, people: Acme, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    acme = people
+    monkeypatch.setattr(invites, "ORG_DAILY_MAX", 2)
+    manager = await _manager(setup, acme)
+    made = await invites.create(
+        setup, manager, CONTEST, Grant.OBSERVER, email="a@example.test", lifetime=timedelta(hours=2)
+    )
+    await invites.create(setup, manager, Scope("acme"), Grant.OBSERVER, email="b@example.test")
+    with pytest.raises(InviteLimit):
+        await invites.create(setup, manager, CONTEST, Grant.OBSERVER, email="c@example.test")
+    await setup.settle()
+
+    with pytest.raises(InviteLimit):
+        await invites.send_again(setup, manager, CONTEST, made.id)
+    clock.advance(timedelta(hours=3))
+    again = await invites.send_again(setup, manager, CONTEST, made.id)
+
+    # Lapsed, it is sent again with its whole lifetime from now.
+    assert not again.expired
+    assert again.expires_at == clock.now() + timedelta(hours=2)
+    clock.advance(timedelta(days=1))
+    await invites.create(setup, manager, CONTEST, Grant.OBSERVER, email="c@example.test")
+
+
+async def test_a_mail_that_cannot_be_written_is_failed_and_never_left_waiting(
+    setup: Setup, people: Acme, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    acme = people
+    manager = await _manager(setup, acme)
+    without_address = await invites.create(setup, manager, CONTEST, Grant.OBSERVER, username="bob")
+
+    async def gone(*_: object) -> None:
+        raise NotFound("the contest went")
+
+    await setup.settle()
+    monkeypatch.setattr(invites.names, "scope_names", gone)
+    broken = await invites.create(setup, manager, CONTEST, Grant.OBSERVER, username="carol")
+    await setup.settle()
+
+    shown = {invite.id: invite.mail_status for invite in await invites.at(setup, manager, CONTEST)}
+    assert shown == {without_address.id: MailStatus.FAILED, broken.id: MailStatus.FAILED}
+    assert acme.fake.mail.sent == []
+
+
+async def test_a_place_and_a_role_are_refused_to_whoever_could_not_take_them(
+    setup: Setup, people: Acme
+) -> None:
+    acme = people
+    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    manager = await _manager(setup, acme)
+    carol = await signed_in(setup, acme.fake, 20)
+    await contestants.register(setup, carol, ContestId("acme/spring"))
+
+    with pytest.raises(InvalidInvite):
+        await invites.create(setup, manager, Scope("acme"), Grant.OBSERVER, username="carol")
+    with pytest.raises(InvalidInvite):
+        await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="ada")
+
+
+async def test_a_place_is_taken_only_while_its_sender_may_still_offer_it(
+    setup: Setup, people: Acme
+) -> None:
+    acme = people
+    await acme.fake.orgs.grant_role(20, CONTEST, Role.MANAGER)
+    carol = await organiser(setup, acme.fake, 20, CONTEST, Role.MANAGER)
+    made = await invites.create(setup, carol, CONTEST, Grant.CONTESTANT, username="bob")
+    await acme.fake.orgs.revoke_role(20, CONTEST, Role.MANAGER)
+    bob = await signed_in(setup, acme.fake, 8)
+
+    with pytest.raises(Forbidden):
+        await invites.accept(setup, bob, made.id)
+
+
+async def test_a_link_opened_while_the_forge_is_down_says_so(setup: Setup, people: Acme) -> None:
+    acme = people
+    manager = await _manager(setup, acme)
+    await invites.create(setup, manager, CONTEST, Grant.OBSERVER, email="carol@example.test")
+    await setup.settle()
+    carol = await signed_in(setup, acme.fake, 20)
+    acme.fake.state.unavailable = True
+    try:
+        with pytest.raises(Unavailable):
+            await invites.by_token(setup, carol, _token(acme))
+    finally:
+        acme.fake.state.unavailable = False

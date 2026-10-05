@@ -134,7 +134,7 @@ async def grant(
     if Role.ADMIN in replaced:
         _require_admin(organiser, scope, "demote an admin")
         await _refuse_if_last_admin(ctx, user.id, scope)
-    await _refuse_if_contestant(ctx, user, scope)
+    await refuse_if_contestant(ctx, user, scope)
     if role not in held:
         await ctx.forge.orgs.grant_role(user.id, scope, role)
         _logged("roles.granted", organiser, user.id, scope, role)
@@ -171,19 +171,23 @@ async def grant_invited(
     lowers a role. Run under the org's lock, which the caller holds.
     """
     await one_change_at_a_time(ctx, scope.org)
-    sent_by = await ctx.forge.orgs.roles_of_user(inviter_id)
-    least = Role.ADMIN if role is Role.ADMIN else Role.MANAGER
-    if not holds(sent_by, scope, least):
-        raise Forbidden(
-            "Whoever sent this invite may no longer grant that role; ask the organisers again."
-        )
+    await refuse_unless_may_grant(
+        ctx, inviter_id, scope, Role.ADMIN if role is Role.ADMIN else Role.MANAGER
+    )
     await require_scope(ctx, scope)
     await refuse_service_account(ctx, user.id)
     grants = await ctx.forge.orgs.roles_of_user(user.id)
-    if holds(grants, scope, role):
+    direct = _direct(grants, scope)
+    if holds(grants, scope, role) and role not in direct:
         return
-    replaced = _direct(grants, scope) - {role}
-    await _refuse_if_contestant(ctx, user, scope)
+    replaced = {held for held in direct if RANK[held] < RANK[role]}
+    if role in direct:
+        # A grant whose revoke failed last time: finish the move.
+        for old in sorted(replaced, key=RANK.__getitem__):
+            await ctx.forge.orgs.revoke_role(user.id, scope, old)
+        return
+    replaced = direct - {role}
+    await refuse_if_contestant(ctx, user, scope)
     await ctx.forge.orgs.grant_role(user.id, scope, role)
     log.info(
         "roles.granted",
@@ -201,6 +205,20 @@ async def grant_invited(
             by_user_id=inviter_id,
             scope=scope.path,
             role=old.value,
+        )
+
+
+async def refuse_unless_may_grant(ctx: Context, user_id: int, scope: Scope, least: Role) -> None:
+    """`Forbidden` unless the person, who sent an invite, still holds `least`
+    at the scope, read live; someone whose account is gone holds nothing.
+    """
+    try:
+        held = await ctx.forge.orgs.roles_of_user(user_id)
+    except NotFound:
+        held = ()
+    if not holds(held, scope, least):
+        raise Forbidden(
+            "Whoever sent this invite may no longer grant it; ask the organisers for a new one."
         )
 
 
@@ -281,7 +299,7 @@ async def _refuse_if_last_admin(ctx: Context, user_id: int, scope: Scope) -> Non
         raise sole_admin([scope], f"Someone else has to be an admin of {scope.name} first.")
 
 
-async def _refuse_if_contestant(ctx: Context, user: User, scope: Scope) -> None:
+async def refuse_if_contestant(ctx: Context, user: User, scope: Scope) -> None:
     statement = select(Contestant.contest_id).where(
         Contestant.user_id == user.id, Contestant.status.in_(REGISTERED)
     )

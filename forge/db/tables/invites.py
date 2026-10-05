@@ -3,14 +3,14 @@ accepts or declines it or the organisers withdraw it. An invite may name an
 email address nobody has an account for yet, which the forge has nothing to
 hold, which is why the row exists. `user_id` is who the invite is for once
 that is known: at once for a username, and for an address when its owner
-first lists their invites, matched against the addresses the forge has
-confirmed for them.
+first lists their invites or opens the link its mail carried, matched
+against the addresses the forge has confirmed for them.
 """
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, Index
+from sqlalchemy import BigInteger, CheckConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.db.base import Base, Timestamped
@@ -46,7 +46,11 @@ class Invite(Base, Timestamped):
         CheckConstraint(f"status in {STATUSES}", name="status"),
         CheckConstraint(f"mail_status in {MAIL_STATUSES}", name="mail_status"),
         CheckConstraint("(username IS NULL) <> (email IS NULL)", name="target"),
-        Index("ix_invites_scope", "scope"),
+        Index("ix_invites_scope_created_at", "scope", "created_at"),
         Index("ix_invites_user_id_status", "user_id", "status"),
-        Index("ix_invites_email", "email"),
+        Index(
+            "ix_invites_email_unattached",
+            "email",
+            postgresql_where=text("user_id IS NULL AND status = 'pending'"),
+        ),
     )

@@ -23,7 +23,7 @@ from forge.log import get_logger
 from forge.port import Forge
 from forge.runtime.actions import action
 from forge.runtime.context import AfterRollback, Context
-from forge.services import names, roles, sessions
+from forge.services import invites, names, roles, sessions
 from forge.services.passwords import new_password
 
 log = get_logger(__name__)
@@ -65,6 +65,7 @@ async def delete(ctx: Context, session: Session) -> None:
     await _refuse_if_sole_admin(ctx, session.user_id, grants)
     await _refuse_if_sharing_workflows(ctx.forge, session.user_id)
     await sessions.revoke_all(ctx, session.user_id)
+    await invites.forget_person(ctx, session.user_id)
     for grant in grants:
         await ctx.forge.orgs.revoke_role(session.user_id, grant.scope, grant.role)
         # The forge refuses to delete someone who still holds a role, so the

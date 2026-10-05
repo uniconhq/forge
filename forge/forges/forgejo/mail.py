@@ -1,7 +1,10 @@
 """The mail area over SMTP, and the one a deployment without a mail server
 has. Python's own `smtplib` speaks SMTP; it blocks, so each message is sent
-on a thread of its own, and a server that does not answer within
-`SMTP_TIMEOUT_SECONDS` is `Unavailable`. Plain `smtp` is for a server on the
+on a thread of its own, and a server that leaves any one step unanswered
+for `SMTP_TIMEOUT_SECONDS` is `Unavailable`. A server that offers no
+encryption where it is asked for, or a certificate that does not verify, is
+`Rejected`, since asking again will not change it. The message goes to the
+one address it names and nobody else. Plain `smtp` is for a server on the
 deployment's own network, such as Mailpit on a development stack; `smtps`
 encrypts from the first byte and `smtp+starttls` upgrades the connection
 before the credentials cross it, the two ways the forge itself is set up.
@@ -10,8 +13,9 @@ before the credentials cross it, the two ways the forge itself is set up.
 import asyncio
 import smtplib
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from email.headerregistry import Address
 from email.message import EmailMessage
 from email.utils import format_datetime, make_msgid
 from typing import Literal
@@ -31,7 +35,7 @@ class MailConfig:
     protocol: Protocol
     sender: str
     user: str | None = None
-    password: str | None = None
+    password: str | None = field(default=None, repr=False)
 
 
 class SmtpMail:
@@ -45,14 +49,14 @@ class SmtpMail:
     async def send(self, mail: Mail) -> None:
         message = EmailMessage()
         message["From"] = self._config.sender
-        message["To"] = mail.to
+        message["To"] = Address(addr_spec=mail.to)
         message["Subject"] = mail.subject
         message["Date"] = format_datetime(datetime.now(UTC))
         message["Message-ID"] = make_msgid(domain=_domain(self._config.sender))
         message.set_content(mail.text)
-        await asyncio.to_thread(self._send, message)
+        await asyncio.to_thread(self._send, message, mail.to)
 
-    def _send(self, message: EmailMessage) -> None:
+    def _send(self, message: EmailMessage, to: str) -> None:
         config = self._config
         try:
             if config.protocol == "smtps":
@@ -69,7 +73,7 @@ class SmtpMail:
                     client.starttls(context=ssl.create_default_context())
                 if config.user:
                     client.login(config.user, config.password or "")
-                client.send_message(message)
+                client.send_message(message, to_addrs=[to])
         except smtplib.SMTPRecipientsRefused as exc:
             codes = sorted({code for code, _ in exc.recipients.values()})
             if all(400 <= code < 500 for code in codes):
@@ -81,6 +85,10 @@ class SmtpMail:
             if 400 <= exc.smtp_code < 500:
                 raise Unavailable(f"the mail server is busy: {exc.smtp_code}") from None
             raise Rejected(f"the mail server refused: {exc.smtp_code}") from None
+        except (ssl.SSLError, smtplib.SMTPNotSupportedError) as exc:
+            raise Rejected(
+                f"the mail server's encryption or login is not what is set: {type(exc).__name__}"
+            ) from None
         except (OSError, smtplib.SMTPException) as exc:
             raise Unavailable(f"the mail server did not answer: {type(exc).__name__}") from None
 
