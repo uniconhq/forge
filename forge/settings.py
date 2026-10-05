@@ -169,8 +169,10 @@ class Settings(BaseSettings):
     deployment runs one backend process, Forgejo and Woodpecker share the
     server, and Postgres allows 100 connections with three kept for its
     superuser, so 30 leaves the forge, the CI, the readiness probe and an
-    operator's command more than half. A deployment that runs more backend
-    processes keeps their pools' sum under that.
+    operator's command more than half. A process that serves live updates
+    holds one connection more, outside the pool, while anyone is watching
+    (`runtime/broker.py`). A deployment that runs more backend processes
+    keeps their pools' sum under that.
     """
 
     model_config = SettingsConfigDict(env_prefix="UNICON_", extra="ignore")
