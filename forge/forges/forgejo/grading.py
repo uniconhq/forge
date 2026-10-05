@@ -66,6 +66,7 @@ from forge.domain.grading import (
     ConfigAsk,
     GradingRun,
     RunPlaces,
+    RunState,
 )
 from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, Identity
 from forge.domain.ids import RunId, TaskId
@@ -107,6 +108,14 @@ FILTER_SOCKET = "unix:///run/unicon/docker.sock"
 
 PUBLIC_KEY_PATH = "/api/signature/public-key"
 KEY_REFETCH_SECONDS = 60.0
+QUEUE_PATH = "/api/queue/info"
+QUEUE_KEPT_SECONDS = 10.0
+WAITING_LISTS = ("pending", "waiting_on_deps")
+TAKEN_LIST = "running"
+FINISHED_STATUSES = frozenset(
+    {"success", "failure", "killed", "canceled", "error", "blocked", "declined", "skipped"}
+)
+UNFINISHED_STATES = frozenset({"pending", "running"})
 
 
 class WoodpeckerGrading:
@@ -120,6 +129,8 @@ class WoodpeckerGrading:
         self._login = login
         self._key: Ed25519PublicKey | None = None
         self._key_read_at = -KEY_REFETCH_SECONDS
+        self._queue: dict[tuple[int, int], RunState] = {}
+        self._queue_read_at = -QUEUE_KEPT_SECONDS
 
     async def activate(self, as_: AsOrgAccount, task: TaskId) -> None:
         ref = parse_task(task)
@@ -186,6 +197,51 @@ class WoodpeckerGrading:
     async def cancel_run(self, run: RunId) -> None:
         repo_id, number = _parse_run(run)
         await self._ci.call(CI_ADMIN, "POST", f"/api/repos/{repo_id}/pipelines/{number}/cancel")
+
+    async def run_state(self, run: RunId) -> RunState:
+        """From the queue, which lists every task with its repository and
+        pipeline number under `pending`, `waiting_on_deps` or `running`, read
+        at most once every `QUEUE_KEPT_SECONDS` however many runs are asked
+        about; only a run the queue does not hold costs a read of its
+        pipeline. A run finishing marks its workflow finished before it
+        leaves the queue, so one in no queue whose workflows are all still
+        `pending` or `running` was dropped, and one whose pipeline the CI
+        does not know is lost too.
+        """
+        key = _parse_run(run)
+        queued = (await self._queue_view()).get(key)
+        if queued is not None:
+            return queued
+        repo_id, number = key
+        try:
+            pipeline = json_of(
+                await self._ci.call(CI_ADMIN, "GET", f"/api/repos/{repo_id}/pipelines/{number}")
+            )
+        except NotFound:
+            return RunState.LOST
+        if pipeline.get("status") in FINISHED_STATUSES:
+            return RunState.FINISHED
+        workflows = [one for one in pipeline.get("workflows") or [] if isinstance(one, dict)]
+        if workflows and all(one.get("state") in UNFINISHED_STATES for one in workflows):
+            return RunState.LOST
+        return RunState.FINISHED
+
+    async def _queue_view(self) -> dict[tuple[int, int], RunState]:
+        if time.monotonic() - self._queue_read_at < QUEUE_KEPT_SECONDS:
+            return self._queue
+        queue = json_of(await self._ci.call(CI_ADMIN, "GET", QUEUE_PATH))
+        view: dict[tuple[int, int], RunState] = {}
+        for name, state in (
+            *((waiting, RunState.QUEUED) for waiting in WAITING_LISTS),
+            (TAKEN_LIST, RunState.TAKEN),
+        ):
+            for task in queue.get(name) or []:
+                if isinstance(task, dict):
+                    repo, number = task.get("repo_id"), task.get("pipeline_number")
+                    if isinstance(repo, int) and isinstance(number, int):
+                        view[(repo, number)] = state
+        self._queue, self._queue_read_at = view, time.monotonic()
+        return view
 
     async def read_config_request(self, request: CiRequest, *, now: datetime) -> ConfigAsk:
         await self._verify(request, now)

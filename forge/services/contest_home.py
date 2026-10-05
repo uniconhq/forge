@@ -1,7 +1,10 @@
 """What a signed-in person reads of the contests they may see: the list of
-them, a contest's home and a task's page. It is all read live from the forge
-on every request, as the platform, with the contest's visibility and the
-release rules applied first (`published`), and nothing is kept.
+them, a contest's home and a task's page. It is read from the forge as the
+platform, with the contest's visibility and the release rules applied first
+(`published`). The list starts from every published contest as this process
+read it at most half a minute ago, shared by everyone, and is then filtered
+for the person; a home and a task's page are read live. Each lets go of its
+connection to the database before it reads the forge.
 
 A person sees a published contest that is `public` or `signed-in`, and a
 `hidden` one only once they are its approved contestant; organisers see
@@ -133,8 +136,9 @@ async def contests(ctx: Context, session: Session) -> tuple[ContestSummary, ...]
             await ctx.db.execute(select(Contestant).where(Contestant.user_id == session.user_id))
         ).scalars()
     }
+    await ctx.let_go()
     found = []
-    every = await published.every_contest(ctx)
+    every = await published.every_contest_kept(ctx)
     where = await names.places_named(ctx, [contest for contest, _ in every])
     for contest, settings in every:
         row = rows.get(contest)
@@ -161,6 +165,7 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
     they may not see.
     """
     settings, person = await release.seen(ctx, session, contest)
+    await ctx.let_go()
     now = ctx.now
     extension = contestants.time_extension(person.row)
     tasks = tuple(
@@ -212,6 +217,7 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
     except NotFound as exc:
         raise NotFound(published.NO_SUCH_TASK) from exc
     found = await published.task(ctx, task, settings)
+    await ctx.let_go()
     now = ctx.now
     if found is None or not rules.visible(settings, found.definition, now):
         raise NotFound(published.NO_SUCH_TASK)

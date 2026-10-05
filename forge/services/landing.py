@@ -4,13 +4,16 @@ and nothing else. A visitor has no credential, so everything is read as the
 platform, and the package applies the contest's visibility and the release
 rules before it hands anything on. A contest that is not public, and a task
 that is not visible, are no such contest or task, the same answer as one
-that is not there. The list of public contests is kept for five seconds by
-each process, since anyone may ask for it and it reads every org's contests
-at the forge; a contest made public or hidden shows there within that time.
+that is not there. The list of public contests starts from every published
+contest as this process read it at most half a minute ago
+(`published.every_contest_kept`), since anyone may ask for it and reading
+it costs the forge two reads an org; a contest made public or hidden
+through this process shows there at once, and through another within that
+time.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from forge.domain import release as rules
 from forge.domain.definitions import ContestDefinition
@@ -59,25 +62,16 @@ class PublicStatement:
     statement: str
 
 
-PUBLIC_LIST_KEPT = timedelta(seconds=5)
-
-
 @action
 async def contests(ctx: Context) -> tuple[PublicContest, ...]:
-    """Every public contest, newest start first, without its tasks, as it
-    stood at most five seconds ago.
-    """
-
-    async def read() -> tuple[PublicContest, ...]:
-        public = [pair for pair in await published.every_contest(ctx) if _public(pair[1])]
-        where = await names.places_named(ctx, [contest for contest, _ in public])
-        return tuple(
-            _contest(contest, where[contest], settings, ())
-            for contest, settings in public
-            if contest in where
-        )
-
-    return await ctx.memo.remembered("landing.contests", PUBLIC_LIST_KEPT, read)
+    """Every public contest, newest start first, without its tasks."""
+    public = [pair for pair in await published.every_contest_kept(ctx) if _public(pair[1])]
+    where = await names.places_named(ctx, [contest for contest, _ in public])
+    return tuple(
+        _contest(contest, where[contest], settings, ())
+        for contest, settings in public
+        if contest in where
+    )
 
 
 @action

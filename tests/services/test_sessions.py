@@ -1,15 +1,17 @@
 """Sessions: the credential is ciphertext at rest, the two lifetimes end a
-session, the refresh is a compare-and-set that survives another process
-winning it, and listing and revoking work.
+session, use is noted once the unit of work ends however it ends, the
+refresh runs before a request's unit of work and is a compare-and-set that
+survives another process winning it, and listing and revoking work.
 """
 
 import asyncio
+import uuid
 from datetime import timedelta
 
 import psycopg
 import pytest
 
-from forge.domain.errors import NotFound, SessionExpired, Unauthenticated
+from forge.domain.errors import NotFound, SessionExpired, Unauthenticated, Unavailable
 from forge.domain.identity import Credential
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
@@ -17,7 +19,7 @@ from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import sessions
 from forge.settings import Settings
-from forge.testing import CALLBACK_PATH, FakeClock
+from forge.testing import CALLBACK_PATH, FakeClock, logged
 
 
 async def _signed_in(ctx: Context, fake: FakeForge, user_id: int = 7) -> tuple[Session, Credential]:
@@ -78,13 +80,37 @@ async def test_a_fresh_session_is_accepted_and_an_unknown_one_is_not(
         await sessions.authenticate(ctx, session.id.__class__(int=0))
 
 
-async def test_use_moves_the_idle_clock(ctx: Context, fake: FakeForge, clock: FakeClock) -> None:
+async def test_use_moves_the_idle_clock(
+    setup: Setup, ctx: Context, fake: FakeForge, clock: FakeClock
+) -> None:
     session, _ = await _signed_in(ctx, fake)
     clock.advance(timedelta(days=10))
-    await sessions.authenticate(ctx, session.id)
+    async with setup.unit_of_work() as own:
+        await sessions.authenticate(own, session.id)
     clock.advance(timedelta(days=10))
 
     assert (await sessions.authenticate(ctx, session.id)).user_id == 7
+
+
+async def test_use_is_noted_even_when_the_unit_of_work_rolls_back(
+    setup: Setup, ctx: Context, fake: FakeForge, clock: FakeClock
+) -> None:
+    session, _ = await _signed_in(ctx, fake)
+    clock.advance(timedelta(days=10))
+
+    with pytest.raises(RuntimeError, match="halfway"):
+        async with setup.unit_of_work() as own:
+            await sessions.authenticate(own, session.id)
+            raise RuntimeError("halfway")
+    clock.advance(timedelta(days=10))
+
+    assert (await sessions.authenticate(ctx, session.id)).user_id == 7
+
+
+async def _fresh(setup: Setup, session_id: uuid.UUID) -> Credential:
+    await sessions.keep_fresh(setup, session_id)
+    async with setup.unit_of_work() as own:
+        return await sessions.credential_for(own, session_id)
 
 
 async def test_a_credential_near_expiry_is_refreshed_once_for_two_callers(
@@ -93,15 +119,21 @@ async def test_a_credential_near_expiry_is_refreshed_once_for_two_callers(
     session, _ = await _signed_in(ctx, fake)
     clock.advance(timedelta(minutes=57))
 
-    async def use() -> Credential:
-        async with setup.unit_of_work() as own:
-            return await sessions.credential_for(own, session.id)
-
-    first, second = await asyncio.gather(use(), use())
+    first, second = await asyncio.gather(_fresh(setup, session.id), _fresh(setup, session.id))
 
     assert first == second
     assert fake.refreshes == 1
     assert first.access in fake.state.credentials
+
+
+async def test_a_credential_far_from_expiry_is_not_refreshed(
+    setup: Setup, ctx: Context, fake: FakeForge, clock: FakeClock
+) -> None:
+    session, credential = await _signed_in(ctx, fake)
+    clock.advance(timedelta(minutes=50))
+
+    assert await _fresh(setup, session.id) == credential
+    assert fake.refreshes == 0
 
 
 async def test_a_refresh_another_process_won_is_read_back(
@@ -111,12 +143,8 @@ async def test_a_refresh_another_process_won_is_read_back(
     clock.advance(timedelta(minutes=57))
     other = Setup.build(settings, callback_path=CALLBACK_PATH, forge=fake, clock=clock)
 
-    async def use(on: Setup) -> Credential:
-        async with on.unit_of_work() as own:
-            return await sessions.credential_for(own, session.id)
-
     try:
-        first, second = await asyncio.gather(use(setup), use(other))
+        first, second = await asyncio.gather(_fresh(setup, session.id), _fresh(other, session.id))
     finally:
         await other.stop()
 
@@ -125,16 +153,47 @@ async def test_a_refresh_another_process_won_is_read_back(
 
 
 async def test_a_refresh_the_forge_refuses_ends_the_session(
-    ctx: Context, fake: FakeForge, clock: FakeClock
+    setup: Setup, ctx: Context, fake: FakeForge, clock: FakeClock
 ) -> None:
     session, _ = await _signed_in(ctx, fake)
     clock.advance(timedelta(minutes=57))
     fake.refuse_refresh = True
 
     with pytest.raises(SessionExpired):
-        await sessions.credential_for(ctx, session.id)
+        await sessions.keep_fresh(setup, session.id)
     with pytest.raises(SessionExpired):
         await sessions.authenticate(ctx, session.id)
+
+
+async def test_a_refresh_the_forge_does_not_answer_leaves_the_credential_in_use(
+    setup: Setup,
+    ctx: Context,
+    fake: FakeForge,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session, credential = await _signed_in(ctx, fake)
+    clock.advance(timedelta(minutes=57))
+
+    async def silent(_: Credential) -> Credential:
+        raise Unavailable("The forge did not answer.")
+
+    monkeypatch.setattr(fake.identity, "refresh_credential", silent)
+
+    assert await _fresh(setup, session.id) == credential
+    assert logged(caplog, "session.refresh_unanswered")
+
+
+async def test_a_credential_past_its_expiry_is_unavailable_not_a_dead_session(
+    ctx: Context, fake: FakeForge, clock: FakeClock
+) -> None:
+    session, _ = await _signed_in(ctx, fake)
+    clock.advance(timedelta(minutes=61))
+
+    with pytest.raises(Unavailable):
+        await sessions.credential_for(ctx, session.id)
+    assert (await sessions.authenticate(ctx, session.id)).user_id == 7
 
 
 async def test_a_user_sees_and_ends_their_other_sessions(ctx: Context, fake: FakeForge) -> None:

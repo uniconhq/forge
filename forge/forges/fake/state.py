@@ -14,6 +14,7 @@ from typing import Any
 from forge.domain.clock import Clock, SystemClock
 from forge.domain.content import Change, ConflictToken, Files
 from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
+from forge.domain.grading import RunState
 from forge.domain.identity import AsUser, Credential, Identity, Platform, User
 from forge.domain.ids import AgentId, RunId, ThreadId, VersionId
 from forge.domain.roles import RANK, Role, Scope
@@ -72,13 +73,15 @@ class Repo:
 @dataclass
 class StartedRun:
     """A run the fake CI was asked to start: the task it is of, the variables
-    it was started with, when, and whether it was cancelled.
+    it was started with, when, whether it was cancelled, and where the CI
+    has it, queued until a test says otherwise.
     """
 
     task: str
     variables: dict[str, str]
     at: datetime
     cancelled: bool = False
+    ci_state: RunState = RunState.QUEUED
 
 
 @dataclass

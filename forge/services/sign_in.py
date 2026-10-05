@@ -94,6 +94,7 @@ async def complete(
     and the previous one is left as it was.
     """
     if attempt is None:
+        log.info("sign_in.refused", reason="attempt", state=state[:STATE_PREFIX])
         raise SignInInvalid("This sign-in did not start here, or took too long.")
     if not compare_digest(attempt.state.encode(), state.encode()):
         log.info("sign_in.refused", reason="state", state=state[:STATE_PREFIX])

@@ -13,13 +13,25 @@ start the CI refuses, or does not answer, ends the grading in
 `system_error` saying why: whoever reads it sees that at once and tries
 again, a contestant by submitting, an organiser with `retry`.
 
+A grading whose run the CI has lost reads as a system error saying so,
+like an overdue one, and nothing is written when it is read: `lost` asks
+the CI where the runs of `dispatched` gradings are, once they have waited
+long enough for that to mean something (`grading.worth_asking`), at most
+once every `RUN_STATE_KEPT` for each run however many people are watching
+it, and with the reader's connection let go of first.
+
 An organiser managing the task reads its gradings and acts on one:
 
 - `cancel` stops a grading that is not finished, at the CI too when a run
-  of it is there, so a run nobody will look at does not hold a machine;
+  of it is there, so a run nobody will look at does not hold a machine,
+  including one that reads as a system error because it is overdue or lost
+  while its row still waits;
 - `retry` makes a new attempt of a finished one, against the publication
   the old attempt graded against, unless another attempt of it is still
-  being graded;
+  being graded. One that reads as finished only because it is overdue or
+  lost is ended first, with the reason written on its row, and the old
+  run is cancelled at the CI once the retry has committed, so it does not
+  keep a machine's containers going;
 - `rejudge` makes a new attempt of every submission's latest attempt at
   every stage the current publication still has, against that publication.
   A latest attempt still being graded against an older publication is
@@ -34,9 +46,9 @@ before a control whose route names only the grading.
 
 import builtins
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select, tuple_
@@ -59,10 +71,12 @@ from forge.domain.grading import (
     UNFINISHED,
     GradingRun,
     GradingStatus,
+    RunState,
     callback_token,
     envelope_key,
     overdue,
     token_hash,
+    worth_asking,
 )
 from forge.domain.identity import AsOrgAccount
 from forge.domain.ids import (
@@ -89,6 +103,10 @@ log = get_logger(__name__)
 
 NO_SUCH_GRADING = "There is no such grading."
 LIST_LIMIT = 500
+RUN_STATE_KEPT = timedelta(seconds=15)
+"""How long this process keeps the CI's answer about where one run is, so a
+contestant's page polling every two seconds asks the CI a few times a
+minute at most."""
 
 ACCOUNT_NOT_READY = "The org's grading account is not ready."
 NOT_ACTIVATED = "The task is not taken for grading at the CI."
@@ -416,24 +434,64 @@ def finish(row: Grading, status: GradingStatus, now: datetime, *, error: str | N
     row.error = error
 
 
-def overdue_of(ctx: Context, row: Grading) -> str | None:
-    """Why the grading is past what its state may take, or none."""
+def overdue_of(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> str | None:
+    """Why the grading is past what its state may take, or none. `lost`
+    names the gradings whose runs the CI was found to have lost.
+    """
     return overdue(
         GradingStatus(row.status),
         created_at=row.queued_at,
         dispatched_at=row.dispatched_at,
         deadline=row.deadline_at,
         now=ctx.now,
+        lost=row.id in lost,
     )
 
 
-def status_of(ctx: Context, row: Grading) -> GradingStatus:
-    """Where the grading stands now: one past what its state may take is a
-    system error (`grading.overdue`).
+def status_of(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> GradingStatus:
+    """Where the grading stands now: one past what its state may take, or
+    whose run the CI has lost, is a system error (`grading.overdue`).
     """
-    if overdue_of(ctx, row) is not None:
+    if overdue_of(ctx, row, lost) is not None:
         return GradingStatus.SYSTEM_ERROR
     return GradingStatus(row.status)
+
+
+async def lost(ctx: Context, rows: Iterable[Grading]) -> frozenset[uuid.UUID]:
+    """The gradings among `rows` whose run the CI no longer holds. Only a
+    grading worth asking about is asked about, each run at most once every
+    `RUN_STATE_KEPT` by this process, and the connection is let go of before
+    the CI is asked. A CI that does not answer loses nothing: the grading
+    reads as its row says.
+    """
+    asking = [
+        (row.id, RunId(row.run_id))
+        for row in rows
+        if row.run_id is not None
+        and worth_asking(GradingStatus(row.status), row.dispatched_at, ctx.now)
+    ]
+    if not asking:
+        return frozenset()
+    await ctx.let_go()
+    found: set[uuid.UUID] = set()
+    for grading, run in asking:
+        if await _run_state(ctx, grading, run) is RunState.LOST:
+            found.add(grading)
+    return frozenset(found)
+
+
+async def _run_state(ctx: Context, grading: uuid.UUID, run: RunId) -> RunState | None:
+    async def ask() -> RunState | None:
+        try:
+            state = await ctx.forge.grading.run_state(run)
+        except PortError as exc:
+            log.warning("gradings.run_state_unanswered", run=run, error=type(exc).__name__)
+            return None
+        if state is RunState.LOST:
+            log.warning("gradings.run_lost", grading=str(grading), run=run)
+        return state
+
+    return await ctx.memo.remembered(f"gradings.run_state.{run}", RUN_STATE_KEPT, ask)
 
 
 @action
@@ -454,10 +512,10 @@ async def cancel(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Grad
     there. `WrongStatus` for one that is finished.
     """
     row = await _managed(ctx, organiser, grading)
-    status = status_of(ctx, row)
-    if status in FINISHED:
-        raise WrongStatus(f"The grading is {status.value} already.", current=status.value)
-    if status in AT_THE_CI and row.run_id is not None:
+    stored = GradingStatus(row.status)
+    if stored in FINISHED:
+        raise WrongStatus(f"The grading is {stored.value} already.", current=stored.value)
+    if stored in AT_THE_CI and row.run_id is not None:
         await _cancel_run(ctx, RunId(row.run_id))
     finish(row, GradingStatus.CANCELLED, ctx.now)
     await ctx.db.flush()
@@ -472,17 +530,35 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     not finished, and `Conflict` while another attempt of it is graded.
     """
     found = await _managed(ctx, organiser, grading, lock=False)
+    gone = await lost(ctx, [found])
     attempts = await _attempts(ctx, [(found.submission_id, found.stage)])
     row = next(attempt for attempt in attempts if attempt.id == grading)
-    status = status_of(ctx, row)
+    status = status_of(ctx, row, gone)
     if status not in FINISHED:
         raise WrongStatus(f"The grading is {status.value}, not finished.", current=status.value)
-    if any(status_of(ctx, other) in UNFINISHED for other in attempts):
+    if any(status_of(ctx, other, gone) in UNFINISHED for other in attempts):
         raise Conflict("Another attempt of this grading is still being graded.")
+    stored = GradingStatus(row.status)
+    if stored in UNFINISHED:
+        finish(row, GradingStatus.SYSTEM_ERROR, ctx.now, error=overdue_of(ctx, row, gone))
+    if row.run_id is not None and stored not in (GradingStatus.DONE, GradingStatus.CANCELLED):
+        _cancel_after_commit(ctx, RunId(row.run_id))
     made = _next_attempt(ctx, row, PublicationId(row.publication_id), attempts)
     await ctx.db.flush()
     log.info("gradings.retried", grading=str(row.id), attempt=made.attempt)
     return record(ctx, made)
+
+
+def _cancel_after_commit(ctx: Context, run: RunId) -> None:
+    """Cancel the run at the CI once the unit of work has committed, holding
+    nothing while the CI is called; a run the CI does not stop is refused its
+    reports, since its grading is finished.
+    """
+
+    async def cancel(after: Context) -> None:
+        await _cancel_quietly(after, run)
+
+    ctx.after_commit(cancel)
 
 
 @action
@@ -560,11 +636,12 @@ async def list(
         .scalars()
         .all()
     )
-    return tuple(record(ctx, row) for row in rows)
+    gone = await lost(ctx, rows)
+    return tuple(record(ctx, row, gone) for row in rows)
 
 
-def record(ctx: Context, row: Grading) -> GradingRecord:
-    late = overdue_of(ctx, row)
+def record(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> GradingRecord:
+    late = overdue_of(ctx, row, lost)
     return GradingRecord(
         id=row.id,
         task=TaskId(row.task_id),

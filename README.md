@@ -308,7 +308,11 @@ everything else is built from it: the ids the tables store, `<org>`,
 `<org>/<contest>` and `<org>/<contest>/<task>` with each part a key; the
 org's name at the forge and its service account's, `unicon-ci-<org key>`;
 every repository's name, such as `<contest key>.<task key>.task`; and every
-role team's. The names people give them are labels in the `names` table,
+role team's. The Forgejo implementation lists an org's contests and a
+contest's tasks through Forgejo's repository search for names holding
+`.contest` or `.task`, checking each name it gets back, since the org also
+holds a repository for every contestant at every task and reading them all
+grew with each. The names people give them are labels in the `names` table,
 one row per thing, unique among the things of its kind in the same parent.
 So a rename will change one row and move nothing, and a name freed and taken
 again names a new thing that inherits no registration, grading or role of
@@ -384,7 +388,11 @@ variable named.
 when the value is empty, forged, signed under another key or older than the
 session's hard lifetime, so a forged id is refused without a database read.
 `sign_in_value(attempt)` and `sign_in_attempt(value)` do the same for what
-checks a sign-in's answer, for `UNICON_SIGN_IN_TTL`. `policy()` says whether
+checks a sign-in's answer, for `UNICON_SIGN_IN_TTL`. A cookie signed up to
+two seconds in the future still reads, since another process's clock may
+be a second ahead or the machine's may be stepped back after it signed;
+every refusal is logged as `cookies.refused` with its reason and never the
+value. `policy()` says whether
 the cookies are `Secure` and how long each lives. The host keeps the cookie
 names, `HttpOnly`, `SameSite` and the `Set-Cookie` header itself, because
 those are HTTP.
@@ -436,12 +444,39 @@ one the browser had before, together.
 Every other service function is a building block, called only from inside
 the package. Its first parameter is a `Context`: the transaction of the
 unit of work, the forge, the settings and the clock. A building block never
-commits `ctx.db`. Session bookkeeping runs in short transactions of its
-own, opened with `ctx.own_transaction()`, which commits when its block ends
-and rolls back when it raises, so a refused request still records what it
-learned whatever the action does next. The setup holds one lock per session
-for refreshing its credential, taken as `ctx.refresh_lock(session_id)`, so
-two requests in one process refresh it once. Work that may start only once
+commits `ctx.db`.
+
+A unit of work holds one pooled connection from its first query until it
+ends, and never asks for a second while it holds it: a request that did
+would wait on the pool while keeping a connection from it, and a few dozen
+at once lock the whole pool up. So the few writes that must land whatever
+the action does go to `ctx.after_end(work)`, which runs each on a unit of
+work of its own once this one has ended, committed or rolled back, and its
+connection is back: noting that a session was used, and ending one whose
+credential the forge refused. Refreshing a session's credential, which asks
+the forge and then compare-and-sets the stored value, is done before the
+route's action opens its unit of work, by `identity.current`, which the
+host's guard calls on every request (`sessions.keep_fresh`): each read and
+write there is a transaction of its own and none is open while the forge is
+asked, and the action then reads a credential good for minutes yet. The
+setup holds one lock per session for that refresh, taken as
+`ctx.refresh_lock(session_id)`, so two requests in one process refresh it
+once. An action that has only read may hand its connection back before a
+slow call to the forge with `await ctx.let_go()`; the next query takes one
+again in a transaction of its own. One that has written or holds a lock
+keeps its connection, so its all or nothing stands. The pages people open
+most do this: `/me`, the organiser's guard, the list of contests, a
+contest's home and a task's page. `tests/services/test_one_connection.py`
+runs the main request paths on a pool of one connection that waits a
+second, so a path that nests a checkout fails there at once.
+
+Each process keeps `UNICON_DATABASE_POOL_SIZE` connections (20),
+`UNICON_DATABASE_POOL_OVERFLOW` more in a rush (10), and a request that
+finds them all taken waits `UNICON_DATABASE_POOL_WAIT` seconds (10) and
+fails. The deployment runs one backend process beside Forgejo and
+Woodpecker on a Postgres that allows 100 connections, three of them kept
+for its superuser; more backend processes keep their pools' sum under what
+the others leave. Work that may start only once
 the unit of work has committed is handed to `ctx.after_commit(work)`: when
 the unit of work commits, `Setup.unit_of_work` runs each piece on a unit of
 work of its own, and one that fails goes to the log as
@@ -721,10 +756,16 @@ to them in the contest's order; and `task`, a visible task's statement,
 limits and the inputs a contestant gives, with the labels, languages, file
 types and sizes a submit panel shows, and nothing else of what it holds. A visitor with no session reads
 `landing`: the public contests, one with its released tasks, and a released
-task's statement. The list of public contests is kept by each process for
-five seconds (`ctx.memo`, `forge/runtime/memo.py`), since anyone may ask for
-it and it reads every org's contests; visitors arriving while it is read wait
-for that one read. All of it is read live as the platform from the latest
+task's statement. Both lists of contests, a signed-in person's and a
+visitor's, start from every published contest as the process read it at
+most thirty seconds ago (`published.every_contest_kept`, kept in
+`ctx.memo`, `forge/runtime/memo.py`), since reading it costs the forge two
+calls an org and it is read as the platform, so one answer serves
+everybody and each person's filtering comes after; people arriving while
+it is read wait for that one read. A contest's settings saved through the
+process drop its copy at once (`published.forget_contests`); another
+process's copy lasts its thirty seconds. The operator's reconcile reads the
+list live. Everything else is read live as the platform from the latest
 publication of each task, with the contest's visibility and the release
 rules applied first, and a contest or task the reader may not see is no
 such contest or task, the same answer as one that is not there.
@@ -747,9 +788,10 @@ one asked for included (`upload_limit`, with `limit` and `bytes`). The count
 is taken under an advisory lock on the person and the task, held until the
 unit of work ends, so two slots asked at once cannot both pass.
 
-It then makes the person's place to submit the task, if no slot of theirs for
-it has been kept before, since an object belongs to a place and there has to
-be one to put it in; asks the forge whether the place already holds that
+Before any of that, it makes the person's place to submit the task, if no
+slot of theirs for it has been kept before, since an object belongs to a
+place and there has to be one to put it in. It asks with no connection held
+(below); then it asks the forge whether the place already holds that
 object, which answers a `Slot` that is `ready` with nothing to send; and
 otherwise records an `uploads` row and answers the address to send the file
 to.
@@ -797,9 +839,11 @@ bytes are read back and checked against the digest the upload was verified
 with. At a contestant's first submit to the task, their place to submit it
 is made, as the platform, once they are found approved and before their
 submissions are counted, which is the one thing a later refusal leaves at
-the forge. It is made under a lock on their `contestants` row, so a removal
-waits for it and then takes the access away again, and one removed by then
-is `not_approved`. Then the files go in as one commit as the
+the forge. The place is made first, holding nothing, since it takes the
+forge seconds; then their `contestants` row is held and read again, and
+someone removed meanwhile has the access just given taken away again and is
+`not_approved`. A removal that comes after takes away a place already
+there, so either way the access is gone once both are done. Then the files go in as one commit as the
 contestant, `files/<input id>/<file name>` beside `submission.json`, named
 `submission/<n>` as the platform; one `queued` grading row is inserted per
 stage graded on submit, against the task's current publication, attempt 1,
@@ -858,6 +902,24 @@ envelope and reports; its row keeps its status, and an organiser retries
 it: `queued` five minutes after it was made (its start was lost),
 `dispatched` two hours after its run was started (no machine took it, or it
 never reached the harness), and `running` past its deadline.
+
+A `dispatched` grading can also have a run the CI lost: Woodpecker 3.18.1
+drops a run from its queue for good when the machine it handed the run to
+does not renew its claim within a minute, after a network drop or a machine
+that died during the checkout, and the pipeline goes on saying `pending`
+(woodpecker-ci/woodpecker#7063). Once a grading has been `dispatched` two
+minutes, reading it asks the CI where its run is (`grading.run_state`,
+`gradings.lost`): queued for a machine, taken by one, finished, or lost,
+told by the queue the run is in, not by its status, which is `pending`
+either way. A lost one reads as `system_error` with `LOST` as its reason;
+one still queued is left alone however long it waits, since at a
+contest's start a run waits minutes behind others. The CI is asked about a
+run at most once every fifteen seconds by a process, through the memo,
+and the Forgejo implementation reads the queue at most once every ten
+seconds for all runs, so contestants' pages polling every few seconds
+cost it little. Nothing is written when a grading is read; the reader's
+connection is let go of before the CI is asked, and a CI that does not
+answer loses nothing.
 
 **Starting a run.** Every new grading row hands `gradings.start` to
 `ctx.after_commit`, so its run is started right after the unit of work that
@@ -967,10 +1029,15 @@ start once it commits. It logs what it did as `reconcile.done`.
 **The organiser's controls.** Each takes the `Organiser` from
 `access.organiser` and needs manager at the grading's task; a grading whose
 task they do not observe is no such grading. `gradings.cancel` stops a
-grading that is not finished, at the CI too when a run of it is there
-(`WrongStatus` for a finished one). `gradings.retry` makes a new attempt of a
-finished one against the publication it graded against, while no other
-attempt of it is being graded (`Conflict`). `gradings.rejudge(task)` makes a
+grading that is not finished, at the CI too when a run of it is there,
+one that reads as `system_error` because it is overdue or lost while its
+row still waits included (`WrongStatus` for a finished one).
+`gradings.retry` makes a new attempt of a finished one against the
+publication it graded against, while no other attempt of it is being
+graded (`Conflict`). One that reads as finished only because it is overdue
+or lost is ended first with that reason written on its row, and its old
+run is cancelled at the CI once the retry has committed, so it does not
+keep a machine's containers going. `gradings.rejudge(task)` makes a
 new attempt of every submission's latest attempt at every stage the current
 publication has, against it, cancelling first one still being graded against
 an older publication and leaving one being graded against the current one,

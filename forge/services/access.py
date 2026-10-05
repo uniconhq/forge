@@ -48,10 +48,11 @@ async def organiser(ctx: Context, session: Session, scope: Scope, role: Role) ->
     """
     try:
         credential = await sessions.credential_for(ctx, session.id)
+        await ctx.let_go()
         grants = await ctx.forge.orgs.roles_of(AsUser(session.user_id, credential))
     except Forbidden as exc:
         log.warning("access.credential_refused", user_id=session.user_id)
-        await sessions.revoke_now(ctx, session.id)
+        sessions.revoke_at_end(ctx, session.id)
         raise SessionExpired("Sign in again.") from exc
     if not holds(grants, scope, role):
         log.info("access.refused", user_id=session.user_id, scope=scope.path, role=role.value)

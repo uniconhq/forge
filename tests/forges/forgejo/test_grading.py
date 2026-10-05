@@ -1,7 +1,8 @@
 """The grading area over Woodpecker, asserted without one: a task activated
 once and its runs started as the org account with the run's variables, a
 task deactivated and forgotten as the org account, the org account's CI user
-deleted, a start answered without a run refused, a run found by its grading id, the
+deleted, a start answered without a run refused, a run found by its grading id, where
+the CI has a run told by its queue and, for one in no queue, its pipeline, the
 extension's request checked against the CI's key as RFC 9421 lays it out,
 and the answer with its three steps.
 """
@@ -19,9 +20,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from forge.domain.errors import Forbidden, Rejected, Unavailable
-from forge.domain.grading import CiRequest, GradingRun
+from forge.domain.grading import CiRequest, GradingRun, RunState
 from forge.domain.identity import AsOrgAccount
-from forge.domain.ids import PublicationId, SubmissionId, TaskId, VersionId
+from forge.domain.ids import PublicationId, RunId, SubmissionId, TaskId, VersionId
 from forge.forges.forgejo import ForgejoForge, grading
 from tests.forges.forgejo.conftest import Recorder, ok
 
@@ -410,3 +411,63 @@ def test_the_envelope_places_name_the_task_the_publication_and_the_submission(
 
 def _pem_answer(key: Ed25519PrivateKey) -> httpx.Response:
     return httpx.Response(200, content=_pem(key), headers={"Content-Type": "text/plain"})
+
+
+def _queue(**lists: list[tuple[int, int]]) -> httpx.Response:
+    return ok(
+        {
+            name: [
+                {"id": str(index), "repo_id": repo, "pipeline_number": number}
+                for index, (repo, number) in enumerate(lists.get(name, []))
+            ]
+            for name in ("pending", "waiting_on_deps", "running")
+        }
+    )
+
+
+async def test_a_run_in_the_queue_is_queued_or_taken_without_reading_its_pipeline(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/queue/info", _queue(pending=[(5, 3)], running=[(5, 4)]))
+
+    assert await forgejo.grading.run_state(RunId("5/3")) is RunState.QUEUED
+    assert await forgejo.grading.run_state(RunId("5/4")) is RunState.TAKEN
+    assert recorder.calls() == ["GET /api/queue/info"]
+    assert recorder.headers("GET", "/api/queue/info") == ["Bearer ci-admin"]
+
+
+async def test_a_run_in_no_queue_is_finished_or_lost_by_its_pipeline(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/queue/info", _queue())
+    recorder.on(
+        "GET",
+        "/api/repos/5/pipelines/3",
+        ok({"status": "pending", "workflows": [{"id": 9, "state": "pending"}]}),
+    )
+    recorder.on(
+        "GET",
+        "/api/repos/5/pipelines/4",
+        ok({"status": "running", "workflows": [{"id": 10, "state": "success"}]}),
+    )
+    recorder.on("GET", "/api/repos/5/pipelines/5", ok({"status": "killed", "workflows": []}))
+    recorder.on("GET", "/api/repos/5/pipelines/6", httpx.Response(404))
+
+    assert await forgejo.grading.run_state(RunId("5/3")) is RunState.LOST
+    assert await forgejo.grading.run_state(RunId("5/4")) is RunState.FINISHED
+    assert await forgejo.grading.run_state(RunId("5/5")) is RunState.FINISHED
+    assert await forgejo.grading.run_state(RunId("5/6")) is RunState.LOST
+
+
+async def test_the_queue_is_read_at_most_once_in_ten_seconds(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/queue/info", _queue(pending=[(5, 3)]), _queue(running=[(5, 3)]))
+
+    first = await forgejo.grading.run_state(RunId("5/3"))
+    kept = await forgejo.grading.run_state(RunId("5/3"))
+    forgejo.grading._queue_read_at -= grading.QUEUE_KEPT_SECONDS
+    fresh = await forgejo.grading.run_state(RunId("5/3"))
+
+    assert (first, kept, fresh) == (RunState.QUEUED, RunState.QUEUED, RunState.TAKEN)
+    assert recorder.calls() == ["GET /api/queue/info", "GET /api/queue/info"]
