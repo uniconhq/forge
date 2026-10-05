@@ -437,7 +437,7 @@ hosting process calls are actions, marked `@action` from
 | `clarifications` | `ask`, `mine`, `follow_up`, `inbox`, `of_contest`, `reply`, `mark`, `unmark`, `answer_publicly` |
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
-| `submissions` | `submit`, `mine`, `one`, `files`, `file`, `run_log` |
+| `submissions` | `submit`, `mine`, `one`, `files`, `download`, `run_log` |
 | `gradings` | `cancel`, `retry`, `rejudge`, `list`, `task_of` |
 | `runs` | `config`, `envelope`, `callback` |
 | `workflows` | `create` |
@@ -925,13 +925,13 @@ completion it failed on leaves the upload `waiting`, to be completed again.
 for a file an organiser puts into a task, which the next save writes the
 pointer for (`files.write_upload`).
 
-An upload no submit used is removed, object and row, once its two days are
-over, the next time its owner asks for a slot: before the count is taken,
-`slot` removes the person's own lapsed, unused uploads, and leaves one whose
-object the store failed on for the next time. The object of an upload a
-submit used is removed once the submit commits (`uploads.forget`), since its
-bytes are in the submission's commit, and its row stays `consumed` as the
-record of what was submitted.
+An upload no submit used loses its row once its two days are over, the
+next time its owner asks for a slot: before the count is taken, `slot`
+removes the person's own lapsed, unused uploads, so they stop counting
+against what the person may hold. Their bytes are the forge's to collect
+once no commit names them. The row of an upload a submit used stays
+`consumed` as the record of what was submitted, and its bytes stay, since
+the submission's commit points at them.
 
 ## Submissions
 
@@ -946,11 +946,12 @@ window; every upload named is theirs for this task (`upload_not_yours`), a
 checked file no submission used (`upload_not_ready`), and each and all of
 them within the sizes allowed (`too_large`); and what is given fits the
 task's contestant inputs (`invalid_inputs`, each problem at its input). The
-bytes are read back and checked against the digest the upload was verified
-with. At a contestant's first submit to the task, their place to submit it
-is made, as the platform, once they are found approved and before their
-submissions are counted, which is the one thing a later refusal leaves at
-the forge. The place is made first, holding nothing, since it takes the
+forge is asked once more that the place still holds each upload's object,
+so a commit never points at bytes that are not there (`upload_not_ready`).
+A file upload made the contestant's place to submit the task already; a
+first submission of nothing but typed values makes it, as the platform,
+once they are found approved and before the submit's hold, which is the one
+thing a later refusal leaves at the forge. The place is made first, holding nothing, since it takes the
 forge seconds; then their `contestants` row is held and read again, and
 someone removed meanwhile has the access just given taken away again and is
 `not_approved`. A removal that comes after takes away a place already
@@ -985,7 +986,8 @@ every stage as that stage's `show` allows: `full` the outcome, metrics,
 summary, each test's row and whether there is a log, `metrics` the outcome
 and metrics, `hidden` the status alone. A `system_error`'s summary is written
 for staff and is never shown, whatever the stage's `show`. `files` gives the inputs one was made
-with, as its `submission.json` names them, and `file` one of those files.
+with, as its `submission.json` names them, and `download` a door to one of
+those files, which the proxy streams from the forge.
 `run_log` gives the bytes of the run log of the latest attempt at a stage,
 the first stage in the task's order with one unless a stage is named, only
 where that stage's `show` is `full`, and only when it is at most 9 MiB
@@ -1036,7 +1038,7 @@ answer loses nothing.
 `ctx.after_commit`, so its run is started right after the unit of work that
 made it commits, on a unit of work of its own: the CI asks the platform
 about the grading while the start is under way, and must find the row
-committed. Up to eight such starts run at once. `start` passes over a
+committed. Up to eight of one request's starts run at once. `start` passes over a
 grading that is not `queued`, reads what the start needs and commits that
 much, so the call to the CI holds no connection and no lock, and as the
 org's own account (`org_accounts.identity`)
@@ -1239,8 +1241,8 @@ There is no jobs table, and nothing in the package runs on a timer. Each
 piece of upkeep is done by a request that already touches what it keeps:
 `sessions.create`, at every sign-in, first deletes the session rows that
 ended longer ago than a session's hard lifetime (`sessions.sweep`);
-`uploads.slot` removes the person's own lapsed, unused uploads, and a submit
-removes the objects it used once it commits; and `org_accounts.identity`
+`uploads.slot` removes the rows of the person's own lapsed, unused uploads;
+and `org_accounts.identity`
 signs an org's account in at the CI again when its `ci_signed_in_at` is
 older than `SIGN_IN_SHARE`, two thirds, of the session's hard lifetime (20
 days by default), under a lock on its row so two callers sign it in once.
@@ -1313,10 +1315,11 @@ three primitives it uses from `PRIMITIVES`, each primitive repo's own
 `primitive.yaml` with an image of `PLACEHOLDER_DIGEST`, so a task's first
 save finds a workflow and every step's image; the package's tests check the
 copy against deploy's file when that repo is checked out beside this one.
-The fake's store is `fake.objects`: a test plays the browser with
-`post(slot.fields, content)` and `put_part(url, content)`, which answers the
-value `complete` takes for the part, and the grading machine with
-`put(url, content)`. `fake.racing_submissions = n` makes the next submission
+The fake's large-file store is `fake.uploads`: a test plays the browser
+through the door with `send`, handing back the address the door gave out,
+or puts an object straight into a place with `put`, and `forget` drops one
+the way the forge's collector would. The grading machine's results go to
+`fake.objects` with `put(url, content)`. `fake.racing_submissions = n` makes the next submission
 collide with `n` others for its number, and `fake.lose_submission_answer`
 names it and then fails as if the answer were lost. The fake CI signs the
 question it asks the extension with a key of its own:

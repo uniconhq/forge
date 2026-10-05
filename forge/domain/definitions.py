@@ -607,6 +607,14 @@ class TaskDefinition(Model):
                         (*at, position, "type"),
                         f"Must be {known}, the type {entry.id} has at the task level.",
                     )
+        if self.stages and not any(stage.trigger is Trigger.ON_SUBMIT for stage in self.stages):
+            # Only a stage graded on submit makes a grading, and a submission
+            # is listed and rate-limited by its gradings, so a task without
+            # one would take submissions nobody could see.
+            problems.add(
+                ("stages",),
+                "Needs a stage with trigger on_submit; the other triggers are not graded yet.",
+            )
         problems.raise_any()
         return self
 
