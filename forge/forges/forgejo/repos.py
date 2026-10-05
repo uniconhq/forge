@@ -272,6 +272,17 @@ class Repos:
             as_, f"/api/v1/repos/{owner}/{name}/media/{path}", params={"ref": at}, max_size=max_size
         )
 
+    async def read_blob(
+        self, as_: Identity, owner: str, name: str, path: str, *, at: str, max_size: int
+    ) -> bytes:
+        """One file at a version as the commit holds it, through the raw
+        endpoint, which gives a large-file pointer as the pointer. `Rejected`
+        for one over `max_size` bytes, read no further.
+        """
+        return await self._http.read_capped(
+            as_, f"/api/v1/repos/{owner}/{name}/raw/{path}", params={"ref": at}, max_size=max_size
+        )
+
     async def write_file(
         self,
         as_: Identity,

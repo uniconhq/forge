@@ -23,6 +23,7 @@ from forge.domain.ids import OrgId, ThreadId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
+from forge.domain.uploads import POINTER_MAX, pointer_text
 from forge.domain.workflows import Visibility
 from forge.forges.forgejo import ForgejoForge
 from tests.live.conftest import (
@@ -229,6 +230,18 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
         )
         with pytest.raises(NotFound):
             await forge.workspaces.read_submission_file(person, second.id, "main.py", max_size=64)
+        # A pointer reads back as the pointer through the blob read, which is
+        # how a recovered submission finds the uploads it used.
+        pointer = pointer_text("a" * 64, 7)
+        third = await forge.workspaces.record_submission(
+            person, workspace, task, {"files/submission/big.bin": pointer}, key="live-key-three"
+        )
+        assert (
+            await forge.workspaces.read_submission_blob(
+                person, third.id, "files/submission/big.bin", max_size=POINTER_MAX
+            )
+            == pointer
+        )
 
         repo = f"/api/v1/repos/{org}/autumn.sum.u{contestant['id']}.sub"
         tags = {tag["name"]: tag["commit"]["sha"] for tag in admin.get(f"{repo}/tags").json()}
@@ -244,7 +257,7 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
             await forge.workspaces.record_submission(
                 person, workspace, task, {"main.py": b"late"}, key="live-key-late"
             )
-        assert await forge.workspaces.list_submissions(workspace, task) == (first, second)
+        assert await forge.workspaces.list_submissions(workspace, task) == (first, second, third)
     finally:
         delete_user(admin, contestant["login"])
 
