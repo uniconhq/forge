@@ -12,6 +12,7 @@ from forge.domain.invites import Grant, InviteStatus, MailStatus
 from forge.domain.names import Named, ScopeNames
 from forge.domain.roles import HeldRole, Role, RoleGrant, Scope, ScopeKind
 from forge.domain.sessions import Session
+from forge.domain.teams import MemberStatus
 from forge.domain.yaml_models import Problem
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "HeldRole",
     "InviteStatus",
     "MailStatus",
+    "MemberStatus",
     "Named",
     "OrgId",
     "Problem",

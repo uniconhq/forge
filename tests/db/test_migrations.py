@@ -19,7 +19,17 @@ from forge.db.migrations import alembic_config, downgrade_to_base, upgrade_to_he
 from forge.db.tables import Grading, OrgAccount, metadata
 from forge.runtime.setup import Setup
 
-TABLES = {"sessions", "contestants", "gradings", "uploads", "org_accounts", "names", "invites"}
+TABLES = {
+    "sessions",
+    "contestants",
+    "gradings",
+    "uploads",
+    "org_accounts",
+    "names",
+    "invites",
+    "teams",
+    "team_members",
+}
 
 
 def test_the_schema_has_exactly_the_tables_the_package_owns(migrated_database_url: str) -> None:

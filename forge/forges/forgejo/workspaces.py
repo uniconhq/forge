@@ -26,7 +26,7 @@ from forge.domain.ids import (
     VersionId,
     WorkspaceId,
 )
-from forge.domain.names import WorkspaceOwner
+from forge.domain.names import TeamOwner, WorkspaceOwner
 from forge.domain.publications import Publication, read_note
 from forge.domain.roles import Scope
 from forge.domain.submissions import Submitted, write_note
@@ -106,9 +106,13 @@ class ForgejoWorkspaces:
         A repository that is there, not yet finished, and has a collaborator
         who is not one of the members is somebody else's, and is refused with
         `Conflict` rather than shared: the name is the owner's id, so this
-        only happens if something other than this code made or changed it.
+        only happens if something other than this code made or changed it. A
+        team's repository is the exception: its collaborators who are not
+        members are former members, taken off first.
         """
-        usernames = [await self._users.username_of(member) for member in member_ids]
+        usernames = await self._usernames(member_ids)
+        if isinstance(ref.owner, TeamOwner):
+            await self._shed_former_members(ref.org, repo, usernames)
         if usernames and await self._finished(ref.org, repo, usernames, permission):
             return
         if await self._repos.exists(ref.org, repo):
@@ -127,6 +131,30 @@ class ForgejoWorkspaces:
         for username in usernames:
             await self._repos.add_collaborator(ref.org, repo, username, permission=permission)
 
+    async def _shed_former_members(self, org: str, repo: str, usernames: list[str]) -> None:
+        """Take off a team's part everyone who is not a member now: only the
+        platform makes these repositories and only members are put on them,
+        so anyone else is a former member whose removal a change that failed
+        halfway left undone.
+        """
+        if not await self._repos.exists(org, repo):
+            return
+        members = {username.lower() for username in usernames}
+        for person in await self._repos.collaborators(org, repo):
+            if str(person["login"]).lower() not in members:
+                await self._repos.remove_collaborator(org, repo, str(person["login"]))
+
+    async def _usernames(self, member_ids: Sequence[int]) -> list[str]:
+        """The members' usernames, passing over anyone whose account is gone,
+        who can reach nothing any more."""
+        found = []
+        for member in member_ids:
+            try:
+                found.append(await self._users.username_of(member))
+            except NotFound:
+                continue
+        return found
+
     async def _finished(self, org: str, repo: str, usernames: list[str], permission: str) -> bool:
         for username in usernames:
             if await self._repos.permission_of(org, repo, username) != permission:
@@ -143,9 +171,22 @@ class ForgejoWorkspaces:
         if others:
             raise Conflict(f"{org}/{repo} already has other collaborators: {', '.join(others)}")
 
+    async def share_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
+        ref = parse_workspace(workspace)
+        usernames = await self._usernames(member_ids)
+        members = {username.lower() for username in usernames}
+        for repo in await self._workspace_repos(ref):
+            for person in await self._repos.collaborators(ref.org, repo):
+                if str(person["login"]).lower() not in members:
+                    await self._repos.remove_collaborator(ref.org, repo, str(person["login"]))
+            if repo == ref.desk_repo:
+                await self._open(ref, repo, member_ids, permission=READ)
+            else:
+                await self._open(ref, repo, member_ids, reserve=True)
+
     async def close_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
         ref = parse_workspace(workspace)
-        usernames = [await self._users.username_of(member) for member in member_ids]
+        usernames = await self._usernames(member_ids)
         for repo in await self._workspace_repos(ref):
             for username in usernames:
                 await self._repos.remove_collaborator(ref.org, repo, username)

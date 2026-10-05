@@ -1,4 +1,4 @@
-"""The seven tables the platform owns: what a forge cannot hold. `metadata` is
+"""The nine tables the platform owns: what a forge cannot hold. `metadata` is
 the metadata with every one of them on it, which is what the migrations and
 the tests compare against; reading it from here is what puts them there.
 """
@@ -10,6 +10,7 @@ from forge.db.tables.invites import Invite
 from forge.db.tables.names import Name
 from forge.db.tables.org_accounts import OrgAccount
 from forge.db.tables.sessions import Session
+from forge.db.tables.teams import Team, TeamMember
 from forge.db.tables.uploads import Upload
 
 __all__ = [
@@ -19,6 +20,8 @@ __all__ = [
     "Name",
     "OrgAccount",
     "Session",
+    "Team",
+    "TeamMember",
     "Upload",
     "metadata",
 ]

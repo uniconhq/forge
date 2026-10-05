@@ -507,6 +507,9 @@ async def test_a_workspace_repo_someone_else_is_in_is_refused(fake: FakeForge) -
     await fake.orgs.create_org(OrgId("acme"), description="Acme")
     contest = await fake.content.create_contest(OrgId("acme"), "spring", {"contest.yaml": b"x"})
     await fake.workspaces.open_workspace(contest, UserOwner(8), [8])
+    # Not finished for 8 any more, as a try that stopped halfway leaves it,
+    # and someone else is in it: that is somebody else's repository.
+    fake.state.repos[("acme", "spring.u8.desk")].readers.discard(8)
     fake.state.repos[("acme", "spring.u8.desk")].writers.add(7)
 
     with pytest.raises(Conflict, match="other collaborators"):

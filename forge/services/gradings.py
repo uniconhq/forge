@@ -89,7 +89,7 @@ from forge.domain.ids import (
     new_id,
 )
 from forge.domain.live import Nudge, NudgeKind
-from forge.domain.names import UserOwner
+from forge.domain.names import TeamOwner, UserOwner
 from forge.domain.publications import Publication
 from forge.domain.roles import Role, holds, task_scope
 from forge.domain.submissions import Submitted
@@ -452,6 +452,7 @@ def changed(ctx: Context, row: Grading) -> None:
             NudgeKind.GRADING,
             str(row.id),
             user=owner.user_id if isinstance(owner, UserOwner) else None,
+            team=str(owner.team_id) if isinstance(owner, TeamOwner) else None,
             scope=task_scope(TaskId(row.task_id)),
         )
     )

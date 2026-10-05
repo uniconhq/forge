@@ -15,7 +15,7 @@ in a fixed word that says what it is:
     unicon/<name>.primitive
 
 The owner of a workspace is `u<user-id>` for a contestant, or
-`team.<team-id>` for a team once teams come with feature 14, and is read
+`team.<team-id>` for a team, and is read
 back as everything between the second dot and the final word. Never a
 username: a person can change theirs and someone else can then take it, and
 the workspace would follow the name.
@@ -157,7 +157,7 @@ def parse_workspace(value: WorkspaceId) -> WorkspaceRef:
 
 def owner_from_segment(segment: str) -> WorkspaceOwner:
     """The owner a workspace segment names: a team by its id after the team
-    prefix, the shape feature 14's team workspaces use, and a contestant by
+    prefix, and a contestant by
     their user id after the user prefix. Anything else names no workspace.
     """
     if segment.startswith(TEAM_PREFIX):

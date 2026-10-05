@@ -74,8 +74,8 @@ class UserOwner:
 
 @dataclass(frozen=True, slots=True)
 class TeamOwner:
-    """A workspace owned by a team, named by the team's id. No team exists
-    yet: this is the owner feature 14's team workspaces use.
+    """A workspace owned by a team, named by the team's id, which its members
+    reach while they are in it (`services/teams.py`).
     """
 
     team_id: uuid.UUID
