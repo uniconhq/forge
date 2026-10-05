@@ -191,6 +191,21 @@ class FakeWorkspaces:
             raise Rejected(f"{path} is larger than {max_size} bytes")
         return content
 
+    async def read_submission_blob(
+        self, as_: Identity, submission: SubmissionId, path: str, *, max_size: int
+    ) -> bytes:
+        self._state.record("read_submission_blob", as_, submission=submission, path=path)
+        self._state.check_up()
+        ref, task_name, number = parse_submission(submission)
+        repo = self._state.repo(ref.org, ref.submission_repo(task_name))
+        self._state.require_read(as_, repo)
+        files = self._state.version_files(repo, f"{SUBMISSION_PREFIX}{number}")
+        if path not in files:
+            raise NotFound(f"{submission} has no file {path}")
+        if len(files[path]) > max_size:
+            raise Rejected(f"{path} is larger than {max_size} bytes")
+        return files[path]
+
     async def download(self, as_: Identity, submission: SubmissionId, path: str) -> Door:
         self._state.record("download", as_, submission=submission, path=path)
         ref, task_name, number = parse_submission(submission)
