@@ -29,7 +29,7 @@ from forge.domain.invites import Grant, InviteStatus, MailStatus
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.sessions import Session
 from forge.runtime.setup import Setup
-from forge.services import contestants, invites, release
+from forge.services import contestants, invites, names, release
 from forge.services.access import Organiser
 from forge.testing import APP_URL, FakeClock
 from tests.services.conftest import RUNNING, Acme, organiser, signed_in, write_contest
@@ -432,7 +432,7 @@ async def test_a_mail_that_cannot_be_written_is_failed_and_never_left_waiting(
         raise NotFound("the contest went")
 
     await setup.settle()
-    monkeypatch.setattr(invites.names, "scope_names", gone)
+    monkeypatch.setattr(names, "scope_names", gone)
     broken = await invites.create(setup, manager, CONTEST, Grant.OBSERVER, username="carol")
     await setup.settle()
 
