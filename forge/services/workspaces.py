@@ -1,10 +1,11 @@
 """Taking a removed contestant's access to their workspace away. A workspace
 is where a contestant works for one contest: a desk their questions live in,
-and one place per task to submit to. Nothing of it is made in advance: the
-place to submit a task is made at the contestant's first submit to it
-(`submissions`), and its name comes from the contest and the contestant's
-user id, so nothing about it is stored. Closing it takes their access away
-from whichever parts were made and keeps what is in them.
+and one place per task to submit to. The place to submit a task is made once
+they are approved or at the task's first publication (`places`), or else at
+their first upload or submit to it (`submissions`), and its name comes from
+the contest and the contestant's user id, so nothing about it is stored.
+Closing it takes their access away from whichever parts were made and keeps
+what is in them.
 """
 
 from forge.db.tables import Contestant
