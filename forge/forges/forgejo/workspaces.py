@@ -2,7 +2,9 @@
 submission repository per task, each attached to the contest's role teams so
 its organisers can read it, with the members as write collaborators. Each is
 made on its own, and every part of making one checks before it acts, so a
-try that stopped halfway is finished by the next. A submission and a
+try that stopped halfway is finished by the next. The members are given
+their access last, so a repository whose members all hold it is finished,
+and making it again costs one call a member. A submission and a
 publication are tags under a reserved prefix that only the platform account
 may create, each pointing at the exact commit the files went in with. A
 publication is an annotated tag whose message is its note.
@@ -97,14 +99,17 @@ class ForgejoWorkspaces:
         contest's roles, with `reserve` keep its submissions for the platform,
         and only then give the members access, write unless `permission` says
         read, so nobody can write a place whose submissions anyone may name.
-        Each leaves what is already right alone.
+        Each leaves what is already right alone, and when every member holds
+        that access already nothing else is asked.
 
-        A repository that is there and has a collaborator who is not one of
-        the members is somebody else's, and is refused with `Conflict` rather
-        than shared: the name is the owner's id, so this only happens if
-        something other than this code made or changed it.
+        A repository that is there, not yet finished, and has a collaborator
+        who is not one of the members is somebody else's, and is refused with
+        `Conflict` rather than shared: the name is the owner's id, so this
+        only happens if something other than this code made or changed it.
         """
         usernames = [await self._users.username_of(member) for member in member_ids]
+        if usernames and await self._finished(ref.org, repo, usernames, permission):
+            return
         if await self._repos.exists(ref.org, repo):
             await self._refuse_if_someone_elses(ref.org, repo, usernames)
         else:
@@ -120,6 +125,12 @@ class ForgejoWorkspaces:
             await self._repos.reserve_versions(ref.org, repo, SUBMISSION_PREFIX)
         for username in usernames:
             await self._repos.add_collaborator(ref.org, repo, username, permission=permission)
+
+    async def _finished(self, org: str, repo: str, usernames: list[str], permission: str) -> bool:
+        for username in usernames:
+            if await self._repos.permission_of(org, repo, username) != permission:
+                return False
+        return True
 
     async def _refuse_if_someone_elses(self, org: str, repo: str, usernames: list[str]) -> None:
         members = {username.lower() for username in usernames}

@@ -406,6 +406,22 @@ class Repos:
             PLATFORM, "DELETE", f"/api/v1/repos/{owner}/{name}/collaborators/{username}"
         )
 
+    async def permission_of(self, owner: str, name: str, username: str) -> str | None:
+        """What `username` may do at the repository, `none` when nothing, or
+        none at all when the repository is not there.
+        """
+        try:
+            record = json_of(
+                await self._http.call(
+                    PLATFORM,
+                    "GET",
+                    f"/api/v1/repos/{owner}/{name}/collaborators/{username}/permission",
+                )
+            )
+        except NotFound:
+            return None
+        return str(record.get("permission"))
+
     async def collaborators(self, owner: str, name: str) -> list[dict[str, Any]]:
         return list_of(
             await self._http.call(PLATFORM, "GET", f"/api/v1/repos/{owner}/{name}/collaborators")

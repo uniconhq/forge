@@ -52,6 +52,7 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
 ) -> None:
     recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
     for repo in ("spring.u8.desk", "spring.sum.u8.sub"):
+        recorder.on("GET", f"/api/v1/repos/acme/{repo}/collaborators/bob/permission", ok({}, 404))
         recorder.on("GET", f"/api/v1/repos/acme/{repo}", ok({}, 404))
         recorder.on("GET", f"/api/v1/repos/acme/{repo}/branches/main", ok({}, 404))
         recorder.on("GET", f"/api/v1/repos/acme/{repo}/branch_protections/main", ok({}, 404))
@@ -102,6 +103,11 @@ async def test_a_workspace_opened_again_keeps_what_is_there(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.u8.desk/collaborators/bob/permission",
+        ok({"permission": "none"}),
+    )
     recorder.on("GET", "/api/v1/repos/acme/spring.u8.desk", ok({"id": 3}))
     recorder.on(
         "GET",
@@ -137,6 +143,11 @@ async def test_a_workspace_repo_someone_else_is_in_is_refused_and_not_shared(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.u8.desk/collaborators/bob/permission",
+        ok({"permission": "none"}),
+    )
     recorder.on("GET", "/api/v1/repos/acme/spring.u8.desk", ok({"id": 3}))
     recorder.on(
         "GET",
@@ -148,6 +159,62 @@ async def test_a_workspace_repo_someone_else_is_in_is_refused_and_not_shared(
         await forgejo.workspaces.open_workspace(ContestId("acme/spring"), UserOwner(8), [8])
 
     assert not [call for call in recorder.calls() if call.startswith("PUT ")]
+
+
+async def test_a_place_its_members_can_write_already_is_finished_and_left_alone(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.sum.u8.sub/collaborators/bob/permission",
+        ok({"permission": "write"}),
+    )
+    workspace = forgejo.workspaces.workspace_of(ContestId("acme/spring"), UserOwner(8))
+
+    await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
+
+    assert recorder.calls() == [
+        "GET /api/v1/users/search",
+        "GET /api/v1/repos/acme/spring.sum.u8.sub/collaborators/bob/permission",
+    ]
+
+
+async def test_a_place_a_member_only_reads_is_made_up_to_writing(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.sum.u8.sub/collaborators/bob/permission",
+        ok({"permission": "read"}),
+    )
+    recorder.on("GET", "/api/v1/repos/acme/spring.sum.u8.sub", ok({"id": 3}))
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.sum.u8.sub/collaborators",
+        ok([{**USER, "id": 8, "login": "bob"}]),
+    )
+    recorder.on(
+        "GET",
+        "/api/v1/orgs/acme/teams/search",
+        ok(
+            {
+                "data": [
+                    {"id": 1, "name": "acme.spring-admin"},
+                    {"id": 2, "name": "acme.spring-manager"},
+                    {"id": 3, "name": "acme.spring-observer"},
+                ]
+            }
+        ),
+    )
+    workspace = forgejo.workspaces.workspace_of(ContestId("acme/spring"), UserOwner(8))
+
+    await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
+
+    assert recorder.sent("PUT", "/api/v1/repos/acme/spring.sum.u8.sub/collaborators/bob") == [
+        {"permission": "write"}
+    ]
 
 
 async def test_a_file_is_read_with_a_token_and_written_back_with_it(
