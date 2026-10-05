@@ -64,6 +64,7 @@ class Context:
     memo: Memo = field(repr=False, kw_only=True)
     make_key: KeyMaker = field(default=random_key, repr=False, kw_only=True)
     committed: list[AfterCommit] = field(default_factory=list, repr=False, kw_only=True)
+    background: list[AfterCommit] = field(default_factory=list, repr=False, kw_only=True)
     rolled_back: list[AfterRollback] = field(default_factory=list, repr=False, kw_only=True)
     ended: list[AfterCommit] = field(default_factory=list, repr=False, kw_only=True)
     nudges: list[Nudge] = field(default_factory=list, repr=False, kw_only=True)
@@ -94,6 +95,19 @@ class Context:
         partway to let go of its connection before a slow call.
         """
         self.committed.append(work)
+
+    def in_background(self, work: AfterCommit) -> None:
+        """Start `work` once this unit of work has committed, on a unit of
+        work of its own, and answer without waiting for it: for work the
+        person who asked does not wait on, and that something else finishes
+        when it never runs, such as making contestants' places to submit
+        before their first upload, which that upload makes itself when it
+        finds one missing. Nothing starts when the unit of work rolls back.
+        Work that fails is logged, and a process that stops cuts short what
+        is running. The work owns its unit of work, and may commit it
+        partway to let go of its connection before a slow call.
+        """
+        self.background.append(work)
 
     def after_rollback(self, work: AfterRollback) -> None:
         """Run `work` if this unit of work rolls back, whether something in

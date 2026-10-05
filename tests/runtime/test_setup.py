@@ -3,7 +3,9 @@ and closes a transaction of its own, saves nothing when it raises or its
 commit fails, runs inside a caller's unit of work when handed one, and uses
 the setup the process holds when handed neither. Work a unit of work leaves
 for after its commit runs then, on a unit of work of its own, and never when
-it rolls back; work it leaves for a rollback runs, the latest first, when it
+it rolls back. Work it leaves for the background starts then too, and
+nobody waits for it: it fails into the log, and `stop` cuts it short. Work
+it leaves for a rollback runs, the latest first, when it
 raises or its commit fails, never when it commits, and one that fails is
 logged without hiding the error. Work left for its end runs either way, once
 its connection is back in the pool, and an action that has only read can
@@ -13,6 +15,7 @@ database that does not answer is `NotReady`, with the cause in the log and
 not in the error.
 """
 
+import asyncio
 import uuid
 from datetime import timedelta
 
@@ -202,6 +205,85 @@ async def test_work_left_for_after_the_commit_runs_on_a_unit_of_work_of_its_own(
         assert seen == []
 
     assert seen == [2]
+
+
+async def test_work_left_for_the_background_starts_after_the_commit_and_nobody_waits_for_it(
+    setup: Setup, fake: FakeForge
+) -> None:
+    started = asyncio.Event()
+    go_on = asyncio.Event()
+    seen: list[int] = []
+
+    async def count_sessions(later: Context) -> None:
+        started.set()
+        await go_on.wait()
+        found = await sessions.list_for(later, await _signed_in(later, fake))
+        seen.append(len(found))
+
+    async with setup.unit_of_work() as ctx:
+        await _signed_in(ctx, fake)
+        ctx.in_background(count_sessions)
+        assert not started.is_set()
+
+    await asyncio.wait_for(started.wait(), timeout=5)
+    assert seen == []
+    go_on.set()
+    await setup.settle()
+    assert seen == [2]
+
+
+async def test_work_left_for_the_background_does_not_start_when_the_unit_of_work_rolls_back(
+    setup: Setup,
+) -> None:
+    ran: list[bool] = []
+
+    async def note(later: Context) -> None:
+        ran.append(True)
+
+    with pytest.raises(RuntimeError, match="halfway"):
+        async with setup.unit_of_work() as ctx:
+            ctx.in_background(note)
+            raise RuntimeError("halfway")
+    await setup.settle()
+
+    assert ran == []
+
+
+async def test_work_in_the_background_that_fails_is_logged(
+    setup: Setup, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def fail(later: Context) -> None:
+        raise RuntimeError("in the background")
+
+    async with setup.unit_of_work() as ctx:
+        ctx.in_background(fail)
+    await setup.settle()
+
+    assert logged(caplog, "setup.background_failed")
+
+
+async def test_stop_cuts_short_the_work_running_in_the_background(
+    settings: Settings, fake: FakeForge, clock: FakeClock
+) -> None:
+    started = asyncio.Event()
+    cut: list[bool] = []
+
+    async def forever(later: Context) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cut.append(True)
+            raise
+
+    built = Setup.build(settings, callback_path=CALLBACK_PATH, forge=fake, clock=clock)
+    async with built.unit_of_work() as ctx:
+        ctx.in_background(forever)
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    await built.stop()
+
+    assert cut == [True]
 
 
 async def test_work_left_for_after_the_commit_does_not_run_when_the_unit_of_work_rolls_back(
