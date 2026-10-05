@@ -11,6 +11,7 @@ and the workflows people make in `test_workflows.py`.
 
 import contextlib
 import secrets
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -20,7 +21,7 @@ import pytest
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import OrgId, ThreadId
-from forge.domain.names import UserOwner
+from forge.domain.names import TeamOwner, UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.uploads import POINTER_MAX, pointer_text
@@ -545,3 +546,37 @@ async def test_the_addresses_the_forge_confirmed_are_read_for_a_person(
         delete_user(admin, person["login"])
 
     assert confirmed == (person["email"],)
+
+
+async def test_a_teams_place_sheds_a_former_member_and_sharing_makes_the_members_exact(
+    forge: ForgejoForge, org: str, admin: httpx.Client, stamp: str
+) -> None:
+    first = make_user(admin, f"teamone-{stamp}")
+    second = make_user(admin, f"teamtwo-{stamp}")
+    both = [int(first["id"]), int(second["id"])]
+    try:
+        contest = await forge.content.create_contest(OrgId(org), "teams", {"contest.yaml": b"x\n"})
+        task = await forge.content.create_task(contest, "sum", {"task.yaml": b"y\n"})
+        workspace = forge.workspaces.workspace_of(contest, TeamOwner(uuid.uuid4()))
+        await forge.workspaces.open_submission_place(workspace, task, both)
+        place = next(
+            entry["name"]
+            for entry in admin.get(f"/api/v1/orgs/{org}/repos", params={"limit": 50}).json()
+            if entry["name"].startswith("teams.sum.team.")
+        )
+
+        def logins() -> set[str]:
+            found = admin.get(f"/api/v1/repos/{org}/{place}/collaborators").json()
+            return {str(person["login"]) for person in found}
+
+        assert logins() == {first["login"], second["login"]}
+        # The second left, and a change that failed halfway left them on it.
+        await forge.workspaces.open_submission_place(workspace, task, both[:1])
+        assert logins() == {first["login"]}
+        await forge.workspaces.share_workspace(workspace, both)
+        assert logins() == {first["login"], second["login"]}
+        await forge.workspaces.share_workspace(workspace, both[1:])
+        assert logins() == {second["login"]}
+    finally:
+        delete_user(admin, first["login"])
+        delete_user(admin, second["login"])

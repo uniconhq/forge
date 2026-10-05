@@ -4,8 +4,8 @@ since the backup, and the forge is where submissions are kept, so
 `unicon-forge reconcile` reads them there, once, when the operator runs it.
 
 For each contest of every org the platform made, each task with a
-publication, and each person who registered for the contest, it lists that
-person's submissions of the task and inserts, for any that has no grading at
+publication, and each person who registered for the contest and each team
+of it, it lists their submissions of the task and inserts, for any that has no grading at
 all, one queued grading per stage the task grades on submit, against the
 task's current publication, attempt 1, with the idempotency key its
 protected version's note carries; their runs start once it commits. A submit
@@ -24,7 +24,7 @@ from forge.domain.ids import ContestId, WorkspaceId
 from forge.domain.names import UserOwner
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import gradings, published
+from forge.services import gradings, published, teams
 from forge.services.published import PublishedTask
 
 log = get_logger(__name__)
@@ -66,14 +66,17 @@ async def reconcile(ctx: Context) -> Reconciled:
 async def _workspaces(ctx: Context, contest: ContestId) -> list[WorkspaceId]:
     """The workspace of everyone who registered for the contest, whatever
     became of their registration, since a removed contestant's submissions
-    are kept.
+    are kept, and of every team of it.
     """
     users = await ctx.db.execute(
         select(Contestant.user_id)
         .where(Contestant.contest_id == contest)
         .order_by(Contestant.user_id)
     )
-    return [ctx.forge.workspaces.workspace_of(contest, UserOwner(user)) for user in users.scalars()]
+    people = [
+        ctx.forge.workspaces.workspace_of(contest, UserOwner(user)) for user in users.scalars()
+    ]
+    return [*people, *await teams.workspaces_of(ctx, contest)]
 
 
 async def _task(

@@ -16,6 +16,16 @@ once per person. The first upload to a task makes its place whenever it finds
 it missing, so work that a restart cuts short, or that stops at a forge that
 does not answer, costs that upload the time it takes and nothing more.
 
+In a contest whose settings turn teams on, places ahead are a team's: a
+team's first member starts making its place at every task the contest has
+published, and a task's first publication makes it for every team with
+members. Approving someone there makes nothing ahead, since a person who
+joins a team never uses a place of their own, and someone who enters alone
+makes theirs at their first upload. A team's place is made with every
+member on it, and once made it is held against the team's members as they
+stand then, so someone who joined meanwhile is added and someone who left
+loses the access just given (`teams.settle`).
+
 Only a published contest that has not ended gets places ahead, and only at
 tasks that are not hidden: a task that is not released yet is made ahead,
 since a task released at the start is the case this is for, while a hidden
@@ -29,23 +39,24 @@ timeout too. A process that stops lets the place being made finish and
 makes no more (`ctx.stopping`).
 """
 
-import asyncio
-import weakref
+import uuid
 from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import timedelta
 
 from sqlalchemy import select
 
 from forge.db.tables import Contestant
+from forge.db.tables import Team as TeamRow
 from forge.domain.definitions import ContestDefinition, State
-from forge.domain.errors import NotFound, PortError, Unavailable
+from forge.domain.errors import NotFound, PortError, TeamChanged, Unavailable
 from forge.domain.ids import ContestId, TaskId
-from forge.domain.names import UserOwner
+from forge.domain.names import TeamOwner
 from forge.domain.registration import Status
 from forge.domain.roles import contest_id_of, task_scope
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import published, workspaces
+from forge.services import published, teams, workspaces
+from forge.services.turns import Turns
 
 log = get_logger(__name__)
 
@@ -53,26 +64,6 @@ AHEAD_AT_ONCE = 2
 """How many pieces of work making places ahead run at once in a process."""
 TASKS_KEPT = timedelta(minutes=1)
 """How long the tasks a contest makes places at are kept once read."""
-
-
-class Turns:
-    """At most `at_once` holders at a time in a process, the rest waiting
-    their turn in order, with one set of turns per event loop, since a
-    semaphore belongs to the loop it is first used on.
-    """
-
-    def __init__(self, at_once: int) -> None:
-        self.at_once = at_once
-        self._by_loop: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
-            weakref.WeakKeyDictionary()
-        )
-
-    def __call__(self) -> asyncio.Semaphore:
-        loop = asyncio.get_running_loop()
-        turns = self._by_loop.get(loop)
-        if turns is None:
-            turns = self._by_loop[loop] = asyncio.Semaphore(self.at_once)
-        return turns
 
 
 _ahead = Turns(AHEAD_AT_ONCE)
@@ -84,20 +75,51 @@ async def make(
     task: TaskId,
     turn: AbstractAsyncContextManager[object] | None = None,
 ) -> bool:
-    """Make the contestant's place to submit `task`, the forge's part inside
-    `turn`, then hold their row and read it again. False, with the access
-    just given taken back, when they are no longer approved by then.
-    `PortError` when the forge fails, with the row not held.
+    """Make the contestant's place to submit `task`, their team's when they
+    are in one, the forge's part inside `turn`, then hold their row and read
+    it again. False, with the access just given taken back, when they are no
+    longer approved by then. `TeamChanged` when they left their team while
+    it was made. `PortError` when the forge fails, with the row not held.
     """
-    workspace = ctx.forge.workspaces.workspace_of(ContestId(row.contest_id), UserOwner(row.user_id))
+    contest = ContestId(row.contest_id)
+    standing = await teams.standing(ctx, contest, row.user_id)
+    workspace = ctx.forge.workspaces.workspace_of(contest, standing.owner)
     await ctx.let_go()
     async with turn if turn is not None else nullcontext():
-        await ctx.forge.workspaces.open_submission_place(workspace, task, [row.user_id])
+        await ctx.forge.workspaces.open_submission_place(workspace, task, list(standing.members))
     await ctx.db.refresh(row, with_for_update=True)
+    members = standing.members
+    if isinstance(standing.owner, TeamOwner):
+        members = await teams.settle(ctx, standing.owner.team_id, workspace, standing.members)
     if row.status != Status.APPROVED:
         await workspaces.close(ctx, row)
         log.info("places.taken_back", task=task, user_id=row.user_id)
         return False
+    if row.user_id not in members:
+        raise TeamChanged("Your team changed while your place to submit was made; try again.")
+    return True
+
+
+async def make_for_team(
+    ctx: Context,
+    contest: ContestId,
+    team: uuid.UUID,
+    task: TaskId,
+    turn: AbstractAsyncContextManager[object] | None = None,
+) -> bool:
+    """Make a team's place to submit `task` with every member on it, the
+    forge's part inside `turn`, and hold it against the members as they are
+    then. False for a team with nobody in it.
+    """
+    members = tuple(await teams.member_ids(ctx, team))
+    if not members:
+        return False
+    owner = TeamOwner(team)
+    workspace = ctx.forge.workspaces.workspace_of(contest, owner)
+    await ctx.let_go()
+    async with turn if turn is not None else nullcontext():
+        await ctx.forge.workspaces.open_submission_place(workspace, task, members)
+    await teams.settle(ctx, team, workspace, members)
     return True
 
 
@@ -111,8 +133,26 @@ def ahead_for(ctx: Context, row: Contestant) -> None:
 
     async def work(later: Context) -> None:
         async with _ahead():
+            settings = await _settings_if_open(later, contest)
+            if settings is None or teams.is_on(settings):
+                return
             tasks = await _tasks(later, contest)
             await _make_each(later, contest, [(task, user_id) for task in tasks])
+
+    ctx.in_background(work)
+
+
+def ahead_for_team(ctx: Context, contest: ContestId, team: uuid.UUID) -> None:
+    """Once this unit of work commits, start making the team's places at
+    every task its contest has published.
+    """
+    if not ctx.settings.places_ahead:
+        return
+
+    async def work(later: Context) -> None:
+        async with _ahead():
+            tasks = await _tasks(later, contest)
+            await _make_each_team(later, contest, [(task, team) for task in tasks])
 
     ctx.in_background(work)
 
@@ -133,6 +173,14 @@ def ahead_at(ctx: Context, task: TaskId) -> None:
                 return
             found = await published.task(later, task, settings)
             if found is None or found.definition.hidden:
+                return
+            if teams.is_on(settings):
+                every = await later.db.scalars(
+                    select(TeamRow.id)
+                    .where(TeamRow.contest_id == contest)
+                    .order_by(TeamRow.created_at)
+                )
+                await _make_each_team(later, contest, [(task, team) for team in every.all()])
                 return
             approved = (
                 select(Contestant.user_id)
@@ -177,6 +225,43 @@ async def _settings_if_open(ctx: Context, contest: ContestId) -> ContestDefiniti
     if settings.state is not State.PUBLISHED or ctx.now >= settings.end:
         return None
     return settings
+
+
+async def _make_each_team(
+    ctx: Context, contest: ContestId, wanted: list[tuple[TaskId, uuid.UUID]]
+) -> None:
+    """Make each team's place in turn, as `_make_each` makes a person's."""
+    made = 0
+    for done, (task, team) in enumerate(wanted):
+        if ctx.stopping():
+            log.info("places.ahead_cut_short", contest=contest, made=made, left=len(wanted) - done)
+            return
+        try:
+            if await make_for_team(ctx, contest, team, task):
+                made += 1
+        except Unavailable as exc:
+            await ctx.db.rollback()
+            log.warning(
+                "places.ahead_stopped",
+                contest=contest,
+                made=made,
+                left=len(wanted) - done,
+                error=type(exc).__name__,
+                detail=exc.detail,
+            )
+            return
+        except PortError as exc:
+            await ctx.db.rollback()
+            log.warning(
+                "places.ahead_passed_over",
+                task=task,
+                team=str(team),
+                error=type(exc).__name__,
+                detail=exc.detail,
+            )
+        await ctx.db.commit()
+    if wanted:
+        log.info("places.ahead_made", contest=contest, made=made, of=len(wanted))
 
 
 async def _make_each(ctx: Context, contest: ContestId, wanted: list[tuple[TaskId, int]]) -> None:

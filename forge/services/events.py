@@ -25,7 +25,7 @@ from forge.domain import release as rules
 from forge.domain.errors import Forbidden, NotFound, PortError
 from forge.domain.ids import OrgId
 from forge.domain.live import Nudge, NudgeKind
-from forge.domain.names import UserOwner
+from forge.domain.names import TeamOwner, UserOwner
 from forge.domain.roles import contest_scope, task_scope
 from forge.domain.threads import ThreadChange, ThreadKind
 from forge.log import get_logger
@@ -79,11 +79,12 @@ async def publish(ctx: Context, org: OrgId, kind: str, body: bytes) -> None:
 
 async def _nudge(ctx: Context, change: ThreadChange) -> Nudge | None:
     if change.kind is ThreadKind.CLARIFICATION:
-        asker = change.asker.user_id if isinstance(change.asker, UserOwner) else None
+        asker = change.asker
         return Nudge(
             NudgeKind.CLARIFICATION,
             change.thread,
-            user=asker,
+            user=asker.user_id if isinstance(asker, UserOwner) else None,
+            team=str(asker.team_id) if isinstance(asker, TeamOwner) else None,
             scope=contest_scope(change.contest),
         )
     if change.task is None:

@@ -79,7 +79,7 @@ from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import names, roles
 from forge.services.access import Organiser, require
-from forge.services.places import Turns
+from forge.services.turns import Turns
 
 log = get_logger(__name__)
 

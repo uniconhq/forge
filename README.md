@@ -115,6 +115,9 @@ forge/api/
   roles.py      holders, grant, revoke, and the Holder holders returns
   invites.py    create, at, send_again, withdraw, mine, by_token, accept,
                 decline, and the Invite they return
+  teams.py      create, request, cancel, leave, invite, approve, remove, the
+                organise_ actions, mine, listed, every, and the Team, Member,
+                Listed and Mine they return
   cookies.py    what goes into the two cookies and what comes out, and the policy
   log.py        setup, get_logger, and the Logger it returns
   errors.py     every error the package raises to its callers
@@ -978,6 +981,48 @@ opened again a second later, and a stream that subscribed while the
 connection was still being opened. A session holds at most eight streams
 in a process; one more ends the oldest.
 
+## Teams
+
+`teams` lets contestants of a contest whose `contest.yaml` turns `teams` on
+enter together and count as one contestant. Everyone in a team registers
+and is approved first, so the contest's rules hold for every person. An
+approved contestant `create`s a team, leading it, or `request`s to join one,
+which accepts the leader's invitation when there is one; the leader
+`invite`s an approved contestant, `approve`s a request and `remove`s a
+member, or turns a request down; a member `leave`s, and the lead passes to
+the member who joined earliest. Organisers of the contest make
+(`organise_create`), delete (`organise_delete`, refused as
+`team_has_submissions` for a team that has submitted), move people between
+(`organise_move`), take people out of (`organise_remove`) and change the
+leader of (`organise_lead`) teams, and an observer lists them all (`every`).
+`mine` gives a person their team and the teams they asked or are asked
+into, and `listed` the teams to choose from. Refusals: `teams_off`,
+`invalid_team_name`, `team_name_taken` (names are unique in a contest,
+ignoring case), `team_full` (with `limit`, the contest's `max_size`),
+`in_team`, `submitted_alone` (someone who submitted on their own joins no
+team, since those results are theirs), `not_approved` and `forbidden`. A
+contestant's changes stop at the contest's end; organisers can still mend
+teams, and a member can leave and organisers remove after teams are turned
+off. A team left with nobody that never submitted is deleted, its members'
+rows kept `left`.
+
+Once in a team, the team is the person's contestant: their workspace is the
+team's (`TeamOwner`, named `team.<id>`), so its gradings, the task's limits,
+which are counted per workspace, and its questions are the team's, and
+every member sees them. Who reaches the team's workspace changes in the
+request that changes the membership, at the forge first: a joiner is given
+access to every part already made (`share_workspace`, which also takes off
+anyone else), and someone who leaves, is removed, moved or taken out of the
+contest loses it; a call that fails fails the request, and asking again
+finishes it. A part made later is made with the members then, and checked
+against them afterwards (`teams.settle`), since it is made holding no lock;
+a team's repository also sheds any former member whenever it is opened. A
+submit holds the person's registration so no change of team passes it, and
+is asked again (`team_changed`) when their team changed under it. In a
+contest with teams, places are made ahead for teams, not people. Live
+updates reach every member of a team. Locks: contestant rows first, then
+team rows by id.
+
 ## Uploads
 
 A person's files go from the browser into the forge's own large-file store
@@ -1292,7 +1337,8 @@ The rest, `invalid_name`, `unauthenticated`, `session_expired`,
 `domain_not_allowed` and `contest_full`, which share the base class
 `RegistrationRefused`, `invalid_reason` and `invalid_extension`, the
 invites' `invalid_invite`, `already_invited` (with `invite`, the one held
-already) and `invite_expired`, and
+already), `invite_limit` (with `retry_at`) and `invite_expired`, the
+teams' refusals (above) and `team_changed`, and
 `archived` (the contest is archived), `not_approved` and
 `invalid_idempotency_key`, and grading's
 `ci_request_refused` (the CI's request does not verify or names no grading
@@ -1304,10 +1350,10 @@ detail. The refusals of an upload or a submit share the base class
 
 ## The tables
 
-Seven tables, keyed by UUID v7 but for `names`, keyed by the id it names,
+Nine tables, keyed by UUID v7 but for `names`, keyed by the id it names,
 with every enumeration as `text` under a `CHECK`: `sessions`,
-`contestants`, `gradings`, `uploads`, `org_accounts`, `names` and
-`invites`. They
+`contestants`, `gradings`, `uploads`, `org_accounts`, `names`,
+`invites`, `teams` and `team_members`. They
 hold what a forge cannot: of users, orgs, contests and tasks only the names
 people gave the last three (above), the rest read live. `org_accounts` is
 one row per org, by the org's id, its service account's

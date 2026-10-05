@@ -149,7 +149,9 @@ async def slot(
         raise TooLarge(
             f"The file is larger than the {limit} bytes allowed.", limit=limit, input=whose
         )
-    if not await _asked_before(ctx, entrant.session.user_id, task, UploadPurpose.SUBMISSION):
+    if not await _asked_before(
+        ctx, entrant.session.user_id, task, UploadPurpose.SUBMISSION, since=entrant.since
+    ):
         # An object belongs to a repository at the forge, so the place has to
         # be there before any bytes are sent. A row for this task, taken or
         # not, means an earlier slot made it, so a submission of twenty files
@@ -266,7 +268,7 @@ async def complete(ctx: Context, session: Session, task: TaskId, upload: uuid.UU
     if row.status != UploadStatus.WAITING:
         return view(row)
     as_ = AsUser(fresh.user_id, await sessions.credential_for(ctx, session.id))
-    if not await holds(ctx, _place_of(ctx, row, fresh.user_id), as_, row):
+    if not await holds(ctx, await _place_of(ctx, row, fresh.user_id), as_, row):
         raise UploadNotReady("The file has not arrived yet.", uploads=[str(upload)])
     row.status = UploadStatus.VERIFIED
     await ctx.db.flush()
@@ -322,7 +324,7 @@ async def door(ctx: Context, session: Session, upload: uuid.UUID, *, length: int
         raise Forbidden(DOOR_REFUSED)
     as_ = AsUser(fresh.user_id, await sessions.credential_for(ctx, session.id))
     answer = ctx.forge.uploads.door(
-        _place_of(ctx, row, fresh.user_id), as_=as_, digest=row.digest, size=row.size
+        await _place_of(ctx, row, fresh.user_id), as_=as_, digest=row.digest, size=row.size
     )
     log.info("uploads.door_opened", upload=str(upload), size=row.size, user_id=fresh.user_id)
     return answer
@@ -481,14 +483,15 @@ async def _record(
     )
 
 
-def _place_of(ctx: Context, row: UploadRow, user_id: int) -> UploadPlace:
-    """The repository an upload's bytes belong to: the person's own place to
-    submit the task, or the task itself for an organiser's file.
+async def _place_of(ctx: Context, row: UploadRow, user_id: int) -> UploadPlace:
+    """The repository an upload's bytes belong to: the place to submit the
+    task the person works in, their team's while they are in one, or the
+    task itself for an organiser's file.
     """
     task = TaskId(row.task_id or "")
     if row.purpose == UploadPurpose.TASK_FILE:
         return TaskPlace(task)
-    return SubmissionPlace(submitters.place_of(ctx, task, user_id), task)
+    return SubmissionPlace(await submitters.place_of(ctx, task, user_id), task)
 
 
 async def _clear_lapsed(ctx: Context, user_id: int, purpose: UploadPurpose) -> None:
@@ -518,21 +521,30 @@ async def _clear_lapsed(ctx: Context, user_id: int, purpose: UploadPurpose) -> N
     await ctx.db.flush()
 
 
-async def _asked_before(ctx: Context, user_id: int, task: TaskId, purpose: UploadPurpose) -> bool:
-    """Whether any slot of this kind was ever kept for the person at the task,
-    taken or not, and so whether their place there is made already. Read
-    without a lock: the answer only saves a call to the forge, and a place
-    made twice is made once.
+async def _asked_before(
+    ctx: Context,
+    user_id: int,
+    task: TaskId,
+    purpose: UploadPurpose,
+    *,
+    since: datetime | None = None,
+) -> bool:
+    """Whether any slot of this kind was kept for the person at the task,
+    taken or not, since `since`, when they joined or left a team, and so
+    whether the place they now upload into is made already with them on it.
+    Read without a lock: the answer only saves a call to the forge, and a
+    place made twice is made once.
     """
-    found = await ctx.db.scalar(
-        select(UploadRow.id)
-        .where(
-            UploadRow.owner_user_id == user_id,
-            UploadRow.task_id == task,
-            UploadRow.purpose == purpose,
-        )
-        .limit(1)
+    query = select(UploadRow.id).where(
+        UploadRow.owner_user_id == user_id,
+        UploadRow.task_id == task,
+        UploadRow.purpose == purpose,
     )
+    if since is not None:
+        # Asked for at `expires_at` less the lifetime, by the same clock as
+        # `since`; the row's own `created_at` is the database's.
+        query = query.where(UploadRow.expires_at > since + rules.LIFETIME)
+    found = await ctx.db.scalar(query.limit(1))
     return found is not None
 
 

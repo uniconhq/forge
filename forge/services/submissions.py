@@ -206,6 +206,7 @@ async def submit(
         opened = True
     if workspace is not None:
         await _hold(ctx, workspace, task)
+        await submitters.hold_standing(ctx, entrant)
         again = await _again(ctx, entrant, workspace, idempotency_key)
         if again is not None:
             return again
@@ -463,10 +464,11 @@ async def _recover(
 
 
 async def _consume_used(ctx: Context, entrant: Entrant, found: Submitted) -> None:
-    """Mark consumed, by `found`, the person's uploads its files point at:
-    for each pointer, the oldest checked upload of theirs for the task with
-    its digest. A submission whose `submission.json` does not read marks
-    nothing, and its uploads lapse as any unused one does.
+    """Mark consumed, by `found`, the uploads its files point at: for each
+    pointer, the oldest checked upload for the task with its digest of
+    whoever works in the workspace, the person or their team's members. A
+    submission whose `submission.json` does not read marks nothing, and its
+    uploads lapse as any unused one does.
     """
     user = AsUser(entrant.session.user_id, await sessions.credential_for(ctx, entrant.session.id))
     try:
@@ -493,7 +495,7 @@ async def _consume_used(ctx: Context, entrant: Entrant, found: Submitted) -> Non
         await ctx.db.execute(
             select(UploadRow)
             .where(
-                UploadRow.owner_user_id == entrant.session.user_id,
+                UploadRow.owner_user_id.in_(entrant.members or (entrant.session.user_id,)),
                 UploadRow.task_id == entrant.task,
                 UploadRow.purpose == UploadPurpose.SUBMISSION,
                 UploadRow.status == UploadStatus.VERIFIED,
