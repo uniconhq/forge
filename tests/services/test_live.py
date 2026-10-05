@@ -159,6 +159,22 @@ async def _first(stream: AsyncIterator[Nudge | None]) -> Nudge:
     raise AssertionError("the stream ended")
 
 
+async def _within(stream: AsyncIterator[Nudge | None], beats: int) -> list[Nudge]:
+    """Every nudge the stream gives until it has sent `beats` heartbeats,
+    which it does whenever it is quiet for its heartbeat, so the stream is
+    read for about that many heartbeats and never cut off mid-read.
+    """
+    heard: list[Nudge] = []
+    async with asyncio.timeout(5):
+        while beats:
+            nudge = await anext(stream)
+            if nudge is None:
+                beats -= 1
+            else:
+                heard.append(nudge)
+    return heard
+
+
 async def test_a_stream_hears_what_another_process_publishes_and_a_stranger_does_not(
     setup: Setup,
     settings: Settings,
@@ -176,16 +192,17 @@ async def test_a_stream_hears_what_another_process_publishes_and_a_stranger_does
         assert await anext(mine) is None
         assert await anext(theirs) is None
         await asyncio.wait_for(other.broker.ready.wait(), 5)
+        # The first stream started the broker, so it subscribed before it
+        # listened and is told to resync. The second is told too only if it
+        # subscribed before the broker's connection came up, which is a race.
         assert (await _first(mine)).kind is NudgeKind.RESYNC
-        assert (await _first(theirs)).kind is NudgeKind.RESYNC
+        assert {nudge.kind for nudge in await _within(theirs, 3)} <= {NudgeKind.RESYNC}
 
         grading = await _submit(setup, acme, entered)
 
         heard = await _first(mine)
         assert (heard.kind, heard.id) == (NudgeKind.GRADING, str(grading))
-        async with asyncio.timeout(1):
-            nothing = [await anext(theirs) for _ in range(3)]
-        assert nothing == [None, None, None]
+        assert await _within(theirs, 3) == []
     finally:
         await mine.aclose()
         await theirs.aclose()
