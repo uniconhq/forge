@@ -42,6 +42,7 @@ from forge.log import get_logger
 from forge.runtime.context import Context
 from forge.services import contestants, places, published, release, sessions, teams
 from forge.services.published import PublishedTask
+from forge.services.turns import Turns
 
 log = get_logger(__name__)
 
@@ -143,7 +144,7 @@ async def hold_standing(ctx: Context, entrant: Entrant) -> None:
 
 
 PLACES_AT_ONCE = 4
-_room = places.Turns(PLACES_AT_ONCE)
+_room = Turns(PLACES_AT_ONCE)
 
 
 async def open_place(ctx: Context, entrant: Entrant) -> None:

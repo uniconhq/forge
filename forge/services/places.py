@@ -39,9 +39,7 @@ timeout too. A process that stops lets the place being made finish and
 makes no more (`ctx.stopping`).
 """
 
-import asyncio
 import uuid
-import weakref
 from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import timedelta
 
@@ -58,6 +56,7 @@ from forge.domain.roles import contest_id_of, task_scope
 from forge.log import get_logger
 from forge.runtime.context import Context
 from forge.services import published, teams, workspaces
+from forge.services.turns import Turns
 
 log = get_logger(__name__)
 
@@ -65,26 +64,6 @@ AHEAD_AT_ONCE = 2
 """How many pieces of work making places ahead run at once in a process."""
 TASKS_KEPT = timedelta(minutes=1)
 """How long the tasks a contest makes places at are kept once read."""
-
-
-class Turns:
-    """At most `at_once` holders at a time in a process, the rest waiting
-    their turn in order, with one set of turns per event loop, since a
-    semaphore belongs to the loop it is first used on.
-    """
-
-    def __init__(self, at_once: int) -> None:
-        self.at_once = at_once
-        self._by_loop: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
-            weakref.WeakKeyDictionary()
-        )
-
-    def __call__(self) -> asyncio.Semaphore:
-        loop = asyncio.get_running_loop()
-        turns = self._by_loop.get(loop)
-        if turns is None:
-            turns = self._by_loop[loop] = asyncio.Semaphore(self.at_once)
-        return turns
 
 
 _ahead = Turns(AHEAD_AT_ONCE)
