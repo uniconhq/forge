@@ -14,6 +14,7 @@ from forge.forges.forgejo.content import ForgejoContent
 from forge.forges.forgejo.grading import WoodpeckerGrading
 from forge.forges.forgejo.http import ForgejoAuth, Http, WoodpeckerAuth, new_client
 from forge.forges.forgejo.identity import ForgejoIdentity
+from forge.forges.forgejo.mail import MailConfig, NoMail, SmtpMail
 from forge.forges.forgejo.oauth import OAuth
 from forge.forges.forgejo.objects import NoStore, S3Objects, StorageConfig
 from forge.forges.forgejo.orgs import ForgejoOrgs
@@ -35,7 +36,9 @@ class ForgejoConfig:
     under it, and that is how the implementation tells the CI's webhook from
     any other. `storage` is the object store beside the forge, which the
     Forgejo implementation reaches over S3; without it every call to the
-    store is `Misconfigured`.
+    store is `Misconfigured`. `mail` is the server the forge sends its own
+    mail through, which the platform's mail goes through too; without it
+    nothing is sent.
     """
 
     public_url: str
@@ -50,6 +53,7 @@ class ForgejoConfig:
     ci_public_url: str
     ci_admin_token: str
     storage: StorageConfig | None = None
+    mail: MailConfig | None = None
 
 
 class ForgejoForge:
@@ -108,6 +112,9 @@ class ForgejoForge:
         self.computes = WoodpeckerComputes(ci)
         self.objects: S3Objects | NoStore = (
             S3Objects(config.storage) if config.storage is not None else NoStore()
+        )
+        self.mail: SmtpMail | NoMail = (
+            SmtpMail(config.mail) if config.mail is not None else NoMail()
         )
 
     @property

@@ -7,6 +7,7 @@ from forge.domain.errors import Misconfigured
 from forge.forges.cached import CachedForge
 from forge.forges.fake import FakeForge
 from forge.forges.forgejo import ForgejoConfig, ForgejoForge
+from forge.forges.forgejo.mail import MailConfig
 from forge.forges.forgejo.objects import StorageConfig
 from forge.port import Forge
 from forge.settings import Settings
@@ -53,5 +54,20 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
                 results_bucket=s3.results_bucket,
                 machine_url=str(settings.machine_url),
             ),
+            mail=_mail(settings),
         )
+    )
+
+
+def _mail(settings: Settings) -> MailConfig | None:
+    mail = settings.mail
+    if mail is None:
+        return None
+    return MailConfig(
+        host=mail.smtp_addr,
+        port=mail.smtp_port,
+        protocol=mail.protocol,
+        sender=mail.sender,
+        user=mail.user,
+        password=mail.password.get_secret_value() if mail.password is not None else None,
     )
