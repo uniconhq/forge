@@ -13,6 +13,7 @@ from forge.domain.identity import Credential, User
 from forge.forges.fake.content import FakeContent
 from forge.forges.fake.grading import FakeComputes, FakeGrading
 from forge.forges.fake.identity import FakeIdentity
+from forge.forges.fake.mail import FakeMail
 from forge.forges.fake.objects import FakeObjects
 from forge.forges.fake.orgs import FakeOrgs
 from forge.forges.fake.state import Call, State
@@ -46,6 +47,7 @@ class FakeForge:
         self.primitives = FakePrimitives(self.state)
         self.computes = FakeComputes(self.state)
         self.objects = FakeObjects(self.state.clock)
+        self.mail = FakeMail()
 
     @property
     def name(self) -> str:

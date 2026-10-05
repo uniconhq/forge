@@ -29,13 +29,16 @@ class Users:
         """The user's addresses Forgejo marks verified, which it lists only to
         the user, so the administrator's token asks with `sudo`. With
         `REGISTER_EMAIL_CONFIRM` off Forgejo marks every address verified, so
-        the mark means something only where confirmation is on.
+        the mark means something only where confirmation is on. The primary
+        address comes first.
         """
         username = await self.username_of(user_id)
         emails = list_of(
             await self._http.call(PLATFORM, "GET", "/api/v1/user/emails", params={"sudo": username})
         )
-        return tuple(str(entry["email"]) for entry in emails if entry.get("verified"))
+        verified = [entry for entry in emails if entry.get("verified")]
+        verified.sort(key=lambda entry: not entry.get("primary"))
+        return tuple(str(entry["email"]) for entry in verified)
 
     async def username_of(self, user_id: int) -> str:
         return str((await self._record(user_id))["login"])

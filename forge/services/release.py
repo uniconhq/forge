@@ -24,7 +24,7 @@ from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import contestants, published, roles
+from forge.services import contestants, invites, published, roles
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,12 +76,15 @@ def of(
 @dataclass(frozen=True, slots=True)
 class Reader:
     """A signed-in person as a contest's reads see them: their registration
-    for it, if any, and whether they hold a role at it, at one of its tasks or
-    at its org.
+    for it, if any, whether they hold a role at it, at one of its tasks or at
+    its org, and whether they have accepted an invite to take part and not
+    registered yet, which shows them a hidden contest as its contestants see
+    it; once they have registered, the registration decides.
     """
 
     row: Contestant | None
     organises: bool
+    invited: bool = False
 
 
 async def reader(ctx: Context, session: Session, contest: ContestId) -> Reader:
@@ -89,9 +92,12 @@ async def reader(ctx: Context, session: Session, contest: ContestId) -> Reader:
     once.
     """
     row = await contestants.row_of(ctx, contest, session.user_id)
+    invited = row is None and await invites.accepted_place(ctx, contest, session.user_id)
     await ctx.let_go()
     return Reader(
-        row=row, organises=await roles.holds_role_in_contest(ctx, session.user_id, contest)
+        row=row,
+        organises=await roles.holds_role_in_contest(ctx, session.user_id, contest),
+        invited=invited,
     )
 
 
@@ -117,6 +123,7 @@ def sees(settings: ContestDefinition, person: Reader) -> bool:
     return rules.contest_visible_to(
         settings,
         has_session=True,
-        is_contestant=person.row is not None and person.row.status == Status.APPROVED,
+        is_contestant=person.invited
+        or (person.row is not None and person.row.status == Status.APPROVED),
         is_organiser=person.organises,
     )

@@ -113,12 +113,15 @@ forge/api/
                 CiAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
                 ENVELOPE_PATH and CALLBACK_PATH, where each is served
   roles.py      holders, grant, revoke, and the Holder holders returns
+  invites.py    create, at, send_again, withdraw, mine, by_token, accept,
+                decline, and the Invite they return
   cookies.py    what goes into the two cookies and what comes out, and the policy
   log.py        setup, get_logger, and the Logger it returns
   errors.py     every error the package raises to its callers
   types.py      Session, User, Role, Scope, ScopeKind, RoleGrant, HeldRole,
                 Named, ScopeNames, OrgId, ContestId, TaskId, VersionId,
-                PublicationId, ConflictToken, Edit and Problem
+                PublicationId, ConflictToken, Edit, Problem, and an invite's
+                Grant, InviteStatus and MailStatus
 ```
 
 Each module only imports names written elsewhere in the package and lists
@@ -161,8 +164,8 @@ released, visible and open to one contestant, and who sees a contest at all.
 
 `forge/port/` declares every operation the platform needs from a git host,
 in the platform's words, as one `Protocol` per area: `identity`, `orgs`,
-`content`, `workspaces`, `threads`, `workflows`, `primitives`, `grading` and
-`computes`. `Forge` composes the areas, so a service reaches a host as
+`content`, `workspaces`, `threads`, `workflows`, `primitives`, `grading`,
+`computes`, `uploads`, `objects` and `mail`. `Forge` composes the areas, so a service reaches a host as
 `ctx.forge.orgs.grant_role(...)` and an implementation is a set of area
 classes over one HTTP client. Every reference the package stores is an id
 the port hands out, built from keys (below). Above the port only
@@ -212,8 +215,11 @@ writes a submission's files as one change as the contestant, leaving exactly
 those files in the place, and names it the next `submission/<n>` as the
 platform with a note carrying the submit's idempotency key, taking the next
 number when another took its own; `list_submissions` reads each back as a
-`Submitted` with its number, version and key, and `read_submission_file` one
-of its files at its version, big ones included.
+`Submitted` with its number, version and key, `read_submission_file` one
+of its files at its version, big ones included, and `read_submission_blob`
+one as the commit holds it, a large file's pointer rather than its bytes
+(Forgejo's `raw` endpoint), which is how a recovered submission finds the
+uploads it used.
 `grading.activate` takes a task for grading at the CI, as the org account.
 `grading.start_run` starts a `GradingRun`, what one run of one grading is
 in the platform's words, as the org account, with the variables
@@ -300,6 +306,18 @@ Forgejo implementation reaches Garage over S3 with boto3 at
 `UNICON_MACHINE_URL`, path-style; the proxy passes `/unicon-results/` to
 Garage with the Host header unchanged.
 
+The `mail` area (`port/mail.py`) hands one plain-text message to the mail
+server the forge sends its own mail through, which travels with the forge
+for the reason the object store does. The Forgejo implementation speaks SMTP
+with Python's `smtplib` on a thread, giving each step 15 seconds, to the
+one address the message names; a server that does not answer or answers
+busy is `Unavailable`, and one that refuses the address or the login, or
+whose encryption is not what the settings ask for, is `Rejected`. Without `settings.mail` the area says it
+is not configured and sends nothing. The fake keeps what it was handed in
+`fake.mail.sent`; `fake.mail.down`, `fake.mail.refusing` and
+`fake.mail.configured` stand for a server that does not answer, one that
+refuses and none at all.
+
 Both implementations name repositories and build and read ids with the one
 grammar in `forges/ids.py`, so an id from elsewhere is `NotFound` whichever
 is behind the port.
@@ -385,7 +403,14 @@ variables, and the object store's as `settings.s3`, read from
 `UNICON_S3_ENDPOINT`, `UNICON_S3_REGION` (`garage` unless given),
 `UNICON_S3_ACCESS_KEY`, `UNICON_S3_SECRET_KEY` and
 `UNICON_S3_RESULTS_BUCKET` (`unicon-results`); both are
-required only when `UNICON_FORGE=forgejo`. `UNICON_MACHINE_URL` is where
+required only when `UNICON_FORGE=forgejo`. The mail server invite mail goes
+through travels as `settings.mail`, read from `UNICON_MAIL_SMTP_ADDR`,
+`UNICON_MAIL_SMTP_PORT` (587 unless given), `UNICON_MAIL_PROTOCOL`
+(`smtp+starttls` unless given, or `smtps`, or plain `smtp` for a server on
+the deployment's own network), `UNICON_MAIL_SMTP_USER`,
+`UNICON_MAIL_SMTP_PASSWORD` and `UNICON_MAIL_FROM`; it is the server the
+forge sends its own mail through, and the whole of it is absent while
+`UNICON_MAIL_SMTP_ADDR` is empty, when nothing is mailed. `UNICON_MACHINE_URL` is where
 grading machines reach the platform, `UNICON_PUBLIC_URL` unless given.
 `UNICON_HARNESS_IMAGE` is the harness every plan names, by digest, and
 `UNICON_CLONE_IMAGE` the image the CI checks a task and a submission out
@@ -735,21 +760,21 @@ A person asks to join a contest with `contestants.register(session,
 contest)`, with the code the contest asks for when it asks for one. A
 request nobody has approved has nothing at the forge, so all of it is a row
 in `contestants`. The contest has to be one they see: published, and
-`public` or `signed-in`. Then, stopping at the first refusal, each with a
+`public` or `signed-in`, or `hidden` for someone who has accepted an invite
+to it. Then, stopping at the first refusal, each with a
 code of its own: the registration window is open (`registration_closed`);
 they hold no role at the contest, its tasks or its org (`is_staff`), read
 under the org's lock on role changes, the one `roles.grant` takes, so a
 grant and a registration never pass each other; they have no registration
 there already (`already_registered`); the invite, the code and the email
 address the contest asks for (`invite_required`, `wrong_invite_code`,
-`domain_not_allowed`), where a pattern must match the whole of one of the
+`domain_not_allowed`), where the invite is one they have accepted (below)
+and a pattern must match the whole of one of the
 addresses the forge has confirmed are theirs, whatever its case, within a
 time limit, since the pattern is an organiser's; an address counts only as
 far as the forge confirms it, so with Forgejo that needs
 `REGISTER_EMAIL_CONFIRM` on wherever people sign themselves up; and a place is free (`contest_full`), counted under an
-advisory lock on the contest, so the last place goes once. Nothing makes
-invites yet, so a contest that asks for one refuses everyone
-(`invite_required`). The row is written pending with what let it through;
+advisory lock on the contest, so the last place goes once. The row is written pending with what let it through;
 with `approval: auto` it is approved in the same call. The rules themselves
 are in `forge/domain/registration.py`.
 
@@ -805,6 +830,56 @@ list live. Everything else is read live as the platform from the latest
 publication of each task, with the contest's visibility and the release
 rules applied first, and a contest or task the reader may not see is no
 such contest or task, the same answer as one that is not there.
+
+## Invites
+
+`invites` lets an organiser ask one person, by username or by email address,
+to take a contestant's place in a contest or an organiser's role at an org,
+a contest or a task. An invite is a row in `invites`, since it may name an
+address with no account behind it. `create` needs what granting it would:
+the manager role at the scope, admin to invite an admin, and a contestant's
+place only at a contest; a username is looked up at once, someone who holds
+the role or a registration already, or could not take it (a role in a
+contest they are registered for, a place in one where they hold a role), is
+refused (`invalid_invite`), the same pending invite twice is
+`already_invited`, and an org makes at most 1000 invites a day
+(`invite_limit`). An address is one plain address and nothing else, so one
+invite mails one person. Making and changing invites take the org's lock
+on role changes, the one `roles.grant` takes. `at` lists a scope's invites
+to its observers, newest first, at most 500; `send_again` mails a pending
+one again, lapsed or not, with a new token, so the earlier link stops
+working, and its whole lifetime again from then, at most once every ten
+minutes (`invite_limit`) and only where there is a mail server
+(`invalid_invite`); and `withdraw` takes back a pending one, or an accepted
+contestant's place until its person registers.
+
+The mail goes out once the request that made the invite has committed, and
+the request answers without waiting (`ctx.in_background`), so a mail server
+that is slow or down never fails the click. The invite is the record, and
+its `mail_status` says what became of the mail: `waiting`, `sent`,
+`failed`, whatever stopped it, a username whose account has no confirmed
+address included, or `off` on a deployment without a mail server. A mail a
+restart cut short stays `waiting`, and an organiser sends it again. At most
+four mails are written and sent at a time in a process, and none holds a
+database connection while it asks the forge or the mail server. The mail
+carries a link to `/invites#<token>` on the app; the token is kept only as
+its SHA-256, and sits after the `#` so no server's log ever holds it.
+
+The person acts on their own invites only. `mine` lists their pending ones
+that have not lapsed, once every pending invite to an address the forge has
+confirmed is theirs has been made theirs; an address counts only as far as
+the forge confirms it, so with Forgejo that needs `REGISTER_EMAIL_CONFIRM`
+on wherever people sign themselves up. `by_token` opens the invite a link
+carries when it is theirs and is `not_found` for anyone else, or
+`forge_unavailable` when the forge could not say whose address it is; `accept`
+grants what the invite carries and `decline` grants nothing, both closing
+it, and a lapsed one does neither (`invite_expired`). An organiser role is
+granted by the rules a grant keeps, and never lowers a role the person
+holds; a contestant's place is the eligibility an invite-only contest asks
+for, and shows a hidden contest to them until they register, when their
+registration decides. Either is taken only while whoever sent the invite
+may still grant it. Deleting an account withdraws the pending invites to
+it. The rules are in `forge/domain/invites.py`.
 
 ## Announcements and clarifications
 
@@ -1215,7 +1290,9 @@ The rest, `invalid_name`, `unauthenticated`, `session_expired`,
 `not_ready`, the registration refusals `registration_closed`, `is_staff`,
 `already_registered`, `invite_required`, `wrong_invite_code`,
 `domain_not_allowed` and `contest_full`, which share the base class
-`RegistrationRefused`, `invalid_reason` and `invalid_extension`, and
+`RegistrationRefused`, `invalid_reason` and `invalid_extension`, the
+invites' `invalid_invite`, `already_invited` (with `invite`, the one held
+already) and `invite_expired`, and
 `archived` (the contest is archived), `not_approved` and
 `invalid_idempotency_key`, and grading's
 `ci_request_refused` (the CI's request does not verify or names no grading
@@ -1227,9 +1304,10 @@ detail. The refusals of an upload or a submit share the base class
 
 ## The tables
 
-Six tables, keyed by UUID v7 but for `names`, keyed by the id it names,
+Seven tables, keyed by UUID v7 but for `names`, keyed by the id it names,
 with every enumeration as `text` under a `CHECK`: `sessions`,
-`contestants`, `gradings`, `uploads`, `org_accounts` and `names`. They
+`contestants`, `gradings`, `uploads`, `org_accounts`, `names` and
+`invites`. They
 hold what a forge cannot: of users, orgs, contests and tasks only the names
 people gave the last three (above), the rest read live. `org_accounts` is
 one row per org, by the org's id, its service account's
@@ -1251,7 +1329,10 @@ deadline, `progress` the last progress reported, `verdict` and `log_key`
 what came back, and `error` a line for staff. An `uploads` row is one
 browser upload: its owner, task and input, name, declared and measured
 size, digest, status, the id of its parts while they arrive, the submission
-that consumed it, and when its lifetime ends.
+that consumed it, and when its lifetime ends. An `invites` row is one
+invite: the scope's keys, what it grants, the username or the address it
+names, who it is for once known, who sent it, its token's SHA-256, its
+status, its expiry, when it was decided, and what became of its mail.
 `unicon-forge migrate` reads `UNICON_DATABASE_URL`, applies the migrations
 under `forge/db/alembic/` and exits. A deployment runs it before the host
 starts, from the host's image, which has the package and its command

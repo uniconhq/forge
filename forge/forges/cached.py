@@ -233,6 +233,7 @@ class CachedForge:
         self.computes = inner.computes
         self.objects = inner.objects
         self.uploads = inner.uploads
+        self.mail = inner.mail
 
     @property
     def name(self) -> str:
