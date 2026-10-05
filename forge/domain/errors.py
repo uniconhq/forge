@@ -428,3 +428,53 @@ class InviteExpired(ServiceError):
     """
 
     code = "invite_expired"
+
+
+class TeamsOff(ServiceError):
+    """The contest's settings do not turn teams on."""
+
+    code = "teams_off"
+
+
+class InvalidTeamName(ServiceError):
+    """A team's name that is empty, too long, or not printable."""
+
+    code = "invalid_team_name"
+
+
+class TeamNameTaken(ServiceError):
+    """Another team of the contest has that name, ignoring case."""
+
+    code = "team_name_taken"
+
+
+class TeamFull(ServiceError):
+    """The team holds as many as the contest's settings allow. `limit` is that
+    many.
+    """
+
+    code = "team_full"
+
+
+class InTeam(ServiceError):
+    """The person is a member of a team in the contest already, or has asked
+    or been asked to join this one.
+    """
+
+    code = "in_team"
+
+
+class SubmittedAlone(ServiceError):
+    """The person has submitted to the contest on their own, so their results
+    are theirs and cannot become a team's.
+    """
+
+    code = "submitted_alone"
+
+
+class TeamHasSubmissions(ServiceError):
+    """A team that has submitted is kept with its results, so it is not
+    deleted.
+    """
+
+    code = "team_has_submissions"

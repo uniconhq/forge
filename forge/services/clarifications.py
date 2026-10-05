@@ -35,6 +35,8 @@ is made as the organiser, so the record says who answered.
 """
 
 import re
+import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -42,10 +44,10 @@ from sqlalchemy import select
 
 from forge.db.tables import Contestant
 from forge.domain import release as rules
-from forge.domain.errors import Forbidden, NotApproved, NotFound, SessionExpired
+from forge.domain.errors import Conflict, Forbidden, NotApproved, NotFound, SessionExpired
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId, TaskId, ThreadId, WorkspaceId
-from forge.domain.names import ScopeNames, UserOwner
+from forge.domain.names import ScopeNames, TeamOwner, UserOwner, WorkspaceOwner
 from forge.domain.registration import Status
 from forge.domain.roles import Role, contest_scope, holds, task_scope
 from forge.domain.sessions import Session
@@ -53,7 +55,7 @@ from forge.domain.threads import Thread, ThreadKind
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import announcements, names, published, release, sessions
+from forge.services import announcements, names, published, release, sessions, teams
 from forge.services.access import Organiser, require
 from forge.services.announcements import Announcement, AnsweredQuestion
 
@@ -76,14 +78,14 @@ class Message:
 
 @dataclass(frozen=True, slots=True)
 class Clarification:
-    """One question: its contest by name, the asker's user id, its number in
-    their workspace, the task it names, what it asks, when, whether it is
-    answered and whether it is open, and every message under it, oldest
-    first.
+    """One question: its contest by name, whose desk it is in, the asker's
+    user id or `team.<id>` for a team's, its number there, the task it
+    names, what it asks, when, whether it is answered and whether it is
+    open, and every message under it, oldest first.
     """
 
     contest: ScopeNames
-    asker: int
+    asker: str
     number: int
     task: str | None
     title: str
@@ -121,10 +123,18 @@ async def ask(
         body += f"\n\n<!-- unicon:task {about} -->"
     where = await names.scope_names(ctx, contest_scope(contest))
     as_ = AsUser(session.user_id, await sessions.credential_for(ctx, session.id))
+    standing = await teams.standing(ctx, contest, session.user_id)
     await ctx.let_go()
-    workspace = await ctx.forge.workspaces.open_workspace(
-        contest, UserOwner(session.user_id), [session.user_id]
-    )
+    workspace = await ctx.forge.workspaces.open_workspace(contest, standing.owner, standing.members)
+    if isinstance(standing.owner, TeamOwner):
+        owner = standing.owner
+
+        async def again(members: Sequence[int]) -> None:
+            await ctx.forge.workspaces.open_workspace(contest, owner, members)
+
+        current = await teams.settle(ctx, owner.team_id, workspace, standing.members, again)
+        if session.user_id not in current:
+            raise Conflict("Your team changed while your question was asked; ask again.")
     thread = await ctx.forge.threads.post_thread(
         as_, workspace, ThreadKind.CLARIFICATION, title=title, body=body
     )
@@ -142,8 +152,9 @@ async def mine(ctx: Context, session: Session, contest: ContestId) -> tuple[Clar
         return ()
     where = await names.scope_names(ctx, contest_scope(contest))
     as_ = AsUser(session.user_id, await sessions.credential_for(ctx, session.id))
+    standing = await teams.standing(ctx, contest, session.user_id)
     await ctx.let_go()
-    workspace = ctx.forge.workspaces.workspace_of(contest, UserOwner(session.user_id))
+    workspace = ctx.forge.workspaces.workspace_of(contest, standing.owner)
     try:
         threads = await ctx.forge.threads.list_threads(as_, workspace, ThreadKind.CLARIFICATION)
     except NotFound:
@@ -164,8 +175,9 @@ async def follow_up(
         raise NotApproved("Only an approved contestant of the contest asks it questions.")
     _, body = announcements.checked("-", body)
     as_ = AsUser(session.user_id, await sessions.credential_for(ctx, session.id))
+    standing = await teams.standing(ctx, contest, session.user_id)
     await ctx.let_go()
-    workspace = ctx.forge.workspaces.workspace_of(contest, UserOwner(session.user_id))
+    workspace = ctx.forge.workspaces.workspace_of(contest, standing.owner)
     thread = await _found(ctx, as_, ctx.forge.threads.thread_of(workspace, number))
     await ctx.forge.threads.comment(as_, thread.id, body)
     if thread.answered or thread.closed:
@@ -237,7 +249,7 @@ async def of_contest(
 
 @action
 async def reply(
-    ctx: Context, organiser: Organiser, contest: ContestId, asker: int, number: int, *, body: str
+    ctx: Context, organiser: Organiser, contest: ContestId, asker: str, number: int, *, body: str
 ) -> Clarification:
     """Comment on a question as the organiser, leaving it as open or
     answered as it was. Needs the manager role at the contest.
@@ -251,7 +263,7 @@ async def reply(
 
 @action
 async def mark(
-    ctx: Context, organiser: Organiser, contest: ContestId, asker: int, number: int
+    ctx: Context, organiser: Organiser, contest: ContestId, asker: str, number: int
 ) -> Clarification:
     """Mark a question answered and close it, as the organiser; one already
     marked is left as it is. Needs the manager role at the contest.
@@ -265,7 +277,7 @@ async def mark(
 
 @action
 async def unmark(
-    ctx: Context, organiser: Organiser, contest: ContestId, asker: int, number: int
+    ctx: Context, organiser: Organiser, contest: ContestId, asker: str, number: int
 ) -> Clarification:
     """Take the answered mark off a question and open it again, as the
     organiser; one neither marked nor closed is left as it is. Needs the
@@ -283,7 +295,7 @@ async def answer_publicly(
     ctx: Context,
     organiser: Organiser,
     contest: ContestId,
-    asker: int,
+    asker: str,
     number: int,
     *,
     title: str,
@@ -317,15 +329,33 @@ async def _row(ctx: Context, contest: ContestId, user_id: int) -> Contestant | N
 
 
 async def _managed(
-    ctx: Context, organiser: Organiser, contest: ContestId, asker: int, number: int
+    ctx: Context, organiser: Organiser, contest: ContestId, asker: str, number: int
 ) -> Thread:
     """The question numbered `number` in the asker's workspace, read as the
     organiser, once they are found to manage the contest.
     """
     require(organiser, contest_scope(contest), Role.MANAGER)
     await ctx.let_go()
-    workspace = ctx.forge.workspaces.workspace_of(contest, UserOwner(asker))
+    workspace = ctx.forge.workspaces.workspace_of(contest, _owner(asker))
     return await _found(ctx, organiser.identity, ctx.forge.threads.thread_of(workspace, number))
+
+
+def _owner(asker: str) -> WorkspaceOwner:
+    """The desk a question's key names: a person's by their user id, or a
+    team's by `team.<id>`. `NotFound` for anything else.
+    """
+    if asker.isdigit():
+        return UserOwner(int(asker))
+    if asker.startswith("team."):
+        try:
+            return TeamOwner(uuid.UUID(asker.removeprefix("team.")))
+        except ValueError:
+            pass
+    raise NotFound(NO_SUCH_QUESTION)
+
+
+def _asker(owner: WorkspaceOwner) -> str:
+    return str(owner.user_id) if isinstance(owner, UserOwner) else f"team.{owner.team_id}"
 
 
 async def _found(ctx: Context, as_: AsUser, thread: ThreadId) -> Thread:
@@ -408,9 +438,18 @@ async def _shown(
     }
     if wanted or tasks:
         places.update(await names.places_named(ctx, [*wanted, *tasks]))
+    askers: dict[str, frozenset[int]] = {}
+    for _, _, owner, _ in about:
+        key = _asker(owner)
+        if key not in askers:
+            askers[key] = (
+                frozenset({owner.user_id})
+                if isinstance(owner, UserOwner)
+                else await teams.everyone_in(ctx, owner.team_id)
+            )
     shown = []
     for thread, contest, owner, task in about:
-        asker = owner.user_id if isinstance(owner, UserOwner) else 0
+        asker = _asker(owner)
         task_names = places.get(task) if task is not None else None
         shown.append(
             Clarification(
@@ -424,7 +463,11 @@ async def _shown(
                 answered=thread.answered,
                 closed=thread.closed,
                 messages=tuple(
-                    Message(from_asker=comment.author_id == asker, body=comment.body, at=comment.at)
+                    Message(
+                        from_asker=comment.author_id in askers[asker],
+                        body=comment.body,
+                        at=comment.at,
+                    )
                     for comment in thread.comments
                 ),
             )

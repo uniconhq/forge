@@ -17,6 +17,7 @@ submit.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from forge.db.tables import Contestant
 from forge.domain import release as rules
@@ -30,14 +31,13 @@ from forge.domain.errors import (
     Unavailable,
 )
 from forge.domain.ids import TaskId, WorkspaceId
-from forge.domain.names import UserOwner
 from forge.domain.registration import Status
 from forge.domain.release import Closed
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import contestants, places, published, release, sessions
+from forge.services import contestants, places, published, release, sessions, teams
 from forge.services.published import PublishedTask
 
 log = get_logger(__name__)
@@ -59,6 +59,10 @@ class Entrant:
     published: PublishedTask
     row: Contestant | None
     workspace: WorkspaceId | None
+    members: tuple[int, ...] = ()
+    """Whoever works in the workspace: the team's members, or the person."""
+    since: datetime | None = None
+    """When the person began working in it, in or out of a team."""
 
 
 async def entrant(ctx: Context, session: Session, task: TaskId) -> Entrant:
@@ -79,12 +83,13 @@ async def entrant(ctx: Context, session: Session, task: TaskId) -> Entrant:
     found = await published.task(ctx, task, settings)
     if found is None or not rules.released(settings, found.definition, ctx.now):
         raise NotFound(published.NO_SUCH_TASK)
-    workspace = (
-        ctx.forge.workspaces.workspace_of(contest, UserOwner(fresh.user_id))
-        if person.row is not None
-        else None
+    if person.row is None:
+        return Entrant(fresh, task, settings, found, None, None)
+    standing = await teams.standing(ctx, contest, fresh.user_id)
+    workspace = ctx.forge.workspaces.workspace_of(contest, standing.owner)
+    return Entrant(
+        fresh, task, settings, found, person.row, workspace, standing.members, standing.since
     )
-    return Entrant(fresh, task, settings, found, person.row, workspace)
 
 
 async def refuse(ctx: Context, entrant: Entrant) -> tuple[Contestant, WorkspaceId]:
@@ -166,8 +171,11 @@ async def open_place(ctx: Context, entrant: Entrant) -> None:
     log.info("submitters.place_opened", task=entrant.task, user_id=user_id)
 
 
-def place_of(ctx: Context, task: TaskId, user_id: int) -> WorkspaceId:
-    """The id of the person's workspace in the task's contest. No call is
-    made; the id comes from the contest and the person.
+async def place_of(ctx: Context, task: TaskId, user_id: int) -> WorkspaceId:
+    """The id of the workspace the person works in for the task's contest,
+    their team's while they are in one. No call to the forge is made; the id
+    comes from the contest and the person or the team.
     """
-    return ctx.forge.workspaces.workspace_of(contest_id_of(task_scope(task)), UserOwner(user_id))
+    contest = contest_id_of(task_scope(task))
+    standing = await teams.standing(ctx, contest, user_id)
+    return ctx.forge.workspaces.workspace_of(contest, standing.owner)

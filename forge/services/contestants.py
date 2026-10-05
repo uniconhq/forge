@@ -32,8 +32,9 @@ pending one approved, `reject`
 records the decision with a reason the person reads, `reopen` takes a
 rejection back and leaves the registration pending again, `remove` ends an
 approved one, taking the contestant's access to their workspace away and
-keeping what is in it, and `extend` gives one person more time, which every
-deadline check adds. Anyone observing the contest lists the registrations.
+keeping what is in it, and taking them out of their team, and `extend`
+gives one person more time, which every deadline check adds. Anyone
+observing the contest lists the registrations.
 A contestant's workspace is made a part at a time: the place to submit each
 task once they are approved, without the approval waiting for it, or else at
 their first upload to it (`places`).
@@ -57,7 +58,7 @@ from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import invites, places, published, roles, workspaces
+from forge.services import invites, places, published, roles, teams, workspaces
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -217,6 +218,7 @@ async def remove(
     row = await _decided(ctx, organiser, contest, user_id, (Status.APPROVED,), "removed")
     _decide(ctx, row, Status.REMOVED, decided_by=organiser.user.id, reason=None)
     await ctx.db.flush()
+    await teams.on_removed(ctx, row)
     await workspaces.close(ctx, row)
     log.info("contestants.removed", contest=contest, user_id=user_id, by=organiser.user.id)
     return registration_of(row, await _user(ctx, user_id))

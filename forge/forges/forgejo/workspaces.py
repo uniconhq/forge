@@ -143,6 +143,14 @@ class ForgejoWorkspaces:
         if others:
             raise Conflict(f"{org}/{repo} already has other collaborators: {', '.join(others)}")
 
+    async def share_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
+        ref = parse_workspace(workspace)
+        for repo in await self._workspace_repos(ref):
+            if repo == ref.desk_repo:
+                await self._open(ref, repo, member_ids, permission=READ)
+            else:
+                await self._open(ref, repo, member_ids, reserve=True)
+
     async def close_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
         ref = parse_workspace(workspace)
         usernames = [await self._users.username_of(member) for member in member_ids]

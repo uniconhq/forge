@@ -124,6 +124,18 @@ class FakeWorkspaces:
             repo.writers.difference_update(member_ids)
             repo.readers.difference_update(member_ids)
 
+    async def share_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
+        self._state.record(
+            "share_workspace", PLATFORM, workspace=workspace, member_ids=list(member_ids)
+        )
+        self._state.check_up()
+        ref = parse_workspace(workspace)
+        for repo in self._workspace_repos(ref):
+            if repo.name == ref.desk_repo:
+                self._open(ref, repo.name, member_ids, read_only=True)
+            else:
+                self._open(ref, repo.name, member_ids, reserve=True)
+
     async def list_submissions(self, workspace: WorkspaceId, task: TaskId) -> tuple[Submitted, ...]:
         self._state.record("list_submissions", PLATFORM, workspace=workspace, task=task)
         self._state.check_up()

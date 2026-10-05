@@ -41,7 +41,7 @@ from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import ActionSetup, Context
 from forge.runtime.held import setup_or_held
-from forge.services import identity, sessions
+from forge.services import identity, sessions, teams
 
 log = get_logger(__name__)
 
@@ -69,11 +69,12 @@ async def audience(ctx: Context, session: Session, previous: Audience | None = N
             )
         )
     )
+    in_teams = await teams.team_ids(ctx, session.user_id)
     grants = previous.grants if previous is not None else ()
     try:
         credential = await sessions.credential_for(ctx, session.id)
     except Unavailable:
-        return Audience(user_id=session.user_id, grants=grants, contests=contests)
+        return Audience(user_id=session.user_id, grants=grants, contests=contests, teams=in_teams)
     await ctx.let_go()
     try:
         grants = tuple(await ctx.forge.orgs.roles_of(AsUser(session.user_id, credential)))
@@ -82,7 +83,9 @@ async def audience(ctx: Context, session: Session, previous: Audience | None = N
     except Forbidden:
         sessions.revoke_at_end(ctx, session.id)
         raise SessionExpired("Sign in again.") from None
-    return Audience(user_id=session.user_id, grants=tuple(grants), contests=contests)
+    return Audience(
+        user_id=session.user_id, grants=tuple(grants), contests=contests, teams=in_teams
+    )
 
 
 async def stream(
