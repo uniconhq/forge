@@ -229,7 +229,9 @@ publication, with a note, and `workspaces.list_publications` reads each back
 as a `Publication` with what its note says. A contestant's workspace is made
 one part at a time, each of which can be run again and keeps what is
 already right: `workspaces.open_workspace` makes the desk and gives the
-members write access to it, `workspaces.open_submission_place` makes the
+members read access to it, which at Forgejo lets them post and comment on
+issues there and close their own but not edit anyone else's comments or
+labels, `workspaces.open_submission_place` makes the
 place to submit one task, reserves its submissions for the platform and only
 then gives them write access there, and `workspaces.close_workspace` takes
 the access away and keeps everything in it. `workspaces.workspace_of` names
@@ -803,11 +805,16 @@ A **clarification** is a contestant's question, a thread labelled
 `clarification` on the desk of their own workspace, which is what keeps it
 private to them and the organisers who reach the desk through the
 contest's roles. An approved contestant asks as themselves, and their first
-question makes the desk, as the platform (`clarifications.ask`); a question
-may name a task released to them. They read their own questions with every
-message (`mine`), and comment again on one (`follow_up`), which on an
-answered question takes the mark off and opens it, so the follow-up lands
-back with the organisers in the same thread. A manager at the contest
+question makes the desk, as the platform (`clarifications.ask`), with them
+a reader on it, so they cannot change an organiser's reply or a label; the
+port puts the label on as the platform when Forgejo drops a reader's. A
+question may name a task released to them, kept as a line in its body that
+is checked against the question's contest whenever it is read, since the
+asker can edit their own question at the forge. They read their own
+questions with every message (`mine`), and comment again on one
+(`follow_up`), after which, on an answered question, the platform takes the
+mark off and opens it, so the follow-up lands back with the organisers in
+the same thread. A manager at the contest
 replies, which leaves it open (`reply`); marks it answered, which labels it
 `answered` and closes it, with or without a reply (`mark`); and takes that
 back (`unmark`). Marking or unmarking twice changes nothing, so a retry is
@@ -815,13 +822,15 @@ always safe and a reply is never posted twice. The inbox is one search at
 the forge for the org's open clarifications, as the organiser, for anyone
 holding a role anywhere in the org, each shown only where they observe the
 contest (`inbox`); an answered question is closed precisely because the
-forge's search cannot ask for a label's absence. `of_contest` is every
+forge's search cannot ask for a label's absence. An issue labelled
+`clarification` anywhere but a desk is passed over. `of_contest` is every
 question of one contest, answered ones included. An answer made public is
 an ordinary announcement on the question's task, or its contest, posted as
 the organiser with a line the platform adds pointing at the question
 (`answer_publicly`); readers learn that it answers a question and an
 organiser which, and the question stays private. Text a person writes
-never carries such a line: `announcements.checked` takes any out. A title
+never carries such a line: `announcements.checked` takes any out, again
+until none is left. A title
 is at most 200 characters and a text at most 20,000, and an empty or
 longer one is `InvalidMessage`, naming which.
 
