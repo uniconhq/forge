@@ -31,7 +31,7 @@ from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
 from forge.domain.identity import PLATFORM, Identity, Platform
 from forge.domain.ids import VersionId
 from forge.domain.uploads import Door
-from forge.forges.forgejo.http import Http, json_of, list_of
+from forge.forges.forgejo.http import MAX_PAGES, PAGE_SIZE, Http, json_of, list_of
 
 DEFAULT_BRANCH = "main"
 CREATE_MESSAGE = "Create"
@@ -41,10 +41,14 @@ PAGE_LIMIT = 50
 WRITE_ATTEMPTS = 4
 
 
+SEARCH_PATH = "/api/v1/repos/search"
+
+
 class Repos:
     def __init__(self, http: Http, *, platform_account: str) -> None:
         self._http = http
         self._platform_account = platform_account
+        self._org_ids: dict[str, int] = {}
 
     async def create(
         self, as_: Identity, owner: str, name: str, files: Files, *, private: bool
@@ -437,6 +441,49 @@ class Repos:
     async def under(self, org: str, as_: Identity = PLATFORM) -> list[dict[str, Any]]:
         """Every repository in the org that `as_` may see."""
         return await self._http.get_all(as_, f"/api/v1/orgs/{org}/repos")
+
+    async def named_with(
+        self, org: str, part: str, as_: Identity = PLATFORM
+    ) -> list[dict[str, Any]]:
+        """Every repository the org owns whose name holds `part` and `as_` may
+        see, found through the forge's search, so a listing costs what it
+        finds: an org holds a repository for every contestant at every task,
+        and reading them all to find a contest's few tasks grew with each one.
+        The caller still checks each name, since the search matches anywhere
+        in it.
+        """
+        owner = await self._org_id(org)
+        found: list[dict[str, Any]] = []
+        for page in range(1, MAX_PAGES + 1):
+            response = await self._http.call(
+                as_,
+                "GET",
+                SEARCH_PATH,
+                params={
+                    "q": part,
+                    "uid": owner,
+                    "exclusive": "true",
+                    "limit": PAGE_SIZE,
+                    "page": page,
+                },
+            )
+            batch = json_of(response).get("data") or []
+            found.extend(batch)
+            if len(batch) < PAGE_SIZE:
+                return found
+        raise Unavailable(f"the search for {part} in {org} did not end within {MAX_PAGES} pages")
+
+    async def _org_id(self, org: str) -> int:
+        """The forge's number for the org, read once: an org is named by a key
+        that is never reused, so the number never changes under its name.
+        """
+        known = self._org_ids.get(org)
+        if known is None:
+            known = int(
+                json_of(await self._http.call(PLATFORM, "GET", f"/api/v1/orgs/{org}"))["id"]
+            )
+            self._org_ids[org] = known
+        return known
 
     async def record(self, owner: str, name: str) -> dict[str, Any]:
         return json_of(await self._http.call(PLATFORM, "GET", f"/api/v1/repos/{owner}/{name}"))

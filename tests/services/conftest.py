@@ -6,7 +6,9 @@ contest and a task made the way an organiser makes them, a checked
 a create that failed. For the contestant's side: a session for anyone,
 the contest's settings written as a test needs them, a task made and one
 published by a save of its starter, a contestant entered in a running
-contest, and a file uploaded as a browser uploads one.
+contest, and a file uploaded as a browser uploads one. A test that moves
+the clock on by more than a credential lives and then calls an action as
+someone passes the guard first, `identity.current`, as every request does.
 """
 
 import copy
@@ -27,6 +29,7 @@ from forge.services import (
     access,
     contestants,
     contests,
+    identity,
     orgs,
     publications,
     sessions,
@@ -193,8 +196,10 @@ async def upload(
     filename: str = "main.py",
 ) -> uploads.Upload:
     """A file uploaded the way a browser does: a slot, the bytes sent
-    through the door, and the upload completed.
+    through the door, and the upload completed, each request passing the
+    host's guard first, which keeps the session's credential fresh.
     """
+    await identity.current(session.id, setup=setup)
     slot = await uploads.slot(
         setup,
         session,

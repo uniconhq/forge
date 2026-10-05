@@ -1,6 +1,7 @@
 """An answer kept for a while: the first caller works it out and the ones
 arriving meanwhile wait for that answer rather than working it out again, and
-it is worked out afresh once its time has passed by the setup's clock.
+it is worked out afresh once its time has passed by the setup's clock, or
+once it is forgotten, even while it was being worked out.
 """
 
 import asyncio
@@ -43,3 +44,33 @@ async def test_an_answer_is_worked_out_again_once_its_time_has_passed() -> None:
     fresh = await memo.remembered("list", timedelta(seconds=5), work)
 
     assert (kept, still, fresh) == ("first", "first", "second")
+
+
+async def test_a_forgotten_answer_is_worked_out_again() -> None:
+    memo = Memo(FakeClock())
+    answers = iter(["first", "second"])
+
+    async def work() -> str:
+        return next(answers)
+
+    kept = await memo.remembered("list", timedelta(seconds=5), work)
+    memo.forget("list")
+    fresh = await memo.remembered("list", timedelta(seconds=5), work)
+
+    assert (kept, fresh) == ("first", "second")
+
+
+async def test_an_answer_forgotten_while_it_was_worked_out_is_not_kept() -> None:
+    memo = Memo(FakeClock())
+    answers = iter(["stale", "fresh"])
+
+    async def work() -> str:
+        answer = next(answers)
+        if answer == "stale":
+            memo.forget("list")
+        return answer
+
+    stale = await memo.remembered("list", timedelta(seconds=5), work)
+    fresh = await memo.remembered("list", timedelta(seconds=5), work)
+
+    assert (stale, fresh) == ("stale", "fresh")
