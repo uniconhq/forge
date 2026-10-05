@@ -108,11 +108,12 @@ async def test_a_unit_of_work_that_rolls_back_publishes_nothing(
     assert await _heard(listening) == []
 
 
-def _event(repository: str, number: int = 1) -> bytes:
+def _event(repository: str, number: int = 1, *, label: str | None = None) -> bytes:
+    kind = "clarification" if repository.endswith(".desk") else "announcement"
     return json.dumps(
         {
             "repository": {"name": repository, "owner": {"login": "acme"}},
-            "issue": {"number": number},
+            "issue": {"number": number, "labels": [{"name": label if label else kind}]},
         }
     ).encode()
 
@@ -128,6 +129,7 @@ async def test_a_push_nudges_who_may_hear_of_each_kind_of_thread(
     await events.publish(setup, OrgId("acme"), "issues", _event("spring.hidden.task"))
     await events.publish(setup, OrgId("other"), "issues", _event("spring.contest"))
     await events.publish(setup, OrgId("acme"), "push", _event("spring.contest"))
+    await events.publish(setup, OrgId("acme"), "issues", _event("spring.contest", label="bug"))
 
     asked, contest, released, unreleased = await _heard(listening)
     assert (asked.kind, asked.user, asked.scope, asked.contest) == (

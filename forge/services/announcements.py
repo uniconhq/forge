@@ -189,8 +189,7 @@ def checked(title: str, body: str) -> tuple[str, str]:
     platform reads back taken out, and each within its length. An empty or
     too long one is `InvalidMessage`, naming it.
     """
-    title = MARK.sub("", title).strip()
-    body = MARK.sub("", body).strip()
+    title, body = _unmarked(title), _unmarked(body)
     if not title:
         raise InvalidMessage("A title is needed.", field="title")
     if len(title) > TITLE_MOST:
@@ -200,6 +199,17 @@ def checked(title: str, body: str) -> tuple[str, str]:
     if len(body) > BODY_MOST:
         raise InvalidMessage(f"The text is at most {BODY_MOST} characters.", field="body")
     return title, body
+
+
+def _unmarked(text: str) -> str:
+    """The text with every marker taken out, again until none is left, so
+    one hidden inside another cannot come out whole.
+    """
+    while True:
+        bare = MARK.sub("", text)
+        if bare == text:
+            return bare.strip()
+        text = bare
 
 
 def place_of(scope: Scope) -> ThreadPlace:

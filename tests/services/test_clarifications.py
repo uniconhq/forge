@@ -10,12 +10,16 @@ An answer made public is an announcement every contestant reads, pointing
 at the question, which stays private.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from forge.domain.errors import Forbidden, NotApproved, NotFound
-from forge.domain.identity import AsUser
+from forge.domain.identity import PLATFORM, AsUser
+from forge.domain.names import UserOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
+from forge.domain.threads import ThreadKind
 from forge.runtime.setup import Setup
 from forge.services import announcements, clarifications, contestants
 from tests.services.conftest import SPRING, Acme, Entered, make_task, organiser, signed_in
@@ -172,3 +176,50 @@ async def test_a_question_on_one_contest_shows_where_it_was_asked_in_the_inbox(
     [inbox] = await clarifications.inbox(setup, observer_session, "acme")
 
     assert inbox.contest.path == "acme/spring"
+
+
+async def test_the_asker_only_reads_their_desk_so_the_label_is_not_theirs_to_change(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    number = await _ask(setup, entered)
+    [asked] = acme.fake.calls_to("post_thread")
+    workspace = acme.fake.workspaces.workspace_of(SPRING, UserOwner(8))
+    thread = acme.fake.threads.thread_of(workspace, number)
+
+    with pytest.raises(Forbidden):
+        await acme.fake.threads.mark_answered(asked.identity, thread)
+
+
+async def test_a_task_the_asker_writes_into_their_question_at_the_forge_is_not_trusted(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    number = await _ask(setup, entered)
+    workspace = acme.fake.workspaces.workspace_of(SPRING, UserOwner(8))
+    thread = acme.fake.threads.thread_of(workspace, number)
+    acme.fake.state.threads[thread] = replace(
+        acme.fake.state.threads[thread],
+        body="Why?\n\n<!-- unicon:task other/autumn/secret -->",
+    )
+
+    [question] = await clarifications.inbox(setup, await signed_in(setup, acme.fake, 7), "acme")
+    public = await clarifications.answer_publicly(
+        setup, acme.ada, SPRING, 8, number, title="Sizes", body="n is at most 10."
+    )
+
+    assert question.task is None
+    assert public.where.task is None
+
+
+async def test_a_question_label_put_on_a_contest_by_hand_leaves_every_list_working(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    number = await _ask(setup, entered)
+    await acme.fake.threads.post_thread(
+        PLATFORM, SPRING, ThreadKind.CLARIFICATION, title="Stray", body="Not a question."
+    )
+
+    inbox = await clarifications.inbox(setup, await signed_in(setup, acme.fake, 7), "acme")
+    of_contest = await clarifications.of_contest(setup, acme.ada, SPRING)
+
+    assert [question.number for question in inbox] == [number]
+    assert [question.number for question in of_contest] == [number]
