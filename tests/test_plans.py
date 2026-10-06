@@ -1,765 +1,1360 @@
-"""The compiler: one flat plan per stage in the runner's plan shape version 4,
-every step carrying its primitive's image and limits, every
-`foreach` expanded over the task's actual tests and folded where the
-primitive batches, every value resolved, the verdict block from the
-workflow's outputs, the same bytes every time; what it refuses, each at its
-YAML path; only the compiler writes inside `plans/`; and what a publication
-names as changing how it grades, in the note it carries. Every plan compiled
-here keeps the package's copy of the plan schema, and the shape a plan is
-held to below is the contract's section 2, written out by hand.
+"""The compiler: a task's tests read from its folders, its groups matched to
+them, and its plan compiled from `task.yaml`, the workflow and the primitives
+its steps use. The plan keeps the runner's contract; a per-test step is one
+batch or one entry per test; every value is written in or refused at its
+path in `task.yaml`; secrets reach only the ports marked for them; sealed
+steps are found and held back; credit names a number fit to be one; a plan
+that does not fit the run ceiling or a machine is refused; and a
+publication says what changed how the task grades.
 """
 
 import json
-import re
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from typing import Any
 
 import pytest
 
 from forge.domain.contracts import violation
-from forge.domain.definitions import TaskDefinition, parse_task, starter_task
+from forge.domain.definitions import parse_task, starter_task
+from forge.domain.grading import PLATFORM_MACHINE, Machine
 from forge.domain.plans import (
+    PLAN_PATH,
+    Compiled,
     Plan,
     Snapshot,
-    cases_of,
-    compile_plans,
+    check_workflow,
+    compile_plan,
     grading_changes,
+    group_problems,
     is_reserved,
-    plan_path,
+    natural,
+    read_tests,
+    spelled,
+)
+from forge.domain.plans import (
+    TestCase as Case,
+)
+from forge.domain.plans import (
+    test_yaml_paths as yaml_paths,
 )
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
-from forge.domain.publications import Note, read_note, write_note
+from forge.domain.showing import NOTHING_SEALED, Sealed
 from forge.domain.workflow_definition import WorkflowDefinition, parse_workflow
-from forge.domain.yaml_models import InvalidDefinition
+from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES
 
-STARTER = starter_task("Sum")["task.yaml"]
-TESTS = ("data/testcases/1.in", "data/testcases/1.ans", "data/testcases/2.in")
-PATHS = (*TESTS, "data/testcases/2.ans", "data/testcases/10.in", "data/testcases/10.ans")
-HARNESS_IMAGE = f"ghcr.io/uniconhq/harness@{PLACEHOLDER_DIGEST}"
+HARNESS = "ghcr.io/uniconhq/harness@sha256:" + "1" * 64
+CLASSIC_WORKFLOW = parse_workflow(CLASSIC)
 
 
-def classic() -> dict[str, WorkflowDefinition]:
-    return {"unicon/classic@v1": parse_workflow(CLASSIC)}
+def declared(name: str, rest: str) -> PrimitiveDeclaration:
+    return parse_primitive(f"image: ghcr.io/acme/{name}@{PLACEHOLDER_DIGEST}\n" + rest)
 
 
-def primitives(**extra: bytes) -> dict[str, PrimitiveDeclaration]:
-    found = {f"unicon/{name}@v1": parse_primitive(text) for name, text in PRIMITIVES.items()}
-    found.update({ref: parse_primitive(text) for ref, text in extra.items()})
-    return found
+LIMITS = "limits: {time_ms: 1000, cpu_ms: 1000, memory_mb: 64, pids: 8, output_mb: 1, gpus: 0}\n"
+
+ACME = {
+    "acme/score@v1": declared(
+        "score",
+        "batch: true\n"
+        + LIMITS
+        + """\
+inputs:
+  actual: {type: file, runs: false}
+  expected: {type: file, runs: false}
+outputs:
+  fraction: {type: number, optional: true}
+  steps: number
+  outcome: outcome
+""",
+    ),
+    "acme/notebook@v1": declared(
+        "notebook",
+        LIMITS
+        + """\
+inputs:
+  notebook: {type: file, runs: true}
+  data: {type: folder, runs: false}
+  key: {type: text, secret: true, optional: true}
+  note: {type: text, optional: true}
+outputs:
+  predictions: file
+  accuracy: number
+  outcome: outcome
+""",
+    ),
+    "acme/each@v1": declared(
+        "each",
+        LIMITS
+        + """\
+inputs:
+  actual: {type: file, runs: false}
+  expected: {type: file, runs: false}
+outputs:
+  outcome: outcome
+""",
+    ),
+    "acme/gpu@v1": declared(
+        "gpu",
+        LIMITS
+        + """\
+limits_from:
+  gpus: {input: gpus}
+inputs:
+  gpus: number
+outputs:
+  outcome: outcome
+""",
+    ),
+}
+PRIMITIVES_READ: dict[str, PrimitiveDeclaration] = {
+    **{f"unicon/{name}@v2": parse_primitive(text) for name, text in PRIMITIVES.items()},
+    **ACME,
+}
+
+CLASSIC_HEAD = """\
+inputs:
+  submission: {type: file, contestant: true}
+  language: {type: enum, options: [c, cpp, java, python], contestant: true}
+"""
+COMPILE = """\
+  - id: compile
+    use: unicon/compile@v2
+    with:
+      source: ${{ inputs.submission }}
+      language: ${{ inputs.language }}
+"""
+CHECK = """\
+  - id: check
+    use: unicon/diff-check@v2
+    per_test: true
+    with:
+      actual: ${{ steps.run.output }}
+      expected: ${{ test.answer }}
+"""
+
+TUNABLE = parse_workflow(
+    CLASSIC_HEAD
+    + """\
+  n: {type: number, contestant: true}
+  verbose: boolean
+  scale: number
+  memory_limit: number
+test:
+  input: file
+  answer: file
+  seconds: number
+  name: text
+steps:
+"""
+    + COMPILE
+    + """\
+  - id: run
+    use: unicon/sandbox-run@v2
+    per_test: true
+    with:
+      binary: ${{ steps.compile.binary }}
+      input: ${{ test.input }}
+      time_limit: ${{ test.seconds }}
+      memory_limit: ${{ inputs.memory_limit }}
+      args: >-
+        --n ${{ inputs.n }} --scale ${{ inputs.scale }} --v ${{ inputs.verbose }}
+        --test ${{ test.name }} {raw}
+"""
+    + CHECK
+)
+"""Classic with a contestant number, a task boolean and number, and a number
+and a text field per test, written into the run's arguments."""
+
+CHECKED = parse_workflow(
+    CLASSIC_HEAD
+    + """\
+  time_limit: number
+  memory_limit: number
+  better: {type: enum, options: [higher, lower]}
+test:
+  input: file
+  answer: file
+steps:
+"""
+    + COMPILE
+    + """\
+  - id: run
+    use: unicon/sandbox-run@v2
+    per_test: true
+    with:
+      binary: ${{ steps.compile.binary }}
+      input: ${{ test.input }}
+      time_limit: ${{ inputs.time_limit }}
+      memory_limit: ${{ inputs.memory_limit }}
+  - id: score
+    use: acme/score@v1
+    per_test: true
+    with:
+      actual: ${{ steps.run.output }}
+      expected: ${{ test.answer }}
+report:
+  fraction:
+    {from: "${{ steps.score.fraction }}", fold: mean, better: higher, at_least: 0, at_most: 1}
+  miss: {from: "${{ steps.score.fraction }}", fold: mean, better: lower, at_least: 0, at_most: 1}
+  steps_taken: {from: "${{ steps.score.steps }}", fold: sum, better: lower, at_least: 0}
+  raw: {from: "${{ steps.score.steps }}", fold: sum, at_least: 0}
+  reward: {from: "${{ steps.score.steps }}", fold: sum, better: higher}
+  chosen: {from: "${{ steps.score.steps }}", fold: sum, better: "${{ inputs.better }}", at_least: 0}
+  log: ${{ steps.compile.compile_log }}
+"""
+)
+"""Classic scored by a checker reporting a bounded fraction, and numbers with
+every combination of direction and bound."""
+
+NOTEBOOK = parse_workflow(
+    """\
+inputs:
+  notebook: {type: file, contestant: true}
+  data: folder
+  key: {type: text, optional: true}
+test:
+  answer: file
+steps:
+  - id: predict
+    use: acme/notebook@v1
+    with:
+      notebook: ${{ inputs.notebook }}
+      data: ${{ inputs.data }}
+      key: ${{ inputs.key }}
+  - id: score
+    use: acme/score@v1
+    per_test: true
+    with:
+      actual: ${{ steps.predict.predictions }}
+      expected: ${{ test.answer }}
+report:
+  accuracy: ${{ steps.predict.accuracy }}
+  fraction:
+    {from: "${{ steps.score.fraction }}", fold: mean, better: higher, at_least: 0, at_most: 1}
+"""
+)
+"""The contestant's notebook run once over a data folder the task names, and
+each test scored from its predictions."""
+
+OUTPUT_ONLY = parse_workflow(
+    """\
+inputs:
+  answers: {type: file, contestant: true, per_test: true}
+test:
+  input: {type: file, public: true}
+  answer: file
+steps:
+  - id: check
+    use: acme/each@v1
+    per_test: true
+    with:
+      actual: ${{ inputs.answers }}
+      expected: ${{ test.answer }}
+"""
+)
+"""An output-only task: one file per test, checked by a primitive that takes
+no batch, each test's input served to contestants."""
+
+CLASSIC_TASK = """\
+name: Sum
+workflow: unicon/classic@v2
+inputs:
+  submission: {label: Your solution}
+  language: {options: [python]}
+  time_limit: 2
+  memory_limit: 256
+test_groups:
+  main: {each: 100}
+"""
 
 
-def task(extra: bytes = b"") -> TaskDefinition:
-    return parse_task(STARTER + extra)
+def classic_tests(*ids: str) -> set[str]:
+    """The files of the tests `ids`, each an input and an answer."""
+    return {f"tests/{test}/{entry}" for test in ids for entry in ("input", "answer")}
+
+
+def task_with(
+    text: str = CLASSIC_TASK,
+    *,
+    workflow: str = "unicon/classic@v2",
+    inputs: str | None = None,
+    groups: str | None = None,
+    credit: str | None = None,
+) -> str:
+    """`text` with another workflow line, inputs block, groups or credit."""
+    lines = text.replace("unicon/classic@v2", workflow)
+    if inputs is not None:
+        head, _, rest = lines.partition("inputs:\n")
+        _, _, tail = rest.partition("test_groups:\n")
+        lines = f"{head}inputs:\n{inputs}test_groups:\n{tail}"
+    if groups is not None:
+        head, _, _ = lines.partition("test_groups:\n")
+        lines = f"{head}test_groups:\n{groups}"
+    if credit is not None:
+        lines += f"credit: {credit}\n"
+    return lines
+
+
+def cases_of(
+    workflow: WorkflowDefinition, paths: Collection[str], yamls: Mapping[str, bytes]
+) -> list[Case]:
+    tests, problems = read_tests(paths, workflow.test, yamls)
+    assert problems == []
+    return tests
 
 
 def compiled(
-    definition: TaskDefinition | None = None,
-    workflows: dict[str, WorkflowDefinition] | None = None,
-    paths: Collection[str] = PATHS,
-    declared: dict[str, PrimitiveDeclaration] | None = None,
-) -> dict[str, Plan]:
-    plans = compile_plans(
-        definition or task(),
-        workflows or classic(),
-        declared or primitives(),
+    text: str,
+    paths: Collection[str],
+    workflow: WorkflowDefinition = CLASSIC_WORKFLOW,
+    *,
+    yamls: Mapping[str, bytes] | None = None,
+    secrets: Collection[str] = frozenset(),
+    machine: Machine = PLATFORM_MACHINE,
+) -> Compiled:
+    """The task compiled after every check before it has passed."""
+    task = parse_task(text)
+    assert check_workflow(workflow, PRIMITIVES_READ) == []
+    tests = cases_of(workflow, paths, yamls or {})
+    assert group_problems(task, tests, paths) == []
+    return compile_plan(
+        task,
+        workflow,
+        PRIMITIVES_READ,
         paths,
-        harness_image=HARNESS_IMAGE,
+        tests,
+        secrets=secrets,
+        machine=machine,
+        harness_image=HARNESS,
     )
-    for plan in plans.values():
-        assert violation(document(plan), "plan") is None
-    return plans
+
+
+def refused(
+    text: str,
+    paths: Collection[str],
+    workflow: WorkflowDefinition = CLASSIC_WORKFLOW,
+    **options: Any,
+) -> list[Problem]:
+    with pytest.raises(InvalidDefinition) as raised:
+        compiled(text, paths, workflow, **options)
+    return raised.value.errors
 
 
 def document(plan: Plan) -> dict[str, Any]:
-    loaded: dict[str, Any] = json.loads(plan.to_bytes())
-    return loaded
+    found: dict[str, Any] = json.loads(plan.to_bytes())
+    return found
 
 
-def image(name: str) -> str:
-    return f"ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}"
+def step(plan: Plan, step_id: str) -> dict[str, Any]:
+    (found,) = [entry for entry in document(plan)["steps"] if entry["id"] == step_id]
+    assert isinstance(found, dict)
+    return found
 
 
-def test_the_starter_task_compiles_to_one_flat_plan_over_classic() -> None:
-    plans = compiled()
-    assert list(plans) == ["default"]
-    plan = document(plans["default"])
+# The tests, from their folders
 
-    assert (plan["schema_version"], plan["harness_image"], plan["stage"]) == (
-        4,
-        HARNESS_IMAGE,
-        "default",
+
+def test_two_groups_may_each_have_a_test_1() -> None:
+    tests = cases_of(CLASSIC_WORKFLOW, classic_tests("samples/1", "main/1"), {})
+
+    assert [test.id for test in tests] == ["main/1", "samples/1"]
+    assert [(test.group, test.name) for test in tests] == [("main", "1"), ("samples", "1")]
+    assert tests[1].entries == {
+        "answer": "tests/samples/1/answer",
+        "input": "tests/samples/1/input",
+    }
+
+
+def test_tests_are_in_natural_order_within_groups_in_name_order() -> None:
+    paths = classic_tests("main/10", "main/2", "main/1", "b/x10", "b/x9", "a/1")
+
+    assert [test.id for test in cases_of(CLASSIC_WORKFLOW, paths, {})] == [
+        "a/1",
+        "b/x9",
+        "b/x10",
+        "main/1",
+        "main/2",
+        "main/10",
+    ]
+    assert sorted(["10", "2", "1"], key=natural) == ["1", "2", "10"]
+
+
+def test_an_entry_may_carry_an_ending_after_the_fields_name() -> None:
+    tests = cases_of(CLASSIC_WORKFLOW, {"tests/main/1/input.txt", "tests/main/1/answer.out"}, {})
+
+    assert tests[0].entries == {
+        "input": "tests/main/1/input.txt",
+        "answer": "tests/main/1/answer.out",
+    }
+
+
+def test_dot_files_are_left_out() -> None:
+    paths = classic_tests("main/1") | {
+        "tests/.gitkeep",
+        "tests/main/.hidden/input",
+        "tests/main/1/.x",
+    }
+
+    assert [test.id for test in cases_of(CLASSIC_WORKFLOW, paths, {})] == ["main/1"]
+
+
+def read_problems(
+    paths: Collection[str],
+    workflow: WorkflowDefinition = CLASSIC_WORKFLOW,
+    yamls: Mapping[str, bytes] | None = None,
+) -> list[Problem]:
+    _, problems = read_tests(paths, workflow.test, yamls or {})
+    return problems
+
+
+def test_an_entry_for_no_field_is_refused_naming_the_test() -> None:
+    assert read_problems(classic_tests("main/1") | {"tests/main/1/extra"}) == [
+        {
+            "path": "tests/main/1/extra",
+            "message": "The test main/1 has an entry for no field: extra.",
+        }
+    ]
+
+
+def test_a_missing_field_is_refused_naming_the_test_and_the_field() -> None:
+    assert read_problems({"tests/main/1/input"}) == [
+        {"path": "tests/main/1/", "message": "The test main/1 has no answer."}
+    ]
+
+
+def test_a_field_given_twice_is_refused() -> None:
+    assert read_problems(classic_tests("main/1") | {"tests/main/1/input.txt"}) == [
+        {"path": "tests/main/1/", "message": "The test main/1 gives input twice: input, input.txt."}
+    ]
+
+
+def test_a_file_outside_a_test_folder_is_refused() -> None:
+    problems = read_problems(classic_tests("main/1") | {"tests/README.md", "tests/main/notes.txt"})
+
+    assert [problem["path"] for problem in problems] == ["tests/README.md", "tests/main/notes.txt"]
+    assert all("holds only folders" in problem["message"] for problem in problems)
+
+
+def test_a_test_whose_name_is_not_a_name_is_refused() -> None:
+    assert read_problems(classic_tests("main/a.b")) == [
+        {"path": "tests/main/a.b/", "message": "'a.b' is not a name: letters, digits, _ and -."}
+    ]
+
+
+FOLDERS = parse_workflow(
+    """\
+test:
+  env: folder
+  answer: file
+steps:
+  - id: check
+    use: acme/each@v1
+    per_test: true
+    with: {actual: "${{ test.answer }}", expected: "${{ test.answer }}"}
+"""
+)
+
+
+def test_a_folder_field_is_a_folder_named_the_field() -> None:
+    paths = {"tests/main/1/env/a.txt", "tests/main/1/env/b/c.txt", "tests/main/1/answer"}
+
+    (test,) = cases_of(FOLDERS, paths, {})
+
+    assert test.entries == {"env": "tests/main/1/env/", "answer": "tests/main/1/answer"}
+
+
+def test_a_file_where_a_folder_field_is_wanted_is_refused_and_the_other_way() -> None:
+    assert read_problems({"tests/main/1/env", "tests/main/1/answer"}, FOLDERS) == [
+        {"path": "tests/main/1/env", "message": "env is a folder field."}
+    ]
+    assert read_problems({"tests/main/1/env/a", "tests/main/1/answer/b"}, FOLDERS) == [
+        {"path": "tests/main/1/answer/", "message": "answer is a file field."}
+    ]
+
+
+SCALARS = parse_workflow(
+    """\
+test:
+  answer: file
+  seconds: number
+  name: text
+  fast: boolean
+  kind: {type: enum, options: [small, large]}
+steps:
+  - id: check
+    use: acme/each@v1
+    per_test: true
+    with: {actual: "${{ test.answer }}", expected: "${{ test.answer }}"}
+"""
+)
+ONE_SCALAR_TEST = {"tests/main/1/answer", "tests/main/1/test.yaml"}
+GOOD_YAML = b"seconds: 2.5\nname: one\nfast: true\nkind: small\n"
+
+
+def test_a_test_yaml_gives_every_scalar_field_its_value() -> None:
+    (test,) = cases_of(SCALARS, ONE_SCALAR_TEST, {"tests/main/1/test.yaml": GOOD_YAML})
+
+    assert test.scalars == {"seconds": 2.5, "name": "one", "fast": True, "kind": "small"}
+    assert test.entries == {"answer": "tests/main/1/answer"}
+    assert yaml_paths(ONE_SCALAR_TEST | {"tests/test.yaml", "tests/main/test.yaml"}) == [
+        "tests/main/1/test.yaml"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (b"seconds: 2.5\nname: one\nfast: true\n", "kind is not given."),
+        (GOOD_YAML + b"colour: red\n", "colour is not a field of the workflow's tests."),
+        (GOOD_YAML.replace(b"2.5", b"fast"), "seconds: Must be a number."),
+        (GOOD_YAML.replace(b"2.5", b".nan"), "seconds: Must be a number."),
+        (GOOD_YAML.replace(b"name: one", b"name: 1"), "name: Must be text."),
+        (GOOD_YAML.replace(b"fast: true", b"fast: 1"), "fast: Must be true or false."),
+        (GOOD_YAML.replace(b"small", b"huge"), "kind: Must be one of small, large."),
+        (b"[1, 2]\n", "must be a mapping"),
+        (GOOD_YAML + b"seconds: 3\n", "given twice"),
+    ],
+)
+def test_a_test_yaml_that_breaks_the_fields_is_refused_at_it(text: bytes, message: str) -> None:
+    problems = read_problems(ONE_SCALAR_TEST, SCALARS, {"tests/main/1/test.yaml": text})
+
+    assert [problem["path"] for problem in problems] == ["tests/main/1/test.yaml"]
+    assert message in problems[0]["message"]
+
+
+def test_a_test_without_its_test_yaml_is_refused() -> None:
+    assert read_problems({"tests/main/1/answer"}, SCALARS) == [
+        {
+            "path": "tests/main/1/",
+            "message": "The test needs a test.yaml giving seconds, name, fast, kind.",
+        }
+    ]
+
+
+def test_a_test_yaml_is_refused_when_the_workflow_has_no_scalar_field() -> None:
+    paths = classic_tests("main/1") | {"tests/main/1/test.yaml"}
+
+    assert read_problems(paths, yamls={"tests/main/1/test.yaml": b"x: 1\n"}) == [
+        {
+            "path": "tests/main/1/test.yaml",
+            "message": "The workflow's tests have no text, number, true-or-false or enum field, "
+            "so a test has no test.yaml.",
+        }
+    ]
+
+
+def test_a_scalar_field_given_as_a_file_is_an_entry_for_no_field() -> None:
+    problems = read_problems(
+        ONE_SCALAR_TEST | {"tests/main/1/seconds"}, SCALARS, {"tests/main/1/test.yaml": GOOD_YAML}
     )
-    assert plan["tests"] == ["1", "2", "10"]
-    compile_, run, check = plan["steps"]
+
+    assert problems == [
+        {
+            "path": "tests/main/1/seconds",
+            "message": "The test main/1 has an entry for no field: seconds.",
+        }
+    ]
+
+
+def groups_of(groups: str, paths: Collection[str]) -> list[Problem]:
+    task = parse_task(task_with(groups=groups))
+    return group_problems(task, cases_of(CLASSIC_WORKFLOW, paths, {}), paths)
+
+
+def test_every_group_folder_is_a_group_and_every_group_a_folder() -> None:
+    assert groups_of("  main: {each: 1}\n", classic_tests("main/1")) == []
+    assert groups_of("  main: {each: 1}\n", classic_tests("main/1", "extra/1")) == [
+        {
+            "path": "tests/extra/",
+            "message": "extra is a folder of tests/ but not a group in test_groups: list it, or "
+            "move its tests.",
+        }
+    ]
+    assert groups_of("  main: {each: 1}\n  large: {each: 1}\n", classic_tests("main/1")) == [
+        {
+            "path": "test_groups.large",
+            "message": "There is no folder tests/large/ with a test in it.",
+        }
+    ]
+
+
+def test_a_task_without_tests_is_refused_at_its_groups() -> None:
+    task = parse_task(CLASSIC_TASK)
+
+    assert group_problems(task, [], {"task.yaml"}) == [
+        {
+            "path": "test_groups",
+            "message": "The task has no tests/ folder: add tests/<group>/<test>/.",
+        }
+    ]
+
+
+def test_every_test_weight_names_a_test_of_its_group() -> None:
+    groups = "  main: {each: 1, test_weights: {'2': 3, '9': 2}}\n  samples: {}\n"
+    paths = classic_tests("main/1", "main/2", "samples/9")
+
+    assert groups_of(groups, paths) == [
+        {"path": "test_groups.main.test_weights.9", "message": "main/9 is not a test of main."}
+    ]
+
+
+# Compiling
+
+
+TWO_GROUPS = "  main: {each: 100}\n  samples: {}\n"
+
+
+def test_the_classic_task_compiles_to_a_plan_the_runner_takes() -> None:
+    text = task_with(groups=TWO_GROUPS)
+    result = compiled(text, classic_tests("main/1", "main/2", "samples/1"))
+    plan = result.plan
+    written = document(plan)
+
+    assert violation(written, "plan") is None
+    assert written["schema_version"] == 5
+    assert written["harness_image"] == HARNESS
+    assert written["tests"] == ["main/1", "main/2", "samples/1"]
+    assert written["contestant"] == {
+        "submission": {"type": "file"},
+        "language": {"type": "enum", "options": ["c", "cpp", "java", "python"]},
+    }
+    assert [entry["id"] for entry in written["steps"]] == ["compile", "run", "check"]
+    assert written["report"] == {
+        "time_ms": {"step": "run", "output": "time_ms", "at_least": 0},
+        "memory_kb": {"step": "run", "output": "memory_kb", "at_least": 0},
+        "log": {"step": "compile", "output": "compile_log"},
+    }
+    assert (result.sealed, result.notes, result.held) == ((), (), NOTHING_SEALED)
+
+
+def test_a_once_step_takes_the_contestants_file_into_a_folder_port() -> None:
+    compile_ = step(compiled(CLASSIC_TASK, classic_tests("main/1")).plan, "compile")
+
     assert compile_ == {
         "id": "compile",
-        "primitive": "compile@v1",
-        "image": image("compile"),
+        "primitive": "unicon/compile@v2",
+        "image": f"ghcr.io/uniconhq/primitive-compile@{PLACEHOLDER_DIGEST}",
+        "network": False,
         "limits": {
             "time_ms": 60000,
             "cpu_ms": 60000,
             "memory_mb": 1024,
             "pids": 128,
             "output_mb": 64,
+            "gpus": 0,
         },
+        "outputs": {"binary": "file", "compile_log": "text", "outcome": "outcome"},
+        "folders": ["source"],
         "inputs": {
             "source": {"submission": "submission"},
-            "language": {"submission": "submission", "field": "language"},
+            "language": {"submission": "language"},
         },
     }
-    assert (run["id"], run["primitive"], run["image"]) == (
-        "run",
-        "sandbox-run@v1",
-        image("sandbox-run"),
-    )
-    assert [item["test"] for item in run["batch"]] == ["1", "2", "10"]
-    assert run["batch"][2]["inputs"] == {
+
+
+def test_a_batching_primitive_is_one_step_with_an_item_per_test_and_its_limits_raised() -> None:
+    text = task_with(groups=TWO_GROUPS)
+    plan = compiled(text, classic_tests("main/1", "main/2", "samples/1")).plan
+
+    run = step(plan, "run")
+    assert [item["test"] for item in run["batch"]] == ["main/1", "main/2", "samples/1"]
+    assert run["batch"][0]["inputs"] == {
         "binary": {"step": "compile", "output": "binary"},
-        "input": {"task": "data/testcases/10.in"},
-        "time_limit": {"value": 2.0},
+        "input": {"task": "tests/main/1/input"},
+        "time_limit": {"value": 2},
         "memory_limit": {"value": 256},
     }
-    assert check["batch"][0]["inputs"] == {
-        "actual": {"step": "run", "output": "output", "test": "1"},
-        "expected": {"task": "data/testcases/1.ans"},
-    }
-    assert plan["verdict"] == {
-        "outcome": {"step": "check", "output": "outcome"},
-        "metrics": {"points": {"step": "check", "output": "points"}},
-        "tests": {
-            "time_ms": {"step": "run", "output": "time_ms"},
-            "memory_kb": {"step": "run", "output": "memory_kb"},
-        },
-        "summary": {"step": "compile", "output": "compile_log"},
-    }
-
-
-def test_a_batch_takes_the_limits_of_every_test_and_limits_from_raises_them() -> None:
-    slow = parse_task(STARTER.replace(b"value: 2.0", b"value: 9.5").replace(b"256", b"900"))
-    [run] = [step for step in compiled(slow)["default"].steps if step.id == "run"]
-    assert run.limits.model_dump() == {
-        "time_ms": 3 * (9.5 * 2000 + 3000),
-        "cpu_ms": 3 * (9.5 * 2000 + 3000),
-        "memory_mb": 900 + 256,
+    # time_limit 2 raises time_ms and cpu_ms to 2 * 2000 + 3000 for each of
+    # the three items, summed; memory_limit 256 raises memory_mb to 512.
+    assert run["limits"] == {
+        "time_ms": 21000,
+        "cpu_ms": 21000,
+        "memory_mb": 512,
         "pids": 128,
         "output_mb": 64,
+        "gpus": 0,
     }
-    [quick] = [step for step in compiled()["default"].steps if step.id == "run"]
-    assert (quick.limits.time_ms, quick.limits.memory_mb) == (3 * 7000, 512)
-
-
-def test_a_foreach_over_a_hundred_tests_is_a_hundred_steps_unless_the_primitive_batches() -> None:
-    hundred = [f"data/testcases/{n}.{ending}" for n in range(1, 101) for ending in ("in", "ans")]
-    unbatched = PRIMITIVES["diff-check"].replace(b"batch: true", b"batch: false")
-    plan = compiled(paths=hundred, declared=primitives(**{"unicon/diff-check@v1": unbatched}))
-    steps = plan["default"].steps
-    checks = [step for step in steps if step.id == "check"]
-    runs = [step for step in steps if step.id == "run"]
-
-    assert len(checks) == 100 and len(runs) == 1
-    assert [step.test for step in checks[:3]] == ["1", "2", "3"]
-    assert checks[9].inputs == {
-        "actual": {"step": "run", "output": "output", "test": "10"},
-        "expected": {"task": "data/testcases/10.ans"},
+    check = step(plan, "check")
+    assert check["batch"][2]["inputs"] == {
+        "actual": {"step": "run", "output": "output"},
+        "expected": {"task": "tests/samples/1/answer"},
     }
-    assert checks[0].limits.time_ms == 5000
-    assert len(runs[0].batch or ()) == 100
+    assert check["limits"]["time_ms"] == 3 * 5000
+    assert check["outputs"] == {"outcome": "outcome"}
+    assert "folders" not in check
 
 
-def test_a_test_list_is_ordered_by_number_and_leaves_hidden_and_unended_files_out() -> None:
-    tests, problems = cases_of(
-        "data/t/",
-        [
-            "data/t/10.in",
-            "data/t/2.in",
-            "data/t/2.out",
-            "data/t/b1.in",
-            "data/t/a10.in",
-            "data/t/a9.in",
-            "data/t/.gitkeep",
-            "data/t/README",
-            "data/t/deep/3.in",
-            "data/t/2.hint",
-        ],
+def test_a_limit_is_raised_and_rounded_up_never_lowered() -> None:
+    low = task_with(inputs="  time_limit: 0.5\n  memory_limit: 1.2\n")
+    run = step(compiled(low, classic_tests("main/1")).plan, "run")
+    assert (run["limits"]["time_ms"], run["limits"]["memory_mb"]) == (5000, 258)
+
+    odd = task_with(inputs="  time_limit: 1.0001\n  memory_limit: 256\n")
+    run = step(compiled(odd, classic_tests("main/1")).plan, "run")
+    assert run["limits"]["time_ms"] == 5001
+
+
+def test_a_non_batching_per_test_step_is_one_entry_per_test() -> None:
+    text = task_with(
+        workflow="acme/output-only@v1",
+        inputs="  answers: {max_size: 1MB}\n",
+        groups="  main: {each: 1}\n",
     )
-    assert problems == []
-    assert [test.id for test in tests] == ["2", "10", "a9", "a10", "b1"]
-    assert tests[0].files == {
-        "input": "data/t/2.in",
-        "answer": "data/t/2.out",
-        "hint": "data/t/2.hint",
+    plan = compiled(text, classic_tests("main/1", "main/2"), OUTPUT_ONLY).plan
+    written = document(plan)
+
+    assert violation(written, "plan") is None
+    assert written["contestant"] == {"answers": {"type": "file", "per_test": True}}
+    assert [(entry["id"], entry["test"]) for entry in written["steps"]] == [
+        ("check", "main/1"),
+        ("check", "main/2"),
+    ]
+    assert written["steps"][1]["inputs"] == {
+        "actual": {"submission": "answers"},
+        "expected": {"task": "tests/main/2/answer"},
     }
+    assert written["steps"][1]["limits"]["time_ms"] == 1000
 
 
-def test_a_test_with_two_answers_or_a_name_no_path_takes_is_refused() -> None:
-    _, problems = cases_of("t/", ["t/1.in", "t/1.ans", "t/1.out", "t/a b.in"])
-    assert problems == [
-        "The test 1 has two answer files in t/.",
-        "'a b' in t/ is not a test name: letters, digits, dots, hyphens and underscores, "
-        "starting with a letter or a digit.",
-    ]
+def test_a_plan_is_the_same_bytes_every_time_and_reads_back() -> None:
+    first = compiled(CLASSIC_TASK, classic_tests("main/1")).plan
+    second = compiled(CLASSIC_TASK, classic_tests("main/1")).plan
+
+    assert first.to_bytes() == second.to_bytes()
+    assert first.to_bytes().endswith(b"}\n")
+    assert Plan.from_bytes(first.to_bytes()) == first
 
 
-def refusals(
-    definition: TaskDefinition | None = None,
-    workflows: dict[str, WorkflowDefinition] | None = None,
-    paths: Collection[str] = PATHS,
-    declared: dict[str, PrimitiveDeclaration] | None = None,
-) -> list[tuple[str, str]]:
-    with pytest.raises(InvalidDefinition) as error:
-        compiled(definition, workflows, paths, declared)
-    return [(problem["path"], problem["message"]) for problem in error.value.errors]
+def test_a_plan_names_every_task_path_its_values_name() -> None:
+    plan = compiled(CLASSIC_TASK, classic_tests("main/1", "main/2")).plan
 
-
-def test_a_limit_is_never_raised_from_an_infinity_or_past_one() -> None:
-    with pytest.raises(InvalidDefinition) as error:
-        parse_task(STARTER.replace(b"value: 2.0", b"value: .inf"))
-    assert [problem["message"] for problem in error.value.errors] == ["Must be a number."]
-    huge = parse_task(STARTER.replace(b"value: 2.0", b"value: 1.0e+308"))
-    assert refusals(huge) == [
-        (
-            "workflow",
-            "In unicon/classic@v1, steps[1].with.time_limit: The limit time_ms raised from "
-            "time_limit is too large.",
-        )
-    ]
-
-
-def test_a_folder_with_no_tests_is_refused_at_the_setter_value() -> None:
-    assert refusals(paths=["data/testcases/.gitkeep"]) == [
-        (
-            "inputs.setter[0].value",
-            "There is no test in data/testcases/: add files such as 1.in and 1.ans.",
-        )
-    ]
-
-
-def test_a_test_missing_a_field_a_step_reads_is_refused_naming_it() -> None:
-    [(path, message)] = refusals(paths=TESTS)
-    assert path == "workflow"
-    assert message == (
-        "In unicon/classic@v1, steps[2].with.expected: The test 2 has no answer file in "
-        "data/testcases/."
+    assert plan.task_paths() == (
+        "tests/main/1/answer",
+        "tests/main/1/input",
+        "tests/main/2/answer",
+        "tests/main/2/input",
     )
 
 
-def probe(
-    steps: str, outputs: str = "outputs:\n  outcome: ${{ steps.compile.outcome }}\n"
-) -> dict[str, WorkflowDefinition]:
-    text = (
-        "name: unicon/classic\nversion: v1\ninputs:\n"
-        "  - {id: submission, type: code}\n  - {id: testcases, type: 'file[]'}\n"
-        "  - {id: time_limit, type: number}\n  - {id: memory_limit, type: number}\n"
-        f"steps:\n{steps}{outputs}"
+TUNABLE_TASK = """\
+name: Tunable
+workflow: acme/tunable@v1
+inputs:
+  verbose: true
+  scale: 2.50
+  memory_limit: 256
+test_groups:
+  main: {each: 1}
+"""
+TUNABLE_PATHS = classic_tests("main/1", "main/2") | {
+    "tests/main/1/test.yaml",
+    "tests/main/2/test.yaml",
+}
+TUNABLE_YAMLS = {
+    "tests/main/1/test.yaml": b"seconds: 1\nname: one\n",
+    "tests/main/2/test.yaml": b"seconds: 2.5\nname: two words\n",
+}
+
+
+def test_scalars_are_written_in_and_a_contestants_number_becomes_a_template() -> None:
+    plan = compiled(TUNABLE_TASK, TUNABLE_PATHS, TUNABLE, yamls=TUNABLE_YAMLS).plan
+
+    assert violation(document(plan), "plan") is None
+    first, second = step(plan, "run")["batch"]
+    assert first["inputs"]["args"] == {
+        "template": "--n {0} --scale 2.5 --v true --test one {{raw}}",
+        "parts": [{"submission": "n"}],
+    }
+    assert second["inputs"]["args"]["template"] == (
+        "--n {0} --scale 2.5 --v true --test two words {{raw}}"
     )
-    return {"unicon/classic@v1": parse_workflow(text)}
-
-
-COMPILE = (
-    "  - id: compile\n    use: unicon/compile@v1\n    with:\n"
-    "      source: ${{ inputs.submission }}\n      language: ${{ inputs.submission.language }}\n"
-)
-
-
-@pytest.mark.parametrize(
-    ("steps", "message"),
-    [
-        (
-            COMPILE + "      extra: 1\n",
-            "steps[0].with.extra: unicon/compile@v1 has no input extra.",
-        ),
-        (
-            "  - id: compile\n    use: unicon/compile@v1\n    with:\n"
-            "      source: ${{ inputs.submission }}\n",
-            "steps[0].with: unicon/compile@v1 needs the input language.",
-        ),
-        (
-            "  - id: compile\n    use: unicon/compile@v1\n    with:\n"
-            "      source: ${{ inputs.time_limit }}\n      language: python\n",
-            "steps[0].with.source: Takes file, not number.",
-        ),
-        (
-            "  - id: compile\n    use: unicon/compile@v1\n    with:\n"
-            "      source: ${{ inputs.submission }}\n      language: rust\n",
-            "steps[0].with.language: Takes one of python, c, cpp, java.",
-        ),
-        (
-            "  - id: compile\n    use: unicon/compile@v1\n    with:\n"
-            "      source: ${{ steps.later.binary }}\n      language: python\n",
-            "steps[0].with.source: later is not a step before this one.",
-        ),
-        (
-            COMPILE + "  - id: run\n    use: unicon/sandbox-run@v1\n"
-            "    foreach: ${{ inputs.testcases }}\n    with:\n"
-            "      binary: ${{ steps.compile.nothing }}\n      input: ${{ item.input }}\n"
-            "      time_limit: 1\n      memory_limit: 1\n",
-            "steps[1].with.binary: The step compile has no output nothing.",
-        ),
-        (
-            COMPILE + "  - id: run\n    use: unicon/sandbox-run@v1\n    with:\n"
-            "      binary: ${{ steps.compile.binary }}\n      input: ${{ item.input }}\n"
-            "      time_limit: 1\n      memory_limit: 1\n",
-            "steps[1].with.input: item is there only inside a step with a foreach.",
-        ),
-        (
-            COMPILE + "  - id: run\n    use: unicon/sandbox-run@v1\n"
-            "    foreach: ${{ inputs.submission }}\n    with:\n"
-            "      binary: ${{ steps.compile.binary }}\n      input: ${{ item.input }}\n"
-            "      time_limit: 1\n      memory_limit: 1\n",
-            "steps[1].foreach: A foreach runs over a setter's file[] input, ${{ inputs.<id> }}.",
-        ),
-        (
-            COMPILE + "  - id: run\n    use: unicon/sandbox-run@v1\n    with:\n"
-            "      binary: ${{ steps.compile.binary }}\n      input: ${{ inputs.submission }}\n"
-            "      time_limit: ${{ inputs.submission }}\n      memory_limit: 1\n",
-            "steps[1].with.time_limit: Takes number, not file.",
-        ),
-        (
-            "  - id: compile\n    use: unicon/compile@v1\n    with:\n"
-            "      source: ${{ inputs.submission }}\n      language: [python]\n",
-            "steps[0].with.language: A list or a mapping as an input comes with feature 10.",
-        ),
-        (
-            "  - id: compile\n    use: unicon/compile@v1\n    with:\n"
-            "      source: ${{ inputs.submission }}\n"
-            "      language: ${{ inputs.submission }} at ${{ inputs.submission }}\n",
-            "steps[0].with.language: Only a setter's text, number or true-or-false input is "
-            "written into text, not ${{ inputs.submission }}.",
-        ),
-        (
-            "  - id: compile\n    use: unicon/compile@v1\n    with:\n"
-            "      source: ${{ secrets.token }}\n      language: python\n",
-            "steps[0].with.source: ${{ secrets.token }} is not a reference a workflow makes: "
-            "inputs.<id>, inputs.<id>.language, steps.<id>.<output> or item.<field>.",
-        ),
-    ],
-    ids=[
-        "undeclared-input",
-        "missing-input",
-        "wrong-type",
-        "enum-value",
-        "later-step",
-        "no-such-output",
-        "item-outside-foreach",
-        "foreach-contestant",
-        "number-from-a-file",
-        "a-list",
-        "written-file",
-        "unknown-reference",
-    ],
-)
-def test_a_step_that_does_not_fit_its_primitive_is_refused_at_the_workflow(
-    steps: str, message: str
-) -> None:
-    [(path, found)] = refusals(workflows=probe(steps))
-    assert path == "workflow"
-    assert found == f"In unicon/classic@v1, {message}"
-
-
-def test_a_language_the_compile_step_does_not_take_is_refused() -> None:
-    rust = parse_task(STARTER.replace(b"language: [python]", b"language: [python, rust]"))
-    [(path, message)] = refusals(rust)
-    assert path == "workflow"
-    assert message == (
-        "In unicon/classic@v1, steps[0].with.language: Takes one of python, c, cpp, java, not rust."
+    assert (first["inputs"]["time_limit"], second["inputs"]["time_limit"]) == (
+        {"value": 1},
+        {"value": 2.5},
     )
+    # The first test's limit raises nothing past the primitive's own 5000;
+    # the second's raises it to 2.5 * 2000 + 3000.
+    assert step(plan, "run")["limits"]["time_ms"] == 5000 + 8000
 
 
-@pytest.mark.parametrize(
-    ("outputs", "message"),
-    [
-        ("outputs: {}\n", "outputs: A workflow's outputs give its outcome."),
-        (
-            "outputs:\n  outcome: ${{ steps.compile.compile_log }}\n",
-            "outputs.outcome: steps.compile.compile_log is text, not outcome.",
-        ),
-        (
-            "outputs:\n  outcome: ${{ steps.compile.outcome }}\n"
-            "  tests:\n    time_ms: ${{ steps.compile.outcome }}\n",
-            "outputs.tests.time_ms: steps.compile.outcome is outcome, not number.",
-        ),
-        (
-            "outputs:\n  outcome: literal\n",
-            "outputs.outcome: Must be ${{ steps.<id>.<output> }}.",
-        ),
-    ],
-    ids=["no-outcome", "outcome-type", "test-type", "not-a-reference"],
-)
-def test_outputs_that_do_not_fill_the_verdict_are_refused(outputs: str, message: str) -> None:
-    [(path, found)] = refusals(workflows=probe(COMPILE, outputs))
-    assert (path, found) == ("workflow", f"In unicon/classic@v1, {message}")
-
-
-def test_a_per_test_row_from_a_step_that_runs_once_is_refused() -> None:
-    outputs = (
-        "outputs:\n  outcome: ${{ steps.compile.outcome }}\n"
-        "  summary: ${{ steps.compile.compile_log }}\n"
-    )
-    assert compiled(workflows=probe(COMPILE, outputs))["default"].verdict.summary is not None
-    times = "outputs:\n  outcome: ${{ steps.compile.outcome }}\n  tests:\n"
-    times += "    time_ms: ${{ steps.nothing.time_ms }}\n"
-    [(_, message)] = refusals(workflows=probe(COMPILE, times))
-    assert message.endswith(
-        "outputs.tests.time_ms: steps.nothing.time_ms is not an output of a step."
-    )
-
-
-def test_a_foreach_over_a_second_list_is_refused_until_feature_10() -> None:
-    staged = parse_task(
-        STARTER.replace(
-            b"  setter:\n",
-            b"  setter:\n    - {id: extra, type: 'file[]', value: data/extra/}\n",
-        )
-    )
+def test_a_string_with_only_the_tasks_and_the_tests_scalars_is_a_plain_value() -> None:
     workflow = parse_workflow(
         CLASSIC.replace(
-            b"  - id: memory_limit\n", b"  - id: extra\n    type: file[]\n  - id: memory_limit\n"
-        ).replace(
-            b"    foreach: ${{ inputs.testcases }}\n    with:\n      actual",
-            b"    foreach: ${{ inputs.extra }}\n    with:\n      actual",
+            b"memory_limit: ${{ inputs.memory_limit }}",
+            b"memory_limit: ${{ inputs.memory_limit }}\n"
+            + b'      args: "-t ${{ inputs.time_limit }} {x}"',
         )
     )
-    [(path, message)] = refusals(
-        staged, {"unicon/classic@v1": workflow}, [*PATHS, "data/extra/1.in", "data/extra/1.ans"]
+    plan = compiled(
+        CLASSIC_TASK.replace("time_limit: 2", "time_limit: 2.50"), classic_tests("main/1"), workflow
+    ).plan
+
+    assert step(plan, "run")["batch"][0]["inputs"]["args"] == {"value": "-t 2.5 {x}"}
+
+
+def test_a_contestant_scalar_given_whole_to_a_text_port_is_a_template_of_itself() -> None:
+    workflow = parse_workflow(
+        CLASSIC.replace(
+            b"memory_limit: ${{ inputs.memory_limit }}",
+            b"memory_limit: ${{ inputs.memory_limit }}\n      args: ${{ inputs.language }}",
+        )
     )
-    assert path == "workflow"
-    assert message == (
-        "In unicon/classic@v1, steps[2].foreach: Every foreach of a workflow runs over one list, "
-        "data/testcases/, until feature 10."
-    )
+    plan = compiled(CLASSIC_TASK, classic_tests("main/1"), workflow).plan
 
-
-def test_a_use_that_is_not_among_the_primitives_read_is_refused() -> None:
-    declared = primitives()
-    del declared["unicon/diff-check@v1"]
-    [(path, message)] = refusals(declared=declared)
-    assert (path, message) == (
-        "workflow",
-        "In unicon/classic@v1, steps[2].use: unicon/diff-check@v1 is not a primitive.",
-    )
-
-
-def test_a_limit_raised_from_a_value_not_known_at_the_save_is_refused() -> None:
-    contestant = parse_task(
-        STARTER.replace(
-            b"    - id: time_limit\n      type: number\n      value: 2.0\n", b""
-        ).replace(b"  setter:\n", b"    - {id: time_limit, type: number}\n  setter:\n")
-    )
-    [(path, message)] = refusals(contestant)
-    assert path == "workflow"
-    assert message == (
-        "In unicon/classic@v1, steps[1].with.time_limit: The limit time_ms is raised from "
-        "time_limit, so it is a number known at the save."
-    )
-
-
-STAGES = b"""
-stages:
-  - id: validation
-    counts: false
-    inputs:
-      setter:
-        - id: testcases
-          type: file[]
-          value: data/testcases/public/
-  - id: test
-    trigger: at_end
-    show: hidden
-    workflow: unicon/classic@v2
-    inputs:
-      setter:
-        - id: time_limit
-          type: number
-          value: 5.0
-"""
-
-
-def test_a_stage_takes_its_own_tests_setter_values_and_workflow() -> None:
-    staged = task(STAGES)
-    assert [(str(ref), at) for ref, at in staged.workflow_refs()] == [
-        ("unicon/classic@v1", "workflow"),
-        ("unicon/classic@v2", "stages[1].workflow"),
-    ]
-    v2 = parse_workflow(CLASSIC.replace(b"version: v1", b"version: v2"))
-    paths = [*PATHS, "data/testcases/public/7.in", "data/testcases/public/7.ans"]
-    plans = compiled(staged, {**classic(), "unicon/classic@v2": v2}, paths)
-    assert list(plans) == ["validation", "test"]
-    assert plans["validation"].tests == ("7",)
-    assert plans["test"].tests == ("1", "2", "10")
-    [run] = [step for step in plans["test"].steps if step.id == "run"]
-    assert run.batch is not None
-    assert run.batch[0].inputs["time_limit"] == {"value": 5.0}
-
-
-def test_an_empty_stage_list_is_refused_at_the_stage_value() -> None:
-    [(path, _)] = refusals(
-        task(STAGES), {**classic(), "unicon/classic@v2": classic()["unicon/classic@v1"]}
-    )
-    assert path == "stages[0].inputs.setter[0].value"
-
-
-def test_a_setter_value_is_written_into_text_and_a_folder_given_whole_is_its_files() -> None:
-    declared = primitives(
-        **{
-            "unicon/probe@v1": b"""\
-name: unicon/probe
-version: v1
-image: ghcr.io/uniconhq/primitive-probe@sha256:"""
-            + b"1" * 64
-            + b"""
-limits: {time_ms: 1, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1}
-inputs:
-  sentence: {type: text}
-  tests: {type: "file[]"}
-  flag: {type: boolean}
-  code: {type: file}
-outputs:
-  outcome: {type: outcome}
-"""
-        }
-    )
-    workflow = probe(
-        "  - id: probe\n    use: unicon/probe@v1\n    with:\n"
-        "      sentence: at most ${{inputs.time_limit}}s and ${{ inputs.memory_limit }}MB\n"
-        "      tests: ${{ inputs.testcases }}\n      flag: true\n"
-        "      code: ${{ inputs.submission }}\n",
-        "outputs:\n  outcome: ${{ steps.probe.outcome }}\n",
-    )
-    [step] = compiled(workflows=workflow, declared=declared)["default"].steps
-    assert step.inputs == {
-        "sentence": {"value": "at most 2.0s and 256MB"},
-        "tests": {
-            "task": [
-                "data/testcases/1.ans",
-                "data/testcases/1.in",
-                "data/testcases/2.ans",
-                "data/testcases/2.in",
-                "data/testcases/10.ans",
-                "data/testcases/10.in",
-            ]
-        },
-        "flag": {"value": True},
-        "code": {"submission": "submission"},
+    assert step(plan, "run")["batch"][0]["inputs"]["args"] == {
+        "template": "{0}",
+        "parts": [{"submission": "language"}],
     }
-    assert compiled(workflows=workflow, declared=declared)["default"].tests == ()
-
-
-def test_an_input_given_by_neither_side_is_refused() -> None:
-    missing = parse_task(
-        STARTER.replace(b"    - id: memory_limit\n      type: number\n      value: 256\n", b"")
-    )
-    [(path, message)] = refusals(missing)
-    assert path == "inputs.setter"
-    assert "memory_limit" in message
-    assert "neither" in message
-    assert "default" in message
-
-
-def test_an_input_given_by_both_sides_is_refused_naming_the_stage() -> None:
-    both = task(
-        b"stages:\n  - id: open\n    inputs:\n      setter:\n"
-        b"        - {id: submission, type: code, value: 'print(1)'}\n"
-    )
-    [(path, message)] = refusals(both)
-    assert path == "inputs.contestant"
-    assert "submission" in message
-    assert "both" in message
-    assert "open" in message
-
-
-def test_an_input_the_workflow_does_not_declare_is_refused_on_either_side() -> None:
-    extra_setter = parse_task(
-        STARTER.replace(b"  setter:\n", b"  setter:\n    - {id: seed, type: number, value: 1}\n")
-    )
-    assert refusals(extra_setter) == [
-        (
-            "inputs.setter",
-            "The input seed is not an input of the workflow in stage default (unicon/classic@v1).",
-        )
-    ]
-    extra_contestant = parse_task(
-        STARTER.replace(b"  setter:\n", b"    - {id: notes, type: text}\n  setter:\n")
-    )
-    [(path, message)] = refusals(extra_contestant)
-    assert path == "inputs.contestant"
-    assert "notes" in message
-
-
-def test_an_input_of_another_type_than_the_workflow_declares_is_refused() -> None:
-    mistyped = parse_task(
-        STARTER.replace(b"type: number\n      value: 256", b"type: text\n      value: '256'")
-    )
-    [(path, message)] = refusals(mistyped)
-    assert path == "inputs.setter"
-    assert "memory_limit" in message
-    assert "number" in message
-
-
-IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$")
-STEP_ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-LIMITS = {"time_ms", "cpu_ms", "memory_mb", "pids", "output_mb"}
-VALUE_SHAPES = [
-    {"value"},
-    {"task"},
-    {"submission"},
-    {"submission", "field"},
-    {"step", "output"},
-    {"step", "output", "test"},
-]
-
-
-def _value_conforms(value: dict[str, Any], tests: list[str]) -> None:
-    assert set(value) in VALUE_SHAPES, value
-    if "test" in value:
-        assert value["test"] in tests
-    if "field" in value:
-        assert value["field"] == "language"
-
-
-def conforms(plan: dict[str, Any]) -> None:
-    """The contract's plan shape: every key it names and no other, every
-    step one of its three shapes, every value one of its six.
-    """
-    assert set(plan) == {"schema_version", "harness_image", "stage", "tests", "steps", "verdict"}
-    assert plan["schema_version"] == 4
-    assert IMAGE.match(plan["harness_image"])
-    tests = plan["tests"]
-    seen = set()
-    for step in plan["steps"]:
-        base = {"id", "primitive", "image", "limits"}
-        assert set(step) in (base | {"inputs"}, base | {"inputs", "test"}, base | {"batch"})
-        assert STEP_ID.match(step["id"]) and IMAGE.match(step["image"])
-        assert "/" not in step["primitive"] and "@" in step["primitive"]
-        assert set(step["limits"]) == LIMITS
-        assert (step["id"], step.get("test")) not in seen
-        seen.add((step["id"], step.get("test")))
-        for item in step.get("batch") or [{"test": step.get("test"), "inputs": step["inputs"]}]:
-            for value in item["inputs"].values():
-                _value_conforms(value, tests)
-    assert set(plan["verdict"]) <= {"outcome", "metrics", "tests", "summary"}
-    assert set(plan["verdict"]["outcome"]) == {"step", "output"}
-
-
-def test_a_compiled_plan_meets_the_contract_and_is_the_same_bytes_every_time() -> None:
-    first = compiled()["default"].to_bytes()
-    second = compiled(paths=list(reversed(PATHS)))["default"].to_bytes()
-    assert first == second
-    assert first.endswith(b"}\n")
-    loaded = json.loads(first)
-    conforms(loaded)
-    assert first == (json.dumps(loaded, sort_keys=True, indent=2) + "\n").encode()
-    assert Plan.from_bytes(first) == compiled()["default"]
-    assert plan_path("default") == "plans/default.json"
-    assert "${{" not in first.decode()
 
 
 @pytest.mark.parametrize(
-    "change",
+    ("value", "spelling"),
     [
-        {"schema_version": 2},
-        {"harness_image": "ghcr.io/uniconhq/harness:latest"},
-        {"steps": []},
-        {"extra": True},
-        {"verdict": {}},
+        (True, "true"),
+        (False, "false"),
+        (2, "2"),
+        (2.0, "2"),
+        (2.50, "2.5"),
+        (0.1, "0.1"),
+        (1e-7, "0.0000001"),
+        (1e21, "1000000000000000000000"),
+        ("cpp", "cpp"),
     ],
 )
-def test_a_plan_outside_the_contract_is_refused_when_read(change: dict[str, Any]) -> None:
-    loaded = json.loads(compiled()["default"].to_bytes())
-    with pytest.raises(ValueError):
-        Plan.from_bytes(json.dumps({**loaded, **change}).encode())
+def test_a_scalar_has_one_spelling_as_text(value: object, spelling: str) -> None:
+    assert spelled(value) == spelling
 
 
-def test_a_step_value_outside_the_six_shapes_is_refused_when_read() -> None:
-    loaded = json.loads(compiled()["default"].to_bytes())
-    loaded["steps"][0]["inputs"]["source"] = {"submission": "submission", "extra": 1}
-    with pytest.raises(ValueError):
-        Plan.from_bytes(json.dumps(loaded).encode())
+CLASSIC_INPUTS = "  submission: {label: Your solution}\n  language: {options: [python]}\n"
 
 
-PLAN = compiled()["default"].to_bytes()
-BEFORE = Snapshot(
-    plans={"plans/default.json": PLAN},
-    data={"data/testcases/1.in": "sha256:aa", "data/testcases/1.ans": "sha256:bb"},
-    limits=task().limits.as_mapping(),
+@pytest.mark.parametrize(
+    ("inputs", "path", "message"),
+    [
+        (
+            CLASSIC_INPUTS + "  memory_limit: 256\n",
+            "inputs.time_limit",
+            "Give this input a value: a number.",
+        ),
+        (
+            CLASSIC_INPUTS + "  time_limit: 2\n  memory_limit: 256\n  colour: red\n",
+            "inputs.colour",
+            "The workflow unicon/classic@v2 has no input colour.",
+        ),
+        (
+            CLASSIC_INPUTS + "  time_limit: two\n  memory_limit: 256\n",
+            "inputs.time_limit",
+            "Must be a number.",
+        ),
+        (
+            CLASSIC_INPUTS + "  time_limit: true\n  memory_limit: 256\n",
+            "inputs.time_limit",
+            "Must be a number.",
+        ),
+        (
+            "  submission: main.py\n  time_limit: 2\n  memory_limit: 256\n",
+            "inputs.submission",
+            "The contestant gives this one",
+        ),
+        (
+            "  language: {options: [rust]}\n  time_limit: 2\n  memory_limit: 256\n",
+            "inputs.language.options",
+            "rust is not an option of the workflow's: c, cpp, java, python.",
+        ),
+        (
+            "  language: {options: [python], default: c}\n  time_limit: 2\n  memory_limit: 256\n",
+            "inputs.language.default",
+            "Must be one of python.",
+        ),
+        (
+            "  submission: {max_size: 3GB}\n  time_limit: 2\n  memory_limit: 256\n",
+            "inputs.submission.max_size",
+            "Must be at most 2GB",
+        ),
+        (
+            "  submission: {min: 1}\n  time_limit: 2\n  memory_limit: 256\n",
+            "inputs.submission.min",
+            "A file input does not take min.",
+        ),
+    ],
 )
+def test_a_value_the_task_gives_wrongly_is_refused_at_its_line(
+    inputs: str, path: str, message: str
+) -> None:
+    problems = refused(task_with(inputs=inputs), classic_tests("main/1"))
+
+    assert [problem["path"] for problem in problems] == [path]
+    assert message in problems[0]["message"]
+
+
+def test_a_contestant_input_with_no_details_may_be_left_out() -> None:
+    text = task_with(inputs="  time_limit: 2\n  memory_limit: 256\n")
+
+    assert compiled(text, classic_tests("main/1")).plan.contestant.keys() == {
+        "submission",
+        "language",
+    }
+
+
+CHECKED_TASK = """\
+name: Checked
+workflow: acme/checked@v1
+inputs:
+  time_limit: 2
+  memory_limit: 256
+  better: higher
+test_groups:
+  main: {each: 1}
+"""
+
+
+def test_an_enum_value_is_one_of_the_workflows_options() -> None:
+    problems = refused(
+        CHECKED_TASK.replace("better: higher", "better: sideways"), classic_tests("main/1"), CHECKED
+    )
+
+    assert problems == [{"path": "inputs.better", "message": "Must be one of higher, lower."}]
+
+
+NOTEBOOK_TASK = """\
+name: Digits
+workflow: acme/notebook@v1
+inputs:
+  data: data/mnist-test/
+test_groups:
+  main: {each: 1, show: after_close}
+"""
+NOTEBOOK_PATHS = {"data/mnist-test/images.bin", "tests/main/1/answer", "tests/main/2/answer"}
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        ("data/empty/", "There is no file under data/empty/ in the task."),
+        ("data/mnist-test", "Names a folder, so it ends with /, such as data/."),
+        ("../data/", "Must not have empty, . or .. parts."),
+        ("/data/", "Must be a path from the top of the task repo, with forward slashes."),
+    ],
+)
+def test_a_folder_value_names_a_folder_with_a_file_in_the_task(data: str, message: str) -> None:
+    text = NOTEBOOK_TASK.replace("data/mnist-test/", data)
+
+    assert refused(text, NOTEBOOK_PATHS, NOTEBOOK) == [{"path": "inputs.data", "message": message}]
+
+
+def test_a_task_folder_into_a_folder_port_is_listed_in_folders() -> None:
+    plan = compiled(NOTEBOOK_TASK, NOTEBOOK_PATHS, NOTEBOOK).plan
+    predict = step(plan, "predict")
+
+    assert predict["folders"] == ["data"]
+    assert predict["inputs"] == {
+        "notebook": {"submission": "notebook"},
+        "data": {"task": "data/mnist-test/"},
+    }
+    assert violation(document(plan), "plan") is None
+    assert plan.task_paths() == ("data/mnist-test/", "tests/main/1/answer", "tests/main/2/answer")
+
+
+def test_an_optional_input_left_out_gives_its_port_nothing() -> None:
+    predict = step(compiled(NOTEBOOK_TASK, NOTEBOOK_PATHS, NOTEBOOK).plan, "predict")
+
+    assert "key" not in predict["inputs"]
+
+
+# Secrets
+
+
+SECRET_TASK = NOTEBOOK_TASK.replace(
+    "data/mnist-test/\n", "data/mnist-test/\n  key: {secret: openai}\n"
+)
+
+
+def test_a_secret_the_org_does_not_hold_is_refused() -> None:
+    assert refused(SECRET_TASK, NOTEBOOK_PATHS, NOTEBOOK) == [
+        {"path": "inputs.key", "message": "The org holds no secret named openai."}
+    ]
+
+
+def test_a_secret_into_a_marked_text_port_is_carried_by_name() -> None:
+    plan = compiled(SECRET_TASK, NOTEBOOK_PATHS, NOTEBOOK, secrets={"openai"}).plan
+
+    assert step(plan, "predict")["inputs"]["key"] == {"secret": "openai"}
+    assert violation(document(plan), "plan") is None
+
+
+def test_a_secret_into_an_unmarked_port_is_refused() -> None:
+    workflow = parse_workflow(_notebook_with("note: ${{ inputs.key }}"))
+
+    assert refused(SECRET_TASK, NOTEBOOK_PATHS, workflow, secrets={"openai"}) == [
+        {
+            "path": "inputs.key",
+            "message": "key is a secret, and steps[0] gives it to note, which can hand the "
+            "secret to the contestant's program.",
+        }
+    ]
+
+
+def test_a_secret_written_into_text_is_refused() -> None:
+    workflow = parse_workflow(_notebook_with('note: "Bearer ${{ inputs.key }}"'))
+
+    assert refused(SECRET_TASK, NOTEBOOK_PATHS, workflow, secrets={"openai"}) == [
+        {
+            "path": "inputs.key",
+            "message": "key is a secret, and steps[0] writes it into text; give the secret to "
+            "its own port.",
+        }
+    ]
+
+
+def _notebook_with(line: str) -> bytes:
+    """The notebook workflow with `key` wired by `line` in place of its own."""
+    text = (
+        "inputs:\n"
+        "  notebook: {type: file, contestant: true}\n"
+        "  data: folder\n"
+        "  key: text\n"
+        "test:\n  answer: file\n"
+        "steps:\n"
+        "  - id: predict\n"
+        "    use: acme/notebook@v1\n"
+        "    with:\n"
+        "      notebook: ${{ inputs.notebook }}\n"
+        "      data: ${{ inputs.data }}\n"
+        f"      {line}\n"
+    )
+    return text.encode()
+
+
+def test_a_secret_is_text_naming_a_secret() -> None:
+    text = SECRET_TASK.replace("{secret: openai}", "{secret: openai, also: 1}")
+
+    assert refused(text, NOTEBOOK_PATHS, NOTEBOOK, secrets={"openai"}) == [
+        {
+            "path": "inputs.key",
+            "message": "Must be text, or {secret: <name>} naming a secret the org holds.",
+        }
+    ]
+
+
+# Sealed steps (T5)
+
+
+def test_a_step_running_contestant_code_over_data_the_contestant_is_not_served_is_sealed() -> None:
+    result = compiled(NOTEBOOK_TASK, NOTEBOOK_PATHS, NOTEBOOK)
+
+    assert result.sealed == ("predict", "score")
+    assert result.held == Sealed(stop=True, values=frozenset({"accuracy", "fraction"}))
+    predict, score, credit = result.notes
+    assert predict == (
+        "Step predict is sealed: it runs the contestant's code over data/mnist-test/, which the "
+        "contestant is not served, so what it reports is shown at the reveal."
+    )
+    assert score.startswith("Step score is sealed")
+    assert credit == "fraction is reported, but credit is not set: an accepted test earns 1."
+
+
+def test_a_task_with_a_sealed_step_shows_every_group_after_close() -> None:
+    text = NOTEBOOK_TASK.replace(
+        "  main: {each: 1, show: after_close}\n", "  main: {each: 1}\n  samples: {show: verdict}\n"
+    )
+    paths = NOTEBOOK_PATHS | {"tests/samples/1/answer"}
+
+    assert refused(text, paths, NOTEBOOK) == [
+        {
+            "path": "test_groups.main.show",
+            "message": "main is shown always, but step predict gives the contestant's code "
+            "data/mnist-test/; show it after_close, or serve the data under public/.",
+        },
+        {
+            "path": "test_groups.samples.show",
+            "message": "samples is shown verdict, but step predict gives the contestant's code "
+            "data/mnist-test/; show it after_close, or serve the data under public/.",
+        },
+    ]
+
+
+def test_data_served_under_public_seals_nothing() -> None:
+    text = NOTEBOOK_TASK.replace("data/mnist-test/", "public/mnist/").replace(
+        ", show: after_close", ""
+    )
+    result = compiled(text, {"public/mnist/images.bin", "tests/main/1/answer"}, NOTEBOOK)
+
+    assert (result.sealed, result.held) == ((), NOTHING_SEALED)
+    assert not any(note.startswith("Step") for note in result.notes)
+
+
+def test_classic_is_not_sealed_since_each_run_reads_only_its_own_tests_input() -> None:
+    result = compiled(CLASSIC_TASK, classic_tests("main/1", "main/2"))
+
+    assert result.sealed == ()
+
+
+UNSEALED = parse_workflow(
+    """inputs:
+  answers: {type: file, contestant: true}
+  expected: file
+test:
+  answer: file
+steps:
+  - id: check
+    use: acme/each@v1
+    with:
+      actual: ${{ inputs.answers }}
+      expected: ${{ inputs.expected }}
+"""
+)
+"""A contestant's file checked once against a file of the task's, by a
+primitive that runs neither."""
+UNSEALED_TASK = """\
+name: T
+workflow: acme/unsealed@v1
+inputs:
+  expected: secret/expected.txt
+test_groups:
+  main: {each: 1}
+"""
+UNSEALED_PATHS = {"secret/expected.txt", "tests/main/1/answer"}
+
+
+def test_a_step_that_runs_no_contestant_code_is_not_sealed_by_hidden_data() -> None:
+    result = compiled(UNSEALED_TASK, UNSEALED_PATHS, UNSEALED)
+
+    assert result.sealed == ()
+    assert step(result.plan, "check")["inputs"]["expected"] == {"task": "secret/expected.txt"}
+
+
+@pytest.mark.parametrize(
+    ("expected", "message"),
+    [
+        ("secret/missing.txt", "There is no file secret/missing.txt in the task."),
+        ("secret/", "Names one file, so it does not end with /."),
+        ("secret//expected.txt", "Must not have empty, . or .. parts."),
+        (
+            "secret\\expected.txt",
+            "Must be a path from the top of the task repo, with forward slashes.",
+        ),
+        ("3", "Must be a path in the task repo, such as data/ or checker/checker.cpp."),
+    ],
+)
+def test_a_file_value_names_a_file_in_the_task(expected: str, message: str) -> None:
+    text = UNSEALED_TASK.replace("secret/expected.txt", expected)
+
+    assert refused(text, UNSEALED_PATHS, UNSEALED) == [
+        {"path": "inputs.expected", "message": message}
+    ]
+
+
+# Credit (T3, T4)
+
+
+@pytest.mark.parametrize(
+    "credit", ["fraction", "{relative: steps_taken}", "{relative: chosen}", "{relative: fraction}"]
+)
+def test_credit_names_a_number_fit_to_be_one(credit: str) -> None:
+    text = task_with(CHECKED_TASK, workflow="acme/checked@v1", credit=credit)
+
+    compiled(text, classic_tests("main/1"), CHECKED)
+
+
+@pytest.mark.parametrize(
+    ("credit", "path", "message"),
+    [
+        (
+            "steps_taken",
+            "credit",
+            "steps_taken is not a credit: its workflow does not bound it to 0 to 1.",
+        ),
+        ("raw", "credit", "raw is not a credit: its workflow does not bound it to 0 to 1."),
+        ("miss", "credit", "miss is lower is better, so it is not a credit."),
+        ("log", "credit", "log is not a number the workflow reports per test."),
+        ("ghost", "credit", "ghost is not a number the workflow reports per test."),
+        (
+            "{relative: raw}",
+            "credit.relative",
+            "raw has no direction: its workflow declares no better.",
+        ),
+        (
+            "{relative: reward}",
+            "credit.relative",
+            "reward is not bounded below by 0: its workflow declares no at_least of 0 or more.",
+        ),
+        (
+            "{relative: log}",
+            "credit.relative",
+            "log is not a number the workflow reports per test, with a direction.",
+        ),
+    ],
+)
+def test_credit_naming_a_number_unfit_to_be_one_is_refused(
+    credit: str, path: str, message: str
+) -> None:
+    text = task_with(CHECKED_TASK, workflow="acme/checked@v1", credit=credit)
+
+    assert refused(text, classic_tests("main/1"), CHECKED) == [{"path": path, "message": message}]
+
+
+def test_a_bounded_number_credit_does_not_name_is_reported_not_refused() -> None:
+    plain = compiled(CHECKED_TASK, classic_tests("main/1"), CHECKED)
+    assert plain.notes == (
+        "fraction is reported, but credit is not set: an accepted test earns 1.",
+        "miss is reported, but credit is not set: an accepted test earns 1.",
+    )
+
+    credited = compiled(
+        task_with(CHECKED_TASK, workflow="acme/checked@v1", credit="fraction"),
+        classic_tests("main/1"),
+        CHECKED,
+    )
+    assert credited.notes == ("miss is reported, but credit names another value.",)
+
+
+def test_a_compiled_report_carries_each_numbers_bounds() -> None:
+    report = document(compiled(CHECKED_TASK, classic_tests("main/1"), CHECKED).plan)["report"]
+
+    assert report["fraction"] == {
+        "step": "score",
+        "output": "fraction",
+        "at_least": 0,
+        "at_most": 1,
+    }
+    assert report["reward"] == {"step": "score", "output": "steps"}
+    assert report["log"] == {"step": "compile", "output": "compile_log"}
+    assert step(compiled(CHECKED_TASK, classic_tests("main/1"), CHECKED).plan, "score")[
+        "outputs"
+    ] == {"fraction?": "number", "steps": "number", "outcome": "outcome"}
+
+
+# Fit
+
+
+def test_a_time_limit_pushing_the_run_past_the_ceiling_is_refused_at_the_input() -> None:
+    text = task_with(inputs=CLASSIC_INPUTS + "  time_limit: 700\n  memory_limit: 256\n")
+
+    assert refused(text, classic_tests("main/1")) == [
+        {
+            "path": "inputs.time_limit",
+            "message": "time_limit gives the run 27 minutes; a run may take 25.",
+        }
+    ]
+
+
+def test_a_batch_sums_its_items_against_the_ceiling() -> None:
+    sixty = [f"main/{number}" for number in range(1, 61)]
+    text = task_with(inputs=CLASSIC_INPUTS + "  time_limit: 10\n  memory_limit: 256\n")
+
+    assert refused(text, classic_tests(*sixty)) == [
+        {
+            "path": "inputs.time_limit",
+            "message": "time_limit gives the run 31 minutes; a run may take 25.",
+        }
+    ]
+    fits = task_with(inputs=CLASSIC_INPUTS + "  time_limit: 5\n  memory_limit: 256\n")
+    compiled(fits, classic_tests(*sixty))
+
+
+def test_memory_beyond_the_platforms_machine_is_refused_at_the_input() -> None:
+    text = task_with(inputs=CLASSIC_INPUTS + "  time_limit: 2\n  memory_limit: 20000\n")
+
+    assert refused(text, classic_tests("main/1")) == [
+        {
+            "path": "inputs.memory_limit",
+            "message": "memory_limit gives step run 20256 MB of memory; no machine this task may "
+            "run on has more than 16384.",
+        }
+    ]
+    assert Machine(memory_mb=16384, gpus=0) == PLATFORM_MACHINE
+
+
+GPU = parse_workflow(
+    """\
+inputs:
+  gpus: number
+test:
+  answer: file
+steps:
+  - {id: train, use: acme/gpu@v1, with: {gpus: "${{ inputs.gpus }}"}}
+"""
+)
+GPU_TASK = "name: T\nworkflow: acme/gpu@v1\ninputs:\n  gpus: 1\ntest_groups:\n  main: {each: 1}\n"
+
+
+def test_a_gpu_is_refused_while_no_machine_has_one() -> None:
+    assert refused(GPU_TASK, {"tests/main/1/answer"}, GPU) == [
+        {
+            "path": "inputs.gpus",
+            "message": "gpus gives step train 1 GPUs; no machine this task may run on has more "
+            "than 0.",
+        }
+    ]
+    plan = compiled(GPU_TASK, {"tests/main/1/answer"}, GPU, machine=Machine(16384, 1)).plan
+    assert step(plan, "train")["limits"]["gpus"] == 1
+    compiled(GPU_TASK.replace("gpus: 1", "gpus: 0"), {"tests/main/1/answer"}, GPU)
+
+
+# The starter
+
+
+def test_the_starter_task_compiles_against_the_seeded_classic() -> None:
+    files = starter_task("Sum")
+    task = parse_task(files["task.yaml"])
+    paths = set(files)
+
+    assert check_workflow(CLASSIC_WORKFLOW, PRIMITIVES_READ) == []
+    tests, problems = read_tests(paths, CLASSIC_WORKFLOW.test, {})
+    assert problems == [] and group_problems(task, tests, paths) == []
+    result = compile_plan(
+        task,
+        CLASSIC_WORKFLOW,
+        PRIMITIVES_READ,
+        paths,
+        tests,
+        secrets=frozenset(),
+        machine=PLATFORM_MACHINE,
+        harness_image=HARNESS,
+    )
+
+    assert result.plan.tests == ("main/1",)
+    assert violation(document(result.plan), "plan") is None
+
+
+# What changed how a task grades
+
+
+def snapshot(plan: bytes = b"plan", **data: str) -> Snapshot:
+    return Snapshot(
+        plans={PLAN_PATH: plan}, data={key.replace("__", "/"): value for key, value in data.items()}
+    )
 
 
 def test_a_first_publication_changes_nothing() -> None:
-    assert grading_changes(None, BEFORE) == ()
+    assert grading_changes(None, snapshot()) == ()
 
 
-def test_a_statement_only_save_changes_nothing() -> None:
-    same = Snapshot(plans=dict(BEFORE.plans), data=dict(BEFORE.data), limits=dict(BEFORE.limits))
-    assert grading_changes(BEFORE, same) == ()
+def test_the_same_plan_and_data_change_nothing() -> None:
+    assert (
+        grading_changes(snapshot(tests__main__1__input="a"), snapshot(tests__main__1__input="a"))
+        == ()
+    )
 
 
 def test_a_changed_plan_is_named() -> None:
-    slower = parse_task(STARTER.replace(b"value: 2.0", b"value: 3.0"))
-    plan = compiled(slower)["default"].to_bytes()
-    after = Snapshot(plans={"plans/default.json": plan}, data=BEFORE.data, limits=BEFORE.limits)
-    assert grading_changes(BEFORE, after) == ("plans/default.json changed",)
+    assert grading_changes(snapshot(), snapshot(b"other")) == ("plans/plan.json changed",)
 
 
-def test_a_new_stage_is_a_plan_added() -> None:
-    after = Snapshot(
-        plans={**BEFORE.plans, "plans/test.json": PLAN}, data=BEFORE.data, limits=BEFORE.limits
-    )
-    assert grading_changes(BEFORE, after) == ("plans/test.json added",)
+def test_a_data_file_added_removed_or_changed_is_named() -> None:
+    before = snapshot(tests__main__1__input="a", tests__main__1__answer="b")
+    after = snapshot(tests__main__1__input="c", tests__main__2__input="d")
 
-
-@pytest.mark.parametrize(
-    ("data", "expected"),
-    [
-        ({**BEFORE.data, "data/testcases/2.in": "sha256:cc"}, ("data/testcases/2.in added",)),
-        ({"data/testcases/1.in": "sha256:aa"}, ("data/testcases/1.ans removed",)),
-        (
-            {**BEFORE.data, "data/testcases/1.in": "sha256:dd"},
-            ("data/testcases/1.in changed",),
-        ),
-    ],
-)
-def test_a_data_file_added_removed_or_changed_is_named(
-    data: dict[str, str], expected: tuple[str, ...]
-) -> None:
-    after = Snapshot(plans=BEFORE.plans, data=data, limits=BEFORE.limits)
-    assert grading_changes(BEFORE, after) == expected
-
-
-def test_a_changed_limit_is_named() -> None:
-    fewer = parse_task(STARTER.replace(b"submissions: 50", b"submissions: 10")).limits
-    after = Snapshot(plans=BEFORE.plans, data=BEFORE.data, limits=fewer.as_mapping())
-    assert grading_changes(BEFORE, after) == ("limits.submissions changed",)
-
-
-def test_several_changes_are_named_together() -> None:
-    after = Snapshot(
-        plans={},
-        data={**BEFORE.data, "data/testcases/1.in": "sha256:ee"},
-        limits={**BEFORE.limits, "rate": "1 per 60s"},
-    )
-    assert grading_changes(BEFORE, after) == (
-        "plans/default.json removed",
-        "data/testcases/1.in changed",
-        "limits.rate changed",
+    assert grading_changes(before, after) == (
+        "tests/main/1/answer removed",
+        "tests/main/1/input changed",
+        "tests/main/2/input added",
     )
 
 
 def test_only_the_plans_folder_is_reserved() -> None:
-    assert is_reserved("plans") and is_reserved("plans/default.json")
-    assert not is_reserved("plansx/a") and not is_reserved("data/plans/a")
-
-
-def test_a_note_reads_back_as_written() -> None:
-    changes = ("plans/default.json changed", "data/testcases/1.in added")
-
-    assert read_note(write_note(True, changes)) == Note(True, changes)
-    assert read_note(write_note(False, ())) == Note(False, ())
-    assert write_note(True, ("limits.rate changed",)) == (
-        "grading_changed: true\nchanges:\n- limits.rate changed\n"
-    )
-
-
-@pytest.mark.parametrize("text", [None, "", "[1, 2]", "grading_changed: [", "changes: x"])
-def test_a_note_that_does_not_read_says_nothing_changed(text: str | None) -> None:
-    assert read_note(text) == Note(False, ())
+    assert is_reserved("plans/plan.json")
+    assert is_reserved("plans")
+    assert not is_reserved("plansx/plan.json")
+    assert not is_reserved("tests/plans/1/input")

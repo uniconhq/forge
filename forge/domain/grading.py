@@ -1,5 +1,5 @@
 """Grading as the package and the port describe it: where one grading of one
-submission at one stage stands, the runs and agents at the CI, what one
+submission stands, the runs and agents at the CI, what one
 grading run is, the requests the CI makes about one and the answer it is
 given, the two secrets a run is handed, and the clock a run keeps to.
 
@@ -19,7 +19,14 @@ minutes (`WOODPECKER_DEFAULT_PIPELINE_TIMEOUT`). Of that, the two checkouts
 are allowed `CHECKOUT_ALLOWANCE` and the reports `REPORT_ALLOWANCE`, which
 leaves `WALL_CEILING` for the harness: an envelope's `limits.wall_seconds` is
 what its plan's steps may take, their time limits summed with a margin for
-each container and one for the run, and never more than that. A run's
+each container and one for the run, which a save refuses above the ceiling
+(the plan's fit, `forge.domain.plans`).
+
+A plan must also fit a machine: every step's memory and GPUs within what the
+machines a task may run on have. Until computes advertise their machines
+(feature 12), every task runs on the platform's pool, whose machines take a
+step of up to `PLATFORM_MACHINE`, the socket filter's own memory ceiling and
+no GPU. A run's
 deadline is written when its harness first fetches the envelope, the wall
 clock and the reporting allowance after it, so a run that waited for a
 machine loses none of its time.
@@ -53,12 +60,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from forge.domain.ids import AgentId, PublicationId, SubmissionId, TaskId, VersionId
-from forge.domain.plans import Plan
+
+if TYPE_CHECKING:
+    from forge.domain.plans import Plan
 
 CALLBACK_INFO = b"unicon-grading-callback"
 ENVELOPE_INFO = b"unicon-grading-envelope"
@@ -80,6 +90,21 @@ NEVER_STARTED = "Its run was never started."
 NEVER_BEGAN = "Its run did not begin within two hours of being started."
 OVERDUE = "Its run did not report before its deadline."
 LOST = "The grading machine lost its run before it began."
+
+
+@dataclass(frozen=True, slots=True)
+class Machine:
+    """The most one step may ask of a machine: memory in megabytes and GPU
+    devices.
+    """
+
+    memory_mb: int
+    gpus: int
+
+
+PLATFORM_MACHINE = Machine(memory_mb=16384, gpus=0)
+"""What a machine of the platform's pool gives one step: the socket filter's
+default memory ceiling (`UNICON_FILTER_MAX_MEMORY_MB`), and no GPU."""
 
 
 class RunState(StrEnum):
@@ -273,13 +298,12 @@ with takes any length, so the read is where the bound holds."""
 def wall_seconds(plan: Plan) -> int:
     """How long the harness may take over the plan: every step's time limit
     summed, which for a batch is already its tests' together, with a margin
-    for each container and one for the run, and never more than
-    `WALL_CEILING`.
+    for each container and one for the run. A save refuses a plan for which
+    this is more than `WALL_CEILING`.
     """
     steps = sum(step.limits.time_ms for step in plan.steps) / 1000
     margin = BASE_WALL + STEP_OVERHEAD * len(plan.steps)
-    wanted = math.ceil(steps + margin.total_seconds())
-    return max(1, min(wanted, int(WALL_CEILING.total_seconds())))
+    return max(1, math.ceil(steps + margin.total_seconds()))
 
 
 def run_deadline(fetched_at: datetime, wall: int) -> datetime:
