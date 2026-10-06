@@ -41,6 +41,7 @@ the approval waiting for it, or else at
 their first upload to it (`places`).
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -53,13 +54,14 @@ from forge.domain.definitions import Approval, ContestDefinition
 from forge.domain.errors import AlreadyRegistered, ContestFull, IsStaff, NotFound
 from forge.domain.identity import User
 from forge.domain.ids import ContestId
+from forge.domain.names import UserOwner
 from forge.domain.registration import Status
 from forge.domain.roles import Role, contest_scope
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import invites, places, published, roles, teams, workspaces
+from forge.services import invites, places, published, roles, teams, timelines, workspaces
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -84,6 +86,7 @@ class Registration:
     decided_at: datetime | None
     reason: str | None
     time_extension: timedelta
+    extension_tasks: tuple[str, ...] | None
 
 
 @action
@@ -227,15 +230,37 @@ async def remove(
 
 @action
 async def extend(
-    ctx: Context, organiser: Organiser, contest: ContestId, user_id: int, extension: timedelta
+    ctx: Context,
+    organiser: Organiser,
+    contest: ContestId,
+    user_id: int,
+    extension: timedelta,
+    tasks: Sequence[str] | None = None,
 ) -> Registration:
-    """Give one person `extension` past the contest's end in place of any
-    they had, so an extension of nothing takes theirs away. Needs the manager
-    role at the contest, and the person pending or approved.
+    """Give one person `extension` on the contest's `tasks`, by name, every
+    task when none are named, in place of any they had, so an extension of
+    nothing takes theirs away. It moves their due and close on those tasks
+    while they work alone; in a team, the team's own is theirs. Needs the
+    manager role at the contest, and the person pending or approved.
+    `InvalidExtension` when it names a task the contest does not list, would
+    let them submit to a task whose reveal has passed, or would leave one of
+    their submissions after the due or the close it was made before.
     """
     row = await _decided(ctx, organiser, contest, user_id, rules.REGISTERED, "given time")
     checked = rules.checked_extension(extension)
+    settings = await published.contest(ctx, contest)
+    named = rules.checked_tasks(tasks, [entry.id for entry in settings.tasks])
+    workspace = ctx.forge.workspaces.workspace_of(contest, UserOwner(user_id))
+    await timelines.refuse_extension(
+        ctx,
+        contest,
+        settings,
+        workspace,
+        timelines.of_contestant(row),
+        timelines.extension_of(int(checked.total_seconds()), named),
+    )
     row.time_extension_seconds = int(checked.total_seconds())
+    row.extension_tasks = [*named] if named is not None else None
     await ctx.db.flush()
     log.info(
         "contestants.extended",
@@ -259,7 +284,7 @@ async def row_of(ctx: Context, contest: ContestId, user_id: int) -> Contestant |
 
 
 def time_extension(row: Contestant | None) -> timedelta:
-    """The person's own extension, nothing without a row."""
+    """How long the person's own extension is, nothing without a row."""
     return timedelta(seconds=row.time_extension_seconds if row is not None else 0)
 
 
@@ -336,7 +361,7 @@ async def _confirmed_emails(
     """The person's confirmed addresses, asked only of a contest with an
     email pattern.
     """
-    if settings.registration.eligibility.email_pattern is None:
+    if settings.registration.email_pattern is None:
         return ()
     return await ctx.forge.identity.verified_emails(user_id)
 
@@ -358,4 +383,5 @@ def registration_of(row: Contestant, user: User | None) -> Registration:
         decided_at=row.decided_at,
         reason=row.reason,
         time_extension=time_extension(row),
+        extension_tasks=tuple(row.extension_tasks) if row.extension_tasks is not None else None,
     )

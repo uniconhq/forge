@@ -1,14 +1,20 @@
-"""Registering for a contest and deciding a registration. A registration that
-breaks a rule is refused with that rule's code; one that breaks none is one
-pending row, and nothing is written at the forge. Two registrations for the
-last place leave one row. A contest set to approve on its own approves at
-once. An organiser managing the contest approves,
-rejects with a reason, reopens a rejection, removes and extends, each only
-from the statuses it is allowed from; anyone observing it lists the registrations, and nobody
-else does.
+"""Registering for a contest and deciding a registration. The rules are the
+flat `registration` block: `invite_only`, `code`, `email_pattern`, the
+window and the capacity. A registration that breaks a rule is refused with
+that rule's code; one that breaks none is one pending row, and nothing is
+written at the forge. Two registrations for the last place leave one row. A
+contest set to approve on its own approves at once. An organiser managing
+the contest approves, rejects with a reason, reopens a rejection, removes
+and extends, each only from the statuses it is allowed from; anyone
+observing it lists the registrations, and nobody else does. An extension is
+for the tasks it names, every task when it names none, and is refused on a
+task the contest does not list, on a task whose reveal has passed, and when
+shortening it would leave a submission after the due or the close it was
+made before.
 """
 
 import asyncio
+import re
 from datetime import timedelta
 
 import pytest
@@ -35,15 +41,26 @@ from forge.domain.ids import TaskId, WorkspaceId
 from forge.domain.registration import Status
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
+from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import contestants, contests, roles
+from forge.services import contestants, contests, roles, submissions
 from forge.services.access import Organiser
-from tests.services.conftest import ACME, SPRING, Acme, organiser, signed_in, write_contest
+from forge.testing import FakeClock
+from tests.services.conftest import (
+    ACME,
+    SPRING,
+    Acme,
+    Entered,
+    organiser,
+    signed_in,
+    upload,
+    write_contest,
+)
 
 READS = {"read_file", "find_user", "roles_of_user"}
 
 
-def settings(*, visibility: str = "public", state: str = "published", **registration: str) -> str:
+def settings(*, visibility: str = "everyone", state: str = "published", **registration: str) -> str:
     """acme/spring running now, with the registration block's keys given as
     YAML text.
     """
@@ -109,14 +126,9 @@ async def test_a_passing_registration_is_one_pending_row_and_writes_nothing_at_t
         (settings(opens="2026-09-27T00:00:00Z"), 8, {}, RegistrationClosed),
         (settings(closes="2026-09-26T11:00:00Z"), 8, {}, RegistrationClosed),
         (settings(), 7, {}, IsStaff),
-        (settings(mode="invite-only"), 8, {}, InviteRequired),
-        (
-            settings(eligibility="{invite_code: sesame}"),
-            8,
-            {"invite_code": "open"},
-            WrongInviteCode,
-        ),
-        (settings(eligibility="{email_pattern: '.*@u\\.nus\\.edu'}"), 21, {}, DomainNotAllowed),
+        (settings(invite_only="true"), 8, {}, InviteRequired),
+        (settings(code="sesame"), 8, {"invite_code": "open"}, WrongInviteCode),
+        (settings(email_pattern="'.*@u\\.nus\\.edu'"), 21, {}, DomainNotAllowed),
     ],
     ids=["not-yet", "closed", "staff", "invite-only", "wrong-code", "wrong-address"],
 )
@@ -143,10 +155,7 @@ async def test_a_person_breaking_no_rule_passes_every_one_and_keeps_what_let_the
 ) -> None:
     await write_contest(
         people.fake,
-        settings(
-            eligibility="{invite_code: sesame, email_pattern: '.*@u\\.nus\\.edu'}",
-            capacity="1",
-        ),
+        settings(code="sesame", email_pattern="'.*@u\\.nus\\.edu'", capacity="1"),
     )
 
     registered = await _register(setup, people, 20, invite_code="sesame")
@@ -159,7 +168,7 @@ async def test_a_person_breaking_no_rule_passes_every_one_and_keeps_what_let_the
 async def test_an_address_the_forge_never_confirmed_does_not_let_anyone_in(
     setup: Setup, people: Acme, spring: str
 ) -> None:
-    await write_contest(people.fake, settings(eligibility=r"{email_pattern: '.*@u\.nus\.edu'}"))
+    await write_contest(people.fake, settings(email_pattern=r"'.*@u\.nus\.edu'"))
     people.fake.state.unverified.add("cyd@u.nus.edu")
 
     with pytest.raises(DomainNotAllowed):
@@ -370,6 +379,111 @@ async def test_an_extension_is_set_on_the_row_and_replaces_the_last_one(
     await contestants.reject(setup, manager, SPRING, 8, "No.")
     with pytest.raises(WrongStatus):
         await contestants.extend(setup, manager, SPRING, 8, timedelta(minutes=5))
+
+
+TIMED = """name: Spring 2026
+start: 2026-09-26T10:00:00Z
+end: 2026-09-26T15:00:00Z
+state: published
+visibility: everyone
+tasks:
+  - {{id: sum, {times}}}
+  - id: other
+"""
+
+
+async def _submit_sum(setup: Setup, acme: Acme, entered: Entered, key: str) -> int:
+    made = await upload(setup, acme.fake, entered.session, entered.task, b"print(3)\n")
+    submitted = await submissions.submit(
+        setup,
+        entered.session,
+        entered.task,
+        {
+            "submission": SubmittedInput(uploads=(made.id,)),
+            "language": SubmittedInput(value="python"),
+        },
+        idempotency_key=key,
+    )
+    return submitted.number
+
+
+async def test_an_extension_on_named_tasks_is_kept_with_them_and_needs_tasks_the_contest_lists(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await write_contest(acme.fake, TIMED.format(times="closes: 2026-09-26T13:00:00Z"))
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+
+    named = await contestants.extend(
+        setup, manager, SPRING, 8, timedelta(minutes=30), tasks=["sum", "sum"]
+    )
+
+    assert (named.time_extension, named.extension_tasks) == (timedelta(minutes=30), ("sum",))
+    (row,) = await _rows(setup)
+    assert (row.time_extension_seconds, row.extension_tasks) == (1800, ["sum"])
+    for tasks in (["nope"], ["sum", "nope"], []):
+        with pytest.raises(InvalidExtension):
+            await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=1), tasks=tasks)
+    every = await contestants.extend(setup, manager, SPRING, 8, timedelta(minutes=10))
+    assert (every.time_extension, every.extension_tasks) == (timedelta(minutes=10), None)
+
+
+async def test_an_extension_is_refused_on_a_task_whose_reveal_has_passed(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, TIMED.format(times="closes: 2026-09-26T13:00:00Z"))
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+    clock.advance(timedelta(hours=1, minutes=30))
+
+    with pytest.raises(InvalidExtension, match="sum's hidden results were shown"):
+        await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=1), tasks=["sum"])
+    with pytest.raises(InvalidExtension):
+        await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=1))
+    other = await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=1), tasks=["other"])
+
+    assert other.extension_tasks == ("other",)
+
+
+async def test_shortening_an_extension_is_refused_when_it_would_make_a_submission_late(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await write_contest(
+        acme.fake, TIMED.format(times="due: 2026-09-26T12:30:00Z, closes: 2026-09-26T14:00:00Z")
+    )
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+    await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=1), tasks=["sum"])
+    clock.advance(timedelta(hours=1, minutes=15))
+    assert await _submit_sum(setup, acme, entered, "key-0001-aaaa") == 1
+
+    made = "sum's submission 1, made 2026-09-26T13:15:00+00:00 was on time"
+    for shorter, tasks in (
+        (timedelta(minutes=30), ["sum"]),
+        (timedelta(0), None),
+        (timedelta(hours=1), ["other"]),
+    ):
+        with pytest.raises(InvalidExtension, match=re.escape(made)):
+            await contestants.extend(setup, manager, SPRING, 8, shorter, tasks=tasks)
+    kept = await contestants.extend(setup, manager, SPRING, 8, timedelta(minutes=45), tasks=["sum"])
+
+    assert kept.time_extension == timedelta(minutes=45)
+
+
+async def test_shortening_an_extension_is_refused_when_it_would_close_before_a_submission(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, TIMED.format(times="closes: 2026-09-26T13:00:00Z"))
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+    await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=1), tasks=["sum"])
+    clock.advance(timedelta(hours=1, minutes=30))
+    assert await _submit_sum(setup, acme, entered, "key-0001-aaaa") == 1
+
+    with pytest.raises(
+        InvalidExtension,
+        match="sum's submission 1, made 2026-09-26T13:30:00\\+00:00 would be after the task closed",
+    ):
+        await contestants.extend(setup, manager, SPRING, 8, timedelta(minutes=20), tasks=["sum"])
+    longer = await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=2), tasks=["sum"])
+
+    assert longer.time_extension == timedelta(hours=2)
 
 
 async def test_a_decision_on_someone_who_never_registered_is_not_found(

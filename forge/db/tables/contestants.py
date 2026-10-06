@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import BigInteger, CheckConstraint, Index, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.db.base import Base, Timestamped
@@ -30,6 +31,8 @@ class Contestant(Base, Timestamped):
     decided_by_user_id: Mapped[int | None] = mapped_column(BigInteger)
     reason: Mapped[str | None]
     time_extension_seconds: Mapped[int] = mapped_column(server_default=text("0"))
+    extension_tasks: Mapped[list[str] | None] = mapped_column(JSONB)
+    """The tasks, by name, the extension is for; every task when none."""
 
     __table_args__ = (
         CheckConstraint(f"status in {STATUSES}", name="status"),

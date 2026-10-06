@@ -1,11 +1,14 @@
-"""Teams in a contest whose settings turn them on. An approved contestant
-makes a team and leads it, or asks to join one; the leader asks people in,
-lets requests in and removes members, up to the contest's size; a member
-leaves. Organisers make, delete and mend teams. The team is the contestant:
-one workspace its members reach as the membership changes, in the request
-that changes it, one count of submissions, and one desk of questions.
+"""Teams in a contest whose `team_size: N` turns them on. An approved
+contestant makes a team and leads it, or asks to join one; the leader asks
+people in, lets requests in and removes members, up to the contest's
+`team_size`; a member leaves. Organisers make, delete and mend teams, and
+extend one on the tasks they name. The team is the contestant: one
+workspace its members reach as the membership changes, in the request that
+changes it, one count of submissions, one extension, and one desk of
+questions.
 """
 
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -15,9 +18,11 @@ from forge.db.tables import Team as TeamRow
 from forge.domain.errors import (
     Forbidden,
     InTeam,
+    InvalidExtension,
     NotApproved,
     NotFound,
     SubmittedAlone,
+    TaskClosed,
     TeamFull,
     TeamHasSubmissions,
     TeamNameTaken,
@@ -44,11 +49,14 @@ from tests.services.conftest import (
     write_contest,
 )
 
-TEAMS = RUNNING + "teams:\n  enabled: true\n  max_size: {size}\n"
+TEAMS = RUNNING + "team_size: {size}\n"
 
 
 def code(*uploads: Any) -> dict[str, SubmittedInput]:
-    return {"submission": SubmittedInput(uploads=tuple(uploads), language="python")}
+    return {
+        "submission": SubmittedInput(uploads=tuple(uploads)),
+        "language": SubmittedInput(value="python"),
+    }
 
 
 async def _enter(setup: Setup, acme: Acme, user_id: int, name: str) -> Session:
@@ -65,7 +73,7 @@ async def crowd(setup: Setup, acme: Acme, entered: Entered) -> dict[str, Session
     """bob (8), carol (20) and dan (21), approved in acme/spring with teams of
     at most two.
     """
-    await write_contest(acme.fake, TEAMS.format(visibility="public", size=2))
+    await write_contest(acme.fake, TEAMS.format(visibility="everyone", size=2))
     return {
         "bob": entered.session,
         "carol": await _enter(setup, acme, 20, "carol"),
@@ -114,7 +122,7 @@ async def test_a_team_submits_as_one_and_every_member_sees_every_submission(
 async def test_the_task_limits_count_once_for_the_whole_team(
     setup: Setup, acme: Acme, entered: Entered, crowd: dict[str, Session], clock: FakeClock
 ) -> None:
-    await write_contest(acme.fake, TEAMS.format(visibility="public", size=2))
+    await write_contest(acme.fake, TEAMS.format(visibility="everyone", size=2))
     bob, carol = crowd["bob"], crowd["carol"]
     team = await teams.create(setup, bob, SPRING, "Adders")
     await teams.invite(setup, bob, SPRING, team.id, "carol")
@@ -201,6 +209,13 @@ async def test_a_team_holds_no_more_than_the_contest_allows(
     assert refused.value.extra == {"limit": 2}
     with pytest.raises(TeamFull):
         await teams.invite(setup, bob, SPRING, team.id, "dan")
+    assert (await teams.mine(setup, bob, SPRING)).max_size == 2
+
+    # The cap is the contest's team_size, read at each change.
+    await write_contest(acme.fake, TEAMS.format(visibility="everyone", size=3))
+    joined = await teams.approve(setup, bob, SPRING, team.id, 21)
+    assert sorted(m.user_id for m in joined.members) == [8, 20, 21]
+    assert (await teams.mine(setup, bob, SPRING)).max_size == 3
 
 
 async def test_who_may_join_and_who_may_run_a_team(
@@ -265,6 +280,52 @@ async def test_organisers_make_delete_move_and_lead(
     await teams.organise_remove(setup, manager, SPRING, second.id, 20)
     observer = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.OBSERVER)
     assert [team.name for team in await teams.every(setup, observer, SPRING)] == ["First"]
+
+
+TIMED = (
+    RUNNING.format(visibility="everyone").replace(
+        "  - id: sum\n", "  - {id: sum, closes: 2026-09-26T13:00:00Z}\n"
+    )
+    + "  - {id: other, closes: 2026-09-26T13:00:00Z}\n"
+    + "  - {id: third, closes: 2026-09-26T13:00:00Z}\n"
+    + "team_size: 2\n"
+)
+
+
+async def test_an_organiser_extends_a_team_on_the_named_tasks_alone(
+    setup: Setup, acme: Acme, entered: Entered, crowd: dict[str, Session], clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, TIMED)
+    carol, dan = crowd["carol"], crowd["dan"]
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+    adders = await teams.organise_create(setup, manager, SPRING, "Adders", leader="bob")
+    await teams.organise_move(setup, manager, SPRING, 20, adders.id)
+    takers = await teams.organise_create(setup, manager, SPRING, "Takers", leader="dan")
+
+    with pytest.raises(InvalidExtension):
+        await teams.organise_extend(
+            setup, manager, SPRING, adders.id, timedelta(hours=1), tasks=["nope"]
+        )
+    extended = await teams.organise_extend(
+        setup, manager, SPRING, adders.id, timedelta(hours=1), tasks=["sum"]
+    )
+    await teams.organise_extend(
+        setup, manager, SPRING, takers.id, timedelta(hours=1), tasks=["other"]
+    )
+    clock.advance(timedelta(hours=1, minutes=30))
+
+    assert (extended.time_extension, extended.extension_tasks) == (timedelta(hours=1), ("sum",))
+    assert await _submit(setup, acme, carol, entered.task, "key-0001-aaaa") == 1
+    with pytest.raises(TaskClosed) as refused:
+        await _submit(setup, acme, dan, entered.task, "key-0002-bbbb")
+    assert refused.value.extra == {"reason": "closed"}
+    with pytest.raises(InvalidExtension, match="third's hidden results were shown"):
+        await teams.organise_extend(setup, manager, SPRING, takers.id, timedelta(hours=1))
+    made = "sum's submission 1, made 2026-09-26T13:30:00+00:00 would be after the task closed"
+    with pytest.raises(InvalidExtension, match=re.escape(made)):
+        await teams.organise_extend(
+            setup, manager, SPRING, adders.id, timedelta(minutes=20), tasks=["sum"]
+        )
 
 
 async def test_a_contestant_removed_from_the_contest_leaves_their_team(
