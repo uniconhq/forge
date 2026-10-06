@@ -1,22 +1,27 @@
 """A submission: what a contestant gives for each of a task's contestant
 inputs, checked against those inputs, and the one commit it becomes in their
-place to submit the task (the runner's `submission.schema.json`, version 4):
+place to submit the task (TASK-FORMAT.md section 2, the runner's
+`submission.schema.json`, version 5):
 
-- `files/<input id>/<file name>` for every file of a `code`, `file` or
-  `file[]` input, and nothing else;
-- `submission.json` at the top, naming each input's files and, for a code
-  input, the language chosen, or giving a text, number or true-or-false
-  input its value.
+- `files/<input id>/<relative path>` for every file of a `file` or `folder`
+  input, and nothing else; a `per_test` input's files are at
+  `files/<input id>/<group>/<test>` or `files/<input id>/<group>/<test>.<ending>`,
+  one per test of the plan at most;
+- `submission.json` at the top, naming each file or folder input's files,
+  or giving a text, number, true-or-false or enum input its value.
 
-    {"schema_version": 4, "inputs": {
-      "submission": {"files": ["files/submission/main.py"], "language": "python"},
-      "alpha": {"value": 0.5}}}
+    {"schema_version": 5, "inputs": {
+      "submission": {"files": ["files/submission/main.py"]},
+      "language": {"value": "python"}}}
 
-A code input is one file and, when the input lists languages, one of them; a
-file input one file; a file[] input one or more, each under its own name. A
-text, number or true-or-false input the contestant leaves out takes the
-input's default, and one without a default is required. A jupyter input is
-not submitted from here.
+A contestant input is what the plan's `contestant` declares, with the form
+details the task gives it (`Field`). A file input is one file; a folder
+input one or more, each under its own path; the files under an input
+together within its `max_size`. A text, number, true-or-false or enum input
+the contestant leaves out takes the task's `default`, and one without a
+default is required; an enum's value is one of the task's `options`, the
+workflow's when the task narrows none, and a number lies within `min` and
+`max`.
 
 The submission is named as a protected version whose note carries the
 submit's idempotency key, so a submit tried again after its answer was lost
@@ -24,27 +29,80 @@ finds the submission it made instead of making a second.
 """
 
 import json
+import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 import yaml
 
-from forge.domain.definitions import ContestantInput
+from forge.domain.definitions import DEFAULT_MAX_SIZE, Form
 from forge.domain.errors import InvalidInputs
 from forge.domain.ids import SubmissionId, VersionId
-from forge.domain.uploads import FILE_INPUTS
-from forge.domain.workflow_definition import InputType
+from forge.domain.types import FILES, Type
+from forge.domain.uploads import filename_problem
 from forge.domain.yaml_models import is_number
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SUBMISSION_FILE = "submission.json"
 FILES_FOLDER = "files"
 TEXT_MAX = 64 * 1024
 KEY_MIN, KEY_MAX = 8, 128
 KEY_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+TEST_FILE = re.compile(r"^(?P<group>[A-Za-z0-9_-]+)/(?P<test>[A-Za-z0-9_-]+)(\.[^/]*)?$")
+
+
+@dataclass(frozen=True, slots=True)
+class Field:
+    """One input the contestant gives: what the plan declares of it, its
+    type, an enum's options and whether it is one file per test, and the
+    task's form details, its label, default, bounds, options and size.
+    """
+
+    id: str
+    type: Type
+    label: str
+    options: tuple[str, ...] | None = None
+    per_test: bool = False
+    default: Any = None
+    min: int | float | None = None
+    max: int | float | None = None
+    max_size: int = DEFAULT_MAX_SIZE
+
+    @property
+    def files(self) -> bool:
+        return self.type in FILES
+
+
+def fields_of(contestant: Mapping[str, Any], inputs: Mapping[str, Any]) -> tuple[Field, ...]:
+    """The contestant's inputs, each from the plan's `contestant` declaration
+    of it and the task's form details in `inputs`: in the order `task.yaml`
+    lists them, then the rest by name.
+    """
+    order = [name for name in inputs if name in contestant]
+    order += sorted(name for name in contestant if name not in order)
+    found = []
+    for name in order:
+        declared = contestant[name]
+        details = inputs.get(name)
+        form = Form.model_validate(details) if isinstance(details, dict) else Form()
+        options = tuple(form.options or declared.options or ()) or None
+        found.append(
+            Field(
+                id=name,
+                type=Type(declared.type),
+                label=form.label or name,
+                options=options,
+                per_test=bool(declared.per_test),
+                default=form.default,
+                min=form.min,
+                max=form.max,
+                max_size=form.max_size if form.max_size is not None else DEFAULT_MAX_SIZE,
+            )
+        )
+    return tuple(found)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,22 +145,41 @@ def key_is_valid(key: str) -> bool:
     return KEY_MIN <= len(key) <= KEY_MAX and set(key) <= KEY_CHARACTERS
 
 
+def path_problem(entry: Field, name: str, tests: Collection[str]) -> str | None:
+    """What is wrong with `name` as where an uploaded file goes under its
+    input, if anything: one plain name for a file input, a path of plain
+    names for a folder input, and `<group>/<test>` with or without an
+    ending, for a test of the plan, for a per-test input.
+    """
+    parts = name.split("/")
+    for part in parts:
+        problem = filename_problem(part)
+        if problem is not None:
+            return problem
+    if entry.per_test:
+        matched = TEST_FILE.match(name)
+        if matched is None or f"{matched['group']}/{matched['test']}" not in tests:
+            return "A file of this input is named for a test, <group>/<test>, such as main/1.txt."
+        return None
+    if entry.type is Type.FILE and len(parts) > 1:
+        return "A file name is one name, with no folder in it."
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class SubmittedInput:
-    """What a contestant gives for one input: the uploads of its files, and
-    for a code input the language chosen; or, for a text, number or
-    true-or-false input, its value.
+    """What a contestant gives for one input: the uploads of its files; or,
+    for a text, number, true-or-false or enum input, its value.
     """
 
     uploads: tuple[uuid.UUID, ...] = ()
-    language: str | None = None
     value: str | int | float | bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class UploadedFile:
     """A checked upload as a submission lays it out: the input it was asked
-    for, the name it is committed under and its size.
+    for, the path it is committed under in that input and its size.
     """
 
     upload: uuid.UUID
@@ -123,13 +200,14 @@ class Layout:
 
 
 def lay_out(
-    declared: tuple[ContestantInput, ...],
+    declared: tuple[Field, ...],
+    tests: Collection[str],
     given: Mapping[str, SubmittedInput],
     uploads: Mapping[uuid.UUID, UploadedFile],
 ) -> Layout:
-    """The submission `given` makes for inputs `declared`, each upload of which
-    is in `uploads`. `InvalidInputs` naming every problem when it does not
-    fit.
+    """The submission `given` makes for inputs `declared` of a plan whose
+    tests are `tests`, each upload of which is in `uploads`. `InvalidInputs`
+    naming every problem when it does not fit.
     """
     problems: list[dict[str, str]] = []
     files: dict[str, uuid.UUID] = {}
@@ -138,7 +216,7 @@ def lay_out(
     for name in sorted(set(given) - known):
         problems.append({"input": name, "message": "The task has no such input."})
     for entry in declared:
-        found = _one(entry, given.get(entry.id), uploads, files)
+        found = _one(entry, tests, given.get(entry.id), uploads, files)
         if isinstance(found, str):
             problems.append({"input": entry.id, "message": found})
         elif found is not None:
@@ -152,32 +230,32 @@ def lay_out(
 
 
 def _one(
-    entry: ContestantInput,
+    entry: Field,
+    tests: Collection[str],
     given: SubmittedInput | None,
     uploads: Mapping[uuid.UUID, UploadedFile],
     files: dict[str, uuid.UUID],
 ) -> dict[str, Any] | str | None:
-    """The input's entry in `submission.json`, a sentence saying what is
-    wrong, or none for an input that is left out and needs nothing.
+    """The input's entry in `submission.json`, or a sentence saying what is
+    wrong.
     """
-    if entry.type is InputType.JUPYTER:
-        return "A notebook input is not submitted from here." if given is not None else None
-    if entry.type in FILE_INPUTS:
-        return _files(entry, given, uploads, files)
+    if entry.files:
+        return _files(entry, tests, given, uploads, files)
     if given is None or given.value is None:
-        if given is not None and (given.uploads or given.language is not None):
+        if given is not None and given.uploads:
             return "Give this input a value, not files."
         if entry.default is None:
             return "This input is required."
         return {"value": entry.default}
-    if given.uploads or given.language is not None:
+    if given.uploads:
         return "Give this input a value, not files."
-    problem = _value_problem(entry, given.value)
+    problem = value_problem(entry, given.value)
     return problem if problem is not None else {"value": given.value}
 
 
 def _files(
-    entry: ContestantInput,
+    entry: Field,
+    tests: Collection[str],
     given: SubmittedInput | None,
     uploads: Mapping[uuid.UUID, UploadedFile],
     files: dict[str, uuid.UUID],
@@ -185,12 +263,12 @@ def _files(
     if given is None or not given.uploads:
         return (
             "This input needs a file."
-            if entry.type is not InputType.FILES
-            else ("This input needs at least one file.")
+            if entry.type is Type.FILE
+            else "This input needs at least one file."
         )
     if given.value is not None:
         return "Give this input files, not a value."
-    if entry.type is not InputType.FILES and len(given.uploads) != 1:
+    if entry.type is Type.FILE and not entry.per_test and len(given.uploads) != 1:
         return "This input takes exactly one file."
     if len(set(given.uploads)) != len(given.uploads):
         return "An upload is given more than once."
@@ -199,35 +277,41 @@ def _files(
         return "An upload was asked for another input."
     names = [upload.filename for upload in chosen]
     if len(set(names)) != len(names):
-        return "Two files have the same name."
-    result: dict[str, Any] = {}
-    if entry.type is InputType.CODE:
-        languages = entry.language
-        if languages is None and given.language is not None:
-            return "This input takes no language."
-        if languages is not None and given.language not in languages:
-            return f"Choose one of the languages {', '.join(languages)}."
-        if given.language is not None:
-            result["language"] = given.language
-    elif given.language is not None:
-        return "Only a code input takes a language."
+        return "Two files have the same path."
+    for name in names:
+        problem = path_problem(entry, name, tests)
+        if problem is not None:
+            return f"{name}: {problem}"
+    if entry.per_test:
+        answered = [
+            f"{matched['group']}/{matched['test']}"
+            for name in names
+            if (matched := TEST_FILE.match(name)) is not None
+        ]
+        if len(set(answered)) != len(answered):
+            return "Two files answer the same test."
+    total = sum(upload.size for upload in chosen)
+    if total > entry.max_size:
+        return f"The files of this input total more than the {entry.max_size} bytes allowed."
     paths = []
     for upload in sorted(chosen, key=lambda upload: upload.filename):
         path = f"{FILES_FOLDER}/{entry.id}/{upload.filename}"
         files[path] = upload.upload
         paths.append(path)
-    result["files"] = paths
-    return result
+    return {"files": paths}
 
 
-def _value_problem(entry: ContestantInput, value: object) -> str | None:
+def value_problem(entry: Field, value: object) -> str | None:
+    """What is wrong with `value` for a text, number, true-or-false or enum
+    input, if anything.
+    """
     match entry.type:
-        case InputType.TEXT:
+        case Type.TEXT:
             if not isinstance(value, str):
                 return "Must be text."
             if len(value.encode()) > TEXT_MAX:
                 return f"Must be at most {TEXT_MAX} bytes."
-        case InputType.NUMBER:
+        case Type.NUMBER:
             if not is_number(value):
                 return "Must be a number."
             assert isinstance(value, int | float)
@@ -235,9 +319,12 @@ def _value_problem(entry: ContestantInput, value: object) -> str | None:
                 return f"Must be at least {entry.min}."
             if entry.max is not None and value > entry.max:
                 return f"Must be at most {entry.max}."
-        case InputType.BOOLEAN:
+        case Type.BOOLEAN:
             if not isinstance(value, bool):
                 return "Must be true or false."
+        case Type.ENUM:
+            if value not in (entry.options or ()):
+                return f"Choose one of {', '.join(entry.options or ())}."
         case _:
             return "This input does not take a value."
     return None

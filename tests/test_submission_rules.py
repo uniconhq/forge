@@ -1,7 +1,6 @@
-"""The rules under uploads and submissions, with no database: a primitive's
-declaration reads or is refused at its path, and the three the built-in
-workflow uses keep the contract and are their repos' own; a file name, an
-`accept` list and the parts of a large file; what a submission lays out,
+"""The rules under uploads and submissions, with no database: a file name and
+the parts of a large file; the form a contestant fills, from the plan's
+contestant inputs and the task's form details; what a submission lays out,
 keeping the contract, and what it refuses, input by input; the note its
 protected version carries; and the two secrets a grading run is handed,
 derived and never stored.
@@ -9,105 +8,34 @@ derived and never stored.
 
 import json
 import uuid
+from typing import Any
 
 import pytest
-import yaml
 
 from forge.domain.contracts import violation
-from forge.domain.definitions import parse_task, starter_task
+from forge.domain.definitions import DEFAULT_MAX_SIZE
 from forge.domain.errors import InvalidInputs
 from forge.domain.grading import callback_token, envelope_key, token_hash
-from forge.domain.primitives import PortType, parse_primitive
+from forge.domain.plans import ContestantInput
 from forge.domain.submissions import (
+    Field,
     SubmittedInput,
     UploadedFile,
+    fields_of,
     key_is_valid,
     lay_out,
     read_note,
     write_note,
 )
+from forge.domain.types import Type
 from forge.domain.uploads import (
     POINTER_MAX,
-    accepts,
     digest_problem,
     filename_problem,
     is_pointer,
     pointer_text,
+    read_pointer,
 )
-from forge.domain.yaml_models import InvalidDefinition
-from forge.testing import PRIMITIVES
-from tests.conftest import sibling
-
-DIGEST = "sha256:" + "a" * 64
-BASE = f"""\
-name: unicon/probe
-version: v1
-image: ghcr.io/uniconhq/primitive-probe@{DIGEST}
-limits: {{time_ms: 1, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1}}
-"""
-
-
-def test_the_three_primitives_read_as_the_contract_declares_them() -> None:
-    compile_ = parse_primitive(PRIMITIVES["compile"])
-    run = parse_primitive(PRIMITIVES["sandbox-run"])
-    check = parse_primitive(PRIMITIVES["diff-check"])
-
-    assert (compile_.short_name, compile_.batch, run.batch, check.batch) == (
-        "compile",
-        False,
-        True,
-        True,
-    )
-    assert compile_.inputs["language"].values == ("python", "c", "cpp", "java")
-    assert compile_.outputs["binary"].optional is True
-    assert run.limits_from["time_ms"].input == "time_limit"
-    assert check.outputs["outcome"].type is PortType.OUTCOME
-
-
-@pytest.mark.parametrize("name", list(PRIMITIVES))
-def test_each_primitive_keeps_the_contract_as_written_and_as_read(name: str) -> None:
-    declared = parse_primitive(PRIMITIVES[name])
-    assert violation(yaml.safe_load(PRIMITIVES[name]), "primitive") is None
-    assert violation(declared.model_dump(mode="json", exclude_none=True), "primitive") is None
-
-
-@pytest.mark.parametrize("name", list(PRIMITIVES))
-def test_each_primitive_is_its_repos_declaration_with_the_image_written_in(name: str) -> None:
-    published = sibling(f"primitive-{name}", "primitive.yaml").read_text(encoding="utf-8")
-    lines = PRIMITIVES[name].decode().splitlines(keepends=True)
-    assert "".join(line for line in lines if not line.startswith("image: ")) == published
-
-
-@pytest.mark.parametrize(
-    ("extra", "path"),
-    [
-        ("inputs:\n  kind: {type: enum}\n", "inputs.kind.values"),
-        ("inputs:\n  kind: {type: text, values: [a]}\n", "inputs.kind.values"),
-        (
-            "inputs:\n  kind: {type: text}\nlimits_from:\n  time_ms: {input: kind}\n",
-            "limits_from.time_ms.input",
-        ),
-        ("outputs:\n  kind: {type: list}\n", "outputs.kind.type"),
-        ("schema_version: 3\n", "schema_version"),
-        ("colour: red\n", "colour"),
-    ],
-    ids=["enum-without-values", "values-on-text", "limit-from-text", "unknown-type", "v3", "key"],
-)
-def test_a_declaration_that_breaks_the_contract_is_refused_at_its_path(
-    extra: str, path: str
-) -> None:
-    with pytest.raises(InvalidDefinition) as refused:
-        parse_primitive(BASE + extra)
-    assert path in [problem["path"] for problem in refused.value.errors]
-
-
-def test_a_declaration_names_its_image_by_digest_and_may_say_its_version() -> None:
-    assert parse_primitive(BASE + "schema_version: 4\n").schema_version == 4
-    local = BASE.replace("ghcr.io/uniconhq", "localhost:5000")
-    assert parse_primitive(local).image.startswith("localhost:5000/")
-    with pytest.raises(InvalidDefinition) as refused:
-        parse_primitive(BASE.replace(f"@{DIGEST}", ":latest"))
-    assert [problem["path"] for problem in refused.value.errors] == ["image"]
 
 
 @pytest.mark.parametrize(
@@ -130,16 +58,6 @@ def test_a_file_name_is_one_plain_name(name: str, fine: bool) -> None:
     assert (filename_problem(name) is None) is fine
 
 
-def test_accept_takes_endings_and_content_types() -> None:
-    assert accepts(None, "anything", None)
-    assert accepts((".py", ".cpp"), "Main.PY", None)
-    assert not accepts((".py",), "main.pyc", None)
-    assert accepts(("image/*",), "x.bin", "image/png")
-    assert accepts(("application/zip",), "x", "application/zip; charset=binary")
-    assert accepts(("csv",), "data.csv", None)
-    assert not accepts(("text/plain",), "x.txt", "text/html")
-
-
 def test_a_pointer_is_the_three_lines_git_lfs_reads() -> None:
     digest, size = "b" * 64, 4096
     written = pointer_text(digest, size)
@@ -149,6 +67,7 @@ def test_a_pointer_is_the_three_lines_git_lfs_reads() -> None:
         b"size 4096\n"
     )
     assert is_pointer(written)
+    assert read_pointer(written) == (digest, size)
 
 
 def test_what_counts_as_a_pointer_is_what_a_checkout_would_act_on() -> None:
@@ -167,6 +86,7 @@ def test_what_counts_as_a_pointer_is_what_a_checkout_would_act_on() -> None:
     assert not is_pointer(b"version 1\n")
     assert not is_pointer(b"# version https://git-lfs.github.com/spec/v1\n")
     assert not is_pointer(b" " * POINTER_MAX + b"version https://git-lfs.github.com/spec/v1\n")
+    assert read_pointer(b"version https://git-lfs.github.com/spec/v1\nnonsense\n") is None
 
 
 def test_a_digest_is_lowercase_hex_of_the_right_length() -> None:
@@ -177,124 +97,243 @@ def test_a_digest_is_lowercase_hex_of_the_right_length() -> None:
     assert digest_problem("") is not None
 
 
-TASK = parse_task(
-    starter_task("Sum")["task.yaml"].replace(
-        b"      language: [python]\n",
-        b"      language: [python, cpp]\n"
-        b"    - {id: weights, type: 'file[]', max_size: 1MB}\n"
-        b"    - {id: alpha, type: number, min: 0, max: 1, default: 0.5}\n"
-        b"    - {id: note, type: text}\n",
+# The form
+
+
+CONTESTANT = {
+    "submission": ContestantInput(type=Type.FILE),
+    "language": ContestantInput(type=Type.ENUM, options=("c", "cpp", "java", "python")),
+    "alpha": ContestantInput(type=Type.NUMBER),
+    "fast": ContestantInput(type=Type.BOOLEAN),
+    "note": ContestantInput(type=Type.TEXT),
+    "weights": ContestantInput(type=Type.FOLDER),
+    "answers": ContestantInput(type=Type.FILE, per_test=True),
+}
+"""A plan's contestant inputs, one of every kind."""
+
+INPUTS: dict[str, Any] = {
+    "time_limit": 2,
+    "language": {"options": ["python", "cpp"], "default": "python", "label": "Language"},
+    "submission": {"label": "Your solution", "max_size": "1KB"},
+    "alpha": {"min": 0, "max": 1, "default": 0.5},
+    "fast": {"default": False},
+    "weights": {"max_size": "1KB"},
+}
+"""The task's `inputs`: a value for an input the contestant does not give,
+and form details for some they do."""
+
+TESTS = ("main/1", "main/2", "samples/1")
+
+
+def test_the_form_is_the_plans_inputs_with_the_tasks_details_in_its_order() -> None:
+    fields = fields_of(CONTESTANT, INPUTS)
+
+    assert [field.id for field in fields] == [
+        "language",
+        "submission",
+        "alpha",
+        "fast",
+        "weights",
+        "answers",
+        "note",
+    ]
+    by_id = {field.id: field for field in fields}
+    assert by_id["language"] == Field(
+        id="language",
+        type=Type.ENUM,
+        label="Language",
+        options=("python", "cpp"),
+        default="python",
     )
-)
-SOURCE, W1, W2 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    assert by_id["submission"].max_size == 1024 and by_id["submission"].label == "Your solution"
+    assert (by_id["alpha"].min, by_id["alpha"].max, by_id["alpha"].default) == (0, 1, 0.5)
+    assert by_id["answers"].per_test and by_id["answers"].files
+    assert (by_id["note"].label, by_id["note"].max_size) == ("note", DEFAULT_MAX_SIZE)
+    workflows = fields_of({"language": CONTESTANT["language"]}, {})
+    assert workflows[0].options == ("c", "cpp", "java", "python")
+
+
+FIELDS = fields_of(CONTESTANT, INPUTS)
+SOURCE, W1, W2, A1, A2, S1 = (uuid.uuid4() for _ in range(6))
 UPLOADS = {
     SOURCE: UploadedFile(SOURCE, "submission", "main.py", 10),
-    W1: UploadedFile(W1, "weights", "b.bin", 3),
-    W2: UploadedFile(W2, "weights", "a.bin", 3),
+    W1: UploadedFile(W1, "weights", "layers/b.bin", 300),
+    W2: UploadedFile(W2, "weights", "a.bin", 300),
+    A1: UploadedFile(A1, "answers", "main/1.txt", 5),
+    A2: UploadedFile(A2, "answers", "main/2", 5),
+    S1: UploadedFile(S1, "answers", "samples/1.out", 5),
+}
+COMPLETE = {
+    "submission": SubmittedInput(uploads=(SOURCE,)),
+    "language": SubmittedInput(value="cpp"),
+    "note": SubmittedInput(value="hello"),
+    "weights": SubmittedInput(uploads=(W1, W2)),
+    "answers": SubmittedInput(uploads=(A1, A2, S1)),
 }
 
 
 def test_a_submission_lays_out_its_files_and_names_them_in_submission_json() -> None:
-    layout = lay_out(
-        TASK.inputs.contestant,
-        {
-            "submission": SubmittedInput(uploads=(SOURCE,), language="cpp"),
-            "weights": SubmittedInput(uploads=(W1, W2)),
-            "note": SubmittedInput(value="hello"),
-        },
-        UPLOADS,
-    )
+    layout = lay_out(FIELDS, TESTS, COMPLETE, UPLOADS)
 
     assert layout.files == {
         "files/submission/main.py": SOURCE,
         "files/weights/a.bin": W2,
-        "files/weights/b.bin": W1,
+        "files/weights/layers/b.bin": W1,
+        "files/answers/main/1.txt": A1,
+        "files/answers/main/2": A2,
+        "files/answers/samples/1.out": S1,
     }
-    assert json.loads(layout.document) == {
-        "schema_version": 4,
+    document = json.loads(layout.document)
+    assert document == {
+        "schema_version": 5,
         "inputs": {
-            "submission": {"files": ["files/submission/main.py"], "language": "cpp"},
-            "weights": {"files": ["files/weights/a.bin", "files/weights/b.bin"]},
+            "language": {"value": "cpp"},
+            "submission": {"files": ["files/submission/main.py"]},
             "alpha": {"value": 0.5},
+            "fast": {"value": False},
+            "weights": {"files": ["files/weights/a.bin", "files/weights/layers/b.bin"]},
+            "answers": {
+                "files": [
+                    "files/answers/main/1.txt",
+                    "files/answers/main/2",
+                    "files/answers/samples/1.out",
+                ]
+            },
             "note": {"value": "hello"},
         },
     }
     assert layout.document.endswith(b"}\n")
-    assert violation(json.loads(layout.document), "submission") is None
+    assert violation(document, "submission") is None
+
+
+def test_a_left_out_input_takes_its_default() -> None:
+    layout = lay_out(FIELDS, TESTS, {**COMPLETE, "language": SubmittedInput()}, UPLOADS)
+
+    assert json.loads(layout.document)["inputs"]["language"] == {"value": "python"}
+
+
+def test_a_per_test_input_may_answer_some_tests_only() -> None:
+    layout = lay_out(FIELDS, TESTS, {**COMPLETE, "answers": SubmittedInput(uploads=(A2,))}, UPLOADS)
+
+    assert json.loads(layout.document)["inputs"]["answers"] == {"files": ["files/answers/main/2"]}
+
+
+def refusal(given: dict[str, SubmittedInput], uploads: dict[uuid.UUID, UploadedFile]) -> Any:
+    with pytest.raises(InvalidInputs) as refused:
+        lay_out(FIELDS, TESTS, {**COMPLETE, **given}, {**UPLOADS, **uploads})
+    return refused.value.extra["errors"]
+
+
+EXTRA, BIG, TWIN, NOT_A_TEST, SECOND_1 = (uuid.uuid4() for _ in range(5))
+MORE = {
+    EXTRA: UploadedFile(EXTRA, "submission", "other.py", 10),
+    BIG: UploadedFile(BIG, "submission", "big.py", 1025),
+    TWIN: UploadedFile(TWIN, "weights", "a.bin", 1),
+    NOT_A_TEST: UploadedFile(NOT_A_TEST, "answers", "main/3.txt", 1),
+    SECOND_1: UploadedFile(SECOND_1, "answers", "main/1", 1),
+}
 
 
 @pytest.mark.parametrize(
     ("given", "input", "message"),
     [
-        ({"submission": SubmittedInput(uploads=(SOURCE,))}, "submission", "Choose one of"),
-        (
-            {"submission": SubmittedInput(uploads=(SOURCE,), language="rust")},
-            "submission",
-            "Choose one of the languages python, cpp.",
-        ),
-        ({"submission": SubmittedInput(value="print(1)")}, "submission", "needs a file"),
-        (
-            {"submission": SubmittedInput(uploads=(SOURCE, W1), language="cpp")},
-            "submission",
-            "exactly one file",
-        ),
-        (
-            {"submission": SubmittedInput(uploads=(W1,), language="cpp")},
-            "submission",
-            "another input",
-        ),
+        ({"language": SubmittedInput(value="rust")}, "language", "Choose one of python, cpp."),
+        ({"language": SubmittedInput(value="java")}, "language", "Choose one of python, cpp."),
         ({"alpha": SubmittedInput(value=2)}, "alpha", "Must be at most 1."),
+        ({"alpha": SubmittedInput(value=-0.5)}, "alpha", "Must be at least 0."),
         ({"alpha": SubmittedInput(value=True)}, "alpha", "Must be a number."),
         ({"alpha": SubmittedInput(value=float("nan"))}, "alpha", "Must be a number."),
-        ({"note": SubmittedInput(value=None)}, "note", "This input is required."),
-        ({"note": SubmittedInput(uploads=(W1,))}, "note", "not files"),
+        ({"fast": SubmittedInput(value="yes")}, "fast", "Must be true or false."),
+        ({"note": SubmittedInput()}, "note", "This input is required."),
+        ({"note": SubmittedInput(value=7)}, "note", "Must be text."),
+        ({"note": SubmittedInput(uploads=(W1,))}, "note", "Give this input a value, not files."),
+        ({"submission": SubmittedInput(value="print(1)")}, "submission", "needs a file"),
+        (
+            {"submission": SubmittedInput(uploads=(SOURCE, EXTRA))},
+            "submission",
+            "This input takes exactly one file.",
+        ),
+        ({"submission": SubmittedInput(uploads=(W2,))}, "submission", "another input"),
+        ({"submission": SubmittedInput(uploads=(BIG,))}, "submission", "1024 bytes allowed"),
+        ({"weights": SubmittedInput()}, "weights", "This input needs at least one file."),
+        (
+            {"weights": SubmittedInput(uploads=(W2, TWIN))},
+            "weights",
+            "Two files have the same path.",
+        ),
+        ({"weights": SubmittedInput(uploads=(W1, W1))}, "weights", "given more than once"),
+        (
+            {"weights": SubmittedInput(uploads=(W1, W2, TWIN))},
+            "weights",
+            "Two files have the same path.",
+        ),
+        (
+            {"answers": SubmittedInput(uploads=(NOT_A_TEST,))},
+            "answers",
+            "main/3.txt: A file of this input is named for a test, <group>/<test>, such as "
+            "main/1.txt.",
+        ),
+        (
+            {"answers": SubmittedInput(uploads=(A1, SECOND_1))},
+            "answers",
+            "Two files answer the same test.",
+        ),
         ({"ghost": SubmittedInput(value=1)}, "ghost", "The task has no such input."),
     ],
     ids=[
-        "no-language",
-        "unlisted-language",
-        "value-for-code",
-        "two-files",
-        "upload-of-another-input",
+        "enum-outside-the-tasks-options",
+        "enum-the-task-narrowed-away",
         "above-max",
+        "below-min",
         "boolean-for-number",
         "nan-for-number",
+        "text-for-boolean",
         "required-text",
+        "number-for-text",
         "files-for-text",
+        "value-for-file",
+        "two-files-for-file",
+        "upload-of-another-input",
+        "file-over-its-size",
+        "empty-folder",
+        "same-path-twice",
+        "same-upload-twice",
+        "same-path-among-three",
+        "not-a-plan-test",
+        "one-test-twice",
         "unknown-input",
     ],
 )
 def test_a_submission_that_does_not_fit_the_inputs_is_refused_naming_the_input(
     given: dict[str, SubmittedInput], input: str, message: str
 ) -> None:
-    complete = {
-        "submission": SubmittedInput(uploads=(SOURCE,), language="cpp"),
-        "weights": SubmittedInput(uploads=(W1,)),
-        "note": SubmittedInput(value="x"),
-    }
-    with pytest.raises(InvalidInputs) as refused:
-        lay_out(TASK.inputs.contestant, {**complete, **given}, UPLOADS)
-    errors = refused.value.extra["errors"]
+    errors = refusal(given, MORE)
+
     assert [error["input"] for error in errors] == [input]
     assert message in errors[0]["message"]
 
 
-def test_two_files_of_one_name_are_refused() -> None:
-    twin = uuid.uuid4()
-    uploads = {**UPLOADS, twin: UploadedFile(twin, "weights", "a.bin", 1)}
-    with pytest.raises(InvalidInputs) as refused:
-        lay_out(
-            TASK.inputs.contestant,
-            {
-                "submission": SubmittedInput(uploads=(SOURCE,), language="cpp"),
-                "weights": SubmittedInput(uploads=(W2, twin)),
-                "note": SubmittedInput(value="x"),
-            },
-            uploads,
-        )
-    assert refused.value.extra["errors"] == [
-        {"input": "weights", "message": "Two files have the same name."}
+def test_a_folders_files_together_are_within_its_size() -> None:
+    heavy = uuid.uuid4()
+    uploads = {heavy: UploadedFile(heavy, "weights", "c.bin", 1024 - 600 + 1)}
+
+    errors = refusal({"weights": SubmittedInput(uploads=(W1, W2, heavy))}, uploads)
+
+    assert errors == [
+        {
+            "input": "weights",
+            "message": "The files of this input total more than the 1024 bytes allowed.",
+        }
     ]
+
+
+def test_every_input_that_does_not_fit_is_named_together() -> None:
+    errors = refusal(
+        {"alpha": SubmittedInput(value=5), "note": SubmittedInput(), "ghost": SubmittedInput()},
+        {},
+    )
+
+    assert [error["input"] for error in errors] == ["ghost", "alpha", "note"]
 
 
 def test_a_key_is_short_random_text_and_its_note_reads_back() -> None:

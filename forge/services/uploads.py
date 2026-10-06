@@ -4,10 +4,11 @@ through the upload door to the forge's large-file store, and says when they
 are there (`forge.domain.uploads` holds the rules).
 
 `slot` needs the person to be able to submit to the task now
-(`submitters.refuse`), the input to be one of the task's contestant inputs a
-file is uploaded for, the file name to be one plain name the input `accept`s,
-the digest to be a SHA-256, and the declared size to be within the input's
-`max_size` and the task's `limits.max_size` (`too_large`, naming the limit),
+(`submitters.refuse`), the input to be one of the task's contestant `file`
+or `folder` inputs, the file's path to be one the input takes
+(`forge.domain.submissions.path_problem`), the digest to be a SHA-256, and
+the declared size to be within the input's `max_size` (`too_large`, naming
+the input),
 and the person to hold fewer open uploads for the task than `rules.OPEN_MAX`,
 declaring with this one at most `rules.open_bytes` together (`upload_limit`),
 counted under a lock on the person and the task so two slots asked at once
@@ -48,7 +49,7 @@ from sqlalchemy import func, select, text
 from forge.db.tables import Upload as UploadRow
 from forge.domain import uploads as rules
 from forge.domain.content import check_path
-from forge.domain.definitions import FILE_CEILING, SUBMISSION_CEILING, ContestantInput
+from forge.domain.definitions import FILE_CEILING, SUBMISSION_CEILING
 from forge.domain.errors import (
     Forbidden,
     InvalidInputs,
@@ -64,13 +65,13 @@ from forge.domain.identity import AsUser
 from forge.domain.ids import TaskId, new_id
 from forge.domain.roles import Role, task_scope
 from forge.domain.sessions import Session
+from forge.domain.submissions import Field, path_problem
 from forge.domain.uploads import Door, UploadPurpose, UploadStatus
-from forge.domain.workflow_definition import InputType
 from forge.log import get_logger
 from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import sessions, submitters
+from forge.services import published, sessions, submitters
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -135,19 +136,19 @@ async def slot(
     sha256: str,
     content_type: str | None = None,
 ) -> Slot:
-    """A slot for one file of `size` bytes named `filename`, whose content
-    hashes to `sha256`, for the task's contestant input `input`, recorded as
-    an upload of the signed-in person.
+    """A slot for one file of `size` bytes that goes at `filename` under the
+    task's contestant input `input`, whose content hashes to `sha256`,
+    recorded as an upload of the signed-in person.
     """
     entrant = await submitters.entrant(ctx, session, task)
     _, workspace = await submitters.refuse(ctx, entrant)
-    definition = entrant.published.definition
-    entry = _file_input(definition.inputs.contestant, input)
-    _refuse_file(entry, filename, size, sha256, content_type)
-    limit, whose = _limit(entry, definition.limits.max_size)
+    form = await published.form(ctx, entrant.published)
+    entry = _file_input(form.fields, input)
+    _refuse_file(entry, filename, size, sha256, content_type, form.tests)
+    limit = min(entry.max_size, FILE_CEILING)
     if size > limit:
         raise TooLarge(
-            f"The file is larger than the {limit} bytes allowed.", limit=limit, input=whose
+            f"The file is larger than the {limit} bytes allowed.", limit=limit, input=entry.id
         )
     if not await _asked_before(
         ctx, entrant.session.user_id, task, UploadPurpose.SUBMISSION, since=entrant.since
@@ -164,7 +165,9 @@ async def slot(
         entrant.session.user_id,
         task,
         size,
-        rules.open_bytes(min(definition.limits.max_size, SUBMISSION_CEILING)),
+        rules.open_bytes(
+            min(sum(field.max_size for field in form.fields if field.files), SUBMISSION_CEILING)
+        ),
     )
     place = SubmissionPlace(workspace, task)
     as_ = AsUser(entrant.session.user_id, await sessions.credential_for(ctx, entrant.session.id))
@@ -602,9 +605,9 @@ async def _refuse_open(
         )
 
 
-def _file_input(declared: Sequence[ContestantInput], input: str) -> ContestantInput:
+def _file_input(declared: Sequence[Field], input: str) -> Field:
     for entry in declared:
-        if entry.id == input and entry.type in rules.FILE_INPUTS:
+        if entry.id == input and entry.files:
             return entry
     raise InvalidInputs(
         "The task has no input a file is uploaded for by that name.",
@@ -613,32 +616,19 @@ def _file_input(declared: Sequence[ContestantInput], input: str) -> ContestantIn
 
 
 def _refuse_file(
-    entry: ContestantInput, filename: str, size: int, digest: str, content_type: str | None
+    entry: Field,
+    filename: str,
+    size: int,
+    digest: str,
+    content_type: str | None,
+    tests: Collection[str],
 ) -> None:
-    problem = rules.filename_problem(filename)
+    problem = path_problem(entry, filename, tests)
     if problem is None and (isinstance(size, bool) or not isinstance(size, int) or size < 0):
         problem = "A size is a whole number of bytes."
     if problem is None:
         problem = rules.digest_problem(digest)
     if problem is None and content_type is not None and len(content_type) > rules.CONTENT_TYPE_MAX:
         problem = "A content type is at most 255 characters."
-    if (
-        problem is None
-        and entry.type is not InputType.CODE
-        and not rules.accepts(entry.accept, filename, content_type)
-    ):
-        problem = f"This input takes {', '.join(entry.accept or ())}."
     if problem is not None:
         raise InvalidInputs(problem, errors=[{"input": entry.id, "message": problem}])
-
-
-def _limit(entry: ContestantInput, task_limit: int) -> tuple[int, str | None]:
-    """The most a file for the input may be, and the input whose limit that
-    is, or none when it is the task's. Never above `FILE_CEILING`, which is
-    what the forge takes for one object: a slot above it would be handed out
-    for a file the forge then refuses, with nothing saying why.
-    """
-    task_limit = min(task_limit, SUBMISSION_CEILING, FILE_CEILING)
-    if entry.max_size is not None and entry.max_size < task_limit:
-        return entry.max_size, entry.id
-    return task_limit, None
