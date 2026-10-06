@@ -4,7 +4,8 @@ every step carrying its primitive's image and limits, every
 primitive batches, every value resolved, the verdict block from the
 workflow's outputs, the same bytes every time; what it refuses, each at its
 YAML path; only the compiler writes inside `plans/`; and what a publication
-names as changing how it grades, in the note it carries. The shape a plan is
+names as changing how it grades, in the note it carries. Every plan compiled
+here keeps the package's copy of the plan schema, and the shape a plan is
 held to below is the contract's section 2, written out by hand.
 """
 
@@ -15,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from forge.domain.contracts import violation
 from forge.domain.definitions import TaskDefinition, parse_task, starter_task
 from forge.domain.plans import (
     HARNESS_IMAGE,
@@ -57,13 +59,16 @@ def compiled(
     paths: Collection[str] = PATHS,
     declared: dict[str, PrimitiveDeclaration] | None = None,
 ) -> dict[str, Plan]:
-    return compile_plans(
+    plans = compile_plans(
         definition or task(),
         workflows or classic(),
         declared or primitives(),
         paths,
         harness_image=HARNESS_IMAGE,
     )
+    for plan in plans.values():
+        assert violation(document(plan), "plan") is None
+    return plans
 
 
 def document(plan: Plan) -> dict[str, Any]:

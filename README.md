@@ -1463,7 +1463,8 @@ copy of the file deploy's bootstrap seeds, and with `seed_primitives` the
 three primitives it uses from `PRIMITIVES`, each primitive repo's own
 `primitive.yaml` with an image of `PLACEHOLDER_DIGEST`, so a task's first
 save finds a workflow and every step's image; the package's tests check the
-copy against deploy's file when that repo is checked out beside this one.
+copies against deploy's file and the primitives' own when those repos are
+checked out beside this one.
 The fake's large-file store is `fake.uploads`: a test plays the browser
 through the door with `send`, handing back the address the door gave out,
 or puts an object straight into a place with `put`, and `forget` drops one
@@ -1522,6 +1523,15 @@ reach the forge's public URL. `tests/live/test_undo.py` drives the removals
 a failed create uses and then an org and a task whose commit fails, and
 checks that nothing they made is left at Forgejo or Woodpecker; its first
 two tests need only the forge.
+
+A few tests compare the package's copies with their originals in the repos
+checked out beside this one: `schemas/` with `runner`'s, `CLASSIC` with the
+workflow `deploy` seeds, and `PRIMITIVES` with each `primitive-<name>`'s
+`primitive.yaml`. Without a repo they are skipped, unless `CI` is set, when
+they fail. CI checks the forge out beside them: the runner at the release
+whose contracts `schemas/` copies, a `ref:` in `.github/workflows/ci.yaml`
+that moves with the copy, deploy's `main`, and each primitive at the tag
+deploy's `images.json` seeds the forge with.
 
 ## Releasing
 
