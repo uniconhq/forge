@@ -102,9 +102,10 @@ async def test_a_contest_and_a_task_are_made_bare_then_secured(
     assert _team_names(admin, org, "spring.contest") & contest_teams == set()
     listed = admin.get(f"/api/v1/repos/{org}/spring.sum.task/contents").json()
     assert sorted(entry["name"] for entry in listed) == [
-        "data",
+        "public",
         "statement.md",
         "task.yaml",
+        "tests",
     ]
     assert await forge.content.exists(task) is True
     assert await forge.content.exists(TaskId(f"{org}/spring/nope")) is False
