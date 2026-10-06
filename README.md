@@ -1570,8 +1570,8 @@ workflow `deploy` seeds, and `PRIMITIVES` with each `primitive-<name>`'s
 `primitive.yaml`. Without a repo they are skipped, unless `CI` is set, when
 they fail. CI checks the forge out beside them: the runner at the release
 whose contracts `schemas/` copies, a `ref:` in `.github/workflows/ci.yaml`
-that moves with the copy, deploy's `main`, and each primitive at the tag
-deploy's `images.json` seeds the forge with.
+that moves with the copy, deploy's `main`, and each primitive at the release
+whose declaration `PRIMITIVES` copies, which moves the same way.
 
 ## Releasing
 
