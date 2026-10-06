@@ -63,13 +63,6 @@ from forge.domain.plans import Plan
 CALLBACK_INFO = b"unicon-grading-callback"
 ENVELOPE_INFO = b"unicon-grading-envelope"
 
-CLONE_IMAGE = (
-    "ghcr.io/uniconhq/clone@sha256:8968497186f0e9d578a8a5202688cfb644161fcf6fb3365192ac627b031578a4"
-)
-"""The image the CI checks a task and a submission out with, of runner release
-v0.3.0, from that release's `images.json`: what `UNICON_CLONE_IMAGE` is
-unless a deployment sets it."""
-
 PLATFORM_POOL = "pool:platform"
 """The label every run is pinned to until orgs bring machines of their own:
 only a machine the platform controls declares it."""

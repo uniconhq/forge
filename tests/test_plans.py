@@ -19,7 +19,6 @@ import pytest
 from forge.domain.contracts import violation
 from forge.domain.definitions import TaskDefinition, parse_task, starter_task
 from forge.domain.plans import (
-    HARNESS_IMAGE,
     Plan,
     Snapshot,
     cases_of,
@@ -37,6 +36,7 @@ from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES
 STARTER = starter_task("Sum")["task.yaml"]
 TESTS = ("data/testcases/1.in", "data/testcases/1.ans", "data/testcases/2.in")
 PATHS = (*TESTS, "data/testcases/2.ans", "data/testcases/10.in", "data/testcases/10.ans")
+HARNESS_IMAGE = f"ghcr.io/uniconhq/harness@{PLACEHOLDER_DIGEST}"
 
 
 def classic() -> dict[str, WorkflowDefinition]:

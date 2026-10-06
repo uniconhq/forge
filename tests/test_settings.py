@@ -1,14 +1,12 @@
 """Configuration is read once at start, a mistake names the variable, the
-Forgejo and object store settings are required only when Forgejo is chosen,
-and cookies are secure whenever the platform is served over https.
+Forgejo, object store and image settings are required only when Forgejo is
+chosen, and cookies are secure whenever the platform is served over https.
 """
 
 import pytest
 from pydantic import ValidationError
 
-from forge.domain.grading import CLONE_IMAGE
-from forge.domain.plans import HARNESS_IMAGE
-from forge.settings import Settings, load_log_settings, load_settings
+from forge.settings import FAKE_IMAGES, Settings, load_log_settings, load_settings
 
 COMPLETE = {
     "UNICON_PUBLIC_URL": "http://localhost:8080",
@@ -25,6 +23,8 @@ COMPLETE = {
     "UNICON_S3_ENDPOINT": "http://garage:3900",
     "UNICON_S3_ACCESS_KEY": "GK-test",
     "UNICON_S3_SECRET_KEY": "s3-secret",
+    "UNICON_HARNESS_IMAGE": "ghcr.io/uniconhq/harness@sha256:" + "1" * 64,
+    "UNICON_CLONE_IMAGE": "ghcr.io/uniconhq/clone@sha256:" + "2" * 64,
 }
 
 
@@ -41,7 +41,6 @@ def environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "UNICON_INTERNAL_URL",
         "UNICON_ORG_CREATION_OPEN",
         "UNICON_MACHINE_URL",
-        "UNICON_HARNESS_IMAGE",
         "UNICON_S3_REGION",
         "UNICON_S3_RESULTS_BUCKET",
     ]:
@@ -246,32 +245,59 @@ def test_the_machine_url_follows_the_public_url_unless_given(
     assert str(load_settings().machine_url) == "http://proxy/"
 
 
-def test_the_harness_image_is_the_pinned_one_unless_given_and_always_by_digest(
+def test_forgejo_needs_both_images(
     environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert load_settings().harness_image == HARNESS_IMAGE
-    local = "localhost:5000/harness@sha256:" + "a" * 64
-    monkeypatch.setenv("UNICON_HARNESS_IMAGE", local)
-    assert load_settings().harness_image == local
+    monkeypatch.delenv("UNICON_HARNESS_IMAGE")
+    monkeypatch.delenv("UNICON_CLONE_IMAGE")
 
-    monkeypatch.setenv("UNICON_HARNESS_IMAGE", "ghcr.io/uniconhq/harness:latest")
     with pytest.raises(SystemExit):
         load_settings()
-    assert "UNICON_HARNESS_IMAGE: Value error, is not an image by digest" in capsys.readouterr().err
+
+    lines = capsys.readouterr().err
+    assert "UNICON_FORGE=forgejo needs UNICON_HARNESS_IMAGE, UNICON_CLONE_IMAGE" in lines
 
 
-def test_the_clone_image_is_the_pinned_one_unless_given_and_always_by_digest(
-    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("variable", "field", "tagged"),
+    [
+        ("UNICON_HARNESS_IMAGE", "harness_image", "ghcr.io/uniconhq/harness:latest"),
+        ("UNICON_CLONE_IMAGE", "clone_image", "ghcr.io/uniconhq/clone:v1"),
+    ],
+)
+def test_an_image_is_the_one_given_and_always_by_digest(
+    environment: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    variable: str,
+    field: str,
+    tagged: str,
 ) -> None:
-    assert load_settings().clone_image == CLONE_IMAGE
-    local = "localhost:5000/uniconhq/clone@sha256:" + "b" * 64
-    monkeypatch.setenv("UNICON_CLONE_IMAGE", local)
-    assert load_settings().clone_image == local
+    local = "localhost:5000/uniconhq/image@sha256:" + "a" * 64
+    monkeypatch.setenv(variable, local)
+    assert getattr(load_settings(), field) == local
 
-    monkeypatch.setenv("UNICON_CLONE_IMAGE", "ghcr.io/uniconhq/clone:v1")
+    monkeypatch.setenv(variable, tagged)
     with pytest.raises(SystemExit):
         load_settings()
-    assert "UNICON_CLONE_IMAGE: Value error, is not an image by digest" in capsys.readouterr().err
+    assert f"{variable}: Value error, is not an image by digest" in capsys.readouterr().err
+
+
+def test_the_fake_names_placeholder_images_unless_given(
+    environment: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UNICON_FORGE", "fake")
+    monkeypatch.delenv("UNICON_HARNESS_IMAGE")
+    monkeypatch.delenv("UNICON_CLONE_IMAGE")
+
+    settings = load_settings()
+    assert (settings.harness_image, settings.clone_image) == (
+        FAKE_IMAGES["harness_image"],
+        FAKE_IMAGES["clone_image"],
+    )
+    assert Settings.for_tests().harness_image == FAKE_IMAGES["harness_image"]
+    monkeypatch.setenv("UNICON_HARNESS_IMAGE", COMPLETE["UNICON_HARNESS_IMAGE"])
+    assert load_settings().harness_image == COMPLETE["UNICON_HARNESS_IMAGE"]
 
 
 def test_there_is_no_mail_server_while_its_address_is_empty(

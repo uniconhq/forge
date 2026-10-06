@@ -417,8 +417,9 @@ forge sends its own mail through, and the whole of it is absent while
 grading machines reach the platform, `UNICON_PUBLIC_URL` unless given.
 `UNICON_HARNESS_IMAGE` is the harness every plan names, by digest, and
 `UNICON_CLONE_IMAGE` the image the CI checks a task and a submission out
-with, by digest, each the one of the runner release the package pins unless
-given. A missing or malformed variable stops the process at start with the
+with, by digest. Both are required when `UNICON_FORGE=forgejo`, since which
+images a deployment runs is its own choice, from its image manifest; the fake
+runs neither and names a placeholder digest unless given. A missing or malformed variable stops the process at start with the
 variable named.
 
 ## Cookies
