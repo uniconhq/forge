@@ -72,6 +72,8 @@ async def test_a_url_stops_working_when_it_expires(store: S3Objects) -> None:
 
     late = httpx.put(url, content=b"too late", timeout=30)
 
-    assert late.status_code == 403, late.text
+    # Garage answers an expired presigned URL 400 ("Date is too old"), where
+    # AWS answers 403; either way nothing is stored.
+    assert late.status_code in (400, 403), late.text
     with pytest.raises(NotFound):
         await store.read(key)

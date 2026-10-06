@@ -1,9 +1,13 @@
 """The HTTP client retries a server that is busy, raises `Unavailable` once
 the retries are used up, never sends a create twice once it reached the
 server, turns every refusal into one of the five errors, and signs each
-identity its own way.
+identity its own way. Over a real connection pool it keeps eight calls in
+flight, the ninth waiting its turn and `Unavailable` once the pool timeout
+passes, and every response, a stream's included, gives its connection back.
 """
 
+import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -12,7 +16,13 @@ import pytest
 
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, AsUser, Credential
-from forge.forges.forgejo.http import ForgejoAuth, Http, WoodpeckerAuth
+from forge.forges.forgejo.http import (
+    CONCURRENT_CALLS,
+    ForgejoAuth,
+    Http,
+    WoodpeckerAuth,
+    new_client,
+)
 
 ACME = AsOrgAccount("acme", forge_token="forge-token-acme", ci_token="ci-token-acme")
 
@@ -83,8 +93,8 @@ async def test_a_create_that_reached_the_server_is_never_sent_again(
 
 @pytest.mark.parametrize(
     "failure",
-    [httpx.ConnectError("refused"), httpx.ConnectTimeout("slow"), httpx.PoolTimeout("busy")],
-    ids=["refused", "connect-timeout", "pool-timeout"],
+    [httpx.ConnectError("refused"), httpx.ConnectTimeout("slow")],
+    ids=["refused", "connect-timeout"],
 )
 async def test_a_create_that_never_left_is_sent_again(failure: Exception) -> None:
     seen: list[httpx.Request] = []
@@ -94,6 +104,16 @@ async def test_a_create_that_never_left_is_sent_again(failure: Exception) -> Non
 
     assert response.json() == {"id": 1}
     assert len(seen) == 2
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+async def test_a_call_that_found_no_free_connection_is_not_asked_again(method: str) -> None:
+    seen: list[httpx.Request] = []
+    http = _client([httpx.PoolTimeout("busy"), httpx.Response(200, json={})], seen)
+
+    with pytest.raises(Unavailable):
+        await http.call(PLATFORM, method, "/api/v1/orgs")
+    assert len(seen) == 1
 
 
 @pytest.mark.parametrize(
@@ -159,3 +179,104 @@ async def test_a_list_is_read_until_a_short_page() -> None:
 
 def _later() -> datetime:
     return datetime.now(UTC) + timedelta(hours=1)
+
+
+class Server:
+    """An HTTP server on a local port that holds every `/held` request until
+    `release` is set, answers `/large` with more than a capped read takes,
+    and counts the connections opened to it.
+    """
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.connections = 0
+        self.held = 0
+        self.url = ""
+
+    async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self.connections += 1
+        try:
+            while head := await reader.readuntil(b"\r\n\r\n"):
+                if head.startswith(b"GET /held "):
+                    self.held += 1
+                    await self.release.wait()
+                    body = b"ok"
+                else:
+                    body = b"x" * 4096
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body))
+                await writer.drain()
+        except asyncio.IncompleteReadError, ConnectionError:
+            pass
+        finally:
+            writer.close()
+
+
+@pytest.fixture
+async def server() -> AsyncIterator[Server]:
+    found = Server()
+    listening = await asyncio.start_server(found.handle, "127.0.0.1", 0)
+    found.url = f"http://127.0.0.1:{listening.sockets[0].getsockname()[1]}"
+    async with listening:
+        yield found
+        found.release.set()
+
+
+def _pooled(server: Server, pool: float) -> Http:
+    timeout = httpx.Timeout(5.0, pool=pool)
+    return Http(new_client(server.url, timeout=timeout), ForgejoAuth("admin"), backoff_seconds=0)
+
+
+async def _until(condition: Any) -> None:
+    for _ in range(200):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the server never saw it")
+
+
+async def test_a_ninth_call_waits_for_one_of_the_eight_to_finish(server: Server) -> None:
+    http = _pooled(server, pool=5.0)
+    calls = [
+        asyncio.create_task(http.call(PLATFORM, "GET", "/held"))
+        for _ in range(CONCURRENT_CALLS + 1)
+    ]
+    await _until(lambda: server.held == CONCURRENT_CALLS)
+    await asyncio.sleep(0.1)
+    assert (server.held, server.connections) == (CONCURRENT_CALLS, CONCURRENT_CALLS)
+
+    server.release.set()
+    answers = await asyncio.gather(*calls)
+
+    assert [answer.text for answer in answers] == ["ok"] * (CONCURRENT_CALLS + 1)
+    assert server.connections == CONCURRENT_CALLS
+    await http.aclose()
+
+
+async def test_a_call_that_waits_past_the_pool_timeout_is_unavailable(server: Server) -> None:
+    http = _pooled(server, pool=0.2)
+    calls = [
+        asyncio.create_task(http.call(PLATFORM, "GET", "/held")) for _ in range(CONCURRENT_CALLS)
+    ]
+    await _until(lambda: server.held == CONCURRENT_CALLS)
+
+    with pytest.raises(Unavailable, match="no connection free"):
+        await http.call(PLATFORM, "GET", "/held")
+
+    server.release.set()
+    await asyncio.gather(*calls)
+    await http.aclose()
+
+
+async def test_a_capped_read_gives_its_connection_back_whether_it_fits_or_not(
+    server: Server,
+) -> None:
+    http = _pooled(server, pool=0.5)
+
+    for _ in range(CONCURRENT_CALLS + 2):
+        with pytest.raises(Rejected):
+            await http.read_capped(PLATFORM, "/large", params=None, max_size=100)
+        assert await http.read_capped(PLATFORM, "/large", params=None, max_size=10_000)
+
+    server.release.set()
+    assert (await http.call(PLATFORM, "GET", "/held")).text == "ok"
+    await http.aclose()

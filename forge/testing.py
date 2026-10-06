@@ -206,7 +206,8 @@ outputs:
 """The declarations of the three primitives the built-in workflow uses, at
 `v1`: each primitive repo's own `primitive.yaml` as it is, with the `image`
 line deploy's bootstrap writes under `name` and `version`, carrying a
-placeholder digest in place of the image's own."""
+placeholder digest in place of the image's own. The package's own tests
+check each against its repo's when that is checked out beside this one."""
 
 
 async def seed_primitives(fake: FakeForge) -> None:

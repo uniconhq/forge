@@ -31,13 +31,62 @@ jobs:
     env:
       UNICON_TEST_DATABASE_URL: postgresql+psycopg://postgres:test@localhost:5432/postgres
 
+    defaults:
+      run:
+        working-directory: forge
+
     steps:
+      # The tests compare the package's copies with their originals in the
+      # repos beside it: the contract schemas with the runner's, the classic
+      # workflow with the one deploy seeds, and the three primitives'
+      # declarations with their repos'. They fail in CI when a checkout is
+      # missing, so the repos sit beside each other the way they do on a
+      # laptop. The runner's tag is the release whose contracts the package
+      # copies, and moves when the copy does: the runner releases a contract
+      # change first, so its main would turn this red before the copy can
+      # follow. Each primitive is checked out at the release deploy's image
+      # manifest seeds the forge with.
       - uses: actions/checkout@v7
+        with:
+          path: forge
+      - uses: actions/checkout@v7
+        with:
+          repository: uniconhq/runner
+          ref: v0.5.1
+          path: runner
+      - uses: actions/checkout@v7
+        with:
+          repository: uniconhq/deploy
+          path: deploy
+      - name: The primitive releases deploy seeds
+        id: primitives
+        working-directory: deploy
+        run: |
+          for name in compile sandbox-run diff-check; do
+            tag="$(jq -r --arg name "$name" '.primitives[$name].source.tag' images.json)"
+            echo "${name//-/_}=$tag" >> "$GITHUB_OUTPUT"
+          done
+      - uses: actions/checkout@v7
+        with:
+          repository: uniconhq/primitive-compile
+          ref: ${{ steps.primitives.outputs.compile }}
+          path: primitive-compile
+      - uses: actions/checkout@v7
+        with:
+          repository: uniconhq/primitive-sandbox-run
+          ref: ${{ steps.primitives.outputs.sandbox_run }}
+          path: primitive-sandbox-run
+      - uses: actions/checkout@v7
+        with:
+          repository: uniconhq/primitive-diff-check
+          ref: ${{ steps.primitives.outputs.diff_check }}
+          path: primitive-diff-check
 
       - uses: astral-sh/setup-uv@v10.1.0
         with:
           version: 0.12.13
           enable-cache: true
+          cache-dependency-glob: forge/uv.lock
 
       - run: uv sync --frozen
 

@@ -2,7 +2,6 @@
 as owner/name@version, and a malformed workflow is refused at its path.
 """
 
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,8 +16,7 @@ from forge.domain.workflow_definition import (
 )
 from forge.domain.yaml_models import InvalidDefinition
 from forge.testing import CLASSIC
-
-SEEDED = Path(__file__).resolve().parents[2] / "deploy" / "workflows" / "classic" / "workflow.yaml"
+from tests.conftest import sibling
 
 
 def test_the_classic_workflow_parses() -> None:
@@ -44,11 +42,8 @@ def test_the_classic_workflow_parses() -> None:
     assert workflow.outputs["metrics"] == {"points": "${{ steps.check.points }}"}
 
 
-@pytest.mark.skipif(
-    not SEEDED.exists(), reason="the deploy repo is not checked out beside this one"
-)
 def test_the_seeded_classic_workflow_is_the_one_tested_here() -> None:
-    seeded = parse_workflow(SEEDED.read_bytes())
+    seeded = parse_workflow(sibling("deploy", "workflows", "classic", "workflow.yaml").read_bytes())
     assert seeded == parse_workflow(CLASSIC)
 
 
