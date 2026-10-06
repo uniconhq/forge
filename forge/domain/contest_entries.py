@@ -2,8 +2,11 @@
 `contest.yaml` so the rest of the file stays as the organisers wrote it,
 comments and layout included.
 
-The entry takes the first label of A, B, ..., Z, AA, AB, ... that no other
-entry holds, and 100 points. It goes at the end of the list: a `tasks: []`
+The entry is `{id: <task>}`: the task's label is its place in the list, and
+its worth the default 100 once it gives points (TASK-FORMAT.md section 1.1).
+In a contest already published, the entry also sets `release_at` and
+`closes` at the contest's `end`, so work in progress shows nothing until the
+organisers move them. It goes at the end of the list: a `tasks: []`
 becomes a list of one, a block list gets one more item at the indent its
 items already use, and a file with no `tasks` key gets one at the end. A
 list written in flow style with items in it, `tasks: [{id: a, ...}]`, is
@@ -14,14 +17,12 @@ the one entry; when it does not, nothing is written.
 
 import json
 import re
+from datetime import datetime
 
 import yaml
 
-from forge.domain.definitions import parse_contest
+from forge.domain.definitions import State, parse_contest, stamp
 from forge.domain.yaml_models import load_mapping, load_yaml
-
-POINTS = 100
-"""What a new entry is worth, the value the format's own examples use."""
 
 _TASKS_KEY = re.compile(r"tasks:[ \t]*(?P<rest>.*)")
 _EMPTY_FLOW = re.compile(r"\[[ \t]*\](?P<after>[ \t]*(#.*)?)")
@@ -34,46 +35,39 @@ class Unlisted(Exception):
     """
 
 
-def label_for(taken: set[str]) -> str:
-    """The first of A, B, ..., Z, AA, AB, ... not in `taken`."""
-    count = 0
-    while True:
-        label = _letters(count)
-        if label not in taken:
-            return label
-        count += 1
-
-
 def with_entry(content: bytes, task: str) -> bytes | None:
     """`contest.yaml` with an entry for `task`, or none when it has one
     already. `InvalidDefinition` when the file is not a valid `contest.yaml`;
     `Unlisted` when its `tasks` cannot be added to.
     """
     contest = parse_contest(content)
-    if any(entry.id == task for entry in contest.tasks):
+    if contest.entry(task) is not None:
         return None
-    label = label_for({entry.label for entry in contest.tasks})
+    entry: dict[str, object] = {"id": task}
+    lines = [f"- id: {_scalar(task)}"]
+    if contest.state is State.PUBLISHED:
+        entry["release_at"] = entry["closes"] = contest.end
+        lines += [f"  release_at: {stamp(contest.end)}", f"  closes: {stamp(contest.end)}"]
     text = content.decode()
     newline = "\r\n" if "\r\n" in text else "\n"
-    updated = _inserted(text, _entry_lines(task, label), newline)
+    updated = _inserted(text, lines, newline)
     before = load_mapping("contest.yaml", text)
-    expected = {
-        **before,
-        "tasks": [*(before.get("tasks") or []), {"id": task, "label": label, "points": POINTS}],
-    }
-    if load_mapping("contest.yaml", updated) != expected:
+    expected = {**before, "tasks": [*(before.get("tasks") or []), entry]}
+    if _comparable(load_mapping("contest.yaml", updated)) != _comparable(expected):
         raise Unlisted("The edit would change more than the tasks list.")
     parse_contest(updated.encode())
     return updated.encode()
 
 
-def _letters(count: int) -> str:
-    label = ""
-    count += 1
-    while count:
-        count, rest = divmod(count - 1, 26)
-        label = chr(ord("A") + rest) + label
-    return label
+def _comparable(value: object) -> object:
+    """`value` with every time in UTC, as YAML may read one in another zone."""
+    if isinstance(value, dict):
+        return {key: _comparable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_comparable(item) for item in value]
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.timestamp()
+    return value
 
 
 def _scalar(value: str) -> str:
@@ -86,11 +80,6 @@ def _scalar(value: str) -> str:
     except yaml.YAMLError:
         plain = False
     return value if plain else json.dumps(value)
-
-
-def _entry_lines(task: str, label: str) -> list[str]:
-    """The entry's lines, with the item marker at no indent."""
-    return [f"- id: {_scalar(task)}", f"  label: {_scalar(label)}", f"  points: {POINTS}"]
 
 
 def _inserted(text: str, entry: list[str], newline: str) -> str:

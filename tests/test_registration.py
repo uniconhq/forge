@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from forge.domain.definitions import Eligibility, Registration, RegistrationMode
+from forge.domain.definitions import Registration
 from forge.domain.errors import (
     DomainNotAllowed,
     InvalidExtension,
@@ -27,6 +27,7 @@ from forge.domain.registration import (
     Status,
     checked_extension,
     checked_reason,
+    checked_tasks,
     eligibility,
     matches,
     refuse_closed,
@@ -68,7 +69,7 @@ def test_a_contest_that_asks_for_nothing_lets_anyone_through_and_keeps_nothing()
 
 
 def test_an_invite_only_contest_needs_an_accepted_invite() -> None:
-    rules = Registration(mode=RegistrationMode.INVITE_ONLY)
+    rules = Registration(invite_only=True)
 
     with pytest.raises(InviteRequired) as refused:
         eligibility(rules, emails=(), invite_code=None, invited=False)
@@ -79,7 +80,7 @@ def test_an_invite_only_contest_needs_an_accepted_invite() -> None:
 
 @pytest.mark.parametrize("given", [None, "", "Sesame", "sesame "])
 def test_a_code_has_to_be_the_contests_own(given: str | None) -> None:
-    rules = Registration(eligibility=Eligibility(invite_code="sesame"))
+    rules = Registration(code="sesame")
 
     with pytest.raises(WrongInviteCode) as refused:
         eligibility(rules, emails=(), invite_code=given, invited=False)
@@ -103,7 +104,7 @@ def test_a_code_has_to_be_the_contests_own(given: str | None) -> None:
 def test_a_pattern_has_to_match_the_whole_address_whatever_its_case(
     email: str | None, passes: bool
 ) -> None:
-    rules = Registration(eligibility=Eligibility(email_pattern=r".*@u\.nus\.edu"))
+    rules = Registration(email_pattern=r".*@u\.nus\.edu")
 
     emails = (email,) if email is not None else ()
     if passes:
@@ -117,10 +118,7 @@ def test_a_pattern_has_to_match_the_whole_address_whatever_its_case(
 
 
 def test_the_first_rule_broken_is_the_one_refused_with() -> None:
-    rules = Registration(
-        mode=RegistrationMode.INVITE_ONLY,
-        eligibility=Eligibility(invite_code="sesame", email_pattern=r".*@u\.nus\.edu"),
-    )
+    rules = Registration(invite_only=True, code="sesame", email_pattern=r".*@u\.nus\.edu")
 
     with pytest.raises(InviteRequired):
         eligibility(rules, emails=("eve@example.test",), invite_code="wrong", invited=False)
@@ -162,7 +160,7 @@ def test_an_extension_is_whole_seconds_between_nothing_and_a_year() -> None:
 
 
 def test_any_confirmed_address_that_matches_lets_the_person_through() -> None:
-    rules = Registration(eligibility=Eligibility(email_pattern=r".*@u\.nus\.edu"))
+    rules = Registration(email_pattern=r".*@u\.nus\.edu")
 
     outcome = eligibility(
         rules, emails=("ada@example.test", "ada@u.nus.edu"), invite_code=None, invited=False
@@ -177,3 +175,15 @@ def test_a_pattern_that_takes_too_long_lets_nobody_through_and_holds_nobody_up()
     assert not matches(r"(x+x+)+y", "x" * 200)
     assert not matches(r".*", "x" * (EMAIL_MAX + 1))
     assert time.monotonic() - started < 1
+
+
+def test_an_extension_names_the_tasks_it_is_for_or_none_for_every_task() -> None:
+    known = ("a", "b", "c")
+
+    assert checked_tasks(None, known) is None
+    assert checked_tasks(["b", "a", "b"], known) == ("b", "a")
+    with pytest.raises(InvalidExtension):
+        checked_tasks([], known)
+    with pytest.raises(InvalidExtension) as refused:
+        checked_tasks(["a", "z"], known)
+    assert "z is not a task of the contest." in refused.value.detail

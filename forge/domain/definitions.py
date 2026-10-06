@@ -1,7 +1,18 @@
 """The two files an organiser defines a contest and a task with, as models:
-`contest.yaml` (TASK-FORMAT.md section 5) and `task.yaml` (section 3). Both
-are validated on every save. A key the format does not know is refused, so a
-typo is an error, and every error carries the YAML path it is at.
+`contest.yaml` (TASK-FORMAT.md section 1.1) and `task.yaml` (section 1.2).
+Both are validated on every save. A key the format does not know is refused,
+so a typo is an error, and a key the format no longer has is refused at that
+key with the sentence that says what replaced it. Every error carries the
+YAML path it is at.
+
+What each file says of itself is checked here: a contest's times in order,
+each task entry's timeline in order (C1, the part that needs no task), each
+board's own rules (C3); a task's test groups, their rule weights, test
+weights and `show` words, and its `credit` (T1, T2 and T6, and the parts of
+T3 that need no workflow). What needs another file, the workflow a task
+names, its tests, an earlier publication or the rows' submissions, is the
+save's (`forge.domain.plans`, `forge.services.publications`,
+`forge.services.timelines`).
 
 Some keys are the frame of a scope and belong to its admin (PROPOSAL.md
 section 10): `CONTEST_ADMIN_KEYS`, `TASK_ADMIN_KEYS`, and the statement,
@@ -14,35 +25,33 @@ valid as written.
 
 import json
 import re
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from itertools import pairwise
 from typing import Annotated, Any, Literal
 
 import regex
-from pydantic import Field, PlainValidator, model_validator
+from pydantic import Field, PlainValidator, ValidationError, model_validator
 
 from forge.domain.errors import InvalidName
 from forge.domain.names import validate_contest_or_task_name
-from forge.domain.workflow_definition import InputType, Ref, WorkflowRef
+from forge.domain.workflow_definition import Options, Ref
 from forge.domain.yaml_models import (
+    ANY,
     AwareTime,
-    Handle,
     InvalidDefinition,
+    Line,
     Model,
     Number,
-    Path,
-    Problem,
     Problems,
+    Retired,
     Size,
-    Text,
-    format_size,
     is_number,
     load_mapping,
     mapping_or_empty,
     parse_size,
-    path_text,
+    problems_of,
     validate,
 )
 
@@ -50,42 +59,30 @@ __all__ = [
     "ADMIN_ONLY_FILES",
     "CONTEST_ADMIN_KEYS",
     "CONTEST_FILE",
-    "DEFAULT_STAGE",
     "STATEMENT_FILE",
     "TASK_ADMIN_KEYS",
     "TASK_FILE",
     "Approval",
-    "BoardVisibility",
-    "Combine",
     "ContestDefinition",
     "ContestTask",
     "ContestVisibility",
-    "ContestantInput",
-    "Direction",
-    "Eligibility",
-    "Inputs",
+    "Form",
+    "Group",
     "InvalidDefinition",
     "Leaderboard",
-    "Limits",
-    "OrderEntry",
-    "OrderKey",
-    "Overrides",
+    "Over",
+    "Penalty",
     "Rate",
     "Registration",
-    "RegistrationMode",
-    "ResolvedStage",
+    "Relative",
     "Select",
-    "SetterInput",
     "Show",
-    "Stage",
     "State",
-    "Subtask",
+    "Submissions",
     "TaskDefinition",
-    "Teams",
-    "Trigger",
+    "Who",
     "admin_only_changes",
     "parse_contest",
-    "parse_rate",
     "parse_task",
     "starter_contest",
     "starter_task",
@@ -95,6 +92,8 @@ __all__ = [
 CONTEST_FILE = "contest.yaml"
 TASK_FILE = "task.yaml"
 STATEMENT_FILE = "statement.md"
+TESTS_FOLDER = "tests/"
+PUBLIC_FOLDER = "public/"
 
 Flag = Annotated[bool, Field(strict=True)]
 
@@ -106,18 +105,13 @@ class State(StrEnum):
 
 
 class ContestVisibility(StrEnum):
-    """Who sees the contest: visitors and everyone signed in, anyone with a
-    session, or only its contestants and organisers.
+    """Who sees the contest at all: anyone, guests included; anyone signed
+    in; or only its contestants and organisers.
     """
 
-    PUBLIC = "public"
+    EVERYONE = "everyone"
     SIGNED_IN = "signed-in"
     HIDDEN = "hidden"
-
-
-class RegistrationMode(StrEnum):
-    OPEN = "open"
-    INVITE_ONLY = "invite-only"
 
 
 class Approval(StrEnum):
@@ -125,43 +119,44 @@ class Approval(StrEnum):
     MANUAL = "manual"
 
 
+class Over(StrEnum):
+    """Which test groups a board counts, by each group's declared `show`."""
+
+    ALL = "all"
+    LIVE = "live"
+    AFTER_CLOSE = "after_close"
+
+
 class Select(StrEnum):
+    """Which of a row's submissions to a task a board counts."""
+
     BEST = "best"
-    LATEST = "latest"
-    SELECTED = "selected"
-    FIRST_ACCEPTED = "first_accepted"
+    BEST_PER_GROUP = "best_per_group"
+    MARKED = "marked"
 
 
-class Combine(StrEnum):
-    SUM = "sum"
-    MEAN = "mean"
-    COUNT = "count"
+class Who(StrEnum):
+    """Who sees a board, among those who may see the contest."""
+
+    ORGANISERS = "organisers"
+    CONTESTANTS = "contestants"
+    EVERYONE = "everyone"
 
 
-class Direction(StrEnum):
-    ASC = "asc"
-    DESC = "desc"
-
-
-class OrderKey(StrEnum):
-    """A ranking key the platform computes: `last_improvement`, earlier
-    wins; `penalty`, minutes to the counted submission plus `per_rejected`
-    for each rejected one before it.
+class Show(StrEnum):
+    """When contestants see a test group's results: as soon as a grading
+    ends; its outcome and points now and its tests at the task's reveal; or
+    everything but its name and its most points at the reveal.
     """
 
-    LAST_IMPROVEMENT = "last_improvement"
-    PENALTY = "penalty"
-
-
-class BoardVisibility(StrEnum):
-    PUBLIC = "public"
-    CONTESTANTS = "contestants"
-    ORGANISERS = "organisers"
+    ALWAYS = "always"
+    VERDICT = "verdict"
+    AFTER_CLOSE = "after_close"
 
 
 def _pattern(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("Must be text: a regular expression.")
+    if not isinstance(value, str) or not value.strip() or "\n" in value:
+        raise ValueError("Must be one line: a regular expression.")
     try:
         regex.compile(value)
     except regex.error as error:
@@ -182,16 +177,9 @@ def _task_handle(value: object) -> str:
 
 
 TaskHandle = Annotated[str, PlainValidator(_task_handle)]
-
-
-class Eligibility(Model):
-    """Who may register: an email address matching `email_pattern`, and the
-    code a contestant types when `invite_code` is set. Both are off unless
-    given.
-    """
-
-    email_pattern: Annotated[str, PlainValidator(_pattern)] | None = None
-    invite_code: Text | None = None
+Count = Annotated[int, Field(strict=True, ge=1)]
+Seconds = Annotated[int, Field(strict=True, ge=1)]
+VALUE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 class Registration(Model):
@@ -200,91 +188,130 @@ class Registration(Model):
     cap on the number of contestants.
     """
 
-    mode: RegistrationMode = RegistrationMode.OPEN
+    invite_only: Flag = False
     opens: AwareTime | None = None
     closes: AwareTime | None = None
     approval: Approval = Approval.MANUAL
-    eligibility: Eligibility = Eligibility()
-    capacity: Annotated[int, Field(strict=True, ge=1)] | None = None
+    email_pattern: Annotated[str, PlainValidator(_pattern)] | None = None
+    code: Line | None = None
+    capacity: Count | None = None
 
 
-class Teams(Model):
-    """Teams are off unless enabled; an enabled team holds up to three
-    unless `max_size` says otherwise.
+class Penalty(Model):
+    """`penalty` with its one setting: minutes charged for each earlier
+    attempt that does not count.
     """
 
-    enabled: Flag = False
-    max_size: Annotated[int, Field(strict=True, ge=1)] = 3
+    by: Literal["penalty"]
+    per_attempt: Annotated[int, Field(strict=True, ge=0)] = 0
 
 
-class OrderEntry(Model):
-    """One ranking criterion: a metric the workflow reports, ranked in a
-    direction, or a key the platform computes.
-    """
+def _order_key(value: object) -> str | Penalty:
+    if isinstance(value, dict):
+        return Penalty.model_validate(value)
+    if not isinstance(value, str) or not VALUE_NAME.match(value):
+        raise ValueError(
+            "Must be points, penalty, a value name the tasks report, or "
+            "{by: penalty, per_attempt: <minutes>}."
+        )
+    return value
 
-    metric: Text | None = None
-    direction: Direction | None = None
-    key: OrderKey | None = None
-    per_rejected: Annotated[int, Field(strict=True, ge=0)] | None = None
 
-    @model_validator(mode="after")
-    def _check(self) -> OrderEntry:
-        problems = Problems()
-        if self.metric is None and self.key is None:
-            problems.add((), "Each entry names a metric with a direction, or a built-in key.")
-        if self.metric is not None and self.key is not None:
-            problems.add(("key",), "Give either metric or key, not both.")
-        if self.metric is not None and self.direction is None:
-            problems.add(("direction",), "A metric needs a direction, asc or desc.")
-        if self.metric is None and self.direction is not None:
-            problems.add(("direction",), "Applies only to a metric; a built-in key has its own.")
-        if self.per_rejected is not None and self.key is not OrderKey.PENALTY:
-            problems.add(("per_rejected",), "Applies only to key: penalty.")
-        problems.raise_any()
-        return self
+OrderKey = Annotated[str | Penalty, PlainValidator(_order_key)]
+
+
+def _rows(value: object) -> Literal["all", "own"] | int:
+    if value in ("all", "own"):
+        return "all" if value == "all" else "own"
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return value
+    raise ValueError("Must be all, own, or a whole number of at least 1, the top rows shown.")
+
+
+def key_name(key: str | Penalty) -> str:
+    """The name an `order` key ranks on: `points`, `penalty` or a value's."""
+    return key if isinstance(key, str) else "penalty"
 
 
 class Leaderboard(Model):
-    """One board. `tasks` left out ranks every task in the contest; `stage`
-    left out reads the gradings of the stage `default`.
+    """One board: the tasks it covers, every task when left out; the groups
+    it counts; which submission counts per row and task; the keys rows are
+    ranked on in turn; who sees it; and which rows they see.
     """
 
-    name: Text
+    name: Line
     tasks: tuple[TaskHandle, ...] | None = None
-    stage: Handle = "default"
-    select: Select
-    combine: Combine
-    order: tuple[OrderEntry, ...] = Field(min_length=1)
-    visibility: BoardVisibility
-    freeze_at: AwareTime | None = None
-    team_only: Flag = False
+    over: Over = Over.ALL
+    select: Select = Select.BEST
+    order: tuple[OrderKey, ...] = Field(default=("points",), min_length=1)
+    who: Who = Who.ORGANISERS
+    rows: Annotated[Literal["all", "own"] | int, PlainValidator(_rows)] = "all"
+
+    @model_validator(mode="after")
+    def _check(self) -> Leaderboard:
+        problems = Problems()
+        names = [key_name(key) for key in self.order]
+        for index, name in enumerate(names):
+            if name in names[:index]:
+                problems.add(("order", index), f"{name} is ranked on twice.")
+        if names[0] == "penalty":
+            problems.add(
+                ("order", 0),
+                "penalty is never the first key: it breaks ties among rows equal on the "
+                "keys before it.",
+            )
+        if self.select is Select.BEST_PER_GROUP:
+            if names[0] != "points":
+                problems.add(("select",), "best_per_group ranks points first.")
+            values = [name for name in names if name not in ("points", "penalty")]
+            if values:
+                problems.add(
+                    ("select",),
+                    f"best_per_group sums groups across submissions, so it cannot rank "
+                    f"{values[0]}, which belongs to one submission.",
+                )
+        if self.rows == "own" and self.who is Who.EVERYONE:
+            problems.add(("rows",), "own is not for everyone: a guest has no row of their own.")
+        problems.raise_any()
+        return self
+
+    def covers(self, task: str) -> bool:
+        return self.tasks is None or task in self.tasks
 
 
 class ContestTask(Model):
-    """A task's place in the contest: its id, the label shown for it and the
-    points it is worth.
+    """A task's whole timeline in the contest: what it is worth, when it is
+    released, falls due and closes, how much a late day takes off, and how
+    many of its submissions a row may mark. Every time but `due` defaults to
+    the contest's own.
     """
 
     id: TaskHandle
-    label: Text
-    points: Annotated[int, Field(strict=True, ge=0)]
+    worth: Annotated[Number, Field(ge=0)] | None = None
+    release_at: AwareTime | None = None
+    due: AwareTime | None = None
+    late_per_day: Number | None = None
+    closes: AwareTime | None = None
+    marks: Annotated[int, Field(strict=True, ge=1, le=10)] | None = None
+
+
+DEFAULT_WORTH = 100
 
 
 class ContestDefinition(Model):
-    """A `contest.yaml`. `description` defaults to empty, `submissions_closed`
-    to off, `registration` to open with manual approval, `teams` to off,
-    and `leaderboards` and `tasks` to none.
+    """A `contest.yaml`. `registration` defaults to open with manual
+    approval, `team_size` to no teams, and `leaderboards` and `tasks` to
+    none.
     """
 
-    name: Text
-    description: str = ""
+    name: Line
+    description: str | None = None
     start: AwareTime
     end: AwareTime
     state: State
-    submissions_closed: Flag = False
     visibility: ContestVisibility
     registration: Registration = Registration()
-    teams: Teams = Teams()
+    team_size: Annotated[int, Field(strict=True, ge=2)] | None = None
     leaderboards: tuple[Leaderboard, ...] = ()
     tasks: tuple[ContestTask, ...] = ()
 
@@ -297,7 +324,6 @@ class ContestDefinition(Model):
         if opens is not None and closes is not None and closes <= opens:
             problems.add(("registration", "closes"), "Must be after registration.opens.")
         problems.duplicates([task.id for task in self.tasks], ("tasks",))
-        problems.duplicates([task.label for task in self.tasks], ("tasks",), "label")
         problems.duplicates([board.name for board in self.leaderboards], ("leaderboards",), "name")
         known = {task.id for task in self.tasks}
         for index, board in enumerate(self.leaderboards):
@@ -307,197 +333,132 @@ class ContestDefinition(Model):
                         ("leaderboards", index, "tasks", position),
                         f"{task!r} is not in the contest's tasks.",
                     )
-            if board.team_only and not self.teams.enabled:
-                problems.add(
-                    ("leaderboards", index, "team_only"), "Needs teams.enabled to be true."
+        for index, entry in enumerate(self.tasks):
+            for path, message in self._entry_problems(entry):
+                problems.add(("tasks", index, *path), message)
+        problems.raise_any()
+        return self
+
+    def _entry_problems(self, entry: ContestTask) -> list[tuple[tuple[str, ...], str]]:
+        """C1 as far as the file alone says: the four times in order, a
+        fraction a late day takes, and marks only under a marked board.
+        """
+        found: list[tuple[tuple[str, ...], str]] = []
+        # An absent release_at or closes is read at its default and named as
+        # the contest's start or end, so a problem is never at a key the
+        # entry does not write.
+        times = [
+            ("start", self.start),
+            ("release_at" if entry.release_at is not None else "start", self.release_of(entry)),
+            ("due", entry.due),
+            ("closes" if entry.closes is not None else "end", self.closes_of(entry)),
+            ("end", self.end),
+        ]
+        chain = [(key, at) for key, at in times if at is not None]
+        for (before, earlier), (key, later) in pairwise(chain):
+            if later >= earlier:
+                continue
+            if key == "end":
+                found.append(((before,), f"{before} is after the contest's end."))
+            elif before == "start":
+                found.append(((key,), f"{key} is before the contest's start."))
+            else:
+                found.append(
+                    (
+                        (key,),
+                        f"{key} is before {before}: a task's times run start <= "
+                        "release_at <= due <= closes <= end.",
+                    )
                 )
-        problems.raise_any()
-        return self
+        if entry.late_per_day is not None:
+            if entry.due is None:
+                found.append((("late_per_day",), "Applies only with a due."))
+            if not 0 < entry.late_per_day <= 1:
+                found.append(
+                    (
+                        ("late_per_day",),
+                        "Must be more than 0 and at most 1, a fraction taken per day.",
+                    )
+                )
+        if entry.marks is not None and not any(
+            board.select is Select.MARKED and board.covers(entry.id) for board in self.leaderboards
+        ):
+            found.append(
+                (("marks",), "Applies only when a board with select: marked covers the task.")
+            )
+        return found
 
+    def entry(self, task: str) -> ContestTask | None:
+        """The task's entry in `tasks`, or none when the contest lists it not."""
+        return next((entry for entry in self.tasks if entry.id == task), None)
 
-class Trigger(StrEnum):
-    ON_SUBMIT = "on_submit"
-    ON_SELECT = "on_select"
-    AT_END = "at_end"
-    MANUAL = "manual"
+    def release_of(self, entry: ContestTask) -> datetime:
+        return entry.release_at if entry.release_at is not None else self.start
 
+    def closes_of(self, entry: ContestTask) -> datetime:
+        return entry.closes if entry.closes is not None else self.end
 
-class Show(StrEnum):
-    """What a contestant sees of a stage's result."""
-
-    FULL = "full"
-    METRICS = "metrics"
-    HIDDEN = "hidden"
-
-
-FILE_TYPES = frozenset({InputType.FILE, InputType.FILES, InputType.DATASET})
-DEFAULT_STAGE = "default"
-
-
-def _path_problem(value: object, *, folder: bool | None) -> str | None:
-    """What is wrong with `value` as a path in the task repo, if anything.
-    `folder` says whether it must name a folder, one file, or either.
-    """
-    if not isinstance(value, str) or not value:
-        return "Must be a path in the task repo, such as data/testcases/."
-    if value.startswith("/") or "\\" in value:
-        return "Must be a path from the top of the task repo, with forward slashes."
-    if any(part in ("", ".", "..") for part in value.removesuffix("/").split("/")):
-        return "Must not have empty, . or .. parts."
-    if folder is True and not value.endswith("/"):
-        return "Names a folder, so it ends with /, such as data/testcases/."
-    if folder is False and value.endswith("/"):
-        return "Names one file, so it does not end with /."
-    return None
-
-
-def _value_problem(kind: InputType, value: object) -> str | None:
-    """What is wrong with `value` as a setter's value of type `kind`."""
-    match kind:
-        case InputType.CODE | InputType.TEXT:
-            return None if isinstance(value, str) else "Must be text."
-        case InputType.NUMBER:
-            return None if is_number(value) else "Must be a number."
-        case InputType.BOOLEAN:
-            return None if isinstance(value, bool) else "Must be true or false."
-        case InputType.FILE:
-            return _path_problem(value, folder=False)
-        case InputType.FILES:
-            return _path_problem(value, folder=True)
-        case InputType.DATASET:
-            return _path_problem(value, folder=None)
-        case InputType.JUPYTER:
-            return "A jupyter input is the contestant's; a setter cannot give one."
-
-
-class ContestantInput(Model):
-    """An input the contestant gives, with the fields its form shows:
-    `language` for code, `min` and `max` for a number, `accept` and
-    `max_size` for a file, and a `default` for code, text, a number or a
-    true-or-false. `label` defaults to the id.
-    """
-
-    id: Handle
-    type: InputType
-    label: Text | None = None
-    language: tuple[Text, ...] | None = Field(default=None, min_length=1)
-    min: Number | None = None
-    max: Number | None = None
-    accept: tuple[Text, ...] | None = Field(default=None, min_length=1)
-    max_size: Size | None = None
-    default: Any = None
-
-    @model_validator(mode="after")
-    def _check(self) -> ContestantInput:
-        problems = Problems()
-        kind = self.type
-        if kind is InputType.DATASET:
-            problems.add(("type",), "A dataset is the setter's; a contestant cannot give one.")
-        if self.language is not None and kind is not InputType.CODE:
-            problems.add(("language",), "Applies only to a code input.")
-        for key in ("min", "max"):
-            if getattr(self, key) is not None and kind is not InputType.NUMBER:
-                problems.add((key,), "Applies only to a number input.")
-        if self.min is not None and self.max is not None and self.max < self.min:
-            problems.add(("max",), "Must be at least min.")
-        for key in ("accept", "max_size"):
-            if getattr(self, key) is not None and kind not in (InputType.FILE, InputType.FILES):
-                problems.add((key,), "Applies only to a file or file[] input.")
-        if self.default is not None:
-            problem = self._default_problem()
-            if problem:
-                problems.add(("default",), problem)
-        problems.raise_any()
-        return self
-
-    def _default_problem(self) -> str | None:
-        if self.type in (*FILE_TYPES, InputType.JUPYTER):
-            return f"A {self.type} input has no default."
-        problem = _value_problem(self.type, self.default)
-        if problem or self.type is not InputType.NUMBER:
-            return problem
-        if self.min is not None and self.default < self.min:
-            return "Must be at least min."
-        if self.max is not None and self.default > self.max:
-            return "Must be at most max."
+    def label_of(self, task: str) -> str | None:
+        """The task's label, its position as a letter, A, B, ..., Z, AA, ...;
+        none when the contest does not list it.
+        """
+        for index, entry in enumerate(self.tasks):
+            if entry.id == task:
+                return letters(index)
         return None
 
+    def marks_of(self, entry: ContestTask) -> int | None:
+        """How many submissions a row may mark: the entry's, or 1 when a
+        marked board covers the task, or none.
+        """
+        if entry.marks is not None:
+            return entry.marks
+        marked = any(
+            board.select is Select.MARKED and board.covers(entry.id) for board in self.leaderboards
+        )
+        return 1 if marked else None
 
-class SetterInput(Model):
-    """An input the setter gives, with its `value`: text, a number or a
-    true-or-false as written, or for a file a path in the task repo. A
-    `file[]` value names a folder and ends with `/`; a `dataset` may name
-    a file or a folder.
-    """
 
-    id: Handle
-    type: InputType
-    value: Any
+def letters(index: int) -> str:
+    """The label of the entry at `index`: A, B, ..., Z, AA, AB, ..."""
+    label = ""
+    count = index + 1
+    while count:
+        count, rest = divmod(count - 1, 26)
+        label = chr(ord("A") + rest) + label
+    return label
 
-    @model_validator(mode="after")
-    def _check(self) -> SetterInput:
-        problem = _value_problem(self.type, self.value)
-        if problem:
-            key = "type" if self.type is InputType.JUPYTER else "value"
-            problems = Problems()
-            problems.add((key,), problem)
-            problems.raise_any()
-        return self
+
+class Rate(Model):
+    """At most `count` submissions in any window of `per` seconds."""
+
+    count: Count
+    per: Seconds
 
     @property
-    def names_file(self) -> bool:
-        return self.type in FILE_TYPES
-
-
-class Inputs(Model):
-    contestant: tuple[ContestantInput, ...] = ()
-    setter: tuple[SetterInput, ...] = ()
-
-
-class Overrides(Model):
-    """The setter inputs a subtask or a stage gives in place of the task's,
-    or in addition to them.
-    """
-
-    setter: tuple[SetterInput, ...] = ()
-
-
-_RATE = re.compile(r"^\s*(\d+)\s+per\s+(\d+)\s*([smh])\s*$")
-_RATE_UNITS = {"s": 1, "m": 60, "h": 3600}
-
-
-@dataclass(frozen=True, slots=True)
-class Rate:
-    """At most `count` submissions in any window of length `per`."""
-
-    count: int
-    per: timedelta
-
-    def __str__(self) -> str:
-        return f"{self.count} per {int(self.per.total_seconds())}s"
-
-
-def parse_rate(value: object) -> Rate:
-    """`N per Xs`, `N per Xm` or `N per Xh` as a `Rate`."""
-    if isinstance(value, Rate):
-        return value
-    match = _RATE.match(value) if isinstance(value, str) else None
-    if match is None:
-        raise ValueError("Must be a rate such as 1 per 30s, 5 per 10m or 20 per 1h.")
-    count, length = int(match.group(1)), int(match.group(2))
-    if count < 1 or length < 1:
-        raise ValueError("Both numbers in a rate must be at least 1.")
-    return Rate(count, timedelta(seconds=length * _RATE_UNITS[match.group(3)]))
+    def window(self) -> timedelta:
+        return timedelta(seconds=self.per)
 
 
 DEFAULT_SUBMISSIONS = 50
-DEFAULT_RATE = Rate(1, timedelta(seconds=30))
+DEFAULT_RATE = Rate(count=1, per=30)
+
+
+class Submissions(Model):
+    """What a submit is counted against: at most `max` submissions, 50 by
+    default, and at most one every 30 seconds unless `rate` says otherwise.
+    """
+
+    max: Count = DEFAULT_SUBMISSIONS
+    rate: Rate = DEFAULT_RATE
+
+
 DEFAULT_MAX_SIZE = parse_size("10MB")
 FILE_CEILING = parse_size("2GB")
-"""The most any one file may be, whatever a task allows. It is the forge's
-own limit on an object in its large-file store (Forgejo:
-`[server] LFS_MAX_FILE_SIZE`), which refuses a larger one itself, so a task
-allowing more would only promise what the forge then takes back."""
+"""The most any one file input may total, whatever a task allows. It is the
+forge's own limit on an object in its large-file store (Forgejo: `[server]
+LFS_MAX_FILE_SIZE`), which refuses a larger one itself, so a task allowing
+more would only promise what the forge then takes back."""
 SUBMISSION_CEILING = parse_size("2GB")
 """The most any submission may be, whatever a task allows. No submission
 passes through the platform's memory any more, so what this bounds is the
@@ -505,266 +466,277 @@ disk one person's submissions take in the store every contest shares; it is
 also what the open-upload allowance is counted against (`domain.uploads`).
 Raising it costs disk and nothing else."""
 
+NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
-class Limits(Model):
-    """What a submit is checked against. Each has a default: 50 submissions
-    per contestant, at most one every 30 seconds, of at most 10MB, where a
-    megabyte is 1024 kilobytes of 1024 bytes.
+
+class Group(Model):
+    """One test group: its rule weights, the share of its tests `pass` asks
+    for, its tests' weights, and when it is shown. A rule weight left out is
+    0; `show` left out is `always`, except on a group added once the task
+    has a graded submission, which must say (T10).
     """
 
-    submissions: Annotated[int, Field(strict=True, ge=1)] = DEFAULT_SUBMISSIONS
-    rate: Annotated[Rate, PlainValidator(parse_rate)] = DEFAULT_RATE
-    max_size: Size = DEFAULT_MAX_SIZE
+    each: Annotated[Number, Field(ge=0)] | None = None
+    worst: Annotated[Number, Field(ge=0)] | None = None
+    pass_: Annotated[Number, Field(ge=0)] | None = Field(default=None, alias="pass")
+    pass_at: Number | None = None
+    test_weights: dict[str, Number] | None = None
+    show: Show | None = None
 
-    def as_mapping(self) -> dict[str, object]:
-        """The limits in the form a publication records and compares them."""
-        return {
-            "submissions": self.submissions,
-            "rate": str(self.rate),
-            "max_size": self.max_size,
-        }
+    @property
+    def weight(self) -> int | float:
+        """What the group can earn, `R_g`: its rule weights summed."""
+        return sum(value or 0 for value in (self.each, self.worst, self.pass_))
 
-
-class Subtask(Model):
-    id: Handle
-    points: Annotated[int, Field(strict=True, ge=0)]
-    workflow: Ref | None = None
-    inputs: Overrides = Overrides()
+    @property
+    def shown(self) -> Show:
+        return self.show if self.show is not None else Show.ALWAYS
 
 
-class Stage(Model):
-    """One grading round. Graded on submit, its result shown in full and
-    counted for the leaderboards unless it says otherwise.
+def _value_name(value: object) -> str:
+    if not isinstance(value, str) or not VALUE_NAME.match(value):
+        raise ValueError("Must be the name of a value the workflow reports.")
+    return value
+
+
+class Relative(Model):
+    """`{relative: <value>}`: a test earns its value against the best any
+    contestant reached on it.
     """
 
-    id: Handle
-    trigger: Trigger = Trigger.ON_SUBMIT
-    show: Show = Show.FULL
-    counts: Flag = True
-    workflow: Ref | None = None
-    inputs: Overrides = Overrides()
+    relative: Annotated[str, PlainValidator(_value_name)]
 
 
-@dataclass(frozen=True, slots=True)
-class ResolvedStage:
-    """A stage with the inheritance rule applied: its own workflow or the
-    task's, and the task's setter inputs with the stage's in their place.
-    `index` is its place in `stages`, or none for the implicit `default`.
+def _credit(value: object) -> str | Relative:
+    if isinstance(value, dict):
+        return Relative.model_validate(value)
+    return _value_name(value)
+
+
+class Form(Model):
+    """The form details of an input the contestant gives, all optional: its
+    label; a default for text, a number, true or false and an enum; the
+    least and the most a number may be; the options an enum offers; and the
+    most a file or folder input's files may total.
     """
 
-    id: str
-    trigger: Trigger
-    show: Show
-    counts: bool
-    workflow: WorkflowRef
-    setter: tuple[SetterInput, ...]
-    index: int | None
-
-
-def _overlay(base: Sequence[SetterInput], over: Sequence[SetterInput]) -> tuple[SetterInput, ...]:
-    replaced = {entry.id: entry for entry in over}
-    merged = [replaced.pop(entry.id, entry) for entry in base]
-    return (*merged, *(entry for entry in over if entry.id in replaced))
+    label: Line | None = None
+    default: Any = None
+    min: Number | None = None
+    max: Number | None = None
+    options: Options | None = None
+    max_size: Size | None = None
 
 
 class TaskDefinition(Model):
-    """A `task.yaml`. `release_at` left out releases the task when the
-    contest starts; `hidden` defaults to off; `limits` to the defaults in
-    `Limits`. With no `stages` the task has one, `default`, graded on
-    submit, shown in full and counted.
+    """A `task.yaml`. `inputs` defaults to none, `credit` to an accepted test
+    earning 1, and `submissions` to 50 at one every 30 seconds.
     """
 
-    name: Text
+    name: Line
     workflow: Ref
-    release_at: AwareTime | None = None
-    hidden: Flag = False
-    inputs: Inputs = Inputs()
-    limits: Limits = Limits()
-    subtasks: tuple[Subtask, ...] = ()
-    stages: tuple[Stage, ...] = ()
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    credit: Annotated[str | Relative, PlainValidator(_credit)] | None = None
+    test_groups: dict[str, Group] = Field(min_length=1)
+    submissions: Submissions = Submissions()
 
     @model_validator(mode="after")
     def _check(self) -> TaskDefinition:
         problems = Problems()
-        problems.duplicates(
-            [entry.id for entry in self.inputs.contestant], ("inputs", "contestant")
-        )
-        problems.duplicates([entry.id for entry in self.inputs.setter], ("inputs", "setter"))
-        problems.duplicates([subtask.id for subtask in self.subtasks], ("subtasks",))
-        problems.duplicates([stage.id for stage in self.stages], ("stages",))
-        types = {entry.id: entry.type for entry in self.inputs.setter}
-        overrides: list[tuple[Path, Overrides]] = [
-            *((("subtasks", index), subtask.inputs) for index, subtask in enumerate(self.subtasks)),
-            *((("stages", index), stage.inputs) for index, stage in enumerate(self.stages)),
-        ]
-        for place, given in overrides:
-            at: Path = (*place, "inputs", "setter")
-            problems.duplicates([entry.id for entry in given.setter], at)
-            for position, entry in enumerate(given.setter):
-                known = types.get(entry.id)
-                if known is not None and known is not entry.type:
-                    problems.add(
-                        (*at, position, "type"),
-                        f"Must be {known}, the type {entry.id} has at the task level.",
-                    )
-        if self.stages and not any(stage.trigger is Trigger.ON_SUBMIT for stage in self.stages):
-            # Only a stage graded on submit makes a grading, and a submission
-            # is listed and rate-limited by its gradings, so a task without
-            # one would take submissions nobody could see.
-            problems.add(
-                ("stages",),
-                "Needs a stage with trigger on_submit; the other triggers are not graded yet.",
-            )
+        for name, group in self.test_groups.items():
+            for path, message in self._group_problems(name, group):
+                problems.add(("test_groups", name, *path), message)
+        if self.credit is not None and not self.gives_points:
+            problems.add(("credit",), "No group has a rule weight, so credit scores nothing.")
         problems.raise_any()
         return self
 
-    def stages_resolved(self) -> tuple[ResolvedStage, ...]:
-        """Every stage with its workflow and setter inputs resolved."""
-        if not self.stages:
-            return (
-                ResolvedStage(
-                    id=DEFAULT_STAGE,
-                    trigger=Trigger.ON_SUBMIT,
-                    show=Show.FULL,
-                    counts=True,
-                    workflow=self.workflow,
-                    setter=self.inputs.setter,
-                    index=None,
-                ),
+    def _group_problems(self, name: str, group: Group) -> list[tuple[tuple[str, ...], str]]:
+        """T1, T2 as far as the file says, and T6."""
+        found: list[tuple[tuple[str, ...], str]] = []
+        if not NAME.match(name):
+            found.append(((), "A group's name is letters, digits, _ and -."))
+        if group.pass_at is not None:
+            if group.pass_ is None:
+                found.append((("pass_at",), "Applies only beside pass."))
+            if not 0 < group.pass_at <= 1:
+                found.append((("pass_at",), "Must be more than 0 and at most 1."))
+        if group.worst is not None and self.credit is None:
+            found.append((("worst",), "With pass/fail tests `worst` is `pass`: write `pass`."))
+        if group.test_weights is not None:
+            for test, weight in group.test_weights.items():
+                if not NAME.match(test):
+                    found.append(
+                        (("test_weights", test), "A test's name is letters, digits, _ and -.")
+                    )
+                elif weight <= 0:
+                    found.append(
+                        (
+                            ("test_weights", test),
+                            f"{name}/{test} weighs {weight}: put a test that counts for nothing "
+                            "in a group with no rule weight.",
+                        )
+                    )
+            reads = group.each is not None or (
+                group.pass_ is not None and group.pass_at is not None and group.pass_at < 1
             )
-        return tuple(
-            ResolvedStage(
-                id=stage.id,
-                trigger=stage.trigger,
-                show=stage.show,
-                counts=stage.counts,
-                workflow=stage.workflow or self.workflow,
-                setter=_overlay(self.inputs.setter, stage.inputs.setter),
-                index=index,
-            )
-            for index, stage in enumerate(self.stages)
-        )
-
-    def workflow_refs(self) -> tuple[tuple[WorkflowRef, str], ...]:
-        """Each workflow the stages grade with, once, in the order the stages
-        are listed, with the YAML path of the first place that names it: the
-        task's `workflow`, or a stage's own. These are the workflows read
-        before the task compiles.
-        """
-        found: dict[str, tuple[WorkflowRef, str]] = {}
-        for stage in self.stages_resolved():
-            own = stage.index is not None and self.stages[stage.index].workflow is not None
-            at = f"stages[{stage.index}].workflow" if own else "workflow"
-            found.setdefault(str(stage.workflow), (stage.workflow, at))
-        return tuple(found.values())
-
-    def named_files(self) -> tuple[str, ...]:
-        """Every path in the task repo a file, file[] or dataset setter input
-        names, at the task level, in a subtask or in a stage, sorted. A path
-        ending in `/` names a folder.
-        """
-        entries = [
-            *self.inputs.setter,
-            *(entry for subtask in self.subtasks for entry in subtask.inputs.setter),
-            *(entry for stage in self.stages for entry in stage.inputs.setter),
-        ]
-        return tuple(sorted({entry.value for entry in entries if entry.names_file}))
-
-    def file_inputs(self) -> tuple[tuple[str, str], ...]:
-        """Every file, file[] or dataset setter input as the YAML path of its
-        value and the path in the task repo it names, at the task level,
-        then in each subtask, then in each stage.
-        """
-        places: list[tuple[Path, Sequence[SetterInput]]] = [
-            (("inputs", "setter"), self.inputs.setter),
-            *(
-                (("subtasks", index, "inputs", "setter"), subtask.inputs.setter)
-                for index, subtask in enumerate(self.subtasks)
-            ),
-            *(
-                (("stages", index, "inputs", "setter"), stage.inputs.setter)
-                for index, stage in enumerate(self.stages)
-            ),
-        ]
-        return tuple(
-            (path_text((*at, position, "value")), str(entry.value))
-            for at, entries in places
-            for position, entry in enumerate(entries)
-            if entry.names_file
-        )
-
-    def oversized(self) -> list[Problem]:
-        """A problem at every size limit the platform cannot keep: the task's
-        `limits.max_size` above `SUBMISSION_CEILING`, and each contestant
-        input's `max_size` above `FILE_CEILING`, which is one file's limit at
-        the forge.
-        """
-        problems: list[Problem] = []
-        if self.limits.max_size > SUBMISSION_CEILING:
-            problems.append(
-                Problem(
-                    path="limits.max_size",
-                    message=(
-                        f"Must be at most {format_size(SUBMISSION_CEILING)}, the largest "
-                        "submission the platform takes."
-                    ),
-                )
-            )
-        for index, entry in enumerate(self.inputs.contestant):
-            if entry.max_size is not None and entry.max_size > FILE_CEILING:
-                problems.append(
-                    Problem(
-                        path=f"inputs.contestant[{index}].max_size",
-                        message=(
-                            f"Must be at most {format_size(FILE_CEILING)}, the largest file "
-                            "the platform takes."
-                        ),
+            if not reads:
+                found.append(
+                    (
+                        ("test_weights",),
+                        f"test_weights on {name} change nothing: only each, or pass with a "
+                        "pass_at below 1, reads them.",
                     )
                 )
-        return problems
+        if group.show is Show.VERDICT:
+            problem = self._verdict_problem(name, group)
+            if problem is not None:
+                found.append((("show",), problem))
+        return found
 
-    def missing_files(self, has: Callable[[str], bool]) -> list[Problem]:
-        """A problem at the value of every file input whose path `has` says
-        is not in the state being saved. A path ending in `/` is a folder,
-        there when some file is under it.
-        """
-        problems: list[Problem] = []
-        for at, path in self.file_inputs():
-            if not has(path):
-                message = (
-                    f"There is no file under {path} in the task."
-                    if path.endswith("/")
-                    else f"There is no file {path} in the task."
-                )
-                problems.append(Problem(path=at, message=message))
-        return problems
+    def _verdict_problem(self, name: str, group: Group) -> str | None:
+        """T6: a verdict shows only all-or-nothing points."""
+        if group.each is not None:
+            return (
+                f"{name} is shown as a verdict, but its each points would tell how many of "
+                "its tests passed; use pass, or show it always or after_close."
+            )
+        if group.worst is not None:
+            return (
+                f"{name} is shown as a verdict, but its worst points would tell its worst "
+                "test's credit; use pass, or show it always or after_close."
+            )
+        if isinstance(self.credit, Relative):
+            return (
+                "A verdict group's outcome and points would move when other rows improve on "
+                "its hidden tests; show it always or after_close."
+            )
+        return None
+
+    @property
+    def gives_points(self) -> bool:
+        """Whether some group carries a rule weight, `W > 0`."""
+        return any(group.weight > 0 for group in self.test_groups.values())
+
+
+def _is_public(value: object) -> bool:
+    return value == "public"
+
+
+def _is_text(value: object) -> bool:
+    return isinstance(value, str)
+
+
+def _old_select(value: object) -> bool:
+    return value in ("latest", "selected", "first_accepted")
+
+
+def _old_order(value: object) -> bool:
+    return isinstance(value, dict) and bool({"metric", "key", "direction"} & set(value))
+
+
+CONTEST_RETIRED = (
+    Retired(
+        ("submissions_closed",),
+        "A task takes submissions until the closes on its entry in tasks; give each task "
+        "closes, or move end. Remove submissions_closed.",
+    ),
+    Retired(("teams",), "Write team_size: <n> to turn teams on; without it there are none."),
+    Retired(("registration", "mode"), "Write invite_only: true for an invite-only contest."),
+    Retired(
+        ("registration", "eligibility"),
+        "Write email_pattern and code directly under registration.",
+    ),
+    Retired(("visibility",), "public is now everyone.", _is_public),
+    Retired(
+        ("tasks", ANY, "label"),
+        "A task's label is its place in tasks, A, B, ...; remove label.",
+    ),
+    Retired(("tasks", ANY, "points"), "points is now worth."),
+    Retired(("leaderboards", ANY, "stage"), "A board counts test groups; over says which."),
+    Retired(("leaderboards", ANY, "combine"), "A board sums its tasks; remove combine."),
+    Retired(
+        ("leaderboards", ANY, "visibility"),
+        "visibility is now who: organisers, contestants or everyone.",
+    ),
+    Retired(("leaderboards", ANY, "freeze_at"), "A board does not freeze; remove freeze_at."),
+    Retired(
+        ("leaderboards", ANY, "team_only"),
+        "A board's rows are teams whenever team_size is set; remove team_only.",
+    ),
+    Retired(
+        ("leaderboards", ANY, "select"),
+        "select is best, best_per_group or marked.",
+        _old_select,
+    ),
+    Retired(
+        ("leaderboards", ANY, "order", ANY),
+        "An order key is points, a value name, penalty or {by: penalty, per_attempt: "
+        "<minutes>}; a value's direction is its workflow's.",
+        _old_order,
+    ),
+)
+
+TASK_RETIRED = (
+    Retired(
+        ("release_at",),
+        "A task's times are on its entry in contest.yaml's tasks; write release_at there.",
+    ),
+    Retired(
+        ("hidden",),
+        "A task shows from the release_at on its entry in contest.yaml; to hide results, "
+        "give a test group show: after_close.",
+    ),
+    Retired(
+        ("limits",),
+        "limits is now submissions: {max, rate: {count, per}}; each file input sets its own "
+        "max_size.",
+    ),
+    Retired(
+        ("subtasks",),
+        "Subtasks are test groups: folders under tests/ listed in test_groups.",
+    ),
+    Retired(
+        ("stages",),
+        "A task has one plan: hidden results are a test group's show, and which submission "
+        "counts is a board's select.",
+    ),
+    Retired(
+        ("inputs", "contestant"),
+        "inputs is one mapping keyed by the workflow's input ids: form details for the "
+        "contestant's inputs, values for the rest.",
+    ),
+    Retired(
+        ("inputs", "setter"),
+        "inputs is one mapping keyed by the workflow's input ids: form details for the "
+        "contestant's inputs, values for the rest.",
+    ),
+    Retired(
+        ("submissions", "rate"),
+        "rate is {count, per}, such as {count: 1, per: 30}.",
+        _is_text,
+    ),
+)
 
 
 def parse_contest(text: bytes | str) -> ContestDefinition:
     """The `contest.yaml` in `text`. Raises `InvalidDefinition` listing every
     problem with its YAML path.
     """
-    return validate(ContestDefinition, CONTEST_FILE, load_mapping(CONTEST_FILE, text))
+    return validate(
+        ContestDefinition, CONTEST_FILE, load_mapping(CONTEST_FILE, text), CONTEST_RETIRED
+    )
 
 
 def parse_task(text: bytes | str) -> TaskDefinition:
     """The `task.yaml` in `text`. Raises `InvalidDefinition` listing every
     problem with its YAML path.
     """
-    return validate(TaskDefinition, TASK_FILE, load_mapping(TASK_FILE, text))
+    return validate(TaskDefinition, TASK_FILE, load_mapping(TASK_FILE, text), TASK_RETIRED)
 
 
-CONTEST_ADMIN_KEYS = (
-    "name",
-    "description",
-    "start",
-    "end",
-    "submissions_closed",
-    "state",
-    "visibility",
-    "registration",
-)
-TASK_ADMIN_KEYS = ("name", "limits")
+CONTEST_ADMIN_KEYS = ("name", "description", "state", "visibility", "registration")
+TASK_ADMIN_KEYS = ("name", "submissions")
 ADMIN_ONLY_FILES = (STATEMENT_FILE,)
 
 _MISSING = object()
@@ -794,10 +766,11 @@ def title_of(title: str | None, name: str) -> str:
 
 def _yaml_text(value: str) -> str:
     """`value` as a YAML scalar in double quotes; a JSON string is one."""
-    return json.dumps(value, ensure_ascii=False)
+    return json.dumps(" ".join(value.split()), ensure_ascii=False)
 
 
-def _stamp(moment: datetime) -> str:
+def stamp(moment: datetime) -> str:
+    """A moment as `contest.yaml` writes one, in UTC to the second."""
     return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -805,7 +778,7 @@ def starter_contest(name: str, now: datetime) -> bytes:
     """The `contest.yaml` a new contest is created with: titled `name`, a
     draft seen by anyone signed in, open to register with manual approval,
     starting on the first full hour at least seven days after `now` and
-    running five hours, with teams off and no leaderboards or tasks.
+    running five hours, with one board shown to contestants and no tasks.
     """
     week_on = now.astimezone(UTC) + timedelta(days=7)
     start = week_on.replace(minute=0, second=0, microsecond=0)
@@ -813,65 +786,115 @@ def starter_contest(name: str, now: datetime) -> bytes:
         start += timedelta(hours=1)
     end = start + timedelta(hours=5)
     return f"""\
-# The contest's settings. The format is TASK-FORMAT.md, section 5.
+# The contest's settings. The format is TASK-FORMAT.md, section 1.1.
 name: {_yaml_text(name)}
-description: ""
-start: {_stamp(start)}
-end: {_stamp(end)}
+start: {stamp(start)}
+end: {stamp(end)}
 state: draft
-submissions_closed: false
 visibility: signed-in
-
-registration:
-  mode: open
-  approval: manual
-
-teams:
-  enabled: false
-  max_size: 3
-
-leaderboards: []
-
-tasks: []
+leaderboards:
+  - name: Standings
+    who: contestants
 """.encode()
 
 
 def starter_task(name: str) -> dict[str, bytes]:
     """The files a new task is created with: a `task.yaml` titled `name` that
-    grades Python with `unicon/classic@v1` against the testcases in
-    `data/testcases/`, a placeholder statement, one example testcase, `1.in`
-    with its answer `1.ans`, so the first save compiles a plan that grades.
+    grades Python with `unicon/classic@v2` on one group of tests, a
+    placeholder statement, an empty `public/`, and one test, `main/1`, whose
+    input is `1 2` and whose answer is `3`, so the first save publishes.
     """
     task = f"""\
-# The task's settings. The format is TASK-FORMAT.md, section 3.
+# The task's settings. The format is TASK-FORMAT.md, section 1.2.
 name: {_yaml_text(name)}
-workflow: unicon/classic@v1
-
+workflow: unicon/classic@v2
 inputs:
-  contestant:
-    - id: submission
-      type: code
-      label: Your solution
-      language: [python]
-  setter:
-    - id: testcases
-      type: file[]
-      value: data/testcases/
-    - id: time_limit
-      type: number
-      value: 2.0
-    - id: memory_limit
-      type: number
-      value: 256
-
-limits:
-  submissions: {DEFAULT_SUBMISSIONS}
-  rate: {DEFAULT_RATE.count} per {int(DEFAULT_RATE.per.total_seconds())}s
-  max_size: {format_size(DEFAULT_MAX_SIZE)}
+  submission: {{label: Your solution}}
+  language: {{options: [python]}}
+  time_limit: 2
+  memory_limit: 256
+test_groups:
+  main: {{each: 100}}
 """
     return {
         TASK_FILE: task.encode(),
         STATEMENT_FILE: b"Write the statement contestants read here.\n",
-        "data/testcases/1.in": b"1 2\n",
-        "data/testcases/1.ans": b"3\n",
+        f"{PUBLIC_FOLDER}.gitkeep": b"",
+        f"{TESTS_FOLDER}main/1/input": b"1 2\n",
+        f"{TESTS_FOLDER}main/1/answer": b"3\n",
     }
+
+
+def form_problems(
+    form: Mapping[str, Any], kind: str, workflow_options: tuple[str, ...] | None
+) -> list[tuple[tuple[str, ...], str]]:
+    """What is wrong with a contestant input's form details, given the
+    input's type and, for an enum, the workflow's options; each with its
+    path below the input.
+    """
+    try:
+        details = Form.model_validate(form)
+    except ValidationError as error:
+        return [
+            (tuple(problem["path"].split(".")) if problem["path"] else (), problem["message"])
+            for problem in problems_of(error)
+        ]
+    return details_problems(details, kind, workflow_options)
+
+
+def details_problems(
+    details: Form, kind: str, workflow_options: tuple[str, ...] | None
+) -> list[tuple[tuple[str, ...], str]]:
+    found: list[tuple[tuple[str, ...], str]] = []
+    allowed = {
+        "text": {"label", "default"},
+        "number": {"label", "default", "min", "max"},
+        "boolean": {"label", "default"},
+        "enum": {"label", "default", "options"},
+        "file": {"label", "max_size"},
+        "folder": {"label", "max_size"},
+    }[kind]
+    for key in sorted(details.model_fields_set - allowed):
+        found.append(((key,), f"A {kind} input does not take {key}."))
+    if details.min is not None and details.max is not None and details.max < details.min:
+        found.append((("max",), "Must be at least min."))
+    if details.max_size is not None and details.max_size > FILE_CEILING:
+        found.append((("max_size",), "Must be at most 2GB, the largest the platform takes."))
+    if details.options is not None and workflow_options is not None:
+        extra = [option for option in details.options if option not in workflow_options]
+        if extra:
+            found.append(
+                (
+                    ("options",),
+                    f"{extra[0]} is not an option of the workflow's: "
+                    f"{', '.join(workflow_options)}.",
+                )
+            )
+    if details.default is not None and "default" in allowed:
+        problem = _default_problem(details, kind, workflow_options)
+        if problem is not None:
+            found.append((("default",), problem))
+    return found
+
+
+def _default_problem(
+    details: Form, kind: str, workflow_options: tuple[str, ...] | None
+) -> str | None:
+    value = details.default
+    match kind:
+        case "text":
+            return None if isinstance(value, str) else "Must be text."
+        case "boolean":
+            return None if isinstance(value, bool) else "Must be true or false."
+        case "number":
+            if not is_number(value):
+                return "Must be a number."
+            if details.min is not None and value < details.min:
+                return "Must be at least min."
+            if details.max is not None and value > details.max:
+                return "Must be at most max."
+            return None
+        case "enum":
+            offered = details.options or workflow_options or ()
+            return None if value in offered else f"Must be one of {', '.join(offered)}."
+    return None
