@@ -26,10 +26,12 @@ member on it, and once made it is held against the team's members as they
 stand then, so someone who joined meanwhile is added and someone who left
 loses the access just given (`teams.settle`).
 
-Only a published contest that has not ended gets places ahead, at every
-task with a publication: a task that is not released yet is made ahead,
-since a task released at the start is the case this is for, and a contest
-still a draft or over has nobody to submit.
+Only a published contest that has not ended gets places ahead, and only at
+a task with a publication that is released at the contest's start or has
+been released already (`made_ahead`): a task released at the start is made
+ahead before it, since that is the case this is for, while one whose
+`release_at` is later, or that the contest does not list, gets none until it
+is released, and a contest still a draft or over has nobody to submit.
 Anyone the work misses makes their place at their first upload.
 
 A person the forge refuses for a reason of their own, such as a repository
@@ -41,7 +43,7 @@ makes no more (`ctx.stopping`).
 
 import uuid
 from contextlib import AbstractAsyncContextManager, nullcontext
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
@@ -172,7 +174,7 @@ def ahead_at(ctx: Context, task: TaskId) -> None:
             if settings is None:
                 return
             found = await published.task(later, task, settings)
-            if found is None:
+            if found is None or not made_ahead(settings, found.name, later.now):
                 return
             if teams.is_on(settings):
                 every = await later.db.scalars(
@@ -194,8 +196,8 @@ def ahead_at(ctx: Context, task: TaskId) -> None:
 
 
 async def _tasks(ctx: Context, contest: ContestId) -> tuple[TaskId, ...]:
-    """Every task of the contest with a publication, kept
-    for `TASKS_KEPT` so a crowd approved together reads them once, and
+    """Every task of the contest with a publication that `made_ahead` takes,
+    kept for `TASKS_KEPT` so a crowd approved together reads them once, and
     forgotten when a task is first published; none for a contest that is
     gone, a draft, archived or over.
     """
@@ -204,9 +206,24 @@ async def _tasks(ctx: Context, contest: ContestId) -> tuple[TaskId, ...]:
         settings = await _settings_if_open(ctx, contest)
         if settings is None:
             return ()
-        return tuple(found.id for found in await published.tasks(ctx, contest, settings))
+        return tuple(
+            found.id
+            for found in await published.tasks(ctx, contest, settings)
+            if made_ahead(settings, found.name, ctx.now)
+        )
 
     return await ctx.memo.remembered(_tasks_name(contest), TASKS_KEPT, read)
+
+
+def made_ahead(settings: ContestDefinition, task: str, now: datetime) -> bool:
+    """Whether places are made ahead at the task, by name: the contest lists
+    it, and its `release_at` is the contest's start or has passed.
+    """
+    entry = settings.entry(task)
+    if entry is None:
+        return False
+    released_at = settings.release_of(entry)
+    return released_at <= max(settings.start, now)
 
 
 def _tasks_name(contest: ContestId) -> str:

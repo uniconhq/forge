@@ -1,8 +1,8 @@
 """Making places ahead: approving someone makes their place at every task the
 contest has published, a task's first publication makes it for everyone
 approved, both once the request has committed and in turns of their own,
-at a task released only later too, none for a contest that is a draft or
-over, and someone removed while their place is made has the access taken
+none at a task released later until it is released, none for a contest that
+is a draft or over, and someone removed while their place is made has the access taken
 back. A person the forge refuses is passed over; a forge that does not
 answer stops the rest, which the contestant's first upload makes.
 """
@@ -181,8 +181,8 @@ async def test_a_forge_that_fails_stops_the_rest_and_the_first_upload_makes_the_
     assert _writers(acme.fake, sum_task, 8) == {8}
 
 
-async def test_a_task_released_only_later_gets_its_places_ahead_too(
-    setup: Setup, acme: Acme, sum_task: TaskId
+async def test_a_task_released_later_gets_its_places_ahead_once_it_is_released(
+    setup: Setup, acme: Acme, sum_task: TaskId, clock: FakeClock
 ) -> None:
     await write_contest(
         acme.fake,
@@ -192,14 +192,16 @@ async def test_a_task_released_only_later_gets_its_places_ahead_too(
     )
     await _approve(setup, acme, 8)
     await setup.settle()
-
     await publish(setup, acme, sum_task)
     await setup.settle()
+
+    assert _made(acme.fake) == []
+
+    clock.advance(timedelta(hours=1))
     acme.fake.add_user(20, "cyd")
     await _approve(setup, acme, 20)
     await setup.settle()
 
-    assert _writers(acme.fake, sum_task, 8) == {8}
     assert _writers(acme.fake, sum_task, 20) == {20}
 
 
