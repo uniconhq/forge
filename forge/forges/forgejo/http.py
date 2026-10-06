@@ -10,6 +10,14 @@ never reached the server, the connection failing before anything was sent;
 a POST the server answered with an error, or whose answer was lost, is
 `Unavailable` at once, and the step that sent it finds on its next run
 whether the thing was made.
+
+Each client keeps at most `CONCURRENT_CALLS` connections, so at most that
+many calls are in flight to one service from a process; a call waits for a
+free one in order, for the pool timeout at most, and is `Unavailable` after
+that without being asked again, since asking again would put it behind every
+call that came after it. A connection is free again once its response is
+closed: a plain request reads its body whole and closes it, and a stream
+closes when its block ends.
 """
 
 import asyncio
@@ -25,7 +33,8 @@ from forge.log import get_logger
 log = get_logger(__name__)
 
 CONCURRENT_CALLS = 8
-TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+LIMITS = httpx.Limits(max_connections=CONCURRENT_CALLS, max_keepalive_connections=CONCURRENT_CALLS)
+TIMEOUT = httpx.Timeout(10.0, connect=5.0, pool=30.0)
 RETRIES = 3
 BACKOFF_SECONDS = 0.2
 PAGE_SIZE = 50
@@ -33,7 +42,7 @@ MAX_PAGES = 200
 
 SERVER_ERROR = 500
 CREATES = frozenset({"POST"})
-NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout)
 NOT_FOUND = 404
 FORBIDDEN = (401, 403)
 CONFLICT = 409
@@ -91,7 +100,6 @@ class Http:
         self._auth = auth
         self._retries = retries
         self._backoff = backoff_seconds
-        self._in_flight = asyncio.Semaphore(CONCURRENT_CALLS)
 
     async def call(
         self,
@@ -141,10 +149,7 @@ class Http:
         """
         headers = {"Authorization": await self._auth.header(as_)}
         try:
-            async with (
-                self._in_flight,
-                self._client.stream("GET", path, params=params, headers=headers) as response,
-            ):
+            async with self._client.stream("GET", path, params=params, headers=headers) as response:
                 if response.status_code >= SERVER_ERROR:
                     raise Unavailable(f"{path} answered {response.status_code}")
                 if not response.is_success:
@@ -190,10 +195,11 @@ class Http:
     ) -> httpx.Response:
         for attempt in range(self._retries + 1):
             try:
-                async with self._in_flight:
-                    response = await self._client.request(
-                        method, path, json=json, data=data, params=params, headers=headers
-                    )
+                response = await self._client.request(
+                    method, path, json=json, data=data, params=params, headers=headers
+                )
+            except httpx.PoolTimeout as exc:
+                raise Unavailable(f"no connection free for {path}") from exc
             except httpx.HTTPError as exc:
                 if attempt == self._retries or not _may_resend(method, exc):
                     raise Unavailable(f"no answer from {path}: {type(exc).__name__}") from exc
@@ -218,8 +224,8 @@ def _may_resend(method: str, failure: httpx.HTTPError) -> bool:
     return method not in CREATES or isinstance(failure, NOT_SENT)
 
 
-def new_client(base_url: str) -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=TIMEOUT)
+def new_client(base_url: str, *, timeout: httpx.Timeout = TIMEOUT) -> httpx.AsyncClient:
+    return httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout, limits=LIMITS)
 
 
 def message_of(response: httpx.Response) -> str:

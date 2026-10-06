@@ -180,7 +180,10 @@ that is busy reaches the services only as `Unavailable` once the retries are
 used up. A retry never makes something twice: a request that sets a state is
 retried on a busy server or a lost answer, and a request that creates
 something, a POST, only when it never reached the server; otherwise it is
-`Unavailable` at once and the request that sent it fails.
+`Unavailable` at once and the request that sent it fails. A process keeps at
+most eight calls in flight to Forgejo and eight to the CI, one connection
+each; a call waits its turn for a free connection for 30 seconds at most and
+is then `Unavailable`, not asked again.
 
 Operations done for a person take the identity the call is made under, so the
 host records the change as theirs and enforces their permissions underneath
