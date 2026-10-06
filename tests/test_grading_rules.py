@@ -8,7 +8,6 @@ import json
 import math
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -25,27 +24,21 @@ from forge.domain.grading import (
 )
 from forge.domain.plans import Plan
 from forge.domain.reports import VERDICT_MAX, Event, read_report, verdict_problem
+from tests.conftest import sibling
 
-RUNNER = Path(__file__).resolve().parents[2] / "runner"
 GRADING = uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31")
 IMAGE = "ghcr.io/uniconhq/primitive-compile@sha256:" + "0" * 64
 
 
-@pytest.mark.skipif(
-    not (RUNNER / "schemas").exists(), reason="the runner repo is not checked out beside this one"
-)
 @pytest.mark.parametrize("contract", CONTRACTS)
 def test_the_contract_files_are_the_runners_own(contract: str) -> None:
-    published = RUNNER / "schemas" / f"{contract}.schema.json"
+    published = sibling("runner", "schemas", f"{contract}.schema.json")
     assert schema_text(contract) == published.read_text(encoding="utf-8")
 
 
-@pytest.mark.skipif(
-    not (RUNNER / "examples").exists(), reason="the runner repo is not checked out beside this one"
-)
 @pytest.mark.parametrize("contract", ["envelope", "verdict", "plan", "submission"])
 def test_the_runners_examples_keep_the_contracts(contract: str) -> None:
-    example = json.loads((RUNNER / "examples" / f"{contract}.json").read_text(encoding="utf-8"))
+    example = json.loads(sibling("runner", "examples", f"{contract}.json").read_text("utf-8"))
     assert violation(example, contract) is None
 
 

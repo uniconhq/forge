@@ -26,8 +26,6 @@ from pydantic import (
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
-from forge.domain.grading import CLONE_IMAGE
-from forge.domain.plans import HARNESS_IMAGE
 from forge.domain.primitives import IMAGE
 
 KEY_BYTES = 32
@@ -49,6 +47,18 @@ FORGEJO_VARIABLES = {
 }
 
 DEFAULTED_FORGEJO_FIELDS = ("internal_url", "woodpecker_public_url")
+
+IMAGE_VARIABLES = {
+    "harness_image": "UNICON_HARNESS_IMAGE",
+    "clone_image": "UNICON_CLONE_IMAGE",
+}
+
+FAKE_IMAGES = {
+    "harness_image": "ghcr.io/uniconhq/harness@sha256:" + "0" * 64,
+    "clone_image": "ghcr.io/uniconhq/clone@sha256:" + "0" * 64,
+}
+"""The images the fake forge's plans and runs name unless given. It runs
+neither, so a placeholder digest does."""
 
 S3_VARIABLES = {
     "endpoint": "UNICON_S3_ENDPOINT",
@@ -208,8 +218,9 @@ class Settings(BaseSettings):
     `mail`, the mail server's settings, is optional, and without it nothing
     is mailed. `harness_image` is the harness every plan names, by digest, and
     `clone_image` the image the CI checks a task and a submission out with,
-    by digest, each the one of the runner release the package pins unless
-    given.
+    by digest, both required with `forgejo`: they are the deployment's
+    choice, from its image manifest. The fake runs neither and names a
+    placeholder unless given.
 
     `database_pool_size` connections to the database stay open in each
     process, `database_pool_overflow` more are opened in a rush, and a
@@ -249,8 +260,8 @@ class Settings(BaseSettings):
     forgejo: ForgejoSettings | None = None
     s3: S3Settings | None = None
     mail: MailSettings | None = None
-    harness_image: str = HARNESS_IMAGE
-    clone_image: str = CLONE_IMAGE
+    harness_image: str
+    clone_image: str
 
     session_hard_ttl: timedelta = timedelta(days=30)
     session_idle_ttl: timedelta = timedelta(days=14)
@@ -303,7 +314,8 @@ class Settings(BaseSettings):
         if not isinstance(data, dict):
             return data
         if data.get("forge", "forgejo") != "forgejo":
-            return {**data, "forgejo": None}
+            images = {name: image for name, image in FAKE_IMAGES.items() if data.get(name) is None}
+            return {**data, **images, "forgejo": None}
         given = data.get("forgejo")
         if isinstance(given, ForgejoSettings):
             return data
@@ -324,6 +336,9 @@ class Settings(BaseSettings):
                 for name, field in S3Settings.model_fields.items()
                 if field.is_required() and given_s3.get(name) is None
             ]
+        missing += [
+            variable for name, variable in IMAGE_VARIABLES.items() if data.get(name) is None
+        ]
         if missing:
             raise ValueError(f"UNICON_FORGE=forgejo needs {', '.join(missing)}")
         if values.get("internal_url") is None:

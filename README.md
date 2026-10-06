@@ -180,7 +180,10 @@ that is busy reaches the services only as `Unavailable` once the retries are
 used up. A retry never makes something twice: a request that sets a state is
 retried on a busy server or a lost answer, and a request that creates
 something, a POST, only when it never reached the server; otherwise it is
-`Unavailable` at once and the request that sent it fails.
+`Unavailable` at once and the request that sent it fails. A process keeps at
+most eight calls in flight to Forgejo and eight to the CI, one connection
+each; a call waits its turn for a free connection for 30 seconds at most and
+is then `Unavailable`, not asked again.
 
 Operations done for a person take the identity the call is made under, so the
 host records the change as theirs and enforces their permissions underneath
@@ -417,8 +420,9 @@ forge sends its own mail through, and the whole of it is absent while
 grading machines reach the platform, `UNICON_PUBLIC_URL` unless given.
 `UNICON_HARNESS_IMAGE` is the harness every plan names, by digest, and
 `UNICON_CLONE_IMAGE` the image the CI checks a task and a submission out
-with, by digest, each the one of the runner release the package pins unless
-given. A missing or malformed variable stops the process at start with the
+with, by digest. Both are required when `UNICON_FORGE=forgejo`, since which
+images a deployment runs is its own choice, from its image manifest; the fake
+runs neither and names a placeholder digest unless given. A missing or malformed variable stops the process at start with the
 variable named.
 
 ## Cookies
@@ -1463,7 +1467,8 @@ copy of the file deploy's bootstrap seeds, and with `seed_primitives` the
 three primitives it uses from `PRIMITIVES`, each primitive repo's own
 `primitive.yaml` with an image of `PLACEHOLDER_DIGEST`, so a task's first
 save finds a workflow and every step's image; the package's tests check the
-copy against deploy's file when that repo is checked out beside this one.
+copies against deploy's file and the primitives' own when those repos are
+checked out beside this one.
 The fake's large-file store is `fake.uploads`: a test plays the browser
 through the door with `send`, handing back the address the door gave out,
 or puts an object straight into a place with `put`, and `forget` drops one
@@ -1522,6 +1527,15 @@ reach the forge's public URL. `tests/live/test_undo.py` drives the removals
 a failed create uses and then an org and a task whose commit fails, and
 checks that nothing they made is left at Forgejo or Woodpecker; its first
 two tests need only the forge.
+
+A few tests compare the package's copies with their originals in the repos
+checked out beside this one: `schemas/` with `runner`'s, `CLASSIC` with the
+workflow `deploy` seeds, and `PRIMITIVES` with each `primitive-<name>`'s
+`primitive.yaml`. Without a repo they are skipped, unless `CI` is set, when
+they fail. CI checks the forge out beside them: the runner at the release
+whose contracts `schemas/` copies, a `ref:` in `.github/workflows/ci.yaml`
+that moves with the copy, deploy's `main`, and each primitive at the tag
+deploy's `images.json` seeds the forge with.
 
 ## Releasing
 
