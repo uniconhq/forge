@@ -1,8 +1,8 @@
 """What a visitor with no session reads: the contests whose `visibility` is
-`public` and that are published, and the statements of their released tasks,
+`everyone` and that are published, and the statements of their released tasks,
 and nothing else. A visitor has no credential, so everything is read as the
 platform, and the package applies the contest's visibility and the release
-rules before it hands anything on. A contest that is not public, and a task
+rules before it hands anything on. A contest that is not for everyone, and a task
 that is not visible, are no such contest or task, the same answer as one
 that is not there. The list of public contests starts from every published
 contest as this process read it at most half a minute ago
@@ -80,9 +80,9 @@ async def contest(ctx: Context, contest: ContestId) -> PublicContest:
     settings = await _public_settings(ctx, contest, published.NO_SUCH_CONTEST)
     now = ctx.now
     tasks = tuple(
-        PublicTask(task.id, task.name, task.label, task.definition.name)
+        PublicTask(task.id, task.name, task.label or task.name, task.definition.name)
         for task in await published.tasks(ctx, contest, settings)
-        if rules.visible(settings, task.definition, now)
+        if rules.visible(settings, task.name, now)
     )
     where = await names.scope_names(ctx, contest_scope(contest))
     return _contest(contest, where, settings, tasks)
@@ -95,10 +95,10 @@ async def statement(ctx: Context, task: TaskId) -> PublicStatement:
     """
     settings = await _public_settings(ctx, contest_id_of(task_scope(task)), published.NO_SUCH_TASK)
     found = await published.task(ctx, task, settings)
-    if found is None or not rules.visible(settings, found.definition, ctx.now):
+    if found is None or not rules.visible(settings, found.name, ctx.now):
         raise NotFound(published.NO_SUCH_TASK)
     return PublicStatement(
-        PublicTask(found.id, found.name, found.label, found.definition.name),
+        PublicTask(found.id, found.name, found.label or found.name, found.definition.name),
         await published.statement(ctx, found),
     )
 
@@ -129,7 +129,7 @@ def _contest(
         contest=contest,
         where=where,
         name=settings.name,
-        description=settings.description,
+        description=settings.description or "",
         start=settings.start,
         end=settings.end,
         tasks=tasks,

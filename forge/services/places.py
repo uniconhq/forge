@@ -26,10 +26,10 @@ member on it, and once made it is held against the team's members as they
 stand then, so someone who joined meanwhile is added and someone who left
 loses the access just given (`teams.settle`).
 
-Only a published contest that has not ended gets places ahead, and only at
-tasks that are not hidden: a task that is not released yet is made ahead,
-since a task released at the start is the case this is for, while a hidden
-one may never be, and a contest still a draft or over has nobody to submit.
+Only a published contest that has not ended gets places ahead, at every
+task with a publication: a task that is not released yet is made ahead,
+since a task released at the start is the case this is for, and a contest
+still a draft or over has nobody to submit.
 Anyone the work misses makes their place at their first upload.
 
 A person the forge refuses for a reason of their own, such as a repository
@@ -172,7 +172,7 @@ def ahead_at(ctx: Context, task: TaskId) -> None:
             if settings is None:
                 return
             found = await published.task(later, task, settings)
-            if found is None or found.definition.hidden:
+            if found is None:
                 return
             if teams.is_on(settings):
                 every = await later.db.scalars(
@@ -194,7 +194,7 @@ def ahead_at(ctx: Context, task: TaskId) -> None:
 
 
 async def _tasks(ctx: Context, contest: ContestId) -> tuple[TaskId, ...]:
-    """Every task of the contest with a publication that is not hidden, kept
+    """Every task of the contest with a publication, kept
     for `TASKS_KEPT` so a crowd approved together reads them once, and
     forgotten when a task is first published; none for a contest that is
     gone, a draft, archived or over.
@@ -204,11 +204,7 @@ async def _tasks(ctx: Context, contest: ContestId) -> tuple[TaskId, ...]:
         settings = await _settings_if_open(ctx, contest)
         if settings is None:
             return ()
-        return tuple(
-            found.id
-            for found in await published.tasks(ctx, contest, settings)
-            if not found.definition.hidden
-        )
+        return tuple(found.id for found in await published.tasks(ctx, contest, settings))
 
     return await ctx.memo.remembered(_tasks_name(contest), TASKS_KEPT, read)
 

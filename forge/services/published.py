@@ -18,6 +18,7 @@ from datetime import timedelta
 
 from forge.domain.definitions import (
     CONTEST_FILE,
+    DEFAULT_WORTH,
     STATEMENT_FILE,
     TASK_FILE,
     ContestDefinition,
@@ -29,7 +30,9 @@ from forge.domain.definitions import (
 from forge.domain.errors import NotFound, PortError
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId
+from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.publications import Publication
+from forge.domain.submissions import Field, fields_of
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
@@ -43,9 +46,9 @@ NO_SUCH_TASK = names.NO_SUCH_TASK
 
 @dataclass(frozen=True, slots=True)
 class PublishedTask:
-    """A task as its latest publication froze it, by its name, with its place
-    in the contest's `tasks` list, which names it, when the contest gives it
-    one.
+    """A task as its latest publication froze it, by its name, with its
+    entry in the contest's `tasks` list and the label its place there gives
+    it, when the contest lists it.
     """
 
     id: TaskId
@@ -53,15 +56,17 @@ class PublishedTask:
     publication: Publication
     definition: TaskDefinition
     entry: ContestTask | None
+    label: str | None = None
 
     @property
-    def label(self) -> str:
-        """What the contest calls the task, or its name when it says nothing."""
-        return self.entry.label if self.entry is not None else self.name
-
-    @property
-    def points(self) -> int | None:
-        return self.entry.points if self.entry is not None else None
+    def worth(self) -> int | float | None:
+        """The most points the task gives in the contest: its entry's `worth`,
+        100 on a task that gives points when the entry says none, and none on
+        a task that gives no points or that the contest does not list.
+        """
+        if self.entry is None or not self.definition.gives_points:
+            return None
+        return self.entry.worth if self.entry.worth is not None else DEFAULT_WORTH
 
 
 async def contest(ctx: Context, contest: ContestId) -> ContestDefinition:
@@ -105,8 +110,11 @@ async def task(
         definition = parse_task(found.content)
     except InvalidDefinition:
         return None
-    entries = {entry.id: entry for entry in settings.tasks} if settings is not None else {}
-    return PublishedTask(task, name, latest, definition, entries.get(name))
+    if settings is None:
+        return PublishedTask(task, name, latest, definition, None)
+    return PublishedTask(
+        task, name, latest, definition, settings.entry(name), settings.label_of(name)
+    )
 
 
 async def tasks(
@@ -127,6 +135,36 @@ async def tasks(
     return sorted(
         found, key=lambda published: (order.get(published.name, len(order)), published.name)
     )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskForm:
+    """What a submission to a task is made of: the inputs the contestant
+    gives, as its plan declares them with the task's form details, and the
+    tests of the plan, which a per-test input's files are named for.
+    """
+
+    fields: tuple[Field, ...]
+    tests: tuple[str, ...]
+
+
+FORM_KEPT = timedelta(hours=1)
+"""How long this process keeps a publication's form: a publication never
+changes, so the time only bounds what is held."""
+
+
+async def form(ctx: Context, published: PublishedTask) -> TaskForm:
+    """The task's form at its latest publication, read from its plan."""
+
+    async def read() -> TaskForm:
+        found = await ctx.forge.content.read_file(
+            PLATFORM, published.id, PLAN_PATH, at=published.publication.version
+        )
+        plan = Plan.from_bytes(found.content)
+        return TaskForm(fields_of(plan.contestant, published.definition.inputs), plan.tests)
+
+    key = f"published.form.{published.id}.{published.publication.version}"
+    return await ctx.memo.remembered(key, FORM_KEPT, read)
 
 
 async def statement(ctx: Context, published: PublishedTask) -> str:

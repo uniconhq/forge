@@ -1,15 +1,17 @@
 """Making a task is a request a manager of its contest makes, done before it
-answers: the place with `task.yaml`, `statement.md` and an example testcase
-in `data/testcases/`, then the roles of the contest and the task with its
-protection and its publications reserved, then its activation at the CI as
-the org's account, then its entry at the end of the `tasks` list in
-`contest.yaml`, written as the platform. Nothing is published; a task the
-list holds already is left as it is, and a `contest.yaml` that does not read
-is left alone; a step that fails fails the request, removes what the earlier
-steps made and leaves the name free, and so does a commit that fails after
-every step, which takes the entry out of `contest.yaml` too unless an
-organiser changed the file since; a removal that fails is logged and the
-step's own error is raised; the list is read as the organiser.
+answers: the place with the starter `task.yaml`, `statement.md`, an empty
+`public/` and one test, `tests/main/1/`, then the roles of the contest and
+the task with its protection and its publications reserved, then its
+activation at the CI as the org's account, then its entry at the end of the
+`tasks` list in `contest.yaml`, written as the platform: `{id}` in a draft
+contest, and in a published one with `release_at` and `closes` at the
+contest's end, so work in progress shows nothing. Nothing is published; a
+task the list holds already is left as it is, and a `contest.yaml` that does
+not read is left alone; a step that fails fails the request, removes what
+the earlier steps made and leaves the name free, and so does a commit that
+fails after every step, which takes the entry out of `contest.yaml` too
+unless an organiser changed the file since; a removal that fails is logged
+and the step's own error is raised; the list is read as the organiser.
 """
 
 import logging
@@ -67,44 +69,66 @@ async def test_a_contest_manager_makes_the_task_with_its_files(
     ]
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
     assert sorted(repo.files) == [
-        "data/testcases/1.ans",
-        "data/testcases/1.in",
+        "public/.gitkeep",
         "statement.md",
         "task.yaml",
+        "tests/main/1/answer",
+        "tests/main/1/input",
     ]
-    assert parse_task(repo.files["task.yaml"]).name == "Sum of Two"
+    assert (repo.files["tests/main/1/input"], repo.files["tests/main/1/answer"]) == (
+        b"1 2\n",
+        b"3\n",
+    )
+    starter = parse_task(repo.files["task.yaml"])
+    assert (starter.name, str(starter.workflow)) == ("Sum of Two", "unicon/classic@v2")
     assert repo.teams == {Scope("acme", "spring"), Scope("acme", "spring", "sum")}
     assert repo.reserved == {"published/"}
     assert repo.rewrites_refused is True
     assert repo.versions == {}
     assert acme.fake.state.repos[("acme", "spring.contest")].files["contest.yaml"] == (
-        contest_before.replace(
-            b"tasks: []\n", b"tasks:\n  - id: sum\n    label: A\n    points: 100\n"
-        )
+        contest_before + b"tasks:\n  - id: sum\n"
     )
     found = await acme.fake.content.read_file(bob.identity, SUM, "statement.md")
     assert found.content.startswith(b"Write the statement")
 
 
-async def test_each_new_task_takes_the_next_free_label_and_a_listed_one_is_left_alone(
+async def test_each_new_task_goes_at_the_end_of_the_list_and_a_listed_one_is_left_alone(
     setup: Setup, acme: Acme, spring: ContestId
 ) -> None:
     await write_contest(
         acme.fake,
-        CONTEST_HEAD + "tasks:\n  # Ordered by difficulty.\n  - id: product\n    label: A\n"
-        "    points: 50\n",
+        CONTEST_HEAD + "tasks:\n  # Ordered by difficulty.\n  - id: product\n    worth: 50\n",
     )
 
     for name in ("product", "sum", "power"):
         await tasks.create(setup, acme.ada, spring, name)
 
     written = acme.fake.state.repos[("acme", "spring.contest")].files["contest.yaml"]
-    assert [(entry.id, entry.label, entry.points) for entry in parse_contest(written).tasks] == [
-        ("product", "A", 50),
-        ("sum", "B", 100),
-        ("power", "C", 100),
+    contest = parse_contest(written)
+    assert [(entry.id, entry.worth, entry.release_at) for entry in contest.tasks] == [
+        ("product", 50, None),
+        ("sum", None, None),
+        ("power", None, None),
     ]
+    assert [contest.label_of(name) for name in ("product", "sum", "power")] == ["A", "B", "C"]
     assert b"# Ordered by difficulty." in written
+
+
+async def test_a_task_made_in_a_published_contest_opens_and_closes_at_its_end(
+    setup: Setup, acme: Acme, spring: ContestId
+) -> None:
+    await write_contest(acme.fake, CONTEST_HEAD.replace("state: draft", "state: published"))
+
+    await tasks.create(setup, acme.ada, spring, "sum")
+
+    written = acme.fake.state.repos[("acme", "spring.contest")].files["contest.yaml"]
+    assert written.endswith(
+        b"tasks:\n  - id: sum\n    release_at: 2026-10-01T15:00:00Z\n"
+        b"    closes: 2026-10-01T15:00:00Z\n"
+    )
+    (entry,) = parse_contest(written).tasks
+    assert entry.release_at == entry.closes == parse_contest(written).end
+    assert (entry.worth, entry.due) == (None, None)
 
 
 async def test_a_contest_yaml_that_does_not_read_is_left_alone_and_the_task_is_made(

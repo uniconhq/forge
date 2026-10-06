@@ -1,20 +1,27 @@
-"""The save that publishes. A valid save writes the organiser's files and one
-plan per stage as one change and publishes exactly that change, numbered
-after the last, with a note that reads back. A save another save
-landed under is kept as a draft, and so, always, is a save asked to be. A
-save inside `plans/` and a manager's change to an admin-only setting are
+"""The save that publishes. A valid save writes the organiser's files and the
+task's plan, `plans/plan.json`, as one change and publishes exactly that
+change, numbered after the last, with a note that reads back. A save another
+save landed under is kept as a draft, and so, always, is a save asked to be.
+A save inside `plans/` and a manager's change to an admin-only setting are
 refused with nothing written. A save that does not check is a draft: its
 files written, no publication, and its errors recomputed whenever the task's
-state is read. What changed how the task grades is named, and while the
-contest runs such a save asks to be confirmed.
+state is read. What changed how the task grades is named, and once the
+contest has started such a save asks to be confirmed; a change to how it
+scores changes nothing that grades. Once the task has a done grading, a
+group's `show` neither hides what was shown nor is left unsaid on a new
+group.
 """
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
 import pytest
+from sqlalchemy import update
 
+from forge.db.tables import Grading
 from forge.domain.content import Edit
+from forge.domain.contracts import violation
 from forge.domain.errors import (
     AdminOnly,
     ConfirmationRequired,
@@ -22,25 +29,67 @@ from forge.domain.errors import (
     Forbidden,
     ReservedPath,
 )
+from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.plans import Plan
 from forge.domain.roles import Role, Scope
+from forge.domain.submissions import SubmittedInput
 from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
-from forge.services import publications, tasks
+from forge.services import publications, submissions, tasks
 from forge.services.access import Organiser
 from forge.services.publications import Draft, Published
 from forge.testing import CLASSIC, PRIMITIVES
-from tests.services.conftest import SPRING, Acme, organiser
+from tests.services.conftest import Acme, Entered, organiser, upload, write_contest
 
-RUNNING = b"""\
+RUNNING = """\
 name: Spring 2026
 start: 2026-09-26T10:00:00Z
 end: 2026-09-26T15:00:00Z
-state: published
-visibility: public
+state: {state}
+visibility: everyone
+tasks:
+  - id: sum
 """
+
+OLD_CLASSIC = b"""\
+name: unicon/classic
+version: v1
+
+inputs:
+  - id: submission
+    type: code
+  - id: testcases
+    type: file[]
+
+steps:
+  - id: compile
+    use: unicon/compile@v1
+    with:
+      source: ${{ inputs.submission }}
+      language: ${{ inputs.submission.language }}
+
+outputs:
+  outcome: ${{ steps.compile.outcome }}
+"""
+"""`unicon/classic@v1` as the format before this one wrote it, cut short."""
+
+OLD_COMPILE = b"""\
+name: unicon/compile
+version: v1
+batch: false
+limits: {time_ms: 60000, cpu_ms: 60000, memory_mb: 1024, pids: 128, output_mb: 64}
+limits_from: {}
+inputs:
+  source: {type: file}
+  language: {type: enum, values: [python, c, cpp, java]}
+outputs:
+  binary: {type: file, optional: true}
+  compile_log: {type: text}
+  outcome: {type: outcome}
+"""
+"""`unicon/compile@v1`'s declaration as the format before this one wrote it."""
 
 
 async def _edits(acme: Acme, task: TaskId, contents: Mapping[str, bytes]) -> dict[str, Edit]:
@@ -49,8 +98,15 @@ async def _edits(acme: Acme, task: TaskId, contents: Mapping[str, bytes]) -> dic
     return {path: Edit(content, head.tokens.get(path)) for path, content in contents.items()}
 
 
-async def _task_yaml(acme: Acme, task: TaskId) -> bytes:
-    return acme.fake.state.repos[("acme", "spring.sum.task")].files["task.yaml"] if task else b""
+def _task_yaml(acme: Acme) -> bytes:
+    return acme.fake.state.repos[("acme", "spring.sum.task")].files["task.yaml"]
+
+
+def _with(acme: Acme, old: bytes, new: bytes) -> dict[str, bytes]:
+    """`task.yaml` as it is now, with `old` replaced by `new`."""
+    current = _task_yaml(acme)
+    assert old in current, old
+    return {"task.yaml": current.replace(old, new)}
 
 
 async def _save(
@@ -77,32 +133,54 @@ def _written(acme: Acme) -> list[str]:
 async def _published(setup: Setup, acme: Acme, task: TaskId) -> Published:
     """The task's first publication, a save of the starter as it is."""
     result = await _save(setup, acme, task, {"statement.md": b"Add two numbers.\n"})
-    assert isinstance(result, Published)
+    assert isinstance(result, Published), result
     acme.fake.reset_calls()
     return result
 
 
-async def test_a_valid_save_is_one_change_with_its_plans_and_that_change_is_published(
+async def _workflow(acme: Acme, name: str, content: bytes, owner: str = "unicon") -> None:
+    """A public workflow at `v1` with `content` as its `workflow.yaml`."""
+    made = await acme.fake.workflows.create_workflow(
+        PLATFORM, owner, name, {"workflow.yaml": content}, Visibility.PUBLIC
+    )
+    await acme.fake.workflows.create_workflow_version(PLATFORM, made, "v1")
+
+
+async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the_contract(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     result = await _save(setup, acme, sum_task, {"statement.md": b"Add two numbers.\n"})
 
     assert isinstance(result, Published)
-    assert (result.number, result.grading_changed, result.changes) == (1, False, ())
+    assert (result.number, result.grading_changed, result.changes, result.notes) == (
+        1,
+        False,
+        (),
+        (),
+    )
     (saved,) = acme.fake.calls_to("save_files")
     assert saved.identity == acme.ada.identity
-    assert saved.arguments["paths"] == ["plans/default.json", "statement.md"]
+    assert saved.arguments["paths"] == ["plans/plan.json", "statement.md"]
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
     head = repo.history[-1]
     assert (head.author_id, head.message) == (7, "Save")
     assert repo.versions == {"published/1": head.version}
-    plan = Plan.from_bytes(repo.files["plans/default.json"])
+    assert sorted(path for path in repo.files if path.startswith("plans/")) == ["plans/plan.json"]
+    document = json.loads(repo.files["plans/plan.json"])
+    assert violation(document, "plan") is None
+    plan = Plan.from_bytes(repo.files["plans/plan.json"])
+    assert plan.schema_version == 5
     assert [step.primitive for step in plan.steps] == [
-        "compile@v1",
-        "sandbox-run@v1",
-        "diff-check@v1",
+        "unicon/compile@v2",
+        "unicon/sandbox-run@v2",
+        "unicon/diff-check@v2",
     ]
-    assert plan.tests == ("1",)
+    assert plan.tests == ("main/1",)
+    assert set(plan.contestant) == {"submission", "language"}
+    # The workflow's declaration; the task's narrower options are its form's.
+    assert plan.contestant["language"].options == ("c", "cpp", "java", "python")
+    assert set(plan.report) == {"time_ms", "memory_kb", "log"}
+    assert plan.task_paths() == ("tests/main/1/answer", "tests/main/1/input")
     assert plan.harness_image == setup.settings.harness_image
     reads = acme.fake.calls_to("read_declaration")
     assert {call.arguments["primitive"] for call in reads} == {
@@ -116,6 +194,7 @@ async def test_a_valid_save_is_one_change_with_its_plans_and_that_change_is_publ
     (listed,) = await publications.list(setup, acme.ada, sum_task)
     assert (listed.id, listed.number, listed.version) == (result.publication, 1, head.version)
     assert (listed.grading_changed, listed.changes) == (False, ())
+    assert set(listed.workflows) == {"unicon/classic"}
 
 
 async def test_each_publication_is_numbered_after_the_last_and_none_touches_the_ci(
@@ -174,40 +253,18 @@ async def test_a_save_another_landed_under_is_kept_as_a_draft_and_not_published(
     assert repo.versions == {}
 
 
-async def test_a_stage_the_task_no_longer_has_loses_its_plan_in_the_same_change(
+async def test_a_plan_file_the_compiler_no_longer_writes_is_removed_in_the_same_change(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    await _published(setup, acme, sum_task)
-    staged = (
-        await _task_yaml(acme, sum_task)
-        + b"""
-stages:
-  - id: public
-  - id: final
-    trigger: at_end
-"""
-    )
+    repo = acme.fake.state.repos[("acme", "spring.sum.task")]
+    acme.fake.state.commit(repo, {"plans/default.json": b"{}\n"}, "An old plan", 7)
 
-    result = await _save(setup, acme, sum_task, {"task.yaml": staged})
+    result = await _save(setup, acme, sum_task, {"statement.md": b"Add two numbers.\n"})
 
     assert isinstance(result, Published)
     (saved,) = acme.fake.calls_to("save_files")
-    assert saved.arguments["paths"] == [
-        "plans/default.json",
-        "plans/final.json",
-        "plans/public.json",
-        "task.yaml",
-    ]
-    repo = acme.fake.state.repos[("acme", "spring.sum.task")]
-    assert sorted(path for path in repo.files if path.startswith("plans/")) == [
-        "plans/final.json",
-        "plans/public.json",
-    ]
-    assert result.changes == (
-        "plans/default.json removed",
-        "plans/final.json added",
-        "plans/public.json added",
-    )
+    assert saved.arguments["paths"] == ["plans/default.json", "plans/plan.json", "statement.md"]
+    assert sorted(path for path in repo.files if path.startswith("plans/")) == ["plans/plan.json"]
 
 
 async def test_a_save_inside_plans_is_refused_and_writes_nothing(
@@ -218,11 +275,11 @@ async def test_a_save_inside_plans_is_refused_and_writes_nothing(
             setup,
             acme,
             sum_task,
-            {"plans/default.json": b"{}", "statement.md": b"x", "plans": b"x"},
+            {"plans/plan.json": b"{}", "statement.md": b"x", "plans": b"x"},
         )
 
     assert refused.value.code == "reserved_path"
-    assert refused.value.extra["paths"] == ["plans", "plans/default.json"]
+    assert refused.value.extra["paths"] == ["plans", "plans/plan.json"]
     assert _written(acme) == []
 
 
@@ -240,13 +297,19 @@ async def manager(setup: Setup, acme: Acme, sum_task: TaskId) -> Organiser:
     [
         ({"statement.md": b"Mine.\n"}, ["statement.md"]),
         ({"task.yaml": (b'name: "Sum of Two"', b'name: "Mine"')}, ["name"]),
-        ({"task.yaml": (b"submissions: 50", b"submissions: 5")}, ["limits"]),
+        ({"task.yaml": (b"test_groups:", b"submissions: {max: 5}\ntest_groups:")}, ["submissions"]),
         (
-            {"task.yaml": (b"rate: 1 per 30s", b"rate: 2 per 30s"), "statement.md": b"Mine.\n"},
-            ["limits", "statement.md"],
+            {
+                "task.yaml": (
+                    b"test_groups:",
+                    b"submissions:\n  rate: {count: 2, per: 30}\ntest_groups:",
+                ),
+                "statement.md": b"Mine.\n",
+            },
+            ["submissions", "statement.md"],
         ),
     ],
-    ids=["statement", "name", "limits", "both"],
+    ids=["statement", "name", "submissions", "both"],
 )
 async def test_a_managers_admin_only_change_is_refused_naming_it_and_an_admins_is_not(
     setup: Setup,
@@ -256,7 +319,7 @@ async def test_a_managers_admin_only_change_is_refused_naming_it_and_an_admins_i
     contents: dict[str, Any],
     keys: list[str],
 ) -> None:
-    task_yaml = await _task_yaml(acme, sum_task)
+    task_yaml = _task_yaml(acme)
     files = {
         path: task_yaml.replace(*value) if isinstance(value, tuple) else value
         for path, value in contents.items()
@@ -273,7 +336,7 @@ async def test_a_managers_admin_only_change_is_refused_naming_it_and_an_admins_i
 async def test_a_managers_save_of_everything_else_publishes(
     setup: Setup, acme: Acme, sum_task: TaskId, manager: Organiser
 ) -> None:
-    task_yaml = await _task_yaml(acme, sum_task)
+    task_yaml = _task_yaml(acme)
     statement = acme.fake.state.repos[("acme", "spring.sum.task")].files["statement.md"]
 
     result = await _save(
@@ -281,14 +344,18 @@ async def test_a_managers_save_of_everything_else_publishes(
         acme,
         sum_task,
         {
-            "task.yaml": task_yaml.replace(b"value: 2.0", b"value: 3.0") + b"hidden: true\n",
+            "task.yaml": task_yaml.replace(b"time_limit: 2", b"time_limit: 3").replace(
+                b"main: {each: 100}", b"main: {pass: 100, show: verdict}"
+            ),
             "statement.md": statement,
-            "data/testcases/1.in": b"1 2\n",
+            "tests/main/2/input": b"2 2\n",
+            "tests/main/2/answer": b"4\n",
+            "public/notes.txt": b"Read me.\n",
         },
         manager,
     )
 
-    assert isinstance(result, Published)
+    assert isinstance(result, Published), result
     (saved,) = acme.fake.calls_to("save_files")
     assert saved.identity == manager.identity
 
@@ -304,20 +371,19 @@ async def test_a_save_needs_the_manager_role_at_the_task(
     assert await publications.list(setup, bob, sum_task) == ()
 
 
-async def test_a_save_naming_a_missing_file_is_a_draft_and_the_state_recomputes_its_errors(
+async def test_a_group_with_no_tests_is_a_draft_and_the_state_recomputes_its_errors(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     published = await _published(setup, acme, sum_task)
-    task_yaml = await _task_yaml(acme, sum_task)
-    broken = task_yaml.replace(b"value: data/testcases/", b"value: data/hidden/")
+    broken = _with(acme, b"  main: {each: 100}\n", b"  samples: {}\n  main: {each: 100}\n")
 
-    draft = await _save(setup, acme, sum_task, {"task.yaml": broken})
+    draft = await _save(setup, acme, sum_task, broken)
 
     assert isinstance(draft, Draft)
     assert draft.errors == (
         {
-            "path": "inputs.setter[0].value",
-            "message": "There is no file under data/hidden/ in the task.",
+            "path": "test_groups.samples",
+            "message": "There is no folder tests/samples/ with a test in it.",
         },
     )
     assert draft.held_back == ()
@@ -325,7 +391,7 @@ async def test_a_save_naming_a_missing_file_is_a_draft_and_the_state_recomputes_
     (saved,) = acme.fake.calls_to("save_files")
     assert saved.arguments["paths"] == ["task.yaml"]
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
-    assert repo.files["task.yaml"] == broken
+    assert repo.files["task.yaml"] == broken["task.yaml"]
     assert repo.head == draft.version
     assert len(repo.versions) == 1
 
@@ -335,7 +401,7 @@ async def test_a_save_naming_a_missing_file_is_a_draft_and_the_state_recomputes_
     assert state.latest.id == published.publication
 
     fixed = await _save(
-        setup, acme, sum_task, {"data/hidden/1.in": b"1 2\n", "data/hidden/1.ans": b"3\n"}
+        setup, acme, sum_task, {"tests/samples/1/input": b"1 2\n", "tests/samples/1/answer": b"3\n"}
     )
     assert isinstance(fixed, Published)
     assert fixed.number == 2
@@ -344,28 +410,56 @@ async def test_a_save_naming_a_missing_file_is_a_draft_and_the_state_recomputes_
 
 
 @pytest.mark.parametrize(
-    ("change", "path", "named"),
+    ("files", "path", "said"),
     [
+        ({"tests/main/2/input": b"2 2\n"}, "tests/main/2/", "The test main/2 has no answer."),
         (
-            (b"workflow: unicon/classic@v1", b"workflow: unicon/classic@v9"),
-            "workflow",
-            "unicon/classic@v9",
+            {"tests/main/1/notes": b"x\n"},
+            "tests/main/1/notes",
+            "The test main/1 has an entry for no field: notes.",
         ),
-        ((b"workflow: unicon/classic@v1", b"workflow: bob/mine@v1"), "workflow", "bob/mine@v1"),
         (
-            (b"limits:", b"stages:\n  - id: one\n    workflow: unicon/gone@v1\nlimits:"),
-            None,
-            "unicon/gone@v1",
+            {"tests/main/1/answer.txt": b"3\n"},
+            "tests/main/1/",
+            "The test main/1 gives answer twice: answer, answer.txt.",
+        ),
+        (
+            {"tests/other/1/input": b"1 2\n", "tests/other/1/answer": b"3\n"},
+            "tests/other/",
+            "other is a folder of tests/ but not a group in test_groups: list it, or move its "
+            "tests.",
         ),
     ],
-    ids=["no-such-version", "not-shared", "stage-override"],
+    ids=["missing-field", "no-such-field", "field-twice", "unlisted-group"],
 )
-async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_path_naming_it(
+async def test_a_test_out_of_its_layout_is_a_draft_at_its_folder(
+    setup: Setup,
+    acme: Acme,
+    sum_task: TaskId,
+    files: dict[str, bytes],
+    path: str,
+    said: str,
+) -> None:
+    draft = await _save(setup, acme, sum_task, files)
+
+    assert isinstance(draft, Draft)
+    assert [(error["path"], error["message"]) for error in draft.errors] == [(path, said)]
+    assert acme.fake.calls_to("publish") == []
+
+
+@pytest.mark.parametrize(
+    ("change", "named"),
+    [
+        ((b"workflow: unicon/classic@v2", b"workflow: unicon/classic@v9"), "unicon/classic@v9"),
+        ((b"workflow: unicon/classic@v2", b"workflow: bob/mine@v1"), "bob/mine@v1"),
+    ],
+    ids=["no-such-version", "not-shared"],
+)
+async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_line_naming_it(
     setup: Setup,
     acme: Acme,
     sum_task: TaskId,
     change: tuple[bytes, bytes],
-    path: str | None,
     named: str,
 ) -> None:
     bob = AsUser(8, acme.fake.mint(8))
@@ -373,18 +467,58 @@ async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_path_nami
         bob, "bob", "mine", {"workflow.yaml": CLASSIC}, Visibility.PRIVATE
     )
     await acme.fake.workflows.create_workflow_version(bob, mine, "v1")
-    task_yaml = await _task_yaml(acme, sum_task)
 
-    draft = await _save(setup, acme, sum_task, {"task.yaml": task_yaml.replace(*change)})
+    draft = await _save(setup, acme, sum_task, _with(acme, *change))
 
     assert isinstance(draft, Draft)
     (error,) = draft.errors
-    assert error["path"] == (path or "stages[0].workflow")
+    assert error["path"] == "workflow"
     assert "cannot be read" in error["message"]
     assert named in error["message"]
     assert acme.fake.calls_to("publish") == []
     reads = acme.fake.calls_to("read_workflow_file")
     assert {call.identity for call in reads} == {acme.ada.identity}
+
+
+async def test_a_workflow_in_an_old_format_is_refused_at_its_line_for_its_owner_to_retag(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _workflow(acme, "old", OLD_CLASSIC)
+
+    draft = await _save(
+        setup,
+        acme,
+        sum_task,
+        _with(acme, b"workflow: unicon/classic@v2", b"workflow: unicon/old@v1"),
+    )
+
+    assert isinstance(draft, Draft)
+    (error,) = draft.errors
+    assert error["path"] == "workflow"
+    assert error["message"].startswith(
+        "The workflow unicon/old@v1 is not in the current format, so its owner tags a new version: "
+    )
+    assert acme.fake.calls_to("publish") == []
+
+
+async def test_a_workflow_that_does_not_check_as_a_version_is_refused_at_its_line(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _workflow(
+        acme, "broken", CLASSIC.replace(b"steps.compile.binary", b"steps.compile.nothing")
+    )
+
+    draft = await _save(
+        setup,
+        acme,
+        sum_task,
+        _with(acme, b"workflow: unicon/classic@v2", b"workflow: unicon/broken@v1"),
+    )
+
+    assert isinstance(draft, Draft)
+    assert draft.errors
+    assert {error["path"] for error in draft.errors} == {"workflow"}
+    assert all(error["message"].startswith("In unicon/broken@v1, ") for error in draft.errors)
 
 
 @pytest.mark.parametrize(
@@ -396,34 +530,24 @@ async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_path_nami
             "such primitive or workflow at that version, or it is not shared with you.",
         ),
         (
-            b"unicon/classic@v1",
-            "In unicon/custom@v1, steps[0].use: unicon/classic@v1 is a workflow; using a "
-            "workflow as a step comes with feature 10.",
-        ),
-        (
-            b"unicon/odd@v1",
-            "In unicon/custom@v1, steps[0].use: The primitive unicon/odd@v1 declares itself as "
-            "unicon/compile@v1.",
+            b"unicon/classic@v2",
+            "In unicon/custom@v1, steps[0].use: unicon/classic@v2 is not a primitive: a step "
+            "uses a primitive, never a workflow.",
         ),
     ],
-    ids=["no-such-version", "a-workflow", "declares-another"],
+    ids=["no-such-version", "a-workflow"],
 )
 async def test_a_step_whose_use_is_no_primitive_the_organiser_reads_is_an_error_naming_it(
     setup: Setup, acme: Acme, sum_task: TaskId, use: bytes, said: str
 ) -> None:
-    acme.fake.primitives.add("odd", {"v1": PRIMITIVES["compile"]})
-    custom = CLASSIC.replace(b"name: unicon/classic", b"name: unicon/custom").replace(
-        b"use: unicon/compile@v1", b"use: " + use
-    )
-    made = await acme.fake.workflows.create_workflow(
-        PLATFORM, "unicon", "custom", {"workflow.yaml": custom}, Visibility.PUBLIC
-    )
-    await acme.fake.workflows.create_workflow_version(PLATFORM, made, "v1")
-    task_yaml = (await _task_yaml(acme, sum_task)).replace(
-        b"workflow: unicon/classic@v1", b"workflow: unicon/custom@v1"
-    )
+    await _workflow(acme, "custom", CLASSIC.replace(b"use: unicon/compile@v2", b"use: " + use))
 
-    draft = await _save(setup, acme, sum_task, {"task.yaml": task_yaml})
+    draft = await _save(
+        setup,
+        acme,
+        sum_task,
+        _with(acme, b"workflow: unicon/classic@v2", b"workflow: unicon/custom@v1"),
+    )
 
     assert isinstance(draft, Draft)
     assert [(error["path"], error["message"]) for error in draft.errors] == [("workflow", said)]
@@ -432,124 +556,209 @@ async def test_a_step_whose_use_is_no_primitive_the_organiser_reads_is_an_error_
     assert acme.fake.calls_to("publish") == []
 
 
-async def test_an_invalid_task_yaml_and_an_uncovered_input_are_drafts_with_their_paths(
+async def test_a_primitive_in_an_old_format_is_refused_naming_it(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    task_yaml = await _task_yaml(acme, sum_task)
-    invalid = task_yaml.replace(b"type: number\n      value: 2.0", b"type: number\n      value: x")
-    uncovered = task_yaml.replace(
-        b"    - id: memory_limit\n      type: number\n      value: 256\n", b""
+    acme.fake.primitives.add("odd", {"v1": OLD_COMPILE, "v2": PRIMITIVES["compile"]})
+    await _workflow(
+        acme, "custom", CLASSIC.replace(b"use: unicon/compile@v2", b"use: unicon/odd@v1")
     )
 
-    first = await _save(setup, acme, sum_task, {"task.yaml": invalid})
-    second = await _save(setup, acme, sum_task, {"task.yaml": uncovered})
-
-    assert isinstance(first, Draft) and isinstance(second, Draft)
-    assert [error["path"] for error in first.errors] == ["inputs.setter[1].value"]
-    assert [error["path"] for error in second.errors] == ["inputs.setter"]
-    assert "memory_limit is given by neither side" in second.errors[0]["message"]
-    assert acme.fake.calls_to("publish") == []
-
-
-async def test_a_statement_only_save_leaves_the_flag_off_and_a_plan_change_sets_it(
-    setup: Setup, acme: Acme, sum_task: TaskId
-) -> None:
-    await _published(setup, acme, sum_task)
-    task_yaml = await _task_yaml(acme, sum_task)
-
-    text = await _save(setup, acme, sum_task, {"statement.md": b"Clearer.\n"})
-    plan = await _save(
-        setup, acme, sum_task, {"task.yaml": task_yaml.replace(b"value: 2.0", b"value: 3.0")}
-    )
-
-    assert isinstance(text, Published) and isinstance(plan, Published)
-    assert (text.grading_changed, text.changes) == (False, ())
-    assert (plan.grading_changed, plan.changes) == (True, ("plans/default.json changed",))
-    history = await publications.list(setup, acme.ada, sum_task)
-    assert [(entry.number, entry.grading_changed) for entry in history] == [
-        (1, False),
-        (2, False),
-        (3, True),
-    ]
-    assert history[2].changes == ("plans/default.json changed",)
-
-
-async def test_a_named_data_file_and_a_limit_each_set_the_flag(
-    setup: Setup, acme: Acme, sum_task: TaskId
-) -> None:
-    await _published(setup, acme, sum_task)
-
-    added = await _save(
-        setup, acme, sum_task, {"data/testcases/2.in": b"1 2\n", "data/testcases/2.ans": b"3\n"}
-    )
-    same = await _save(setup, acme, sum_task, {"data/testcases/2.in": b"1 2\n"})
-    changed = await _save(setup, acme, sum_task, {"data/testcases/2.in": b"2 3\n"})
-    elsewhere = await _save(setup, acme, sum_task, {"notes/idea.md": b"later\n"})
-    task_yaml = await _task_yaml(acme, sum_task)
-    limit = await _save(
+    draft = await _save(
         setup,
         acme,
         sum_task,
-        {"task.yaml": task_yaml.replace(b"submissions: 50", b"submissions: 9")},
+        _with(acme, b"workflow: unicon/classic@v2", b"workflow: unicon/custom@v1"),
     )
 
-    assert isinstance(added, Published) and isinstance(changed, Published)
-    assert isinstance(same, Published) and isinstance(elsewhere, Published)
-    assert isinstance(limit, Published)
-    assert added.changes == (
-        "plans/default.json changed",
-        "data/testcases/2.ans added",
-        "data/testcases/2.in added",
+    assert isinstance(draft, Draft)
+    (error,) = draft.errors
+    assert error["path"] == "workflow"
+    assert error["message"].startswith(
+        "In unicon/custom@v1, steps[0].use: The primitive unicon/odd@v1 is not in the current "
+        "format; use a later version of it: "
     )
-    assert same.grading_changed is False
-    assert changed.changes == ("data/testcases/2.in changed",)
-    assert elsewhere.grading_changed is False
-    assert limit.changes == ("limits.submissions changed",)
+
+
+async def test_an_invalid_task_yaml_and_an_uncovered_input_are_drafts_with_their_paths(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    invalid = _with(acme, b"time_limit: 2", b"time_limit: x")
+    uncovered = _with(acme, b"  memory_limit: 256\n", b"")
+    given = _with(acme, b"  submission: {label: Your solution}", b"  submission: main.py")
+    unknown = _with(acme, b"  time_limit: 2\n", b"  time_limit: 2\n  speed: 3\n")
+
+    drafts = [
+        await _save(setup, acme, sum_task, files) for files in (invalid, uncovered, given, unknown)
+    ]
+
+    paths = [
+        [error["path"] for error in draft.errors] for draft in drafts if isinstance(draft, Draft)
+    ]
+    assert paths == [
+        ["inputs.time_limit"],
+        ["inputs.memory_limit"],
+        ["inputs.submission"],
+        ["inputs.speed"],
+    ]
+    assert acme.fake.calls_to("publish") == []
+
+
+async def _secret_workflow(acme: Acme) -> None:
+    """`unicon/args@v1`: classic with a text input handed to the run."""
+    await _workflow(
+        acme,
+        "args",
+        CLASSIC.replace(b"  time_limit: number\n", b"  time_limit: number\n  args: text\n").replace(
+            b"      memory_limit: ${{ inputs.memory_limit }}\n",
+            b"      memory_limit: ${{ inputs.memory_limit }}\n      args: ${{ inputs.args }}\n",
+        ),
+    )
+
+
+async def test_a_secret_is_refused_since_the_org_holds_none_and_a_plain_text_publishes(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _secret_workflow(acme)
+    task_yaml = _task_yaml(acme).replace(
+        b"workflow: unicon/classic@v2", b"workflow: unicon/args@v1"
+    )
+    secret = task_yaml.replace(b"  time_limit: 2\n", b"  time_limit: 2\n  args: {secret: k}\n")
+    plain = task_yaml.replace(b"  time_limit: 2\n", b"  time_limit: 2\n  args: '-v'\n")
+
+    refused = await _save(setup, acme, sum_task, {"task.yaml": secret})
+    published = await _save(setup, acme, sum_task, {"task.yaml": plain})
+
+    assert isinstance(refused, Draft)
+    assert [(error["path"], error["message"]) for error in refused.errors] == [
+        ("inputs.args", "The org holds no secret named k.")
+    ]
+    assert isinstance(published, Published), published
+
+
+async def test_scoring_changes_never_change_grading_and_a_test_or_a_limit_does(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _published(setup, acme, sum_task)
+
+    text = await _save(setup, acme, sum_task, {"statement.md": b"Clearer.\n"})
+    rules = await _save(setup, acme, sum_task, _with(acme, b"{each: 100}", b"{pass: 100}"))
+    caps = await _save(
+        setup,
+        acme,
+        sum_task,
+        _with(
+            acme, b"test_groups:", b"submissions: {max: 9, rate: {count: 2, per: 60}}\ntest_groups:"
+        ),
+    )
+    public = await _save(setup, acme, sum_task, {"public/hint.txt": b"Add.\n"})
+    limit = await _save(setup, acme, sum_task, _with(acme, b"time_limit: 2", b"time_limit: 3"))
+    edited = await _save(setup, acme, sum_task, {"tests/main/1/input": b"2 3\n"})
+    same = await _save(setup, acme, sum_task, {"tests/main/1/input": b"2 3\n"})
+    added = await _save(
+        setup, acme, sum_task, {"tests/main/2/input": b"1 1\n", "tests/main/2/answer": b"2\n"}
+    )
+
+    results = [
+        result
+        for result in (text, rules, caps, public, limit, edited, same, added)
+        if isinstance(result, Published)
+    ]
+    assert [(result.grading_changed, result.changes) for result in results] == [
+        (False, ()),
+        (False, ()),
+        (False, ()),
+        (False, ()),
+        (True, ("plans/plan.json changed",)),
+        (True, ("tests/main/1/input changed",)),
+        (False, ()),
+        (
+            True,
+            (
+                "plans/plan.json changed",
+                "tests/main/2/answer added",
+                "tests/main/2/input added",
+            ),
+        ),
+    ]
+    history = await publications.list(setup, acme.ada, sum_task)
+    assert [entry.grading_changed for entry in history] == [
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+        False,
+        True,
+    ]
+    assert history[5].changes == ("plans/plan.json changed",)
 
 
 @pytest.fixture
 async def running(setup: Setup, acme: Acme, sum_task: TaskId) -> TaskId:
-    """The task published once, in a contest that is running now."""
-    current = await acme.fake.content.read_file(PLATFORM, SPRING, "contest.yaml")
-    await acme.fake.content.write_file(
-        PLATFORM, SPRING, "contest.yaml", RUNNING, message="Run", expected=current.token
-    )
+    """The task published once, in a contest that has started."""
+    await write_contest(acme.fake, RUNNING.format(state="published"))
     await _published(setup, acme, sum_task)
     return sum_task
 
 
-async def test_a_grading_change_while_the_contest_runs_asks_first_and_writes_nothing(
-    setup: Setup, acme: Acme, running: TaskId
+@pytest.mark.parametrize(
+    ("change", "listed"),
+    [
+        ((b"time_limit: 2", b"time_limit: 1"), ["plans/plan.json changed"]),
+        (None, ["tests/main/1/input changed"]),
+    ],
+    ids=["limit", "test"],
+)
+async def test_a_grading_change_once_the_contest_has_started_asks_first_and_writes_nothing(
+    setup: Setup,
+    acme: Acme,
+    running: TaskId,
+    change: tuple[bytes, bytes] | None,
+    listed: list[str],
 ) -> None:
-    task_yaml = await _task_yaml(acme, running)
-    faster = {"task.yaml": task_yaml.replace(b"value: 2.0", b"value: 1.0")}
+    files = _with(acme, *change) if change else {"tests/main/1/input": b"5 5\n"}
 
     with pytest.raises(ConfirmationRequired) as asked:
-        await _save(setup, acme, running, faster)
+        await _save(setup, acme, running, files)
 
     assert asked.value.code == "confirmation_required"
-    assert asked.value.extra["changes"] == ["plans/default.json changed"]
+    assert asked.value.extra["changes"] == listed
     assert _written(acme) == []
-    confirmed = await _save(setup, acme, running, faster, confirm=True)
+    confirmed = await _save(setup, acme, running, files, confirm=True)
     assert isinstance(confirmed, Published)
-    assert (confirmed.number, confirmed.grading_changed) == (2, True)
+    assert (confirmed.number, confirmed.grading_changed, list(confirmed.changes)) == (
+        2,
+        True,
+        listed,
+    )
+
+
+async def test_a_scoring_change_once_the_contest_has_started_publishes_without_asking(
+    setup: Setup, acme: Acme, running: TaskId
+) -> None:
+    rules = await _save(setup, acme, running, _with(acme, b"{each: 100}", b"{each: 60, pass: 40}"))
+    caps = await _save(
+        setup, acme, running, _with(acme, b"test_groups:", b"submissions: {max: 3}\ntest_groups:")
+    )
+    text = await _save(setup, acme, running, {"statement.md": b"Typo fixed.\n"})
+
+    for result in (rules, caps, text):
+        assert isinstance(result, Published), result
+        assert (result.grading_changed, result.changes) == (False, ())
 
 
 async def test_a_grading_change_kept_as_a_draft_is_written_and_not_published(
     setup: Setup, acme: Acme, running: TaskId
 ) -> None:
-    task_yaml = await _task_yaml(acme, running)
-
     kept = await _save(
-        setup,
-        acme,
-        running,
-        {"task.yaml": task_yaml.replace(b"value: 2.0", b"value: 1.0")},
-        keep_as_draft=True,
+        setup, acme, running, _with(acme, b"time_limit: 2", b"time_limit: 1"), keep_as_draft=True
     )
 
     assert isinstance(kept, Draft)
-    assert (kept.errors, kept.held_back) == ((), ("plans/default.json changed",))
+    assert (kept.errors, kept.held_back) == ((), ("plans/plan.json changed",))
     assert _written(acme) == ["save_files"]
     (saved,) = acme.fake.calls_to("save_files")
     assert saved.arguments["paths"] == ["task.yaml"]
@@ -557,7 +766,7 @@ async def test_a_grading_change_kept_as_a_draft_is_written_and_not_published(
     assert (state.draft, state.errors) == (True, ())
     published = await publications.save(setup, acme.ada, running, {}, confirm=True)
     assert isinstance(published, Published)
-    assert published.changes == ("plans/default.json changed",)
+    assert published.changes == ("plans/plan.json changed",)
 
 
 @pytest.mark.parametrize("confirm", [False, True], ids=["alone", "with-confirm"])
@@ -583,24 +792,14 @@ async def test_a_save_kept_as_a_draft_never_publishes_whatever_else_holds(
     assert (state.draft, state.errors) == (True, ())
 
 
-async def test_a_text_only_save_while_the_contest_runs_publishes_without_asking(
-    setup: Setup, acme: Acme, running: TaskId
+@pytest.mark.parametrize("state", ["draft", "archived"])
+async def test_outside_a_started_contest_a_grading_change_publishes_without_asking(
+    setup: Setup, acme: Acme, sum_task: TaskId, state: str
 ) -> None:
-    result = await _save(setup, acme, running, {"statement.md": b"Typo fixed.\n"})
-
-    assert isinstance(result, Published)
-    assert result.grading_changed is False
-
-
-async def test_outside_a_running_contest_a_grading_change_publishes_without_asking(
-    setup: Setup, acme: Acme, sum_task: TaskId
-) -> None:
+    await write_contest(acme.fake, RUNNING.format(state=state))
     await _published(setup, acme, sum_task)
-    task_yaml = await _task_yaml(acme, sum_task)
 
-    result = await _save(
-        setup, acme, sum_task, {"task.yaml": task_yaml.replace(b"value: 2.0", b"value: 1.0")}
-    )
+    result = await _save(setup, acme, sum_task, _with(acme, b"time_limit: 2", b"time_limit: 1"))
 
     assert isinstance(result, Published)
     assert result.grading_changed is True
@@ -609,4 +808,120 @@ async def test_outside_a_running_contest_a_grading_change_publishes_without_aski
         for call in acme.fake.calls_to("read_file")
         if call.arguments["place"] == ContestId("acme/spring")
     ]
-    assert contest_reads == [PLATFORM]
+    assert PLATFORM in contest_reads
+    assert set(contest_reads) == {PLATFORM}
+
+
+async def _graded(setup: Setup, acme: Acme, entered: Entered) -> None:
+    """bob's submission to the task, its grading done."""
+    made = await upload(setup, acme.fake, entered.session, entered.task, b"print(3)\n")
+    await submissions.submit(
+        setup,
+        entered.session,
+        entered.task,
+        {
+            "submission": SubmittedInput(uploads=(made.id,)),
+            "language": SubmittedInput(value="python"),
+        },
+        idempotency_key="key-0001-aaaa",
+    )
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(update(Grading).values(status=GradingStatus.DONE))
+    acme.fake.reset_calls()
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "refused"),
+    [
+        (b"{each: 100}", b"{each: 100, show: after_close}", "main was shown always"),
+        (b"{each: 100}", b"{pass: 100, show: verdict}", "main was shown always"),
+        (
+            b"{pass: 100, show: verdict}",
+            b"{pass: 100, show: after_close}",
+            "main was shown verdict",
+        ),
+        (b"{each: 100, show: after_close}", b"{each: 100}", None),
+        (b"{each: 100, show: after_close}", b"{pass: 100, show: verdict}", None),
+        (b"{pass: 100, show: verdict}", b"{pass: 100}", None),
+    ],
+    ids=[
+        "always-to-after-close",
+        "always-to-verdict",
+        "verdict-to-after-close",
+        "after-close-to-always",
+        "after-close-to-verdict",
+        "verdict-to-always",
+    ],
+)
+async def test_once_graded_what_was_shown_is_not_hidden_again_and_the_other_way_is_allowed(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    before: bytes,
+    after: bytes,
+    refused: str | None,
+) -> None:
+    if before != b"{each: 100}":
+        first = await _save(setup, acme, entered.task, _with(acme, b"{each: 100}", before))
+        assert isinstance(first, Published), first
+    await _graded(setup, acme, entered)
+
+    result = await _save(setup, acme, entered.task, _with(acme, before, after))
+
+    if refused is None:
+        assert isinstance(result, Published), result
+        return
+    assert isinstance(result, Draft)
+    assert [(error["path"], error["message"]) for error in result.errors] == [
+        ("test_groups.main.show", f"{refused}: what was shown cannot be hidden again.")
+    ]
+    assert acme.fake.calls_to("publish") == []
+
+
+async def test_before_any_grading_is_done_a_group_may_be_hidden(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    result = await _save(
+        setup, acme, entered.task, _with(acme, b"{each: 100}", b"{each: 100, show: after_close}")
+    )
+
+    assert isinstance(result, Published), result
+
+
+NEW_GROUP = {"tests/large/1/input": b"5 6\n", "tests/large/1/answer": b"11\n"}
+
+
+async def test_once_graded_a_new_group_must_say_its_show(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _graded(setup, acme, entered)
+    unsaid = _with(acme, b"  main: {each: 100}\n", b"  main: {each: 100}\n  large: {each: 50}\n")
+
+    draft = await _save(setup, acme, entered.task, {**unsaid, **NEW_GROUP})
+    said = await _save(
+        setup,
+        acme,
+        entered.task,
+        {"task.yaml": unsaid["task.yaml"].replace(b"{each: 50}", b"{each: 50, show: always}")},
+        confirm=True,
+    )
+
+    assert isinstance(draft, Draft)
+    assert [(error["path"], error["message"]) for error in draft.errors] == [
+        (
+            "test_groups.large",
+            "large is new and states no show: say always to show it at once, or verdict or "
+            "after_close.",
+        )
+    ]
+    assert isinstance(said, Published), said
+
+
+async def test_before_any_grading_is_done_a_new_group_needs_no_show(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    added = _with(acme, b"  main: {each: 100}\n", b"  main: {each: 100}\n  large: {each: 50}\n")
+
+    result = await _save(setup, acme, entered.task, {**added, **NEW_GROUP}, confirm=True)
+
+    assert isinstance(result, Published), result
