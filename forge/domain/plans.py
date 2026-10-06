@@ -41,10 +41,6 @@ Checking every type, a workflow used as a step, and subtask overrides are
 feature 10's. Before it compiles, the compiler checks that every input the
 workflow declares is given by exactly one side of the task, with the type the
 workflow declares.
-
-`HARNESS_IMAGE` is the harness image of runner release v0.3.0, from that
-release's `images.json`: what `UNICON_HARNESS_IMAGE` is unless a deployment
-sets it, and what every plan names.
 """
 
 import json
@@ -72,11 +68,6 @@ from forge.domain.primitives import (
 )
 from forge.domain.workflow_definition import InputType, WorkflowDefinition, WorkflowStep
 from forge.domain.yaml_models import InvalidDefinition, Model, Problem, is_number, path_text
-
-HARNESS_IMAGE = (
-    "ghcr.io/uniconhq/harness"
-    "@sha256:2f73048019369c3ce58c9165e8ca2f45dbdc6815792ca2eb88c922896f7d8400"
-)
 
 SCHEMA_VERSION: Literal[4] = 4
 STEP_ID = r"^[a-z0-9][a-z0-9_-]*$"

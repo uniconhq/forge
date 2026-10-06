@@ -1,15 +1,19 @@
 """The rules under uploads and submissions, with no database: a primitive's
-declaration reads or is refused at its path; a file name, an `accept` list
-and the parts of a large file; what a submission lays out and what it
-refuses, input by input; the note its protected version carries; and the
-two secrets a grading run is handed, derived and never stored.
+declaration reads or is refused at its path, and the three the built-in
+workflow uses keep the contract and are their repos' own; a file name, an
+`accept` list and the parts of a large file; what a submission lays out,
+keeping the contract, and what it refuses, input by input; the note its
+protected version carries; and the two secrets a grading run is handed,
+derived and never stored.
 """
 
 import json
 import uuid
 
 import pytest
+import yaml
 
+from forge.domain.contracts import violation
 from forge.domain.definitions import parse_task, starter_task
 from forge.domain.errors import InvalidInputs
 from forge.domain.grading import callback_token, envelope_key, token_hash
@@ -32,6 +36,7 @@ from forge.domain.uploads import (
 )
 from forge.domain.yaml_models import InvalidDefinition
 from forge.testing import PRIMITIVES
+from tests.conftest import sibling
 
 DIGEST = "sha256:" + "a" * 64
 BASE = f"""\
@@ -57,6 +62,20 @@ def test_the_three_primitives_read_as_the_contract_declares_them() -> None:
     assert compile_.outputs["binary"].optional is True
     assert run.limits_from["time_ms"].input == "time_limit"
     assert check.outputs["outcome"].type is PortType.OUTCOME
+
+
+@pytest.mark.parametrize("name", list(PRIMITIVES))
+def test_each_primitive_keeps_the_contract_as_written_and_as_read(name: str) -> None:
+    declared = parse_primitive(PRIMITIVES[name])
+    assert violation(yaml.safe_load(PRIMITIVES[name]), "primitive") is None
+    assert violation(declared.model_dump(mode="json", exclude_none=True), "primitive") is None
+
+
+@pytest.mark.parametrize("name", list(PRIMITIVES))
+def test_each_primitive_is_its_repos_declaration_with_the_image_written_in(name: str) -> None:
+    published = sibling(f"primitive-{name}", "primitive.yaml").read_text(encoding="utf-8")
+    lines = PRIMITIVES[name].decode().splitlines(keepends=True)
+    assert "".join(line for line in lines if not line.startswith("image: ")) == published
 
 
 @pytest.mark.parametrize(
@@ -201,6 +220,7 @@ def test_a_submission_lays_out_its_files_and_names_them_in_submission_json() -> 
         },
     }
     assert layout.document.endswith(b"}\n")
+    assert violation(json.loads(layout.document), "submission") is None
 
 
 @pytest.mark.parametrize(
