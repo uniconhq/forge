@@ -109,13 +109,12 @@ async def _task(
                 continue
             try:
                 async with ctx.db.begin_nested():
-                    rows = gradings.queue_submission(
+                    gradings.queue_submission(
                         ctx,
                         task=task.id,
                         workspace=workspace,
                         submission=made,
                         publication=task.publication,
-                        definition=task.definition,
                         key=made.key,
                         at=made.at,
                     )
@@ -125,12 +124,6 @@ async def _task(
                     "reconcile.key_taken", task=task.id, workspace=workspace, number=made.number
                 )
                 continue
-            inserted += len(rows)
-            log.info(
-                "reconcile.graded",
-                task=task.id,
-                workspace=workspace,
-                number=made.number,
-                gradings=len(rows),
-            )
+            inserted += 1
+            log.info("reconcile.graded", task=task.id, workspace=workspace, number=made.number)
     return seen, inserted

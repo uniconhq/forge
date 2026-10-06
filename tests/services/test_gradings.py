@@ -1,18 +1,22 @@
-"""A grading from its queued row to its verdict, over a real Postgres and the
-fake. The submit that makes a grading starts its run once it commits, once,
-as the org account, pinned to the platform pool, with the variables the
-extension checks; a start that fails ends the grading in a system error
-saying why. The extension answers the three steps only for a signed request
-naming a grading being started with those variables. The envelope is served
+"""A grading from its queued row to its result, over a real Postgres and the
+fake. The submit that makes a grading, one per submission, starts its run
+once it commits, once, as the org account, pinned to the platform pool, with
+the variables the extension checks; a start that fails ends the grading in a
+system error saying why. The extension answers the three steps only for a
+signed request naming a grading being started with those variables. The
+envelope (version 5, no stage, no secrets while no org holds one) is served
 once, with its key, to a run the CI holds that has not begun, and that fetch
 starts the run's clock. The callback takes reports only under the grading's
-own token, keeps a verdict that matches the schema and turns any other into
-a system error. A run that has not reported by its deadline reads as a
-system error, and so does one whose run the CI has lost, found by asking
-the CI when the grading is read, a few times a minute at most, while one
-still waiting in its queue is left alone. The organiser cancels, retries
-and rejudges, a stuck grading included, whose old run is cancelled; and
-the operator's reconcile gives a submission without gradings its rows.
+own token, keeps a result that matches the schema exactly as it was written,
+its numbers included, makes a run stopped by a system error one with the
+result's error, and turns any other result into a system error saying why.
+A run that has not reported by its deadline reads as a system error, and so
+does one whose run the CI has lost, found by asking the CI when the grading
+is read, a few times a minute at most, while one still waiting in its queue
+is left alone; its contestant is told it is still being graded. The
+organiser cancels, retries and rejudges, a stuck grading included, whose old
+run is cancelled; and the operator's reconcile gives a submission without
+gradings its rows.
 """
 
 import asyncio
@@ -20,12 +24,14 @@ import json
 import uuid
 from collections.abc import Callable, Coroutine
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
 from sqlalchemy import delete, select, update
 
 from forge.db.tables import Grading
+from forge.domain import exact_json
 from forge.domain.contracts import violation
 from forge.domain.errors import (
     CiRequestRefused,
@@ -34,7 +40,6 @@ from forge.domain.errors import (
     GradingClosed,
     InvalidCallback,
     InvalidToken,
-    LogTooLarge,
     NotFound,
     Unavailable,
     WrongStatus,
@@ -47,7 +52,6 @@ from forge.domain.grading import (
     NEVER_STARTED,
     OVERDUE,
     REPORT_ALLOWANCE,
-    RUN_LOG_MAX,
     START_WAIT,
     GradingRun,
     GradingStatus,
@@ -58,7 +62,7 @@ from forge.domain.grading import (
 )
 from forge.domain.identity import PLATFORM, AsOrgAccount, User
 from forge.domain.ids import OrgId, RunId
-from forge.domain.plans import Plan
+from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
@@ -78,7 +82,10 @@ async def _submit(setup: Setup, acme: Acme, entered: Entered, key: str = KEY) ->
         setup,
         entered.session,
         entered.task,
-        {"submission": SubmittedInput(uploads=(made.id,), language="python")},
+        {
+            "submission": SubmittedInput(uploads=(made.id,)),
+            "language": SubmittedInput(value="python"),
+        },
         idempotency_key=key,
     )
     return (await _rows(setup))[-1]
@@ -161,24 +168,26 @@ def _held(acme: Acme, scope: Scope, role: Role) -> Organiser:
     )
 
 
-def _verdict(envelope: dict[str, Any], **changes: Any) -> dict[str, Any]:
-    verdict = {
-        "schema_version": 4,
-        "outcome": "accepted",
-        "metrics": {"points": 1},
-        "tests": [
-            {"id": "1", "outcome": "accepted", "time_ms": 12, "memory_kb": 900, "metrics": {}}
-        ],
-        "summary": "1 of 1 tests accepted.",
-        "log": envelope["log_put"].split("?", 1)[0],
+def _result(envelope: dict[str, Any], **changes: Any) -> dict[str, Any]:
+    result = {
+        "schema_version": 5,
+        "stopped": None,
+        "tests": [{"test": "main/1", "outcome": "accepted", "values": {"time_ms": 12}}],
+        "values": {"log": ""},
+        "run_log": envelope["log_put"].split("?", 1)[0],
+        "error": None,
     }
-    verdict.update(changes)
-    return verdict
+    result.update(changes)
+    return result
+
+
+def _finished(result: dict[str, Any]) -> dict[str, Any]:
+    return {"event": "finished", "result": result}
 
 
 async def _report(setup: Setup, row: Grading, document: dict[str, Any]) -> GradingStatus:
     return await runs.callback(
-        setup, row.id, f"Bearer {_token(setup, row)}", json.dumps(document).encode()
+        setup, row.id, f"Bearer {_token(setup, row)}", exact_json.dumps(document).encode()
     )
 
 
@@ -370,7 +379,7 @@ async def test_the_envelope_is_the_runs_served_once_and_its_fetch_starts_the_clo
     async with setup.unit_of_work() as ctx:
         [publication] = await ctx.forge.workspaces.list_publications(entered.task)
         found = await ctx.forge.content.read_file(
-            PLATFORM, entered.task, "plans/default.json", at=publication.version
+            PLATFORM, entered.task, PLAN_PATH, at=publication.version
         )
     wall = wall_seconds(Plan.from_bytes(found.content))
     assert document["limits"] == {"wall_seconds": wall}
@@ -387,7 +396,8 @@ async def test_the_envelope_is_the_runs_served_once_and_its_fetch_starts_the_clo
         "submission": "/woodpecker/submission",
     }
     assert document["submission"]["repo"] == "spring.sum.u8.sub"
-    assert (document["stage"], document["attempt"]) == ("default", 1)
+    assert "stage" not in document
+    assert (document["schema_version"], document["attempt"], document["secrets"]) == (5, 1, {})
     acme.fake.objects.put(document["log_put"], b"the log")
     assert acme.fake.objects.objects[f"logs/{row.id}/1.log"] == b"the log"
 
@@ -429,15 +439,16 @@ async def test_a_run_that_does_not_report_by_its_deadline_reads_as_a_system_erro
 
     (after,) = await gradings.list(setup, manager, entered.task)
     assert (after.status, after.error) == (GradingStatus.SYSTEM_ERROR, OVERDUE)
-    [result] = (await submissions.one(setup, entered.session, entered.task, 1)).gradings
-    assert result.status == GradingStatus.SYSTEM_ERROR
+    # The contestant is told it is still being graded until staff end it.
+    result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
+    assert result is not None and result.status == GradingStatus.RUNNING
     with pytest.raises(GradingClosed):
-        await _report(setup, row, {"event": "finished", "verdict": _verdict(envelope)})
+        await _report(setup, row, _finished(_result(envelope)))
     retried = await gradings.retry(setup, manager, row.id)
     assert retried.attempt == 2
 
 
-async def test_a_valid_verdict_lands_on_the_row_with_its_log_and_the_contestant_reads_it(
+async def test_a_valid_result_lands_on_the_row_with_its_log_and_the_contestant_reads_it(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     row, envelope = await _running(setup, acme, entered)
@@ -449,84 +460,134 @@ async def test_a_valid_verdict_lands_on_the_row_with_its_log_and_the_contestant_
         == GradingStatus.RUNNING
     )
     assert (await _row(setup, row.id)).progress == {"step": "run", "done": 3, "total": 10}
-    verdict = _verdict(envelope)
-    assert await _report(setup, row, {"event": "finished", "verdict": verdict}) == (
-        GradingStatus.DONE
-    )
-    assert await _report(setup, row, {"event": "finished", "verdict": verdict}) == (
-        GradingStatus.DONE
-    )
+    result = _result(envelope)
+    assert await _report(setup, row, _finished(result)) == GradingStatus.DONE
+    assert await _report(setup, row, _finished(result)) == GradingStatus.DONE
 
     after = await _row(setup, row.id)
-    assert (after.status, after.verdict, after.log_key) == (
+    assert (after.status, after.result, after.log_key, after.error) == (
         GradingStatus.DONE,
-        verdict,
+        result,
         f"logs/{row.id}/1.log",
+        None,
     )
-    mine = await submissions.one(setup, entered.session, entered.task, 1)
-    [result] = mine.gradings
-    assert (result.status, result.outcome, result.metrics, result.log) == (
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    (listed,) = await gradings.list(setup, manager, entered.task)
+    assert (listed.status, listed.result, listed.log) == (GradingStatus.DONE, result, True)
+    mine = (await submissions.one(setup, entered.session, entered.task, 1)).grading
+    assert mine is not None
+    assert (mine.status, mine.stopped, mine.outcome, mine.values) == (
         GradingStatus.DONE,
+        None,
         "accepted",
-        {"points": 1},
-        True,
+        {"log": ""},
     )
-    assert await submissions.run_log(setup, entered.session, entered.task, 1) == b"compile ok\n"
+    [main] = mine.groups
+    assert (main.group, main.outcome, main.tests) == (
+        "main",
+        "accepted",
+        ({"test": "main/1", "outcome": "accepted", "values": {"time_ms": 12}},),
+    )
 
 
-async def test_a_run_log_over_the_ceiling_is_refused_and_a_failing_store_is_not_named(
-    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    row, envelope = await _running(setup, acme, entered)
-    await _report(setup, row, {"event": "finished", "verdict": _verdict(envelope)})
-    session, task = entered.session, entered.task
-    acme.fake.objects.put(envelope["log_put"], b"x" * RUN_LOG_MAX)
-    assert len(await submissions.run_log(setup, session, task, 1)) == RUN_LOG_MAX
-
-    acme.fake.objects.put(envelope["log_put"], b"x" * (RUN_LOG_MAX + 1))
-    with pytest.raises(LogTooLarge) as refused:
-        await submissions.run_log(setup, session, task, 1)
-    assert refused.value.extra == {"limit": RUN_LOG_MAX}
-
-    async def down(*args: Any, **kwargs: Any) -> Any:
-        raise Unavailable("the store answered 503 (SlowDown)")
-
-    monkeypatch.setattr(acme.fake.objects, "read", down)
-    with pytest.raises(Unavailable) as failed:
-        await submissions.run_log(setup, session, task, 1)
-    assert failed.value.detail == submissions.LOG_STORE_UNAVAILABLE
-
-
-async def test_a_malformed_verdict_leaves_the_grading_in_system_error(
+async def test_a_results_numbers_are_kept_exactly_as_the_run_wrote_them(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     row, envelope = await _running(setup, acme, entered)
-
-    status = await _report(
-        setup, row, {"event": "finished", "verdict": _verdict(envelope, outcome="great")}
+    tenth, over_one = Decimal("0.1"), Decimal("1.0000000000000000001")
+    result = _result(
+        envelope,
+        tests=[
+            {"test": "main/1", "outcome": "accepted", "values": {"score": over_one, "time_ms": 3}}
+        ],
+        values={"fraction": tenth},
     )
+    body = exact_json.dumps(_finished(result)).encode()
+    assert b"1.0000000000000000001" in body and b"0.1" in body
+
+    status = await runs.callback(setup, row.id, f"Bearer {_token(setup, row)}", body)
+
+    assert status == GradingStatus.DONE
+    kept = (await _row(setup, row.id)).result
+    assert kept is not None
+    [test] = kept["tests"]
+    assert test["values"] == {"score": over_one, "time_ms": 3}
+    assert isinstance(test["values"]["score"], Decimal) and test["values"]["score"] > 1
+    assert isinstance(test["values"]["time_ms"], int)
+    assert kept["values"] == {"fraction": tenth}
+    assert isinstance(kept["values"]["fraction"], Decimal)
+    assert str(kept["values"]["fraction"]) == "0.1"
+    # The same result sent again, after its answer was lost, is the same one.
+    assert await runs.callback(setup, row.id, f"Bearer {_token(setup, row)}", body) == (
+        GradingStatus.DONE
+    )
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"stopped": "great"},
+        {"schema_version": 4},
+        {"tests": [{"test": "main/1", "outcome": "partial", "values": {}}]},
+        {"tests": [{"test": "1", "outcome": "accepted", "values": {}}]},
+        {"tests": [{"test": "main/1", "outcome": "system_error", "values": {}}]},
+        {"stopped": "system_error"},
+        {"error": "said with no stop"},
+        {"verdict": "accepted"},
+    ],
+)
+async def test_a_malformed_result_leaves_the_grading_in_system_error_saying_why(
+    setup: Setup, acme: Acme, entered: Entered, broken: dict[str, Any]
+) -> None:
+    row, envelope = await _running(setup, acme, entered)
+
+    status = await _report(setup, row, _finished(_result(envelope, **broken)))
 
     after = await _row(setup, row.id)
     assert status == GradingStatus.SYSTEM_ERROR
-    assert (after.status, after.verdict) == (GradingStatus.SYSTEM_ERROR, None)
-    assert after.error is not None and "verdict.schema.json" in after.error
-    with pytest.raises(NotFound):
-        await submissions.run_log(setup, entered.session, entered.task, 1)
+    assert (after.status, after.result, after.log_key) == (GradingStatus.SYSTEM_ERROR, None, None)
+    assert after.error is not None and after.error.startswith(
+        "The result does not match result.schema.json"
+    )
 
 
-async def test_a_system_error_verdict_is_kept_as_one(
+async def test_a_finished_report_without_a_result_is_no_report(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     row, envelope = await _running(setup, acme, entered)
-    verdict = _verdict(
-        envelope, outcome="system_error", metrics={}, tests=[], summary="the plan broke"
+
+    with pytest.raises(InvalidCallback):
+        await _report(setup, row, {"event": "finished", "verdict": _result(envelope)})
+
+    assert (await _row(setup, row.id)).status == GradingStatus.RUNNING
+
+
+async def test_a_run_stopped_by_a_system_error_is_kept_as_one_with_its_error(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    row, envelope = await _running(setup, acme, entered)
+    result = _result(
+        envelope,
+        stopped="system_error",
+        tests=[{"test": "main/1", "outcome": "skipped", "values": {}}],
+        values={},
+        error="The step check wrote 1.5 for fraction, above its bound 1.",
     )
 
-    assert await _report(setup, row, {"event": "finished", "verdict": verdict}) == (
-        GradingStatus.SYSTEM_ERROR
-    )
+    assert await _report(setup, row, _finished(result)) == GradingStatus.SYSTEM_ERROR
+
     after = await _row(setup, row.id)
-    assert (after.verdict, after.error) == (verdict, "the plan broke")
+    assert (after.status, after.result, after.error) == (
+        GradingStatus.SYSTEM_ERROR,
+        result,
+        "The step check wrote 1.5 for fraction, above its bound 1.",
+    )
+    mine = (await submissions.one(setup, entered.session, entered.task, 1)).grading
+    assert mine is not None
+    assert (mine.status, mine.stopped, mine.groups) == (GradingStatus.RUNNING, None, ())
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    (listed,) = await gradings.list(setup, manager, entered.task)
+    assert (listed.status, listed.error) == (GradingStatus.SYSTEM_ERROR, after.error)
 
 
 async def test_a_report_needs_this_gradings_token(
@@ -561,7 +622,7 @@ async def test_a_report_is_refused_once_the_grading_takes_none(
 
     clock.set(running.deadline_at)
     with pytest.raises(GradingClosed):
-        await _report(setup, row, {"event": "finished", "verdict": _verdict(envelope)})
+        await _report(setup, row, _finished(_result(envelope)))
 
 
 async def test_an_organiser_cancels_a_grading_at_the_ci_too(
@@ -608,7 +669,7 @@ async def test_a_retry_makes_a_new_attempt_and_keeps_the_old(
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
     with pytest.raises(WrongStatus):
         await gradings.retry(setup, manager, row.id)
-    await _report(setup, row, {"event": "finished", "verdict": _verdict(envelope)})
+    await _report(setup, row, _finished(_result(envelope)))
 
     retried = await gradings.retry(setup, manager, row.id)
 
@@ -619,11 +680,12 @@ async def test_a_retry_makes_a_new_attempt_and_keeps_the_old(
     )
     assert (await _row(setup, retried.id)).status == GradingStatus.DISPATCHED
     old, new = await _rows(setup)
-    assert (old.id, old.status, old.verdict) == (row.id, GradingStatus.DONE, _verdict(envelope))
+    assert (old.id, old.status, old.result) == (row.id, GradingStatus.DONE, _result(envelope))
     assert new.id == retried.id and new.idempotency_key is None
     with pytest.raises(Conflict):
         await gradings.retry(setup, manager, row.id)
-    [result] = (await submissions.one(setup, entered.session, entered.task, 1)).gradings
+    result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
+    assert result is not None
     assert (result.attempt, result.status) == (2, GradingStatus.DISPATCHED)
 
 
@@ -631,7 +693,7 @@ async def test_a_rejudge_grades_every_submission_again_against_the_current_publi
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
     first, envelope = await _running(setup, acme, entered)
-    await _report(setup, first, {"event": "finished", "verdict": _verdict(envelope)})
+    await _report(setup, first, _finished(_result(envelope)))
     clock.advance(timedelta(seconds=31))
     second = await _submit(setup, acme, entered, key="key-0002-bbbb")
     republished = await publish(setup, acme, entered.task, b"\n")
@@ -652,7 +714,7 @@ async def test_a_rejudge_grades_every_submission_again_against_the_current_publi
         (2, 2, GradingStatus.DISPATCHED),
     ]
     assert {row.publication_id for row in rows if row.attempt == 2} == {republished.publication}
-    assert rows[0].verdict == _verdict(envelope)
+    assert rows[0].result == _result(envelope)
     again = await gradings.rejudge(setup, manager, entered.task)
     assert (again.queued, again.left_running) == (0, 2)
     with pytest.raises(Forbidden):
@@ -753,7 +815,8 @@ async def test_a_run_still_waiting_in_the_queue_is_left_alone_however_long(
     assert acme.fake.calls_to("run_state") == []
     clock.advance(timedelta(minutes=20))
 
-    [result] = (await submissions.one(setup, entered.session, entered.task, 1)).gradings
+    result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
+    assert result is not None
     (listed,) = await gradings.list(setup, manager, entered.task)
 
     assert result.status == GradingStatus.DISPATCHED
@@ -770,10 +833,12 @@ async def test_a_run_the_ci_lost_reads_as_a_system_error_saying_so_and_nothing_i
     acme.fake.state.runs[run].ci_state = RunState.LOST
     clock.advance(LOST_CHECK_AFTER)
 
-    [result] = (await submissions.one(setup, entered.session, entered.task, 1)).gradings
+    result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
+    assert result is not None
     (listed,) = await gradings.list(setup, manager, entered.task)
 
-    assert result.status == GradingStatus.SYSTEM_ERROR
+    # Its contestant is told it is still being graded until staff end it.
+    assert result.status == GradingStatus.RUNNING
     assert (listed.status, listed.error) == (GradingStatus.SYSTEM_ERROR, LOST)
     after = await _row(setup, row.id)
     assert (after.status, after.error) == (GradingStatus.DISPATCHED, None)
@@ -806,7 +871,8 @@ async def test_a_ci_that_does_not_say_where_a_run_is_loses_nothing(
 
     monkeypatch.setattr(acme.fake.grading, "run_state", silent)
 
-    [result] = (await submissions.one(setup, entered.session, entered.task, 1)).gradings
+    result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
+    assert result is not None
     assert result.status == GradingStatus.DISPATCHED
 
 
