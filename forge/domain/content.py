@@ -9,10 +9,11 @@ An `Edit` is one file as a save writes it, with the token it was read with:
 either the bytes the save carries, or an `Uploaded` naming a file already at
 the forge, whose pointer the save writes instead;
 a `FileSet` is every file of a place at one version, by path, with its
-token. `check_path` is the rule every path a person names passes before it
-reaches the port: plain segments joined by `/`, relative to the place.
-`has_path` is how a path ending in `/` names a folder, there when some file
-is under it.
+token. A file that is an upload carries its `UploadInfo`, read from the
+pointer its commit holds (`forge.domain.uploads.upload_info`). `check_path`
+is the rule every path a person names passes before it reaches the port:
+plain segments joined by `/`, relative to the place. `has_path` is how a
+path ending in `/` names a folder, there when some file is under it.
 """
 
 import uuid
@@ -60,10 +61,27 @@ class ConflictToken(str):
 
 
 @dataclass(frozen=True, slots=True)
+class UploadInfo:
+    """What a file that is an upload holds: the size and SHA-256 of the
+    bytes the forge's large-file store keeps for it. Its commit holds the
+    pointer to them, which is what `content` and `size` describe, so it is
+    never opened as text, and it is changed by uploading it again.
+    """
+
+    size: int
+    digest: str
+
+
+@dataclass(frozen=True, slots=True)
 class File:
+    """One file as it was read, with the token a write presents back, and
+    `upload` when it is an upload, whose `content` is then the pointer.
+    """
+
     path: str
     content: bytes
     token: ConflictToken
+    upload: UploadInfo | None = None
 
 
 class EntryKind(StrEnum):
@@ -73,9 +91,14 @@ class EntryKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class TreeEntry:
+    """One entry of a folder: a file, with the size of what its commit
+    holds, or a folder. `upload` tells an uploaded file from a typed one.
+    """
+
     path: str
     kind: EntryKind
     size: int | None = None
+    upload: UploadInfo | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -78,7 +78,7 @@ forge/api/
                 task_id_of, the id of the task a scope names
   workflows.py  create, and the NewWorkflow it returns
   files.py      read, tree, history, write, rollback, write_upload, and the
-                File, TreeEntry, EntryKind and Change they return
+                File, TreeEntry, UploadInfo, EntryKind and Change they return
   publications.py  save, list, and the Published, Draft and Publication they
                 return
   release.py    of_task, and the TaskRelease it returns with its Closed reason
@@ -123,8 +123,8 @@ forge/api/
   errors.py     every error the package raises to its callers
   types.py      Session, User, Role, Scope, ScopeKind, RoleGrant, HeldRole,
                 Named, ScopeNames, OrgId, ContestId, TaskId, VersionId,
-                PublicationId, ConflictToken, Edit, Uploaded, Problem, and an invite's
-                Grant, InviteStatus and MailStatus
+                PublicationId, ConflictToken, Edit, Uploaded, Problem, and an
+                invite's Grant, InviteStatus and MailStatus
 ```
 
 Each module only imports names written elsewhere in the package and lists
@@ -696,6 +696,17 @@ manager's change to one of its admin-only keys, `name`,
 is a save of the task, below. A rollback reads the file at the chosen
 version and writes it back as a new change through `write`, so a task's
 rollback is a save too and the history stays whole.
+
+A file an organiser uploaded is put into a task by `write_upload`, a save
+whose commit holds the pointer to it (below, Uploads). `tree` lists such a
+file with `upload`, the size and SHA-256 of what it holds, and `read` gives
+it with the same `upload` beside its content, the pointer, so an editor
+never opens one as text; a typed file has none. Forgejo's contents API
+gives a file's blob size and nothing about git-lfs, so only a file whose
+size a pointer the platform writes could have, 126 to 144 bytes, is read
+to tell, and its content checked as such a pointer
+(`uploads.may_be_pointer`, `upload_info`); a folder of large or of
+ordinary files costs the listing alone.
 
 ## The save
 

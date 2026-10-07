@@ -4,7 +4,7 @@ rollback as a new change, and a file the organiser uploaded put into a task
 by a save, and what they return.
 """
 
-from forge.domain.content import Change, EntryKind, File, TreeEntry
+from forge.domain.content import Change, EntryKind, File, TreeEntry, UploadInfo
 from forge.services.files import history, read, rollback, tree, write, write_upload
 
 __all__ = [
@@ -12,6 +12,7 @@ __all__ = [
     "EntryKind",
     "File",
     "TreeEntry",
+    "UploadInfo",
     "history",
     "read",
     "rollback",
