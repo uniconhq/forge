@@ -74,7 +74,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import ColumnElement, func, select, tuple_
+from sqlalchemy import ColumnElement, and_, func, not_, or_, select, tuple_
 
 from forge.db.tables import Grading, Team
 from forge.domain.definitions import ContestDefinition
@@ -92,8 +92,11 @@ from forge.domain.errors import (
 from forge.domain.grading import (
     AT_THE_CI,
     FINISHED,
+    LOST_CHECK_AFTER,
+    MACHINE_WAIT,
     PLATFORM_POOL,
     RUN_LOG_MAX,
+    START_WAIT,
     UNFINISHED,
     WAITING,
     GradingRun,
@@ -104,7 +107,6 @@ from forge.domain.grading import (
     envelope_key,
     log_key,
     overdue,
-    stored_as,
     token_hash,
     worth_asking,
 )
@@ -562,6 +564,57 @@ def status_of(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> G
     return GradingStatus(row.status)
 
 
+def _overdue(now: datetime) -> ColumnElement[bool]:
+    """The rows `overdue` finds past what their state may take at `now`,
+    told in the query: `queued` `START_WAIT` after it was made,
+    `dispatched` `MACHINE_WAIT` after its run was started, and `running`
+    past its deadline.
+    """
+    return or_(
+        and_(Grading.status == GradingStatus.QUEUED, Grading.queued_at <= now - START_WAIT),
+        and_(
+            Grading.status == GradingStatus.DISPATCHED,
+            Grading.dispatched_at.is_not(None),
+            Grading.dispatched_at <= now - MACHINE_WAIT,
+        ),
+        and_(
+            Grading.status == GradingStatus.RUNNING,
+            Grading.deadline_at.is_not(None),
+            Grading.deadline_at <= now,
+        ),
+    )
+
+
+def _worth_asking(now: datetime) -> ColumnElement[bool]:
+    """The rows `lost` asks the CI about at `now`, told in the query as
+    `worth_asking` tells them: `dispatched` with a run, `LOST_CHECK_AFTER`
+    after it was started and not yet `MACHINE_WAIT`.
+    """
+    return and_(
+        Grading.status == GradingStatus.DISPATCHED,
+        Grading.run_id.is_not(None),
+        Grading.dispatched_at.is_not(None),
+        Grading.dispatched_at <= now - LOST_CHECK_AFTER,
+        Grading.dispatched_at > now - MACHINE_WAIT,
+    )
+
+
+def _may_read_as(status: GradingStatus, now: datetime) -> ColumnElement[bool]:
+    """The rows that may read as `status` at `now`, as `status_of` reads
+    them, all but whether the CI lost a run told in the query: for
+    `system_error`, the rows stored so, overdue, or whose run the CI is to
+    be asked about; for an unfinished status, the rows stored so and not
+    overdue, a lost one among them left out once the CI is asked; and for
+    a finished one, the rows stored so.
+    """
+    stored = Grading.status == status
+    if status == GradingStatus.SYSTEM_ERROR:
+        return or_(stored, _overdue(now), _worth_asking(now))
+    if status in UNFINISHED:
+        return and_(stored, not_(_overdue(now)))
+    return stored
+
+
 async def lost(ctx: Context, rows: Iterable[Grading]) -> frozenset[uuid.UUID]:
     """The gradings among `rows` whose run the CI no longer holds, or holds
     as finished while the grading still waits for its envelope: a run that
@@ -774,13 +827,13 @@ async def feed(
     if team is not None:
         where.append(Grading.workspace_id == _workspace(ctx, contest, TeamOwner(team)))
     if status is not None:
-        where.append(Grading.status.in_(stored_as(status)))
+        where.append(_may_read_as(status, ctx.now))
     size = max(1, min(limit, LIST_LIMIT))
     kept: builtins.list[GradingRecord] = []
     after: tuple[datetime, uuid.UUID] | None = None
-    # A row whose status reads otherwise than it is stored, overdue or lost,
-    # is only known once read, so a filter by status reads a page at a time
-    # until the page is full.
+    # Whether a `dispatched` row's run is lost is known only once the CI is
+    # asked, so a filter by status reads a page at a time until the page is
+    # full; the rest of what a status reads as is told in the query.
     while len(kept) < size:
         query = select(Grading).where(*where)
         if after is not None:

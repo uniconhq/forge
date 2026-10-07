@@ -156,16 +156,6 @@ WAITING = (GradingStatus.QUEUED, GradingStatus.DISPATCHED)
 contest's queue depth counts."""
 
 
-def stored_as(status: GradingStatus) -> tuple[GradingStatus, ...]:
-    """The statuses a row may have when it reads as `status`: its own, and
-    for `system_error` every unfinished one too, since an overdue or lost
-    grading reads so whatever its row still says.
-    """
-    if status == GradingStatus.SYSTEM_ERROR:
-        return (GradingStatus.SYSTEM_ERROR, *UNFINISHED)
-    return (GradingStatus(status),)
-
-
 def overdue(
     status: GradingStatus,
     *,

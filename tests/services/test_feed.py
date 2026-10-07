@@ -13,13 +13,19 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from forge.db.tables import Grading
 from forge.domain.errors import Forbidden
-from forge.domain.grading import MACHINE_WAIT, NEVER_BEGAN, START_WAIT, GradingStatus
+from forge.domain.grading import (
+    LOST_CHECK_AFTER,
+    MACHINE_WAIT,
+    NEVER_BEGAN,
+    START_WAIT,
+    GradingStatus,
+)
 from forge.domain.identity import User
-from forge.domain.ids import TaskId
+from forge.domain.ids import TaskId, new_id
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.sessions import Session
 from forge.domain.submissions import SubmittedInput
@@ -261,3 +267,105 @@ async def test_a_tasks_gradings_say_who_submitted_each_as_the_feed_does(
         (busy["first"], "bob", "sum", "A"),
     ]
     assert listed[0].by == gradings.Submitter(20, None, "carol")
+
+
+async def test_a_filter_by_status_finds_each_grading_as_the_unfiltered_feed_reads_it(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    made = await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
+    now = clock.now()
+    async with setup.unit_of_work() as ctx:
+        base = (await ctx.db.execute(select(Grading).where(Grading.id == made))).scalar_one()
+        run = base.run_id
+        # One row in each state the deadlines and the CI tell apart.
+        states: dict[str, dict[str, Any]] = {
+            "queued": {"status": GradingStatus.QUEUED},
+            "queued too long": {
+                "status": GradingStatus.QUEUED,
+                "queued_at": now - START_WAIT,
+            },
+            "dispatched": {
+                "status": GradingStatus.DISPATCHED,
+                "run_id": run,
+                "dispatched_at": now - timedelta(minutes=1),
+            },
+            "held by the CI": {
+                "status": GradingStatus.DISPATCHED,
+                "run_id": run,
+                "dispatched_at": now - LOST_CHECK_AFTER,
+            },
+            "lost by the CI": {
+                "status": GradingStatus.DISPATCHED,
+                "run_id": "9/999",
+                "dispatched_at": now - LOST_CHECK_AFTER,
+            },
+            "dispatched with no run": {
+                "status": GradingStatus.DISPATCHED,
+                "dispatched_at": now - LOST_CHECK_AFTER,
+            },
+            "never began": {
+                "status": GradingStatus.DISPATCHED,
+                "run_id": run,
+                "dispatched_at": now - MACHINE_WAIT,
+            },
+            "running": {
+                "status": GradingStatus.RUNNING,
+                "run_id": run,
+                "deadline_at": now + timedelta(minutes=1),
+            },
+            "running past its deadline": {
+                "status": GradingStatus.RUNNING,
+                "run_id": run,
+                "deadline_at": now,
+            },
+            "running with no deadline": {"status": GradingStatus.RUNNING, "run_id": run},
+            "done": {"status": GradingStatus.DONE},
+            "cancelled": {"status": GradingStatus.CANCELLED},
+            "system error": {"status": GradingStatus.SYSTEM_ERROR},
+        }
+        rows = {
+            name: Grading(
+                id=new_id(),
+                task_id=base.task_id,
+                workspace_id=base.workspace_id,
+                submission_id=f"{base.submission_id}-{index}",
+                submission_number=base.submission_number,
+                submission_version=base.submission_version,
+                submitted_at=base.submitted_at,
+                publication_id=base.publication_id,
+                attempt=1,
+                **({"queued_at": now} | values),
+            )
+            for index, (name, values) in enumerate(states.items())
+        }
+        ctx.db.add_all(rows.values())
+    observer = await organiser(setup, acme.fake, 7, CONTEST, Role.OBSERVER)
+
+    every = await gradings.feed(setup, observer, SPRING)
+
+    read = {entry.grading.id: entry.grading.status for entry in every}
+    assert {name: read[row.id] for name, row in rows.items()} == {
+        "queued": GradingStatus.QUEUED,
+        "queued too long": GradingStatus.SYSTEM_ERROR,
+        "dispatched": GradingStatus.DISPATCHED,
+        "held by the CI": GradingStatus.DISPATCHED,
+        "lost by the CI": GradingStatus.SYSTEM_ERROR,
+        "dispatched with no run": GradingStatus.DISPATCHED,
+        "never began": GradingStatus.SYSTEM_ERROR,
+        "running": GradingStatus.RUNNING,
+        "running past its deadline": GradingStatus.SYSTEM_ERROR,
+        "running with no deadline": GradingStatus.RUNNING,
+        "done": GradingStatus.DONE,
+        "cancelled": GradingStatus.CANCELLED,
+        "system error": GradingStatus.SYSTEM_ERROR,
+    }
+    for status in GradingStatus:
+        filtered = await gradings.feed(setup, observer, SPRING, status=status)
+        assert [entry.grading.id for entry in filtered] == [
+            entry.grading.id for entry in every if entry.grading.status == status
+        ], status
+    # A page of system errors smaller than what waits fills from the query alone.
+    (first,) = await gradings.feed(
+        setup, observer, SPRING, status=GradingStatus.SYSTEM_ERROR, limit=1
+    )
+    assert first.grading.status == GradingStatus.SYSTEM_ERROR
