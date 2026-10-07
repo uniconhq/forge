@@ -28,6 +28,7 @@ from forge.domain.identity import PLATFORM, AsOrgAccount, User
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.names import Named
 from forge.domain.roles import Role, RoleGrant, Scope
+from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import making, names, org_accounts, publications, tasks
 from forge.services.access import Organiser
@@ -421,6 +422,21 @@ async def test_the_contests_tasks_stand_in_its_order_with_drafts_and_timelines(
     )
     with pytest.raises(Forbidden):
         await tasks.standing(setup, _held_at_task(acme), SPRING)
+
+
+async def test_settings_that_do_not_read_are_told_with_their_errors(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    observer = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.OBSERVER)
+    await write_contest(acme.fake, "name: Spring\nstart: soon\n")
+
+    with pytest.raises(InvalidDefinition) as invalid:
+        await tasks.standing(setup, observer, SPRING)
+
+    assert invalid.value.detail.startswith("contest.yaml ")
+    assert {problem["path"] for problem in invalid.value.errors} >= {"start"}
+    with pytest.raises(NotFound):
+        await tasks.standing(setup, observer, ContestId("acme/autumn"))
 
 
 def _held_at_task(acme: Acme) -> Organiser:

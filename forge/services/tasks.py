@@ -51,6 +51,7 @@ from forge.domain.definitions import (
     ContestDefinition,
     ContestTask,
     letters,
+    parse_contest,
     parse_task,
     starter_task,
     title_of,
@@ -66,7 +67,7 @@ from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import making, names, org_accounts, publications, published
+from forge.services import making, names, org_accounts, publications
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -239,8 +240,9 @@ async def standing(
 ) -> tuple[TaskStanding, ...]:
     """Every task the contest lists, in the order of its `tasks`, each with
     its letter, where its files stand, as `state` gives it, and its timeline.
-    Needs the observer role at the contest. `NotFound` when the contest's
-    settings do not read.
+    Needs the observer role at the contest. `InvalidDefinition` naming
+    `contest.yaml`, with every problem, when its settings do not read, as a
+    save of them would be refused, and `NotFound` for no such contest.
 
     Each task costs the forge what `state` does, its head and its
     publications, a check of its head when that is a draft, and the
@@ -248,7 +250,7 @@ async def standing(
     gives points.
     """
     require(organiser, contest_scope(contest), Role.OBSERVER)
-    settings = await published.contest(ctx, contest)
+    settings = await _settings(ctx, contest)
     ids = await names.task_ids(ctx, contest, [entry.id for entry in settings.tasks])
     await ctx.let_go()
     found: builtins.list[TaskStanding] = []
@@ -266,6 +268,19 @@ async def standing(
             )
         )
     return tuple(found)
+
+
+async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition:
+    """The contest's settings as they stand, read as the platform, for its
+    organisers, who mend them: `InvalidDefinition` naming `contest.yaml`
+    with every problem when they do not read, and `NotFound` for no such
+    contest.
+    """
+    try:
+        found = await ctx.forge.content.read_file(PLATFORM, contest, CONTEST_FILE)
+    except NotFound as exc:
+        raise NotFound(names.NO_SUCH_CONTEST) from exc
+    return parse_contest(found.content)
 
 
 async def _timeline(
