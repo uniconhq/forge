@@ -31,17 +31,37 @@ is.
 
 A task's name is reserved when it is asked for and the task is made at the
 forge under its key; the name is what `contest.yaml` lists it by.
+
+`standing` is the list an organiser works a contest's tasks from: each task
+the contest lists, in its order and under the letter of its place, with
+where its files stand (`state`) and its timeline from its entry, each time
+at its default where the entry gives none. A task of the org the contest
+does not list is not on it.
 """
 
+import builtins
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from forge.domain.contest_entries import Unlisted, with_entry
-from forge.domain.definitions import CONTEST_FILE, starter_task, title_of
+from forge.domain.definitions import (
+    CONTEST_FILE,
+    DEFAULT_WORTH,
+    TASK_FILE,
+    ContestDefinition,
+    ContestTask,
+    letters,
+    parse_contest,
+    parse_task,
+    starter_task,
+    title_of,
+)
 from forge.domain.errors import Conflict, Forbidden, NotFound, PortError
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
 from forge.domain.names import Named, validate_contest_or_task_name
 from forge.domain.publications import Publication
+from forge.domain.release import NONE, due_of
 from forge.domain.roles import Role, contest_id_of, contest_scope, task_scope
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
@@ -53,6 +73,9 @@ from forge.services.access import Organiser, require
 log = get_logger(__name__)
 
 LIST_TRIES = 3
+POINTS_KEPT = timedelta(hours=1)
+"""How long this process keeps whether a publication gives points: a
+publication never changes, so the time only bounds what is held."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +91,38 @@ class TaskState:
     latest: Publication | None
     draft: bool
     errors: tuple[Problem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Timeline:
+    """A task's timeline in its contest, from its entry in `contest.yaml`,
+    each time at its default where the entry gives none: `worth`, the most
+    points it gives, 100 unless the entry says, and none on a task whose
+    latest publication gives no points or that has none; `release_at`, the
+    contest's start unless the entry says; `due`, after which a submission
+    is late, and `late_per_day`, the fraction a started late day takes off,
+    1 unless the entry says, both none on a task with no due; and `closes`,
+    the contest's end unless the entry says.
+    """
+
+    worth: int | float | None
+    release_at: datetime
+    due: datetime | None
+    late_per_day: int | float | None
+    closes: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TaskStanding:
+    """One task of a contest as its organisers work from it: the task with
+    its name, its letter by its place in the contest's `tasks`, where its
+    files stand against its latest publication, and its timeline.
+    """
+
+    task: Named
+    label: str
+    state: TaskState
+    timeline: Timeline
 
 
 @action
@@ -177,6 +232,87 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
         return TaskState(head=head.version, latest=latest, draft=False, errors=())
     checked = await publications.check(ctx, organiser.identity, task, head, {})
     return TaskState(head=head.version, latest=latest, draft=True, errors=checked.errors)
+
+
+@action
+async def standing(
+    ctx: Context, organiser: Organiser, contest: ContestId
+) -> tuple[TaskStanding, ...]:
+    """Every task the contest lists, in the order of its `tasks`, each with
+    its letter, where its files stand, as `state` gives it, and its timeline.
+    Needs the observer role at the contest. `InvalidDefinition` naming
+    `contest.yaml`, with every problem, when its settings do not read, as a
+    save of them would be refused, and `NotFound` for no such contest.
+
+    Each task costs the forge what `state` does, its head and its
+    publications, a check of its head when that is a draft, and the
+    `task.yaml` of its latest publication once per process, for whether it
+    gives points.
+    """
+    require(organiser, contest_scope(contest), Role.OBSERVER)
+    settings = await _settings(ctx, contest)
+    ids = await names.task_ids(ctx, contest, [entry.id for entry in settings.tasks])
+    await ctx.let_go()
+    found: builtins.list[TaskStanding] = []
+    for index, entry in enumerate(settings.tasks):
+        task = ids.get(entry.id)
+        if task is None:
+            continue
+        where = await state(ctx, organiser, task)
+        found.append(
+            TaskStanding(
+                task=Named(task, entry.id),
+                label=letters(index),
+                state=where,
+                timeline=await _timeline(ctx, settings, entry, task, where.latest),
+            )
+        )
+    return tuple(found)
+
+
+async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition:
+    """The contest's settings as they stand, read as the platform, for its
+    organisers, who mend them: `InvalidDefinition` naming `contest.yaml`
+    with every problem when they do not read, and `NotFound` for no such
+    contest.
+    """
+    try:
+        found = await ctx.forge.content.read_file(PLATFORM, contest, CONTEST_FILE)
+    except NotFound as exc:
+        raise NotFound(names.NO_SUCH_CONTEST) from exc
+    return parse_contest(found.content)
+
+
+async def _timeline(
+    ctx: Context,
+    settings: ContestDefinition,
+    entry: ContestTask,
+    task: TaskId,
+    latest: Publication | None,
+) -> Timeline:
+    gives_points = latest is not None and await _gives_points(ctx, task, latest)
+    return Timeline(
+        worth=(entry.worth if entry.worth is not None else DEFAULT_WORTH) if gives_points else None,
+        release_at=settings.release_of(entry),
+        due=due_of(settings, entry, NONE),
+        late_per_day=settings.late_per_day_of(entry),
+        closes=settings.closes_of(entry),
+    )
+
+
+async def _gives_points(ctx: Context, task: TaskId, latest: Publication) -> bool:
+    """Whether the task as `latest` froze it gives points, read once per
+    process for each publication.
+    """
+
+    async def read() -> bool:
+        found = await ctx.forge.content.read_file(PLATFORM, task, TASK_FILE, at=latest.version)
+        try:
+            return parse_task(found.content).gives_points
+        except InvalidDefinition:
+            return False
+
+    return await ctx.memo.remembered(f"tasks.gives_points.{latest.id}", POINTS_KEPT, read)
 
 
 @action

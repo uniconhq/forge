@@ -249,8 +249,8 @@ class WrongStatus(ServiceError):
 
 
 class InvalidReason(ServiceError):
-    """A rejection without a reason the contestant can read, or with one longer
-    than the limit.
+    """A rejection, or a grading's cancel, without a reason the contestant
+    can read, or with one longer than the limit.
     """
 
     code = "invalid_reason"

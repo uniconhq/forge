@@ -19,7 +19,7 @@ from typing import Any
 from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.roles import Role, Scope, ScopeKind
-from forge.forges.forgejo.http import Http, json_of
+from forge.forges.forgejo.http import Http, json_of, segment
 
 CI_TEAM_SUFFIX = "ci"
 TEAM_PERMISSIONS = {Role.ADMIN: "write", Role.MANAGER: "write", Role.OBSERVER: "read"}
@@ -87,7 +87,7 @@ class Teams:
             response = await self._http.call(
                 PLATFORM,
                 "GET",
-                f"/api/v1/orgs/{org}/teams/search",
+                f"/api/v1/orgs/{segment(org)}/teams/search",
                 params={"q": name, "limit": SEARCH_LIMIT},
             )
         except NotFound:
@@ -111,10 +111,14 @@ class Teams:
         return await self._http.get_all(PLATFORM, f"/api/v1/teams/{team_id}/members")
 
     async def add_member(self, team_id: int, username: str) -> None:
-        await self._http.call(PLATFORM, "PUT", f"/api/v1/teams/{team_id}/members/{username}")
+        await self._http.call(
+            PLATFORM, "PUT", f"/api/v1/teams/{team_id}/members/{segment(username)}"
+        )
 
     async def remove_member(self, team_id: int, username: str) -> None:
-        await self._http.call(PLATFORM, "DELETE", f"/api/v1/teams/{team_id}/members/{username}")
+        await self._http.call(
+            PLATFORM, "DELETE", f"/api/v1/teams/{team_id}/members/{segment(username)}"
+        )
 
     async def delete_scope(self, scope: Scope) -> None:
         """Delete the role teams of a contest or a task, each one that is
@@ -142,7 +146,7 @@ class Teams:
                 continue
             for role in Role:
                 team = await self.ensure(at, role)
-                path = f"/api/v1/teams/{team['id']}/repos/{scope.org}/{repo}"
+                path = f"/api/v1/teams/{team['id']}/repos/{segment(scope.org)}/{segment(repo)}"
                 try:
                     await self._http.call(PLATFORM, "GET", path)
                 except NotFound:
@@ -171,7 +175,7 @@ class Teams:
             await self._http.call(
                 PLATFORM,
                 "POST",
-                f"/api/v1/orgs/{org}/teams",
+                f"/api/v1/orgs/{segment(org)}/teams",
                 json={
                     "name": name,
                     "permission": permission,

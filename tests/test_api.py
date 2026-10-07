@@ -17,9 +17,13 @@ import pytest
 
 import forge.api
 import forge.api.sign_in
+from forge.api import files, publications, types, uploads
+from forge.domain.content import Uploaded
 from forge.domain.sessions import Session
 from forge.runtime.context import Context
+from forge.services import files as file_service
 from forge.services import sessions
+from forge.services import uploads as upload_service
 
 
 def _modules() -> Iterator[ModuleType]:
@@ -97,3 +101,15 @@ def test_every_public_name_is_listed_and_written_elsewhere(module: ModuleType) -
     for name in module.__all__:
         home = getattr(getattr(module, name), "__module__", "")
         assert not home.startswith("forge.api"), f"{module.__name__}.{name} is written here"
+
+
+def test_an_organisers_upload_into_a_task_reaches_the_backend() -> None:
+    """The slot, the save that takes it and the types they take and return
+    are on the list, so the backend can serve feature 8's upload.
+    """
+    assert files.write_upload is file_service.write_upload
+    assert uploads.task_file_slot is upload_service.task_file_slot
+    assert uploads.Slot is upload_service.Slot
+    assert types.Uploaded is Uploaded
+    assert {"Edit", "ConflictToken"} <= set(types.__all__)
+    assert {"Published", "Draft"} <= set(publications.__all__)

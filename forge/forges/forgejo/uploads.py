@@ -41,7 +41,7 @@ from typing import Any
 from forge.domain.errors import Forbidden, Unavailable
 from forge.domain.identity import AsUser, Identity
 from forge.domain.uploads import Door
-from forge.forges.forgejo.http import Http, json_of
+from forge.forges.forgejo.http import Http, json_of, segment
 from forge.forges.ids import MalformedId, parse_task, parse_workspace
 from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace
 
@@ -55,7 +55,7 @@ class ForgejoUploads:
     def door(self, place: UploadPlace, *, as_: Identity, digest: str, size: int) -> Door:
         owner, name = _repo_of(place)
         return Door(
-            path=f"/{owner}/{name}.git/info/lfs/objects/{digest}/{size}",
+            path=f"/{segment(owner)}/{segment(name)}.git/info/lfs/objects/{digest}/{size}",
             authorization=_basic(as_),
         )
 
@@ -64,7 +64,7 @@ class ForgejoUploads:
         answered = json_of(
             await self._http.request(
                 "POST",
-                f"/{owner}/{name}.git/info/lfs/objects/batch",
+                f"/{segment(owner)}/{segment(name)}.git/info/lfs/objects/batch",
                 json={
                     "operation": "download",
                     "transfers": ["basic"],

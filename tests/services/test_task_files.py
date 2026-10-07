@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from forge.domain.content import Edit, Uploaded
+from forge.domain.content import Edit, Uploaded, UploadInfo
 from forge.domain.errors import Forbidden, InvalidInputs, UploadLimit, UploadNotReady
 from forge.domain.ids import TaskId
 from forge.domain.roles import Role, Scope
@@ -62,6 +62,34 @@ async def test_an_organisers_file_reaches_the_task_as_a_pointer(
     assert await acme.fake.uploads.holds(
         TaskPlace(entered.task), as_=acme.ada.identity, digest=_digest(DATA), size=len(DATA)
     )
+
+
+async def test_an_uploaded_file_is_listed_and_read_as_an_upload_and_a_typed_one_is_not(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    slot = await _slot(setup, acme, entered.task)
+    await _send(setup, acme, slot, entered.task)
+    await files.write_upload(setup, acme.ada, entered.task, PATH, slot.id, None)
+    # Typed, and as long as a pointer: read to tell, and told apart.
+    await files.write(setup, acme.ada, entered.task, "data/notes.txt", b"n" * 130, None)
+    await files.write(setup, acme.ada, entered.task, "data/big.txt", b"b" * 4096, None)
+    acme.fake.reset_calls()
+
+    listed = {
+        entry.path: entry for entry in await files.tree(setup, acme.ada, entered.task, "data")
+    }
+    read = await files.read(setup, acme.ada, entered.task, PATH)
+    typed = await files.read(setup, acme.ada, entered.task, "data/notes.txt")
+
+    upload = UploadInfo(size=len(DATA), digest=_digest(DATA))
+    assert listed[PATH].upload == upload
+    assert listed[PATH].size == len(pointer_text(_digest(DATA), len(DATA)))
+    assert (listed["data/notes.txt"].upload, listed["data/big.txt"].upload) == (None, None)
+    assert (read.upload, read.content) == (upload, pointer_text(_digest(DATA), len(DATA)))
+    assert typed.upload is None
+    # Only the files whose size a pointer could have were read to list them.
+    tree_reads = sorted(call.arguments["path"] for call in acme.fake.calls_to("read_file"))
+    assert tree_reads == sorted([PATH, "data/notes.txt", PATH, "data/notes.txt"])
 
 
 async def test_a_save_marks_the_upload_it_took(setup: Setup, acme: Acme, entered: Entered) -> None:

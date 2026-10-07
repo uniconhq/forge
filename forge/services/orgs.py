@@ -1,5 +1,5 @@
-"""Making an org, and the two things an org's admin may change about it
-afterwards. `create` makes everything an org needs before it answers: its
+"""Making an org, the two things an org's admin may change about it
+afterwards, and reading them back. `create` makes everything an org needs before it answers: its
 account row, the org itself, its roles, the labels its threads are marked
 with, its signed event push, its first admin, its service account at the
 forge, that account's place in the org and its forge credential, its user at
@@ -22,7 +22,7 @@ is on; with it off the operator creates an org from the command line with
 
 from forge.domain.errors import Conflict, Forbidden, NotFound, PortError
 from forge.domain.ids import OrgId
-from forge.domain.names import Named, service_account_name, validate_org_name
+from forge.domain.names import Named, OrgProfile, service_account_name, validate_org_name
 from forge.domain.roles import Role, Scope, holds
 from forge.domain.sessions import Session
 from forge.log import get_logger
@@ -141,6 +141,18 @@ async def update(
         raise Forbidden(f"This needs the admin role at {named.name}.")
     await ctx.forge.orgs.update_org(org, description=description, display_name=display_name)
     log.info("orgs.updated", org=org, user_id=organiser.user.id)
+
+
+@action
+async def read(ctx: Context, organiser: Organiser, org: OrgId) -> OrgProfile:
+    """The org's display name and description as they stand at the forge,
+    read as the platform, for an organiser holding any role in the org, at
+    the org or at anything in it.
+    """
+    if not any(grant.scope.org == org for grant in organiser.grants):
+        named = organiser.scope if organiser.scope == Scope(org) else Scope(org)
+        raise Forbidden(f"This needs a role in {named.name}.")
+    return await ctx.forge.orgs.read_org(org)
 
 
 async def _reserve(ctx: Context, name: str) -> OrgId:

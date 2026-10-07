@@ -35,7 +35,7 @@ from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.plans import Plan
-from forge.domain.roles import Role, Scope
+from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
@@ -896,7 +896,11 @@ NEW_GROUP = {"tests/large/1/input": b"5 6\n", "tests/large/1/answer": b"11\n"}
 async def test_once_graded_a_new_group_must_say_its_show(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
+    before = await publications.workflow_form(setup, acme.ada, entered.task)
     await _graded(setup, acme, entered)
+    # The form hears of it, so it asks for the show of a group the save adds.
+    after = await publications.workflow_form(setup, acme.ada, entered.task)
+    assert (before.graded, after.graded) == (False, True)
     unsaid = _with(acme, b"  main: {each: 100}\n", b"  main: {each: 100}\n  large: {each: 50}\n")
 
     draft = await _save(setup, acme, entered.task, {**unsaid, **NEW_GROUP})
@@ -1049,3 +1053,81 @@ async def test_a_task_left_giving_no_points_is_refused_while_its_contest_entry_s
     ]
     await write_contest(acme.fake, RUNNING.format(state="draft"))
     assert isinstance(await _save(setup, acme, sum_task, {}), Published)
+
+
+async def test_the_task_form_reads_the_inputs_and_test_fields_its_workflow_declares(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    form = await publications.workflow_form(setup, acme.ada, sum_task)
+
+    assert (form.workflow, form.problem) == ("unicon/classic@v2", None)
+    assert [(field.id, field.type, field.contestant) for field in form.inputs] == [
+        ("submission", "file", True),
+        ("language", "enum", True),
+        ("time_limit", "number", False),
+        ("memory_limit", "number", False),
+    ]
+    assert form.inputs[1].options == ("c", "cpp", "java", "python")
+    assert [(field.name, field.type) for field in form.test] == [
+        ("input", "file"),
+        ("answer", "file"),
+    ]
+    reads = acme.fake.calls_to("read_workflow_file")
+    assert {call.identity for call in reads} == {acme.ada.identity}
+
+
+async def test_a_draft_still_shows_its_workflows_inputs(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    draft = await _save(
+        setup, acme, sum_task, _with(acme, b"test_groups:", b"credit: 7\ntest_groups:")
+    )
+    assert isinstance(draft, Draft)
+
+    form = await publications.workflow_form(setup, acme.ada, sum_task)
+
+    assert form.problem is None
+    assert len(form.inputs) == 4
+
+
+@pytest.mark.parametrize(
+    ("workflow", "problem"),
+    [
+        (b"", "names no workflow"),
+        (b"workflow: [\n", "does not read"),
+        (b"workflow: classic\n", "must end in @ and a version"),
+        (b"workflow: unicon/nothing@v1\n", "cannot be read"),
+    ],
+    ids=["none", "not yaml", "not a reference", "unreadable"],
+)
+async def test_a_task_form_without_a_workflow_it_can_read_says_why(
+    setup: Setup, acme: Acme, sum_task: TaskId, workflow: bytes, problem: str
+) -> None:
+    await _save(setup, acme, sum_task, {"task.yaml": b"name: Sum\n" + workflow})
+
+    form = await publications.workflow_form(setup, acme.ada, sum_task)
+
+    assert (form.inputs, form.test) == ((), ())
+    assert form.problem is not None and problem in form.problem
+
+
+async def test_a_workflow_in_an_old_format_gives_the_form_its_reason(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _workflow(acme, "old", b"inputs: {}\nstages: []\n")
+    await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v2", b"unicon/old@v1"))
+
+    form = await publications.workflow_form(setup, acme.ada, sum_task)
+
+    assert form.workflow == "unicon/old@v1"
+    assert form.problem is not None and "not in the current format" in form.problem
+    elsewhere = Scope("acme", "autumn")
+    stranger = Organiser(
+        user=acme.ada.user,
+        grants=(RoleGrant(elsewhere, Role.OBSERVER),),
+        scope=elsewhere,
+        role=Role.OBSERVER,
+        identity=acme.ada.identity,
+    )
+    with pytest.raises(Forbidden):
+        await publications.workflow_form(setup, stranger, sum_task)

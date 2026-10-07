@@ -3,6 +3,7 @@
 from forge.domain.errors import Conflict, Rejected
 from forge.domain.identity import PLATFORM, AsUser, User
 from forge.domain.ids import OrgId
+from forge.domain.names import OrgProfile
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.forges.fake.state import Org, State
 
@@ -84,6 +85,12 @@ class FakeOrgs:
         org.description = description
         if display_name is not None:
             org.display_name = display_name
+
+    async def read_org(self, name: OrgId) -> OrgProfile:
+        self._state.record("read_org", PLATFORM, name=name)
+        self._state.check_up()
+        org = self._state.org(name)
+        return OrgProfile(display_name=org.display_name, description=org.description)
 
     async def grant_role(self, user_id: int, scope: Scope, role: Role) -> None:
         self._state.record("grant_role", PLATFORM, user_id=user_id, scope=scope, role=role)

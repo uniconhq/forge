@@ -11,6 +11,7 @@ from typing import Protocol
 
 from forge.domain.identity import AsUser, User
 from forge.domain.ids import OrgId
+from forge.domain.names import OrgProfile
 from forge.domain.roles import Role, RoleGrant, Scope
 
 
@@ -72,6 +73,12 @@ class OrgPort(Protocol):
         self, name: OrgId, *, description: str, display_name: str | None = None
     ) -> None:
         """`NotFound` when there is no such org."""
+        ...
+
+    async def read_org(self, name: OrgId) -> OrgProfile:
+        """The org's own fields, read as the platform. `NotFound` when there
+        is no such org.
+        """
         ...
 
     async def grant_role(self, user_id: int, scope: Scope, role: Role) -> None:

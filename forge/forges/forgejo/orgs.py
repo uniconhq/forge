@@ -10,8 +10,9 @@ from typing import Any
 from forge.domain.errors import NotFound, Rejected
 from forge.domain.identity import PLATFORM, AsUser, User
 from forge.domain.ids import OrgId
+from forge.domain.names import OrgProfile
 from forge.domain.roles import Role, RoleGrant, Scope
-from forge.forges.forgejo.http import Http, list_of
+from forge.forges.forgejo.http import Http, json_of, list_of, segment
 from forge.forges.forgejo.labels import LABELS
 from forge.forges.forgejo.teams import Teams, ci_team_name, scope_of_team, team_name
 from forge.forges.forgejo.users import Users, user_from
@@ -34,7 +35,7 @@ class ForgejoOrgs:
         since an org is a kind of user there.
         """
         try:
-            await self._http.call(PLATFORM, "GET", f"/api/v1/users/{name}")
+            await self._http.call(PLATFORM, "GET", f"/api/v1/users/{segment(name)}")
         except NotFound:
             return False
         return True
@@ -58,7 +59,7 @@ class ForgejoOrgs:
     async def create_thread_labels(self, name: OrgId) -> None:
         present = {
             str(label["name"])
-            for label in await self._http.get_all(PLATFORM, f"/api/v1/orgs/{name}/labels")
+            for label in await self._http.get_all(PLATFORM, f"/api/v1/orgs/{segment(name)}/labels")
         }
         for label, colour in LABELS.items():
             if label in present:
@@ -66,7 +67,7 @@ class ForgejoOrgs:
             await self._http.call(
                 PLATFORM,
                 "POST",
-                f"/api/v1/orgs/{name}/labels",
+                f"/api/v1/orgs/{segment(name)}/labels",
                 json={"name": label, "color": colour},
             )
 
@@ -75,13 +76,13 @@ class ForgejoOrgs:
         allows a webhook only to the hosts `ALLOWED_HOST_LIST` names, which is
         why the URL is the platform's internal one.
         """
-        for hook in await self._http.get_all(PLATFORM, f"/api/v1/orgs/{name}/hooks"):
+        for hook in await self._http.get_all(PLATFORM, f"/api/v1/orgs/{segment(name)}/hooks"):
             if str((hook.get("config") or {}).get("url", "")) == url:
                 return
         await self._http.call(
             PLATFORM,
             "POST",
-            f"/api/v1/orgs/{name}/hooks",
+            f"/api/v1/orgs/{segment(name)}/hooks",
             json={
                 "type": HOOK_TYPE,
                 "active": True,
@@ -125,12 +126,12 @@ class ForgejoOrgs:
         try:
             held = list_of(
                 await self._http.call(
-                    PLATFORM, "GET", f"/api/v1/orgs/{name}/repos", params={"limit": 1}
+                    PLATFORM, "GET", f"/api/v1/orgs/{segment(name)}/repos", params={"limit": 1}
                 )
             )
             if held:
                 raise Rejected(f"the org {name} still owns repositories")
-            await self._http.call(PLATFORM, "DELETE", f"/api/v1/orgs/{name}")
+            await self._http.call(PLATFORM, "DELETE", f"/api/v1/orgs/{segment(name)}")
         except NotFound:
             return
 
@@ -140,7 +141,17 @@ class ForgejoOrgs:
         change: dict[str, Any] = {"description": description}
         if display_name is not None:
             change["full_name"] = display_name
-        await self._http.call(PLATFORM, "PATCH", f"/api/v1/orgs/{name}", json=change)
+        await self._http.call(PLATFORM, "PATCH", f"/api/v1/orgs/{segment(name)}", json=change)
+
+    async def read_org(self, name: OrgId) -> OrgProfile:
+        """Forgejo keeps the display name as `full_name`, empty while there is
+        none.
+        """
+        found = json_of(await self._http.call(PLATFORM, "GET", f"/api/v1/orgs/{segment(name)}"))
+        return OrgProfile(
+            display_name=str(found.get("full_name") or "") or None,
+            description=str(found.get("description") or ""),
+        )
 
     async def grant_role(self, user_id: int, scope: Scope, role: Role) -> None:
         team = await self._teams.ensure(scope, role)
