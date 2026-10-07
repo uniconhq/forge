@@ -754,6 +754,11 @@ async def test_a_cancelled_submission_reads_as_cancelled_and_frees_its_place_und
     # A rejudge leaves the cancelled one as it is.
     rejudged = await gradings.rejudge(setup, manager, entered.task)
     assert (rejudged.queued, rejudged.cancelled, rejudged.left_running) == (0, 0, 1)
+    # So does a retry: the cancel ended the submission, and it stays out of the max.
+    with pytest.raises(WrongStatus) as refused:
+        await gradings.retry(setup, manager, row.id)
+    assert "cancelled" in refused.value.detail
+    assert refused.value.extra == {"current": "cancelled"}
     first = [found for found in await _rows(setup) if found.submission_number == 1]
     assert [(found.attempt, found.status) for found in first] == [(1, GradingStatus.CANCELLED)]
 

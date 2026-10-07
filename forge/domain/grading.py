@@ -53,7 +53,8 @@ holds reads as a system error, `LOST`, like an overdue one.
 
 A grading in `system_error` is ended by staff, by regrading it or, when a
 regrade would only repeat the fault, by cancelling it with a sentence its
-contestant reads (`cancel_reason`, at most `CANCEL_REASON_MAX` characters).
+contestant reads (`cancel_reason`, at most `CANCEL_REASON_MAX` characters),
+which ends its submission for good: it is graded again by nothing.
 """
 
 import base64
