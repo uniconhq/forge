@@ -17,7 +17,8 @@ its run at the CI, `dispatched_at` when that run was started,
 `started_at` when its harness fetched the envelope and `deadline_at` the
 run's deadline from then. `progress` is the last progress its run reported,
 `{"step", "done", "total"}`, and `error` a line for staff about a grading
-that ended in `system_error`.
+that ended in `system_error`, kept when staff then cancel it with
+`cancel_reason`, the sentence its contestant reads.
 """
 
 import uuid
@@ -61,6 +62,7 @@ class Grading(Base, Timestamped):
     finished_at: Mapped[datetime | None]
     deadline_at: Mapped[datetime | None]
     error: Mapped[str | None]
+    cancel_reason: Mapped[str | None]
 
     __table_args__ = (
         CheckConstraint(f"status in {STATUSES}", name="status"),

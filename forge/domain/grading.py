@@ -50,6 +50,10 @@ the CI is asked where the run is (`RunState`), once the grading has been
 `dispatched` `LOST_CHECK_AFTER`, by the queue it is in and not the
 pipeline's status, which says `pending` either way; a run the CI no longer
 holds reads as a system error, `LOST`, like an overdue one.
+
+A grading in `system_error` is ended by staff, by regrading it or, when a
+regrade would only repeat the fault, by cancelling it with a sentence its
+contestant reads (`cancel_reason`, at most `CANCEL_REASON_MAX` characters).
 """
 
 import base64
@@ -66,6 +70,7 @@ from typing import TYPE_CHECKING
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from forge.domain.errors import InvalidReason
 from forge.domain.ids import AgentId, PublicationId, SubmissionId, TaskId, VersionId
 
 if TYPE_CHECKING:
@@ -127,9 +132,10 @@ class GradingStatus(StrEnum):
     which happens as soon as the request that made it commits; `dispatched`
     is held by the CI, waiting for a machine or checking out; `running` has
     had its envelope fetched by the harness. It ends `done` with a result,
-    `cancelled` by an organiser, or `system_error`, a grading that failed for
-    a reason of the platform's, never a grade: its run could not be started,
-    or did not report before its deadline.
+    `system_error`, a grading that failed for a reason of the platform's,
+    never a grade: its run could not be started, or did not report before
+    its deadline; or `cancelled`, by staff ending one in `system_error`, or
+    by a rejudge replacing one still being graded.
     """
 
     QUEUED = "queued"
@@ -170,6 +176,23 @@ def overdue(
         case GradingStatus.RUNNING if deadline is not None and now >= deadline:
             return OVERDUE
     return None
+
+
+CANCEL_REASON_MAX = 500
+"""The longest sentence staff cancel a grading with: a few lines its
+contestant reads."""
+
+
+def cancel_reason(reason: str) -> str:
+    """The sentence a grading is cancelled with, trimmed. `InvalidReason`
+    when it is empty or longer than `CANCEL_REASON_MAX`.
+    """
+    trimmed = reason.strip() if isinstance(reason, str) else ""
+    if not trimmed:
+        raise InvalidReason("Say why, so the contestant can read it.")
+    if len(trimmed) > CANCEL_REASON_MAX:
+        raise InvalidReason(f"A reason is at most {CANCEL_REASON_MAX} characters.")
+    return trimmed
 
 
 def worth_asking(status: GradingStatus, dispatched_at: datetime | None, now: datetime) -> bool:

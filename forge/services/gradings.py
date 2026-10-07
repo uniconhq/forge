@@ -22,10 +22,13 @@ it, and with the reader's connection let go of first.
 
 An organiser managing the task reads its gradings and acts on one:
 
-- `cancel` stops a grading that is not finished, at the CI too when a run
-  of it is there, so a run nobody will look at does not hold a machine,
-  including one that reads as a system error because it is overdue or lost
-  while its row still waits;
+- `cancel` ends a submission whose latest grading reads as a system error,
+  stored or because it is overdue or lost while its row still waits, when a
+  regrade would only repeat the fault: the grading is `cancelled` with a
+  sentence its contestant reads, and a run of it still at the CI is stopped
+  once the cancel has committed, so it does not hold a machine. A cancelled
+  submission does not count against the task's `submissions.max`, and a
+  rejudge leaves it as it is;
 - `retry` makes a new attempt of a finished one, against the publication
   the old attempt graded against, unless another attempt of it is still
   being graded. One that reads as finished only because it is overdue or
@@ -37,7 +40,7 @@ An organiser managing the task reads its gradings and acts on one:
   change to how the task grades does (`regrade`).
   A latest attempt still being graded against an older publication is
   cancelled first; one being graded against the current one is left to
-  finish;
+  finish, and a submission staff cancelled stays cancelled;
 - `run_log` reads a grading's run log, for an organiser observing the
   task: it names every test, hidden ones too, so it is the organisers'
   alone. It is read whole up to `RUN_LOG_MAX` bytes and refused above
@@ -80,6 +83,7 @@ from forge.domain.grading import (
     GradingStatus,
     RunState,
     callback_token,
+    cancel_reason,
     envelope_key,
     log_key,
     overdue,
@@ -140,9 +144,10 @@ CALLBACK_PATH = "/api/v1/gradings/{grading}/callback"
 @dataclass(frozen=True, slots=True)
 class GradingRecord:
     """One grading as an organiser reads it: which submission and attempt,
-    against which publication, where it stands, the result as it came back,
-    whether its log was written, the last progress its run reported, and
-    its times.
+    against which publication, where it stands, why when it is a system
+    error, the sentence staff cancelled it with, the result as it came
+    back, whether its log was written, the last progress its run reported,
+    and its times.
     """
 
     id: uuid.UUID
@@ -162,6 +167,7 @@ class GradingRecord:
     started_at: datetime | None
     finished_at: datetime | None
     deadline_at: datetime | None
+    cancel_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,6 +461,14 @@ def changed(ctx: Context, row: Grading) -> None:
     )
 
 
+def staff_cancelled(row: Grading) -> bool:
+    """Whether staff ended the grading's submission by cancelling it, which,
+    while it is the latest attempt, leaves the submission out of what a
+    task's `submissions.max` counts and of what a rejudge grades again.
+    """
+    return row.status == GradingStatus.CANCELLED and row.cancel_reason is not None
+
+
 def overdue_of(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> str | None:
     """Why the grading is past what its state may take, or none. `lost`
     names the gradings whose runs the CI was found to have lost.
@@ -531,18 +545,36 @@ async def task_of(ctx: Context, grading: uuid.UUID) -> TaskId:
 
 
 @action
-async def cancel(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> GradingRecord:
-    """Stop a grading that is not finished, and its run at the CI once the
-    stop has committed, holding nothing while the CI is called. `WrongStatus`
-    for one that is finished.
+async def cancel(
+    ctx: Context, organiser: Organiser, grading: uuid.UUID, reason: str
+) -> GradingRecord:
+    """End a submission whose latest grading reads as a system error by
+    cancelling that grading, with `reason`, a sentence its contestant reads.
+    One that reads so only because it is overdue or lost has that written
+    on its row as its error, and its run at the CI is stopped once the
+    cancel has committed, holding nothing while the CI is called.
+    `InvalidReason` for an empty sentence or one over `CANCEL_REASON_MAX`
+    characters, `WrongStatus` for a grading that is not a system error, and
+    `Conflict` for one with a later attempt, which is the one to cancel.
     """
-    row = await _managed(ctx, organiser, grading)
+    sentence = cancel_reason(reason)
+    found = await _managed(ctx, organiser, grading, lock=False)
+    gone = await lost(ctx, [found])
+    attempts = await _attempts(ctx, [found.submission_id])
+    row = next(attempt for attempt in attempts if attempt.id == grading)
+    status = status_of(ctx, row, gone)
+    if status is not GradingStatus.SYSTEM_ERROR:
+        raise WrongStatus(
+            f"Only a grading in system_error is cancelled; this one is {status.value}.",
+            current=status.value,
+        )
+    if any(other.attempt > row.attempt for other in attempts):
+        raise Conflict("A later attempt of this submission exists; cancel that one.")
     stored = GradingStatus(row.status)
-    if stored in FINISHED:
-        raise WrongStatus(f"The grading is {stored.value} already.", current=stored.value)
     if stored in AT_THE_CI and row.run_id is not None:
         _cancel_after_commit(ctx, RunId(row.run_id))
-    finish(ctx, row, GradingStatus.CANCELLED)
+    finish(ctx, row, GradingStatus.CANCELLED, error=overdue_of(ctx, row, gone) or row.error)
+    row.cancel_reason = sentence
     await ctx.db.flush()
     log.info("gradings.cancelled", grading=str(row.id), user_id=organiser.user.id)
     return record(ctx, row)
@@ -683,6 +715,7 @@ def record(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> Grad
         started_at=row.started_at,
         finished_at=row.finished_at,
         deadline_at=row.deadline_at,
+        cancel_reason=row.cancel_reason,
     )
 
 
@@ -755,7 +788,8 @@ async def regrade(ctx: Context, task: TaskId, publication: PublicationId) -> Rej
     against another publication is cancelled first, and one being graded
     against `publication` is left to finish; one that reads as finished only
     because it is overdue or lost is ended first, its old run cancelled at
-    the CI once this has committed.
+    the CI once this has committed. A submission staff cancelled, its latest
+    attempt `cancelled` with a sentence, is left as it is.
     """
     # Which runs the CI has lost is asked before any row is held, since
     # asking takes the CI's time.
@@ -783,6 +817,8 @@ async def regrade(ctx: Context, task: TaskId, publication: PublicationId) -> Rej
         attempts.setdefault(row.submission_id, []).append(row)
     queued = cancelled = left_running = 0
     for submission, row in latest.items():
+        if staff_cancelled(row):
+            continue
         status = status_of(ctx, row, gone)
         if status in UNFINISHED:
             if row.publication_id == publication:

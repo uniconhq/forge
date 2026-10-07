@@ -1156,7 +1156,8 @@ order and stops at the first refusal, before anything is written, each with a
 code of its own: the task is open by the server's clock plus the
 contestant's extension (`task_closed` with its `reason`, or `archived`); they
 are approved (`not_approved`); they have submissions left (`submission_limit`),
-counted from the submissions at the forge; the task's rate holds
+counted from the submissions at the forge but for the ones staff
+cancelled; the task's rate holds
 (`rate_limited`, with `retry_at`), counted from the grading rows within its
 window; every upload named is theirs for this task (`upload_not_yours`), a
 checked file no submission used (`upload_not_ready`), and each and all of
@@ -1211,9 +1212,11 @@ same tests, its own otherwise, so its rows are folded with the tests they
 ran on; a group with no rows did not run on it (`ran` false) and adds
 nothing to the outcome. A past publication's `task.yaml` and plan are read
 once per process. A run in `system_error` is told to its contestant as
-still running, with nothing of it shown. `files` gives the inputs one was
-made with, as its `submission.json` names them, and `download` a door to
-one of those files, which the proxy streams from the forge. A run's log
+still running, with nothing of it shown, and one staff then cancelled as
+`cancelled` with the sentence they gave (`Result.reason`). `files` gives
+the inputs one was made with, as its `submission.json` names them, and
+`download` a door to one of those files, which the proxy streams from the
+forge. A run's log
 names every test, the hidden ones too, so it is the organisers'
 (`gradings.run_log`). Anyone else's submission is no such submission.
 
@@ -1364,10 +1367,21 @@ start once it commits. It logs what it did as `reconcile.done`.
 
 **The organiser's controls.** Each takes the `Organiser` from
 `access.organiser` and needs manager at the grading's task; a grading whose
-task they do not observe is no such grading. `gradings.cancel` stops a
-grading that is not finished, at the CI too when a run of it is there,
-one that reads as `system_error` because it is overdue or lost while its
-row still waits included (`WrongStatus` for a finished one).
+task they do not observe is no such grading. `gradings.cancel(grading,
+reason)` is staff ending a submission in `system_error` when a regrade
+would only repeat the fault: it cancels a latest attempt that reads as
+`system_error`, stored or because it is overdue or lost while its row still
+waits, with `reason`, a sentence its contestant reads, trimmed, from 1 to
+500 characters (`invalid_reason` otherwise). The row keeps `error`, the
+line for staff, the overdue or lost reason written there for one that only
+read so, and the sentence in `cancel_reason`; a run of it still at the CI is
+cancelled once the cancel has committed. Anything else is `WrongStatus`
+with the status it reads as, and an earlier attempt of a submission
+attempted again is `Conflict`, since the latest is the one to cancel. A
+submission whose latest attempt staff cancelled is served to its
+contestant as `cancelled` with the sentence, does not count against the
+task's `submissions.max`, and is left as it is by a rejudge and by a save's
+regrade; a `retry` of it grades it again.
 `gradings.retry` makes a new attempt of a finished one against the
 publication it graded against, while no other attempt of it is being
 graded (`Conflict`). One that reads as finished only because it is overdue
@@ -1457,7 +1471,8 @@ of the submit that made it; its status is one of `queued`, `dispatched`,
 was queued, `run_id`, `dispatched_at`, `started_at` and `deadline_at` are
 its run, when it was started, when its harness fetched the envelope and its
 deadline, `progress` the last progress reported, `result` and `log_key`
-what came back, and `error` a line for staff. An `uploads` row is one
+what came back, `error` a line for staff, and `cancel_reason` the sentence
+staff cancelled it with, which its contestant reads. An `uploads` row is one
 browser upload: its owner, task and input, name, declared and measured
 size, digest, status, the id of its parts while they arrive, the submission
 that consumed it, and when its lifetime ends. An `invites` row is one

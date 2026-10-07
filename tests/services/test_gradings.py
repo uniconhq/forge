@@ -33,6 +33,7 @@ from sqlalchemy import delete, select, update
 
 from forge.db.tables import Grading
 from forge.domain import exact_json
+from forge.domain.content import Edit
 from forge.domain.contracts import violation
 from forge.domain.errors import (
     CiRequestRefused,
@@ -40,14 +41,17 @@ from forge.domain.errors import (
     Forbidden,
     GradingClosed,
     InvalidCallback,
+    InvalidReason,
     InvalidToken,
     LogTooLarge,
     Misconfigured,
     NotFound,
+    SubmissionLimit,
     Unavailable,
     WrongStatus,
 )
 from forge.domain.grading import (
+    CANCEL_REASON_MAX,
     LOST,
     LOST_CHECK_AFTER,
     MACHINE_WAIT,
@@ -70,7 +74,7 @@ from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import gradings, org_accounts, reconcile, runs, submissions
+from forge.services import gradings, org_accounts, publications, reconcile, runs, submissions
 from forge.services.access import Organiser
 from forge.testing import FakeClock
 from tests.services.conftest import Acme, Entered, organiser, publish, upload
@@ -680,22 +684,94 @@ async def test_a_report_is_refused_once_the_grading_takes_none(
         await _report(setup, row, _finished(_result(envelope)))
 
 
-async def test_an_organiser_cancels_a_grading_at_the_ci_too(
-    setup: Setup, acme: Acme, entered: Entered
+REASON = "The checker crashed on this one; it is not counted."
+
+
+async def test_staff_cancel_only_a_grading_in_system_error_and_say_why(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
     row = await _submit(setup, acme, entered)
     run = RunId(str((await _row(setup, row.id)).run_id))
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    with pytest.raises(WrongStatus) as waiting:
+        await gradings.cancel(setup, manager, row.id, REASON)
+    assert waiting.value.extra == {"current": "dispatched"}
+    for unsaid in ("", "   ", "x" * (CANCEL_REASON_MAX + 1)):
+        with pytest.raises(InvalidReason):
+            await gradings.cancel(setup, manager, row.id, unsaid)
+    clock.advance(MACHINE_WAIT)
 
-    cancelled = await gradings.cancel(setup, manager, row.id)
+    cancelled = await gradings.cancel(setup, manager, row.id, f"  {REASON}\n")
 
-    assert cancelled.status == GradingStatus.CANCELLED
+    assert (cancelled.status, cancelled.error, cancelled.cancel_reason) == (
+        GradingStatus.CANCELLED,
+        NEVER_BEGAN,
+        REASON,
+    )
     assert acme.fake.state.runs[run].cancelled is True
     with pytest.raises(WrongStatus) as refused:
-        await gradings.cancel(setup, manager, row.id)
+        await gradings.cancel(setup, manager, row.id, REASON)
     assert refused.value.extra == {"current": "cancelled"}
     with pytest.raises(GradingClosed):
         await runs.envelope(setup, row.id, _key(setup, row))
+    (listed,) = await gradings.list(setup, manager, entered.task)
+    assert (listed.status, listed.cancel_reason) == (GradingStatus.CANCELLED, REASON)
+
+
+async def test_a_cancelled_submission_reads_as_cancelled_and_frees_its_place_under_the_max(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    row = await _submit(setup, acme, entered)
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    await _set(setup, row.id, status=GradingStatus.SYSTEM_ERROR, error="The checker crashed.")
+    before = (await submissions.one(setup, entered.session, entered.task, 1)).grading
+    assert before is not None
+    assert (before.status, before.reason) == (GradingStatus.RUNNING, None)
+
+    await gradings.cancel(setup, manager, row.id, REASON)
+
+    after = (await submissions.one(setup, entered.session, entered.task, 1)).grading
+    assert after is not None
+    assert (after.status, after.reason) == (GradingStatus.CANCELLED, REASON)
+    assert (await _row(setup, row.id)).error == "The checker crashed."
+    # A task that takes one submission takes another once that one is cancelled.
+    await _limit_to_one(setup, acme, entered)
+    clock.advance(timedelta(seconds=31))
+    second = await _submit(setup, acme, entered, key="key-0002-bbbb")
+    assert second.submission_number == 2
+    clock.advance(timedelta(seconds=31))
+    with pytest.raises(SubmissionLimit):
+        await _submit(setup, acme, entered, key="key-0003-cccc")
+    # A rejudge leaves the cancelled one as it is.
+    rejudged = await gradings.rejudge(setup, manager, entered.task)
+    assert (rejudged.queued, rejudged.cancelled, rejudged.left_running) == (0, 0, 1)
+    first = [found for found in await _rows(setup) if found.submission_number == 1]
+    assert [(found.attempt, found.status) for found in first] == [(1, GradingStatus.CANCELLED)]
+
+
+async def _limit_to_one(setup: Setup, acme: Acme, entered: Entered) -> None:
+    current = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
+    limited = current.content.replace(b"test_groups:", b"submissions: {max: 1}\ntest_groups:")
+    head = await acme.fake.content.list_files(PLATFORM, entered.task)
+    await publications.save(
+        setup, acme.ada, entered.task, {"task.yaml": Edit(limited, head.tokens["task.yaml"])}
+    )
+
+
+async def test_only_the_latest_attempt_of_a_submission_is_cancelled(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    row = await _submit(setup, acme, entered)
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    await _set(setup, row.id, status=GradingStatus.SYSTEM_ERROR, error="The checker crashed.")
+    retried = await gradings.retry(setup, manager, row.id)
+    await _set(setup, retried.id, status=GradingStatus.SYSTEM_ERROR, error="Again.")
+
+    with pytest.raises(Conflict):
+        await gradings.cancel(setup, manager, row.id, REASON)
+    cancelled = await gradings.cancel(setup, manager, retried.id, REASON)
+
+    assert (cancelled.attempt, cancelled.status) == (2, GradingStatus.CANCELLED)
 
 
 async def test_a_grading_is_no_such_grading_to_an_organiser_who_does_not_observe_its_task(
@@ -709,11 +785,11 @@ async def test_a_grading_is_no_such_grading_to_an_organiser_who_does_not_observe
     with pytest.raises(NotFound):
         await gradings.task_of(setup, uuid.uuid4())
     with pytest.raises(NotFound):
-        await gradings.cancel(setup, stranger, row.id)
+        await gradings.cancel(setup, stranger, row.id, REASON)
     with pytest.raises(NotFound):
-        await gradings.cancel(setup, acme.ada, uuid.uuid4())
+        await gradings.cancel(setup, acme.ada, uuid.uuid4(), REASON)
     with pytest.raises(Forbidden):
-        await gradings.cancel(setup, observer, row.id)
+        await gradings.cancel(setup, observer, row.id, REASON)
     assert [found.id for found in await gradings.list(setup, observer, entered.task)] == [row.id]
 
 
@@ -973,7 +1049,7 @@ async def test_an_organiser_cancels_a_grading_that_reads_as_stuck(
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
     clock.advance(MACHINE_WAIT)
 
-    cancelled = await gradings.cancel(setup, manager, row.id)
+    cancelled = await gradings.cancel(setup, manager, row.id, REASON)
 
     assert cancelled.status == GradingStatus.CANCELLED
     assert acme.fake.state.runs[run].cancelled is True
@@ -998,17 +1074,22 @@ async def test_a_run_that_ended_before_its_harness_began_reads_as_lost_and_retri
 
 
 async def test_a_cancel_the_ci_refuses_still_cancels_the_grading(
-    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     row = await _submit(setup, acme, entered)
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    clock.advance(MACHINE_WAIT)
 
     async def refused(*args: object, **kwargs: object) -> None:
         raise Unavailable("the CI is away")
 
     monkeypatch.setattr(acme.fake.grading, "cancel_run", refused)
 
-    cancelled = await gradings.cancel(setup, manager, row.id)
+    cancelled = await gradings.cancel(setup, manager, row.id, REASON)
 
     assert cancelled.status == GradingStatus.CANCELLED
     assert (await _row(setup, row.id)).status == GradingStatus.CANCELLED

@@ -74,7 +74,11 @@ async def _submit(setup: Setup, acme: Acme, entered: Entered) -> uuid.UUID:
 
 
 async def test_each_status_change_of_a_grading_publishes_its_id_once(
-    setup: Setup, acme: Acme, entered: Entered, listening: psycopg.AsyncConnection
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    listening: psycopg.AsyncConnection,
+    clock: FakeClock,
 ) -> None:
     grading = await _submit(setup, acme, entered)
     queued_and_dispatched = await _heard(listening)
@@ -89,8 +93,14 @@ async def test_each_status_change_of_a_grading_publishes_its_id_once(
     report = {"event": "progress", "step": "run", "done": 1, "total": 2}
     await runs.callback(setup, grading, f"Bearer {token}", json.dumps(report).encode())
     progressed = await _heard(listening)
+    # Staff cancel only a grading in system_error: this one is past its
+    # deadline, which writes nothing and so nudges nobody.
+    async with setup.unit_of_work() as ctx:
+        running_row = await gradings.find(ctx, grading)
+        assert running_row is not None and running_row.deadline_at is not None
+        clock.set(running_row.deadline_at)
     manager = await organiser(setup, acme.fake, 7, task_scope(entered.task), Role.MANAGER)
-    await gradings.cancel(setup, manager, grading)
+    await gradings.cancel(setup, manager, grading, "The checker crashed; this one is not counted.")
     cancelled = await _heard(listening)
 
     for heard in (queued_and_dispatched, running, progressed, cancelled):
