@@ -138,6 +138,7 @@ async def test_the_feed_lists_every_attempt_newest_first_with_who_submitted_it(
         1,
     )
     assert retried.attempt == 2
+    assert [entry.grading.latest for entry in listed] == [True, True, True, False]
     assert (first.status, first.error) == (GradingStatus.SYSTEM_ERROR, "The checker crashed.")
     assert [
         entry.grading.id for entry in await gradings.feed(setup, observer, SPRING, limit=2)
@@ -163,6 +164,9 @@ async def test_the_feed_narrows_by_task_by_who_submitted_and_by_status(
     assert await ids(user="bob", task=entered.task) == [busy["retried"], busy["first"]]
     assert await ids(user="nobody") == []
     assert await ids(status=GradingStatus.SYSTEM_ERROR) == [busy["first"]]
+    # Alone on its page, the first attempt is still not the latest.
+    (stuck,) = await gradings.feed(setup, observer, SPRING, status=GradingStatus.SYSTEM_ERROR)
+    assert stuck.grading.latest is False
     assert await ids(status=GradingStatus.DISPATCHED) == [
         busy["by_carol"],
         busy["on_max"],

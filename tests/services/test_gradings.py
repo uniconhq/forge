@@ -789,8 +789,10 @@ async def test_only_the_latest_attempt_of_a_submission_is_retried(
     assert "later attempt" in refused.value.detail
     again = await gradings.retry(setup, manager, retried.id)
 
-    assert again.attempt == 3
+    assert (again.attempt, again.latest) == (3, True)
     assert [found.attempt for found in await _rows(setup)] == [1, 2, 3]
+    listed = await gradings.list(setup, manager, entered.task, limit=2)
+    assert [(found.attempt, found.latest) for found in listed] == [(3, True), (2, False)]
 
 
 async def test_a_grading_is_no_such_grading_to_an_organiser_who_does_not_observe_its_task(

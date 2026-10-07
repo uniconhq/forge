@@ -74,7 +74,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import ColumnElement, select, tuple_
+from sqlalchemy import ColumnElement, func, select, tuple_
 
 from forge.db.tables import Grading, Team
 from forge.domain.errors import (
@@ -162,6 +162,7 @@ CALLBACK_PATH = "/api/v1/gradings/{grading}/callback"
 @dataclass(frozen=True, slots=True)
 class GradingRecord:
     """One grading as an organiser reads it: which submission and attempt,
+    whether that is the submission's latest attempt, the one staff act on,
     against which publication, where it stands, why when it is a system
     error, the sentence staff cancelled it with, the result as it came
     back, whether its log was written, the last progress its run reported,
@@ -175,6 +176,7 @@ class GradingRecord:
     submitted_at: datetime
     publication: PublicationId
     attempt: int
+    latest: bool
     status: GradingStatus
     error: str | None
     result: dict[str, Any] | None
@@ -628,7 +630,7 @@ async def cancel(
     row.cancel_reason = sentence
     await ctx.db.flush()
     log.info("gradings.cancelled", grading=str(row.id), user_id=organiser.user.id)
-    return record(ctx, row)
+    return record(ctx, row, latest=True)
 
 
 @action
@@ -658,7 +660,7 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     made = _next_attempt(ctx, row, PublicationId(row.publication_id), attempts)
     await ctx.db.flush()
     log.info("gradings.retried", grading=str(row.id), attempt=made.attempt)
-    return record(ctx, made)
+    return record(ctx, made, latest=True)
 
 
 def _cancel_after_commit(ctx: Context, run: RunId) -> None:
@@ -705,8 +707,9 @@ async def list(
         .scalars()
         .all()
     )
+    last = await _latest(ctx, rows)
     gone = await lost(ctx, rows)
-    return tuple(record(ctx, row, gone) for row in rows)
+    return tuple(record(ctx, row, gone, latest=row.id in last) for row in rows)
 
 
 @action
@@ -763,9 +766,10 @@ async def feed(
             .scalars()
             .all()
         )
+        last = await _latest(ctx, rows)
         gone = await lost(ctx, rows)
         kept.extend(
-            record(ctx, row, gone)
+            record(ctx, row, gone, latest=row.id in last)
             for row in rows
             if status is None or status_of(ctx, row, gone) == status
         )
@@ -905,7 +909,12 @@ def _log_failure(exc: PortError, grading: uuid.UUID) -> Unavailable:
     return Unavailable(LOG_STORE_UNAVAILABLE)
 
 
-def record(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> GradingRecord:
+def record(
+    ctx: Context, row: Grading, lost: Collection[uuid.UUID] = (), *, latest: bool
+) -> GradingRecord:
+    """The grading as an organiser reads it, `latest` saying whether it is
+    its submission's latest attempt.
+    """
     late = overdue_of(ctx, row, lost)
     return GradingRecord(
         id=row.id,
@@ -915,6 +924,7 @@ def record(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> Grad
         submitted_at=row.submitted_at,
         publication=PublicationId(row.publication_id),
         attempt=row.attempt,
+        latest=latest,
         status=GradingStatus.SYSTEM_ERROR if late is not None else GradingStatus(row.status),
         error=late or row.error,
         result=row.result,
@@ -927,6 +937,23 @@ def record(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> Grad
         deadline_at=row.deadline_at,
         cancel_reason=row.cancel_reason,
     )
+
+
+async def _latest(ctx: Context, rows: Iterable[Grading]) -> frozenset[uuid.UUID]:
+    """The gradings among `rows` that are the latest attempt of their
+    submission, worked out over every attempt of it, read or not.
+    """
+    listed = builtins.list(rows)
+    submissions = sorted({row.submission_id for row in listed})
+    if not submissions:
+        return frozenset()
+    found = await ctx.db.execute(
+        select(Grading.submission_id, func.max(Grading.attempt))
+        .where(Grading.submission_id.in_(submissions))
+        .group_by(Grading.submission_id)
+    )
+    last: dict[str, int] = dict(found.all())
+    return frozenset(row.id for row in listed if row.attempt == last.get(row.submission_id))
 
 
 async def _managed(
