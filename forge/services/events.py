@@ -112,4 +112,4 @@ async def _released(ctx: Context, change: ThreadChange) -> bool:
         found = await published.task(ctx, change.task, settings)
     except PortError:
         return False
-    return found is not None and rules.visible(settings, found.definition, ctx.now)
+    return found is not None and rules.visible(settings, found.name, ctx.now)

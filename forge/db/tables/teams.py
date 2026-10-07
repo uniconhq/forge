@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import BigInteger, CheckConstraint, Index, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.db.base import Base, Timestamped
@@ -25,6 +26,11 @@ class Team(Base, Timestamped):
     contest_id: Mapped[str]
     name: Mapped[str]
     leader_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    time_extension_seconds: Mapped[int] = mapped_column(server_default=text("0"))
+    """The team's extension, which moves its due and close on the tasks it
+    names; a team is the row a contest with teams ranks and times."""
+    extension_tasks: Mapped[list[str] | None] = mapped_column(JSONB)
+    """The tasks, by name, the extension is for; every task when none."""
 
     __table_args__ = (
         Index("ix_teams_contest_id_name", "contest_id", text("lower(name)"), unique=True),

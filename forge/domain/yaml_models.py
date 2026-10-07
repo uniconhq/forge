@@ -9,7 +9,8 @@ shows the sentence beside the field the path names.
 
 import math
 import re
-from collections.abc import Hashable, Iterable, Sequence
+from collections.abc import Callable, Hashable, Iterable, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Annotated, Any, NoReturn, TypedDict
 
@@ -131,12 +132,84 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-def validate[M: Model](model: type[M], what: str, document: dict[str, Any]) -> M:
-    """`document` as a `model`, or `InvalidDefinition` listing every problem."""
+ANY = object()
+"""A part of a `Retired` path that matches any key or index."""
+
+
+@dataclass(frozen=True, slots=True)
+class Retired:
+    """A key, or a value at a key, the format no longer has, and the sentence
+    that says what replaced it, or a function of the value giving it. `path`
+    may hold `ANY` for a list index or a mapping key; `when`, given, says
+    which values at the path are retired, and without it any value is.
+    """
+
+    path: tuple[object, ...]
+    message: str | Callable[[object], str]
+    when: Callable[[object], bool] | None = None
+
+
+def retired_problems(document: object, rules: Sequence[Retired]) -> list[tuple[Path, str]]:
+    """Every place in `document` a rule of `rules` names, with its sentence."""
+    found: list[tuple[Path, str]] = []
+    for rule in rules:
+        for path, value in _at(document, rule.path, ()):
+            if rule.when is None or rule.when(value):
+                message = rule.message if isinstance(rule.message, str) else rule.message(value)
+                found.append((path, message))
+    return found
+
+
+def _at(node: object, pattern: tuple[object, ...], path: Path) -> list[tuple[Path, object]]:
+    if not pattern:
+        return [(path, node)]
+    head, rest = pattern[0], pattern[1:]
+    if isinstance(node, dict):
+        keys = [key for key in node if isinstance(key, str | int)] if head is ANY else [head]
+        return [
+            found
+            for key in keys
+            if key in node
+            for found in _at(node[key], rest, (*path, key))  # type: ignore[arg-type]
+        ]
+    if isinstance(node, list) and (head is ANY or isinstance(head, int)):
+        indices = range(len(node)) if head is ANY else [head]
+        return [
+            found
+            for index in indices
+            if isinstance(index, int) and 0 <= index < len(node)
+            for found in _at(node[index], rest, (*path, index))
+        ]
+    return []
+
+
+def validate[M: Model](
+    model: type[M], what: str, document: dict[str, Any], retired: Sequence[Retired] = ()
+) -> M:
+    """`document` as a `model`, or `InvalidDefinition` listing every problem.
+    A key or value `retired` names is refused with its own sentence, and
+    nothing else is said about it or anything under it.
+    """
+    old = [
+        Problem(path=path_text(path), message=message)
+        for path, message in retired_problems(document, retired)
+    ]
     try:
-        return model.model_validate(document)
+        found = model.model_validate(document)
     except ValidationError as error:
-        raise InvalidDefinition(what, problems_of(error)) from None
+        problems = [
+            problem
+            for problem in problems_of(error)
+            if not any(_under(problem["path"], replaced["path"]) for replaced in old)
+        ]
+        raise InvalidDefinition(what, [*old, *problems]) from None
+    if old:
+        raise InvalidDefinition(what, old)
+    return found
+
+
+def _under(path: str, top: str) -> bool:
+    return path == top or path.startswith((f"{top}.", f"{top}["))
 
 
 def problems_of(error: ValidationError) -> list[Problem]:
@@ -149,7 +222,9 @@ def problems_of(error: ValidationError) -> list[Problem]:
     failed_entries = {tuple(detail["loc"]) for detail in details}
     problems: list[Problem] = []
     for detail in details:
-        loc = tuple(detail["loc"])
+        # A mapping's key that fails is reported at the key itself; pydantic
+        # adds a `[key]` part no YAML path has.
+        loc = tuple(part for part in detail["loc"] if part != "[key]")
         if detail["type"] == "too_short" and any(
             place[: len(loc)] == loc and len(place) > len(loc) for place in failed_entries
         ):
@@ -190,6 +265,8 @@ def _message(detail: ErrorDetails) -> str:
             return f"Must be at least {ctx.get('ge')}."
         case "greater_than":
             return f"Must be more than {ctx.get('gt')}."
+        case "less_than_equal":
+            return f"Must be at most {ctx.get('le')}."
         case "string_too_short":
             return "Must not be empty."
         case "too_short":
@@ -291,8 +368,18 @@ def _aware_time(value: object) -> datetime:
     return value
 
 
+def _line(value: object) -> str:
+    text = _text(value)
+    if "\n" in text or "\r" in text:
+        raise ValueError("Must be one line.")
+    return text
+
+
 Text = Annotated[str, PlainValidator(_text)]
 """Text that is not empty or only spaces."""
+
+Line = Annotated[str, PlainValidator(_line)]
+"""One line of text: not empty, not only spaces, no line break."""
 
 Handle = Annotated[str, PlainValidator(_handle)]
 """An id following the name rules in `forge.domain.names`."""

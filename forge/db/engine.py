@@ -1,7 +1,9 @@
 """The connection pool, the factory that opens a transaction on it, and the
 separate connection a readiness probe asks with. Every connection runs in
 UTC, so a time read back from the database is in UTC whatever zone the
-server itself is set to, the same as every time the package writes.
+server itself is set to, the same as every time the package writes. A JSON
+column's numbers are kept as written (`forge.domain.exact_json`), so a
+result's values come back exactly.
 
 A unit of work holds one connection from its first query until it commits
 or rolls back, and never asks for a second while it holds the first: a
@@ -29,6 +31,8 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import ORMExecuteState, Session, SessionTransaction
 from sqlalchemy.pool import NullPool
+
+from forge.domain import exact_json
 
 TransactionFactory = async_sessionmaker[AsyncSession]
 
@@ -59,6 +63,8 @@ def new_engine(database_url: str, pool: PoolSize) -> AsyncEngine:
         max_overflow=pool.overflow,
         pool_timeout=pool.wait.total_seconds(),
         connect_args=IN_UTC,
+        json_serializer=exact_json.dumps,
+        json_deserializer=exact_json.loads,
     )
 
 

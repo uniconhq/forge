@@ -42,7 +42,7 @@ end: 2026-09-26T15:00:00Z
 state: published
 visibility: {visibility}
 registration:
-  mode: invite-only
+  invite_only: true
 """
 
 
@@ -102,7 +102,7 @@ async def test_an_invite_by_email_waits_for_the_account_and_lets_it_register_inv
     setup: Setup, people: Acme, clock: FakeClock
 ) -> None:
     acme = people
-    await write_contest(acme.fake, INVITE_ONLY.format(visibility="public"))
+    await write_contest(acme.fake, INVITE_ONLY.format(visibility="everyone"))
     manager = await _manager(setup, acme)
     made = await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, email="  Dan@Uni.Test ")
     assert made.email == "dan@uni.test"
@@ -445,7 +445,7 @@ async def test_a_place_and_a_role_are_refused_to_whoever_could_not_take_them(
     setup: Setup, people: Acme
 ) -> None:
     acme = people
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     manager = await _manager(setup, acme)
     carol = await signed_in(setup, acme.fake, 20)
     await contestants.register(setup, carol, ContestId("acme/spring"))

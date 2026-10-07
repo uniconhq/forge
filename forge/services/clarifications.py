@@ -127,7 +127,7 @@ async def ask(
     if task is not None:
         about = await names.task_id(ctx, contest, task)
         found = await published.task(ctx, about, settings) if about is not None else None
-        if found is None or not rules.visible(settings, found.definition, ctx.now):
+        if found is None or not rules.visible(settings, found.name, ctx.now):
             raise NotFound(published.NO_SUCH_TASK)
         body += f"\n\n<!-- unicon:task {about} -->"
     where = await names.scope_names(ctx, contest_scope(contest))

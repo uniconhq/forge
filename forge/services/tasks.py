@@ -1,7 +1,7 @@
 """Making a task, listing a contest's tasks, and where its files stand
 against its publications. A task is one place at the forge holding
-`task.yaml`, `statement.md` and an example testcase in `data/testcases/`,
-with three roles of its own. `create` makes it before it answers: the place
+`task.yaml`, `statement.md`, an empty `public/` and one test in
+`tests/main/1/`, with three roles of its own. `create` makes it before it answers: the place
 with its starter files; its roles and protection, which `content.secure`
 attaches, reserving the task's publications for the platform in the same
 call; its activation at the CI, as the org's own account, which takes the
@@ -16,11 +16,13 @@ logged (`forge.services.making`). The person asks again. Nothing is
 published until the first save.
 
 A contest's tasks are the tasks there are at the forge. The `tasks` list in
-`contest.yaml` orders, labels and scores them. A new task is added to the
-end of that list by the platform, with the next free letter as its label and
-100 points (`forge.domain.contest_entries`), so it shows on the contest's
-pages without anyone editing the file first. The edit is made in the file's
-text, so the organisers' comments and layout stay. When the file does not
+`contest.yaml` orders them, a task's label being its place in it, and gives
+each its timeline and its worth. A new task is added to the end of that list
+by the platform as `{id: <name>}`, and in a published contest with its
+`release_at` and `closes` at the contest's end, so work in progress shows
+nothing until the organisers move them (`forge.domain.contest_entries`).
+The edit is made in the file's text, so the organisers' comments and layout
+stay. When the file does not
 read as a `contest.yaml`, or its list cannot be added to line by line, the
 task is made without an entry and an organiser adds one by hand; an
 organiser's change to the file between the read and the write fails the

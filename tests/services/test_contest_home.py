@@ -1,24 +1,28 @@
 """What a signed-in person reads of a contest. The home of a contest they see
-carries its dates, their registration, their own deadline and the server's
-clock, and lists only the tasks released to them, in the contest's order. A
-task's page gives the statement and limits its latest publication froze, and
-nothing for a task that is not visible. A hidden contest is seen by its
-approved contestants and organisers alone, and anyone else is told there is
-no such contest, as for one that is not there. The list holds every contest
-the person sees, with their own status. Everything is read as the platform.
+carries its dates, their registration and the server's clock, and lists
+only the tasks released to them, in the contest's order, each with the
+label its place gives it, its worth, and its due and close for the person's
+row, their extension on it included. A task's page gives the statement its
+latest publication froze, its submission caps and the form of the inputs a
+contestant gives, read from the plan, and nothing for a task that is not
+visible. A hidden contest is seen by its approved contestants and
+organisers alone, and anyone else is told there is no such contest, as for
+one that is not there. The list holds every contest the person sees, with
+their own status. Everything is read as the platform.
 """
 
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from forge.domain.definitions import Rate
 from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.registration import Status
 from forge.domain.release import Closed
 from forge.domain.roles import Role, Scope
-from forge.domain.workflow_definition import InputType
+from forge.domain.types import Type
 from forge.runtime.setup import Setup
 from forge.services import contest_home, contestants, contests
 from forge.testing import FakeClock, register_contestant
@@ -34,34 +38,42 @@ from tests.services.conftest import (
     write_contest,
 )
 
-ORDERED = (
-    RUNNING
-    + """\
+ORDERED = """\
+name: Spring 2026
+start: 2026-09-26T10:00:00Z
+end: 2026-09-26T15:00:00Z
+state: published
+visibility: {visibility}
 tasks:
   - id: diff
-    label: A
-    points: 100
   - id: sum
-    label: B
-    points: 50
+    worth: 50
+    due: 2026-09-26T13:00:00Z
+    closes: 2026-09-26T14:00:00Z
+  - id: later
+    release_at: 2026-09-26T13:00:00Z
+  - id: unsaved
 """
-)
+
+
+def at(hour: int, minute: int = 0) -> datetime:
+    return datetime(2026, 9, 26, hour, minute, tzinfo=UTC)
 
 
 @pytest.fixture
 async def published(setup: Setup, acme: Acme, sum_task: TaskId) -> list[TaskId]:
-    """acme/spring running and public, with sum and diff published, a hidden
-    task, one released only later, and one never published.
+    """acme/spring running and for everyone, with diff and sum published
+    and listed in that order, one listed and released only later, one
+    listed and never published, and one published that the contest does not
+    list.
     """
-    await write_contest(acme.fake, ORDERED.format(visibility="public"))
     diff = await make_task(setup, acme, "diff")
-    hidden = await make_task(setup, acme, "hidden")
     later = await make_task(setup, acme, "later")
+    unlisted = await make_task(setup, acme, "unlisted")
     await make_task(setup, acme, "unsaved")
-    await publish(setup, acme, sum_task)
-    await publish(setup, acme, diff)
-    await publish(setup, acme, hidden, b"hidden: true\n")
-    await publish(setup, acme, later, b"release_at: 2026-09-26T13:00:00Z\n")
+    await write_contest(acme.fake, ORDERED.format(visibility="everyone"))
+    for task in (sum_task, diff, later, unlisted):
+        await publish(setup, acme, task)
     acme.fake.reset_calls()
     return [diff, sum_task]
 
@@ -73,18 +85,15 @@ async def test_the_home_lists_only_the_released_tasks_in_the_contests_order(
 
     home = await contest_home.home(setup, bob, SPRING)
 
-    assert [(task.name, task.label, task.points) for task in home.tasks] == [
-        ("diff", "A", 100),
-        ("sum", "B", 50),
+    assert [(task.name, task.label, task.worth, task.due, task.closes) for task in home.tasks] == [
+        ("diff", "A", 100, None, at(15)),
+        ("sum", "B", 50, at(13), at(14)),
     ]
     assert all(task.release.open for task in home.tasks)
     assert home.name == "Spring 2026"
-    assert (home.start, home.end) == (
-        datetime(2026, 9, 26, 10, tzinfo=UTC),
-        datetime(2026, 9, 26, 15, tzinfo=UTC),
-    )
-    assert (home.registration, home.registration_open, home.deadline) == (None, True, home.end)
-    assert home.now == datetime(2026, 9, 26, 12, tzinfo=UTC)
+    assert (home.start, home.end) == (at(10), at(15))
+    assert (home.registration, home.registration_open) == (None, True)
+    assert home.now == at(12)
     assert {call.identity for call in acme.fake.calls} == {PLATFORM}
 
 
@@ -96,30 +105,42 @@ async def test_a_task_released_later_joins_the_home_when_its_time_comes(
 
     home = await contest_home.home(setup, bob, SPRING)
 
-    assert [task.name for task in home.tasks] == ["diff", "sum", "later"]
+    assert [(task.name, task.label) for task in home.tasks] == [
+        ("diff", "A"),
+        ("sum", "B"),
+        ("later", "C"),
+    ]
 
 
-async def test_a_contestants_deadline_and_openness_carry_their_extension(
+async def test_a_contestants_due_close_and_openness_carry_their_extension_on_each_task(
     setup: Setup, acme: Acme, published: list[TaskId], clock: FakeClock
 ) -> None:
-    await register_contestant(setup, SPRING, 8, time_extension=timedelta(minutes=30))
     bob = await signed_in(setup, acme.fake, 8)
-    clock.set(datetime(2026, 9, 26, 15, 10, tzinfo=UTC))
+    await contestants.register(setup, bob, SPRING)
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+    await contestants.approve(setup, manager, SPRING, 8)
+    await contestants.extend(setup, manager, SPRING, 8, timedelta(minutes=30), tasks=["sum"])
+    clock.set(at(14, 10))
 
     home = await contest_home.home(setup, bob, SPRING)
     page = await contest_home.task(setup, bob, TaskId("acme/spring/sum"))
 
-    assert home.deadline == datetime(2026, 9, 26, 15, 30, tzinfo=UTC)
+    assert [(task.name, task.due, task.closes) for task in home.tasks] == [
+        ("diff", None, at(15)),
+        ("sum", at(13, 30), at(14, 30)),
+        ("later", None, at(15)),
+    ]
     assert home.registration is not None and home.registration.status is Status.APPROVED
-    assert page.release.open
-    await register_contestant(setup, SPRING, 20, time_extension=timedelta(0))
+    assert (page.due, page.closes, page.release.open) == (at(13, 30), at(14, 30), True)
+    await register_contestant(setup, SPRING, 20)
     acme.fake.add_user(20, "cyd")
     cyd = await signed_in(setup, acme.fake, 20)
     theirs = await contest_home.task(setup, cyd, TaskId("acme/spring/sum"))
-    assert (theirs.release.open, theirs.release.closed) == (False, Closed.ENDED)
+    assert (theirs.due, theirs.closes) == (at(13), at(14))
+    assert (theirs.release.open, theirs.release.closed) == (False, Closed.CLOSED)
 
 
-async def test_a_task_page_gives_the_published_statement_limits_and_inputs(
+async def test_a_task_page_gives_the_published_statement_caps_and_form(
     setup: Setup, acme: Acme, published: list[TaskId]
 ) -> None:
     sum_task = TaskId("acme/spring/sum")
@@ -136,15 +157,29 @@ async def test_a_task_page_gives_the_published_statement_limits_and_inputs(
 
     page = await contest_home.task(setup, bob, sum_task)
 
-    assert (page.name, page.label, page.points) == ("sum", "B", 50)
+    assert (page.name, page.label, page.worth) == ("sum", "B", 50)
     assert page.statement == statement.content.decode()
-    assert (page.limits.submissions, page.limits.max_size) == (50, 10 * 1024 * 1024)
-    assert [(entry.id, entry.type, entry.language) for entry in page.inputs] == [
-        ("submission", InputType.CODE, ("python",))
+    assert (page.submissions.max, page.submissions.rate) == (50, Rate(count=1, per=30))
+    assert [(field.id, field.type, field.label, field.options) for field in page.inputs] == [
+        ("submission", Type.FILE, "Your solution", None),
+        ("language", Type.ENUM, "language", ("python",)),
     ]
 
 
-@pytest.mark.parametrize("name", ["hidden", "later", "unsaved", "nothing"])
+async def test_a_task_page_reads_the_caps_its_publication_gives(
+    setup: Setup, acme: Acme, published: list[TaskId]
+) -> None:
+    diff = TaskId("acme/spring/diff")
+    await publish(setup, acme, diff, b"submissions: {max: 5, rate: {count: 2, per: 60}}\n")
+    bob = await signed_in(setup, acme.fake, 8)
+
+    page = await contest_home.task(setup, bob, diff)
+
+    assert (page.label, page.worth, page.due, page.closes) == ("A", 100, None, at(15))
+    assert (page.submissions.max, page.submissions.rate) == (5, Rate(count=2, per=60))
+
+
+@pytest.mark.parametrize("name", ["later", "unsaved", "unlisted", "nothing"])
 async def test_a_task_that_is_not_visible_has_no_page(
     setup: Setup, acme: Acme, published: list[TaskId], name: str
 ) -> None:
@@ -184,7 +219,7 @@ async def test_the_list_holds_every_contest_the_person_sees_with_their_status(
     manager = await organiser(setup, acme.fake, 7, Scope("acme"), Role.MANAGER)
     for name in ("autumn", "winter", "draft"):
         await contests.create(setup, manager, ACME, name)
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     await write_contest(acme.fake, RUNNING.format(visibility="signed-in"), ContestId("acme/autumn"))
     await write_contest(acme.fake, RUNNING.format(visibility="hidden"), ContestId("acme/winter"))
     bob = await signed_in(setup, acme.fake, 8)

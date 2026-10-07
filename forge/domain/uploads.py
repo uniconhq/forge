@@ -19,10 +19,10 @@ no commit names them (`[cron.gc_lfs]`), about a week later. An upload a
 submit used keeps its row as the record of what was submitted, and its bytes
 belong to the commit from then on.
 
-A file name is one plain path segment, the name the file is committed under
-in `files/<input>/`. `accept` lists what a file input takes: an entry
-starting with a dot is an ending of the name, compared ignoring case, and an
-entry with a slash a content type, where `image/*` takes every image.
+A file name is one plain path segment; where a file goes under its input,
+`files/<input>/<path>`, is that name for a file input, a path of such names
+for a folder input, and `<group>/<test>` with or without an ending for a
+per-test input (`forge.domain.submissions.path_problem`).
 
 Content the platform writes from someone's typed text is never a pointer,
 and no place it writes carries its own rules about which of its files are
@@ -40,14 +40,13 @@ from enum import StrEnum
 
 from forge.domain.content import UNSAFE_CHARACTERS
 from forge.domain.errors import InvalidInputs
-from forge.domain.workflow_definition import InputType
 
 LIFETIME = timedelta(days=2)
 FILENAME_MAX = 255
 CONTENT_TYPE_MAX = 255
 OPEN_MAX = 200
 """The most uploads one person holds for a task before a submit uses them:
-several file[] inputs of dozens of files each, sent twice over."""
+several folder inputs of dozens of files each, sent twice over."""
 OPEN_SUBMISSIONS = 2
 """How many whole submissions' worth of bytes one person's open uploads for
 a task may declare together: one submission's files and one more try."""
@@ -63,10 +62,6 @@ POINTER_MARK = re.compile(rb"git-media|hawser|git-lfs")
 POINTER_MAX = 1024
 """How much of a blob git-lfs reads when it asks whether it is a pointer:
 the first this many bytes, of a blob of any length."""
-
-FILE_INPUTS = frozenset({InputType.CODE, InputType.FILE, InputType.FILES})
-"""The contestant inputs a file is uploaded for: a code input's source is
-uploaded as one file, like a file input's."""
 
 
 class UploadStatus(StrEnum):
@@ -193,29 +188,6 @@ def filename_problem(name: str) -> str | None:
     if name == ATTRIBUTES_FILE:
         return f"A file cannot be named {ATTRIBUTES_FILE}: it would decide how its folder is read."
     return None
-
-
-def accepts(accept: tuple[str, ...] | None, name: str, content_type: str | None) -> bool:
-    """Whether an input whose `accept` is this takes a file of that name and
-    content type. An input with no `accept` takes any file.
-    """
-    if accept is None:
-        return True
-    lowered = name.lower()
-    kind = (content_type or "").split(";", 1)[0].strip().lower()
-    for entry in accept:
-        wanted = entry.strip().lower()
-        if wanted.startswith("."):
-            if lowered.endswith(wanted):
-                return True
-        elif "/" in wanted:
-            if wanted.endswith("/*") and kind.startswith(wanted[:-1]):
-                return True
-            if kind == wanted:
-                return True
-        elif lowered.endswith(f".{wanted}"):
-            return True
-    return False
 
 
 @dataclass(frozen=True, slots=True)

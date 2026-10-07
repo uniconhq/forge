@@ -157,7 +157,7 @@ async def contest(ctx: Context, session: Session, contest: ContestId) -> tuple[A
     tasks = [
         task
         for task in await published.tasks(ctx, contest, settings)
-        if rules.visible(settings, task.definition, ctx.now)
+        if rules.visible(settings, task.name, ctx.now)
     ]
     where = await names.places_named(ctx, [contest, *(task.id for task in tasks)])
     await ctx.let_go()
@@ -178,7 +178,7 @@ async def task(ctx: Context, session: Session, task: TaskId) -> tuple[Announceme
     except NotFound as exc:
         raise NotFound(published.NO_SUCH_TASK) from exc
     found = await published.task(ctx, task, settings)
-    if found is None or not rules.visible(settings, found.definition, ctx.now):
+    if found is None or not rules.visible(settings, found.name, ctx.now):
         raise NotFound(published.NO_SUCH_TASK)
     where = await names.scope_names(ctx, task_scope(task))
     await ctx.let_go()

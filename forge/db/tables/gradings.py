@@ -1,5 +1,5 @@
-"""One grading of one submission at one stage. Everything about it is in this
-row: what ran, where, its status, and the verdict as it was returned. Nothing
+"""One grading of one submission. Everything about it is in this row: what
+ran, where, its status, and the result as it was returned. Nothing
 in the row names a forge object but by the opaque ids the port hands out.
 
 `task_id` and `workspace_id` say whose submission of which task it is, and
@@ -7,8 +7,8 @@ in the row names a forge object but by the opaque ids the port hands out.
 its files went in with, so the CI's run can be pinned to it and checked
 against it. `submitted_at` is when the submit was taken, by the package's
 clock, which is what a task's rate is counted by. `idempotency_key` is the
-key the submit that made the row was sent with, on the rows a submit makes
-and on no retry or rejudge, unique for a workspace, task and stage.
+key the submit that made the row was sent with, on the row a submit makes
+and on no retry or rejudge, unique for a workspace and task.
 `callback_token_hash` is the SHA-256 of the one token its run reports back
 with, stored at the insert.
 
@@ -45,14 +45,13 @@ class Grading(Base, Timestamped):
     submission_version: Mapped[str]
     submitted_at: Mapped[datetime]
     publication_id: Mapped[str]
-    stage: Mapped[str]
     attempt: Mapped[int] = mapped_column(server_default=text("1"))
     idempotency_key: Mapped[str | None]
 
     status: Mapped[str]
     queued_at: Mapped[datetime] = mapped_column(server_default=func.now())
     progress: Mapped[dict[str, Any] | None]
-    verdict: Mapped[dict[str, Any] | None]
+    result: Mapped[dict[str, Any] | None]
     log_key: Mapped[str | None]
     run_id: Mapped[str | None]
     callback_token_hash: Mapped[bytes | None]
@@ -65,7 +64,7 @@ class Grading(Base, Timestamped):
 
     __table_args__ = (
         CheckConstraint(f"status in {STATUSES}", name="status"),
-        UniqueConstraint("submission_id", "stage", "attempt"),
+        UniqueConstraint("submission_id", "attempt"),
         Index("ix_gradings_workspace_id", "workspace_id"),
         Index("ix_gradings_task_id_workspace_id", "task_id", "workspace_id"),
         Index(
@@ -73,7 +72,6 @@ class Grading(Base, Timestamped):
             "workspace_id",
             "task_id",
             "idempotency_key",
-            "stage",
             unique=True,
             postgresql_where=text("idempotency_key is not null"),
         ),
