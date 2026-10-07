@@ -139,6 +139,12 @@ async def test_the_feed_lists_every_attempt_newest_first_with_who_submitted_it(
     )
     assert retried.attempt == 2
     assert [entry.grading.latest for entry in listed] == [True, True, True, False]
+    assert [(entry.task_name, entry.label) for entry in listed] == [
+        ("sum", "A"),
+        ("max", "B"),
+        ("sum", "A"),
+        ("sum", "A"),
+    ]
     assert (first.status, first.error) == (GradingStatus.SYSTEM_ERROR, "The checker crashed.")
     assert [
         entry.grading.id for entry in await gradings.feed(setup, observer, SPRING, limit=2)
@@ -225,3 +231,16 @@ async def test_a_teams_submission_is_shown_as_the_team(
 
     assert (entry.grading.id, entry.by) == (made, gradings.Submitter(None, team.id, "Adders"))
     assert await gradings.feed(setup, observer, SPRING, user="bob") == ()
+
+
+async def test_a_task_the_contest_no_longer_lists_keeps_its_name_and_has_no_label(
+    setup: Setup, acme: Acme, entered: Entered, busy: dict[str, uuid.UUID]
+) -> None:
+    observer = await organiser(setup, acme.fake, 7, CONTEST, Role.OBSERVER)
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
+
+    listed = await gradings.feed(setup, observer, SPRING, task=TaskId("acme/spring/max"))
+
+    assert [(entry.grading.id, entry.task_name, entry.label) for entry in listed] == [
+        (busy["on_max"], "max", None)
+    ]

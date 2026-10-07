@@ -77,6 +77,7 @@ from typing import Any
 from sqlalchemy import ColumnElement, func, select, tuple_
 
 from forge.db.tables import Grading, Team
+from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -127,7 +128,7 @@ from forge.domain.submissions import Submitted
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import org_accounts, published
+from forge.services import names, org_accounts, published
 from forge.services.access import Organiser, require
 from forge.services.credentials import CannotDecrypt
 
@@ -204,12 +205,18 @@ class Submitter:
 
 @dataclass(frozen=True, slots=True)
 class FeedEntry:
-    """One grading in a contest's feed: the grading as `list` gives it, and
-    who made the submission it grades.
+    """One grading in a contest's feed: the grading as `list` gives it, who
+    made the submission it grades, and its task's name and label, the letter
+    of its place in the contest's `tasks`; the label is none once the
+    contest no longer lists the task, or when its settings do not read or
+    the forge does not say, and the name none for a task the platform has
+    no name for.
     """
 
     grading: GradingRecord
     by: Submitter
+    task_name: str | None
+    label: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -776,9 +783,7 @@ async def feed(
         if len(rows) < size:
             break
         after = (rows[-1].created_at, rows[-1].id)
-    kept = kept[:size]
-    by = await _submitters(ctx, {found.workspace for found in kept})
-    return tuple(FeedEntry(found, by[found.workspace]) for found in kept)
+    return await _entries(ctx, contest, kept[:size])
 
 
 @action
@@ -832,6 +837,37 @@ def _in_contest(contest: ContestId, observed: frozenset[TaskId] | None) -> Colum
 
 def _workspace(ctx: Context, contest: ContestId, owner: UserOwner | TeamOwner) -> WorkspaceId:
     return ctx.forge.workspaces.workspace_of(contest, owner)
+
+
+async def _entries(
+    ctx: Context, contest: ContestId, records: Sequence[GradingRecord]
+) -> tuple[FeedEntry, ...]:
+    """Each grading with who submitted it and its task's name and label: the
+    names and the teams read first, and the usernames and the contest's
+    settings from the forge once the connection is let go of.
+    """
+    tasks = await names.names_of(ctx, {found.task for found in records})
+    by = await _submitters(ctx, {found.workspace for found in records})
+    settings = await _settings(ctx, contest) if records else None
+    return tuple(
+        FeedEntry(
+            found,
+            by[found.workspace],
+            task_name=(name := tasks.get(found.task)),
+            label=settings.label_of(name) if settings is not None and name is not None else None,
+        )
+        for found in records
+    )
+
+
+async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition | None:
+    """The contest's settings, or none when they do not read or the forge
+    does not answer.
+    """
+    try:
+        return await published.contest(ctx, contest)
+    except PortError:
+        return None
 
 
 async def _submitters(
