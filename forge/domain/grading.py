@@ -150,6 +150,9 @@ UNFINISHED = (GradingStatus.QUEUED, GradingStatus.DISPATCHED, GradingStatus.RUNN
 AT_THE_CI = (GradingStatus.DISPATCHED, GradingStatus.RUNNING)
 """The statuses of a grading whose run the CI holds."""
 FINISHED = (GradingStatus.DONE, GradingStatus.CANCELLED, GradingStatus.SYSTEM_ERROR)
+WAITING = (GradingStatus.QUEUED, GradingStatus.DISPATCHED)
+"""The statuses of a grading waiting for a machine to begin it, which a
+contest's queue depth counts."""
 
 
 def stored_as(status: GradingStatus) -> tuple[GradingStatus, ...]:

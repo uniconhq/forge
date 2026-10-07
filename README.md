@@ -107,9 +107,9 @@ forge/api/
   submissions.py  submit, mine, one, files, download, the SubmittedInput
                 submit takes, and the Submission, Result, GroupShown,
                 SubmittedFiles, GradingStatus and Show they return
-  gradings.py   cancel, retry, rejudge, list, run_log, task_of, feed, and
-                the GradingRecord, Rejudged, FeedEntry, Submitter and
-                GradingStatus they return
+  gradings.py   cancel, retry, rejudge, list, run_log, task_of, feed,
+                queue_depth, and the GradingRecord, Rejudged, FeedEntry,
+                Submitter, QueueDepth and GradingStatus they return
   runs.py       config, envelope, callback, the CiRequest config takes and the
                 CiAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
                 ENVELOPE_PATH and CALLBACK_PATH, where each is served
@@ -477,7 +477,7 @@ hosting process calls are actions, marked `@action` from
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
 | `submissions` | `submit`, `mine`, `one`, `files`, `download` |
-| `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of`, `feed` |
+| `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
 | `runs` | `config`, `envelope`, `callback` |
 | `workflows` | `create` |
 
@@ -1423,7 +1423,11 @@ org, sees every task's gradings; someone holding a role at some of its
 tasks alone sees theirs, a task they do not observe left out rather than
 refused, and someone holding none of either is `Forbidden`. The usernames
 cost one read of the forge per contestant on the page, kept a minute by
-`CachedForge`, and a team's name one query.
+`CachedForge`, and a team's name one query. `gradings.queue_depth(contest)`
+counts, in one read over the same gradings, the ones waiting for a machine,
+as a `QueueDepth` of `queued` and `dispatched`, by the status they read as:
+one overdue or lost reads as `system_error` and is not counted. Nothing
+stores the count.
 
 ## Errors
 

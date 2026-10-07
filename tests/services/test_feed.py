@@ -3,8 +3,9 @@ The feed lists every grading of the contest's tasks the organiser observes,
 newest first, each attempt a row of its own with who submitted it, a
 contestant by username or a team by name, and narrows by task, by who
 submitted and by status, an overdue or lost grading reading as a system
-error there as everywhere. An organiser of one task sees that task's
-alone, and someone with no role in the contest is refused.
+error there as everywhere. The queue depth counts the waiting ones by
+status in one read. An organiser of one task sees that task's alone, and
+someone with no role in the contest is refused.
 """
 
 import uuid
@@ -16,7 +17,7 @@ from sqlalchemy import update
 
 from forge.db.tables import Grading
 from forge.domain.errors import Forbidden
-from forge.domain.grading import MACHINE_WAIT, NEVER_BEGAN, GradingStatus
+from forge.domain.grading import MACHINE_WAIT, NEVER_BEGAN, START_WAIT, GradingStatus
 from forge.domain.identity import User
 from forge.domain.ids import TaskId
 from forge.domain.roles import Role, RoleGrant, Scope
@@ -188,9 +189,24 @@ async def test_an_organiser_of_one_task_sees_its_gradings_alone(
 
     assert [entry.grading.id for entry in listed] == [busy["on_max"]]
     assert await gradings.feed(setup, of_max, SPRING, task=TaskId("acme/spring/sum")) == ()
+    assert await gradings.queue_depth(setup, of_max, SPRING) == gradings.QueueDepth(0, 1)
     elsewhere = _held(acme, Scope("acme", "autumn"))
     with pytest.raises(Forbidden):
         await gradings.feed(setup, elsewhere, SPRING)
+    with pytest.raises(Forbidden):
+        await gradings.queue_depth(setup, elsewhere, SPRING)
+
+
+async def test_the_queue_depth_counts_the_waiting_gradings_by_status(
+    setup: Setup, acme: Acme, busy: dict[str, uuid.UUID], clock: FakeClock
+) -> None:
+    observer = await organiser(setup, acme.fake, 7, CONTEST, Role.OBSERVER)
+    await _set(setup, busy["by_carol"], status=GradingStatus.QUEUED, run_id=None)
+
+    assert await gradings.queue_depth(setup, observer, SPRING) == gradings.QueueDepth(1, 2)
+    clock.advance(START_WAIT)
+    # The one never started is overdue, and reads as a system error.
+    assert await gradings.queue_depth(setup, observer, SPRING) == gradings.QueueDepth(0, 2)
 
 
 async def test_a_teams_submission_is_shown_as_the_team(

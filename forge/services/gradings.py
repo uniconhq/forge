@@ -51,9 +51,12 @@ An organiser of a contest reads its gradings together:
 - `feed` lists every grading of the contest's tasks the organiser observes,
   newest first, filtered by task, by who submitted and by status, each with
   who submitted it, a contestant by username or a team by name; every
-  attempt is a row of its own, read as `list` reads it.
+  attempt is a row of its own, read as `list` reads it;
+- `queue_depth` counts the ones waiting for a machine by status, `queued`
+  and `dispatched`, one that is overdue or lost not among them, since it
+  reads as a system error.
 
-It sees the tasks the organiser observes: every task for an observer of
+Both see the tasks the organiser observes: every task for an observer of
 the contest or above, and otherwise the tasks they hold a role at, the rest
 left out. Someone holding no role in the contest is refused.
 
@@ -65,6 +68,7 @@ before a control whose route names only the grading.
 
 import builtins
 import uuid
+from collections import Counter
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -90,6 +94,7 @@ from forge.domain.grading import (
     PLATFORM_POOL,
     RUN_LOG_MAX,
     UNFINISHED,
+    WAITING,
     GradingRun,
     GradingStatus,
     RunState,
@@ -203,6 +208,17 @@ class FeedEntry:
 
     grading: GradingRecord
     by: Submitter
+
+
+@dataclass(frozen=True, slots=True)
+class QueueDepth:
+    """How many of a contest's gradings wait for a machine: `queued`, whose
+    run is not started yet, and `dispatched`, whose run the CI holds until a
+    machine takes it.
+    """
+
+    queued: int
+    dispatched: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -755,6 +771,29 @@ async def feed(
     kept = kept[:size]
     by = await _submitters(ctx, {found.workspace for found in kept})
     return tuple(FeedEntry(found, by[found.workspace]) for found in kept)
+
+
+@action
+async def queue_depth(ctx: Context, organiser: Organiser, contest: ContestId) -> QueueDepth:
+    """How many gradings of the contest's tasks the organiser observes wait
+    for a machine, by status, read in one go. `Forbidden` for someone
+    holding no role in the contest.
+    """
+    observed = _observed(organiser, contest)
+    rows = (
+        (
+            await ctx.db.execute(
+                select(Grading).where(_in_contest(contest, observed), Grading.status.in_(WAITING))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    gone = await lost(ctx, rows)
+    counted = Counter(status_of(ctx, row, gone) for row in rows)
+    return QueueDepth(
+        queued=counted[GradingStatus.QUEUED], dispatched=counted[GradingStatus.DISPATCHED]
+    )
 
 
 def _observed(organiser: Organiser, contest: ContestId) -> frozenset[TaskId] | None:
