@@ -49,9 +49,10 @@ An organiser managing the task reads its gradings and acts on one:
 An organiser of a contest reads its gradings together:
 
 - `feed` lists every grading of the contest's tasks the organiser observes,
-  newest first, filtered by task, by who submitted and by status, each with
-  who submitted it, a contestant by username or a team by name, as `list`
-  gives a task's; every attempt is a row of its own;
+  newest first, filtered by task, by who submitted, a contestant's own and
+  their teams' while they were in them, and by status, each with who
+  submitted it, a contestant by username or a team by name, as `list` gives
+  a task's; every attempt is a row of its own;
 - `queue_depth` counts the ones waiting for a machine by status, `queued`
   and `dispatched`, one that is overdue or lost not among them, since it
   reads as a system error.
@@ -138,7 +139,7 @@ from forge.domain.submissions import Submitted
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import names, org_accounts, published
+from forge.services import names, org_accounts, published, teams
 from forge.services.access import Organiser, require
 from forge.services.credentials import CannotDecrypt
 
@@ -807,8 +808,9 @@ async def feed(
 ) -> tuple[FeedEntry, ...]:
     """The gradings of the contest's tasks the organiser observes, newest
     first, at most `limit` of them and never more than 500: of one `task`,
-    of the submissions of the contestant whose username is `user` or of the
-    team `team`, and reading as `status`, each filter when given. A task,
+    of the submissions of the contestant whose username is `user`, their
+    own and their teams' while they were in them, or of the team `team`,
+    and reading as `status`, each filter when given. A task,
     contestant or team the organiser cannot see there gives none, and so
     does a `user` that breaks the forge's username rule (`is_username`).
     `Forbidden` for someone holding no role in the contest.
@@ -828,7 +830,7 @@ async def feed(
             found = await ctx.forge.identity.find_user_by_username(user)
         except NotFound:
             return ()
-        where.append(Grading.workspace_id == _workspace(ctx, contest, UserOwner(found.id)))
+        where.append(await _submitted_by(ctx, contest, found.id))
     if team is not None:
         where.append(Grading.workspace_id == _workspace(ctx, contest, TeamOwner(team)))
     if status is not None:
@@ -916,6 +918,22 @@ def _in_contest(contest: ContestId, observed: frozenset[TaskId] | None) -> Colum
 
 def _workspace(ctx: Context, contest: ContestId, owner: UserOwner | TeamOwner) -> WorkspaceId:
     return ctx.forge.workspaces.workspace_of(contest, owner)
+
+
+async def _submitted_by(ctx: Context, contest: ContestId, user_id: int) -> ColumnElement[bool]:
+    """The gradings of the submissions made while the person worked in a
+    workspace of the contest: their own, and each team's from when they
+    joined it until they left, by when the submission was taken.
+    """
+    spans = [
+        and_(
+            Grading.workspace_id == _workspace(ctx, contest, TeamOwner(member.team)),
+            Grading.submitted_at >= member.joined_at,
+            *([Grading.submitted_at < member.left_at] if member.left_at is not None else []),
+        )
+        for member in await teams.memberships(ctx, contest, user_id)
+    ]
+    return or_(Grading.workspace_id == _workspace(ctx, contest, UserOwner(user_id)), *spans)
 
 
 async def _entries(

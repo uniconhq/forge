@@ -241,7 +241,33 @@ async def test_a_teams_submission_is_shown_as_the_team(
     (entry,) = await gradings.feed(setup, observer, SPRING, team=team.id)
 
     assert (entry.grading.id, entry.by) == (made, gradings.Submitter(None, team.id, "Adders"))
-    assert await gradings.feed(setup, observer, SPRING, user="bob") == ()
+
+
+async def test_a_contestants_gradings_include_their_teams_while_they_were_in_it(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone") + "team_size: 2\n")
+    team = await teams.create(setup, entered.session, SPRING, "Adders")
+    by_team = await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
+    clock.advance(timedelta(seconds=1))
+    carol = await _enter(setup, acme, 20, "carol")
+    await teams.request(setup, carol, SPRING, team.id)
+    await teams.approve(setup, entered.session, SPRING, team.id, 20)
+    clock.advance(timedelta(seconds=1))
+    await teams.leave(setup, entered.session, SPRING)
+    clock.advance(timedelta(seconds=31))
+    by_carol = await _submit(setup, acme, carol, entered.task, "key-0002-bbbb")
+    clock.advance(timedelta(seconds=31))
+    alone = await _submit(setup, acme, entered.session, entered.task, "key-0003-cccc")
+    observer = await organiser(setup, acme.fake, 7, CONTEST, Role.OBSERVER)
+
+    async def ids(user: str) -> list[uuid.UUID]:
+        found = await gradings.feed(setup, observer, SPRING, user=user)
+        return [entry.grading.id for entry in found]
+
+    # Bob's own and the team's from before he left; carol's from when she joined.
+    assert await ids("bob") == [alone, by_team]
+    assert await ids("carol") == [by_carol]
 
 
 async def test_a_task_the_contest_no_longer_lists_keeps_its_name_and_has_no_label(
