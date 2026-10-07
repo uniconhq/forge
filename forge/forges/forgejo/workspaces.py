@@ -273,6 +273,7 @@ class ForgejoWorkspaces:
                     grading_changed=note.grading_changed,
                     changes=note.changes,
                     workflows=note.workflows,
+                    sealed=note.sealed,
                     at=datetime.fromisoformat(str(commit["created"])),
                 )
             )

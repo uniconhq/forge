@@ -1,8 +1,9 @@
 """A person's files on their way in, through the upload door.
 
 A slot leaves one `uploads` row and an address on the platform's own host;
-one larger than the task's or the input's limit is refused before any row,
-naming the limit. The door is what the proxy asks before it reads a body: it
+one larger than its input's `max_size` is refused before any row, naming the
+limit and the input, and one for an input that takes no file, or at a path
+the input does not take, is refused too. The door is what the proxy asks before it reads a body: it
 opens only for the owner's own waiting upload of exactly the length the
 request carries, and what it answers with is the person's own credential, so
 the forge's check of their write access stays underneath. Completing asks
@@ -52,11 +53,11 @@ from forge.forges.ids import parse_task, parse_workspace
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
 from forge.services import contestants, publications, submissions, submitters, uploads
-from forge.testing import CLASSIC, FakeClock
+from forge.testing import FakeClock
 from tests.services.conftest import SPRING, Acme, Entered, organiser, signed_in, upload
 
 SOURCE = b"print(1)\n"
-TASK_LIMIT = 10 * 1024 * 1024
+INPUT_LIMIT = 10 * 1024 * 1024
 
 
 def _digest(content: bytes) -> str:
@@ -225,7 +226,7 @@ async def test_completing_before_the_bytes_arrive_says_so_and_can_be_asked_again
     assert await uploads.complete(setup, session, task, slot.id) == done
 
 
-async def test_a_slot_over_the_tasks_limit_is_refused_naming_it_before_anything(
+async def test_a_slot_over_its_inputs_default_size_is_refused_naming_it_before_anything(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     with pytest.raises(TooLarge) as refused:
@@ -235,11 +236,14 @@ async def test_a_slot_over_the_tasks_limit_is_refused_naming_it_before_anything(
             entered.task,
             input="submission",
             filename="main.py",
-            size=TASK_LIMIT + 1,
+            size=INPUT_LIMIT + 1,
             sha256=_digest(b"x"),
         )
 
-    assert (refused.value.extra["limit"], refused.value.extra["input"]) == (TASK_LIMIT, None)
+    assert (refused.value.extra["limit"], refused.value.extra["input"]) == (
+        INPUT_LIMIT,
+        "submission",
+    )
     assert await _rows(setup) == []
     inside = await uploads.slot(
         setup,
@@ -247,51 +251,90 @@ async def test_a_slot_over_the_tasks_limit_is_refused_naming_it_before_anything(
         entered.task,
         input="submission",
         filename="main.py",
-        size=TASK_LIMIT,
+        size=INPUT_LIMIT,
         sha256=_digest(b"x"),
     )
     assert inside.url is not None
 
 
-async def test_a_file_input_checks_its_own_limit_and_what_it_accepts(
+async def test_a_file_input_checks_the_size_its_task_gives_it(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    source = CLASSIC.replace(b"name: unicon/classic", b"name: acme/notes").replace(
-        b"  - id: testcases\n", b"  - id: notes\n    type: file\n  - id: testcases\n"
-    )
-    workflow = await acme.fake.workflows.create_workflow(
-        PLATFORM, "acme", "notes", {"workflow.yaml": source}, Visibility.PUBLIC
-    )
-    await acme.fake.workflows.create_workflow_version(PLATFORM, workflow, "v1")
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
     current = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
-    text = current.content.replace(b"unicon/classic@v1", b"acme/notes@v1").replace(
-        b"  setter:\n",
-        b"    - {id: notes, type: file, accept: ['.txt'], max_size: 1KB}\n  setter:\n",
+    text = current.content.replace(
+        b"submission: {label: Your solution}", b"submission: {label: Your solution, max_size: 1KB}"
     )
+    assert text != current.content
     saved = await publications.save(
-        setup, acme.ada, entered.task, {"task.yaml": Edit(text, head.tokens["task.yaml"])}
+        setup,
+        acme.ada,
+        entered.task,
+        {"task.yaml": Edit(text, head.tokens["task.yaml"])},
+        confirm=True,
     )
     assert isinstance(saved, publications.Published), saved
     session, task = entered.session, entered.task
     digest = _digest(b"x")
 
-    with pytest.raises(InvalidInputs) as refused:
-        await uploads.slot(
-            setup, session, task, input="notes", filename="x.md", size=1, sha256=digest
-        )
-    assert refused.value.extra["errors"] == [
-        {"input": "notes", "message": "This input takes .txt."}
-    ]
     with pytest.raises(TooLarge) as large:
         await uploads.slot(
-            setup, session, task, input="notes", filename="x.txt", size=1025, sha256=digest
+            setup, session, task, input="submission", filename="x.py", size=1025, sha256=digest
         )
-    assert (large.value.extra["limit"], large.value.extra["input"]) == (1024, "notes")
+    assert (large.value.extra["limit"], large.value.extra["input"]) == (1024, "submission")
     fits = await uploads.slot(
-        setup, session, task, input="notes", filename="x.txt", size=1024, sha256=digest
+        setup, session, task, input="submission", filename="x.py", size=1024, sha256=digest
     )
     assert fits.url is not None
+
+
+ANSWERS = b"""\
+inputs:
+  answers: {type: file, contestant: true, per_test: true}
+test:
+  input: file
+  answer: file
+steps:
+  - id: check
+    use: unicon/diff-check@v2
+    per_test: true
+    with:
+      actual: ${{ inputs.answers }}
+      expected: ${{ test.answer }}
+"""
+"""An output-only workflow: the contestant uploads one answer per test."""
+
+
+async def test_a_per_test_slot_is_named_for_a_test_with_an_ending_that_is_not_empty(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    made = await acme.fake.workflows.create_workflow(
+        PLATFORM, "acme", "answers", {"workflow.yaml": ANSWERS}, Visibility.PUBLIC
+    )
+    await acme.fake.workflows.create_workflow_version(PLATFORM, made, "v1")
+    head = await acme.fake.content.list_files(PLATFORM, entered.task)
+    text = b"name: Sum\nworkflow: acme/answers@v1\ntest_groups:\n  main: {each: 100}\n"
+    saved = await publications.save(
+        setup,
+        acme.ada,
+        entered.task,
+        {"task.yaml": Edit(text, head.tokens["task.yaml"])},
+        confirm=True,
+    )
+    assert isinstance(saved, publications.Published), saved
+    session, task = entered.session, entered.task
+    digest = _digest(b"3\n")
+
+    with pytest.raises(InvalidInputs) as refused:
+        await uploads.slot(
+            setup, session, task, input="answers", filename="main/1.", size=2, sha256=digest
+        )
+    assert refused.value.extra["errors"][0]["input"] == "answers"
+    for fine in ("main/1", "main/1.t"):
+        slot = await uploads.slot(
+            setup, session, task, input="answers", filename=fine, size=2, sha256=digest
+        )
+        assert slot.url is not None
 
 
 async def test_a_slot_needs_a_file_input_a_plain_name_a_digest_and_a_contestant_now(
@@ -305,6 +348,11 @@ async def test_a_slot_needs_a_file_input_a_plain_name_a_digest_and_a_contestant_
             setup, session, task, input="time_limit", filename="a", size=1, sha256=digest
         )
     assert refused.value.extra["errors"][0]["input"] == "time_limit"
+    with pytest.raises(InvalidInputs) as valued:
+        await uploads.slot(
+            setup, session, task, input="language", filename="a", size=1, sha256=digest
+        )
+    assert valued.value.extra["errors"][0]["input"] == "language"
     with pytest.raises(InvalidInputs):
         await uploads.slot(
             setup, session, task, input="submission", filename="a/b.py", size=1, sha256=digest
@@ -334,7 +382,7 @@ async def test_a_slot_needs_a_file_input_a_plain_name_a_digest_and_a_contestant_
         await uploads.slot(
             setup, session, task, input="submission", filename="a.py", size=1, sha256=digest
         )
-    assert closed.value.extra["reason"] == "ended"
+    assert closed.value.extra["reason"] == "closed"
     assert await _rows(setup) == []
 
 
@@ -360,13 +408,16 @@ async def test_a_person_holds_a_bounded_number_of_uploads_until_a_submit_uses_th
             setup, session, task, input="submission", filename="c.py", size=1, sha256=_digest(b"c")
         )
 
-    assert refused.value.extra == {"limit": 3, "bytes": 2 * TASK_LIMIT}
+    assert refused.value.extra == {"limit": 3, "bytes": 2 * INPUT_LIMIT}
     assert len(await _rows(setup)) == 3
     await submissions.submit(
         setup,
         session,
         task,
-        {"submission": SubmittedInput(uploads=(verified.id,), language="python")},
+        {
+            "submission": SubmittedInput(uploads=(verified.id,)),
+            "language": SubmittedInput(value="python"),
+        },
         idempotency_key="key-frees-one",
     )
     freed = await uploads.slot(
@@ -386,7 +437,7 @@ async def test_a_person_declares_at_most_two_submissions_worth_of_open_uploads(
             task,
             input="submission",
             filename=name,
-            size=TASK_LIMIT,
+            size=INPUT_LIMIT,
             sha256=_digest(name.encode()),
         )
 
@@ -395,7 +446,7 @@ async def test_a_person_declares_at_most_two_submissions_worth_of_open_uploads(
             setup, session, task, input="submission", filename="c.py", size=1, sha256=_digest(b"c")
         )
 
-    assert refused.value.extra["bytes"] == 2 * TASK_LIMIT
+    assert refused.value.extra["bytes"] == 2 * INPUT_LIMIT
     empty = await uploads.slot(
         setup, session, task, input="submission", filename="d.py", size=0, sha256=_digest(b"")
     )
@@ -494,7 +545,10 @@ async def test_a_submit_keeps_the_row_and_a_slot_clears_its_owners_lapsed_ones(
         setup,
         session,
         task,
-        {"submission": SubmittedInput(uploads=(used.id,), language="python")},
+        {
+            "submission": SubmittedInput(uploads=(used.id,)),
+            "language": SubmittedInput(value="python"),
+        },
         idempotency_key="key-for-sweep",
     )
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)

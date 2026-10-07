@@ -270,9 +270,8 @@ class SubmitRefused(ServiceError):
 
 
 class TaskClosed(SubmitRefused):
-    """The task takes no submissions from this contestant now: the contest's
-    end plus their own extension has passed, or its organisers closed
-    submissions. `reason` says which, `ended` or `submissions_closed`.
+    """The task takes no submissions from this row now: the task's close
+    plus the row's extension on it has passed. `reason` is `closed`.
     """
 
     code = "task_closed"
@@ -356,7 +355,7 @@ class InvalidInputs(SubmitRefused):
 
 
 class LogTooLarge(ServiceError):
-    """A run log is larger than the platform reads back for a contestant,
+    """A run log is larger than the platform reads back for an organiser,
     which no harness writes. `limit` is the most shown, in bytes.
     """
 

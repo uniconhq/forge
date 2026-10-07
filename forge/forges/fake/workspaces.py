@@ -276,6 +276,7 @@ class FakeWorkspaces:
                     grading_changed=note.grading_changed,
                     changes=note.changes,
                     workflows=note.workflows,
+                    sealed=note.sealed,
                     at=self._state.published_at.get((task, number), self._state.clock.now()),
                 )
             )

@@ -13,7 +13,7 @@ person a contestant of it.
 The rules come from the contest's `registration` block. The window is open
 from `opens` and closed from `closes`, each counted from its own instant,
 and always open without them. An invite-only contest needs an accepted
-invite; a contest with an `invite_code` needs that code; a contest with an
+invite; a contest with a `code` needs that code; a contest with an
 `email_pattern` needs one of the person's confirmed email addresses to match
 the whole pattern, ignoring case. The pattern is an organiser's, so it is
 matched under a time limit, and one that runs past it lets nobody through
@@ -29,7 +29,7 @@ from typing import Any
 
 import regex
 
-from forge.domain.definitions import Registration, RegistrationMode
+from forge.domain.definitions import Registration
 from forge.domain.errors import (
     DomainNotAllowed,
     InvalidExtension,
@@ -82,16 +82,16 @@ def eligibility(
     contest asks for it. The refusal of the first rule they break otherwise.
     """
     outcome: dict[str, Any] = {}
-    if rules.mode is RegistrationMode.INVITE_ONLY:
+    if rules.invite_only:
         if not invited:
             raise InviteRequired("This contest takes only the people it invites.")
         outcome["invited"] = True
-    expected = rules.eligibility.invite_code
+    expected = rules.code
     if expected is not None:
         if invite_code is None or not hmac.compare_digest(invite_code.encode(), expected.encode()):
             raise WrongInviteCode("That is not the code this contest asks for.")
         outcome["invite_code"] = True
-    pattern = rules.eligibility.email_pattern
+    pattern = rules.email_pattern
     if pattern is not None:
         matched = next((email for email in emails if matches(pattern, email)), None)
         if matched is None:
@@ -133,6 +133,21 @@ def checked_reason(reason: str) -> str:
     if len(trimmed) > REASON_MAX:
         raise InvalidReason(f"A reason is at most {REASON_MAX} characters.")
     return trimmed
+
+
+def checked_tasks(tasks: Sequence[str] | None, known: Sequence[str]) -> tuple[str, ...] | None:
+    """The tasks an extension is for, each named once, or none for every
+    task. `InvalidExtension` for an empty list or a task the contest does not
+    list.
+    """
+    if tasks is None:
+        return None
+    if not tasks:
+        raise InvalidExtension("Name the tasks the extension is for, or none for every task.")
+    for task in tasks:
+        if task not in known:
+            raise InvalidExtension(f"{task} is not a task of the contest.")
+    return tuple(dict.fromkeys(tasks))
 
 
 def checked_extension(extension: timedelta) -> timedelta:

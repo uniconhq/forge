@@ -1,10 +1,10 @@
 """Making places ahead: approving someone makes their place at every task the
 contest has published, a task's first publication makes it for everyone
 approved, both once the request has committed and in turns of their own,
-none at a hidden task or for a contest that is a draft or over, and someone
-removed while their place is made has the access taken back. A person the
-forge refuses is passed over; a forge that does not answer stops the rest,
-which the contestant's first upload makes.
+none at a task released later until it is released, none for a contest that
+is a draft or over, and someone removed while their place is made has the access taken
+back. A person the forge refuses is passed over; a forge that does not
+answer stops the rest, which the contestant's first upload makes.
 """
 
 import asyncio
@@ -75,7 +75,7 @@ def _made(fake: FakeForge) -> list[str]:
 async def test_approving_someone_makes_their_place_at_every_published_task(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     await publish(setup, acme, sum_task)
     await setup.settle()
     unsaved = await make_task(setup, acme, "product")
@@ -90,7 +90,7 @@ async def test_approving_someone_makes_their_place_at_every_published_task(
 async def test_a_tasks_first_publication_makes_its_place_for_everyone_approved(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     acme.fake.add_user(20, "cyd")
     await _approve(setup, acme, 8)
     await _approve(setup, acme, 20)
@@ -110,7 +110,7 @@ async def test_a_tasks_first_publication_makes_its_place_for_everyone_approved(
 async def test_a_contest_that_is_over_gets_no_places_ahead(
     setup: Setup, acme: Acme, sum_task: TaskId, clock: FakeClock
 ) -> None:
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     await publish(setup, acme, sum_task)
     await setup.settle()
     person = await signed_in(setup, acme.fake, 8)
@@ -127,7 +127,7 @@ async def test_a_contest_that_is_over_gets_no_places_ahead(
 async def test_someone_removed_while_their_place_is_made_ahead_has_the_access_taken_back(
     setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     await publish(setup, acme, sum_task)
     await setup.settle()
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
@@ -152,7 +152,7 @@ async def test_a_forge_that_fails_stops_the_rest_and_the_first_upload_makes_the_
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     await publish(setup, acme, sum_task)
     await setup.settle()
     real = acme.fake.workspaces.open_submission_place
@@ -181,36 +181,38 @@ async def test_a_forge_that_fails_stops_the_rest_and_the_first_upload_makes_the_
     assert _writers(acme.fake, sum_task, 8) == {8}
 
 
-async def test_a_hidden_task_gets_no_places_ahead(
-    setup: Setup, acme: Acme, sum_task: TaskId
+async def test_a_task_released_later_gets_its_places_ahead_once_it_is_released(
+    setup: Setup, acme: Acme, sum_task: TaskId, clock: FakeClock
 ) -> None:
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(
+        acme.fake,
+        RUNNING.format(visibility="everyone").replace(
+            "  - id: sum\n", "  - {id: sum, release_at: 2026-09-26T13:00:00Z}\n"
+        ),
+    )
     await _approve(setup, acme, 8)
     await setup.settle()
+    await publish(setup, acme, sum_task)
+    await setup.settle()
 
-    await publish(setup, acme, sum_task, b"hidden: true\n")
-    await setup.settle()
-    shown = await make_task(setup, acme, "product")
-    await publish(setup, acme, shown)
-    await setup.settle()
+    assert _made(acme.fake) == []
+
+    clock.advance(timedelta(hours=1))
     acme.fake.add_user(20, "cyd")
     await _approve(setup, acme, 20)
     await setup.settle()
 
-    assert _writers(acme.fake, sum_task, 8) is None
-    assert _writers(acme.fake, sum_task, 20) is None
-    assert _writers(acme.fake, shown, 8) == {8}
-    assert _writers(acme.fake, shown, 20) == {20}
+    assert _writers(acme.fake, sum_task, 20) == {20}
 
 
 async def test_a_draft_contest_gets_no_places_ahead(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     await _approve(setup, acme, 8)
     await setup.settle()
     await write_contest(
-        acme.fake, RUNNING.format(visibility="public").replace("published", "draft")
+        acme.fake, RUNNING.format(visibility="everyone").replace("published", "draft")
     )
 
     await publish(setup, acme, sum_task)
@@ -226,7 +228,7 @@ async def test_a_person_the_forge_refuses_is_passed_over_and_the_rest_are_made(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     acme.fake.add_user(20, "cyd")
     await _approve(setup, acme, 8)
     await _approve(setup, acme, 20)
@@ -251,7 +253,7 @@ async def test_a_person_the_forge_refuses_is_passed_over_and_the_rest_are_made(
 async def test_someone_removed_while_a_new_tasks_place_is_made_has_the_access_taken_back(
     setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     await _approve(setup, acme, 8)
     await setup.settle()
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
@@ -272,7 +274,7 @@ async def test_someone_removed_while_a_new_tasks_place_is_made_has_the_access_ta
 async def test_a_first_upload_to_a_place_made_ahead_is_answered(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     await publish(setup, acme, sum_task)
     await setup.settle()
     await _approve(setup, acme, 8)

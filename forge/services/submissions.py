@@ -9,20 +9,20 @@ code of its own, before anything is written:
    counted from the grading rows of their submissions within its window.
 3. Every upload named is theirs, for this task (`upload_not_yours`), and a
    checked file no submission has used (`upload_not_ready`).
-4. Each file is within its input's `max_size`, and the files together within
-   the task's `max_size` (`too_large`).
-5. What is given fits the task's contestant inputs (`invalid_inputs`).
+4. Each file is within its input's `max_size` (`too_large`).
+5. What is given fits the contestant inputs the task's plan declares, with
+   the task's form details, the files under each input together within its
+   `max_size` (`invalid_inputs`, `forge.domain.submissions`).
 
 Then, while a contestant has no submission of the task, their place to
 submit it is made, as the platform, or finished when a try stopped halfway;
 every part of making it is safe to run again. The files go into it as one commit, as the
 contestant, under `files/<input>/<name>` beside
 `submission.json`; the commit is named `submission/<n>` as the platform,
-with the next number on a collision; one `queued` grading row is inserted per
-stage graded on submit, against the task's current publication, attempt 1,
-with the hash of its callback token, whose runs start once the submit
-commits; and the uploads are marked consumed, their objects removed once it
-commits.
+with the next number on a collision; one `queued` grading row is inserted,
+against the task's current publication, attempt 1, with the hash of its
+callback token, whose run starts once the submit commits; and the uploads
+are marked consumed, their objects removed once it commits.
 
 Submits of one workspace to one task happen one after another, under a
 Postgres advisory lock held until the unit of work ends, so the limits are
@@ -46,14 +46,20 @@ since a retry may carry the same key with other uploads. A later submit that
 is refused rolls its finishing back with the rest, and the next one finishes
 it again.
 
-A contestant reads their own submissions back, newest first, each with its
-grading at every stage as that stage's `show` allows: status only, status
-and metrics, or everything. `files` gives the inputs a submission was made
-with, and `download` the door to one of its files: where the proxy reads it
-from the forge and streams it to the person, so its bytes, two gigabytes or
-two, never pass through the platform. `run_log` gives the log of a grading's
-run where the stage shows everything, of at most `RUN_LOG_MAX` bytes
-(`log_too_large`).
+A contestant reads their own submissions back, newest first, each with the
+latest attempt of its grading as the task's test groups show it
+(`forge.domain.showing`), how many started days late it was, and nothing of
+a run in `system_error` but that it is still being graded. A grading is
+shown with the publication it ran under: its sealed facts, and its
+`test_groups` unless the latest publication's plan lists the same tests. A
+past publication's `task.yaml` and plan are read once per process, since a
+publication never changes; one that does not read shows nothing of its
+gradings but where they stand. `files` gives
+the inputs a submission was made with, and `download` the door to one of
+its files: where the proxy reads it from the forge and streams it to the
+person, so its bytes, two gigabytes or two, never pass through the
+platform. A run's log names every test, hidden ones too, so it is the
+organisers' alone.
 
 What the store or the forge says when it fails goes to the log, and the
 contestant is told only that it did not answer, refused the platform, or
@@ -68,17 +74,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import func, select, text
 
 from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
 from forge.domain import submissions as rules
-from forge.domain.definitions import SUBMISSION_CEILING, Show
+from forge.domain.definitions import TASK_FILE, parse_task
 from forge.domain.errors import (
     Conflict,
     Forbidden,
     InvalidIdempotencyKey,
-    LogTooLarge,
     Misconfigured,
     NotFound,
     PortError,
@@ -90,10 +96,14 @@ from forge.domain.errors import (
     UploadNotReady,
     UploadNotYours,
 )
-from forge.domain.grading import RUN_LOG_MAX, GradingStatus, log_key
-from forge.domain.identity import AsUser
-from forge.domain.ids import SubmissionId, TaskId, WorkspaceId
+from forge.domain.grading import GradingStatus
+from forge.domain.identity import PLATFORM, AsUser
+from forge.domain.ids import PublicationId, SubmissionId, TaskId, WorkspaceId
+from forge.domain.plans import PLAN_PATH, Plan
+from forge.domain.release import due_of, late_days
+from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
+from forge.domain.showing import Graded, GroupShown, shown, under
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
 from forge.domain.uploads import (
     POINTER_MAX,
@@ -103,11 +113,12 @@ from forge.domain.uploads import (
     pointer_text,
     read_pointer,
 )
+from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import gradings, sessions, submitters, uploads
+from forge.services import gradings, published, sessions, submitters, timelines, uploads
 from forge.services.submitters import Entrant
 
 log = get_logger(__name__)
@@ -116,8 +127,6 @@ SUBMIT_LOCK = 0x5355424D
 """The first key of every lock on a workspace's submits of a task, the second
 being the workspace and task hashed by Postgres."""
 NO_SUCH_SUBMISSION = "There is no such submission."
-LOG_STORE_UNAVAILABLE = "The run log could not be read; try again in a moment."
-NO_LOG = "This submission has no log you may read."
 FORGE_UNAVAILABLE = "The forge did not answer; try again in a moment."
 FORGE_MISCONFIGURED = "The forge refused the platform's own registration."
 FORGE_REFUSED = "The forge refused the submission; submit again, or tell the organisers."
@@ -128,43 +137,40 @@ DOCUMENT_MAX = 1024 * 1024
 
 @dataclass(frozen=True, slots=True)
 class Result:
-    """One grading of a submission as its contestant sees it: its id, stage
-    and attempt and where it stands, and of its verdict what the stage's
-    `show` allows. `full` gives the outcome, the metrics, the summary, the
-    row of every test and whether there is a log; `metrics` gives the
-    outcome and the metrics; `hidden` gives the status alone.
+    """The latest attempt of a submission's grading as its contestant sees
+    it: its id and attempt, where it stands, and once it is done, what
+    stopped the run, the outcome over the groups shown, each test group as
+    its `show` allows, and the values reported once. A run in
+    `system_error` is still `running` to its contestant, with nothing else.
     """
 
     id: uuid.UUID
-    stage: str
     attempt: int
     status: GradingStatus
-    show: Show
+    stopped: str | None
     outcome: str | None
-    metrics: dict[str, Any] | None
-    summary: str | None
-    tests: tuple[dict[str, Any], ...] | None
-    log: bool
+    groups: tuple[GroupShown, ...]
+    values: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
 class Submission:
     """One of the contestant's submissions of a task: its number, when it was
-    taken, and the latest attempt of its grading at each stage, in the order
-    the task lists its stages.
+    taken, how many started days after the row's due it was, and the latest
+    attempt of its grading.
     """
 
     task: TaskId
     number: int
     submitted_at: datetime
-    gradings: tuple[Result, ...]
+    late_days: int
+    grading: Result | None
 
 
 @dataclass(frozen=True, slots=True)
 class SubmittedFiles:
     """What a submission was made with: its `submission.json` inputs, each
-    input's files by their paths in the submission, its language, or its
-    value.
+    input's files by their paths in the submission, or its value.
     """
 
     task: TaskId
@@ -213,11 +219,10 @@ async def submit(
     _, workspace = await submitters.refuse(ctx, entrant)
     made = await _listed(ctx, workspace, task) or ()
     await _finish_unrecorded(ctx, entrant, workspace, made)
-    limits = entrant.published.definition.limits
-    if len(made) >= limits.submissions:
+    caps = entrant.published.definition.submissions
+    if len(made) >= caps.max:
         raise SubmissionLimit(
-            f"You have made all {limits.submissions} submissions this task allows.",
-            limit=limits.submissions,
+            f"You have made all {caps.max} submissions this task allows.", limit=caps.max
         )
     await _refuse_rate(ctx, entrant, workspace)
     chosen = await _chosen(ctx, entrant, inputs)
@@ -226,8 +231,10 @@ async def submit(
         # submission of typed values made it before the hold; one whose
         # gradings are all gone still has its place made here.
         await submitters.open_place(ctx, entrant)
+    form = await published.form(ctx, entrant.published)
     layout = rules.lay_out(
-        entrant.published.definition.inputs.contestant,
+        form.fields,
+        form.tests,
         inputs,
         {upload.id: _uploaded(upload) for upload in chosen.values()},
     )
@@ -236,7 +243,7 @@ async def submit(
     for path, upload in layout.files.items():
         files[path] = await _pointer(ctx, entrant, user, chosen[upload])
     recorded = await _record(ctx, user, workspace, task, files, idempotency_key)
-    gradings = _insert(ctx, entrant, workspace, recorded, idempotency_key, at=ctx.now)
+    grading = _insert(ctx, entrant, workspace, recorded, idempotency_key, at=ctx.now)
     for used in chosen.values():
         used.status = UploadStatus.CONSUMED
         used.consumed_by = recorded.id
@@ -245,10 +252,9 @@ async def submit(
         "submissions.submitted",
         task=task,
         number=recorded.number,
-        gradings=len(gradings),
         user_id=entrant.session.user_id,
     )
-    return _submission(ctx, entrant, recorded.number, ctx.now, gradings)
+    return await _submission(ctx, entrant, recorded.number, ctx.now, [grading])
 
 
 @action
@@ -309,62 +315,6 @@ async def download(ctx: Context, session: Session, task: TaskId, number: int, pa
     return door
 
 
-@action
-async def run_log(
-    ctx: Context, session: Session, task: TaskId, number: int, *, stage: str | None = None
-) -> bytes:
-    """The run log of one of the signed-in person's own submissions, of the
-    latest attempt at `stage`, or at the first stage in the task's order
-    with a log, where the stage's `show` is `full`. `NotFound` for a
-    submission that is not theirs, or one with no log they may read, and
-    `LogTooLarge` for a log over `RUN_LOG_MAX` bytes, which is never read
-    whole.
-    """
-    entrant = await submitters.entrant(ctx, session, task)
-    workspace = entrant.workspace
-    found = await _read(ctx, entrant, workspace, number) if workspace is not None else []
-    if not found:
-        raise NotFound(NO_SUCH_SUBMISSION)
-    shown = [
-        result
-        for result in found[0].gradings
-        if result.log and (stage is None or result.stage == stage)
-    ]
-    if not shown:
-        raise NotFound(NO_LOG)
-    grading = str(shown[0].id)
-    try:
-        return await ctx.forge.objects.read(
-            log_key(shown[0].id, shown[0].attempt), max_size=RUN_LOG_MAX
-        )
-    except NotFound as exc:
-        log.warning("submissions.log_missing", task=task, number=number)
-        raise NotFound(NO_LOG) from exc
-    except Misconfigured as exc:
-        raise _log_failure(exc, grading) from None
-    except Rejected as exc:
-        log.warning("submissions.log_too_large", grading=grading, detail=exc.detail)
-        raise LogTooLarge(
-            f"The run log is larger than the {RUN_LOG_MAX} bytes shown.", limit=RUN_LOG_MAX
-        ) from None
-    except PortError as exc:
-        raise _log_failure(exc, grading) from None
-
-
-def _log_failure(exc: PortError, grading: str) -> PortError:
-    """What a caller is told when the log store fails, in fixed words. What
-    the store said goes to the log; S3's own codes name buckets and keys,
-    which is nothing a contestant should read.
-    """
-    log.warning(
-        "submissions.log_unreadable",
-        grading=grading,
-        error=type(exc).__name__,
-        detail=exc.detail,
-    )
-    return Unavailable(LOG_STORE_UNAVAILABLE)
-
-
 async def _submitted_before(ctx: Context, workspace: WorkspaceId, task: TaskId) -> bool:
     """Whether the workspace has a grading at the task, and so a place to
     submit it that some earlier submit made. Read without a lock: the
@@ -422,8 +372,8 @@ async def _again(
     existing = await _read(ctx, entrant, workspace, found.number)
     if existing:
         return existing[0]
-    gradings = await _recover(ctx, entrant, workspace, found)
-    return _submission(ctx, entrant, found.number, found.at, gradings)
+    grading = await _recover(ctx, entrant, workspace, found)
+    return await _submission(ctx, entrant, found.number, found.at, [grading])
 
 
 async def _finish_unrecorded(
@@ -451,16 +401,16 @@ async def _finish_unrecorded(
 
 async def _recover(
     ctx: Context, entrant: Entrant, workspace: WorkspaceId, found: Submitted
-) -> builtins.list[Grading]:
-    """The rows of a submission the forge holds and the database does not,
-    inserted with the key its note carries, and the uploads it used marked
-    consumed.
+) -> Grading:
+    """The grading row of a submission the forge holds and the database does
+    not, inserted with the key its note carries, and the uploads it used
+    marked consumed.
     """
-    gradings = _insert(ctx, entrant, workspace, found, found.key, at=found.at)
+    grading = _insert(ctx, entrant, workspace, found, found.key, at=found.at)
     await _consume_used(ctx, entrant, found)
     await ctx.db.flush()
     log.info("submissions.recovered", task=entrant.task, number=found.number)
-    return gradings
+    return grading
 
 
 async def _consume_used(ctx: Context, entrant: Entrant, found: Submitted) -> None:
@@ -531,8 +481,8 @@ async def _listed(
 
 
 async def _refuse_rate(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -> None:
-    rate = entrant.published.definition.limits.rate
-    since = ctx.now - rate.per
+    rate = entrant.published.definition.submissions.rate
+    since = ctx.now - rate.window
     times = (
         (
             await ctx.db.execute(
@@ -549,10 +499,10 @@ async def _refuse_rate(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -
         .all()
     )
     if len(times) >= rate.count:
-        retry_at = sorted(times)[len(times) - rate.count] + rate.per
+        retry_at = sorted(times)[len(times) - rate.count] + rate.window
         raise RateLimited(
-            f"This task takes {rate.count} submission(s) every {int(rate.per.total_seconds())}s.",
-            rate=str(rate),
+            f"This task takes {rate.count} submission(s) every {rate.per}s.",
+            rate=f"{rate.count} per {rate.per}s",
             retry_at=retry_at.isoformat(),
         )
 
@@ -562,7 +512,7 @@ async def _chosen(
 ) -> dict[uuid.UUID, UploadRow]:
     """Every upload the submit names, held until the unit of work ends, once
     each is the person's own for this task, checked, unused and in time, and
-    each file and all of them together are within the task's limits.
+    each file within its input's `max_size`.
     """
     named = [upload for given in inputs.values() for upload in given.uploads]
     rows = await uploads.owned(ctx, entrant.session.user_id, entrant.task, set(named))
@@ -579,20 +529,16 @@ async def _chosen(
             "An upload named is not a complete, checked file that is not submitted yet.",
             uploads=unready,
         )
-    declared = {entry.id: entry for entry in entrant.published.definition.inputs.contestant}
+    form = await published.form(ctx, entrant.published)
+    declared = {entry.id: entry for entry in form.fields}
     for row in sorted(rows.values(), key=lambda row: str(row.id)):
         entry = declared.get(row.input_id or "")
-        if entry is not None and entry.max_size is not None and _size(row) > entry.max_size:
+        if entry is not None and _size(row) > entry.max_size:
             raise TooLarge(
                 f"A file for {entry.id} is larger than the {entry.max_size} bytes allowed.",
                 limit=entry.max_size,
                 input=entry.id,
             )
-    limit = min(entrant.published.definition.limits.max_size, SUBMISSION_CEILING)
-    if sum(_size(row) for row in rows.values()) > limit:
-        raise TooLarge(
-            f"The submission is larger than the {limit} bytes allowed.", limit=limit, input=None
-        )
     return rows
 
 
@@ -668,10 +614,9 @@ def _insert(
     key: str | None,
     *,
     at: datetime,
-) -> builtins.list[Grading]:
-    """One queued grading row for each stage the task grades on submit,
-    against its current publication, with the hash of its own callback
-    token.
+) -> Grading:
+    """The submission's queued grading row, against the task's current
+    publication, with the hash of its own callback token.
     """
     return gradings.queue_submission(
         ctx,
@@ -679,7 +624,6 @@ def _insert(
         workspace=workspace,
         submission=recorded,
         publication=entrant.published.publication,
-        definition=entrant.published.definition,
         key=key,
         at=at,
     )
@@ -700,11 +644,9 @@ async def _read(
     grouped: dict[int, builtins.list[Grading]] = {}
     for row in rows:
         grouped.setdefault(row.submission_number, []).append(row)
-    gone = await gradings.lost(
-        ctx, [row for found in grouped.values() for row in _latest(found).values()]
-    )
+    gone = await gradings.lost(ctx, [_latest(found) for found in grouped.values()])
     return [
-        _submission(
+        await _submission(
             ctx,
             entrant,
             found,
@@ -716,16 +658,12 @@ async def _read(
     ]
 
 
-def _latest(rows: Sequence[Grading]) -> dict[str, Grading]:
-    """The latest attempt of each stage among `rows`."""
-    latest: dict[str, Grading] = {}
-    for row in rows:
-        if row.stage not in latest or row.attempt > latest[row.stage].attempt:
-            latest[row.stage] = row
-    return latest
+def _latest(rows: Sequence[Grading]) -> Grading:
+    """The latest attempt among `rows`, the attempts of one submission."""
+    return max(rows, key=lambda row: row.attempt)
 
 
-def _submission(
+async def _submission(
     ctx: Context,
     entrant: Entrant,
     number: int,
@@ -733,48 +671,102 @@ def _submission(
     rows: Sequence[Grading],
     lost: frozenset[uuid.UUID] = frozenset(),
 ) -> Submission:
-    """The submission as its owner reads it, each stage by its latest
-    attempt, with `lost` naming the gradings whose runs the CI has lost.
+    """The submission as its owner reads it, by the latest attempt of its
+    grading, with `lost` naming the gradings whose runs the CI has lost.
     """
-    stages = entrant.published.definition.stages_resolved()
-    order = {stage.id: index for index, stage in enumerate(stages)}
-    shows = {stage.id: stage.show for stage in stages}
-    latest = _latest(rows)
-    results = tuple(
-        _result(row, gradings.status_of(ctx, row, lost), shows.get(row.stage, Show.HIDDEN))
-        for row in sorted(
-            latest.values(), key=lambda row: (order.get(row.stage, len(order)), row.stage)
-        )
+    settings = entrant.settings
+    task = entrant.published.name
+    entry = settings.entry(task)
+    extension = await submitters.extension(ctx, entrant)
+    late = late_days(due_of(settings, entry, extension), at) if entry is not None else 0
+    if not rows:
+        return Submission(entrant.task, number, at, late, None)
+    row = _latest(rows)
+    status = gradings.status_of(ctx, row, lost)
+    contest = contest_id_of(task_scope(entrant.task))
+    reveal_at = await timelines.reveal(ctx, contest, settings, task)
+    return Submission(
+        entrant.task, number, at, late, await _result(ctx, entrant, row, status, reveal_at)
     )
-    return Submission(entrant.task, number, at, results)
 
 
-def _result(row: Grading, status: GradingStatus, show: Show) -> Result:
-    """The grading as the contestant may see it under the stage's `show`. A
-    system error's summary is written for staff, so it is never shown.
+async def _result(
+    ctx: Context,
+    entrant: Entrant,
+    row: Grading,
+    status: GradingStatus,
+    reveal_at: datetime | None,
+) -> Result:
+    """The grading as its contestant may see it now, with the publication it
+    ran under. A run in `system_error` is told as still running, with
+    nothing of it shown.
     """
-    verdict = row.verdict or {}
-    full = show is Show.FULL
-    shown = show is not Show.HIDDEN
-    outcome = verdict.get("outcome") if shown else None
-    metrics = verdict.get("metrics") if shown else None
-    graded = verdict.get("outcome") != "system_error"
-    summary = verdict.get("summary") if full and graded else None
-    tests = verdict.get("tests") if full else None
+    if status is GradingStatus.SYSTEM_ERROR:
+        return Result(row.id, row.attempt, GradingStatus.RUNNING, None, None, (), {})
+    if status is not GradingStatus.DONE or row.result is None:
+        return Result(row.id, row.attempt, status, None, None, (), {})
+    graded = await _shown_with(ctx, entrant, PublicationId(row.publication_id))
+    if graded is None:
+        return Result(row.id, row.attempt, status, None, None, (), {})
+    seen = shown(
+        row.result,
+        graded.groups,
+        graded.sealed,
+        revealed=reveal_at is not None and ctx.now >= reveal_at,
+        reveal_at=reveal_at,
+    )
     return Result(
-        id=row.id,
-        stage=row.stage,
-        attempt=row.attempt,
-        status=status,
-        show=show,
-        outcome=str(outcome) if outcome is not None else None,
-        metrics=dict(metrics) if isinstance(metrics, dict) else None,
-        summary=str(summary) if summary is not None else None,
-        tests=tuple(test for test in tests if isinstance(test, dict))
-        if isinstance(tests, list)
-        else None,
-        log=full and row.log_key is not None,
+        row.id, row.attempt, status, seen.stopped, seen.outcome, seen.groups, dict(seen.values)
     )
+
+
+async def _shown_with(ctx: Context, entrant: Entrant, publication: PublicationId) -> Graded | None:
+    """What a grading made under `publication` is shown with
+    (`forge.domain.showing.under`), or none when that publication does not
+    read.
+    """
+    current = entrant.published
+    form = await published.form(ctx, current)
+    latest = Graded(form.tests, current.definition.test_groups, current.publication.sealed)
+    if publication == current.publication.id:
+        return latest
+    own = await _graded(ctx, entrant.task, publication)
+    return under(own, latest) if own is not None else None
+
+
+GRADED_KEPT = published.FORM_KEPT
+"""How long this process keeps what a past publication shows its gradings
+with: a publication never changes, so the time only bounds what is held."""
+
+
+async def _graded(ctx: Context, task: TaskId, publication: PublicationId) -> Graded | None:
+    """The tests, `test_groups` and sealed facts of one of the task's
+    publications, read once per process, or none when it is gone or does
+    not read in the current format.
+    """
+
+    async def read() -> Graded | None:
+        await ctx.let_go()
+        listed = await ctx.forge.workspaces.list_publications(task)
+        found = next((each for each in listed if each.id == publication), None)
+        if found is None:
+            log.warning("submissions.publication_gone", task=task, publication=publication)
+            return None
+        try:
+            task_file = await ctx.forge.content.read_file(
+                PLATFORM, task, TASK_FILE, at=found.version
+            )
+            plan_file = await ctx.forge.content.read_file(
+                PLATFORM, task, PLAN_PATH, at=found.version
+            )
+            definition = parse_task(task_file.content)
+            plan = Plan.from_bytes(plan_file.content)
+        except NotFound, InvalidDefinition, ValidationError:
+            log.warning("submissions.publication_unreadable", task=task, publication=publication)
+            return None
+        return Graded(plan.tests, definition.test_groups, found.sealed)
+
+    return await ctx.memo.remembered(f"submissions.graded.{task}.{publication}", GRADED_KEPT, read)
 
 
 async def _own(

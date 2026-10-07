@@ -1,11 +1,12 @@
 """A contestant's submissions: submitting uploads and values to a task, and
-reading their own submissions, each with its gradings, the files one was
-made with, the door to download one, and the log of its run where the stage
-shows it, and the types they take and come back as.
+reading their own submissions, each with its grading as the task's test
+groups show it, the files one was made with and the door to download one,
+and the types they take and come back as.
 """
 
 from forge.domain.definitions import Show
 from forge.domain.grading import GradingStatus
+from forge.domain.showing import GroupShown
 from forge.domain.submissions import SubmittedInput
 from forge.services.submissions import (
     Result,
@@ -15,12 +16,12 @@ from forge.services.submissions import (
     files,
     mine,
     one,
-    run_log,
     submit,
 )
 
 __all__ = [
     "GradingStatus",
+    "GroupShown",
     "Result",
     "Show",
     "Submission",
@@ -30,6 +31,5 @@ __all__ = [
     "files",
     "mine",
     "one",
-    "run_log",
     "submit",
 ]

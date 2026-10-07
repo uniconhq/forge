@@ -63,10 +63,14 @@ async def _submit(setup: Setup, acme: Acme, entered: Entered) -> uuid.UUID:
         setup,
         entered.session,
         entered.task,
-        {"submission": SubmittedInput(uploads=(made.id,), language="python")},
+        {
+            "submission": SubmittedInput(uploads=(made.id,)),
+            "language": SubmittedInput(value="python"),
+        },
         idempotency_key="key-0001-aaaa",
     )
-    return submitted.gradings[0].id
+    assert submitted.grading is not None
+    return submitted.grading.id
 
 
 async def test_each_status_change_of_a_grading_publishes_its_id_once(

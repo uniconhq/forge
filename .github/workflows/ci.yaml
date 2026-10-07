@@ -42,44 +42,35 @@ jobs:
       # declarations with their repos'. They fail in CI when a checkout is
       # missing, so the repos sit beside each other the way they do on a
       # laptop. The runner's tag is the release whose contracts the package
-      # copies, and moves when the copy does: the runner releases a contract
-      # change first, so its main would turn this red before the copy can
-      # follow. Each primitive is checked out at the release deploy's image
-      # manifest seeds the forge with.
+      # copies, and each primitive's the release whose declaration it copies,
+      # and each moves when its copy does: they release a contract change
+      # first, so their main would turn this red before the copy can follow.
       - uses: actions/checkout@v7
         with:
           path: forge
       - uses: actions/checkout@v7
         with:
           repository: uniconhq/runner
-          ref: v0.5.1
+          ref: v0.6.0
           path: runner
       - uses: actions/checkout@v7
         with:
           repository: uniconhq/deploy
           path: deploy
-      - name: The primitive releases deploy seeds
-        id: primitives
-        working-directory: deploy
-        run: |
-          for name in compile sandbox-run diff-check; do
-            tag="$(jq -r --arg name "$name" '.primitives[$name].source.tag' images.json)"
-            echo "${name//-/_}=$tag" >> "$GITHUB_OUTPUT"
-          done
       - uses: actions/checkout@v7
         with:
           repository: uniconhq/primitive-compile
-          ref: ${{ steps.primitives.outputs.compile }}
+          ref: v2.0.0
           path: primitive-compile
       - uses: actions/checkout@v7
         with:
           repository: uniconhq/primitive-sandbox-run
-          ref: ${{ steps.primitives.outputs.sandbox_run }}
+          ref: v2.0.0
           path: primitive-sandbox-run
       - uses: actions/checkout@v7
         with:
           repository: uniconhq/primitive-diff-check
-          ref: ${{ steps.primitives.outputs.diff_check }}
+          ref: v2.0.0
           path: primitive-diff-check
 
       - uses: astral-sh/setup-uv@v10.1.0

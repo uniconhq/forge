@@ -1,6 +1,7 @@
-"""What a visitor with no session reads: the contests that are public and
-published, each with the tasks released now, and a released task's
-statement. A contest that is not public and a task that is not visible are
+"""What a visitor with no session reads: the contests that are for everyone
+and published, each with the tasks released now, labelled by their place in
+the contest, and a released task's statement. A contest that is not for
+everyone and a task that is not visible are
 no such contest or task, as for one that is not there, and everything is
 read as the platform. The list starts from every contest as this process
 read it at most half a minute ago, and a contest's settings saved through
@@ -27,24 +28,26 @@ from tests.services.conftest import (
     write_contest,
 )
 
+LATER = RUNNING + "  - {{id: later, release_at: 2026-09-26T13:00:00Z}}\n"
+
 
 @pytest.fixture
 async def public(setup: Setup, acme: Acme, sum_task: TaskId) -> TaskId:
-    """acme/spring public and running with sum published and a hidden task,
-    and acme/autumn for anyone signed in.
+    """acme/spring for everyone and running with sum published and a task
+    released only later, and acme/autumn for anyone signed in.
     """
     manager = await organiser(setup, acme.fake, 7, Scope("acme"), Role.MANAGER)
     await contests.create(setup, manager, ACME, "autumn")
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    later = await make_task(setup, acme, "later")
+    await write_contest(acme.fake, LATER.format(visibility="everyone"))
     await write_contest(acme.fake, RUNNING.format(visibility="signed-in"), ContestId("acme/autumn"))
-    hidden = await make_task(setup, acme, "hidden")
     await publish(setup, acme, sum_task)
-    await publish(setup, acme, hidden, b"hidden: true\n")
+    await publish(setup, acme, later)
     acme.fake.reset_calls()
     return sum_task
 
 
-async def test_the_public_contests_are_listed_and_nothing_else(
+async def test_the_contests_for_everyone_are_listed_and_nothing_else(
     setup: Setup, acme: Acme, public: TaskId
 ) -> None:
     listed = await landing.contests(setup)
@@ -55,14 +58,14 @@ async def test_the_public_contests_are_listed_and_nothing_else(
     assert {call.identity for call in acme.fake.calls} == {PLATFORM}
 
 
-async def test_a_public_contest_shows_its_released_tasks_and_their_statements(
+async def test_a_contest_for_everyone_shows_its_released_tasks_and_their_statements(
     setup: Setup, acme: Acme, public: TaskId
 ) -> None:
     contest = await landing.contest(setup, SPRING)
     statement = await landing.statement(setup, public)
 
     assert [(task.task, task.label, task.title) for task in contest.tasks] == [
-        (public, "sum", "Sum of Two")
+        (public, "A", "Sum of Two")
     ]
     assert statement.task.task == public
     stored = await acme.fake.content.read_file(PLATFORM, public, "statement.md")
@@ -77,7 +80,7 @@ async def test_any_other_contest_is_no_such_contest(
         await landing.contest(setup, ContestId(contest))
 
 
-@pytest.mark.parametrize("task", ["acme/spring/hidden", "acme/spring/nothing", "acme/autumn/sum"])
+@pytest.mark.parametrize("task", ["acme/spring/later", "acme/spring/nothing", "acme/autumn/sum"])
 async def test_any_other_task_is_no_such_task(
     setup: Setup, acme: Acme, public: TaskId, task: str
 ) -> None:

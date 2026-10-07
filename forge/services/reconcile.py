@@ -5,12 +5,12 @@ since the backup, and the forge is where submissions are kept, so
 
 For each contest of every org the platform made, each task with a
 publication, and each person who registered for the contest and each team
-of it, it lists their submissions of the task and inserts, for any that has no grading at
-all, one queued grading per stage the task grades on submit, against the
-task's current publication, attempt 1, with the idempotency key its
-protected version's note carries; their runs start once it commits. A submit
-of the same submission sent again meanwhile cannot make a second set of
-rows: the key is unique for a workspace, task and stage.
+of it, it lists their submissions of the task and inserts, for any that has
+no grading at all, one queued grading against the task's current
+publication, attempt 1, with the idempotency key its protected version's
+note carries; its run starts once it commits. A submit of the same
+submission sent again meanwhile cannot make a second row: the key is unique
+for a workspace and task.
 """
 
 from dataclasses import dataclass
@@ -109,13 +109,12 @@ async def _task(
                 continue
             try:
                 async with ctx.db.begin_nested():
-                    rows = gradings.queue_submission(
+                    gradings.queue_submission(
                         ctx,
                         task=task.id,
                         workspace=workspace,
                         submission=made,
                         publication=task.publication,
-                        definition=task.definition,
                         key=made.key,
                         at=made.at,
                     )
@@ -125,12 +124,6 @@ async def _task(
                     "reconcile.key_taken", task=task.id, workspace=workspace, number=made.number
                 )
                 continue
-            inserted += len(rows)
-            log.info(
-                "reconcile.graded",
-                task=task.id,
-                workspace=workspace,
-                number=made.number,
-                gradings=len(rows),
-            )
+            inserted += 1
+            log.info("reconcile.graded", task=task.id, workspace=workspace, number=made.number)
     return seen, inserted

@@ -99,11 +99,14 @@ async def _signed_in(setup: Setup, admin: httpx.Client, person: dict[str, Any]) 
 
 
 def _running(title: str) -> bytes:
-    """A published, public contest that started an hour ago and ends in two."""
+    """A published contest for everyone that started an hour ago and ends in
+    two, listing the task sum.
+    """
     now = datetime.now(UTC).replace(microsecond=0)
     start, end = (now - timedelta(hours=1)).isoformat(), (now + timedelta(hours=2)).isoformat()
     return (
-        f"name: {title}\nstart: {start}\nend: {end}\nstate: published\nvisibility: public\n"
+        f"name: {title}\nstart: {start}\nend: {end}\nstate: published\nvisibility: everyone\n"
+        "tasks:\n  - id: sum\n"
     ).encode()
 
 
@@ -138,7 +141,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
         organiser,
         task,
         "task.yaml",
-        starter.content.replace(b"value: 2.0", b"value: 3.0"),
+        starter.content.replace(b"time_limit: 2", b"time_limit: 3"),
         starter.token,
     )
 
@@ -150,10 +153,10 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     commit = admin.get(f"{repo}/git/commits/{tags['published/1']['commit']['sha']}").json()
     assert commit["author"]["login"] == person["login"]
     assert sorted(entry["filename"] for entry in commit["files"]) == [
-        "plans/default.json",
+        "plans/plan.json",
         "task.yaml",
     ]
-    plan = admin.get(f"{repo}/contents/plans/default.json").json()
+    plan = admin.get(f"{repo}/contents/plans/plan.json").json()
     assert plan["last_commit_sha"] == tags["published/1"]["commit"]["sha"]
 
     activated = ci.get(f"/api/repos/lookup/{org}/spring.sum.task")
@@ -170,7 +173,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
         organiser,
         task,
         "task.yaml",
-        current.content.replace(b"unicon/classic@v1", b"unicon/classic@v9"),
+        current.content.replace(b"unicon/classic@v2", b"unicon/classic@v9"),
         current.token,
     )
 
@@ -209,7 +212,8 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     page = await contest_home.task(live_setup, entrant, task)
     public = await landing.statement(live_setup, task)
     assert page.statement == public.statement
-    assert page.limits.submissions == 50
+    assert page.submissions.max == 50
+    assert [field.id for field in page.inputs] == ["submission", "language"]
 
     removed = await contestants.remove(live_setup, organiser, contest, int(contestant["id"]))
     assert removed.status is Status.REMOVED
