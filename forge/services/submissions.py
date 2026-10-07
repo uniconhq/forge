@@ -49,7 +49,12 @@ it again.
 A contestant reads their own submissions back, newest first, each with the
 latest attempt of its grading as the task's test groups show it
 (`forge.domain.showing`), how many started days late it was, and nothing of
-a run in `system_error` but that it is still being graded. `files` gives
+a run in `system_error` but that it is still being graded. A grading is
+shown with the publication it ran under: its sealed facts, and its
+`test_groups` unless the latest publication's plan lists the same tests. A
+past publication's `task.yaml` and plan are read once per process, since a
+publication never changes; one that does not read shows nothing of its
+gradings but where they stand. `files` gives
 the inputs a submission was made with, and `download` the door to one of
 its files: where the proxy reads it from the forge and streams it to the
 person, so its bytes, two gigabytes or two, never pass through the
@@ -69,11 +74,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import func, select, text
 
 from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
 from forge.domain import submissions as rules
+from forge.domain.definitions import TASK_FILE, parse_task
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -90,12 +97,13 @@ from forge.domain.errors import (
     UploadNotYours,
 )
 from forge.domain.grading import GradingStatus
-from forge.domain.identity import AsUser
-from forge.domain.ids import SubmissionId, TaskId, WorkspaceId
+from forge.domain.identity import PLATFORM, AsUser
+from forge.domain.ids import PublicationId, SubmissionId, TaskId, WorkspaceId
+from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.release import due_of, late_days
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
-from forge.domain.showing import GroupShown, shown
+from forge.domain.showing import Graded, GroupShown, shown, under
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
 from forge.domain.uploads import (
     POINTER_MAX,
@@ -105,6 +113,7 @@ from forge.domain.uploads import (
     pointer_text,
     read_pointer,
 )
+from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
@@ -677,34 +686,87 @@ async def _submission(
     contest = contest_id_of(task_scope(entrant.task))
     reveal_at = await timelines.reveal(ctx, contest, settings, task)
     return Submission(
-        entrant.task, number, at, late, _result(entrant, row, status, reveal_at, ctx.now)
+        entrant.task, number, at, late, await _result(ctx, entrant, row, status, reveal_at)
     )
 
 
-def _result(
+async def _result(
+    ctx: Context,
     entrant: Entrant,
     row: Grading,
     status: GradingStatus,
     reveal_at: datetime | None,
-    now: datetime,
 ) -> Result:
-    """The grading as its contestant may see it now. A run in
-    `system_error` is told as still running, with nothing of it shown.
+    """The grading as its contestant may see it now, with the publication it
+    ran under. A run in `system_error` is told as still running, with
+    nothing of it shown.
     """
     if status is GradingStatus.SYSTEM_ERROR:
         return Result(row.id, row.attempt, GradingStatus.RUNNING, None, None, (), {})
     if status is not GradingStatus.DONE or row.result is None:
         return Result(row.id, row.attempt, status, None, None, (), {})
+    graded = await _shown_with(ctx, entrant, PublicationId(row.publication_id))
+    if graded is None:
+        return Result(row.id, row.attempt, status, None, None, (), {})
     seen = shown(
         row.result,
-        entrant.published.definition.test_groups,
-        entrant.published.publication.sealed,
-        revealed=reveal_at is not None and now >= reveal_at,
+        graded.groups,
+        graded.sealed,
+        revealed=reveal_at is not None and ctx.now >= reveal_at,
         reveal_at=reveal_at,
     )
     return Result(
         row.id, row.attempt, status, seen.stopped, seen.outcome, seen.groups, dict(seen.values)
     )
+
+
+async def _shown_with(ctx: Context, entrant: Entrant, publication: PublicationId) -> Graded | None:
+    """What a grading made under `publication` is shown with
+    (`forge.domain.showing.under`), or none when that publication does not
+    read.
+    """
+    current = entrant.published
+    form = await published.form(ctx, current)
+    latest = Graded(form.tests, current.definition.test_groups, current.publication.sealed)
+    if publication == current.publication.id:
+        return latest
+    own = await _graded(ctx, entrant.task, publication)
+    return under(own, latest) if own is not None else None
+
+
+GRADED_KEPT = published.FORM_KEPT
+"""How long this process keeps what a past publication shows its gradings
+with: a publication never changes, so the time only bounds what is held."""
+
+
+async def _graded(ctx: Context, task: TaskId, publication: PublicationId) -> Graded | None:
+    """The tests, `test_groups` and sealed facts of one of the task's
+    publications, read once per process, or none when it is gone or does
+    not read in the current format.
+    """
+
+    async def read() -> Graded | None:
+        await ctx.let_go()
+        listed = await ctx.forge.workspaces.list_publications(task)
+        found = next((each for each in listed if each.id == publication), None)
+        if found is None:
+            log.warning("submissions.publication_gone", task=task, publication=publication)
+            return None
+        try:
+            task_file = await ctx.forge.content.read_file(
+                PLATFORM, task, TASK_FILE, at=found.version
+            )
+            plan_file = await ctx.forge.content.read_file(
+                PLATFORM, task, PLAN_PATH, at=found.version
+            )
+            definition = parse_task(task_file.content)
+            plan = Plan.from_bytes(plan_file.content)
+        except NotFound, InvalidDefinition, ValidationError:
+            log.warning("submissions.publication_unreadable", task=task, publication=publication)
+            return None
+        return Graded(plan.tests, definition.test_groups, found.sealed)
+
+    return await ctx.memo.remembered(f"submissions.graded.{task}.{publication}", GRADED_KEPT, read)
 
 
 async def _own(

@@ -57,6 +57,7 @@ def result(**changes: Any) -> dict[str, Any]:
     found: dict[str, Any] = {
         "schema_version": 5,
         "stopped": None,
+        "stopped_by": None,
         "tests": [
             {"test": "main/1", "outcome": "accepted", "values": {"time_ms": 120}},
             {"test": "samples/1", "outcome": "wrong_answer", "values": {"time_ms": 15}},
@@ -73,6 +74,7 @@ def test_a_result_that_keeps_its_schema_is_kept() -> None:
     assert result_problem(result()) is None
     stopped = result(
         stopped="compile_error",
+        stopped_by="compile",
         tests=[{"test": "main/1", "outcome": "skipped", "values": {}}],
         values={"log": "main.cpp:3: error"},
     )
@@ -86,6 +88,9 @@ def test_a_result_that_keeps_its_schema_is_kept() -> None:
         ({"schema_version": 4}, "result.schema.json"),
         ({"stopped": "accepted"}, "result.schema.json"),
         ({"stopped": "system_error"}, "result.schema.json"),
+        ({"stopped": "compile_error"}, "result.schema.json"),
+        ({"stopped_by": "compile"}, "result.schema.json"),
+        ({"stopped": "system_error", "error": "x", "stopped_by": "run"}, "result.schema.json"),
         ({"error": "a sentence with no stop"}, "result.schema.json"),
         ({"tests": [{"test": "main/1", "outcome": "great", "values": {}}]}, "result.schema.json"),
         ({"tests": [{"id": "1", "outcome": "accepted", "values": {}}]}, "result.schema.json"),

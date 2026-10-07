@@ -1,14 +1,23 @@
 """What a contestant is shown of a result before and after the task's reveal:
 each group by its `show`, the outcome over the groups whose verdict is
-shown, what stopped the run unless a sealed step may have, and the values
-of steps that are not sealed.
+shown, what stopped the run unless a sealed step did, and the values of
+steps that are not sealed; and which publication's groups and sealed facts
+a grading is shown with.
 """
 
 from datetime import UTC, datetime
 from typing import Any
 
 from forge.domain.definitions import Group, Show
-from forge.domain.showing import NOTHING_SEALED, GroupShown, Sealed, group_of, shown
+from forge.domain.showing import (
+    NOTHING_SEALED,
+    Graded,
+    GroupShown,
+    Sealed,
+    group_of,
+    shown,
+    under,
+)
 
 REVEAL = datetime(2026, 6, 1, 14, tzinfo=UTC)
 
@@ -26,6 +35,7 @@ def row(test: str, outcome: str = "accepted", **values: Any) -> dict[str, Any]:
 RESULT: dict[str, Any] = {
     "schema_version": 5,
     "stopped": None,
+    "stopped_by": None,
     "tests": [
         row("large/1", "time_limit", time_ms=2000),
         row("samples/1", time_ms=12),
@@ -101,6 +111,7 @@ def test_a_stop_by_a_step_that_is_not_sealed_is_shown_at_once() -> None:
     stopped = {
         **RESULT,
         "stopped": "compile_error",
+        "stopped_by": "compile",
         "tests": [row(test, "skipped") for test in ("large/1", "samples/1", "small/1")],
         "values": {"log": "main.cpp:3: error"},
     }
@@ -110,17 +121,24 @@ def test_a_stop_by_a_step_that_is_not_sealed_is_shown_at_once() -> None:
     assert (seen.stopped, seen.outcome) == ("compile_error", "compile_error")
     assert seen.values == {"log": "main.cpp:3: error"}
 
+    beside_a_sealed_step = shown(stopped, GROUPS, SEALED, revealed=False, reveal_at=REVEAL)
+    assert (beside_a_sealed_step.stopped, beside_a_sealed_step.outcome) == (
+        "compile_error",
+        "compile_error",
+    )
+
 
 AFTER_CLOSE = {
     "main": Group.model_validate({"each": 1, "show": "after_close"}),
 }
-SEALED = Sealed(stop=True, values=frozenset({"accuracy", "fraction"}))
+SEALED = Sealed(steps=frozenset({"evaluate"}), values=frozenset({"accuracy", "fraction"}))
 
 
 def test_a_sealed_steps_stop_and_values_wait_for_the_reveal() -> None:
     result = {
         **RESULT,
         "stopped": "runtime_error",
+        "stopped_by": "evaluate",
         "tests": [row("main/1", "skipped")],
         "values": {"accuracy": 0.9, "log": "notebook ran"},
     }
@@ -149,13 +167,44 @@ def test_a_sealed_per_test_value_is_held_on_its_rows_until_the_reveal() -> None:
     )
 
 
-def test_a_test_no_group_lists_is_not_shown_and_a_group_with_no_rows_passes() -> None:
-    groups = {"main": Group(), "extra": Group()}
+def test_a_test_no_group_lists_is_not_shown_and_a_group_with_no_rows_did_not_run() -> None:
+    groups = {"main": Group(), "extra": Group.model_validate({"pass": 1, "show": "after_close"})}
     result = {**RESULT, "tests": [row("old/1", "wrong_answer"), row("main/1")]}
 
-    seen = shown(result, groups, NOTHING_SEALED, revealed=True, reveal_at=None)
+    for revealed in (False, True):
+        seen = shown(result, groups, NOTHING_SEALED, revealed=revealed, reveal_at=REVEAL)
+        assert [group.group for group in seen.groups] == ["main", "extra"]
+        assert seen.groups[0].ran
+        assert seen.groups[1] == GroupShown("extra", Show.AFTER_CLOSE, None, (), None, ran=False)
+        assert seen.outcome == "accepted"
 
-    assert [group.group for group in seen.groups] == ["main", "extra"]
-    assert seen.groups[1].tests == ()
-    assert seen.outcome == "accepted"
+    nothing_ran = shown(result, {"extra": Group()}, NOTHING_SEALED, revealed=True, reveal_at=None)
+    assert nothing_ran.outcome is None
     assert group_of("samples/12") == "samples"
+
+
+OWN = Graded(
+    ("main/1", "main/2"),
+    {"main": Group.model_validate({"each": 1})},
+    Sealed(steps=frozenset({"validate"})),
+)
+
+
+def test_a_grading_is_shown_with_the_latest_groups_while_the_plans_list_the_same_tests() -> None:
+    latest = Graded(
+        ("main/1", "main/2"),
+        {"main": Group.model_validate({"pass": 1, "show": "verdict"})},
+        Sealed(),
+    )
+
+    assert under(OWN, latest) == Graded(OWN.tests, latest.groups, OWN.sealed)
+
+
+def test_a_grading_whose_tests_changed_is_shown_with_its_own_publication() -> None:
+    latest = Graded(
+        ("extra/1", "main/1", "main/2"),
+        {"extra": Group(), "main": Group.model_validate({"each": 1})},
+        NOTHING_SEALED,
+    )
+
+    assert under(OWN, latest) == OWN

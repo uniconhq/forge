@@ -10,8 +10,9 @@ retry instead of made again. A folder input takes a tree of files and a
 per-test input one file per test, named `<group>/<test>`, the files under an
 input within its `max_size` together. The contestant reads their own
 submissions back, each grading with its test groups as their `show` allows
-before and after the task's reveal, a run in `system_error` as still
-running, how many days late each was, and nobody else's.
+before and after the task's reveal, with the publication it ran under when
+the tests have changed since, a run in `system_error` as still running, how
+many days late each was, and nobody else's.
 """
 
 import hashlib
@@ -21,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
@@ -881,6 +882,7 @@ test_groups:
 RESULT: dict[str, Any] = {
     "schema_version": 5,
     "stopped": None,
+    "stopped_by": None,
     "tests": [
         {"test": "large/1", "outcome": "wrong_answer", "values": {"time_ms": 30, "memory_kb": 9}},
         {"test": "main/1", "outcome": "accepted", "values": {"time_ms": 10, "memory_kb": 7}},
@@ -955,6 +957,63 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
     assert after.grading.groups[1].tests == (RESULT["tests"][2],)
 
 
+async def _first_attempts_only(setup: Setup) -> None:
+    """Every grading but the first attempt gone: a regrade not yet made."""
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(delete(Grading).where(Grading.attempt > 1))
+
+
+async def test_a_change_to_show_alone_shows_a_grading_with_the_latest_groups(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _three_groups(setup, acme, entered.task)
+    await _submit(setup, acme, entered)
+    await _graded(setup, RESULT)
+    current = await _task_yaml(acme, entered.task)
+    shown_now = current.replace(b"small: {pass: 30, show: verdict}", b"small: {pass: 30}")
+    await _save(setup, acme, entered.task, {"task.yaml": shown_now})
+    await _first_attempts_only(setup)
+
+    [submission] = await submissions.mine(setup, entered.session, entered.task)
+
+    assert submission.grading is not None
+    small = submission.grading.groups[1]
+    assert (small.show, small.tests) == (Show.ALWAYS, (RESULT["tests"][2],))
+
+
+async def test_a_grading_whose_tests_changed_since_is_shown_with_its_own_publication(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _three_groups(setup, acme, entered.task)
+    await _submit(setup, acme, entered)
+    await _graded(setup, RESULT)
+    current = await _task_yaml(acme, entered.task)
+    start = current.index(b"test_groups:")
+    await _save(
+        setup,
+        acme,
+        entered.task,
+        {
+            "task.yaml": current[:start]
+            + b"test_groups:\n  main: {each: 100}\n  small: {pass: 30}\n"
+            + b"  large: {pass: 70, show: after_close}\n  extra: {each: 10, show: always}\n",
+            "tests/extra/1/input": b"2 2\n",
+            "tests/extra/1/answer": b"4\n",
+        },
+    )
+    await _first_attempts_only(setup)
+
+    [submission] = await submissions.mine(setup, entered.session, entered.task)
+
+    assert submission.grading is not None
+    assert submission.grading.outcome == "accepted"
+    assert [(group.group, group.show, group.tests) for group in submission.grading.groups] == [
+        ("main", Show.ALWAYS, (RESULT["tests"][1],)),
+        ("small", Show.VERDICT, None),
+        ("large", Show.AFTER_CLOSE, None),
+    ]
+
+
 async def test_an_extension_holds_the_reveal_back_for_everyone(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
@@ -983,6 +1042,7 @@ async def test_a_stop_is_shown_as_the_outcome(setup: Setup, acme: Acme, entered:
     stopped = {
         **RESULT,
         "stopped": "compile_error",
+        "stopped_by": "compile",
         "tests": [{"test": "main/1", "outcome": "skipped", "values": {}}],
         "values": {"log": "main.py:1: SyntaxError"},
     }

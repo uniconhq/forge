@@ -7,7 +7,7 @@ what changed, in words a person reads, which workflow each workflow name
 the task used was, by the forge's own id for it, so a later save can tell
 when the same name has come to mean another workflow, and what the task's
 sealed steps hold back until its reveal (`forge.domain.showing.Sealed`):
-the run's stop, when a step that runs once is sealed, and the values
+the sealed steps that run once, whose stop is held back, and the values
 reported from sealed steps.
 
     grading_changed: true
@@ -15,7 +15,7 @@ reported from sealed steps.
     - plans/plan.json changed
     workflows:
       acme/sorting: "412"
-    sealed_stop: true
+    sealed_steps: [validate]
     sealed_values: [accuracy]
 """
 
@@ -63,11 +63,15 @@ def write_note(
     document: dict[str, object] = {"grading_changed": grading_changed, "changes": list(changes)}
     if workflows:
         document["workflows"] = dict(sorted(workflows.items()))
-    if sealed.stop:
-        document["sealed_stop"] = True
+    if sealed.steps:
+        document["sealed_steps"] = sorted(sealed.steps)
     if sealed.values:
         document["sealed_values"] = sorted(sealed.values)
     return yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
+
+
+def _names(value: object) -> frozenset[str]:
+    return frozenset(str(name) for name in value) if isinstance(value, list) else frozenset()
 
 
 def read_note(text: str | None) -> Note:
@@ -88,9 +92,7 @@ def read_note(text: str | None) -> Note:
         if isinstance(workflows, dict)
         else {}
     )
-    values = document.get("sealed_values")
     sealed = Sealed(
-        stop=document.get("sealed_stop") is True,
-        values=frozenset(str(name) for name in values) if isinstance(values, list) else frozenset(),
+        steps=_names(document.get("sealed_steps")), values=_names(document.get("sealed_values"))
     )
     return Note(document.get("grading_changed") is True, listed, pinned, sealed)
