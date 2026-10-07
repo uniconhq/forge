@@ -31,10 +31,11 @@ An organiser managing the task reads its gradings and acts on one:
   `submissions.max`, a retry is refused, and a rejudge leaves it as it is;
 - `retry` makes a new attempt of a submission's latest grading once it is
   finished, against the publication that attempt graded against, unless
-  staff cancelled it or another attempt of it is still being graded. One that reads as finished
-  only because it is overdue or lost is ended first, with the reason
-  written on its row, and the old run is cancelled at the CI once the
-  retry has committed, so it does not keep a machine's containers going;
+  staff cancelled it or another attempt of it is still being graded. One
+  that reads as finished only because it is overdue or lost is ended
+  first, with the reason written on its row, and the old run is cancelled
+  at the CI once the retry has committed, so it does not keep a machine's
+  containers going;
 - `rejudge` makes a new attempt of every submission's latest attempt,
   against the task's current publication, as a save that publishes a
   change to how the task grades does (`regrade`).
@@ -218,11 +219,10 @@ class Submitter:
 class FeedEntry:
     """One grading as an organiser reads it among a task's or a contest's:
     the grading, who made the submission it grades, and its task's name and
-    label, the letter
-    of its place in the contest's `tasks`; the label is none once the
-    contest no longer lists the task, or when its settings do not read or
-    the forge does not say, and the name none for a task the platform has
-    no name for.
+    label, the letter of its place in the contest's `tasks`. The label is
+    none once the contest no longer lists the task, or when its settings do
+    not read or the forge does not say, and the name none for a task the
+    platform has no name for.
     """
 
     grading: GradingRecord
@@ -810,9 +810,9 @@ async def feed(
     first, at most `limit` of them and never more than 500: of one `task`,
     of the submissions of the contestant whose username is `user`, their
     own and their teams' while they were in them, or of the team `team`,
-    and reading as `status`, each filter when given. A task,
-    contestant or team the organiser cannot see there gives none, and so
-    does a `user` that breaks the forge's username rule (`is_username`).
+    and reading as `status`, each filter when given. A task, contestant or
+    team the organiser cannot see there gives none, and so does a `user`
+    that breaks the forge's username rule (`is_username`).
     `Forbidden` for someone holding no role in the contest.
     """
     observed = _observed(organiser, contest)
