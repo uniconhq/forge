@@ -107,8 +107,9 @@ forge/api/
   submissions.py  submit, mine, one, files, download, the SubmittedInput
                 submit takes, and the Submission, Result, GroupShown,
                 SubmittedFiles, GradingStatus and Show they return
-  gradings.py   cancel, retry, rejudge, list, run_log, task_of, and the
-                GradingRecord, Rejudged and GradingStatus they return
+  gradings.py   cancel, retry, rejudge, list, run_log, task_of, feed, and
+                the GradingRecord, Rejudged, FeedEntry, Submitter and
+                GradingStatus they return
   runs.py       config, envelope, callback, the CiRequest config takes and the
                 CiAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
                 ENVELOPE_PATH and CALLBACK_PATH, where each is served
@@ -476,7 +477,7 @@ hosting process calls are actions, marked `@action` from
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
 | `submissions` | `submit`, `mine`, `one`, `files`, `download` |
-| `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of` |
+| `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of`, `feed` |
 | `runs` | `config`, `envelope`, `callback` |
 | `workflows` | `create` |
 
@@ -1023,7 +1024,11 @@ before the commit, so Postgres delivers them with it and never for a unit
 of work that rolls back. Every write of a grading's status or progress
 nudges its contestant and its task's organisers (`gradings.changed`, from
 `new_row`, the start, `finish`, the envelope and the progress callback),
-which is what moves a submissions list while its owner watches. A thread's
+which is what moves a submissions list while its owner watches. Its scope
+is the task, and a role at the contest or the org covers the task, so
+everyone who can read a grading in a contest's feed hears it change; the
+feed's page asks for the feed again on a grading nudge whose id it does
+not show, since a new attempt is a new id. A thread's
 changes come from the forge: the host answers the forge's push as soon as
 `events.check` passes, then hands the body to `events.publish`, which reads
 it through the port and nudges a clarification's asker and its contest's
@@ -1399,6 +1404,26 @@ to `RUN_LOG_MAX`, 9 MiB, and refused above as `LogTooLarge`; a grading with
 no log is `NotFound`, and a store that fails is `Unavailable` in fixed
 words, with what it said in the log. A route that names only the grading
 checks the organiser at the task `gradings.task_of(grading)` gives.
+
+**A contest's gradings.** `gradings.feed(contest, task=, user=, team=,
+status=, limit=)` lists the gradings of the contest's tasks as one feed,
+newest first, at most `limit` (100 unless given) and never more than 500,
+each a `FeedEntry`: the `GradingRecord` `list` gives, with the same
+overdue and lost reading and its reason, and `by`, a `Submitter`, the
+contestant by user id and username or the team by id and name, the name
+none once the account or the team is gone or the forge does not say.
+Every attempt is a row of its own, so the attempts of one submission group
+by its workspace and number. `task` narrows to one task, `user` to the
+submissions a contestant made on their own, by username, `team` to a
+team's, and `status` to the gradings that read as it, a row stored
+unfinished and read as `system_error` included; a filter by status reads a
+page at a time until the page is full, since whether a row is overdue or
+lost is known only once it is read. An observer of the contest, or of its
+org, sees every task's gradings; someone holding a role at some of its
+tasks alone sees theirs, a task they do not observe left out rather than
+refused, and someone holding none of either is `Forbidden`. The usernames
+cost one read of the forge per contestant on the page, kept a minute by
+`CachedForge`, and a team's name one query.
 
 ## Errors
 

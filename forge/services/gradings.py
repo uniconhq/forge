@@ -46,6 +46,17 @@ An organiser managing the task reads its gradings and acts on one:
   alone. It is read whole up to `RUN_LOG_MAX` bytes and refused above
   (`log_too_large`), and a store that fails is told in fixed words.
 
+An organiser of a contest reads its gradings together:
+
+- `feed` lists every grading of the contest's tasks the organiser observes,
+  newest first, filtered by task, by who submitted and by status, each with
+  who submitted it, a contestant by username or a team by name; every
+  attempt is a row of its own, read as `list` reads it.
+
+It sees the tasks the organiser observes: every task for an observer of
+the contest or above, and otherwise the tasks they hold a role at, the rest
+left out. Someone holding no role in the contest is refused.
+
 A grading is named by its id, which is no access control: an organiser who
 does not observe the task is told there is no such grading. `task_of` gives
 the task a grading is of, so the host's guard can check the organiser there
@@ -59,9 +70,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select, tuple_
 
-from forge.db.tables import Grading
+from forge.db.tables import Grading, Team
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -87,11 +98,13 @@ from forge.domain.grading import (
     envelope_key,
     log_key,
     overdue,
+    stored_as,
     token_hash,
     worth_asking,
 )
 from forge.domain.identity import AsOrgAccount
 from forge.domain.ids import (
+    ContestId,
     OrgId,
     PublicationId,
     RunId,
@@ -104,7 +117,7 @@ from forge.domain.ids import (
 from forge.domain.live import Nudge, NudgeKind
 from forge.domain.names import TeamOwner, UserOwner
 from forge.domain.publications import Publication
-from forge.domain.roles import Role, holds, task_scope
+from forge.domain.roles import Role, ScopeKind, contest_scope, holds, task_id_of, task_scope
 from forge.domain.submissions import Submitted
 from forge.log import get_logger
 from forge.runtime.actions import action
@@ -168,6 +181,28 @@ class GradingRecord:
     finished_at: datetime | None
     deadline_at: datetime | None
     cancel_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Submitter:
+    """Who made a submission, as an organiser recognises them: a contestant,
+    by user id and username, or a team, by id and name. The name is none
+    once the account or the team is gone, or when the forge did not say.
+    """
+
+    user_id: int | None
+    team: uuid.UUID | None
+    name: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class FeedEntry:
+    """One grading in a contest's feed: the grading as `list` gives it, and
+    who made the submission it grades.
+    """
+
+    grading: GradingRecord
+    by: Submitter
 
 
 @dataclass(frozen=True, slots=True)
@@ -652,6 +687,138 @@ async def list(
     )
     gone = await lost(ctx, rows)
     return tuple(record(ctx, row, gone) for row in rows)
+
+
+@action
+async def feed(
+    ctx: Context,
+    organiser: Organiser,
+    contest: ContestId,
+    *,
+    task: TaskId | None = None,
+    user: str | None = None,
+    team: uuid.UUID | None = None,
+    status: GradingStatus | None = None,
+    limit: int = 100,
+) -> tuple[FeedEntry, ...]:
+    """The gradings of the contest's tasks the organiser observes, newest
+    first, at most `limit` of them and never more than 500: of one `task`,
+    of the submissions of the contestant whose username is `user` or of the
+    team `team`, and reading as `status`, each filter when given. A task,
+    contestant or team the organiser cannot see there gives none.
+    `Forbidden` for someone holding no role in the contest.
+    """
+    observed = _observed(organiser, contest)
+    where = [_in_contest(contest, observed)]
+    if task is not None:
+        if observed is not None and task not in observed:
+            return ()
+        where.append(Grading.task_id == task)
+    if user is not None:
+        try:
+            found = await ctx.forge.identity.find_user_by_username(user)
+        except NotFound:
+            return ()
+        where.append(Grading.workspace_id == _workspace(ctx, contest, UserOwner(found.id)))
+    if team is not None:
+        where.append(Grading.workspace_id == _workspace(ctx, contest, TeamOwner(team)))
+    if status is not None:
+        where.append(Grading.status.in_(stored_as(status)))
+    size = max(1, min(limit, LIST_LIMIT))
+    kept: builtins.list[GradingRecord] = []
+    after: tuple[datetime, uuid.UUID] | None = None
+    # A row whose status reads otherwise than it is stored, overdue or lost,
+    # is only known once read, so a filter by status reads a page at a time
+    # until the page is full.
+    while len(kept) < size:
+        query = select(Grading).where(*where)
+        if after is not None:
+            query = query.where(tuple_(Grading.created_at, Grading.id) < after)
+        rows = (
+            (
+                await ctx.db.execute(
+                    query.order_by(Grading.created_at.desc(), Grading.id.desc()).limit(size)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        gone = await lost(ctx, rows)
+        kept.extend(
+            record(ctx, row, gone)
+            for row in rows
+            if status is None or status_of(ctx, row, gone) is status
+        )
+        if len(rows) < size:
+            break
+        after = (rows[-1].created_at, rows[-1].id)
+    kept = kept[:size]
+    by = await _submitters(ctx, {found.workspace for found in kept})
+    return tuple(FeedEntry(found, by[found.workspace]) for found in kept)
+
+
+def _observed(organiser: Organiser, contest: ContestId) -> frozenset[TaskId] | None:
+    """The contest's tasks the organiser observes: none to mean every one,
+    for an observer of the contest or above, and otherwise the tasks they
+    hold a role at. `Forbidden` when that is no task at all.
+    """
+    scope = contest_scope(contest)
+    if holds(organiser.grants, scope, Role.OBSERVER):
+        return None
+    tasks = frozenset(
+        task_id_of(grant.scope)
+        for grant in organiser.grants
+        if grant.scope.kind is ScopeKind.TASK
+        and (grant.scope.org, grant.scope.contest) == (scope.org, scope.contest)
+    )
+    if not tasks:
+        named = organiser.scope if organiser.scope == scope else scope
+        raise Forbidden(f"This needs the observer role at {named.name} or one of its tasks.")
+    return tasks
+
+
+def _in_contest(contest: ContestId, observed: frozenset[TaskId] | None) -> ColumnElement[bool]:
+    if observed is None:
+        return Grading.task_id.startswith(f"{contest}/", autoescape=True)
+    return Grading.task_id.in_(sorted(observed))
+
+
+def _workspace(ctx: Context, contest: ContestId, owner: UserOwner | TeamOwner) -> WorkspaceId:
+    return ctx.forge.workspaces.workspace_of(contest, owner)
+
+
+async def _submitters(
+    ctx: Context, workspaces: Collection[WorkspaceId]
+) -> dict[WorkspaceId, Submitter]:
+    """Who works in each workspace, with the name an organiser knows them
+    by: a team's from its row, read first, and a contestant's username from
+    the forge once the connection is let go of, a forge that does not say
+    leaving the name out.
+    """
+    owners = {workspace: ctx.forge.workspaces.owner_of(workspace) for workspace in workspaces}
+    team_ids = {owner.team_id for owner in owners.values() if isinstance(owner, TeamOwner)}
+    teams: dict[uuid.UUID, str] = {}
+    if team_ids:
+        found = await ctx.db.execute(
+            select(Team.id, Team.name).where(Team.id.in_(sorted(team_ids)))
+        )
+        teams = {row.id: row.name for row in found}
+    await ctx.let_go()
+    users: dict[int, str | None] = {}
+    for owner in owners.values():
+        if isinstance(owner, UserOwner) and owner.user_id not in users:
+            try:
+                users[owner.user_id] = (await ctx.forge.identity.find_user(owner.user_id)).username
+            except PortError:
+                users[owner.user_id] = None
+    return {
+        workspace: (
+            Submitter(owner.user_id, None, users[owner.user_id])
+            if isinstance(owner, UserOwner)
+            else Submitter(None, owner.team_id, teams.get(owner.team_id))
+        )
+        for workspace, owner in owners.items()
+    }
 
 
 @action
