@@ -69,7 +69,7 @@ from forge.domain.grading import (
     wall_seconds,
 )
 from forge.domain.identity import PLATFORM, AsOrgAccount, User
-from forge.domain.ids import OrgId, RunId
+from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.submissions import SubmittedInput
@@ -163,6 +163,15 @@ def unstarted(monkeypatch: pytest.MonkeyPatch) -> Start:
             await real(ctx, row.id)
 
     return start
+
+
+async def _listed(
+    setup: Setup, organiser: Organiser, task: TaskId, *, limit: int = 100
+) -> list[gradings.GradingRecord]:
+    """The task's gradings as `gradings.list` gives them, without who
+    submitted each.
+    """
+    return [entry.grading for entry in await gradings.list(setup, organiser, task, limit=limit)]
 
 
 def _held(acme: Acme, scope: Scope, role: Role) -> Organiser:
@@ -441,12 +450,12 @@ async def test_a_run_that_does_not_report_by_its_deadline_reads_as_a_system_erro
     row, envelope = await _running(setup, acme, entered)
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
     assert row.deadline_at is not None
-    (before,) = await gradings.list(setup, manager, entered.task)
+    (before,) = await _listed(setup, manager, entered.task)
     assert before.status == GradingStatus.RUNNING
 
     clock.set(row.deadline_at)
 
-    (after,) = await gradings.list(setup, manager, entered.task)
+    (after,) = await _listed(setup, manager, entered.task)
     assert (after.status, after.error) == (GradingStatus.SYSTEM_ERROR, OVERDUE)
     # The contestant is told it is still being graded until staff end it.
     result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
@@ -481,7 +490,7 @@ async def test_a_valid_result_lands_on_the_row_with_its_log_and_the_contestant_r
         None,
     )
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
-    (listed,) = await gradings.list(setup, manager, entered.task)
+    (listed,) = await _listed(setup, manager, entered.task)
     assert (listed.status, listed.result, listed.log) == (GradingStatus.DONE, result, True)
     mine = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert mine is not None
@@ -595,7 +604,7 @@ async def test_a_run_stopped_by_a_system_error_is_kept_as_one_with_its_error(
     assert mine is not None
     assert (mine.status, mine.stopped, mine.groups) == (GradingStatus.RUNNING, None, ())
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
-    (listed,) = await gradings.list(setup, manager, entered.task)
+    (listed,) = await _listed(setup, manager, entered.task)
     assert (listed.status, listed.error) == (GradingStatus.SYSTEM_ERROR, after.error)
 
 
@@ -714,7 +723,7 @@ async def test_staff_cancel_only_a_grading_in_system_error_and_say_why(
     assert refused.value.extra == {"current": "cancelled"}
     with pytest.raises(GradingClosed):
         await runs.envelope(setup, row.id, _key(setup, row))
-    (listed,) = await gradings.list(setup, manager, entered.task)
+    (listed,) = await _listed(setup, manager, entered.task)
     assert (listed.status, listed.cancel_reason) == (GradingStatus.CANCELLED, REASON)
 
 
@@ -791,7 +800,7 @@ async def test_only_the_latest_attempt_of_a_submission_is_retried(
 
     assert (again.attempt, again.latest) == (3, True)
     assert [found.attempt for found in await _rows(setup)] == [1, 2, 3]
-    listed = await gradings.list(setup, manager, entered.task, limit=2)
+    listed = await _listed(setup, manager, entered.task, limit=2)
     assert [(found.attempt, found.latest) for found in listed] == [(3, True), (2, False)]
 
 
@@ -811,7 +820,7 @@ async def test_a_grading_is_no_such_grading_to_an_organiser_who_does_not_observe
         await gradings.cancel(setup, acme.ada, uuid.uuid4(), REASON)
     with pytest.raises(Forbidden):
         await gradings.cancel(setup, observer, row.id, REASON)
-    assert [found.id for found in await gradings.list(setup, observer, entered.task)] == [row.id]
+    assert [found.id for found in await _listed(setup, observer, entered.task)] == [row.id]
 
 
 async def test_a_retry_makes_a_new_attempt_and_keeps_the_old(
@@ -906,7 +915,7 @@ async def test_a_grading_whose_run_was_never_started_reads_as_a_system_error(
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
     clock.advance(START_WAIT)
 
-    (late,) = await gradings.list(setup, manager, entered.task)
+    (late,) = await _listed(setup, manager, entered.task)
     retried = await gradings.retry(setup, manager, row.id)
     await unstarted(setup, row)
 
@@ -935,7 +944,7 @@ async def test_a_run_no_machine_took_reads_as_a_system_error_and_gets_no_envelop
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
     clock.advance(MACHINE_WAIT)
 
-    (late,) = await gradings.list(setup, manager, entered.task)
+    (late,) = await _listed(setup, manager, entered.task)
 
     assert (late.status, late.error) == (GradingStatus.SYSTEM_ERROR, NEVER_BEGAN)
     with pytest.raises(GradingClosed):
@@ -969,7 +978,7 @@ async def test_a_run_still_waiting_in_the_queue_is_left_alone_however_long(
 
     result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert result is not None
-    (listed,) = await gradings.list(setup, manager, entered.task)
+    (listed,) = await _listed(setup, manager, entered.task)
 
     assert result.status == GradingStatus.DISPATCHED
     assert (listed.status, listed.error) == (GradingStatus.DISPATCHED, None)
@@ -987,7 +996,7 @@ async def test_a_run_the_ci_lost_reads_as_a_system_error_saying_so_and_nothing_i
 
     result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert result is not None
-    (listed,) = await gradings.list(setup, manager, entered.task)
+    (listed,) = await _listed(setup, manager, entered.task)
 
     # Its contestant is told it is still being graded until staff end it.
     assert result.status == GradingStatus.RUNNING
@@ -1085,7 +1094,7 @@ async def test_a_run_that_ended_before_its_harness_began_reads_as_lost_and_retri
     acme.fake.state.runs[run].ci_state = RunState.FINISHED
     clock.advance(LOST_CHECK_AFTER)
 
-    (listed,) = await gradings.list(setup, manager, entered.task)
+    (listed,) = await _listed(setup, manager, entered.task)
     retried = await gradings.retry(setup, manager, row.id)
 
     assert (listed.status, listed.error) == (GradingStatus.SYSTEM_ERROR, LOST)

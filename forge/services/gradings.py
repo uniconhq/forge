@@ -50,8 +50,8 @@ An organiser of a contest reads its gradings together:
 
 - `feed` lists every grading of the contest's tasks the organiser observes,
   newest first, filtered by task, by who submitted and by status, each with
-  who submitted it, a contestant by username or a team by name; every
-  attempt is a row of its own, read as `list` reads it;
+  who submitted it, a contestant by username or a team by name, as `list`
+  gives a task's; every attempt is a row of its own;
 - `queue_depth` counts the ones waiting for a machine by status, `queued`
   and `dispatched`, one that is overdue or lost not among them, since it
   reads as a system error.
@@ -123,7 +123,15 @@ from forge.domain.ids import (
 from forge.domain.live import Nudge, NudgeKind
 from forge.domain.names import TeamOwner, UserOwner
 from forge.domain.publications import Publication
-from forge.domain.roles import Role, ScopeKind, contest_scope, holds, task_id_of, task_scope
+from forge.domain.roles import (
+    Role,
+    ScopeKind,
+    contest_id_of,
+    contest_scope,
+    holds,
+    task_id_of,
+    task_scope,
+)
 from forge.domain.submissions import Submitted
 from forge.log import get_logger
 from forge.runtime.actions import action
@@ -205,8 +213,9 @@ class Submitter:
 
 @dataclass(frozen=True, slots=True)
 class FeedEntry:
-    """One grading in a contest's feed: the grading as `list` gives it, who
-    made the submission it grades, and its task's name and label, the letter
+    """One grading as an organiser reads it among a task's or a contest's:
+    the grading, who made the submission it grades, and its task's name and
+    label, the letter
     of its place in the contest's `tasks`; the label is none once the
     contest no longer lists the task, or when its settings do not read or
     the forge does not say, and the name none for a task the platform has
@@ -697,9 +706,10 @@ async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
 @action
 async def list(
     ctx: Context, organiser: Organiser, task: TaskId, *, limit: int = 100
-) -> tuple[GradingRecord, ...]:
+) -> tuple[FeedEntry, ...]:
     """The task's gradings, newest first, at most `limit` of them and never
-    more than 500, for an organiser observing the task.
+    more than 500, each with who submitted it, as the feed gives them, for
+    an organiser observing the task.
     """
     require(organiser, task_scope(task), Role.OBSERVER)
     rows = (
@@ -716,7 +726,11 @@ async def list(
     )
     last = await _latest(ctx, rows)
     gone = await lost(ctx, rows)
-    return tuple(record(ctx, row, gone, latest=row.id in last) for row in rows)
+    return await _entries(
+        ctx,
+        contest_id_of(task_scope(task)),
+        [record(ctx, row, gone, latest=row.id in last) for row in rows],
+    )
 
 
 @action

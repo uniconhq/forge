@@ -244,3 +244,20 @@ async def test_a_task_the_contest_no_longer_lists_keeps_its_name_and_has_no_labe
     assert [(entry.grading.id, entry.task_name, entry.label) for entry in listed] == [
         (busy["on_max"], "max", None)
     ]
+
+
+async def test_a_tasks_gradings_say_who_submitted_each_as_the_feed_does(
+    setup: Setup, acme: Acme, entered: Entered, busy: dict[str, uuid.UUID]
+) -> None:
+    observer = await organiser(setup, acme.fake, 7, CONTEST, Role.OBSERVER)
+
+    listed = await gradings.list(setup, observer, entered.task)
+
+    assert [
+        (entry.grading.id, entry.by.name, entry.task_name, entry.label) for entry in listed
+    ] == [
+        (busy["by_carol"], "carol", "sum", "A"),
+        (busy["retried"], "bob", "sum", "A"),
+        (busy["first"], "bob", "sum", "A"),
+    ]
+    assert listed[0].by == gradings.Submitter(20, None, "carol")
