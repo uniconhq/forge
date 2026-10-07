@@ -38,6 +38,19 @@ def validate_org_name(value: str) -> str:
     return validate_name(value, max_length=OTHER_MAX)
 
 
+USERNAME = re.compile(r"[A-Za-z0-9](?:[-._]?[A-Za-z0-9])*", re.ASCII)
+USERNAME_MAX = 40
+
+
+def is_username(value: str) -> bool:
+    """Whether `value` can be someone's username at the forge, by Forgejo's
+    rule: letters, digits, `-`, `_` and `.`, beginning and ending with a
+    letter or a digit, no two of `-`, `_` and `.` side by side, and at most
+    `USERNAME_MAX` characters.
+    """
+    return len(value) <= USERNAME_MAX and USERNAME.fullmatch(value) is not None
+
+
 def service_account_name(org: str) -> str:
     """The username of the org's own service account at the forge, the one
     that activates and grades its tasks: `unicon-ci-<org>`.
@@ -86,6 +99,16 @@ class TeamOwner:
 
 
 WorkspaceOwner = UserOwner | TeamOwner
+
+
+@dataclass(frozen=True, slots=True)
+class OrgProfile:
+    """An org's own fields at the forge, which its admin changes: the name it
+    is shown under, none while it has none of its own, and its description.
+    """
+
+    display_name: str | None
+    description: str
 
 
 @dataclass(frozen=True, slots=True)

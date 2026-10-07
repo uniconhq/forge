@@ -13,14 +13,21 @@ write to a task is a save of the task, which publishes it when it is valid
 (`publications.save`). A rollback is not an undo: the file as it was at the
 chosen version is written back as a new change through the same write, so a
 task's rollback is a save too and the history stays whole.
+
+A file the organiser uploaded is held in the commit as a pointer to its
+bytes in the forge's large-file store, and is read and listed as an upload,
+with the size and digest of what it holds, so it is never opened as text;
+it is changed by uploading it again (`write_upload`).
 """
 
 import uuid
+from dataclasses import replace
 
 from forge.domain.content import (
     Change,
     ConflictToken,
     Edit,
+    EntryKind,
     File,
     TreeEntry,
     Uploaded,
@@ -35,7 +42,7 @@ from forge.domain.definitions import (
 from forge.domain.errors import AdminOnly, NotFound
 from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.roles import Role, ScopeKind, holds, scope_of_place, task_scope
-from forge.domain.uploads import refuse_pointer
+from forge.domain.uploads import may_be_pointer, refuse_pointer, upload_info
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
@@ -54,21 +61,40 @@ async def read(
     ctx: Context, organiser: Organiser, place: Place, path: str, at: VersionId | None = None
 ) -> File:
     """One file at the latest version, or at `at`, with the token a write
-    presents back.
+    presents back, saying so when it is an upload: its content is then the
+    pointer, and the file's own bytes are in the forge's large-file store.
     """
     require(organiser, scope_of_place(place), Role.OBSERVER)
-    return await ctx.forge.content.read_file(organiser.identity, place, check_path(path), at=at)
+    found = await ctx.forge.content.read_file(organiser.identity, place, check_path(path), at=at)
+    return replace(found, upload=upload_info(found.content))
 
 
 @action
 async def tree(
     ctx: Context, organiser: Organiser, place: Place, path: str = ""
 ) -> tuple[TreeEntry, ...]:
-    """The files and folders directly under `path`."""
+    """The files and folders directly under `path`, each file that is an
+    upload with the size and digest of what it holds. Only a file whose size
+    is a pointer's is read to tell (`uploads.may_be_pointer`), so a folder of
+    large files or of typed ones costs no read but the listing.
+    """
     require(organiser, scope_of_place(place), Role.OBSERVER)
-    return await ctx.forge.content.list_tree(
+    entries = await ctx.forge.content.list_tree(
         organiser.identity, place, check_path(path) if path else ""
     )
+    return tuple([await _with_upload(ctx, organiser, place, entry) for entry in entries])
+
+
+async def _with_upload(
+    ctx: Context, organiser: Organiser, place: Place, entry: TreeEntry
+) -> TreeEntry:
+    if entry.kind is not EntryKind.FILE or not may_be_pointer(entry.size):
+        return entry
+    try:
+        found = await ctx.forge.content.read_file(organiser.identity, place, entry.path)
+    except NotFound:
+        return entry
+    return replace(entry, upload=upload_info(found.content))
 
 
 @action

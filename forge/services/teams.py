@@ -536,6 +536,34 @@ async def standing(ctx: Context, contest: ContestId, user_id: int) -> Standing:
     return Standing(UserOwner(user_id), (user_id,), left)
 
 
+@dataclass(frozen=True, slots=True)
+class Membership:
+    """A time someone was in a team: from when they joined until they left,
+    or until now while they are in it.
+    """
+
+    team: uuid.UUID
+    joined_at: datetime
+    left_at: datetime | None
+
+
+async def memberships(ctx: Context, contest: ContestId, user_id: int) -> tuple[Membership, ...]:
+    """Every time the person was in a team of the contest, the one they are
+    in now included, a deleted team's too, oldest first.
+    """
+    found = await ctx.db.execute(
+        select(TeamMember.team_id, TeamMember.joined_at, TeamMember.left_at)
+        .where(
+            TeamMember.contest_id == contest,
+            TeamMember.user_id == user_id,
+            TeamMember.status.in_([MemberStatus.MEMBER, MemberStatus.LEFT]),
+            TeamMember.joined_at.is_not(None),
+        )
+        .order_by(TeamMember.joined_at)
+    )
+    return tuple(Membership(row.team_id, row.joined_at, row.left_at) for row in found)
+
+
 async def everyone_in(ctx: Context, team: uuid.UUID) -> frozenset[int]:
     """Everyone who is or was a member of the team, whose messages on its
     desk are the team's.

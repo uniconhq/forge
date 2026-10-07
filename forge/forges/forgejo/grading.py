@@ -72,7 +72,7 @@ from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, Identity
 from forge.domain.ids import RunId, TaskId
 from forge.forges.forgejo import signatures
 from forge.forges.forgejo.ci_login import CiLogin
-from forge.forges.forgejo.http import Http, json_of
+from forge.forges.forgejo.http import Http, json_of, segment
 from forge.forges.forgejo.repos import DEFAULT_BRANCH, Repos
 from forge.forges.ids import (
     PUBLISHED_PREFIX,
@@ -351,7 +351,7 @@ class WoodpeckerGrading:
         server error, which the client would take for a CI that is down.
         """
         try:
-            found = json_of(await self._ci.call(CI_ADMIN, "GET", f"/api/users/{username}"))
+            found = json_of(await self._ci.call(CI_ADMIN, "GET", f"/api/users/{segment(username)}"))
         except NotFound:
             found = json_of(
                 await self._ci.call(CI_ADMIN, "POST", "/api/users", json={"login": username})
@@ -363,7 +363,7 @@ class WoodpeckerGrading:
         org is gone already it answers 404 and keeps the user (measured on
         3.18.1), so a 404 is believed only once the user reads as gone too.
         """
-        path = f"/api/users/{username}"
+        path = f"/api/users/{segment(username)}"
         try:
             await self._ci.call(CI_ADMIN, "DELETE", path)
         except NotFound:
@@ -415,14 +415,20 @@ class WoodpeckerGrading:
         return key
 
     async def _lookup(self, as_: Identity, org: str, repo: str) -> dict[str, Any]:
-        return json_of(await self._ci.call(as_, "GET", f"/api/repos/lookup/{org}/{repo}"))
+        return json_of(
+            await self._ci.call(as_, "GET", f"/api/repos/lookup/{segment(org)}/{segment(repo)}")
+        )
 
     async def _delete_ci_webhooks(self, org: str, repo: str) -> None:
-        for hook in await self._forge.get_all(PLATFORM, f"/api/v1/repos/{org}/{repo}/hooks"):
+        for hook in await self._forge.get_all(
+            PLATFORM, f"/api/v1/repos/{segment(org)}/{segment(repo)}/hooks"
+        ):
             url = str((hook.get("config") or {}).get("url", ""))
             if url.startswith(self._ci_public_url):
                 await self._forge.call(
-                    PLATFORM, "DELETE", f"/api/v1/repos/{org}/{repo}/hooks/{hook['id']}"
+                    PLATFORM,
+                    "DELETE",
+                    f"/api/v1/repos/{segment(org)}/{segment(repo)}/hooks/{hook['id']}",
                 )
 
 
