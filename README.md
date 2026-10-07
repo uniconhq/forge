@@ -112,7 +112,8 @@ forge/api/
                 SubmittedFiles, GradingStatus and Show they return
   gradings.py   cancel, retry, rejudge, list, run_log, task_of, feed,
                 queue_depth, and the GradingRecord, Rejudged, FeedEntry,
-                Submitter, QueueDepth and GradingStatus they return
+                Submitter, QueueDepth and GradingStatus they return; list
+                and feed both give FeedEntry
   runs.py       config, envelope, callback, the CiRequest config takes and the
                 CiAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
                 ENVELOPE_PATH and CALLBACK_PATH, where each is served
@@ -192,7 +193,12 @@ something, a POST, only when it never reached the server; otherwise it is
 `Unavailable` at once and the request that sent it fails. A process keeps at
 most eight calls in flight to Forgejo and eight to the CI, one connection
 each; a call waits its turn for a free connection for 30 seconds at most and
-is then `Unavailable`, not asked again.
+is then `Unavailable`, not asked again. The Forgejo implementation puts every
+name it is handed into a request's path quoted whole (`http.segment`), a
+username, an org, a repository or a ref, and a file's path segment by
+segment (`http.file_path`), so a `/`, `?`, `#` or `%` in one stays in it and
+never reaches another endpoint; an empty name, `.` or `..` is `NotFound`
+without a request, since a path would resolve it away.
 
 Operations done for a person take the identity the call is made under, so the
 host records the change as theirs and enforces their permissions underneath
@@ -783,7 +789,10 @@ it, and its `Timeline` from its entry, each time at its default where the
 entry gives none: `worth` 100, none on a task whose latest publication
 gives no points or that has none, `release_at` the contest's start,
 `due` none, `late_per_day` 1 with a due and none without, and `closes` the
-contest's end. A task of the org the contest does not list is not on it.
+contest's end. A task of the org the contest does not list is not on it. A
+`contest.yaml` that does not read is `InvalidDefinition` naming the file
+with every problem and its path, as a save of it is refused, so the page
+can show what to mend; a contest that is not there is `NotFound`.
 Each task costs what `state` does, its head and its publications, a check
 of its head when that is a draft, and the `task.yaml` of its latest
 publication once per process, for whether it gives points.
@@ -806,7 +815,10 @@ declares no defaults; a contestant input's `default` is the task's own.
 A `task.yaml` that is not there or does not read as YAML, one that names no
 workflow or names it wrongly, and a workflow that cannot be read or is in
 an old format are answered with `problem`, the reason, and no inputs, so the
-form can still be opened to mend them.
+form can still be opened to mend them. Either way `graded` says whether the
+task has a graded submission, a grading of it `done`, the condition T7 and
+T10 hold from: from then on a save refuses a test group it adds without its
+`show`, so the form asks for one there instead of offering a default.
 
 ## The compiler
 
@@ -1065,8 +1077,8 @@ nudges its contestant and its task's organisers (`gradings.changed`, from
 which is what moves a submissions list while its owner watches. Its scope
 is the task, and a role at the contest or the org covers the task, so
 everyone who can read a grading in a contest's feed hears it change; the
-feed's page asks for the feed again on a grading nudge whose id it does
-not show, since a new attempt is a new id. A thread's
+feed's page asks for the feed again on every grading nudge, since a nudge
+says only that some grading moved, and a new attempt is a new id. A thread's
 changes come from the forge: the host answers the forge's push as soon as
 `events.check` passes, then hands the body to `events.publish`, which reads
 it through the port and nudges a clarification's asker and its contest's
@@ -1420,23 +1432,34 @@ line for staff, the overdue or lost reason written there for one that only
 read so, and the sentence in `cancel_reason`; a run of it still at the CI is
 cancelled once the cancel has committed. Anything else is `WrongStatus`
 with the status it reads as, and an earlier attempt of a submission
-attempted again is `Conflict`, since the latest is the one to cancel. A
-submission whose latest attempt staff cancelled is served to its
-contestant as `cancelled` with the sentence, does not count against the
-task's `submissions.max`, and is left as it is by a rejudge and by a save's
-regrade; a `retry` of it grades it again.
-`gradings.retry` makes a new attempt of a finished one against the
-publication it graded against, while no other attempt of it is being
-graded (`Conflict`). One that reads as finished only because it is overdue
-or lost is ended first with that reason written on its row, and its old
-run is cancelled at the CI once the retry has committed, so it does not
-keep a machine's containers going. `gradings.rejudge(task)` makes a
-new attempt of every submission's latest attempt, against the current
-publication, cancelling first one still being graded against
-an older publication and leaving one being graded against the current one,
-and answers a `Rejudged` with its counts. `gradings.list(task)` gives the
-task's gradings, newest first, at most 500, to anyone observing the task, as
-`GradingRecord`s with the result whole. `gradings.run_log(grading)` gives
+attempted again is `Conflict`, since the latest is the one to cancel. The
+cancel is final: a submission whose latest attempt staff cancelled is
+served to its contestant as `cancelled` with the sentence, does not count
+against the task's `submissions.max`, and is graded again by nothing: a
+`retry` of it is `WrongStatus` saying staff cancelled it, and a rejudge and
+a save's regrade leave it as it is. Staff who want it graded after all tell
+the contestant, who submits again. Migration 0014 gives each submission
+cancelled before cancels carried a sentence a stock one, "The organisers
+cancelled this grading.", so it reads and counts the same.
+`gradings.retry` makes a new attempt of a submission's latest attempt once
+it is finished, against the publication it graded against, while no other
+attempt of it is being graded (`Conflict`). An earlier attempt is
+`Conflict` too, since retrying it would grade the submission again against
+the publication a later attempt replaced. One that reads as finished only
+because it is overdue or lost is ended first with that reason written on
+its row, and its old run is cancelled at the CI once the retry has
+committed, so it does not keep a machine's containers going.
+`gradings.rejudge(task)` makes a new attempt of every submission's latest
+attempt, against the current publication, cancelling first one still being
+graded against an older publication and leaving one being graded against
+the current one, and answers a `Rejudged` with its counts.
+`gradings.list(task)` gives the task's gradings, newest first, at most 500,
+to anyone observing the task, each a `FeedEntry` as the feed gives it
+(below), so it says who submitted each. Every `GradingRecord` an organiser
+reads, from `list`, the feed, a cancel or a retry, has the result whole and
+`latest`, whether it is its submission's latest attempt, worked out over
+every attempt of the submission whatever the page holds: the latest is the
+one to cancel or retry. `gradings.run_log(grading)` gives
 the grading's run log to anyone observing its task, read from the store up
 to `RUN_LOG_MAX`, 9 MiB, and refused above as `LogTooLarge`; a grading with
 no log is `NotFound`, and a store that fails is `Unavailable` in fixed
@@ -1446,17 +1469,28 @@ checks the organiser at the task `gradings.task_of(grading)` gives.
 **A contest's gradings.** `gradings.feed(contest, task=, user=, team=,
 status=, limit=)` lists the gradings of the contest's tasks as one feed,
 newest first, at most `limit` (100 unless given) and never more than 500,
-each a `FeedEntry`: the `GradingRecord` `list` gives, with the same
-overdue and lost reading and its reason, and `by`, a `Submitter`, the
-contestant by user id and username or the team by id and name, the name
-none once the account or the team is gone or the forge does not say.
-Every attempt is a row of its own, so the attempts of one submission group
-by its workspace and number. `task` narrows to one task, `user` to the
-submissions a contestant made on their own, by username, `team` to a
-team's, and `status` to the gradings that read as it, a row stored
-unfinished and read as `system_error` included; a filter by status reads a
-page at a time until the page is full, since whether a row is overdue or
-lost is known only once it is read. An observer of the contest, or of its
+each a `FeedEntry`: the `GradingRecord`, with the overdue and lost reading
+and its reason and `latest`; `by`, a `Submitter`, the contestant by user id
+and username or the team by id and name, the name none once the account or
+the team is gone or the forge does not say; and `task_name` and `label`,
+the task's name and the letter of its place in the contest's `tasks`, the
+label none once the contest no longer lists the task or its settings do not
+read, so a page needs no second read for them. Every attempt is a row of
+its own, so the attempts of one submission group by its workspace and
+number. `task` narrows to one task; `user` to what a contestant submitted,
+by username: on their own, and in each team of the contest while they were
+in it, from when they joined until they left, by when the submission was
+taken; `team` to a team's; and `status` to the gradings that read as it. A
+`user` that breaks the forge's username rule (`names.is_username`:
+letters, digits, `-`, `_` and `.`, beginning and ending with a letter or a
+digit, none of the three twice in a row, at most 40 characters) matches
+nothing and is never sent to the forge. A filter by status is told in the
+query by the deadlines `overdue` keeps: `system_error` reads the rows
+stored so, the ones past their deadline and the `dispatched` ones the CI
+is to be asked about, and an unfinished status the rows stored so and not
+overdue. Only whether the CI lost a run is asked once a page is read, so a
+filter reads another page only when a lost-run check left one short. An
+observer of the contest, or of its
 org, sees every task's gradings; someone holding a role at some of its
 tasks alone sees theirs, a task they do not observe left out rather than
 refused, and someone holding none of either is `Forbidden`. The usernames
@@ -1539,7 +1573,9 @@ was queued, `run_id`, `dispatched_at`, `started_at` and `deadline_at` are
 its run, when it was started, when its harness fetched the envelope and its
 deadline, `progress` the last progress reported, `result` and `log_key`
 what came back, `error` a line for staff, and `cancel_reason` the sentence
-staff cancelled it with, which its contestant reads. An `uploads` row is one
+staff cancelled it with, which its contestant reads, on every submission
+staff cancelled (a stock one on those cancelled before 0013) and on no
+attempt a rejudge replaced. An `uploads` row is one
 browser upload: its owner, task and input, name, declared and measured
 size, digest, status, the id of its parts while they arrive, the submission
 that consumed it, and when its lifetime ends. An `invites` row is one
