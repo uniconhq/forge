@@ -75,7 +75,8 @@ forge/api/
                 OrgProfile read returns
   contests.py   create, list, and contest_id_of, the id of the contest a scope
                 is in
-  tasks.py      create, list, state, the TaskState state returns, and
+  tasks.py      create, list, state, standing, the TaskState state returns,
+                the TaskStanding and Timeline standing returns, and
                 task_id_of, the id of the task a scope names
   workflows.py  create, and the NewWorkflow it returns
   files.py      read, tree, history, write, rollback, write_upload, and the
@@ -473,7 +474,7 @@ hosting process calls are actions, marked `@action` from
 | `sign_in` | `complete` |
 | `orgs` | `create`, `create_by_operator`, `update`, `read` |
 | `contests` | `create`, `list` |
-| `tasks` | `create`, `list`, `state` |
+| `tasks` | `create`, `list`, `state`, `standing` |
 | `files` | `read`, `tree`, `history`, `write`, `rollback`, `write_upload` |
 | `publications` | `save`, `list` |
 | `release` | `of_task` |
@@ -771,6 +772,20 @@ takes each path with its new content and the token it was read with, as an
 6. A publication that changed how the task grades regrades every submission
    to the task, as `gradings.rejudge` does: a new attempt of each one's
    latest attempt against it.
+
+`tasks.standing(contest)` is the list an observer of the contest works
+its tasks from: every task the contest's `tasks` lists, in that order,
+each a `TaskStanding` with its name, its letter by its place, its
+`TaskState` as `tasks.state` gives it, the latest publication with its
+number, time and `grading_changed`, and whether a draft with errors sits on
+it, and its `Timeline` from its entry, each time at its default where the
+entry gives none: `worth` 100, none on a task whose latest publication
+gives no points or that has none, `release_at` the contest's start,
+`due` none, `late_per_day` 1 with a due and none without, and `closes` the
+contest's end. A task of the org the contest does not list is not on it.
+Each task costs what `state` does, its head and its publications, a check
+of its head when that is a draft, and the `task.yaml` of its latest
+publication once per process, for whether it gives points.
 
 A valid save comes back as `Published`, with the publication, its number,
 whether it changed how the task grades and what, its notes, the sealed

@@ -86,6 +86,21 @@ async def task_id(ctx: Context, contest: ContestId, name: str) -> TaskId | None:
     return TaskId(found) if found is not None else None
 
 
+async def task_ids(ctx: Context, contest: ContestId, names: Iterable[str]) -> dict[str, TaskId]:
+    """The id of each of the contest's tasks among `names` that has one, by
+    name, in one read.
+    """
+    wanted = set(names)
+    if not wanted:
+        return {}
+    rows = await ctx.db.execute(
+        select(Name.id, Name.name).where(
+            Name.kind == TASK, Name.parent == contest, Name.name.in_(sorted(wanted))
+        )
+    )
+    return {row.name: TaskId(row.id) for row in rows}
+
+
 @action
 async def scope_at(
     ctx: Context, org: str, contest: str | None = None, task: str | None = None

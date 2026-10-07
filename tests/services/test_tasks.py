@@ -15,21 +15,33 @@ and the step's own error is raised; the list is read as the organiser.
 """
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge.domain.content import Edit
 from forge.domain.definitions import parse_contest, parse_task
 from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
-from forge.domain.identity import PLATFORM, AsOrgAccount
+from forge.domain.identity import PLATFORM, AsOrgAccount, User
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.names import Named
-from forge.domain.roles import Role, Scope
+from forge.domain.roles import Role, RoleGrant, Scope
 from forge.runtime.setup import Setup
-from forge.services import making, names, org_accounts, tasks
+from forge.services import making, names, org_accounts, publications, tasks
+from forge.services.access import Organiser
 from forge.testing import logged
-from tests.services.conftest import SPRING, SUM, Acme, forge_state, organiser, write_contest
+from tests.services.conftest import (
+    SPRING,
+    SUM,
+    Acme,
+    forge_state,
+    make_task,
+    organiser,
+    publish,
+    write_contest,
+)
 
 STEPS = [
     ("content", "create_task"),
@@ -353,3 +365,70 @@ async def test_a_task_whose_activation_the_ci_refuses_signs_the_org_account_in_a
 
     assert len(acme.fake.calls_to("activate")) == 2
     assert len(acme.fake.calls_to("mint_ci_token")) == 1
+
+
+STANDING = CONTEST_HEAD + (
+    "tasks:\n"
+    "  - id: max\n"
+    "    worth: 50\n"
+    "    release_at: 2026-10-01T11:00:00Z\n"
+    "    closes: 2026-10-01T14:00:00Z\n"
+    "  - id: sum\n"
+    "    due: 2026-10-01T13:00:00Z\n"
+)
+
+
+async def test_the_contests_tasks_stand_in_its_order_with_drafts_and_timelines(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    max_task = await make_task(setup, acme, "max")
+    await make_task(setup, acme, "extra")
+    await publish(setup, acme, sum_task)
+    first = await publish(setup, acme, max_task)
+    head = await acme.fake.content.list_files(PLATFORM, max_task)
+    broken = await publications.save(
+        setup, acme.ada, max_task, {"task.yaml": Edit(b"name: [\n", head.tokens["task.yaml"])}
+    )
+    assert isinstance(broken, publications.Draft)
+    await write_contest(acme.fake, STANDING)
+    observer = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.OBSERVER)
+
+    standing = await tasks.standing(setup, observer, SPRING)
+
+    # The task the contest does not list is not on it.
+    assert [(line.label, line.task) for line in standing] == [
+        ("A", Named(max_task, "max")),
+        ("B", Named(SUM, "sum")),
+    ]
+    on_max, on_sum = standing
+    assert on_max.state.latest is not None and on_max.state.latest.number == first.number
+    assert on_max.state.draft and on_max.state.errors
+    assert on_max.timeline == tasks.Timeline(
+        worth=50,
+        release_at=datetime(2026, 10, 1, 11, tzinfo=UTC),
+        due=None,
+        late_per_day=None,
+        closes=datetime(2026, 10, 1, 14, tzinfo=UTC),
+    )
+    assert on_sum.state.latest is not None
+    assert (on_sum.state.draft, on_sum.state.errors) == (False, ())
+    assert on_sum.timeline == tasks.Timeline(
+        worth=100,
+        release_at=datetime(2026, 10, 1, 10, tzinfo=UTC),
+        due=datetime(2026, 10, 1, 13, tzinfo=UTC),
+        late_per_day=1,
+        closes=datetime(2026, 10, 1, 15, tzinfo=UTC),
+    )
+    with pytest.raises(Forbidden):
+        await tasks.standing(setup, _held_at_task(acme), SPRING)
+
+
+def _held_at_task(acme: Acme) -> Organiser:
+    scope = Scope("acme", "spring", "sum")
+    return Organiser(
+        user=User(id=9, username="eve"),
+        grants=(RoleGrant(scope, Role.OBSERVER),),
+        scope=scope,
+        role=Role.OBSERVER,
+        identity=acme.ada.identity,
+    )
