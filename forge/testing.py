@@ -161,7 +161,7 @@ outputs:
         """\
 batch: true
 network: false
-limits: {time_ms: 5000, cpu_ms: 5000, memory_mb: 256, pids: 128, output_mb: 64, gpus: 0}
+limits: {time_ms: 2000, cpu_ms: 2000, memory_mb: 256, pids: 128, output_mb: 64, gpus: 0}
 limits_from:
   time_ms: {input: time_limit, scale: 2000, add: 3000}
   cpu_ms: {input: time_limit, scale: 2000, add: 3000}
@@ -184,7 +184,7 @@ outputs:
         """\
 batch: true
 network: false
-limits: {time_ms: 5000, cpu_ms: 5000, memory_mb: 256, pids: 32, output_mb: 1, gpus: 0}
+limits: {time_ms: 2000, cpu_ms: 2000, memory_mb: 256, pids: 32, output_mb: 1, gpus: 0}
 inputs:
   actual: {type: file, runs: false}
   expected: {type: file, runs: false}

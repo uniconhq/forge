@@ -318,7 +318,10 @@ class WorkflowDefinition(Model):
         return found
 
     def _better_problem(self, better: str) -> str | None:
-        found = whole_reference(better)
+        try:
+            found = whole_reference(better)
+        except BadReference as bad:
+            return str(bad)
         if found is None or found.kind != "inputs":
             return "Must be higher, lower, or ${{ inputs.<id> }} naming a task's enum input."
         declared_input = self.inputs.get(found.name)

@@ -48,6 +48,7 @@ from forge.domain.names import UserOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import UploadStatus
+from forge.domain.workflows import Visibility
 from forge.forges.ids import parse_task, parse_workspace
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
@@ -285,6 +286,55 @@ async def test_a_file_input_checks_the_size_its_task_gives_it(
         setup, session, task, input="submission", filename="x.py", size=1024, sha256=digest
     )
     assert fits.url is not None
+
+
+ANSWERS = b"""\
+inputs:
+  answers: {type: file, contestant: true, per_test: true}
+test:
+  input: file
+  answer: file
+steps:
+  - id: check
+    use: unicon/diff-check@v2
+    per_test: true
+    with:
+      actual: ${{ inputs.answers }}
+      expected: ${{ test.answer }}
+"""
+"""An output-only workflow: the contestant uploads one answer per test."""
+
+
+async def test_a_per_test_slot_is_named_for_a_test_with_an_ending_that_is_not_empty(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    made = await acme.fake.workflows.create_workflow(
+        PLATFORM, "acme", "answers", {"workflow.yaml": ANSWERS}, Visibility.PUBLIC
+    )
+    await acme.fake.workflows.create_workflow_version(PLATFORM, made, "v1")
+    head = await acme.fake.content.list_files(PLATFORM, entered.task)
+    text = b"name: Sum\nworkflow: acme/answers@v1\ntest_groups:\n  main: {each: 100}\n"
+    saved = await publications.save(
+        setup,
+        acme.ada,
+        entered.task,
+        {"task.yaml": Edit(text, head.tokens["task.yaml"])},
+        confirm=True,
+    )
+    assert isinstance(saved, publications.Published), saved
+    session, task = entered.session, entered.task
+    digest = _digest(b"3\n")
+
+    with pytest.raises(InvalidInputs) as refused:
+        await uploads.slot(
+            setup, session, task, input="answers", filename="main/1.", size=2, sha256=digest
+        )
+    assert refused.value.extra["errors"][0]["input"] == "answers"
+    for fine in ("main/1", "main/1.t"):
+        slot = await uploads.slot(
+            setup, session, task, input="answers", filename=fine, size=2, sha256=digest
+        )
+        assert slot.url is not None
 
 
 async def test_a_slot_needs_a_file_input_a_plain_name_a_digest_and_a_contestant_now(

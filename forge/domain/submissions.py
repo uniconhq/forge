@@ -6,7 +6,7 @@ place to submit the task (TASK-FORMAT.md section 2, the runner's
 - `files/<input id>/<relative path>` for every file of a `file` or `folder`
   input, and nothing else; a `per_test` input's files are at
   `files/<input id>/<group>/<test>` or `files/<input id>/<group>/<test>.<ending>`,
-  one per test of the plan at most;
+  the ending not empty, one per test of the plan at most;
 - `submission.json` at the top, naming each file or folder input's files,
   or giving a text, number, true-or-false or enum input its value.
 
@@ -38,6 +38,7 @@ from typing import Any
 
 import yaml
 
+from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, Form
 from forge.domain.errors import InvalidInputs
 from forge.domain.ids import SubmissionId, VersionId
@@ -51,7 +52,9 @@ FILES_FOLDER = "files"
 TEXT_MAX = 64 * 1024
 KEY_MIN, KEY_MAX = 8, 128
 KEY_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
-TEST_FILE = re.compile(r"^(?P<group>[A-Za-z0-9_-]+)/(?P<test>[A-Za-z0-9_-]+)(\.[^/]*)?$")
+TEST_FILE = re.compile(r"^(?P<group>[A-Za-z0-9_-]+)/(?P<test>[A-Za-z0-9_-]+)(\.[^/]+)?$")
+"""A per-test input's file name: `<group>/<test>`, or `<group>/<test>.<ending>`
+with an ending that is not empty, the harness's own rule."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,7 +210,8 @@ def lay_out(
 ) -> Layout:
     """The submission `given` makes for inputs `declared` of a plan whose
     tests are `tests`, each upload of which is in `uploads`. `InvalidInputs`
-    naming every problem when it does not fit.
+    naming every problem when it does not fit, or when its `submission.json`
+    would break the runner's contract.
     """
     problems: list[dict[str, str]] = []
     files: dict[str, uuid.UUID] = {}
@@ -221,12 +225,27 @@ def lay_out(
             problems.append({"input": entry.id, "message": found})
         elif found is not None:
             inputs[entry.id] = found
+    document = {"schema_version": SCHEMA_VERSION, "inputs": inputs}
+    if not problems:
+        problems.extend(_contract_problems(document))
     if problems:
         first = problems[0]
         raise InvalidInputs(f"{first['input']}: {first['message']}", errors=problems)
-    document = {"schema_version": SCHEMA_VERSION, "inputs": inputs}
     text = json.dumps(document, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
     return Layout(files=files, document=text.encode(), inputs=inputs)
+
+
+def _contract_problems(document: Mapping[str, Any]) -> list[dict[str, str]]:
+    """How `document` breaks the runner's submission contract, at the input
+    it is about when it is about one, so a submission the harness would
+    refuse is never made.
+    """
+    broken = violation(document, "submission")
+    if broken is None:
+        return []
+    location = broken.removeprefix("at ").split(":", 1)[0].split("/")
+    about = location[1] if location[0] == "inputs" and len(location) > 1 else ""
+    return [{"input": about, "message": f"The submission breaks the runner's contract {broken}."}]
 
 
 def _one(

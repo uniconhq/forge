@@ -23,10 +23,11 @@ each container and one for the run, which a save refuses above the ceiling
 (the plan's fit, `forge.domain.plans`).
 
 A plan must also fit a machine: every step's memory and GPUs within what the
-machines a task may run on have. Until computes advertise their machines
-(feature 12), every task runs on the platform's pool, whose machines take a
-step of up to `PLATFORM_MACHINE`, the socket filter's own memory ceiling and
-no GPU. A run's
+machines a task may run on have, and no step reaching the network on a
+machine that gives none. Until computes advertise their machines (feature
+12), every task runs on the platform's pool, whose machines take a step of
+up to `PLATFORM_MACHINE`, the socket filter's own memory ceiling, no GPU and
+no network. A run's
 deadline is written when its harness first fetches the envelope, the wall
 clock and the reporting allowance after it, so a run that waited for a
 machine loses none of its time.
@@ -94,17 +95,19 @@ LOST = "The grading machine lost its run before it began."
 
 @dataclass(frozen=True, slots=True)
 class Machine:
-    """The most one step may ask of a machine: memory in megabytes and GPU
-    devices.
+    """The most one step may ask of a machine: memory in megabytes, GPU
+    devices, and whether it may reach the network.
     """
 
     memory_mb: int
     gpus: int
+    network: bool
 
 
-PLATFORM_MACHINE = Machine(memory_mb=16384, gpus=0)
+PLATFORM_MACHINE = Machine(memory_mb=16384, gpus=0, network=False)
 """What a machine of the platform's pool gives one step: the socket filter's
-default memory ceiling (`UNICON_FILTER_MAX_MEMORY_MB`), and no GPU."""
+default memory ceiling (`UNICON_FILTER_MAX_MEMORY_MB`), no GPU and no
+network."""
 
 
 class RunState(StrEnum):
@@ -123,7 +126,7 @@ class GradingStatus(StrEnum):
     """Where one grading stands. `queued` waits for its run to be started,
     which happens as soon as the request that made it commits; `dispatched`
     is held by the CI, waiting for a machine or checking out; `running` has
-    had its envelope fetched by the harness. It ends `done` with a verdict,
+    had its envelope fetched by the harness. It ends `done` with a result,
     `cancelled` by an organiser, or `system_error`, a grading that failed for
     a reason of the platform's, never a grade: its run could not be started,
     or did not report before its deadline.
@@ -290,7 +293,7 @@ def log_key(grading: uuid.UUID, attempt: int) -> str:
 
 
 RUN_LOG_MAX = 9 * 1024 * 1024
-"""The largest run log read back for a contestant. The harness cuts the log
+"""The largest run log read back for an organiser. The harness cuts the log
 it writes to 8 MiB and a line saying what it left out; the URL it writes
 with takes any length, so the read is where the bound holds."""
 

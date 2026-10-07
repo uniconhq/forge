@@ -7,9 +7,11 @@ refused with nothing written. A save that does not check is a draft: its
 files written, no publication, and its errors recomputed whenever the task's
 state is read. What changed how the task grades is named, and once the
 contest has started such a save asks to be confirmed; a change to how it
-scores changes nothing that grades. Once the task has a done grading, a
-group's `show` neither hides what was shown nor is left unsaid on a new
-group.
+scores changes nothing that grades, and a published change to how it grades
+queues every submission to be graded again. Once the task has a done
+grading, a group's `show` neither hides what any graded publication showed
+nor is left unsaid on a new group. A task left giving no points is refused
+while its contest's entry gives it a worth or a due.
 """
 
 import json
@@ -17,7 +19,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from forge.db.tables import Grading
 from forge.domain.content import Edit
@@ -925,3 +927,125 @@ async def test_before_any_grading_is_done_a_new_group_needs_no_show(
     result = await _save(setup, acme, entered.task, {**added, **NEW_GROUP}, confirm=True)
 
     assert isinstance(result, Published), result
+
+
+async def _removed(acme: Acme, task: TaskId, paths: list[str]) -> None:
+    """`paths` taken out of the task at the forge, as the file editor's
+    removal leaves them.
+    """
+    head = await acme.fake.content.list_files(PLATFORM, task)
+    await acme.fake.content.save_files(
+        PLATFORM,
+        task,
+        dict.fromkeys(paths),
+        expected={path: head.tokens[path] for path in paths},
+        message="Remove",
+    )
+
+
+async def test_what_any_graded_publication_showed_is_not_hidden_when_its_group_comes_back(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    with_large = _with(
+        acme, b"  main: {each: 100}\n", b"  main: {each: 100}\n  large: {each: 50}\n"
+    )
+    first = await _save(setup, acme, entered.task, {**with_large, **NEW_GROUP}, confirm=True)
+    assert isinstance(first, Published), first
+    await _graded(setup, acme, entered)
+    await _removed(acme, entered.task, sorted(NEW_GROUP))
+    without = await _save(
+        setup,
+        acme,
+        entered.task,
+        _with(acme, b"  large: {each: 50}\n", b""),
+        confirm=True,
+    )
+    assert isinstance(without, Published), without
+    hidden = _with(
+        acme,
+        b"  main: {each: 100}\n",
+        b"  main: {each: 100}\n  large: {each: 50, show: after_close}\n",
+    )
+
+    refused = await _save(setup, acme, entered.task, {**hidden, **NEW_GROUP}, confirm=True)
+    shown = await _save(
+        setup,
+        acme,
+        entered.task,
+        {"task.yaml": hidden["task.yaml"].replace(b"after_close", b"always"), **NEW_GROUP},
+        confirm=True,
+    )
+
+    assert isinstance(refused, Draft)
+    assert [(error["path"], error["message"]) for error in refused.errors] == [
+        (
+            "test_groups.large.show",
+            "large was shown always: what was shown cannot be hidden again.",
+        )
+    ]
+    assert isinstance(shown, Published), shown
+
+
+async def _attempts(setup: Setup) -> list[tuple[int, int, str, GradingStatus]]:
+    async with setup.unit_of_work() as ctx:
+        rows = (
+            await ctx.db.execute(
+                select(Grading).order_by(Grading.submission_number, Grading.attempt)
+            )
+        ).scalars()
+        return [
+            (row.submission_number, row.attempt, row.publication_id, GradingStatus(row.status))
+            for row in rows
+        ]
+
+
+async def test_a_published_grading_change_regrades_every_submission_and_a_scoring_one_none(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _graded(setup, acme, entered)
+    (graded,) = await _attempts(setup)
+
+    scoring = await _save(setup, acme, entered.task, _with(acme, b"{each: 100}", b"{pass: 100}"))
+    unchanged = await _attempts(setup)
+    grading = await _save(
+        setup, acme, entered.task, _with(acme, b"time_limit: 2", b"time_limit: 1"), confirm=True
+    )
+
+    assert isinstance(scoring, Published) and isinstance(grading, Published)
+    assert (scoring.regraded, unchanged) == (0, [graded])
+    assert grading.regraded == 1
+    first, again = await _attempts(setup)
+    assert first == graded
+    assert again[:3] == (1, 2, grading.publication)
+    assert again[3] in (GradingStatus.QUEUED, GradingStatus.DISPATCHED)
+
+
+WORTH = RUNNING + "    worth: 50\n"
+DUE = RUNNING + "    due: 2026-09-26T14:00:00Z\n"
+
+
+@pytest.mark.parametrize(
+    ("contest", "line"),
+    [
+        (WORTH, "contest.yaml tasks[0].worth gives sum worth 50"),
+        (DUE, "contest.yaml tasks[0].due gives sum a due"),
+    ],
+    ids=["worth", "due"],
+)
+async def test_a_task_left_giving_no_points_is_refused_while_its_contest_entry_scores_it(
+    setup: Setup, acme: Acme, sum_task: TaskId, contest: str, line: str
+) -> None:
+    await _published(setup, acme, sum_task)
+    await write_contest(acme.fake, contest.format(state="draft"))
+
+    result = await _save(setup, acme, sum_task, _with(acme, b"{each: 100}", b"{}"))
+
+    assert isinstance(result, Draft)
+    assert [(error["path"], error["message"]) for error in result.errors] == [
+        (
+            "test_groups",
+            f"No group has a rule weight, so sum gives no points, and {line}; remove it first.",
+        )
+    ]
+    await write_contest(acme.fake, RUNNING.format(state="draft"))
+    assert isinstance(await _save(setup, acme, sum_task, {}), Published)

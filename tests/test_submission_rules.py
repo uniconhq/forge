@@ -6,7 +6,9 @@ protected version carries; and the two secrets a grading run is handed,
 derived and never stored.
 """
 
+import ast
 import json
+import re
 import uuid
 from typing import Any
 
@@ -18,6 +20,7 @@ from forge.domain.errors import InvalidInputs
 from forge.domain.grading import callback_token, envelope_key, token_hash
 from forge.domain.plans import ContestantInput
 from forge.domain.submissions import (
+    TEST_FILE,
     Field,
     SubmittedInput,
     UploadedFile,
@@ -36,6 +39,7 @@ from forge.domain.uploads import (
     pointer_text,
     read_pointer,
 )
+from tests.conftest import sibling
 
 
 @pytest.mark.parametrize(
@@ -311,6 +315,69 @@ def test_a_submission_that_does_not_fit_the_inputs_is_refused_naming_the_input(
 
     assert [error["input"] for error in errors] == [input]
     assert message in errors[0]["message"]
+
+
+def test_a_submission_that_would_break_the_contract_is_refused_at_its_input() -> None:
+    oddly_named = Field(id="Note", type=Type.TEXT, label="Note")
+
+    with pytest.raises(InvalidInputs) as refused:
+        lay_out((oddly_named,), TESTS, {"Note": SubmittedInput(value="hi")}, {})
+
+    (error,) = refused.value.extra["errors"]
+    assert error["input"] == ""
+    assert error["message"].startswith("The submission breaks the runner's contract at inputs:")
+
+
+PER_TEST_NAMES = [
+    ("main/1", True),
+    ("main/1.txt", True),
+    ("main/1.out.txt", True),
+    ("main_2/test-3.a", True),
+    ("main/1.", False),
+    ("main/1/", False),
+    ("main", False),
+    ("main/1/x", False),
+    ("main/1.a/b", False),
+    ("/main/1", False),
+    ("main.1", False),
+    ("ma in/1", False),
+    ("main/.txt", False),
+]
+
+
+def _runners_per_test_file() -> re.Pattern[str]:
+    """The harness's own rule for a per-test file's name, read from the
+    runner's source beside this repo.
+    """
+    source = sibling("runner", "harness", "unicon_harness", "submission.py").read_text("utf-8")
+    for node in ast.parse(source).body:
+        if (
+            isinstance(node, ast.Assign)
+            and [getattr(target, "id", None) for target in node.targets] == ["PER_TEST_FILE"]
+            and isinstance(node.value, ast.Call)
+        ):
+            pattern = node.value.args[0]
+            assert isinstance(pattern, ast.Constant) and isinstance(pattern.value, str)
+            return re.compile(pattern.value)
+    raise AssertionError("the runner's submission.py has no PER_TEST_FILE")
+
+
+@pytest.mark.parametrize(("name", "fine"), PER_TEST_NAMES)
+def test_a_per_test_files_name_follows_the_harnesss_rule(name: str, fine: bool) -> None:
+    runners = _runners_per_test_file()
+
+    assert (TEST_FILE.match(name) is not None) is fine
+    assert (runners.match(name) is not None) is fine
+
+
+def test_a_per_test_file_with_an_empty_ending_is_refused() -> None:
+    dotted = uuid.uuid4()
+    uploads = {dotted: UploadedFile(dotted, "answers", "main/1.", 1)}
+
+    errors = refusal({"answers": SubmittedInput(uploads=(dotted,))}, uploads)
+
+    assert [error["input"] for error in errors] == ["answers"]
+    assert errors[0]["message"].startswith("main/1.: ")
 
 
 def test_a_folders_files_together_are_within_its_size() -> None:

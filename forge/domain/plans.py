@@ -24,8 +24,15 @@ Compiling has three parts, each refusing with every problem it finds:
 - `compile_plan`, the task's values bound to the workflow's inputs (check 4),
   every value written in, every limit raised and rounded up, the sealed
   steps found (check 8, T5), the plan's fit against the run ceiling and the
-  machines it may run on (check 7), and the credit checked against the
-  report (T3, T4).
+  machines it may run on (check 7), the credit checked against the report
+  (T3, T4), and the plan checked against the runner's contract, so a plan
+  the harness would refuse is never published.
+
+A limit raised past what a run or a machine allows is refused where its
+number came from: the task's input, the `test.yaml` of the test that gives
+the most, or the workflow when it writes the number itself; the run ceiling
+is blamed on the raised limit that adds the most time, and on the number of
+tests when no raised limit adds any.
 
 A test's id is `<group>/<test>`, and the plan lists every test, groups in
 name order and tests in natural order within each (`2` before `10`), so
@@ -44,6 +51,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, PlainValidator, model_validator
 
+from forge.domain.contracts import violation
 from forge.domain.definitions import (
     PUBLIC_FOLDER,
     TESTS_FOLDER,
@@ -80,6 +88,7 @@ PLAN_PATH = "plans/plan.json"
 STEP_ID = r"^[a-z0-9][a-z0-9_-]*$"
 PRIMITIVE = r"^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_-]*@[A-Za-z0-9][A-Za-z0-9._-]*$"
 TEST_ID = re.compile(r"^[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$")
+TEST_ID_MAX = 255
 NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 TEST_FILE = "test.yaml"
 SECRET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -134,7 +143,7 @@ def _plan_value(value: object) -> dict[str, Any]:
 
 Value = Annotated[dict[str, Any], PlainValidator(_plan_value)]
 Inputs = dict[str, Value]
-TestId = Annotated[str, Field(pattern=TEST_ID.pattern)]
+TestId = Annotated[str, Field(pattern=TEST_ID.pattern, max_length=TEST_ID_MAX)]
 
 
 class StepLimits(Model):
@@ -367,6 +376,15 @@ def read_tests(
             problems.append(
                 Problem(
                     path=where, message=f"{bad_name[0]!r} is not a name: letters, digits, _ and -."
+                )
+            )
+            continue
+        if len(f"{group}/{test}") > TEST_ID_MAX:
+            problems.append(
+                Problem(
+                    path=where,
+                    message=f"A test's id, <group>/<test>, is at most {TEST_ID_MAX} characters; "
+                    f"this one has {len(group) + 1 + len(test)}.",
                 )
             )
             continue
@@ -823,6 +841,44 @@ class _Taint:
 
 
 @dataclass(frozen=True, slots=True)
+class _Origin:
+    """Where a number that raised a limit came from: a task input by its id,
+    a scalar field of one test's `test.yaml`, or a literal the workflow
+    gives a port, by the port's name; with the number itself.
+    """
+
+    kind: Literal["input", "test", "literal"]
+    name: str
+    value: object
+    test: TestCase | None = None
+
+    @property
+    def path(self) -> str:
+        """Where a refusal of the limit it raised is said."""
+        if self.kind == "input":
+            return f"inputs.{self.name}"
+        if self.kind == "test" and self.test is not None:
+            return f"tests/{self.test.group}/{self.test.name}/{TEST_FILE}"
+        return "workflow"
+
+
+@dataclass(frozen=True, slots=True)
+class _Raised:
+    """One limit of one run of a step raised above its primitive's: the
+    step, the plan entry's test for a step with an entry per test, the test
+    the run is for, the limit and its raised value, and where the number
+    came from.
+    """
+
+    step: str
+    entry: str | None
+    test: TestCase | None
+    limit: str
+    value: int
+    origin: _Origin
+
+
+@dataclass(frozen=True, slots=True)
 class Compiled:
     """A compiled task: its plan, its sealed steps and what they hold back
     until the reveal, and what the save says of it beside publishing it.
@@ -853,7 +909,8 @@ class _Compiler:
         or that the sealed step it reads ran it over."""
         self.reads_sealed: dict[str, str] = {}
         """Each step sealed by reading a sealed step's output, with that step."""
-        self.raised_by: dict[tuple[str, str], tuple[str, str]] = {}
+        self.raised: list[_Raised] = []
+        """Every limit raised above its primitive's, run by run."""
         self.served = self._served()
 
     def refuse(self, path: str, message: str) -> None:
@@ -1062,25 +1119,23 @@ class _Compiler:
         }
         if not per_test:
             ((_, inputs),) = items
-            return [
-                PlanStep(
-                    **common, limits=self._limits(step_id, declaration, [inputs]), inputs=inputs
-                )
-            ]
+            limits = self._limits(step_id, None, declaration, given, items)
+            return [PlanStep(**common, limits=limits, inputs=inputs)]
         if declaration.batch:
             batch = tuple(
                 BatchItem(test=test.id, inputs=inputs) for test, inputs in items if test is not None
             )
-            limits = self._limits(step_id, declaration, [inputs for _, inputs in items])
+            limits = self._limits(step_id, None, declaration, given, items)
             return [PlanStep(**common, limits=limits, batch=batch)]
         return [
             PlanStep(
                 **common,
-                limits=self._limits(step_id, declaration, [inputs]),
+                limits=self._limits(step_id, test.id, declaration, given, [(test, inputs)]),
                 inputs=inputs,
-                test=test.id if test is not None else None,
+                test=test.id,
             )
             for test, inputs in items
+            if test is not None
         ]
 
     def _value(
@@ -1155,23 +1210,35 @@ class _Compiler:
         return {"template": text, "parts": parts}
 
     def _limits(
-        self, step_id: str, declaration: PrimitiveDeclaration, runs: Sequence[Inputs]
+        self,
+        step_id: str,
+        entry: str | None,
+        declaration: PrimitiveDeclaration,
+        given: Mapping[str, Any],
+        runs: Sequence[tuple[TestCase | None, Inputs]],
     ) -> StepLimits:
+        """The limits of one plan entry of a step over `runs`, each raised
+        from the port its primitive names and rounded up, a batch's time
+        summed over its items and the rest the largest of any item. Each
+        raise is recorded with where its number came from, `given` being
+        what the workflow gives the step's ports.
+        """
         raised: list[dict[str, int]] = []
-        for inputs in runs:
+        for test, inputs in runs:
             limits = declaration.limits.as_mapping()
             for name, source in declaration.limits_from.items():
-                given = inputs.get(source.input)
-                if given is None or set(given) != {"value"} or not is_number(given["value"]):
+                value = inputs.get(source.input)
+                if value is None or set(value) != {"value"} or not is_number(value["value"]):
                     continue
-                value = given["value"]
-                wanted = Decimal(repr(value)) * Decimal(repr(source.scale)) + Decimal(
+                number = value["value"]
+                wanted = Decimal(repr(number)) * Decimal(repr(source.scale)) + Decimal(
                     repr(source.add)
                 )
                 ceiling = math.ceil(wanted)
                 if ceiling > limits[name]:
                     limits[name] = ceiling
-                    self.raised_by.setdefault((step_id, name), ("input", source.input))
+                    origin = _origin_of(given.get(source.input), source.input, number, test)
+                    self.raised.append(_Raised(step_id, entry, test, name, ceiling, origin))
             raised.append(limits)
         combined = {
             name: sum(run[name] for run in raised)
@@ -1194,6 +1261,18 @@ class _Compiler:
                 at_most=entry.at_most if isinstance(entry, Meaning) else None,
             )
         return found
+
+
+def _origin_of(raw: object, port: str, number: object, test: TestCase | None) -> _Origin:
+    """Where the number a port was given came from, `raw` being what the
+    workflow wrote for the port.
+    """
+    found = whole_reference(raw) if isinstance(raw, str) else None
+    if found is not None and found.kind == "inputs":
+        return _Origin("input", found.name, number)
+    if found is not None and found.kind == "test" and test is not None:
+        return _Origin("test", found.name, number, test)
+    return _Origin("literal", port, number)
 
 
 def _escaped(text: str) -> str:
@@ -1228,7 +1307,8 @@ def compile_plan(
     `tests` its tests in plan order, `secrets` the names of the secrets the
     task's org holds and `machine` the largest a run of it may take. Raises
     `InvalidDefinition` listing every problem, each at its path in
-    `task.yaml` or at the test folder it is about.
+    `task.yaml`, at the `workflow` line, or at the `test.yaml` of the test
+    whose number raised a limit past what is allowed.
     """
     compiler = _Compiler(task, workflow, primitives, paths, tests, secrets, machine)
     compiler.bind()
@@ -1241,9 +1321,21 @@ def compile_plan(
     problems = [*_fit(compiler, plan), *_credit(task, values), *_sealed(task, compiler)]
     if problems:
         raise InvalidDefinition("task.yaml", problems)
+    broken = violation(plan.model_dump(mode="json", exclude_none=True), "plan")
+    if broken is not None:
+        raise InvalidDefinition(
+            "task.yaml",
+            [
+                Problem(
+                    path="workflow",
+                    message=f"The plan this task compiles to with {task.workflow} breaks "
+                    f"the runner's contract {broken}.",
+                )
+            ],
+        )
     once = {step.id for step in workflow.steps if not step.per_test}
     held = Sealed(
-        stop=any(step in once for step in compiler.sealed),
+        steps=frozenset(step for step in compiler.sealed if step in once),
         values=frozenset(
             name for name, entry in plan.report.items() if entry.step in compiler.sealed
         ),
@@ -1258,49 +1350,105 @@ def compile_plan(
 
 def _fit(compiler: _Compiler, plan: Plan) -> list[Problem]:
     """Check 7's fit: the run's whole time within the ceiling, and every
-    step's memory and GPUs on the machine.
+    step's memory, GPUs and network on the machine, each refused where the
+    number that pushed it over came from.
     """
     problems: list[Problem] = []
     seconds = sum(step.limits.time_ms for step in plan.steps) / 1000
     total = seconds + BASE_WALL.total_seconds() + STEP_OVERHEAD.total_seconds() * len(plan.steps)
     ceiling = WALL_CEILING.total_seconds()
     if total > ceiling:
-        longest = max(plan.steps, key=lambda step: step.limits.time_ms)
-        source = compiler.raised_by.get((longest.id, "time_ms"))
-        name = source[1] if source is not None else None
-        at = f"inputs.{name}" if name is not None and name in compiler.task.inputs else "workflow"
-        said = name if name is not None else str(compiler.task.workflow)
-        problems.append(
-            Problem(
-                path=at,
-                message=f"{said} gives the run {math.ceil(total / 60)} minutes; a run may take "
-                f"{int(ceiling // 60)}.",
-            )
-        )
+        said = f"the run {math.ceil(total / 60)} minutes; a run may take {int(ceiling // 60)}."
+        problems.append(_over_time(compiler, plan, said))
+    machine = compiler.machine
     for step in plan.steps:
         for limit, most, unit in (
-            ("memory_mb", compiler.machine.memory_mb, "MB of memory"),
-            ("gpus", compiler.machine.gpus, "GPUs"),
+            ("memory_mb", machine.memory_mb, "MB of memory"),
+            ("gpus", machine.gpus, "GPUs"),
         ):
             wanted = getattr(step.limits, limit)
-            if wanted <= most:
-                continue
-            source = compiler.raised_by.get((step.id, limit))
-            name = source[1] if source is not None else None
-            at = (
-                f"inputs.{name}"
-                if name is not None and name in compiler.task.inputs
-                else "workflow"
-            )
-            said = name if name is not None else f"step {step.id}"
+            if wanted > most:
+                said = (
+                    f"step {step.id} {wanted} {unit}; no machine this task may run on has more "
+                    f"than {most}."
+                )
+                problems.append(_over_machine(compiler, step, limit, wanted, said))
+        if step.network and not machine.network:
             problems.append(
                 Problem(
-                    path=at,
-                    message=f"{said} gives step {step.id} {wanted} {unit}; no machine this task "
-                    f"may run on has more than {most}.",
+                    path="workflow",
+                    message=f"Step {step.id} uses {step.primitive}, which reaches the network, "
+                    "and no machine this task may run on gives a step the network.",
                 )
             )
     return _unique(problems)
+
+
+def _over_time(compiler: _Compiler, plan: Plan, said: str) -> Problem:
+    """The run ceiling's refusal, blamed on the raised time limit that adds
+    the most time to the run, or on the number of tests when none is raised.
+    """
+    by_origin: dict[tuple[str, str], list[_Raised]] = {}
+    for raised in compiler.raised:
+        if raised.limit == "time_ms":
+            by_origin.setdefault((raised.origin.kind, raised.origin.name), []).append(raised)
+    if not by_origin:
+        count = _tests(len(plan.tests))
+        return Problem(
+            path="workflow",
+            message=f"{count} through the steps of {compiler.task.workflow} give {said}",
+        )
+    runs = max(by_origin.values(), key=lambda runs: sum(run.value for run in runs))
+    tests = sorted({run.test.id for run in runs if run.test is not None}, key=natural)
+    most = max(runs, key=lambda run: run.value)
+    origin = most.origin
+    written = f"{origin.name} {spelled(origin.value)}"
+    if origin.kind == "test":
+        assert origin.test is not None
+        if len(tests) == 1:
+            return Problem(path=origin.path, message=f"{origin.test.id}'s {written} gives {said}")
+        return Problem(
+            path=origin.path,
+            message=f"{_tests(len(tests))} at {origin.name} up to {spelled(origin.value)} "
+            f"({origin.test.id}) give {said}",
+        )
+    if origin.kind == "literal":
+        written = f"{written}, as {compiler.task.workflow} writes it,"
+    if not tests:
+        return Problem(path=origin.path, message=f"{written} gives {said}")
+    verb = "gives" if len(tests) == 1 else "give"
+    return Problem(path=origin.path, message=f"{_tests(len(tests))} at {written} {verb} {said}")
+
+
+def _over_machine(
+    compiler: _Compiler, step: PlanStep, limit: str, wanted: int, said: str
+) -> Problem:
+    """A refusal of a step's memory or GPUs beyond the machine, at where the
+    number that raised it came from, or at the workflow when its primitive
+    asks that much itself.
+    """
+    origin = next(
+        (
+            raised.origin
+            for raised in compiler.raised
+            if (raised.step, raised.entry, raised.limit, raised.value)
+            == (step.id, step.test, limit, wanted)
+        ),
+        None,
+    )
+    if origin is None:
+        return Problem(path="workflow", message=f"{step.primitive} gives {said}")
+    written = f"{origin.name} {spelled(origin.value)}"
+    if origin.kind == "test":
+        assert origin.test is not None
+        return Problem(path=origin.path, message=f"{origin.test.id}'s {written} gives {said}")
+    if origin.kind == "literal":
+        written = f"{written}, as {compiler.task.workflow} writes it,"
+    return Problem(path=origin.path, message=f"{written} gives {said}")
+
+
+def _tests(count: int) -> str:
+    return "1 test" if count == 1 else f"{count} tests"
 
 
 @dataclass(frozen=True, slots=True)

@@ -367,6 +367,18 @@ def test_a_report_entry_breaking_its_rules_is_refused_at_its_key(
     assert sentence in next(problem["message"] for problem in problems if problem["path"] == path)
 
 
+def test_a_better_that_is_no_reference_is_refused_at_its_key_beside_every_other_problem() -> None:
+    document = classic()
+    document["report"]["x"] = {"from": "${{ steps.run.time_ms }}", "better": "${{ foo }}"}
+    document["report"]["points"] = "${{ steps.run.time_ms }}"
+
+    problems = refused(document)
+
+    assert paths(problems) == ["report.x.better", "report.points"]
+    assert problems[0]["message"].startswith("${{ foo }} is not a reference a workflow makes")
+    assert "points is the platform's own name" in problems[1]["message"]
+
+
 def test_better_may_be_a_task_enum_of_higher_and_lower() -> None:
     document = classic()
     document["inputs"]["better"] = {"type": "enum", "options": ["higher", "lower"]}

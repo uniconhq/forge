@@ -680,15 +680,15 @@ def test_a_batching_primitive_is_one_step_with_an_item_per_test_and_its_limits_r
         "actual": {"step": "run", "output": "output"},
         "expected": {"task": "tests/samples/1/answer"},
     }
-    assert check["limits"]["time_ms"] == 3 * 5000
+    assert check["limits"]["time_ms"] == 3 * 2000
     assert check["outputs"] == {"outcome": "outcome"}
     assert "folders" not in check
 
 
-def test_a_limit_is_raised_and_rounded_up_never_lowered() -> None:
+def test_a_limit_is_raised_and_rounded_up() -> None:
     low = task_with(inputs="  time_limit: 0.5\n  memory_limit: 1.2\n")
     run = step(compiled(low, classic_tests("main/1")).plan, "run")
-    assert (run["limits"]["time_ms"], run["limits"]["memory_mb"]) == (5000, 258)
+    assert (run["limits"]["time_ms"], run["limits"]["memory_mb"]) == (4000, 258)
 
     odd = task_with(inputs="  time_limit: 1.0001\n  memory_limit: 256\n")
     run = step(compiled(odd, classic_tests("main/1")).plan, "run")
@@ -1044,7 +1044,9 @@ def test_a_step_running_contestant_code_over_data_the_contestant_is_not_served_i
     result = compiled(NOTEBOOK_TASK, NOTEBOOK_PATHS, NOTEBOOK)
 
     assert result.sealed == ("predict", "score")
-    assert result.held == Sealed(stop=True, values=frozenset({"accuracy", "fraction"}))
+    assert result.held == Sealed(
+        steps=frozenset({"predict"}), values=frozenset({"accuracy", "fraction"})
+    )
     predict, score, credit = result.notes
     assert predict == (
         "Step predict is sealed: it runs the contestant's code over data/mnist-test/, which the "
@@ -1234,7 +1236,7 @@ def test_a_time_limit_pushing_the_run_past_the_ceiling_is_refused_at_the_input()
     assert refused(text, classic_tests("main/1")) == [
         {
             "path": "inputs.time_limit",
-            "message": "time_limit gives the run 27 minutes; a run may take 25.",
+            "message": "1 test at time_limit 700 gives the run 27 minutes; a run may take 25.",
         }
     ]
 
@@ -1246,11 +1248,166 @@ def test_a_batch_sums_its_items_against_the_ceiling() -> None:
     assert refused(text, classic_tests(*sixty)) == [
         {
             "path": "inputs.time_limit",
-            "message": "time_limit gives the run 31 minutes; a run may take 25.",
+            "message": "60 tests at time_limit 10 give the run 28 minutes; a run may take 25.",
         }
     ]
     fits = task_with(inputs=CLASSIC_INPUTS + "  time_limit: 5\n  memory_limit: 256\n")
     compiled(fits, classic_tests(*sixty))
+
+
+ACME["acme/timed@v1"] = declared(
+    "timed",
+    "batch: true\n"
+    + LIMITS
+    + """\
+limits_from:
+  time_ms: {input: seconds, scale: 1000}
+inputs:
+  seconds: number
+  expected: {type: file, runs: false}
+outputs:
+  outcome: outcome
+""",
+)
+PRIMITIVES_READ["acme/timed@v1"] = ACME["acme/timed@v1"]
+
+
+def timed(seconds: str) -> WorkflowDefinition:
+    """A workflow of one batch step whose time is `seconds` per test, given
+    as `seconds` writes it.
+    """
+    return parse_workflow(
+        f"""\
+inputs:
+  seconds: number
+test:
+  answer: file
+  seconds: number
+steps:
+  - id: wait
+    use: acme/timed@v1
+    per_test: true
+    with:
+      seconds: {seconds}
+      expected: ${{{{ test.answer }}}}
+"""
+    )
+
+
+TIMED_TASK = (
+    "name: T\nworkflow: acme/waiting@v1\ninputs:\n  seconds: {seconds}\n"
+    "test_groups:\n  main: {{each: 1}}\n"
+)
+
+
+def timed_tests(seconds: Mapping[str, int]) -> tuple[set[str], dict[str, bytes]]:
+    """The files of tests giving each its `seconds` in its `test.yaml`."""
+    paths = {f"tests/{test}/{entry}" for test in seconds for entry in ("answer", "test.yaml")}
+    yamls = {
+        f"tests/{test}/test.yaml": f"seconds: {value}\n".encode() for test, value in seconds.items()
+    }
+    return paths, yamls
+
+
+HUNDRED = {f"main/{number}": 1 for number in range(1, 101)}
+
+
+def test_a_run_too_long_is_blamed_on_the_task_input_it_was_raised_from() -> None:
+    paths, yamls = timed_tests(HUNDRED)
+    workflow = timed("${{ inputs.seconds }}")
+
+    assert refused(TIMED_TASK.format(seconds=15), paths, workflow, yamls=yamls) == [
+        {
+            "path": "inputs.seconds",
+            "message": "100 tests at seconds 15 give the run 27 minutes; a run may take 25.",
+        }
+    ]
+
+
+def test_a_run_too_long_is_blamed_on_the_test_that_gives_the_most() -> None:
+    ten = {**{f"main/{number}": 2 for number in range(1, 11)}, "main/7": 1500}
+    paths, yamls = timed_tests(ten)
+    workflow = timed("${{ test.seconds }}")
+
+    assert refused(TIMED_TASK.format(seconds=1), paths, workflow, yamls=yamls) == [
+        {
+            "path": "tests/main/7/test.yaml",
+            "message": "10 tests at seconds up to 1500 (main/7) give the run 27 minutes; a run "
+            "may take 25.",
+        }
+    ]
+    paths, yamls = timed_tests({"main/1": 1500})
+    assert refused(TIMED_TASK.format(seconds=1), paths, workflow, yamls=yamls) == [
+        {
+            "path": "tests/main/1/test.yaml",
+            "message": "main/1's seconds 1500 gives the run 27 minutes; a run may take 25.",
+        }
+    ]
+
+
+def test_a_run_too_long_is_blamed_on_the_raised_limit_that_adds_the_most_time() -> None:
+    both = parse_workflow(
+        """\
+inputs:
+  seconds: number
+test:
+  answer: file
+  seconds: number
+steps:
+  - id: first
+    use: acme/timed@v1
+    per_test: true
+    with: {seconds: "${{ inputs.seconds }}", expected: "${{ test.answer }}"}
+  - id: second
+    use: acme/timed@v1
+    per_test: true
+    with: {seconds: "${{ test.seconds }}", expected: "${{ test.answer }}"}
+"""
+    )
+    paths, yamls = timed_tests(dict.fromkeys(HUNDRED, 2))
+    [by_input] = refused(TIMED_TASK.format(seconds=13), paths, both, yamls=yamls)
+    paths, yamls = timed_tests(dict.fromkeys(HUNDRED, 13))
+    [by_test] = refused(TIMED_TASK.format(seconds=2), paths, both, yamls=yamls)
+
+    assert by_input == {
+        "path": "inputs.seconds",
+        "message": "100 tests at seconds 13 give the run 27 minutes; a run may take 25.",
+    }
+    assert by_test == {
+        "path": "tests/main/1/test.yaml",
+        "message": "100 tests at seconds up to 13 (main/1) give the run 27 minutes; a run may "
+        "take 25.",
+    }
+
+
+def test_a_run_too_long_from_a_number_the_workflow_writes_is_refused_at_the_workflow() -> None:
+    paths, yamls = timed_tests(HUNDRED)
+
+    assert refused(TIMED_TASK.format(seconds=1), paths, timed("15"), yamls=yamls) == [
+        {
+            "path": "workflow",
+            "message": "100 tests at seconds 15, as acme/waiting@v1 writes it, give the run 27 "
+            "minutes; a run may take 25.",
+        }
+    ]
+
+
+def test_a_run_too_long_with_no_limit_raised_is_blamed_on_the_number_of_tests() -> None:
+    many = [f"main/{number}" for number in range(1, 92)]
+    text = task_with(
+        workflow="acme/output-only@v1",
+        inputs="  answers: {max_size: 1MB}\n",
+        groups="  main: {each: 1}\n",
+    )
+
+    assert refused(text, classic_tests(*many), OUTPUT_ONLY) == [
+        {
+            "path": "workflow",
+            "message": "91 tests through the steps of acme/output-only@v1 give the run 26 "
+            "minutes; a run may take 25.",
+        }
+    ]
+    compiled(text, classic_tests(*many[:90]), OUTPUT_ONLY)
 
 
 def test_memory_beyond_the_platforms_machine_is_refused_at_the_input() -> None:
@@ -1259,11 +1416,11 @@ def test_memory_beyond_the_platforms_machine_is_refused_at_the_input() -> None:
     assert refused(text, classic_tests("main/1")) == [
         {
             "path": "inputs.memory_limit",
-            "message": "memory_limit gives step run 20256 MB of memory; no machine this task may "
-            "run on has more than 16384.",
+            "message": "memory_limit 20000 gives step run 20256 MB of memory; no machine this "
+            "task may run on has more than 16384.",
         }
     ]
-    assert Machine(memory_mb=16384, gpus=0) == PLATFORM_MACHINE
+    assert Machine(memory_mb=16384, gpus=0, network=False) == PLATFORM_MACHINE
 
 
 GPU = parse_workflow(
@@ -1283,13 +1440,78 @@ def test_a_gpu_is_refused_while_no_machine_has_one() -> None:
     assert refused(GPU_TASK, {"tests/main/1/answer"}, GPU) == [
         {
             "path": "inputs.gpus",
-            "message": "gpus gives step train 1 GPUs; no machine this task may run on has more "
+            "message": "gpus 1 gives step train 1 GPUs; no machine this task may run on has more "
             "than 0.",
         }
     ]
-    plan = compiled(GPU_TASK, {"tests/main/1/answer"}, GPU, machine=Machine(16384, 1)).plan
+    plan = compiled(GPU_TASK, {"tests/main/1/answer"}, GPU, machine=Machine(16384, 1, False)).plan
     assert step(plan, "train")["limits"]["gpus"] == 1
     compiled(GPU_TASK.replace("gpus: 1", "gpus: 0"), {"tests/main/1/answer"}, GPU)
+
+
+ACME["acme/online@v1"] = declared(
+    "online",
+    "network: true\n" + LIMITS + "outputs:\n  outcome: outcome\n",
+)
+PRIMITIVES_READ["acme/online@v1"] = ACME["acme/online@v1"]
+ONLINE = parse_workflow("test:\n  answer: file\nsteps:\n  - {id: fetch, use: acme/online@v1}\n")
+ONLINE_TASK = "name: T\nworkflow: acme/online@v1\ntest_groups:\n  main: {each: 1}\n"
+
+
+def test_a_step_reaching_the_network_is_refused_while_no_machine_gives_it() -> None:
+    assert refused(ONLINE_TASK, {"tests/main/1/answer"}, ONLINE) == [
+        {
+            "path": "workflow",
+            "message": "Step fetch uses acme/online@v1, which reaches the network, and no "
+            "machine this task may run on gives a step the network.",
+        }
+    ]
+    online = Machine(16384, 0, True)
+    plan = compiled(ONLINE_TASK, {"tests/main/1/answer"}, ONLINE, machine=online).plan
+    assert step(plan, "fetch")["network"] is True
+
+
+# The runner's contract
+
+
+def test_a_plan_the_runners_contract_refuses_is_refused_at_the_workflow() -> None:
+    task = parse_task(CLASSIC_TASK)
+    paths = classic_tests("main/1")
+    tests = cases_of(CLASSIC_WORKFLOW, paths, {})
+
+    with pytest.raises(InvalidDefinition) as raised:
+        compile_plan(
+            task,
+            CLASSIC_WORKFLOW,
+            PRIMITIVES_READ,
+            paths,
+            tests,
+            secrets=frozenset(),
+            machine=PLATFORM_MACHINE,
+            harness_image="harness@sha256:" + "1" * 64,
+        )
+
+    (problem,) = raised.value.errors
+    assert problem["path"] == "workflow"
+    assert problem["message"].startswith(
+        "The plan this task compiles to with unicon/classic@v2 breaks the runner's contract at "
+        "harness_image: "
+    )
+
+
+def test_a_test_id_longer_than_the_contract_allows_is_refused_at_its_folder() -> None:
+    group, test = "g" * 200, "t" * 55
+    paths = classic_tests(f"{group}/{test}", f"{group}/{test[:54]}")
+
+    tests, problems = read_tests(paths, CLASSIC_WORKFLOW.test, {})
+
+    assert [case.id for case in tests] == [f"{group}/{test[:54]}"]
+    assert problems == [
+        {
+            "path": f"tests/{group}/{test}/",
+            "message": "A test's id, <group>/<test>, is at most 255 characters; this one has 256.",
+        }
+    ]
 
 
 # The starter
