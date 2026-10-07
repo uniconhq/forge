@@ -26,6 +26,7 @@ import uuid
 from collections.abc import Callable, Coroutine
 from datetime import timedelta
 from decimal import Decimal
+from fractions import Fraction
 from typing import Any
 
 import pytest
@@ -504,8 +505,9 @@ async def test_a_valid_result_lands_on_the_row_with_its_log_and_the_contestant_r
     assert (main.group, main.outcome, main.tests) == (
         "main",
         "accepted",
-        ({"test": "main/1", "outcome": "accepted", "values": {"time_ms": 12}},),
+        ({"test": "main/1", "outcome": "accepted", "values": {"time_ms": 12}, "credit": 1},),
     )
+    assert (main.points, main.max) == (Fraction(100), Fraction(100))
 
 
 async def test_a_results_numbers_are_kept_exactly_as_the_run_wrote_them(

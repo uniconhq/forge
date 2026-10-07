@@ -32,6 +32,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.publications import Publication
+from forge.domain.showing import generation_of
 from forge.domain.submissions import Field, fields_of
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
@@ -48,7 +49,8 @@ NO_SUCH_TASK = names.NO_SUCH_TASK
 class PublishedTask:
     """A task as its latest publication froze it, by its name, with its
     entry in the contest's `tasks` list and the label its place there gives
-    it, when the contest lists it.
+    it, when the contest lists it, and every publication of it, oldest
+    first.
     """
 
     id: TaskId
@@ -57,6 +59,14 @@ class PublishedTask:
     definition: TaskDefinition
     entry: ContestTask | None
     label: str | None = None
+    publications: tuple[Publication, ...] = ()
+
+    def generation(self, publication: Publication) -> int:
+        """`showing.generation_of` for one of the task's publications."""
+        return generation_of(
+            [(each.number, each.grading_changed) for each in self.publications],
+            publication.number,
+        )
 
     @property
     def worth(self) -> int | float | None:
@@ -110,10 +120,17 @@ async def task(
         definition = parse_task(found.content)
     except InvalidDefinition:
         return None
+    every = tuple(publications)
     if settings is None:
-        return PublishedTask(task, name, latest, definition, None)
+        return PublishedTask(task, name, latest, definition, None, publications=every)
     return PublishedTask(
-        task, name, latest, definition, settings.entry(name), settings.label_of(name)
+        task,
+        name,
+        latest,
+        definition,
+        settings.entry(name),
+        settings.label_of(name),
+        every,
     )
 
 

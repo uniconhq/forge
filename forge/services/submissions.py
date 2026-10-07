@@ -58,7 +58,10 @@ shown with the publication it ran under: its sealed facts, and its
 `test_groups` unless the latest publication's plan lists the same tests. A
 past publication's `task.yaml` and plan are read once per process, since a
 publication never changes; one that does not read shows nothing of its
-gradings but where they stand. `files` gives
+gradings but where they stand. Each grading is scored on read
+(`services.scores`): every shown group's points and most, each shown test's
+credit, and the points shown with those still to be decided at the reveal,
+the late factor of the submission's started days applied. `files` gives
 the inputs a submission was made with, and `download` the door to one of
 its files: where the proxy reads it from the forge and streams it to the
 person, so its bytes, two gigabytes or two, never pass through the
@@ -76,15 +79,14 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from fractions import Fraction
 from typing import Any
 
-from pydantic import ValidationError
 from sqlalchemy import func, select, text
 
 from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
 from forge.domain import submissions as rules
-from forge.domain.definitions import TASK_FILE, parse_task
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -101,13 +103,13 @@ from forge.domain.errors import (
     UploadNotYours,
 )
 from forge.domain.grading import GradingStatus
-from forge.domain.identity import PLATFORM, AsUser
+from forge.domain.identity import AsUser
 from forge.domain.ids import PublicationId, SubmissionId, TaskId, WorkspaceId
-from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.release import due_of, late_days
 from forge.domain.roles import contest_id_of, task_scope
+from forge.domain.scoring import Points, Seen, points_seen
 from forge.domain.sessions import Session
-from forge.domain.showing import Graded, GroupShown, shown, told, under
+from forge.domain.showing import GroupShown, shown, told
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
 from forge.domain.uploads import (
     POINTER_MAX,
@@ -117,12 +119,11 @@ from forge.domain.uploads import (
     pointer_text,
     read_pointer,
 )
-from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import gradings, published, sessions, submitters, timelines, uploads
+from forge.services import gradings, published, scores, sessions, submitters, timelines, uploads
 from forge.services.submitters import Entrant
 
 log = get_logger(__name__)
@@ -144,10 +145,11 @@ class Result:
     """The latest attempt of a submission's grading as its contestant sees
     it: its id and attempt, where it stands, and once it is done, what
     stopped the run, the outcome over the groups shown, each test group as
-    its `show` allows, and the values reported once. A run in
-    `system_error` is still `running` to its contestant, with nothing else;
-    one staff cancelled is `cancelled`, with `reason`, the sentence they
-    gave.
+    its `show` allows, and the values reported once; on a task that gives
+    points, the points shown and those pending until the reveal, and the
+    late factor they include. A run in `system_error` is still `running`
+    to its contestant, with nothing else; one staff cancelled is
+    `cancelled`, with `reason`, the sentence they gave.
     """
 
     id: uuid.UUID
@@ -158,6 +160,8 @@ class Result:
     groups: tuple[GroupShown, ...]
     values: dict[str, Any]
     reason: str | None = None
+    points: Points | None = None
+    factor: Fraction | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -669,6 +673,7 @@ async def _read(
     for row in rows:
         grouped.setdefault(row.submission_number, []).append(row)
     gone = await gradings.lost(ctx, [_latest(found) for found in grouped.values()])
+    scorer = scores.Scorer(ctx, entrant.published)
     return [
         await _submission(
             ctx,
@@ -677,6 +682,7 @@ async def _read(
             min(row.submitted_at for row in grouped[found]),
             grouped[found],
             gone,
+            scorer,
         )
         for found in sorted(grouped, reverse=True)
     ]
@@ -694,6 +700,7 @@ async def _submission(
     at: datetime,
     rows: Sequence[Grading],
     lost: frozenset[uuid.UUID] = frozenset(),
+    scorer: scores.Scorer | None = None,
 ) -> Submission:
     """The submission as its owner reads it, by the latest attempt of its
     grading, with `lost` naming the gradings whose runs the CI has lost.
@@ -709,89 +716,54 @@ async def _submission(
     status = gradings.status_of(ctx, row, lost)
     contest = contest_id_of(task_scope(entrant.task))
     reveal_at = await timelines.reveal(ctx, contest, settings, task)
-    return Submission(
-        entrant.task, number, at, late, await _result(ctx, entrant, row, status, reveal_at)
+    factor = scores.factor(settings, entrant.published, extension, at)
+    result = await _result(
+        ctx, scorer or scores.Scorer(ctx, entrant.published), row, status, reveal_at, factor
     )
+    return Submission(entrant.task, number, at, late, result)
 
 
 async def _result(
     ctx: Context,
-    entrant: Entrant,
+    scorer: scores.Scorer,
     row: Grading,
     status: GradingStatus,
     reveal_at: datetime | None,
+    factor: Fraction,
 ) -> Result:
     """The grading as its contestant may see it now, with the publication it
-    ran under. A run in `system_error` is told as still running, with
-    nothing of it shown, and one staff cancelled as cancelled, with the
+    ran under, scored. A run in `system_error` is told as still running,
+    with nothing of it shown, and one staff cancelled as cancelled, with the
     sentence they gave.
     """
     if status is GradingStatus.CANCELLED:
         return Result(row.id, row.attempt, status, None, None, (), {}, row.cancel_reason)
     if status is not GradingStatus.DONE or row.result is None:
         return Result(row.id, row.attempt, told(status), None, None, (), {})
-    graded = await _shown_with(ctx, entrant, PublicationId(row.publication_id))
+    graded = await scorer.graded(PublicationId(row.publication_id))
     if graded is None:
         return Result(row.id, row.attempt, status, None, None, (), {})
+    revealed = reveal_at is not None and ctx.now >= reveal_at
+    scored = await scorer.scored(row, graded, factor)
     seen = shown(
         row.result,
         graded.groups,
         graded.sealed,
-        revealed=reveal_at is not None and ctx.now >= reveal_at,
+        revealed=revealed,
         reveal_at=reveal_at,
+        scored=scored,
     )
     return Result(
-        row.id, row.attempt, status, seen.stopped, seen.outcome, seen.groups, dict(seen.values)
+        row.id,
+        row.attempt,
+        status,
+        seen.stopped,
+        seen.outcome,
+        seen.groups,
+        dict(seen.values),
+        points=points_seen(scored, Seen(revealed), reveal_at),
+        factor=factor,
     )
-
-
-async def _shown_with(ctx: Context, entrant: Entrant, publication: PublicationId) -> Graded | None:
-    """What a grading made under `publication` is shown with
-    (`forge.domain.showing.under`), or none when that publication does not
-    read.
-    """
-    current = entrant.published
-    form = await published.form(ctx, current)
-    latest = Graded(form.tests, current.definition.test_groups, current.publication.sealed)
-    if publication == current.publication.id:
-        return latest
-    own = await _graded(ctx, entrant.task, publication)
-    return under(own, latest) if own is not None else None
-
-
-GRADED_KEPT = published.FORM_KEPT
-"""How long this process keeps what a past publication shows its gradings
-with: a publication never changes, so the time only bounds what is held."""
-
-
-async def _graded(ctx: Context, task: TaskId, publication: PublicationId) -> Graded | None:
-    """The tests, `test_groups` and sealed facts of one of the task's
-    publications, read once per process, or none when it is gone or does
-    not read in the current format.
-    """
-
-    async def read() -> Graded | None:
-        await ctx.let_go()
-        listed = await ctx.forge.workspaces.list_publications(task)
-        found = next((each for each in listed if each.id == publication), None)
-        if found is None:
-            log.warning("submissions.publication_gone", task=task, publication=publication)
-            return None
-        try:
-            task_file = await ctx.forge.content.read_file(
-                PLATFORM, task, TASK_FILE, at=found.version
-            )
-            plan_file = await ctx.forge.content.read_file(
-                PLATFORM, task, PLAN_PATH, at=found.version
-            )
-            definition = parse_task(task_file.content)
-            plan = Plan.from_bytes(plan_file.content)
-        except NotFound, InvalidDefinition, ValidationError:
-            log.warning("submissions.publication_unreadable", task=task, publication=publication)
-            return None
-        return Graded(plan.tests, definition.test_groups, found.sealed)
-
-    return await ctx.memo.remembered(f"submissions.graded.{task}.{publication}", GRADED_KEPT, read)
 
 
 async def _own(
