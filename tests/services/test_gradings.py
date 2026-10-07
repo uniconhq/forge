@@ -774,6 +774,25 @@ async def test_only_the_latest_attempt_of_a_submission_is_cancelled(
     assert (cancelled.attempt, cancelled.status) == (2, GradingStatus.CANCELLED)
 
 
+async def test_only_the_latest_attempt_of_a_submission_is_retried(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    row = await _submit(setup, acme, entered)
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    await _set(setup, row.id, status=GradingStatus.SYSTEM_ERROR, error="The checker crashed.")
+    retried = await gradings.retry(setup, manager, row.id)
+    await _set(setup, retried.id, status=GradingStatus.DONE, error=None)
+
+    # The earlier attempt graded against what the later one replaced.
+    with pytest.raises(Conflict) as refused:
+        await gradings.retry(setup, manager, row.id)
+    assert "later attempt" in refused.value.detail
+    again = await gradings.retry(setup, manager, retried.id)
+
+    assert again.attempt == 3
+    assert [found.attempt for found in await _rows(setup)] == [1, 2, 3]
+
+
 async def test_a_grading_is_no_such_grading_to_an_organiser_who_does_not_observe_its_task(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:

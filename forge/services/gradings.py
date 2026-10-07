@@ -29,12 +29,12 @@ An organiser managing the task reads its gradings and acts on one:
   once the cancel has committed, so it does not hold a machine. A cancelled
   submission does not count against the task's `submissions.max`, and a
   rejudge leaves it as it is;
-- `retry` makes a new attempt of a finished one, against the publication
-  the old attempt graded against, unless another attempt of it is still
-  being graded. One that reads as finished only because it is overdue or
-  lost is ended first, with the reason written on its row, and the old
-  run is cancelled at the CI once the retry has committed, so it does not
-  keep a machine's containers going;
+- `retry` makes a new attempt of a submission's latest grading once it is
+  finished, against the publication that attempt graded against, unless
+  another attempt of it is still being graded. One that reads as finished
+  only because it is overdue or lost is ended first, with the reason
+  written on its row, and the old run is cancelled at the CI once the
+  retry has committed, so it does not keep a machine's containers going;
 - `rejudge` makes a new attempt of every submission's latest attempt,
   against the task's current publication, as a save that publishes a
   change to how the task grades does (`regrade`).
@@ -633,9 +633,11 @@ async def cancel(
 
 @action
 async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> GradingRecord:
-    """A new attempt of a finished grading, against the publication it graded
-    against, the old attempt kept as it is. `WrongStatus` for one that is
-    not finished, and `Conflict` while another attempt of it is graded.
+    """A new attempt of a submission's latest grading once it is finished,
+    against the publication it graded against, the old attempt kept as it
+    is. `WrongStatus` for one that is not finished, and `Conflict` for one
+    with a later attempt, which is the one to retry, or while another
+    attempt of it is graded.
     """
     found = await _managed(ctx, organiser, grading, lock=False)
     gone = await lost(ctx, [found])
@@ -644,6 +646,8 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     status = status_of(ctx, row, gone)
     if status not in FINISHED:
         raise WrongStatus(f"The grading is {status.value}, not finished.", current=status.value)
+    if any(other.attempt > row.attempt for other in attempts):
+        raise Conflict("A later attempt of this submission exists; retry that one.")
     if any(status_of(ctx, other, gone) in UNFINISHED for other in attempts):
         raise Conflict("Another attempt of this grading is still being graded.")
     stored = GradingStatus(row.status)
