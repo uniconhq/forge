@@ -8,6 +8,8 @@ moved since is `Conflict`, with nothing written. A write to a contest's
 `contest.yaml` is validated first and refused whole when it is not valid,
 or when it moves a task's timeline behind what rows already did or puts a
 worth or a due on a task that gives no points (`timelines.check_contest`),
+or when a board asks what a covered task's latest publication does not give
+or a task's marks fall below what a row holds (`boards.check_contest`),
 and a manager's change to one of its admin-only keys is refused naming each. A
 write to a task is a save of the task, which publishes it when it is valid
 (`publications.save`). A rollback is not an undo: the file as it was at the
@@ -47,7 +49,7 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import publications, published, timelines
+from forge.services import boards, publications, published, timelines
 from forge.services.access import Organiser, require
 from forge.services.publications import Draft, Published
 
@@ -154,6 +156,7 @@ async def write(
                     f"Only an admin of {scope.name} may change {', '.join(keys)}.", keys=keys
                 )
         problems = await timelines.check_contest(ctx, contest, _parsed(before), after)
+        problems += await boards.check_contest(ctx, contest, after)
         if problems:
             raise InvalidDefinition(CONTEST_FILE, problems)
     version = await ctx.forge.content.write_file(

@@ -19,7 +19,9 @@ steps in order, and refuses before anything is written.
    graded submission ran under nor is left unsaid on a group added once the
    task has a graded submission (T7, T10); and a task that gives no points
    is refused while its contest's entry for it gives it a `worth` or a
-   `due` (check 10). A workflow is named `<owner>/<name>`, the owner an org by its name or a
+   `due`; and every board covering the task gets what it asks of it, beside
+   the other covered tasks as their latest publications stand (check 10,
+   T8, `boards.check_task`). A workflow is named `<owner>/<name>`, the owner an org by its name or a
    person by their username; when the latest publication used a workflow of
    that name and it is now another workflow, by the forge's own id for it,
    the state is refused at that line, since the owner may have been renamed
@@ -43,8 +45,11 @@ steps in order, and refuses before anything is written.
    task half saved.
 5. That change is named as the next publication, as the platform, with a
    note saying whether it changed how the task grades and what, which
-   workflow each workflow name was, and what the task's sealed steps hold
-   back until its reveal. When another
+   workflow each workflow name was, what the task's sealed steps hold back
+   until its reveal, and what each value it reports means. The save reports
+   each group's most points, the task's reveal, the boards it joins or
+   moves, those whose scope a `show` change moves, and each board ranking
+   `points` that counts nothing from it (T9). When another
    save landed between the check and the write, the change holds files this
    save never checked, so it is kept as a draft instead, saying so, and the
    next save checks and publishes the task as it then stands.
@@ -65,6 +70,8 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from forge.db.tables import Grading
+from forge.domain.board_checks import covered, group_max
+from forge.domain.boards import in_scope
 from forge.domain.content import (
     ConflictToken,
     Edit,
@@ -77,9 +84,12 @@ from forge.domain.content import (
 from forge.domain.definitions import (
     ADMIN_ONLY_FILES,
     CONTEST_FILE,
+    DEFAULT_WORTH,
     TASK_FILE,
     ContestDefinition,
     Group,
+    Leaderboard,
+    Over,
     Show,
     TaskDefinition,
     admin_only_changes,
@@ -115,7 +125,7 @@ from forge.domain.plans import (
 )
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.publications import Publication, write_note
-from forge.domain.release import has_started
+from forge.domain.release import has_started, reveal_of
 from forge.domain.roles import (
     Role,
     contest_id_of,
@@ -123,6 +133,7 @@ from forge.domain.roles import (
     primitive_id_of,
     task_scope,
 )
+from forge.domain.scoring import ZERO, exact, written
 from forge.domain.uploads import (
     ATTRIBUTES_FILE,
     UploadStatus,
@@ -142,7 +153,7 @@ from forge.log import get_logger
 from forge.port.uploads import TaskPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import gradings, names, places, uploads
+from forge.services import boards, gradings, names, places, timelines, uploads
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -257,10 +268,14 @@ async def save(
     touched = {*written, *plans}
     if version != head.version and await _landed_under(ctx, as_, task, head, version, touched):
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
-    assert checked.compiled is not None
+    assert checked.compiled is not None and checked.definition is not None
     notes = checked.compiled.notes
     if latest is not None and version == latest.version:
         return Published(latest.id, latest.number, latest.grading_changed, latest.changes, notes)
+    notes = (
+        *notes,
+        *await _report(ctx, task, checked.definition, checked.compiled, latest, bool(changed)),
+    )
     note = write_note(
         bool(changed),
         changed,
@@ -340,7 +355,79 @@ async def check(
         )
     except InvalidDefinition as invalid:
         return Checked(definition, None, tuple(invalid.errors), pins)
+    refused = await _boards(ctx, task, definition, compiled)
+    if refused:
+        return Checked(definition, None, tuple(refused), pins)
     return Checked(definition, compiled, (), pins)
+
+
+async def _boards(
+    ctx: Context, task: TaskId, definition: TaskDefinition, compiled: Compiled
+) -> builtins.list[Problem]:
+    """T8: what each board covering the task asks of it as saved."""
+    contest = await _contest(ctx, task)
+    name = (await names.names_of(ctx, [task])).get(task)
+    if contest is None or name is None:
+        return []
+    shape = covered(compiled.measures, definition.test_groups)
+    return await boards.check_task(ctx, contest_id_of(task_scope(task)), contest, name, shape)
+
+
+async def _report(
+    ctx: Context,
+    task: TaskId,
+    definition: TaskDefinition,
+    compiled: Compiled,
+    latest: Publication | None,
+    changed: bool,
+) -> builtins.list[str]:
+    """T9: each group's most points, the task's reveal, which boards the
+    save moves and whose scope a `show` change moves, and each board
+    ranking `points` that counts nothing from the task.
+    """
+    contest = await _contest(ctx, task)
+    name = (await names.names_of(ctx, [task])).get(task)
+    if contest is None or name is None:
+        return []
+    entry = contest.entry(name)
+    found: builtins.list[str] = []
+    if entry is not None and definition.gives_points:
+        worth = exact(entry.worth if entry.worth is not None else DEFAULT_WORTH) or ZERO
+        most = group_max(definition.test_groups, worth)
+        found.append(
+            "Each group's most points: "
+            + ", ".join(f"{group} {written(points)}" for group, points in most.items())
+            + "."
+        )
+    if entry is not None:
+        extensions = await timelines.every_extension(ctx, contest_id_of(task_scope(task)))
+        found.append(f"{name} reveals at {reveal_of(contest, entry, extensions).isoformat()}.")
+    before = await _definition_of(ctx, task, latest) if latest is not None else None
+    for board in contest.leaderboards:
+        if board.tasks is not None and not board.covers(name):
+            continue
+        if before is None:
+            found.append(f"{name} joins {board.name}.")
+            continue
+        if (
+            changed
+            or before.test_groups != definition.test_groups
+            or before.credit != definition.credit
+        ):
+            found.append(f"This save moves {board.name}.")
+        if board.over is not Over.ALL and _scope_moved(board, before, definition):
+            found.append(f"A show change moves what {board.name} counts of {name}.")
+    found += boards.task_notes(contest, name, covered(compiled.measures, definition.test_groups))
+    return found
+
+
+def _scope_moved(board: Leaderboard, before: TaskDefinition, after: TaskDefinition) -> bool:
+    """Whether a group of the task moved into or out of the board's scope."""
+    scope = in_scope(board.over)
+    return any(
+        name in before.test_groups and scope(before.test_groups[name].shown) != scope(group.shown)
+        for name, group in after.test_groups.items()
+    )
 
 
 async def _graded_under(ctx: Context, task: TaskId) -> set[str]:
@@ -406,20 +493,30 @@ async def _shown_before(
 
 
 async def _groups_of(ctx: Context, task: TaskId, publication: Publication) -> Mapping[str, Group]:
-    """The test groups of the publication's `task.yaml`, read once per
-    process, or none when it does not read, which a save never publishes.
+    """The test groups of the publication's `task.yaml`, or none when it
+    does not read, which a save never publishes.
+    """
+    found = await _definition_of(ctx, task, publication)
+    return found.test_groups if found is not None else {}
+
+
+async def _definition_of(
+    ctx: Context, task: TaskId, publication: Publication
+) -> TaskDefinition | None:
+    """The publication's `task.yaml`, read once per process, or none when
+    it does not read.
     """
 
-    async def read() -> Mapping[str, Group]:
+    async def read() -> TaskDefinition | None:
         try:
             found = await ctx.forge.content.read_file(
                 PLATFORM, task, TASK_FILE, at=publication.version
             )
-            return parse_task(found.content).test_groups
+            return parse_task(found.content)
         except NotFound, InvalidDefinition:
-            return {}
+            return None
 
-    key = f"publications.groups.{task}.{publication.version}"
+    key = f"publications.definition.{task}.{publication.version}"
     return await ctx.memo.remembered(key, GROUPS_KEPT, read)
 
 
