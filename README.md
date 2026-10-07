@@ -108,8 +108,12 @@ forge/api/
                 Upload complete returns with its UploadStatus, and the Door
                 the proxy is answered with
   submissions.py  submit, mine, one, files, download, the SubmittedInput
-                submit takes, and the Submission, Result, GroupShown,
+                submit takes, and the Submission, Result, GroupShown, Points,
                 SubmittedFiles, GradingStatus and Show they return
+  boards.py     seen, organised, held, mark, unmark, written, and the
+                Standings, Key, Column, NotInView, Ranked, Cell,
+                OrganisedBoard, Marks, Points, UserOwner and TeamOwner they
+                return
   gradings.py   cancel, retry, rejudge, list, run_log, task_of, feed,
                 queue_depth, and the GradingRecord, Rejudged, FeedEntry,
                 Submitter, QueueDepth and GradingStatus they return; list
@@ -165,7 +169,10 @@ rules of an upload's slot and parts. `grading.py` holds what a grading run
 is, its two secrets, its clock and the machine a plan must fit,
 `reports.py` what a run reports back and which results are kept,
 `exact_json.py` the JSON that keeps a result's numbers exactly as written,
-`showing.py` what a contestant is shown of a result and when, and
+`showing.py` what a contestant is shown of a result and when,
+`scoring.py` a result's credit, points and folded values, exact,
+`boards.py` a board ranked from scored results, `board_checks.py` what a
+board asks of the tasks it covers (T8, C4), and
 `contracts.py` checks a document against `schemas/`, a copy of the five
 contract files of the runner release the package pins, which the tests
 check against the runner's own when that repo is checked out beside this
@@ -494,6 +501,8 @@ hosting process calls are actions, marked `@action` from
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
 | `submissions` | `submit`, `mine`, `one`, `files`, `download` |
+| `boards` | `seen`, `organised` |
+| `marks` | `held`, `mark`, `unmark` |
 | `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
 | `runs` | `config`, `envelope`, `callback` |
 | `workflows` | `create` |
@@ -1501,6 +1510,36 @@ as a `QueueDepth` of `queued` and `dispatched`, by the status they read as:
 one overdue or lost reads as `system_error` and is not counted. Nothing
 stores the count.
 
+## Scores and boards
+
+Nothing scored is stored. A result keeps the run's raw facts, and every read
+scores it again (`services/scores.py`, `domain/scoring.py`, TASK-FORMAT.md
+sections 3.1 to 3.5): each test's credit, each group's points
+`worth * late * E_g / W` and most `worth * R_g / W`, and each reported value
+folded over the tests, all as exact rationals, a value written `0.1` read
+as one tenth. A grading is scored with the latest publication's groups,
+credit and value meanings while no grading change came between them, and
+with its own otherwise. Relative credit's best is taken over every
+candidate of the task graded under the same plan. A submission is read
+with its points shown and those still decided at the reveal.
+
+`boards.seen(session, contest)` gives every board the reader's audience
+sees, a visitor reading with no session; `boards.organised(organiser,
+contest, row=)` gives every board as `now` and `final`, every row, or `now`
+as a picked row sees it, beside what the boards ask of their tasks that
+does not hold. A board is ranked on read (`domain/boards.py`) over the
+contest's rows, each approved contestant in no team and each team with a
+member: which submission counts per row and task (`best`,
+`best_per_group`, `marked`), its keys in turn, ties sharing a rank. A
+submission still grading, stopped by a step that is not sealed, or
+cancelled is no attempt; a regrade in progress leaves the earlier attempt
+counting. `marks.mark`, `unmark` and `held` keep a row's marks for the
+`marked` boards in `marks`, at most the task's `marks`, frozen at the row's
+close. A task's save is refused where a board covering it asks what it does
+not give (T8) and reports the boards it moves (T9); a contest's save is
+refused where a board asks what its tasks do not give (C4), or lowers a
+task's `marks` below what a row holds (C1).
+
 ## Errors
 
 Every error has a stable `code` and a `detail` for a person, and some carry
@@ -1529,6 +1568,7 @@ structured members in `extra`:
 | `UploadLimit` | `upload_limit` | `limit`, the open uploads one person may hold for a task, and `bytes`, what they may declare together |
 | `InvalidInputs` | `invalid_inputs` | `errors`, each `{"input", "message"}` |
 | `LogTooLarge` | `log_too_large` | `limit`, the most of a run log read, in bytes |
+| `MarkLimit` | `mark_limit` | `limit`, the marks a row may hold on the task |
 
 The rest, `invalid_name`, `unauthenticated`, `session_expired`,
 `fresh_sign_in_required`, `sign_in_invalid`, `sign_in_denied`,
@@ -1544,16 +1584,17 @@ teams' refusals (above) and `team_changed`, and
 `ci_request_refused` (the CI's request does not verify or names no grading
 being started), `invalid_token` (a report without its grading's token),
 `grading_closed` (the grading takes no envelope or report now) and
-`invalid_callback` (a report that is not one), carry nothing beyond the
-detail. The refusals of an upload or a submit share the base class
+`invalid_callback` (a report that is not one), and the marks' `marks_off`
+(no marked board covers the task) and `marks_frozen` (the row's close has
+passed), carry nothing beyond the detail. The refusals of an upload or a submit share the base class
 `SubmitRefused`.
 
 ## The tables
 
-Nine tables, keyed by UUID v7 but for `names`, keyed by the id it names,
+Ten tables, keyed by UUID v7 but for `names`, keyed by the id it names,
 with every enumeration as `text` under a `CHECK`: `sessions`,
 `contestants`, `gradings`, `uploads`, `org_accounts`, `names`,
-`invites`, `teams` and `team_members`. They
+`invites`, `teams`, `team_members` and `marks`. They
 hold what a forge cannot: of users, orgs, contests and tasks only the names
 people gave the last three (above), the rest read live. `org_accounts` is
 one row per org, by the org's id, its service account's
@@ -1581,7 +1622,9 @@ size, digest, status, the id of its parts while they arrive, the submission
 that consumed it, and when its lifetime ends. An `invites` row is one
 invite: the scope's keys, what it grants, the username or the address it
 names, who it is for once known, who sent it, its token's SHA-256, its
-status, its expiry, when it was decided, and what became of its mail.
+status, its expiry, when it was decided, and what became of its mail. A
+`marks` row is one submission a row marked: the workspace, the task, the
+submission's number, and who marked it.
 `unicon-forge migrate` reads `UNICON_DATABASE_URL`, applies the migrations
 under `forge/db/alembic/` and exits. A deployment runs it before the host
 starts, from the host's image, which has the package and its command
