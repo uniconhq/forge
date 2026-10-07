@@ -13,6 +13,8 @@ from forge.domain.content import ConflictToken, FileSet, check_path
 from forge.domain.errors import InvalidName, InvalidPath, NotFound
 from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.names import (
+    USERNAME_MAX,
+    is_username,
     validate_contest_or_task_name,
     validate_name,
 )
@@ -49,6 +51,27 @@ def test_contest_and_task_names_stop_at_twenty_four() -> None:
     assert validate_name("a" * 40)
     with pytest.raises(InvalidName):
         validate_name("a" * 41)
+
+
+def test_a_username_follows_the_forges_rule() -> None:
+    for good in ("bob", "Ada.Lovelace", "unicon-ci-acme", "a_b-c.d", "7", "a" * USERNAME_MAX):
+        assert is_username(good), good
+    for bad in (
+        "",
+        "-bob",
+        "bob-",
+        "bo--b",
+        "bo._b",
+        "bob/repos",
+        "..",
+        "bob?x",
+        "bob#x",
+        "b%2Fc",
+        "b c",
+        "böb",
+        "a" * (USERNAME_MAX + 1),
+    ):
+        assert not is_username(bad), bad
 
 
 def test_a_role_at_an_org_reaches_every_contest_and_task_in_it() -> None:

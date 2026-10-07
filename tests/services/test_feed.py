@@ -175,6 +175,11 @@ async def test_the_feed_narrows_by_task_by_who_submitted_and_by_status(
     assert await ids(user="carol") == [busy["by_carol"]]
     assert await ids(user="bob", task=entered.task) == [busy["retried"], busy["first"]]
     assert await ids(user="nobody") == []
+    asked = len(acme.fake.calls_to("find_user_by_username"))
+    for malformed in ("bob/repos", "../bob", "bob?x", "", "b" * 41):
+        assert await ids(user=malformed) == []
+    # A name no one can hold is never sent to the forge.
+    assert len(acme.fake.calls_to("find_user_by_username")) == asked
     assert await ids(status=GradingStatus.SYSTEM_ERROR) == [busy["first"]]
     # Alone on its page, the first attempt is still not the latest.
     (stuck,) = await gradings.feed(setup, observer, SPRING, status=GradingStatus.SYSTEM_ERROR)

@@ -123,7 +123,7 @@ from forge.domain.ids import (
     new_id,
 )
 from forge.domain.live import Nudge, NudgeKind
-from forge.domain.names import TeamOwner, UserOwner
+from forge.domain.names import TeamOwner, UserOwner, is_username
 from forge.domain.publications import Publication
 from forge.domain.roles import (
     Role,
@@ -809,7 +809,8 @@ async def feed(
     first, at most `limit` of them and never more than 500: of one `task`,
     of the submissions of the contestant whose username is `user` or of the
     team `team`, and reading as `status`, each filter when given. A task,
-    contestant or team the organiser cannot see there gives none.
+    contestant or team the organiser cannot see there gives none, and so
+    does a `user` that breaks the forge's username rule (`is_username`).
     `Forbidden` for someone holding no role in the contest.
     """
     observed = _observed(organiser, contest)
@@ -819,6 +820,10 @@ async def feed(
             return ()
         where.append(Grading.task_id == task)
     if user is not None:
+        # A name no one can hold at the forge matches nobody, and is never
+        # sent there.
+        if not is_username(user):
+            return ()
         try:
             found = await ctx.forge.identity.find_user_by_username(user)
         except NotFound:
