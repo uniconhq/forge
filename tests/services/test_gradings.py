@@ -8,7 +8,8 @@ envelope (version 5, no stage, no secrets while no org holds one) is served
 once, with its key, to a run the CI holds that has not begun, and that fetch
 starts the run's clock. The callback takes reports only under the grading's
 own token, keeps a result that matches the schema exactly as it was written,
-its numbers included, makes a run stopped by a system error one with the
+its numbers included, with its run log for the organisers observing the task
+to read, up to a ceiling, makes a run stopped by a system error one with the
 result's error, and turns any other result into a system error saying why.
 A run that has not reported by its deadline reads as a system error, and so
 does one whose run the CI has lost, found by asking the CI when the grading
@@ -40,6 +41,8 @@ from forge.domain.errors import (
     GradingClosed,
     InvalidCallback,
     InvalidToken,
+    LogTooLarge,
+    Misconfigured,
     NotFound,
     Unavailable,
     WrongStatus,
@@ -52,6 +55,7 @@ from forge.domain.grading import (
     NEVER_STARTED,
     OVERDUE,
     REPORT_ALLOWANCE,
+    RUN_LOG_MAX,
     START_WAIT,
     GradingRun,
     GradingStatus,
@@ -172,6 +176,7 @@ def _result(envelope: dict[str, Any], **changes: Any) -> dict[str, Any]:
     result = {
         "schema_version": 5,
         "stopped": None,
+        "stopped_by": None,
         "tests": [{"test": "main/1", "outcome": "accepted", "values": {"time_ms": 12}}],
         "values": {"log": ""},
         "run_log": envelope["log_put"].split("?", 1)[0],
@@ -588,6 +593,56 @@ async def test_a_run_stopped_by_a_system_error_is_kept_as_one_with_its_error(
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
     (listed,) = await gradings.list(setup, manager, entered.task)
     assert (listed.status, listed.error) == (GradingStatus.SYSTEM_ERROR, after.error)
+
+
+async def test_an_organiser_observing_the_task_reads_a_run_log_and_nobody_else(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    row, envelope = await _running(setup, acme, entered)
+    observer = _held(acme, SUM, Role.OBSERVER)
+    with pytest.raises(NotFound) as unwritten:
+        await gradings.run_log(setup, observer, row.id)
+    assert unwritten.value.detail == gradings.NO_LOG
+
+    acme.fake.objects.put(envelope["log_put"], b"compile ok\n")
+    await _report(setup, row, _finished(_result(envelope)))
+
+    assert await gradings.run_log(setup, observer, row.id) == b"compile ok\n"
+    for stranger, grading in [
+        (_held(acme, Scope("other"), Role.ADMIN), row.id),
+        (observer, uuid.uuid4()),
+    ]:
+        with pytest.raises(NotFound) as refused:
+            await gradings.run_log(setup, stranger, grading)
+        assert refused.value.detail == gradings.NO_SUCH_GRADING
+
+
+async def test_a_run_log_over_the_ceiling_is_refused_and_a_failing_store_is_not_named(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row, envelope = await _running(setup, acme, entered)
+    await _report(setup, row, _finished(_result(envelope)))
+    observer = _held(acme, SUM, Role.OBSERVER)
+    acme.fake.objects.put(envelope["log_put"], b"x" * RUN_LOG_MAX)
+    assert len(await gradings.run_log(setup, observer, row.id)) == RUN_LOG_MAX
+
+    acme.fake.objects.put(envelope["log_put"], b"x" * (RUN_LOG_MAX + 1))
+    with pytest.raises(LogTooLarge) as refused:
+        await gradings.run_log(setup, observer, row.id)
+    assert refused.value.extra == {"limit": RUN_LOG_MAX}
+
+    for failure in (
+        Unavailable("the store answered 503 (SlowDown)"),
+        Misconfigured("the store answered 403 (InvalidAccessKeyId) for bucket logs"),
+    ):
+
+        async def down(*args: Any, failure: Exception = failure, **kwargs: Any) -> Any:
+            raise failure
+
+        monkeypatch.setattr(acme.fake.objects, "read", down)
+        with pytest.raises(Unavailable) as failed:
+            await gradings.run_log(setup, observer, row.id)
+        assert failed.value.detail == gradings.LOG_STORE_UNAVAILABLE
 
 
 async def test_a_report_needs_this_gradings_token(

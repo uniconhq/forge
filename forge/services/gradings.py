@@ -33,10 +33,15 @@ An organiser managing the task reads its gradings and acts on one:
   run is cancelled at the CI once the retry has committed, so it does not
   keep a machine's containers going;
 - `rejudge` makes a new attempt of every submission's latest attempt,
-  against the task's current publication.
+  against the task's current publication, as a save that publishes a
+  change to how the task grades does (`regrade`).
   A latest attempt still being graded against an older publication is
   cancelled first; one being graded against the current one is left to
-  finish.
+  finish;
+- `run_log` reads a grading's run log, for an organiser observing the
+  task: it names every test, hidden ones too, so it is the organisers'
+  alone. It is read whole up to `RUN_LOG_MAX` bytes and refused above
+  (`log_too_large`), and a store that fails is told in fixed words.
 
 A grading is named by its id, which is no access control: an organiser who
 does not observe the task is told there is no such grading. `task_of` gives
@@ -57,21 +62,26 @@ from forge.db.tables import Grading
 from forge.domain.errors import (
     Conflict,
     Forbidden,
+    LogTooLarge,
+    Misconfigured,
     NotFound,
     PortError,
     Rejected,
+    Unavailable,
     WrongStatus,
 )
 from forge.domain.grading import (
     AT_THE_CI,
     FINISHED,
     PLATFORM_POOL,
+    RUN_LOG_MAX,
     UNFINISHED,
     GradingRun,
     GradingStatus,
     RunState,
     callback_token,
     envelope_key,
+    log_key,
     overdue,
     token_hash,
     worth_asking,
@@ -102,6 +112,8 @@ from forge.services.credentials import CannotDecrypt
 log = get_logger(__name__)
 
 NO_SUCH_GRADING = "There is no such grading."
+NO_LOG = "This grading has no run log."
+LOG_STORE_UNAVAILABLE = "The run log could not be read; try again in a moment."
 LIST_LIMIT = 500
 RUN_STATE_KEPT = timedelta(seconds=15)
 """How long this process keeps the CI's answer about where one run is, so a
@@ -583,55 +595,7 @@ async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
     current = await published.task(ctx, task)
     if current is None:
         raise NotFound("The task has no publication to grade against.")
-    # Which runs the CI has lost is asked before any row is held, since
-    # asking takes the CI's time.
-    gone = await lost(
-        ctx,
-        (await ctx.db.execute(select(Grading).where(Grading.task_id == task))).scalars().all(),
-    )
-    rows = (
-        (
-            await ctx.db.execute(
-                select(Grading)
-                .where(Grading.task_id == task)
-                .order_by(Grading.submission_id, Grading.attempt)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    latest: dict[str, Grading] = {}
-    attempts: dict[str, builtins.list[Grading]] = {}
-    for row in rows:
-        latest[row.submission_id] = row
-        attempts.setdefault(row.submission_id, []).append(row)
-    queued = cancelled = left_running = 0
-    for submission, row in latest.items():
-        status = status_of(ctx, row, gone)
-        if status in UNFINISHED:
-            if row.publication_id == current.publication.id:
-                left_running += 1
-                continue
-            _stop_quietly(ctx, row)
-            cancelled += 1
-        elif GradingStatus(row.status) in UNFINISHED:
-            finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=overdue_of(ctx, row, gone))
-            if row.run_id is not None:
-                _cancel_after_commit(ctx, RunId(row.run_id))
-        _next_attempt(ctx, row, current.publication.id, attempts[submission])
-        queued += 1
-    await ctx.db.flush()
-    log.info(
-        "gradings.rejudged",
-        task=task,
-        publication=current.publication.id,
-        queued=queued,
-        cancelled=cancelled,
-        left_running=left_running,
-    )
-    return Rejudged(task, current.publication.id, queued, cancelled, left_running)
+    return await regrade(ctx, task, current.publication.id)
 
 
 @action
@@ -656,6 +620,47 @@ async def list(
     )
     gone = await lost(ctx, rows)
     return tuple(record(ctx, row, gone) for row in rows)
+
+
+@action
+async def run_log(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> bytes:
+    """The log of the grading's run, for an organiser observing its task.
+    `NotFound` for a grading whose task they do not observe, or one with no
+    log, `LogTooLarge` for a log over `RUN_LOG_MAX` bytes, which is never
+    read whole, and `Unavailable` when the store fails.
+    """
+    row = await find(ctx, grading)
+    if row is None or not holds(organiser.grants, task_scope(TaskId(row.task_id)), Role.OBSERVER):
+        raise NotFound(NO_SUCH_GRADING)
+    if row.log_key is None:
+        raise NotFound(NO_LOG)
+    key = log_key(row.id, row.attempt)
+    await ctx.let_go()
+    try:
+        return await ctx.forge.objects.read(key, max_size=RUN_LOG_MAX)
+    except NotFound as exc:
+        log.warning("gradings.log_missing", grading=str(grading))
+        raise NotFound(NO_LOG) from exc
+    except Misconfigured as exc:
+        raise _log_failure(exc, grading) from None
+    except Rejected as exc:
+        log.warning("gradings.log_too_large", grading=str(grading), detail=exc.detail)
+        raise LogTooLarge(
+            f"The run log is larger than the {RUN_LOG_MAX} bytes shown.", limit=RUN_LOG_MAX
+        ) from None
+    except PortError as exc:
+        raise _log_failure(exc, grading) from None
+
+
+def _log_failure(exc: PortError, grading: uuid.UUID) -> Unavailable:
+    """What an organiser is told when the log store fails, in fixed words.
+    What the store said goes to the log; its own codes name buckets and
+    keys.
+    """
+    log.warning(
+        "gradings.log_unreadable", grading=str(grading), error=type(exc).__name__, detail=exc.detail
+    )
+    return Unavailable(LOG_STORE_UNAVAILABLE)
 
 
 def record(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> GradingRecord:
@@ -741,3 +746,63 @@ def _stop_quietly(ctx: Context, row: Grading) -> None:
     if GradingStatus(row.status) in AT_THE_CI and row.run_id is not None:
         _cancel_after_commit(ctx, RunId(row.run_id))
     finish(ctx, row, GradingStatus.CANCELLED)
+
+
+async def regrade(ctx: Context, task: TaskId, publication: PublicationId) -> Rejudged:
+    """A new attempt of every submission's latest attempt to the task,
+    against `publication`, for a rejudge and for a save that publishes a
+    change to how the task grades. A latest attempt still being graded
+    against another publication is cancelled first, and one being graded
+    against `publication` is left to finish; one that reads as finished only
+    because it is overdue or lost is ended first, its old run cancelled at
+    the CI once this has committed.
+    """
+    # Which runs the CI has lost is asked before any row is held, since
+    # asking takes the CI's time.
+    gone = await lost(
+        ctx,
+        (await ctx.db.execute(select(Grading).where(Grading.task_id == task))).scalars().all(),
+    )
+    rows = (
+        (
+            await ctx.db.execute(
+                select(Grading)
+                .where(Grading.task_id == task)
+                .order_by(Grading.submission_id, Grading.attempt)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    latest: dict[str, Grading] = {}
+    attempts: dict[str, builtins.list[Grading]] = {}
+    for row in rows:
+        latest[row.submission_id] = row
+        attempts.setdefault(row.submission_id, []).append(row)
+    queued = cancelled = left_running = 0
+    for submission, row in latest.items():
+        status = status_of(ctx, row, gone)
+        if status in UNFINISHED:
+            if row.publication_id == publication:
+                left_running += 1
+                continue
+            _stop_quietly(ctx, row)
+            cancelled += 1
+        elif GradingStatus(row.status) in UNFINISHED:
+            finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=overdue_of(ctx, row, gone))
+            if row.run_id is not None:
+                _cancel_after_commit(ctx, RunId(row.run_id))
+        _next_attempt(ctx, row, publication, attempts[submission])
+        queued += 1
+    await ctx.db.flush()
+    log.info(
+        "gradings.rejudged",
+        task=task,
+        publication=publication,
+        queued=queued,
+        cancelled=cancelled,
+        left_running=left_running,
+    )
+    return Rejudged(task, publication, queued, cancelled, left_running)

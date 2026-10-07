@@ -1,9 +1,11 @@
 """A contest's or a task's files, read and written as the organiser. Reading
 needs observer and writing manager, both made as the organiser's own
 identity; a stale token is a conflict; `contest.yaml` is refused whole when
-it is not valid, when it gives a worth or a due to a task that gives no
-points (C1), or when it moves a task's timeline behind what rows already did
-(C2), and a manager's change to an admin-only key is refused naming it, with
+it is not valid, when an entry names no task of the contest or gives a worth
+or a due to a task that gives no points (C1), or when it moves a task's
+timeline behind what rows already did or drops the entry of a task that
+opened or has submissions (C2), a contest never published moving freely,
+and a manager's change to an admin-only key is refused naming it, with
 nothing written either way; a task's write is its save; and a rollback
 writes the old content as a new change.
 """
@@ -25,7 +27,16 @@ from forge.runtime.setup import Setup
 from forge.services import files, publications, submissions
 from forge.services.access import Organiser
 from forge.services.publications import Published
-from tests.services.conftest import RUNNING, SPRING, Acme, Entered, organiser, upload
+from tests.services.conftest import (
+    RUNNING,
+    SPRING,
+    Acme,
+    Entered,
+    make_task,
+    organiser,
+    upload,
+    write_contest,
+)
 
 
 @pytest.fixture
@@ -403,6 +414,8 @@ async def test_an_end_moved_before_a_submission_or_later_after_the_reveal_is_ref
 async def test_a_task_the_contest_did_not_list_never_opened_so_its_entry_may_open_it_later(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
+    await make_task(setup, acme, "product")
+    await write_contest(acme.fake, _running(SUM_ENTRY).decode())
     listed = _running(SUM_ENTRY + "  - {id: product, release_at: 2026-09-26T13:00:00Z}\n")
 
     version = await _write_contest(setup, acme, listed)
@@ -410,3 +423,49 @@ async def test_a_task_the_contest_did_not_list_never_opened_so_its_entry_may_ope
     assert version
     entry = parse_contest(listed).entry("product")
     assert entry is not None and entry.release_at is not None
+
+
+async def test_an_entry_naming_no_task_of_the_contest_is_refused_at_its_id(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    added = await _refused(setup, acme, _running(SUM_ENTRY + "  - id: summ\n"))
+    misspelled = await _refused(setup, acme, _running("  - id: summ\n"))
+
+    assert added == [("tasks[1].id", "summ is not a task of this contest.")]
+    assert misspelled == [
+        ("tasks[0].id", "summ is not a task of this contest."),
+        ("tasks", "sum opened at 2026-09-26T10:00:00+00:00; it cannot be hidden again."),
+    ]
+
+
+async def test_an_entry_is_dropped_only_from_a_task_that_neither_opened_nor_has_submissions(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await make_task(setup, acme, "product")
+    await _submitted(setup, acme, entered)
+    product = b"  - id: product\n"
+    draft = _running(SUM_ENTRY).replace(b"state: published", b"state: draft")
+    await write_contest(acme.fake, (draft + product).decode())
+
+    refused = await _refused(setup, acme, draft.replace(SUM_ENTRY.encode(), product))
+    version = await _write_contest(setup, acme, draft)
+
+    assert refused == [("tasks", "sum has 1 submission; it cannot be hidden, so keep its entry.")]
+    assert version
+
+
+async def test_a_contest_that_was_never_published_moves_its_passed_dates_freely(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    draft = (
+        _running(SUM_ENTRY + "    closes: 2026-09-26T11:00:00Z\n")
+        .replace(b"state: published", b"state: draft")
+        .decode()
+    )
+    await write_contest(acme.fake, draft)
+
+    moved = draft.replace("2026-09-26T1", "2026-10-20T1").encode()
+    version = await _write_contest(setup, acme, moved)
+
+    assert version
+    assert parse_contest(moved).start.month == 10

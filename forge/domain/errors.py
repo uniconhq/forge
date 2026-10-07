@@ -354,6 +354,14 @@ class InvalidInputs(SubmitRefused):
     code = "invalid_inputs"
 
 
+class LogTooLarge(ServiceError):
+    """A run log is larger than the platform reads back for an organiser,
+    which no harness writes. `limit` is the most shown, in bytes.
+    """
+
+    code = "log_too_large"
+
+
 class InvalidIdempotencyKey(ServiceError):
     """A submit's idempotency key is missing or not the short random text a
     browser makes once per submit.
