@@ -261,9 +261,14 @@ async def save(
     notes = checked.compiled.notes
     if latest is not None and version == latest.version:
         return Published(latest.id, latest.number, latest.grading_changed, latest.changes, notes)
-    publication = await ctx.forge.workspaces.publish(
-        task, version, write_note(bool(changed), changed, checked.workflows, checked.compiled.held)
+    note = write_note(
+        bool(changed),
+        changed,
+        checked.workflows,
+        checked.compiled.held,
+        checked.compiled.measures,
     )
+    publication = await ctx.forge.workspaces.publish(task, version, note)
     number = await _number_of(ctx, task, publication)
     regraded = (await gradings.regrade(ctx, task, publication)).queued if changed else 0
     if latest is None:

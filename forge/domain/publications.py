@@ -5,10 +5,14 @@ is a short YAML document the package writes when it publishes and reads back
 when it lists them: whether the publication changed how the task grades,
 what changed, in words a person reads, which workflow each workflow name
 the task used was, by the forge's own id for it, so a later save can tell
-when the same name has come to mean another workflow, and what the task's
+when the same name has come to mean another workflow, what the task's
 sealed steps hold back until its reveal (`forge.domain.showing.Sealed`):
 the sealed steps that run once, whose stop is held back, and the values
-reported from sealed steps.
+reported from sealed steps; and what each per-test number the workflow
+reports means for the task (`forge.domain.scoring.Measure`), its fold, its
+direction with the task's values in and its bounds, as the workflow at its
+pinned version said when the task published, so a grading is scored and a
+board is checked without reading the workflow again.
 
     grading_changed: true
     changes:
@@ -17,6 +21,11 @@ reported from sealed steps.
       acme/sorting: "412"
     sealed_steps: [validate]
     sealed_values: [accuracy]
+    values:
+      time_ms: {fold: max, better: lower, at_least: "0"}
+
+A publication made before values were noted has none: its numbers are shown
+on their tests and fold into nothing until the task publishes again.
 """
 
 from collections.abc import Mapping
@@ -26,6 +35,7 @@ from datetime import datetime
 import yaml
 
 from forge.domain.ids import PublicationId, VersionId
+from forge.domain.scoring import Measure, measure_noted
 from forge.domain.showing import NOTHING_SEALED, Sealed
 
 
@@ -43,6 +53,7 @@ class Publication:
     at: datetime
     workflows: Mapping[str, str] = field(default_factory=dict)
     sealed: Sealed = NOTHING_SEALED
+    measures: Mapping[str, Measure] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +62,7 @@ class Note:
     changes: tuple[str, ...]
     workflows: Mapping[str, str] = field(default_factory=dict)
     sealed: Sealed = NOTHING_SEALED
+    measures: Mapping[str, Measure] = field(default_factory=dict)
 
 
 def write_note(
@@ -58,6 +70,7 @@ def write_note(
     changes: tuple[str, ...],
     workflows: Mapping[str, str] | None = None,
     sealed: Sealed = NOTHING_SEALED,
+    measures: Mapping[str, Measure] | None = None,
 ) -> str:
     """The note a publication is made with."""
     document: dict[str, object] = {"grading_changed": grading_changed, "changes": list(changes)}
@@ -67,11 +80,24 @@ def write_note(
         document["sealed_steps"] = sorted(sealed.steps)
     if sealed.values:
         document["sealed_values"] = sorted(sealed.values)
+    if measures:
+        document["values"] = {name: measures[name].noted() for name in sorted(measures)}
     return yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
 
 
 def _names(value: object) -> frozenset[str]:
     return frozenset(str(name) for name in value) if isinstance(value, list) else frozenset()
+
+
+def _measures(value: object) -> dict[str, Measure]:
+    if not isinstance(value, dict):
+        return {}
+    found: dict[str, Measure] = {}
+    for name, noted in value.items():
+        measure = measure_noted(noted)
+        if measure is not None:
+            found[str(name)] = measure
+    return found
 
 
 def read_note(text: str | None) -> Note:
@@ -95,4 +121,10 @@ def read_note(text: str | None) -> Note:
     sealed = Sealed(
         steps=_names(document.get("sealed_steps")), values=_names(document.get("sealed_values"))
     )
-    return Note(document.get("grading_changed") is True, listed, pinned, sealed)
+    return Note(
+        document.get("grading_changed") is True,
+        listed,
+        pinned,
+        sealed,
+        _measures(document.get("values")),
+    )
