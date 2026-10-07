@@ -31,7 +31,7 @@ SOURCE = b"print(sum(map(int, input().split())))\n"
 
 @pytest.fixture
 async def manager(setup: Setup, acme: Acme, spring: str) -> Organiser:
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     acme.fake.add_user(20, "cyd")
     return await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
 
@@ -40,6 +40,7 @@ async def manager(setup: Setup, acme: Acme, spring: str) -> Organiser:
 async def two_tasks(setup: Setup, acme: Acme, sum_task: TaskId, manager: Organiser) -> list[TaskId]:
     """sum and diff, both published."""
     diff = await make_task(setup, acme, "diff")
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone") + "  - id: diff\n")
     await publish(setup, acme, sum_task)
     await publish(setup, acme, diff)
     acme.fake.reset_calls()
@@ -58,7 +59,10 @@ async def _submit(setup: Setup, acme: Acme, user_id: int, task: TaskId) -> None:
         setup,
         session,
         task,
-        {"submission": SubmittedInput(uploads=(made.id,), language="python")},
+        {
+            "submission": SubmittedInput(uploads=(made.id,)),
+            "language": SubmittedInput(value="python"),
+        },
         idempotency_key="key-0001-aaaa",
     )
 

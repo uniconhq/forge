@@ -122,7 +122,10 @@ async def test_a_contestants_whole_path_to_a_graded_submission(
         one,
         await guard(),
         entered.task,
-        {"submission": SubmittedInput(uploads=(slot.id,), language="python")},
+        {
+            "submission": SubmittedInput(uploads=(slot.id,)),
+            "language": SubmittedInput(value="python"),
+        },
         idempotency_key="one-connection",
     )
     [read] = await submissions.mine(one, await guard(), entered.task)

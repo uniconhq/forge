@@ -1,6 +1,6 @@
 """What the organiser-path tests share: the org acme made with ada as its
 admin and its service account made, the built-in
-workflow `unicon/classic@v1` public at the fake as bootstrap makes it, a
+workflow `unicon/classic@v2` public at the fake as bootstrap makes it, a
 contest and a task made the way an organiser makes them, a checked
 `Organiser` for anyone, and what the fake holds, to compare before and after
 a create that failed. For the contestant's side: a session for anyone,
@@ -50,6 +50,8 @@ start: 2026-09-26T10:00:00Z
 end: 2026-09-26T15:00:00Z
 state: published
 visibility: {visibility}
+tasks:
+  - id: sum
 """
 
 
@@ -165,7 +167,7 @@ async def sum_task(setup: Setup, acme: Acme, spring: ContestId) -> TaskId:
 
 @dataclass(frozen=True, slots=True)
 class Entered:
-    """bob (8), approved in acme/spring, running and public, with the task
+    """bob (8), approved in acme/spring, running and for everyone, with the task
     sum published. His place to submit it is made at his first submit.
     """
 
@@ -175,7 +177,7 @@ class Entered:
 
 @pytest.fixture
 async def entered(setup: Setup, acme: Acme, sum_task: TaskId) -> Entered:
-    await write_contest(acme.fake, RUNNING.format(visibility="public"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     await publish(setup, acme, sum_task)
     bob = await signed_in(setup, acme.fake, 8)
     await contestants.register(setup, bob, SPRING)

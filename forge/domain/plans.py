@@ -1,80 +1,97 @@
-"""The plan a save compiles for each stage of a task, and what a publication
-compares to say whether it changed how the task grades.
+"""The plan a save compiles for a task, and what a publication compares to say
+whether it changed how the task grades (TASK-FORMAT.md sections 1.5 and 2).
 
-A plan is what grading reads (the runner's `plan.schema.json`, version 4):
-flat and fully resolved, so the harness never reads a workflow or a
-primitive's declaration. It names the harness image, the stage, the test
-list and the steps in the order they run, each with its primitive's image by
-digest and its limits, and the verdict block that says which step outputs
-fill the verdict. A step's container runs its image's own entrypoint. It is
-written into the task repo as `plans/<stage>.json` in the commit a
-publication names.
+A plan is what grading reads (the runner's `plan.schema.json`, version 5):
+the task's workflow with the task's values filled in, flat, so the harness
+never reads a workflow or a primitive's declaration and fills in only the
+contestant's values and the secrets. It names the harness image, every test
+of the task, the contestant's inputs as the workflow declares them, the
+steps in the order they run, each with its primitive's image by digest, its
+limits, whether it may reach the network and its declared outputs, and the
+workflow's report with each number's bounds. It is written into the task
+repo as `plans/plan.json` in the commit a publication names.
 
-The compiler takes the stage's workflow step by step. Each `use:` is the
-primitive whose declaration the save read, as the organiser saving, at the
-version named. Each `with` value becomes one value of the plan:
+Compiling has three parts, each refusing with every problem it finds:
 
-- a literal, or text with a setter's text, number or true-or-false input
-  written into it, is `{"value": ...}`;
-- `${{ inputs.<id> }}` naming a setter input is its value: a literal as
-  `{"value": ...}`, a file as `{"task": path}`, a `file[]` as the list of the
-  files directly in its folder, a dataset folder as every file under it;
-- naming a contestant input it is `{"submission": id}`, and
-  `${{ inputs.<id>.language }}` the language chosen for a code input;
-- `${{ steps.<id>.<output> }}` is an earlier step's output; inside a
-  `foreach`, a step of the same `foreach` is read for the same test, and from
-  a step that runs once, a step that runs per test gives its output over
-  every test;
-- `${{ item.<field> }}` is the file of that field of the current test.
+- `check_workflow`, what making a workflow version checks, needing only the
+  primitives its steps use: every port given and every value of the port's
+  type under the two widenings, every reference to an earlier step and a
+  declared output, `test.<field>` and per-test inputs only in per-test
+  steps, optional outputs and inputs only into optional ports, no
+  contestant input or step output into a port a limit is raised from, and
+  the report's types (W2).
+- `read_tests`, the task's tests from its folders `tests/<group>/<test>/`.
+- `compile_plan`, the task's values bound to the workflow's inputs (check 4),
+  every value written in, every limit raised and rounded up, the sealed
+  steps found (check 8, T5), the plan's fit against the run ceiling and the
+  machines it may run on (check 7), the credit checked against the report
+  (T3, T4), and the plan checked against the runner's contract, so a plan
+  the harness would refuse is never published.
 
-A `foreach` over a setter's `file[]` input runs the step once per test of
-that folder (`cases_of`), and a primitive that declares `batch: true` takes
-them all in one step. Every step with a `foreach` in one plan runs over the
-same list. The compiler checks what grading the built-in workflows needs:
-every input a step is given is one its primitive declares, every input it
-requires is given, every output a step or the verdict reads is one its step
-declares, and a value's type is the input's. The step's limits are the
-declaration's, raised by `limits_from` from values known at the save, and for
-a batch its time and CPU are summed over its tests.
+A limit raised past what a run or a machine allows is refused where its
+number came from: the task's input, the `test.yaml` of the test that gives
+the most, or the workflow when it writes the number itself; the run ceiling
+is blamed on the raised limit that adds the most time, and on the number of
+tests when no raised limit adds any.
 
-Checking every type, a workflow used as a step, and subtask overrides are
-feature 10's. Before it compiles, the compiler checks that every input the
-workflow declares is given by exactly one side of the task, with the type the
-workflow declares.
+A test's id is `<group>/<test>`, and the plan lists every test, groups in
+name order and tests in natural order within each (`2` before `10`), so
+reordering `test_groups` changes no plan. A per-test step over a primitive
+that takes a batch is one step with an item per test, and over any other
+one entry per test.
 """
 
 import json
 import math
 import re
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, PlainValidator, model_validator
 
+from forge.domain.contracts import violation
 from forge.domain.definitions import (
-    ContestantInput,
-    ResolvedStage,
-    SetterInput,
+    PUBLIC_FOLDER,
+    TESTS_FOLDER,
+    Relative,
+    Show,
     TaskDefinition,
+    form_problems,
 )
-from forge.domain.primitives import (
-    BATCH_SCALED,
-    IMAGE,
-    LIMIT_NAMES,
-    Port,
-    PortType,
-    PrimitiveDeclaration,
+from forge.domain.grading import BASE_WALL, STEP_OVERHEAD, WALL_CEILING, Machine
+from forge.domain.primitives import BATCH_SCALED, IMAGE, LIMIT_NAMES, Port, PrimitiveDeclaration
+from forge.domain.showing import NOTHING_SEALED, Sealed
+from forge.domain.types import FILES, SCALARS, Type
+from forge.domain.workflow_definition import (
+    BadReference,
+    Meaning,
+    Reference,
+    WorkflowDefinition,
+    WorkflowInput,
+    references,
+    whole_reference,
 )
-from forge.domain.workflow_definition import InputType, WorkflowDefinition, WorkflowStep
-from forge.domain.yaml_models import InvalidDefinition, Model, Problem, is_number, path_text
+from forge.domain.yaml_models import (
+    InvalidDefinition,
+    Model,
+    Problem,
+    is_number,
+    load_mapping,
+    path_text,
+)
 
-SCHEMA_VERSION: Literal[4] = 4
+SCHEMA_VERSION: Literal[5] = 5
+PLANS_FOLDER = "plans/"
+PLAN_PATH = "plans/plan.json"
 STEP_ID = r"^[a-z0-9][a-z0-9_-]*$"
-PRIMITIVE = r"^[a-z0-9][a-z0-9_-]*@[A-Za-z0-9][A-Za-z0-9._-]*$"
-TEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-FIELDS = {"in": "input", "ans": "answer", "out": "answer"}
-VERDICT_TESTS = ("time_ms", "memory_kb")
+PRIMITIVE = r"^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_-]*@[A-Za-z0-9][A-Za-z0-9._-]*$"
+TEST_ID = re.compile(r"^[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$")
+TEST_ID_MAX = 255
+NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+TEST_FILE = "test.yaml"
+SECRET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 def _image(value: object) -> str:
@@ -86,26 +103,39 @@ def _image(value: object) -> str:
 Image = Annotated[str, PlainValidator(_image)]
 
 
+def _scalar(value: object) -> bool:
+    return isinstance(value, str | bool) or is_number(value)
+
+
+def _submission(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"submission"}
+        and isinstance(value["submission"], str)
+    )
+
+
 def _plan_value(value: object) -> dict[str, Any]:
     """One value of a step's inputs, in exactly one of the plan's shapes."""
     if not isinstance(value, dict):
         raise ValueError("a value is a mapping")
     keys = set(value)
-    if keys == {"value"} and (isinstance(value["value"], str | bool) or is_number(value["value"])):
+    if keys == {"value"} and _scalar(value["value"]):
         return value
-    if keys == {"task"} and (
-        isinstance(value["task"], str)
-        or (isinstance(value["task"], list) and all(isinstance(p, str) for p in value["task"]))
-    ):
+    if keys == {"task"} and isinstance(value["task"], str):
+        return value
+    if _submission(value):
+        return value
+    if keys == {"secret"} and isinstance(value["secret"], str):
+        return value
+    if keys == {"step", "output"} and all(isinstance(value[key], str) for key in keys):
         return value
     if (
-        keys in ({"submission"}, {"submission", "field"})
-        and isinstance(value["submission"], str)
-        and value.get("field", "language") == "language"
-    ):
-        return value
-    if keys in ({"step", "output"}, {"step", "output", "test"}) and all(
-        isinstance(value[key], str) for key in keys
+        keys == {"template", "parts"}
+        and isinstance(value["template"], str)
+        and isinstance(value["parts"], list)
+        and value["parts"]
+        and all(_submission(part) for part in value["parts"])
     ):
         return value
     raise ValueError(f"{value!r} is not a value a plan holds")
@@ -113,6 +143,7 @@ def _plan_value(value: object) -> dict[str, Any]:
 
 Value = Annotated[dict[str, Any], PlainValidator(_plan_value)]
 Inputs = dict[str, Value]
+TestId = Annotated[str, Field(pattern=TEST_ID.pattern, max_length=TEST_ID_MAX)]
 
 
 class StepLimits(Model):
@@ -121,10 +152,11 @@ class StepLimits(Model):
     memory_mb: Annotated[int, Field(ge=1)]
     pids: Annotated[int, Field(ge=1)]
     output_mb: Annotated[int, Field(ge=1)]
+    gpus: Annotated[int, Field(ge=0)]
 
 
 class BatchItem(Model):
-    test: Annotated[str, Field(pattern=TEST_ID.pattern)]
+    test: TestId
     inputs: Inputs
 
 
@@ -136,9 +168,12 @@ class PlanStep(Model):
     id: Annotated[str, Field(pattern=STEP_ID)]
     primitive: Annotated[str, Field(pattern=PRIMITIVE)]
     image: Image
+    network: bool
     limits: StepLimits
+    outputs: dict[str, str]
+    folders: tuple[str, ...] | None = None
     inputs: Inputs | None = None
-    test: Annotated[str, Field(pattern=TEST_ID.pattern)] | None = None
+    test: TestId | None = None
     batch: tuple[BatchItem, ...] | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
@@ -150,31 +185,30 @@ class PlanStep(Model):
         return self
 
 
-class Reference(Model):
+class ContestantInput(Model):
+    """A contestant's input as the workflow declares it."""
+
+    type: Type
+    options: tuple[str, ...] | None = None
+    per_test: Literal[True] | None = None
+
+
+class ReportEntry(Model):
     step: Annotated[str, Field(pattern=STEP_ID)]
     output: Annotated[str, Field(min_length=1)]
-
-
-class VerdictBlock(Model):
-    """Which step outputs fill the verdict: its outcome, its named metrics,
-    each test's time and memory, and its summary.
-    """
-
-    outcome: Reference
-    metrics: dict[str, Reference] | None = None
-    tests: dict[Literal["time_ms", "memory_kb"], Reference] | None = None
-    summary: Reference | None = None
+    at_least: int | float | None = None
+    at_most: int | float | None = None
 
 
 class Plan(Model):
-    """One stage's plan, in the shape of the runner's plan schema version 4."""
+    """A task's plan, in the shape of the runner's plan schema version 5."""
 
-    schema_version: Literal[4] = SCHEMA_VERSION
+    schema_version: Literal[5] = SCHEMA_VERSION
     harness_image: Image
-    stage: Annotated[str, Field(min_length=1)]
-    tests: tuple[Annotated[str, Field(pattern=TEST_ID.pattern)], ...] = ()
+    tests: tuple[TestId, ...] = Field(min_length=1)
+    contestant: dict[str, ContestantInput] = Field(default_factory=dict)
     steps: tuple[PlanStep, ...] = Field(min_length=1)
-    verdict: VerdictBlock
+    report: dict[str, ReportEntry] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _unique_steps(self) -> Plan:
@@ -194,13 +228,17 @@ class Plan(Model):
     def from_bytes(cls, data: bytes) -> Plan:
         return cls.model_validate_json(data)
 
-
-PLANS_FOLDER = "plans/"
-
-
-def plan_path(stage: str) -> str:
-    """Where a stage's plan is committed in the task repo."""
-    return f"{PLANS_FOLDER}{stage}.json"
+    def task_paths(self) -> tuple[str, ...]:
+        """Every file or folder of the publication a value names, sorted; a
+        folder ends in `/`.
+        """
+        found: set[str] = set()
+        for step in self.steps:
+            for inputs in [step.inputs] if step.inputs is not None else []:
+                found.update(value["task"] for value in inputs.values() if "task" in value)
+            for item in step.batch or ():
+                found.update(value["task"] for value in item.inputs.values() if "task" in value)
+        return tuple(sorted(found))
 
 
 def is_reserved(path: str) -> bool:
@@ -210,7 +248,7 @@ def is_reserved(path: str) -> bool:
     return path == PLANS_FOLDER.rstrip("/") or path.startswith(PLANS_FOLDER)
 
 
-def _natural(text: str) -> tuple[tuple[int, int, str], ...]:
+def natural(text: str) -> tuple[tuple[int, int, str], ...]:
     """A key that orders text with the numbers in it compared as numbers."""
     return tuple(
         (0, int(part), part) if part.isdigit() else (1, 0, part)
@@ -219,372 +257,989 @@ def _natural(text: str) -> tuple[tuple[int, int, str], ...]:
     )
 
 
+def spelled(value: object) -> str:
+    """A scalar's one spelling as text: a boolean as `true` or `false`, a
+    number as the shortest decimal equal to it, no exponent and no trailing
+    zeros, an integer without a point; text and an enum's word as they are.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        number = Decimal(repr(value))
+        if number == number.to_integral_value():
+            return str(int(number))
+        return format(number.normalize(), "f")
+    return str(value)
+
+
+def path_problem(value: object, *, folder: bool) -> str | None:
+    """What is wrong with `value` as a path in the task repo, if anything; a
+    folder's path ends in `/` and a file's does not.
+    """
+    if not isinstance(value, str) or not value:
+        return "Must be a path in the task repo, such as data/ or checker/checker.cpp."
+    if value.startswith("/") or "\\" in value:
+        return "Must be a path from the top of the task repo, with forward slashes."
+    if any(part in ("", ".", "..") for part in value.removesuffix("/").split("/")):
+        return "Must not have empty, . or .. parts."
+    if folder and not value.endswith("/"):
+        return "Names a folder, so it ends with /, such as data/."
+    if not folder and value.endswith("/"):
+        return "Names one file, so it does not end with /."
+    return None
+
+
+def has_path(paths: Collection[str], path: str) -> bool:
+    """Whether `path` is in the state: a file by its path, a folder when some
+    file is under it.
+    """
+    if path.endswith("/"):
+        return any(found.startswith(path) for found in paths)
+    return path in paths
+
+
+# The tests
+
+
 @dataclass(frozen=True, slots=True)
-class Case:
-    """One test of a `foreach` list: its id, the stem its files share, and
-    the path of each of its fields' files.
+class TestCase:
+    """One test: its id `<group>/<test>`, its group and name, the path of the
+    entry for each file or folder field (a folder's ending in `/`), and the
+    value of each scalar field from its `test.yaml`.
     """
 
     id: str
-    files: Mapping[str, str]
+    group: str
+    name: str
+    entries: Mapping[str, str]
+    scalars: Mapping[str, object]
 
 
-def cases_of(folder: str, paths: Collection[str]) -> tuple[list[Case], list[str]]:
-    """The tests a `file[]` folder holds among `paths`, in order, and a
-    sentence for each thing wrong with them. The files directly in the folder,
-    hidden ones and ones without an ending left out, are grouped by stem:
-    `1.in` and `1.ans` are the test `1` with the fields `input` and `answer`.
-    `.out` is an `answer` too, and any other ending `x` the field `x`.
+def test_yaml_paths(paths: Collection[str]) -> list[str]:
+    """Every `tests/<group>/<test>/test.yaml` in the state, which the save
+    reads before it reads the tests.
     """
-    grouped: dict[str, dict[str, str]] = {}
-    problems: list[str] = []
-    for path in sorted(paths):
-        if not path.startswith(folder):
-            continue
-        name = path.removeprefix(folder)
-        if "/" in name or name.startswith(".") or "." not in name:
-            continue
-        stem, ending = name.rsplit(".", 1)
-        field = FIELDS.get(ending, ending)
-        files = grouped.setdefault(stem, {})
-        if field in files:
-            problems.append(f"The test {stem} has two {field} files in {folder}.")
-            continue
-        files[field] = path
-    tests = []
-    for stem in sorted(grouped, key=_natural):
-        if not TEST_ID.match(stem):
-            problems.append(
-                f"{stem!r} in {folder} is not a test name: letters, digits, dots, hyphens and "
-                "underscores, starting with a letter or a digit."
-            )
-            continue
-        tests.append(Case(id=stem, files=grouped[stem]))
-    return tests, problems
-
-
-def _files_directly_in(folder: str, paths: Collection[str]) -> list[str]:
     return sorted(
-        (
-            path
-            for path in paths
-            if path.startswith(folder)
-            and "/" not in path.removeprefix(folder)
-            and not path.removeprefix(folder).startswith(".")
-        ),
-        key=_natural,
+        path
+        for path in paths
+        if path.startswith(TESTS_FOLDER)
+        and path.count("/") == 3
+        and path.rsplit("/", 1)[1] == TEST_FILE
     )
 
 
-def _files_under(folder: str, paths: Collection[str]) -> list[str]:
-    return sorted((path for path in paths if path.startswith(folder)), key=_natural)
+def read_tests(
+    paths: Collection[str],
+    fields: Mapping[str, Any],
+    test_yamls: Mapping[str, bytes],
+) -> tuple[list[TestCase], list[Problem]]:
+    """The tests under `tests/` among `paths`, the files of the state, in the
+    plan's order, each holding one entry per field the workflow's `test`
+    block declares, and a problem at each folder or file that breaks the
+    layout. `test_yamls` holds the content of every `test.yaml`. A file or
+    folder whose name starts with a dot is left out.
+    """
+    problems: list[Problem] = []
+    found: dict[tuple[str, str], dict[str, list[str]]] = {}
+    for path in sorted(paths):
+        if not path.startswith(TESTS_FOLDER):
+            continue
+        parts = path.removeprefix(TESTS_FOLDER).split("/")
+        if any(part.startswith(".") for part in parts):
+            continue
+        if len(parts) < 3:
+            where = "tests/" if len(parts) == 1 else f"tests/{parts[0]}/"
+            problems.append(
+                Problem(
+                    path=path,
+                    message=f"{where} holds only folders: tests/<group>/<test>/ and the "
+                    "test's entries in it.",
+                )
+            )
+            continue
+        group, test, entry = parts[0], parts[1], parts[2]
+        name = entry.split(".", 1)[0]
+        folder = len(parts) > 3
+        entries = found.setdefault((group, test), {})
+        key = f"{entry}/" if folder else entry
+        if key not in entries.setdefault(name, []):
+            entries[name].append(key)
+    tests: list[TestCase] = []
+    for (group, test), entries in sorted(
+        found.items(), key=lambda pair: (pair[0][0], natural(pair[0][1]))
+    ):
+        where = f"tests/{group}/{test}/"
+        bad_name = [part for part in (group, test) if not NAME.match(part)]
+        if bad_name:
+            problems.append(
+                Problem(
+                    path=where, message=f"{bad_name[0]!r} is not a name: letters, digits, _ and -."
+                )
+            )
+            continue
+        if len(f"{group}/{test}") > TEST_ID_MAX:
+            problems.append(
+                Problem(
+                    path=where,
+                    message=f"A test's id, <group>/<test>, is at most {TEST_ID_MAX} characters; "
+                    f"this one has {len(group) + 1 + len(test)}.",
+                )
+            )
+            continue
+        made = _test(group, test, entries, fields, test_yamls.get(f"{where}{TEST_FILE}"), problems)
+        if made is not None:
+            tests.append(made)
+    return tests, problems
 
 
-_WHOLE = re.compile(r"^\s*\$\{\{\s*([^{}]*?)\s*\}\}\s*$")
-_ANY = re.compile(r"\$\{\{\s*([^{}]*?)\s*\}\}")
-_SETTER_PART = re.compile(r"^inputs\.([A-Za-z0-9_-]+)$")
+def _test(
+    group: str,
+    test: str,
+    entries: Mapping[str, list[str]],
+    fields: Mapping[str, Any],
+    test_yaml: bytes | None,
+    problems: list[Problem],
+) -> TestCase | None:
+    where = f"tests/{group}/{test}/"
+    before = len(problems)
+    files: dict[str, str] = {}
+    scalars: dict[str, object] = {}
+    scalar_fields = {name: kind for name, kind in fields.items() if kind.type in SCALARS}
+    for name, found in entries.items():
+        if name == "test" and found == [TEST_FILE]:
+            continue
+        declared = fields.get(name)
+        if declared is None or declared.type in SCALARS:
+            problems.append(
+                Problem(
+                    path=f"{where}{found[0]}",
+                    message=f"The test {group}/{test} has an entry for no field: {found[0]}.",
+                )
+            )
+            continue
+        if len(found) > 1:
+            problems.append(
+                Problem(
+                    path=where,
+                    message=f"The test {group}/{test} gives {name} twice: {', '.join(found)}.",
+                )
+            )
+            continue
+        is_folder = found[0].endswith("/")
+        if is_folder != (declared.type is Type.FOLDER):
+            wanted = "a folder" if declared.type is Type.FOLDER else "a file"
+            problems.append(
+                Problem(path=f"{where}{found[0]}", message=f"{name} is {wanted} field.")
+            )
+            continue
+        files[name] = f"{where}{found[0]}"
+    for name, declared in fields.items():
+        if declared.type in FILES and name not in files and name not in entries:
+            problems.append(Problem(path=where, message=f"The test {group}/{test} has no {name}."))
+    has_yaml = "test" in entries and TEST_FILE in entries["test"]
+    if has_yaml and not scalar_fields:
+        problems.append(
+            Problem(
+                path=f"{where}{TEST_FILE}",
+                message="The workflow's tests have no text, number, true-or-false or enum "
+                "field, so a test has no test.yaml.",
+            )
+        )
+    elif scalar_fields:
+        scalars = _scalars(where, scalar_fields, test_yaml if has_yaml else None, problems)
+    if len(problems) > before:
+        return None
+    return TestCase(f"{group}/{test}", group, test, files, scalars)
+
+
+def _scalars(
+    where: str, fields: Mapping[str, Any], text: bytes | None, problems: list[Problem]
+) -> dict[str, object]:
+    at = f"{where}{TEST_FILE}"
+    if text is None:
+        problems.append(
+            Problem(path=where, message=f"The test needs a test.yaml giving {', '.join(fields)}.")
+        )
+        return {}
+    try:
+        document = load_mapping(TEST_FILE, text)
+    except InvalidDefinition as invalid:
+        problems.append(Problem(path=at, message=invalid.errors[0]["message"]))
+        return {}
+    found: dict[str, object] = {}
+    for key in sorted(set(document) - set(fields)):
+        problems.append(Problem(path=at, message=f"{key} is not a field of the workflow's tests."))
+    for name, declared in fields.items():
+        if name not in document:
+            problems.append(Problem(path=at, message=f"{name} is not given."))
+            continue
+        problem = _scalar_problem(declared.type, declared.options, document[name])
+        if problem is not None:
+            problems.append(Problem(path=at, message=f"{name}: {problem}"))
+            continue
+        found[name] = document[name]
+    return found
+
+
+def _scalar_problem(kind: Type, options: Sequence[str] | None, value: object) -> str | None:
+    match kind:
+        case Type.TEXT:
+            return None if isinstance(value, str) else "Must be text."
+        case Type.NUMBER:
+            return None if is_number(value) else "Must be a number."
+        case Type.BOOLEAN:
+            return None if isinstance(value, bool) else "Must be true or false."
+        case Type.ENUM:
+            return (
+                None if value in (options or ()) else f"Must be one of {', '.join(options or ())}."
+            )
+    return "Must be a value of its type."
+
+
+def group_problems(
+    task: TaskDefinition, tests: Sequence[TestCase], paths: Collection[str]
+) -> list[Problem]:
+    """Check 5's groups and T2's test weights: every subfolder of `tests/` a
+    key of `test_groups`, every key a subfolder holding a test, and every
+    test weight naming a test of its group.
+    """
+    problems: list[Problem] = []
+    if not any(path.startswith(TESTS_FOLDER) for path in paths):
+        problems.append(
+            Problem(
+                path="test_groups",
+                message="The task has no tests/ folder: add tests/<group>/<test>/.",
+            )
+        )
+        return problems
+    by_group: dict[str, list[str]] = {}
+    for test in tests:
+        by_group.setdefault(test.group, []).append(test.name)
+    folders = {
+        path.removeprefix(TESTS_FOLDER).split("/", 1)[0]
+        for path in paths
+        if path.startswith(TESTS_FOLDER) and "/" in path.removeprefix(TESTS_FOLDER)
+    }
+    folders = {folder for folder in folders if not folder.startswith(".")}
+    test_folders: dict[str, set[str]] = {}
+    for path in paths:
+        parts = path.removeprefix(TESTS_FOLDER).split("/")
+        if (
+            path.startswith(TESTS_FOLDER)
+            and len(parts) >= 3
+            and not any(part.startswith(".") for part in parts)
+        ):
+            test_folders.setdefault(parts[0], set()).add(parts[1])
+    for folder in sorted(folders - set(task.test_groups)):
+        problems.append(
+            Problem(
+                path=f"tests/{folder}/",
+                message=f"{folder} is a folder of tests/ but not a group in test_groups: list it, "
+                "or move its tests.",
+            )
+        )
+    for name, group in task.test_groups.items():
+        if name not in folders:
+            problems.append(
+                Problem(
+                    path=f"test_groups.{name}",
+                    message=f"There is no folder tests/{name}/ with a test in it.",
+                )
+            )
+            continue
+        # A test folder `read_tests` refused for its layout is still a test
+        # of its group here, so its problem is not said twice.
+        if not by_group.get(name) and not test_folders.get(name):
+            problems.append(
+                Problem(path=f"test_groups.{name}", message=f"tests/{name}/ holds no test.")
+            )
+        for weighted in sorted((group.test_weights or {}).keys()):
+            if weighted not in by_group.get(name, []) and weighted not in test_folders.get(
+                name, set()
+            ):
+                problems.append(
+                    Problem(
+                        path=f"test_groups.{name}.test_weights.{weighted}",
+                        message=f"{name}/{weighted} is not a test of {name}.",
+                    )
+                )
+    return problems
+
+
+# Checking a workflow against its primitives
 
 
 @dataclass(frozen=True, slots=True)
 class Kind:
-    """What a resolved value is, for checking it against the input it is
-    given to: its type, the values it may take when it is an enum, and
-    whether it is one value per test.
+    """What a value is, to check it against the port it is given to: its
+    type, the options it may take when it is an enum, and where it came from.
     """
 
-    type: PortType
-    values: frozenset[str] | None = None
-    per_test: bool = False
+    type: Type
+    options: frozenset[str] | None = None
+    source: Literal["literal", "input", "contestant", "test", "step", "text"] = "literal"
+    optional: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class _Compiled:
-    declaration: PrimitiveDeclaration
-    per_test: bool
+def check_workflow(
+    workflow: WorkflowDefinition, primitives: Mapping[str, PrimitiveDeclaration]
+) -> list[Problem]:
+    """Every problem with the workflow as a version, each at its path in
+    `workflow.yaml`. `primitives` holds the declaration of every `use:` that
+    is a primitive, by the reference as text; a `use:` not in it is refused
+    as not a primitive.
+    """
+    problems: list[Problem] = []
+    outputs: dict[str, tuple[PrimitiveDeclaration, bool]] = {}
+    for index, step in enumerate(workflow.steps):
+        where: tuple[str | int, ...] = ("steps", index)
+        declaration = primitives.get(str(step.use))
+        if declaration is None:
+            problems.append(
+                Problem(path=path_text((*where, "use")), message=f"{step.use} is not a primitive.")
+            )
+            continue
+        for name in sorted(set(step.with_) - set(declaration.inputs)):
+            problems.append(
+                Problem(
+                    path=path_text((*where, "with", name)),
+                    message=f"{step.use} has no input {name}.",
+                )
+            )
+        for name, port in declaration.inputs.items():
+            if not port.optional and name not in step.with_:
+                problems.append(
+                    Problem(
+                        path=path_text((*where, "with")),
+                        message=f"{step.use} needs the input {name}.",
+                    )
+                )
+        raised = {source.input for source in declaration.limits_from.values()}
+        for name, raw in step.with_.items():
+            given = declaration.inputs.get(name)
+            if given is None:
+                continue
+            try:
+                _check_value(workflow, outputs, step.per_test, raw, given, name in raised)
+            except _Refused as refused:
+                problems.append(
+                    Problem(path=path_text((*where, "with", name)), message=str(refused))
+                )
+        outputs[step.id] = (declaration, step.per_test)
+    for name, entry in workflow.report.items():
+        try:
+            _check_report(entry, outputs)
+        except _Refused as refused:
+            problems.append(Problem(path=path_text(("report", name)), message=str(refused)))
+    return problems
 
 
 class _Refused(Exception):
     """One problem with a value, said in a sentence."""
 
 
-class _Skipped(Exception):
-    """A value reads a step that failed to compile, whose problem is already
-    reported, so nothing more is said about it.
+def _kind_of(
+    workflow: WorkflowDefinition,
+    outputs: Mapping[str, tuple[PrimitiveDeclaration, bool]],
+    per_test: bool,
+    found: Reference,
+) -> Kind:
+    match found.kind:
+        case "inputs":
+            declared = workflow.inputs.get(found.name)
+            if declared is None:
+                raise _Refused(f"{found.name} is not an input of the workflow.")
+            if declared.per_test and not per_test:
+                raise _Refused(
+                    f"{found.name} is given once per test, so only a per-test step reads it."
+                )
+            options = frozenset(declared.options) if declared.options else None
+            source: Literal["input", "contestant"] = (
+                "contestant" if declared.contestant else "input"
+            )
+            return Kind(declared.type, options, source, declared.optional)
+        case "test":
+            field_ = workflow.test.get(found.name)
+            if field_ is None:
+                raise _Refused(f"{found.name} is not a field of the workflow's tests.")
+            if not per_test:
+                raise _Refused("test.<field> is there only in a step that runs per test.")
+            options = frozenset(field_.options) if field_.options else None
+            return Kind(field_.type, options, "test")
+    assert found.output is not None
+    known = outputs.get(found.name)
+    if known is None:
+        raise _Refused(f"{found.name} is not a step before this one.")
+    declaration, step_per_test = known
+    port = declaration.outputs.get(found.output)
+    if port is None:
+        raise _Refused(f"The step {found.name} has no output {found.output}.")
+    if step_per_test and not per_test:
+        raise _Refused(
+            f"The step {found.name} runs per test, and a step that runs once cannot read it."
+        )
+    if port.type is Type.OUTCOME:
+        raise _Refused("A step's outcome is read by the harness, not given to another step.")
+    options = frozenset(port.options) if port.options else None
+    return Kind(port.type, options, "step", port.optional)
+
+
+def _check_value(
+    workflow: WorkflowDefinition,
+    outputs: Mapping[str, tuple[PrimitiveDeclaration, bool]],
+    per_test: bool,
+    raw: object,
+    port: Port,
+    raises_limit: bool,
+) -> None:
+    kind = _raw_kind(workflow, outputs, per_test, raw)
+    if raises_limit and kind.source in ("contestant", "step", "text"):
+        if kind.source == "contestant":
+            raise _Refused(
+                "This port raises a limit, so the task must give it, not the contestant."
+            )
+        raise _Refused("This port raises a limit, so it must be known at the save.")
+    if kind.optional and not port.optional:
+        if kind.source == "step":
+            raise _Refused("The output may be absent, so it feeds only an optional port.")
+        raise _Refused("The input is optional, so it feeds only an optional port.")
+    _fits(kind, port, raw)
+
+
+def _raw_kind(
+    workflow: WorkflowDefinition,
+    outputs: Mapping[str, tuple[PrimitiveDeclaration, bool]],
+    per_test: bool,
+    raw: object,
+) -> Kind:
+    if isinstance(raw, bool):
+        return Kind(Type.BOOLEAN)
+    if is_number(raw):
+        return Kind(Type.NUMBER)
+    if raw is None or isinstance(raw, list | dict):
+        raise _Refused(
+            "Must be text, a number, true or false, or a ${{ }} reference; not a list, a "
+            "mapping or nothing."
+        )
+    if not isinstance(raw, str):
+        raise _Refused("Must be text, a number, true or false, or a ${{ }} reference.")
+    try:
+        whole = whole_reference(raw)
+        written = references(raw) if whole is None else []
+    except BadReference as bad:
+        raise _Refused(str(bad)) from None
+    if whole is not None:
+        return _kind_of(workflow, outputs, per_test, whole)
+    if not written:
+        return Kind(Type.TEXT)
+    for _, found in written:
+        if found.kind == "steps":
+            raise _Refused("A step's output is given whole, never written into text.")
+        kind = _kind_of(workflow, outputs, per_test, found)
+        if kind.type not in SCALARS:
+            raise _Refused(
+                f"{found} is a {kind.type}, and only text, a number, true or false or an enum "
+                f"is written into text."
+            )
+        if kind.optional:
+            raise _Refused(
+                f"{found} is optional, so it is given whole to optional ports, never written "
+                f"into text."
+            )
+    return Kind(Type.TEXT, source="text")
+
+
+def _fits(kind: Kind, port: Port, raw: object) -> None:
+    """Refuse a value of `kind` given to `port`, under the two widenings: a
+    scalar fits a text port, and a file fits a folder port.
     """
+    wanted = port.type
+    if wanted is Type.TEXT and kind.type in SCALARS:
+        return
+    if wanted is Type.FOLDER and kind.type is Type.FILE:
+        return
+    if wanted is Type.ENUM:
+        allowed = frozenset(port.options or ())
+        if kind.type is Type.TEXT and kind.source == "literal":
+            if raw in allowed:
+                return
+            raise _Refused(f"Takes one of {', '.join(port.options or ())}.")
+        if kind.type is Type.ENUM and kind.options is not None:
+            extra = sorted(kind.options - allowed)
+            if not extra:
+                return
+            raise _Refused(f"Takes one of {', '.join(port.options or ())}, not {', '.join(extra)}.")
+        raise _Refused(f"Takes one of {', '.join(port.options or ())}.")
+    if kind.type is not wanted:
+        raise _Refused(f"Takes {wanted}, not {kind.type}.")
+
+
+def _check_report(
+    entry: str | Meaning, outputs: Mapping[str, tuple[PrimitiveDeclaration, bool]]
+) -> None:
+    raw = entry if isinstance(entry, str) else entry.from_
+    try:
+        found = whole_reference(raw)
+    except BadReference as bad:
+        raise _Refused(str(bad)) from None
+    if found is None or found.kind != "steps" or found.output is None:
+        raise _Refused("Must be ${{ steps.<id>.<output> }}.")
+    known = outputs.get(found.name)
+    port = known[0].outputs.get(found.output) if known is not None else None
+    if known is None or port is None:
+        raise _Refused(f"steps.{found.name}.{found.output} is not an output of a step.")
+    if port.type not in (Type.TEXT, Type.NUMBER):
+        raise _Refused(
+            f"steps.{found.name}.{found.output} is {port.type}; a report holds text or numbers."
+        )
+    if isinstance(entry, Meaning):
+        if port.type is not Type.NUMBER and any(
+            value is not None for value in (entry.fold, entry.better, entry.at_least, entry.at_most)
+        ):
+            raise _Refused(
+                "fold, better, at_least and at_most say what a number means; this is text."
+            )
+        if not known[1] and (entry.fold is not None or entry.better is not None):
+            raise _Refused(
+                "fold and better are for a number reported per test; this step runs once."
+            )
+
+
+# Compiling a task
+
+
+@dataclass(frozen=True, slots=True)
+class Absent:
+    """An optional input the task left out: the ports it feeds get nothing."""
+
+
+ABSENT = Absent()
+
+
+@dataclass(frozen=True, slots=True)
+class Secret:
+    name: str
 
 
 @dataclass
-class _Stage:
-    """What compiling one stage works with, and the problems it finds, each
-    carried at the YAML path of the stage's workflow in `task.yaml`.
+class _Taint:
+    """Where a value's content came from, for the sealed steps: from the
+    contestant, from a task file the contestant is not served (`hidden`,
+    naming it), or out of a sealed step (`sealed`, naming the nearest).
     """
 
+    contestant: bool = False
+    hidden: str | None = None
+    sealed: str | None = None
+
+    def merge(self, other: _Taint) -> None:
+        self.contestant = self.contestant or other.contestant
+        self.hidden = self.hidden or other.hidden
+        self.sealed = self.sealed or other.sealed
+
+
+@dataclass(frozen=True, slots=True)
+class _Origin:
+    """Where a number that raised a limit came from: a task input by its id,
+    a scalar field of one test's `test.yaml`, or a literal the workflow
+    gives a port, by the port's name; with the number itself.
+    """
+
+    kind: Literal["input", "test", "literal"]
+    name: str
+    value: object
+    test: TestCase | None = None
+
+    @property
+    def path(self) -> str:
+        """Where a refusal of the limit it raised is said."""
+        if self.kind == "input":
+            return f"inputs.{self.name}"
+        if self.kind == "test" and self.test is not None:
+            return f"tests/{self.test.group}/{self.test.name}/{TEST_FILE}"
+        return "workflow"
+
+
+@dataclass(frozen=True, slots=True)
+class _Raised:
+    """One limit of one run of a step raised above its primitive's: the
+    step, the plan entry's test for a step with an entry per test, the test
+    the run is for, the limit and its raised value, and where the number
+    came from.
+    """
+
+    step: str
+    entry: str | None
+    test: TestCase | None
+    limit: str
+    value: int
+    origin: _Origin
+
+
+@dataclass(frozen=True, slots=True)
+class Compiled:
+    """A compiled task: its plan, its sealed steps and what they hold back
+    until the reveal, and what the save says of it beside publishing it.
+    """
+
+    plan: Plan
+    sealed: tuple[str, ...]
+    notes: tuple[str, ...] = ()
+    held: Sealed = NOTHING_SEALED
+
+
+@dataclass
+class _Compiler:
     task: TaskDefinition
-    stage: ResolvedStage
     workflow: WorkflowDefinition
     primitives: Mapping[str, PrimitiveDeclaration]
     paths: Collection[str]
-    at: str
-    setter_at: Mapping[str, str]
-    problems: list[Problem]
+    tests: Sequence[TestCase]
+    secrets: Collection[str]
+    machine: Machine
+    problems: list[Problem] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.setter = {entry.id: entry for entry in self.stage.setter}
-        self.contestant = {entry.id: entry for entry in self.task.inputs.contestant}
-        self.compiled: dict[str, _Compiled] = {}
-        self.failed: set[str] = set()
-        self.folder: str | None = None
-        self.tests: list[Case] = []
+        self.values: dict[str, object] = {}
+        self.taints: dict[str, _Taint] = {}
+        self.sealed: dict[str, str] = {}
+        """Each sealed step, with the task file it runs contestant code over,
+        or that the sealed step it reads ran it over."""
+        self.reads_sealed: dict[str, str] = {}
+        """Each step sealed by reading a sealed step's output, with that step."""
+        self.raised: list[_Raised] = []
+        """Every limit raised above its primitive's, run by run."""
+        self.served = self._served()
 
-    def refuse(self, where: str, message: str) -> None:
-        self.problems.append(
-            Problem(path=self.at, message=f"In {self.workflow.ref}, {where}: {message}")
-        )
+    def refuse(self, path: str, message: str) -> None:
+        self.problems.append(Problem(path=path, message=message))
 
-    def plan(self, harness_image: str) -> Plan | None:
-        before = len(self.problems)
+    def _served(self) -> set[str]:
+        """The test entries the workflow marks public, served to contestants."""
+        return {
+            path
+            for test in self.tests
+            for name, path in test.entries.items()
+            if self.workflow.test[name].public
+        }
+
+    # check 4: the task's values
+
+    def bind(self) -> None:
+        declared = self.workflow.inputs
+        for key in sorted(set(self.task.inputs) - set(declared)):
+            self.refuse(f"inputs.{key}", f"The workflow {self.task.workflow} has no input {key}.")
+        for name, wanted in declared.items():
+            given = self.task.inputs.get(name, ABSENT if name not in self.task.inputs else None)
+            at = f"inputs.{name}"
+            if wanted.contestant:
+                self._bind_contestant(at, name, wanted, given)
+            else:
+                self._bind_value(at, name, wanted, given)
+        self._check_secrets()
+
+    def _bind_contestant(self, at: str, name: str, wanted: WorkflowInput, given: object) -> None:
+        if isinstance(given, Absent):
+            return
+        if not isinstance(given, dict):
+            self.refuse(
+                at,
+                "The contestant gives this one: give its form details, such as {label: ...}, "
+                "or leave it out.",
+            )
+            return
+        for path, message in form_problems(given, wanted.type.value, wanted.options):
+            self.refuse(path_text((at, *path)), message)
+
+    def _bind_value(self, at: str, name: str, wanted: WorkflowInput, given: object) -> None:
+        if isinstance(given, Absent):
+            if wanted.optional:
+                self.values[name] = ABSENT
+            else:
+                self.refuse(at, f"Give this input a value: a {_described(wanted.type)}.")
+            return
+        problem = self._value_problem(wanted, given)
+        if problem is not None:
+            self.refuse(at, problem)
+            return
+        if isinstance(given, dict):
+            self.values[name] = Secret(str(given["secret"]))
+        else:
+            self.values[name] = given
+
+    def _value_problem(self, wanted: WorkflowInput, given: object) -> str | None:
+        match wanted.type:
+            case Type.TEXT:
+                if isinstance(given, dict):
+                    secret = given.get("secret")
+                    if (
+                        set(given) != {"secret"}
+                        or not isinstance(secret, str)
+                        or not SECRET_NAME.match(secret)
+                    ):
+                        return "Must be text, or {secret: <name>} naming a secret the org holds."
+                    if secret not in self.secrets:
+                        return f"The org holds no secret named {secret}."
+                    return None
+                return None if isinstance(given, str) else "Must be text, or {secret: <name>}."
+            case Type.NUMBER:
+                return None if is_number(given) else "Must be a number."
+            case Type.BOOLEAN:
+                return None if isinstance(given, bool) else "Must be true or false."
+            case Type.ENUM:
+                options = wanted.options or ()
+                return None if given in options else f"Must be one of {', '.join(options)}."
+            case Type.FILE | Type.FOLDER:
+                folder = wanted.type is Type.FOLDER
+                problem = path_problem(given, folder=folder)
+                if problem is not None:
+                    return problem
+                assert isinstance(given, str)
+                if not has_path(self.paths, given):
+                    return (
+                        f"There is no file under {given} in the task."
+                        if folder
+                        else f"There is no file {given} in the task."
+                    )
+                return None
+        return "Must be a value of its type."
+
+    def _check_secrets(self) -> None:
+        """Each input given as a secret is wired whole into ports marked
+        secret, and into nothing else.
+        """
+        for name, value in self.values.items():
+            if not isinstance(value, Secret):
+                continue
+            for index, step in enumerate(self.workflow.steps):
+                declaration = self.primitives[str(step.use)]
+                for port_name, raw in step.with_.items():
+                    if not isinstance(raw, str):
+                        continue
+                    whole = whole_reference(raw)
+                    used = [found for _, found in references(raw)] if whole is None else [whole]
+                    if not any(found.kind == "inputs" and found.name == name for found in used):
+                        continue
+                    port = declaration.inputs[port_name]
+                    if whole is None:
+                        self.refuse(
+                            f"inputs.{name}",
+                            f"{name} is a secret, and steps[{index}] writes it into text; give the "
+                            "secret to its own port.",
+                        )
+                    elif not port.secret or port.type is not Type.TEXT:
+                        self.refuse(
+                            f"inputs.{name}",
+                            f"{name} is a secret, and steps[{index}] gives it to {port_name}, "
+                            "which can hand the secret to the contestant's program.",
+                        )
+
+    # check 7: the steps
+
+    def compile(self, harness_image: str) -> Plan | None:
         steps: list[PlanStep] = []
         for index, step in enumerate(self.workflow.steps):
-            reported = len(self.problems)
-            found = self._step(index, step)
-            if not found or len(self.problems) > reported:
-                self.failed.add(step.id)
-            steps.extend(found)
-        verdict = self._verdict()
-        if len(self.problems) > before or verdict is None or not steps:
+            declaration = self.primitives[str(step.use)]
+            made = self._step(index, step.id, step.use, step.per_test, step.with_, declaration)
+            steps.extend(made)
+        report = self._report()
+        contestant = {
+            name: ContestantInput(
+                type=declared.type,
+                options=declared.options,
+                per_test=True if declared.per_test else None,
+            )
+            for name, declared in self.workflow.inputs.items()
+            if declared.contestant
+        }
+        if self.problems:
             return None
         return Plan(
             harness_image=harness_image,
-            stage=self.stage.id,
             tests=tuple(test.id for test in self.tests),
+            contestant=contestant,
             steps=tuple(steps),
-            verdict=verdict,
+            report=report,
         )
 
-    def _step(self, index: int, step: WorkflowStep) -> list[PlanStep]:
-        where = f"steps[{index}]"
-        declaration = self.primitives.get(str(step.use))
-        if declaration is None:
-            self.refuse(f"{where}.use", f"{step.use} is not a primitive.")
-            return []
-        unfit = False
-        for name in sorted(set(step.with_) - set(declaration.inputs)):
-            self.refuse(f"{where}.with.{name}", f"{step.use} has no input {name}.")
-            unfit = True
-        for name, port in declaration.inputs.items():
-            if not port.optional and name not in step.with_:
-                self.refuse(f"{where}.with", f"{step.use} needs the input {name}.")
-                unfit = True
-        tests = self._foreach(where, step) if step.foreach is not None else None
-        self.compiled[step.id] = _Compiled(declaration, per_test=tests is not None)
-        if unfit or (step.foreach is not None and tests is None):
-            return []
-        common = {
-            "id": step.id,
-            "primitive": f"{declaration.short_name}@{declaration.version}",
-            "image": declaration.image,
-        }
-        if tests is None:
-            inputs = self._inputs(where, step, declaration, None)
-            limits = self._limits(where, declaration, [inputs] if inputs is not None else [])
-            if inputs is None or limits is None:
-                return []
-            return [PlanStep(**common, limits=limits, inputs=inputs)]
-        runs = [(test, self._inputs(where, step, declaration, test)) for test in tests]
-        if any(inputs is None for _, inputs in runs):
-            return []
-        given = [inputs for _, inputs in runs if inputs is not None]
-        if declaration.batch:
-            limits = self._limits(where, declaration, given)
-            if limits is None:
-                return []
-            batch = tuple(
-                BatchItem(test=test.id, inputs=inputs)
-                for test, inputs in zip(tests, given, strict=True)
-            )
-            return [PlanStep(**common, limits=limits, batch=batch)]
-        found = []
-        for test, inputs in zip(tests, given, strict=True):
-            limits = self._limits(where, declaration, [inputs])
-            if limits is None:
-                return []
-            found.append(PlanStep(**common, limits=limits, inputs=inputs, test=test.id))
-        return found
-
-    def _foreach(self, where: str, step: WorkflowStep) -> list[Case] | None:
-        assert step.foreach is not None
-        whole = _WHOLE.match(step.foreach)
-        name = _SETTER_PART.match(whole.group(1)) if whole else None
-        entry = self.setter.get(name.group(1)) if name else None
-        if entry is None or entry.type is not InputType.FILES:
-            self.refuse(
-                f"{where}.foreach",
-                "A foreach runs over a setter's file[] input, ${{ inputs.<id> }}.",
-            )
-            return None
-        folder = str(entry.value)
-        if self.folder is None:
-            tests, problems = cases_of(folder, self.paths)
-            at = self.setter_at.get(entry.id, "inputs.setter")
-            for message in problems:
-                self.problems.append(Problem(path=at, message=message))
-            if not tests and not problems:
-                self.problems.append(
-                    Problem(
-                        path=at,
-                        message=f"There is no test in {folder}: add files such as 1.in and 1.ans.",
-                    )
-                )
-            if problems or not tests:
-                self.folder = folder
-                return None
-            self.folder, self.tests = folder, tests
-        elif folder != self.folder:
-            self.refuse(
-                f"{where}.foreach",
-                f"Every foreach of a workflow runs over one list, {self.folder}, until feature 10.",
-            )
-            return None
-        return self.tests or None
-
-    def _inputs(
+    def _step(
         self,
-        where: str,
-        step: WorkflowStep,
+        index: int,
+        step_id: str,
+        use: object,
+        per_test: bool,
+        given: Mapping[str, Any],
         declaration: PrimitiveDeclaration,
-        test: Case | None,
-    ) -> Inputs | None:
-        inputs: Inputs = {}
-        failed = False
-        for name, raw in step.with_.items():
-            port = declaration.inputs.get(name)
-            if port is None:
-                continue
-            try:
-                value, kind = self._value(raw, test)
-                _check(port, value, kind)
-            except _Skipped:
-                failed = True
-                continue
-            except _Refused as refused:
-                self.refuse(f"{where}.with.{name}", str(refused))
-                failed = True
-                continue
-            inputs[name] = value
-        return None if failed else inputs
-
-    def _value(self, raw: object, test: Case | None) -> tuple[dict[str, Any], Kind]:
-        if isinstance(raw, bool):
-            return {"value": raw}, Kind(PortType.BOOLEAN)
-        if is_number(raw):
-            return {"value": raw}, Kind(PortType.NUMBER)
-        if raw is None:
-            raise _Refused("Must be given a value.")
-        if isinstance(raw, list | dict):
-            raise _Refused("A list or a mapping as an input comes with feature 10.")
-        if not isinstance(raw, str):
-            raise _Refused("Must be text, a number, true or false, or a ${{ }} reference.")
-        whole = _WHOLE.match(raw)
-        if whole is None:
-            return {"value": _ANY.sub(self._written, raw)}, Kind(PortType.TEXT)
-        return self._reference(whole.group(1), test)
-
-    def _written(self, match: re.Match[str]) -> str:
-        found = _SETTER_PART.match(match.group(1))
-        entry = self.setter.get(found.group(1)) if found else None
-        if entry is None or entry.type not in (
-            InputType.TEXT,
-            InputType.CODE,
-            InputType.NUMBER,
-            InputType.BOOLEAN,
-        ):
-            raise _Refused(
-                f"Only a setter's text, number or true-or-false input is written into text, "
-                f"not {match.group(0)}."
-            )
-        return str(entry.value)
-
-    def _reference(self, expression: str, test: Case | None) -> tuple[dict[str, Any], Kind]:
-        parts = expression.split(".")
-        match parts:
-            case ["inputs", name]:
-                return self._input(name)
-            case ["inputs", name, "language"]:
-                entry = self.contestant.get(name)
-                if entry is None or entry.type is not InputType.CODE:
-                    raise _Refused(f"{name} is not a contestant's code input.")
-                if entry.language is None:
-                    raise _Refused(f"The code input {name} lists no languages in task.yaml.")
-                return {"submission": name, "field": "language"}, Kind(
-                    PortType.ENUM, frozenset(entry.language)
+    ) -> list[PlanStep]:
+        taint = _Taint()
+        runs_contestant = False
+        hidden_on: str | None = None
+        items: list[tuple[TestCase | None, Inputs]] = []
+        for test in self.tests if per_test else [None]:
+            inputs: Inputs = {}
+            for name, raw in given.items():
+                port = declaration.inputs[name]
+                value, value_taint = self._value(raw, port, test)
+                if isinstance(value, Absent):
+                    continue
+                inputs[name] = value
+                taint.merge(value_taint)
+                if port.runs and value_taint.contestant:
+                    runs_contestant = True
+                if not port.secret and value_taint.hidden:
+                    hidden_on = hidden_on or value_taint.hidden
+            items.append((test, inputs))
+        if runs_contestant and hidden_on is not None:
+            self.sealed[step_id] = hidden_on
+        elif taint.sealed is not None:
+            self.sealed[step_id] = self.sealed[taint.sealed]
+            self.reads_sealed[step_id] = taint.sealed
+        if step_id in self.sealed:
+            taint.sealed = step_id
+        self.taints[step_id] = taint
+        common = {
+            "id": step_id,
+            "primitive": str(use),
+            "image": declaration.image,
+            "network": declaration.network,
+            "outputs": {
+                f"{name}?" if port.optional else name: port.type.value
+                for name, port in declaration.outputs.items()
+            },
+            "folders": tuple(
+                sorted(
+                    name
+                    for name, port in declaration.inputs.items()
+                    if port.type is Type.FOLDER and name in given
                 )
-            case ["steps", step, output]:
-                return self._output(step, output, test)
-            case ["item", field]:
-                if test is None:
-                    raise _Refused("item is there only inside a step with a foreach.")
-                path = test.files.get(field)
-                if path is None:
-                    raise _Refused(f"The test {test.id} has no {field} file in {self.folder}.")
-                return {"task": path}, Kind(PortType.FILE)
-        raise _Refused(
-            f"${{{{ {expression} }}}} is not a reference a workflow makes: inputs.<id>, "
-            "inputs.<id>.language, steps.<id>.<output> or item.<field>."
-        )
+            )
+            or None,
+        }
+        if not per_test:
+            ((_, inputs),) = items
+            limits = self._limits(step_id, None, declaration, given, items)
+            return [PlanStep(**common, limits=limits, inputs=inputs)]
+        if declaration.batch:
+            batch = tuple(
+                BatchItem(test=test.id, inputs=inputs) for test, inputs in items if test is not None
+            )
+            limits = self._limits(step_id, None, declaration, given, items)
+            return [PlanStep(**common, limits=limits, batch=batch)]
+        return [
+            PlanStep(
+                **common,
+                limits=self._limits(step_id, test.id, declaration, given, [(test, inputs)]),
+                inputs=inputs,
+                test=test.id,
+            )
+            for test, inputs in items
+            if test is not None
+        ]
 
-    def _input(self, name: str) -> tuple[dict[str, Any], Kind]:
-        entry = self.setter.get(name)
-        if entry is not None:
-            return _setter_value(entry, self.paths)
-        given = self.contestant.get(name)
-        if given is not None:
-            return _contestant_value(given)
-        raise _Refused(f"{name} is not an input the task gives.")
+    def _value(
+        self, raw: object, port: Port, test: TestCase | None
+    ) -> tuple[dict[str, Any] | Absent, _Taint]:
+        if isinstance(raw, bool) or is_number(raw):
+            return {"value": spelled(raw) if port.type is Type.TEXT else raw}, _Taint()
+        assert isinstance(raw, str)
+        whole = whole_reference(raw)
+        if whole is None:
+            return self._written(raw, test), _Taint()
+        return self._reference(whole, port, test)
 
-    def _output(self, step: str, output: str, test: Case | None) -> tuple[dict[str, Any], Kind]:
-        if step in self.failed:
-            raise _Skipped
-        compiled = self.compiled.get(step)
-        if compiled is None:
-            raise _Refused(f"{step} is not a step before this one.")
-        port = compiled.declaration.outputs.get(output)
-        if port is None:
-            raise _Refused(f"The step {step} has no output {output}.")
-        values = frozenset(port.values) if port.values is not None else None
-        if compiled.per_test and test is not None:
-            return {"step": step, "output": output, "test": test.id}, Kind(port.type, values)
-        return {"step": step, "output": output}, Kind(port.type, values, compiled.per_test)
+    def _reference(
+        self, found: Reference, port: Port, test: TestCase | None
+    ) -> tuple[dict[str, Any] | Absent, _Taint]:
+        match found.kind:
+            case "inputs":
+                declared = self.workflow.inputs[found.name]
+                if declared.contestant:
+                    value: dict[str, Any] = {"submission": found.name}
+                    if port.type is Type.TEXT and declared.type is not Type.TEXT:
+                        value = {"template": "{0}", "parts": [value]}
+                    return value, _Taint(contestant=True)
+                given = self.values.get(found.name)
+                if isinstance(given, Absent):
+                    return ABSENT, _Taint()
+                if isinstance(given, Secret):
+                    return {"secret": given.name}, _Taint()
+                if declared.type in FILES:
+                    path = str(given)
+                    return {"task": path}, _Taint(hidden=self._hidden(path))
+                return {"value": spelled(given) if port.type is Type.TEXT else given}, _Taint()
+            case "test":
+                assert test is not None
+                if found.name in test.entries:
+                    return {"task": test.entries[found.name]}, _Taint()
+                scalar = test.scalars[found.name]
+                return {"value": spelled(scalar) if port.type is Type.TEXT else scalar}, _Taint()
+        taint = _Taint()
+        taint.merge(self.taints.get(found.name, _Taint()))
+        return {"step": found.name, "output": found.output}, taint
+
+    def _hidden(self, path: str) -> str | None:
+        """`path` when the contestant is not served it, none when they are."""
+        if path.startswith(PUBLIC_FOLDER) or path in self.served:
+            return None
+        return path
+
+    def _written(self, raw: str, test: TestCase | None) -> dict[str, Any]:
+        """A string with references written into it: the task's and the
+        test's scalars written in now, the contestant's as template parts.
+        """
+        text = ""
+        parts: list[dict[str, str]] = []
+        last = 0
+        for match, found in references(raw):
+            text += _escaped(raw[last : match.start()])
+            last = match.end()
+            declared = self.workflow.inputs.get(found.name) if found.kind == "inputs" else None
+            if declared is not None and declared.contestant:
+                text += f"{{{len(parts)}}}"
+                parts.append({"submission": found.name})
+            elif found.kind == "inputs":
+                text += _escaped(spelled(self.values.get(found.name)))
+            else:
+                assert test is not None
+                text += _escaped(spelled(test.scalars[found.name]))
+        text += _escaped(raw[last:])
+        if not parts:
+            return {"value": text.replace("{{", "{").replace("}}", "}")}
+        return {"template": text, "parts": parts}
 
     def _limits(
-        self, where: str, declaration: PrimitiveDeclaration, runs: Sequence[Inputs]
-    ) -> StepLimits | None:
+        self,
+        step_id: str,
+        entry: str | None,
+        declaration: PrimitiveDeclaration,
+        given: Mapping[str, Any],
+        runs: Sequence[tuple[TestCase | None, Inputs]],
+    ) -> StepLimits:
+        """The limits of one plan entry of a step over `runs`, each raised
+        from the port its primitive names and rounded up, a batch's time
+        summed over its items and the rest the largest of any item. Each
+        raise is recorded with where its number came from, `given` being
+        what the workflow gives the step's ports.
+        """
         raised: list[dict[str, int]] = []
-        for inputs in runs:
+        for test, inputs in runs:
             limits = declaration.limits.as_mapping()
             for name, source in declaration.limits_from.items():
-                given = inputs.get(source.input)
-                if given is None:
+                value = inputs.get(source.input)
+                if value is None or set(value) != {"value"} or not is_number(value["value"]):
                     continue
-                value = given.get("value") if set(given) == {"value"} else None
-                if not is_number(value):
-                    self.refuse(
-                        f"{where}.with.{source.input}",
-                        f"The limit {name} is raised from {source.input}, so it is a number "
-                        "known at the save.",
-                    )
-                    return None
-                assert isinstance(value, int | float)
-                wanted = value * source.scale + source.add
-                if not math.isfinite(wanted):
-                    self.refuse(
-                        f"{where}.with.{source.input}",
-                        f"The limit {name} raised from {source.input} is too large.",
-                    )
-                    return None
-                limits[name] = max(limits[name], math.ceil(wanted))
+                number = value["value"]
+                wanted = Decimal(repr(number)) * Decimal(repr(source.scale)) + Decimal(
+                    repr(source.add)
+                )
+                ceiling = math.ceil(wanted)
+                if ceiling > limits[name]:
+                    limits[name] = ceiling
+                    origin = _origin_of(given.get(source.input), source.input, number, test)
+                    self.raised.append(_Raised(step_id, entry, test, name, ceiling, origin))
             raised.append(limits)
-        if not raised:
-            return StepLimits(**declaration.limits.as_mapping())
         combined = {
             name: sum(run[name] for run in raised)
             if name in BATCH_SCALED
@@ -593,224 +1248,375 @@ class _Stage:
         }
         return StepLimits(**combined)
 
-    def _verdict(self) -> VerdictBlock | None:
-        outputs = self.workflow.outputs
-        before = len(self.problems)
-        if "outcome" not in outputs:
-            self.refuse("outputs", "A workflow's outputs give its outcome.")
-            return None
-        outcome = self._slot("outputs.outcome", outputs["outcome"], PortType.OUTCOME, None)
-        metrics = self._slots("outputs.metrics", outputs.get("metrics"), PortType.NUMBER, None)
-        tests = self._slots("outputs.tests", outputs.get("tests"), PortType.NUMBER, True)
-        if tests is not None:
-            for name in sorted(set(tests) - set(VERDICT_TESTS)):
-                self.refuse(f"outputs.tests.{name}", "A test's row takes time_ms and memory_kb.")
-        summary = (
-            self._slot("outputs.summary", outputs["summary"], PortType.TEXT, False)
-            if "summary" in outputs
-            else None
-        )
-        if len(self.problems) > before or outcome is None:
-            return None
-        return VerdictBlock.model_validate(
-            {"outcome": outcome, "metrics": metrics, "tests": tests, "summary": summary}
-        )
-
-    def _slots(
-        self, where: str, raw: object, wanted: PortType, per_test: bool | None
-    ) -> dict[str, Reference] | None:
-        if raw is None:
-            return None
-        if not isinstance(raw, dict):
-            self.refuse(where, "Must be a mapping of names to ${{ steps.<id>.<output> }}.")
-            return None
-        found = {}
-        for name, value in raw.items():
-            reference = self._slot(f"{where}.{name}", value, wanted, per_test)
-            if reference is not None:
-                found[str(name)] = reference
+    def _report(self) -> dict[str, ReportEntry]:
+        found: dict[str, ReportEntry] = {}
+        for name, entry in self.workflow.report.items():
+            raw = entry if isinstance(entry, str) else entry.from_
+            reference = whole_reference(raw)
+            assert reference is not None and reference.output is not None
+            found[name] = ReportEntry(
+                step=reference.name,
+                output=reference.output,
+                at_least=entry.at_least if isinstance(entry, Meaning) else None,
+                at_most=entry.at_most if isinstance(entry, Meaning) else None,
+            )
         return found
 
-    def _slot(
-        self, where: str, raw: object, wanted: PortType, per_test: bool | None
-    ) -> Reference | None:
-        whole = _WHOLE.match(raw) if isinstance(raw, str) else None
-        parts = whole.group(1).split(".") if whole else []
-        if len(parts) != 3 or parts[0] != "steps":
-            self.refuse(where, "Must be ${{ steps.<id>.<output> }}.")
-            return None
-        step, output = parts[1], parts[2]
-        if step in self.failed:
-            return None
-        compiled = self.compiled.get(step)
-        port = compiled.declaration.outputs.get(output) if compiled else None
-        if compiled is None or port is None:
-            self.refuse(where, f"steps.{step}.{output} is not an output of a step.")
-            return None
-        if port.type is not wanted:
-            self.refuse(where, f"steps.{step}.{output} is {port.type}, not {wanted}.")
-            return None
-        if per_test is not None and compiled.per_test is not per_test:
-            runs = "once per test" if per_test else "once"
-            self.refuse(where, f"Reads a step that runs {runs}; steps.{step} does not.")
-            return None
-        return Reference(step=step, output=output)
 
-
-def _setter_value(entry: SetterInput, paths: Collection[str]) -> tuple[dict[str, Any], Kind]:
-    match entry.type:
-        case InputType.CODE | InputType.TEXT:
-            return {"value": entry.value}, Kind(PortType.TEXT)
-        case InputType.NUMBER:
-            return {"value": entry.value}, Kind(PortType.NUMBER)
-        case InputType.BOOLEAN:
-            return {"value": entry.value}, Kind(PortType.BOOLEAN)
-        case InputType.FILE:
-            return {"task": entry.value}, Kind(PortType.FILE)
-        case InputType.FILES:
-            return {"task": _files_directly_in(entry.value, paths)}, Kind(PortType.FILES)
-        case InputType.DATASET:
-            if str(entry.value).endswith("/"):
-                return {"task": _files_under(entry.value, paths)}, Kind(PortType.FILES)
-            return {"task": entry.value}, Kind(PortType.FILE)
-    raise _Refused(f"The setter input {entry.id} cannot be given to a step.")
-
-
-def _contestant_value(entry: ContestantInput) -> tuple[dict[str, Any], Kind]:
-    kinds = {
-        InputType.CODE: PortType.FILE,
-        InputType.FILE: PortType.FILE,
-        InputType.FILES: PortType.FILES,
-        InputType.TEXT: PortType.TEXT,
-        InputType.NUMBER: PortType.NUMBER,
-        InputType.BOOLEAN: PortType.BOOLEAN,
-    }
-    kind = kinds.get(entry.type)
-    if kind is None:
-        raise _Refused(f"A {entry.type} input is not given to a step yet.")
-    return {"submission": entry.id}, Kind(kind)
-
-
-def _check(port: Port, value: Mapping[str, Any], kind: Kind) -> None:
-    """Refuse `value`, of `kind`, given to an input declared as `port`. Text
-    written in the workflow is one of an enum's values when it is written as
-    one.
+def _origin_of(raw: object, port: str, number: object, test: TestCase | None) -> _Origin:
+    """Where the number a port was given came from, `raw` being what the
+    workflow wrote for the port.
     """
-    wanted = port.type
-    if wanted is PortType.ENUM and set(value) == {"value"} and kind.type is PortType.TEXT:
-        if value["value"] in (port.values or ()):
-            return
-        raise _Refused(f"Takes one of {', '.join(port.values or ())}.")
-    if kind.per_test:
-        if wanted is PortType.FILES and kind.type is PortType.FILE:
-            return
-        raise _Refused(
-            f"Takes one {wanted}, and a step that runs once per test gives one value per test."
+    found = whole_reference(raw) if isinstance(raw, str) else None
+    if found is not None and found.kind == "inputs":
+        return _Origin("input", found.name, number)
+    if found is not None and found.kind == "test" and test is not None:
+        return _Origin("test", found.name, number, test)
+    return _Origin("literal", port, number)
+
+
+def _escaped(text: str) -> str:
+    return text.replace("{", "{{").replace("}", "}}")
+
+
+def _described(kind: Type) -> str:
+    return {
+        Type.TEXT: "text, or {secret: <name>}",
+        Type.NUMBER: "number",
+        Type.BOOLEAN: "true or false",
+        Type.ENUM: "one of its options",
+        Type.FILE: "file path in the task",
+        Type.FOLDER: "folder path in the task, ending in /",
+    }.get(kind, str(kind))
+
+
+def compile_plan(
+    task: TaskDefinition,
+    workflow: WorkflowDefinition,
+    primitives: Mapping[str, PrimitiveDeclaration],
+    paths: Collection[str],
+    tests: Sequence[TestCase],
+    *,
+    secrets: Collection[str],
+    machine: Machine,
+    harness_image: str,
+) -> Compiled:
+    """The task's plan. `workflow` checked as a version already
+    (`check_workflow`), `primitives` holding the declaration of every
+    primitive its steps use, `paths` every file of the state being saved,
+    `tests` its tests in plan order, `secrets` the names of the secrets the
+    task's org holds and `machine` the largest a run of it may take. Raises
+    `InvalidDefinition` listing every problem, each at its path in
+    `task.yaml`, at the `workflow` line, or at the `test.yaml` of the test
+    whose number raised a limit past what is allowed.
+    """
+    compiler = _Compiler(task, workflow, primitives, paths, tests, secrets, machine)
+    compiler.bind()
+    if compiler.problems:
+        raise InvalidDefinition("task.yaml", compiler.problems)
+    plan = compiler.compile(harness_image)
+    if plan is None:
+        raise InvalidDefinition("task.yaml", compiler.problems)
+    values = reported(workflow, primitives)
+    problems = [*_fit(compiler, plan), *_credit(task, values), *_sealed(task, compiler)]
+    if problems:
+        raise InvalidDefinition("task.yaml", problems)
+    broken = violation(plan.model_dump(mode="json", exclude_none=True), "plan")
+    if broken is not None:
+        raise InvalidDefinition(
+            "task.yaml",
+            [
+                Problem(
+                    path="workflow",
+                    message=f"The plan this task compiles to with {task.workflow} breaks "
+                    f"the runner's contract {broken}.",
+                )
+            ],
         )
-    if wanted is PortType.ENUM:
-        allowed = frozenset(port.values or ())
-        if kind.type is PortType.ENUM and kind.values is not None and kind.values <= allowed:
-            return
-        if kind.type is PortType.ENUM and kind.values is not None:
-            extra = ", ".join(sorted(kind.values - allowed))
-            raise _Refused(f"Takes one of {', '.join(port.values or ())}, not {extra}.")
-        raise _Refused(f"Takes one of {', '.join(port.values or ())}.")
-    if kind.type is not wanted:
-        raise _Refused(f"Takes {wanted}, not {kind.type}.")
+    once = {step.id for step in workflow.steps if not step.per_test}
+    held = Sealed(
+        steps=frozenset(step for step in compiler.sealed if step in once),
+        values=frozenset(
+            name for name, entry in plan.report.items() if entry.step in compiler.sealed
+        ),
+    )
+    return Compiled(
+        plan,
+        tuple(sorted(compiler.sealed)),
+        (*_sealed_notes(compiler), *_credit_notes(task, values)),
+        held,
+    )
 
 
-def _coverage(
-    task: TaskDefinition, stage: ResolvedStage, workflow: WorkflowDefinition
-) -> list[Problem]:
-    declared = workflow.input_types()
-    contestant = {entry.id: entry.type for entry in task.inputs.contestant}
-    setter = {entry.id: entry.type for entry in stage.setter}
-    where = f"in stage {stage.id} ({stage.workflow})"
-    problems: list[Problem] = []
-
-    def add(side: str, message: str) -> None:
-        problems.append(Problem(path=f"inputs.{side}", message=message))
-
-    for name, kind in declared.items():
-        given = [
-            (side, types[name])
-            for side, types in (("contestant", contestant), ("setter", setter))
-            if name in types
-        ]
-        if not given:
-            add("setter", f"The workflow input {name} is given by neither side {where}.")
-        elif len(given) > 1:
-            add("contestant", f"The workflow input {name} is given by both sides {where}.")
-        elif given[0][1] is not kind:
-            side, found = given[0]
-            add(side, f"The input {name} is {found}, but the workflow declares {kind} {where}.")
-    for side, types in (("contestant", contestant), ("setter", setter)):
-        for name in types:
-            if name not in declared:
-                add(side, f"The input {name} is not an input of the workflow {where}.")
-    return problems
-
-
-def _workflow_at(task: TaskDefinition, stage: ResolvedStage) -> str:
-    own = stage.index is not None and task.stages[stage.index].workflow is not None
-    return f"stages[{stage.index}].workflow" if own else "workflow"
-
-
-def _setter_at(task: TaskDefinition, stage: ResolvedStage) -> dict[str, str]:
-    """The YAML path of each setter input's value as the stage sees it: the
-    stage's own when it gives one, the task's otherwise.
+def _fit(compiler: _Compiler, plan: Plan) -> list[Problem]:
+    """Check 7's fit: the run's whole time within the ceiling, and every
+    step's memory, GPUs and network on the machine, each refused where the
+    number that pushed it over came from.
     """
-    found = {
-        entry.id: path_text(("inputs", "setter", index, "value"))
-        for index, entry in enumerate(task.inputs.setter)
-    }
-    if stage.index is not None:
-        for index, entry in enumerate(task.stages[stage.index].inputs.setter):
-            found[entry.id] = path_text(("stages", stage.index, "inputs", "setter", index, "value"))
+    problems: list[Problem] = []
+    seconds = sum(step.limits.time_ms for step in plan.steps) / 1000
+    total = seconds + BASE_WALL.total_seconds() + STEP_OVERHEAD.total_seconds() * len(plan.steps)
+    ceiling = WALL_CEILING.total_seconds()
+    if total > ceiling:
+        said = f"the run {math.ceil(total / 60)} minutes; a run may take {int(ceiling // 60)}."
+        problems.append(_over_time(compiler, plan, said))
+    machine = compiler.machine
+    for step in plan.steps:
+        for limit, most, unit in (
+            ("memory_mb", machine.memory_mb, "MB of memory"),
+            ("gpus", machine.gpus, "GPUs"),
+        ):
+            wanted = getattr(step.limits, limit)
+            if wanted > most:
+                said = (
+                    f"step {step.id} {wanted} {unit}; no machine this task may run on has more "
+                    f"than {most}."
+                )
+                problems.append(_over_machine(compiler, step, limit, wanted, said))
+        if step.network and not machine.network:
+            problems.append(
+                Problem(
+                    path="workflow",
+                    message=f"Step {step.id} uses {step.primitive}, which reaches the network, "
+                    "and no machine this task may run on gives a step the network.",
+                )
+            )
+    return _unique(problems)
+
+
+def _over_time(compiler: _Compiler, plan: Plan, said: str) -> Problem:
+    """The run ceiling's refusal, blamed on the raised time limit that adds
+    the most time to the run, or on the number of tests when none is raised.
+    """
+    by_origin: dict[tuple[str, str], list[_Raised]] = {}
+    for raised in compiler.raised:
+        if raised.limit == "time_ms":
+            by_origin.setdefault((raised.origin.kind, raised.origin.name), []).append(raised)
+    if not by_origin:
+        count = _tests(len(plan.tests))
+        return Problem(
+            path="workflow",
+            message=f"{count} through the steps of {compiler.task.workflow} give {said}",
+        )
+    runs = max(by_origin.values(), key=lambda runs: sum(run.value for run in runs))
+    tests = sorted({run.test.id for run in runs if run.test is not None}, key=natural)
+    most = max(runs, key=lambda run: run.value)
+    origin = most.origin
+    written = f"{origin.name} {spelled(origin.value)}"
+    if origin.kind == "test":
+        assert origin.test is not None
+        if len(tests) == 1:
+            return Problem(path=origin.path, message=f"{origin.test.id}'s {written} gives {said}")
+        return Problem(
+            path=origin.path,
+            message=f"{_tests(len(tests))} at {origin.name} up to {spelled(origin.value)} "
+            f"({origin.test.id}) give {said}",
+        )
+    if origin.kind == "literal":
+        written = f"{written}, as {compiler.task.workflow} writes it,"
+    if not tests:
+        return Problem(path=origin.path, message=f"{written} gives {said}")
+    verb = "gives" if len(tests) == 1 else "give"
+    return Problem(path=origin.path, message=f"{_tests(len(tests))} at {written} {verb} {said}")
+
+
+def _over_machine(
+    compiler: _Compiler, step: PlanStep, limit: str, wanted: int, said: str
+) -> Problem:
+    """A refusal of a step's memory or GPUs beyond the machine, at where the
+    number that raised it came from, or at the workflow when its primitive
+    asks that much itself.
+    """
+    origin = next(
+        (
+            raised.origin
+            for raised in compiler.raised
+            if (raised.step, raised.entry, raised.limit, raised.value)
+            == (step.id, step.test, limit, wanted)
+        ),
+        None,
+    )
+    if origin is None:
+        return Problem(path="workflow", message=f"{step.primitive} gives {said}")
+    written = f"{origin.name} {spelled(origin.value)}"
+    if origin.kind == "test":
+        assert origin.test is not None
+        return Problem(path=origin.path, message=f"{origin.test.id}'s {written} gives {said}")
+    if origin.kind == "literal":
+        written = f"{written}, as {compiler.task.workflow} writes it,"
+    return Problem(path=origin.path, message=f"{written} gives {said}")
+
+
+def _tests(count: int) -> str:
+    return "1 test" if count == 1 else f"{count} tests"
+
+
+@dataclass(frozen=True, slots=True)
+class ReportedValue:
+    """A reported value as the task's checks read it: per test or once, its
+    port's type, and its meaning.
+    """
+
+    per_test: bool
+    type: Type
+    meaning: Meaning | None
+
+
+def reported(
+    workflow: WorkflowDefinition, primitives: Mapping[str, PrimitiveDeclaration]
+) -> dict[str, ReportedValue]:
+    """Every name the workflow reports, with whether it is per test, its
+    type and its meaning.
+    """
+    steps = {step.id: step for step in workflow.steps}
+    found: dict[str, ReportedValue] = {}
+    for name, entry in workflow.report.items():
+        raw = entry if isinstance(entry, str) else entry.from_
+        reference = whole_reference(raw)
+        if reference is None or reference.output is None or reference.name not in steps:
+            continue
+        step = steps[reference.name]
+        port = primitives[str(step.use)].outputs[reference.output]
+        found[name] = ReportedValue(
+            step.per_test, port.type, entry if isinstance(entry, Meaning) else None
+        )
     return found
 
 
-def compile_plans(
-    task: TaskDefinition,
-    workflows: Mapping[str, WorkflowDefinition],
-    primitives: Mapping[str, PrimitiveDeclaration],
-    paths: Collection[str],
-    *,
-    harness_image: str,
-) -> dict[str, Plan]:
-    """One plan per stage of `task`, keyed by stage id. `workflows` holds
-    every workflow `task.workflow_refs()` names and `primitives` the
-    declaration of every primitive their steps use, each keyed by the
-    reference as text; `paths` is every file of the state being saved. Raises
-    `InvalidDefinition` listing every problem, each at the YAML path in
-    `task.yaml` it is about.
+def _better(meaning: Meaning, task: TaskDefinition) -> str | None:
+    """A value's direction with the task's values in: `higher`, `lower`, or
+    none when it declares none.
     """
-    stages = task.stages_resolved()
-    problems = [
-        problem
-        for stage in stages
-        for problem in _coverage(task, stage, workflows[str(stage.workflow)])
-    ]
-    if problems:
-        raise InvalidDefinition("task.yaml", problems)
-    plans: dict[str, Plan] = {}
-    for stage in stages:
-        compiling = _Stage(
-            task=task,
-            stage=stage,
-            workflow=workflows[str(stage.workflow)],
-            primitives=primitives,
-            paths=paths,
-            at=_workflow_at(task, stage),
-            setter_at=_setter_at(task, stage),
-            problems=problems,
+    if meaning.better is None:
+        return None
+    found = whole_reference(meaning.better)
+    if found is None:
+        return meaning.better
+    given = task.inputs.get(found.name)
+    return given if isinstance(given, str) else None
+
+
+def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[Problem]:
+    """T3: `credit` names a per-test number bounded 0 to 1 that is not lower
+    is better, or, relative, one with a direction and a lower bound of at
+    least 0.
+    """
+    if task.credit is None:
+        return []
+    if isinstance(task.credit, Relative):
+        name = task.credit.relative
+        value = values.get(name)
+        meaning = value.meaning if value is not None else None
+        if value is None or not _per_test_number(value) or meaning is None:
+            return [
+                Problem(
+                    path="credit.relative",
+                    message=(
+                        f"{name} is not a number the workflow reports per test, with a direction."
+                    ),
+                )
+            ]
+        if _better(meaning, task) is None:
+            return [
+                Problem(
+                    path="credit.relative",
+                    message=f"{name} has no direction: its workflow declares no better.",
+                )
+            ]
+        if meaning.at_least is None or meaning.at_least < 0:
+            return [
+                Problem(
+                    path="credit.relative",
+                    message=(
+                        f"{name} is not bounded below by 0: its workflow declares no "
+                        f"at_least of 0 or more."
+                    ),
+                )
+            ]
+        return []
+    name = task.credit
+    value = values.get(name)
+    if value is None or not _per_test_number(value):
+        return [
+            Problem(path="credit", message=f"{name} is not a number the workflow reports per test.")
+        ]
+    meaning = value.meaning
+    if (
+        meaning is None
+        or meaning.at_least is None
+        or meaning.at_most is None
+        or meaning.at_least < 0
+        or meaning.at_most > 1
+    ):
+        return [
+            Problem(
+                path="credit",
+                message=f"{name} is not a credit: its workflow does not bound it to 0 to 1.",
+            )
+        ]
+    if _better(meaning, task) == "lower":
+        return [
+            Problem(path="credit", message=f"{name} is lower is better, so it is not a credit.")
+        ]
+    return []
+
+
+def _per_test_number(value: ReportedValue) -> bool:
+    return value.per_test and value.type is Type.NUMBER
+
+
+def _credit_notes(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[str]:
+    """T4: a bounded per-test number credit does not name is said, not
+    refused.
+    """
+    named = task.credit.relative if isinstance(task.credit, Relative) else task.credit
+    notes = []
+    for name, value in sorted(values.items()):
+        meaning = value.meaning
+        if not _per_test_number(value) or meaning is None or name == named:
+            continue
+        if (
+            meaning.at_least is not None
+            and meaning.at_most is not None
+            and meaning.at_least >= 0
+            and meaning.at_most <= 1
+        ):
+            if task.credit is None:
+                notes.append(
+                    f"{name} is reported, but credit is not set: an accepted test earns 1."
+                )
+            else:
+                notes.append(f"{name} is reported, but credit names another value.")
+    return notes
+
+
+def _sealed(task: TaskDefinition, compiler: _Compiler) -> list[Problem]:
+    """T5: a task whose workflow has a sealed step shows every group
+    `after_close`.
+    """
+    if not compiler.sealed:
+        return []
+    step, data = sorted(compiler.sealed.items())[0]
+    return [
+        Problem(
+            path=f"test_groups.{name}.show",
+            message=f"{name} is shown {group.shown}, but step {step} gives the contestant's code "
+            f"{data}; show it after_close, or serve the data under public/.",
         )
-        plan = compiling.plan(harness_image)
-        if plan is not None:
-            plans[stage.id] = plan
-    if problems:
-        raise InvalidDefinition("task.yaml", _unique(problems))
-    return plans
+        for name, group in task.test_groups.items()
+        if group.shown is not Show.AFTER_CLOSE
+    ]
+
+
+def _sealed_notes(compiler: _Compiler) -> list[str]:
+    return [
+        f"Step {step} is sealed: it reads what the sealed step "
+        f"{compiler.reads_sealed[step]} wrote, so what it reports is shown at the reveal."
+        if step in compiler.reads_sealed
+        else f"Step {step} is sealed: it runs the contestant's code over {data}, which the "
+        "contestant is not served, so what it reports is shown at the reveal."
+        for step, data in sorted(compiler.sealed.items())
+    ]
 
 
 def _unique(problems: Sequence[Problem]) -> list[Problem]:
@@ -826,41 +1632,32 @@ def _unique(problems: Sequence[Problem]) -> list[Problem]:
 
 @dataclass(frozen=True, slots=True)
 class Snapshot:
-    """What a publication's grading depends on: its plans by path in the task
-    repo, a digest of each data file the plans name by its path, and the
-    task's limits by name.
+    """What a publication's grading depends on: its plan by path in the task
+    repo, and a digest of each data file the plan names, by its path.
     """
 
     plans: Mapping[str, bytes]
     data: Mapping[str, str]
-    limits: Mapping[str, object]
 
 
-def _differences(
-    before: Mapping[str, object], after: Mapping[str, object], prefix: str = ""
-) -> list[str]:
+def _differences(before: Mapping[str, object], after: Mapping[str, object]) -> list[str]:
     changes: list[str] = []
     for key in sorted(before.keys() | after.keys()):
         if key not in before:
-            changes.append(f"{prefix}{key} added")
+            changes.append(f"{key} added")
         elif key not in after:
-            changes.append(f"{prefix}{key} removed")
+            changes.append(f"{key} removed")
         elif before[key] != after[key]:
-            changes.append(f"{prefix}{key} changed")
+            changes.append(f"{key} changed")
     return changes
 
 
 def grading_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...]:
     """What changed how the task grades between the previous publication and
-    this one, in words a person reads: `plans/default.json changed`,
-    `data/testcases/1.in added`, `limits.submissions changed`. Empty when
-    nothing did, and for a first publication, which has nothing before it.
-    `grading_changed` is whether this is non-empty.
+    this one, in words a person reads: `plans/plan.json changed`,
+    `tests/main/1/input added`. Empty when nothing did, and for a first
+    publication, which has nothing before it.
     """
     if before is None:
         return ()
-    return (
-        *_differences(before.plans, after.plans),
-        *_differences(before.data, after.data),
-        *_differences(before.limits, after.limits, "limits."),
-    )
+    return (*_differences(before.plans, after.plans), *_differences(before.data, after.data))

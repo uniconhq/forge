@@ -8,6 +8,7 @@ own error is raised; the list is read as the organiser.
 """
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -34,7 +35,25 @@ async def test_a_manager_makes_the_contest_with_a_valid_starter(setup: Setup, ac
     assert {call.identity for call in acme.fake.calls} == {PLATFORM}
     starter = await acme.fake.content.read_file(PLATFORM, SPRING, "contest.yaml")
     settings = parse_contest(starter.content)
-    assert (settings.name, settings.state.value) == ("Spring 2026", "draft")
+    assert (settings.name, settings.state.value, settings.visibility.value) == (
+        "Spring 2026",
+        "draft",
+        "signed-in",
+    )
+    # The first full hour at least seven days on from the clock's 12:00 on
+    # 26 September, for five hours.
+    assert (settings.start, settings.end) == (
+        datetime(2026, 10, 3, 12, 0, tzinfo=UTC),
+        datetime(2026, 10, 3, 17, 0, tzinfo=UTC),
+    )
+    assert (settings.registration.invite_only, settings.registration.approval.value) == (
+        False,
+        "manual",
+    )
+    assert (settings.description, settings.team_size, settings.tasks) == (None, None, ())
+    (board,) = settings.leaderboards
+    assert (board.name, board.who.value) == ("Standings", "contestants")
+    assert b"\ntasks:" not in starter.content
     repo = acme.fake.state.repos[("acme", "spring.contest")]
     assert repo.teams == {Scope("acme", "spring")}
     assert repo.rewrites_refused is True

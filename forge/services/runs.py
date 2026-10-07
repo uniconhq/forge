@@ -9,15 +9,15 @@ variables, and every other variable must be the one the platform starts
 that grading's run with. The grading must be one whose run is being
 started, `queued`: the CI asks while the platform's start is under way,
 before its answer comes back. The answer is the three steps
-every run has, from the plan of the grading's stage in the publication it
-grades against, which names the harness image by digest; it writes
+every run has, from the plan of the publication it grades against, which
+names the harness image by digest; it writes
 nothing, so it never waits on the start that is holding the row. Anything
 else is refused with an error, never an empty answer, since the CI would
 take an empty answer as leave to run what it found in the repository, and
 the reason goes to the log.
 
 `envelope` is the one document the harness downloads, the runner's
-`envelope.schema.json` version 4, served once: only with the envelope key of
+`envelope.schema.json` version 5, served once: only with the envelope key of
 the grading's run, and only while the grading is `dispatched`, the CI
 holding a run that has not begun. That fetch is the run beginning: the
 grading becomes `running` and its deadline is written, the envelope's wall
@@ -27,20 +27,23 @@ task's runs at the CI can see, and the envelope hands out the callback
 token. A harness whose fetch lost its answer ends its run without a
 report, and the grading reads as a system error once its deadline passes,
 for an organiser to retry. The envelope carries the callback token, the
-callback URL, and a URL the harness writes its log with, signed for the
-machine URL until the deadline.
+callback URL, a URL the harness writes its log with, signed for the
+machine URL until the deadline, and the value of every secret the plan
+names. No org holds a secret yet, so a plan names none and the envelope's
+`secrets` is empty.
 
 `callback` takes a report under the callback token of the grading's run,
 compared by its SHA-256 with the row's in constant time, so another
 grading's token is refused like a wrong one, and the token is what says
 which grading a report is for. A report comes only from a `running` grading
 before its deadline. `started` confirms the run began, `progress` is kept on
-the row, and `finished` carries the verdict: one that matches the runner's
-`verdict.schema.json` and is within `VERDICT_MAX` is kept with its log key
-and the grading is `done`, or `system_error` when the verdict says so; any
-other leaves the grading in `system_error` with the reason, and is taken, since
-sending it again would not mend it. A kept verdict sent again, because its
-answer was lost, is answered the same.
+the row, and `finished` carries the result: one that matches the runner's
+`result.schema.json` and is within `RESULT_MAX` is kept with its log key and
+the grading is `done`, or `system_error` when the result says the run
+stopped on one, with its `error`; any other leaves the grading in
+`system_error` with the reason, and is taken, since sending it again would
+not mend it. A kept result sent again, because its answer was lost, is
+answered the same.
 
 Neither the envelope's key nor a report's token is checked while the row is
 held: the grading is read, the secret checked, and only then is the row
@@ -79,8 +82,8 @@ from forge.domain.grading import (
 )
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
-from forge.domain.plans import Plan, plan_path
-from forge.domain.reports import Event, read_report, verdict_problem
+from forge.domain.plans import PLAN_PATH, Plan
+from forge.domain.reports import ERROR_LIMIT, Event, read_report, result_problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -88,11 +91,10 @@ from forge.services import gradings
 
 log = get_logger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 REFUSED = "The platform does not answer this request."
 NOT_TAKING = "The grading takes no reports or envelope now."
 WRONG_TOKEN = "The report's token is not this grading's."
-ERROR_LIMIT = 500
 SHORTEST_URL = timedelta(seconds=1)
 
 
@@ -167,7 +169,6 @@ async def envelope(ctx: Context, grading: uuid.UUID, key: str) -> dict[str, Any]
         "schema_version": SCHEMA_VERSION,
         "grading_id": str(row.id),
         "submission": dict(places.submission),
-        "stage": row.stage,
         "attempt": row.attempt,
         "checkouts": dict(places.checkouts),
         "callback": {
@@ -177,6 +178,7 @@ async def envelope(ctx: Context, grading: uuid.UUID, key: str) -> dict[str, Any]
         "log_put": log_put,
         "deadline": row.deadline_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
         "limits": {"wall_seconds": wall},
+        "secrets": {},
     }
 
 
@@ -203,8 +205,8 @@ async def callback(
     if (
         report.event is Event.FINISHED
         and status in (GradingStatus.DONE, GradingStatus.SYSTEM_ERROR)
-        and row.verdict is not None
-        and row.verdict == report.verdict
+        and row.result is not None
+        and row.result == report.result
     ):
         return status
     if status is not GradingStatus.RUNNING or (
@@ -219,26 +221,26 @@ async def callback(
             row.progress = report.progress
             gradings.changed(ctx, row)
         case Event.FINISHED:
-            _finished(ctx, row, report.verdict)
+            _finished(ctx, row, report.result)
     await ctx.db.flush()
     return GradingStatus(row.status)
 
 
-def _finished(ctx: Context, row: Grading, verdict: Any) -> None:
-    problem = verdict_problem(verdict)
+def _finished(ctx: Context, row: Grading, result: Any) -> None:
+    problem = result_problem(result)
     if problem is not None:
-        log.warning("runs.verdict_refused", grading=str(row.id), problem=problem)
+        log.warning("runs.result_refused", grading=str(row.id), problem=problem)
         gradings.finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=problem)
         return
-    row.verdict = verdict
-    row.log_key = log_key(row.id, row.attempt) if verdict["log"] is not None else None
-    if verdict["outcome"] == GradingStatus.SYSTEM_ERROR.value:
+    row.result = result
+    row.log_key = log_key(row.id, row.attempt) if result["run_log"] is not None else None
+    if result["stopped"] == GradingStatus.SYSTEM_ERROR.value:
         gradings.finish(
-            ctx, row, GradingStatus.SYSTEM_ERROR, error=str(verdict["summary"])[:ERROR_LIMIT]
+            ctx, row, GradingStatus.SYSTEM_ERROR, error=str(result["error"])[:ERROR_LIMIT]
         )
     else:
         gradings.finish(ctx, row, GradingStatus.DONE)
-    log.info("runs.finished", grading=str(row.id), outcome=verdict["outcome"])
+    log.info("runs.finished", grading=str(row.id), stopped=result["stopped"])
 
 
 def _carries(row: Grading, given: bytes) -> bool:
@@ -294,10 +296,10 @@ async def _run(ctx: Context, row: Grading, refusal: Exception) -> GradingRun:
 
 
 async def _plan(ctx: Context, row: Grading, run: GradingRun, refusal: Exception) -> Plan:
-    """The plan of the grading's stage in the publication it grades against."""
+    """The plan of the publication the grading grades against."""
     try:
         found = await ctx.forge.content.read_file(
-            PLATFORM, TaskId(row.task_id), plan_path(row.stage), at=run.publication_version
+            PLATFORM, TaskId(row.task_id), PLAN_PATH, at=run.publication_version
         )
         return Plan.from_bytes(found.content)
     except (NotFound, Forbidden, ValidationError) as exc:

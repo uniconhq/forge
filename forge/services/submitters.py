@@ -5,7 +5,7 @@ its latest publication froze it, and the person's own registration is read
 beside it. `refuse` then applies the rules a submit is checked against
 before anything is written, in this order, stopping at the first:
 
-1. the task is open by the server's clock plus the person's own extension
+1. the task is open by the server's clock plus the row's extension on it
    (`task_closed`, or `archived` for a contest that is);
 2. they are an approved contestant (`not_approved`).
 
@@ -35,12 +35,12 @@ from forge.domain.errors import (
 )
 from forge.domain.ids import TaskId, WorkspaceId
 from forge.domain.registration import Status
-from forge.domain.release import Closed
+from forge.domain.release import Closed, Extension
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import contestants, places, published, release, sessions, teams
+from forge.services import places, published, release, sessions, teams, timelines
 from forge.services.published import PublishedTask
 from forge.services.turns import Turns
 
@@ -85,7 +85,7 @@ async def entrant(ctx: Context, session: Session, task: TaskId) -> Entrant:
     if not release.sees(settings, person) and not entered:
         raise NotFound(published.NO_SUCH_TASK)
     found = await published.task(ctx, task, settings)
-    if found is None or not rules.released(settings, found.definition, ctx.now):
+    if found is None or not rules.released(settings, found.name, ctx.now):
         raise NotFound(published.NO_SUCH_TASK)
     if person.row is None:
         return Entrant(fresh, task, settings, found, None, None)
@@ -101,28 +101,30 @@ async def refuse(ctx: Context, entrant: Entrant) -> tuple[Contestant, WorkspaceI
     them; each rule's own refusal otherwise.
     """
     openness = rules.openness(
-        entrant.settings,
-        entrant.published.definition,
-        ctx.now,
-        contestants.time_extension(entrant.row),
+        entrant.settings, entrant.published.name, ctx.now, await extension(ctx, entrant)
     )
     match openness.reason:
         case Closed.NOT_RELEASED:
             raise NotFound(published.NO_SUCH_TASK)
         case Closed.ARCHIVED:
             raise Archived("The contest is archived and takes no submissions.")
-        case Closed.ENDED:
-            raise TaskClosed("The contest has ended for you.", reason=Closed.ENDED.value)
-        case Closed.SUBMISSIONS_CLOSED:
-            raise TaskClosed(
-                "The organisers have closed submissions.",
-                reason=Closed.SUBMISSIONS_CLOSED.value,
-            )
+        case Closed.CLOSED:
+            raise TaskClosed("The task has closed for you.", reason=Closed.CLOSED.value)
     row = entrant.row
     if row is None or row.status != Status.APPROVED:
         raise NotApproved(NOT_APPROVED)
     assert entrant.workspace is not None
     return row, entrant.workspace
+
+
+async def extension(ctx: Context, entrant: Entrant) -> Extension:
+    """The extension of the row the person submits as: the workspace's
+    owner's, the team's or their own, and none for one who is no contestant.
+    """
+    if entrant.workspace is None:
+        return Extension()
+    owner = ctx.forge.workspaces.owner_of(entrant.workspace)
+    return await timelines.of_owner(ctx, contest_id_of(task_scope(entrant.task)), owner)
 
 
 async def hold_standing(ctx: Context, entrant: Entrant) -> None:

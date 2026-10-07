@@ -157,7 +157,6 @@ async def test_a_grading_is_started_as_the_org_account_once_its_row_commits(
             version=VersionId("0" * 40),
             submitted_at=ctx.now,
             publication=saved.publication,
-            stage="default",
             attempt=1,
             key=None,
         )

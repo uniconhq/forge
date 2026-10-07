@@ -102,9 +102,10 @@ async def test_a_contest_and_a_task_are_made_bare_then_secured(
     assert _team_names(admin, org, "spring.contest") & contest_teams == set()
     listed = admin.get(f"/api/v1/repos/{org}/spring.sum.task/contents").json()
     assert sorted(entry["name"] for entry in listed) == [
-        "data",
+        "public",
         "statement.md",
         "task.yaml",
+        "tests",
     ]
     assert await forge.content.exists(task) is True
     assert await forge.content.exists(TaskId(f"{org}/spring/nope")) is False
@@ -236,20 +237,20 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
     manager = people["manager"]
     as_manager: AsUser = as_person(admin, manager)
     head = await forge.content.list_files(as_manager, task)
-    assert head.has("data/testcases/") and "task.yaml" in head.tokens
+    assert head.has("tests/main/1/") and "task.yaml" in head.tokens
 
     version = await forge.content.save_files(
         as_manager,
         task,
         {
             "task.yaml": b"name: Sum\n",
-            "plans/default.json": b"{}\n",
-            "data/testcases/1.ans": None,
-            "data/testcases/2.in": b"1 2\n",
+            "plans/plan.json": b"{}\n",
+            "tests/main/1/answer": None,
+            "tests/main/2/input": b"1 2\n",
         },
         expected={
             "task.yaml": head.tokens["task.yaml"],
-            "data/testcases/1.ans": head.tokens["data/testcases/1.ans"],
+            "tests/main/1/answer": head.tokens["tests/main/1/answer"],
         },
         message="Save",
     )
@@ -258,14 +259,14 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
     assert commit["author"]["login"] == manager["login"]
     assert [parent["sha"] for parent in commit["parents"]] == [head.version]
     assert sorted(entry["filename"] for entry in commit["files"]) == [
-        "data/testcases/1.ans",
-        "data/testcases/2.in",
-        "plans/default.json",
+        "plans/plan.json",
         "task.yaml",
+        "tests/main/1/answer",
+        "tests/main/2/input",
     ]
     saved = await forge.content.list_files(as_manager, task)
     assert saved.version == version
-    assert "data/testcases/1.ans" not in saved.tokens
+    assert "tests/main/1/answer" not in saved.tokens
 
     with pytest.raises(Conflict):
         await forge.content.save_files(
@@ -285,7 +286,7 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
     assert (await forge.content.list_files(PLATFORM, task)).version == version
 
     first = await forge.workspaces.publish(task, version, write_note(False, ()))
-    note = write_note(True, ("plans/default.json changed",))
+    note = write_note(True, ("plans/plan.json changed",))
     second = await forge.workspaces.publish(task, head.version, note)
 
     listed = await forge.workspaces.list_publications(task)
@@ -294,7 +295,7 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
         (second, 2, head.version),
     ]
     assert (listed[0].grading_changed, listed[0].changes) == (False, ())
-    assert (listed[1].grading_changed, listed[1].changes) == (True, ("plans/default.json changed",))
+    assert (listed[1].grading_changed, listed[1].changes) == (True, ("plans/plan.json changed",))
     tags = {tag["name"]: tag for tag in admin.get(f"/api/v1/repos/{org}/{repo}/tags").json()}
     assert tags["published/1"]["commit"]["sha"] == version
     assert tags["published/1"]["message"].strip() == write_note(False, ()).strip()

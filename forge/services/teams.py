@@ -7,7 +7,7 @@ Everyone in a team is a contestant of the contest first, registered and
 approved by the contest's own rules, so an invite-only contest, a code, an
 email pattern and the capacity hold for every person. An approved contestant
 creates a team and leads it, or asks to join one; the leader asks people in,
-approves requests and removes members, up to the contest's `max_size`; a
+approves requests and removes members, up to the contest's `team_size`; a
 member leaves. Organisers of the contest create and delete teams, move
 people between them, remove a member and change a leader, under their own
 role at the contest. Someone who has submitted to the contest on their own
@@ -38,13 +38,14 @@ import builtins
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from forge.db.tables import Contestant, Grading, TeamMember
 from forge.db.tables import Team as TeamRow
+from forge.domain import registration
 from forge.domain import teams as rules
 from forge.domain.definitions import ContestDefinition, State
 from forge.domain.errors import (
@@ -68,7 +69,7 @@ from forge.domain.teams import MemberStatus
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import places, published, release
+from forge.services import places, published, release, timelines
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -92,7 +93,8 @@ class Member:
 @dataclass(frozen=True, slots=True)
 class Team:
     """A team: its id and name, its leader, its members, the people asked in
-    or asking, and whether it has submitted anything.
+    or asking, whether it has submitted anything, and its extension: how
+    long, and on which tasks, every task when it names none.
     """
 
     id: uuid.UUID
@@ -101,6 +103,8 @@ class Team:
     members: tuple[Member, ...]
     pending: tuple[Member, ...]
     submitted: bool
+    time_extension: timedelta
+    extension_tasks: tuple[str, ...] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,7 +248,7 @@ async def invite(
         await _admit(ctx, found, row, settings)
         log.info("teams.joined", team=str(found.id), user_id=user.id, by_user_id=session.user_id)
     elif row is None:
-        rules.refuse_full(await _size(ctx, found.id), settings.teams.max_size)
+        rules.refuse_full(await _size(ctx, found.id), settings.team_size or 0)
         ctx.db.add(
             TeamMember(
                 team_id=found.id, contest_id=contest, user_id=user.id, status=MemberStatus.INVITED
@@ -342,6 +346,48 @@ async def organise_delete(
 
 
 @action
+async def organise_extend(
+    ctx: Context,
+    organiser: Organiser,
+    contest: ContestId,
+    team: uuid.UUID,
+    extension: timedelta,
+    tasks: Sequence[str] | None = None,
+) -> Team:
+    """Give a team `extension` on the contest's `tasks`, by name, every task
+    when none are named, in place of any it had, so an extension of nothing
+    takes it away. It moves the team's due and close on those tasks. Needs
+    the manager role at the contest. `InvalidExtension` when it names a task
+    the contest does not list, would let the team submit to a task whose
+    reveal has passed, or would leave one of its submissions after the due
+    or the close it was made before.
+    """
+    settings = await _organiser_settings(ctx, organiser, contest, even_off=True)
+    found = await _hold_team(ctx, contest, team)
+    checked = registration.checked_extension(extension)
+    named = registration.checked_tasks(tasks, [entry.id for entry in settings.tasks])
+    await timelines.refuse_extension(
+        ctx,
+        contest,
+        settings,
+        _workspace(ctx, found),
+        timelines.extension_of(found.time_extension_seconds, found.extension_tasks),
+        timelines.extension_of(int(checked.total_seconds()), named),
+    )
+    found.time_extension_seconds = int(checked.total_seconds())
+    found.extension_tasks = [*named] if named is not None else None
+    await ctx.db.flush()
+    log.info(
+        "teams.extended",
+        team=str(team),
+        contest=contest,
+        seconds=found.time_extension_seconds,
+        by_user_id=organiser.user.id,
+    )
+    return await _view(ctx, found)
+
+
+@action
 async def organise_move(
     ctx: Context, organiser: Organiser, contest: ContestId, user_id: int, team: uuid.UUID
 ) -> Team:
@@ -361,7 +407,7 @@ async def organise_move(
         raise SubmittedAlone(
             "That person has submitted on their own, so their results stay theirs."
         )
-    rules.refuse_full(await _size(ctx, target.id), settings.teams.max_size)
+    rules.refuse_full(await _size(ctx, target.id), settings.team_size or 0)
     row = await _live_row(ctx, target.id, user_id)
     if current is not None:
         await _remove(ctx, held[current.team_id], current)
@@ -439,7 +485,7 @@ async def mine(ctx: Context, session: Session, contest: ContestId) -> Mine:
             invited.append(await _listed(ctx, found, settings))
         else:
             requested.append(await _listed(ctx, found, settings))
-    return Mine(team, tuple(invited), tuple(requested), settings.teams.max_size)
+    return Mine(team, tuple(invited), tuple(requested), settings.team_size or 0)
 
 
 @action
@@ -561,7 +607,7 @@ async def on_removed(ctx: Context, row: Contestant) -> None:
 
 
 def is_on(settings: ContestDefinition) -> bool:
-    return settings.teams.enabled
+    return settings.team_size is not None
 
 
 # The pieces.
@@ -601,7 +647,7 @@ async def _organiser_settings(
 
 
 def _refuse_off(settings: ContestDefinition) -> None:
-    if not settings.teams.enabled:
+    if settings.team_size is None:
         raise TeamsOff("This contest has no teams.")
 
 
@@ -770,7 +816,7 @@ async def _admit(ctx: Context, team: TeamRow, row: TeamMember, settings: Contest
     other requests and invitations in the contest dropped.
     """
     current = await member_ids(ctx, team.id)
-    rules.refuse_full(len(current), settings.teams.max_size)
+    rules.refuse_full(len(current), settings.team_size or 0)
     await ctx.forge.workspaces.share_workspace(_workspace(ctx, team), [*current, row.user_id])
     row.status = MemberStatus.MEMBER
     row.joined_at = ctx.now
@@ -883,6 +929,8 @@ async def _view(ctx: Context, team: TeamRow) -> Team:
         members=tuple(members),
         pending=tuple(pending),
         submitted=await _submitted(ctx, ContestId(team.contest_id), team.id),
+        time_extension=timedelta(seconds=team.time_extension_seconds),
+        extension_tasks=tuple(team.extension_tasks) if team.extension_tasks is not None else None,
     )
 
 
@@ -892,5 +940,5 @@ async def _listed(ctx: Context, team: TeamRow, settings: ContestDefinition) -> L
         name=team.name,
         leader=await _user(ctx, team.leader_user_id) if team.leader_user_id is not None else None,
         size=await _size(ctx, team.id),
-        max_size=settings.teams.max_size,
+        max_size=settings.team_size or 0,
     )

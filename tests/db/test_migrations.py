@@ -1,17 +1,22 @@
 """The migration brings an empty database to the schema the tables declare,
-with exactly the tables the package owns and rolls back to nothing, an
-activation job and a grading row made by a submit included, a grading row
-round-trips with its verdict, and the rows of states that are gone are moved
-to the ones that stand for them.
+with exactly the tables the package owns, and every revision goes down and
+up again one step at a time, back to nothing and an activation job and a
+grading row made by a submit included. A grading row round-trips with its
+result, its numbers exactly as written; the rows of states that are gone are
+moved to the ones that stand for them; and the task format's revision keeps
+one grading per submission and attempt, its result emptied, and gives
+extensions their tasks.
 """
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 
@@ -83,8 +88,21 @@ def test_the_migration_rolls_back_over_an_activation_and_a_submission_place_job(
     upgrade_to_head(migrated_database_url)
 
 
-async def test_a_grading_row_round_trips_with_its_verdict(setup: Setup) -> None:
-    verdict = {"outcome": "verdict", "verdict": "AC", "score": "100", "summary": [{"id": "1"}]}
+async def test_a_grading_row_round_trips_with_its_result_exactly(setup: Setup) -> None:
+    result = {
+        "schema_version": 5,
+        "stopped": None,
+        "tests": [
+            {
+                "test": "main/1",
+                "outcome": "accepted",
+                "values": {"score": Decimal("1.0000000000000000001"), "time_ms": 12},
+            }
+        ],
+        "values": {"fraction": Decimal("0.1"), "log": ""},
+        "run_log": None,
+        "error": None,
+    }
     async with setup.unit_of_work() as ctx:
         row = Grading(
             task_id="acme/spring/sum",
@@ -94,10 +112,9 @@ async def test_a_grading_row_round_trips_with_its_verdict(setup: Setup) -> None:
             submission_version="c" * 40,
             submitted_at=datetime.now(UTC),
             publication_id="acme/spring/sum#1",
-            stage="public",
             idempotency_key="key-12345678",
             status="done",
-            verdict=verdict,
+            result=result,
             log_key="logs/1",
             run_id="12/3",
             callback_token_hash=b"\x00" * 32,
@@ -108,8 +125,15 @@ async def test_a_grading_row_round_trips_with_its_verdict(setup: Setup) -> None:
         row_id = row.id
     async with setup.unit_of_work() as ctx:
         found = await ctx.db.get(Grading, row_id)
-    assert found is not None
-    assert found.verdict == verdict
+        stored: str = (
+            await ctx.db.execute(text("SELECT result #>> '{tests,0,values,score}' FROM gradings"))
+        ).scalar_one()
+    assert found is not None and found.result is not None
+    assert found.result == result
+    score = found.result["tests"][0]["values"]["score"]
+    assert isinstance(score, Decimal) and score > 1
+    assert str(found.result["values"]["fraction"]) == "0.1"
+    assert stored == "1.0000000000000000001"
     assert found.run_id == "12/3"
 
 
@@ -155,26 +179,37 @@ async def test_a_time_reads_back_in_utc_whatever_zone_the_server_is_in(setup: Se
 
 
 def _grading(
-    connection: Any, status: str, wait_reason: str | None, key: str | None, number: int = 0
+    connection: Any,
+    status: str,
+    wait_reason: str | None,
+    key: str | None,
+    number: int = 0,
+    *,
+    stage: str | None = "default",
 ) -> None:
     """A grading row, with a `wait_reason` only on a schema from before
-    revision 0007, which still has one.
+    revision 0007, which still has one, and a `stage` only on a schema from
+    before revision 0012.
     """
     columns = ", wait_reason" if wait_reason is not None else ""
     values = ", :reason" if wait_reason is not None else ""
+    if stage is not None:
+        columns += ", stage"
+        values += ", :stage"
     connection.execute(
         text(
             "INSERT INTO gradings (id, task_id, workspace_id, submission_id, submission_number, "
-            f"submission_version, submitted_at, publication_id, stage, status{columns}, "
+            f"submission_version, submitted_at, publication_id, status{columns}, "
             "idempotency_key) VALUES (gen_random_uuid(), 'acme/spring/sum', 'acme/spring/@u7', "
             "'acme/spring/@u7/sum#' || :number, :number, 'c', now(), 'acme/spring/sum#1', "
-            f"'default', :status{values}, :key)"
+            f":status{values}, :key)"
         ),
         {
             "number": number or (1 if key else 2),
             "status": status,
             "reason": wait_reason,
             "key": key,
+            "stage": stage,
         },
     )
 
@@ -194,20 +229,21 @@ def test_a_name_is_of_one_of_the_three_kinds(migrated_database_url: str) -> None
     engine.dispose()
 
 
-def test_a_key_is_unique_for_a_workspace_task_and_stage(migrated_database_url: str) -> None:
+def test_a_key_is_unique_for_a_workspace_and_task(migrated_database_url: str) -> None:
     engine = create_engine(migrated_database_url)
     with engine.begin() as connection:
-        _grading(connection, "queued", None, "key-12345678")
+        _grading(connection, "queued", None, "key-12345678", 1, stage=None)
     with pytest.raises(IntegrityError), engine.begin() as connection:
-        connection.execute(
-            text(
-                "INSERT INTO gradings (id, task_id, workspace_id, submission_id, "
-                "submission_number, submission_version, submitted_at, publication_id, stage, "
-                "status, idempotency_key) VALUES (gen_random_uuid(), 'acme/spring/sum', "
-                "'acme/spring/@u7', 'acme/spring/@u7/sum#9', 9, 'c', now(), "
-                "'acme/spring/sum#1', 'default', 'queued', 'key-12345678')"
-            )
-        )
+        _grading(connection, "queued", None, "key-12345678", 9, stage=None)
+    engine.dispose()
+
+
+def test_a_submission_has_one_grading_per_attempt(migrated_database_url: str) -> None:
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        _grading(connection, "done", None, None, 1, stage=None)
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        _grading(connection, "queued", None, None, 1, stage=None)
     engine.dispose()
 
 
@@ -339,3 +375,89 @@ def test_the_states_that_are_gone_become_the_ones_that_stand_for_them(
     # stays; the one that only lapsed named bytes in a bucket nothing reads
     # after 0009, and 'consumed' is the word 0007 gave it, so it goes.
     assert uploads == ["consumed"]
+
+
+def _revisions(database_url: str) -> list[str]:
+    """Every revision, oldest first."""
+    script = ScriptDirectory.from_config(alembic_config(database_url))
+    return [revision.revision for revision in reversed(list(script.walk_revisions()))]
+
+
+def test_every_revision_goes_down_and_up_again_one_step_at_a_time(
+    migrated_database_url: str,
+) -> None:
+    config = alembic_config(migrated_database_url)
+    revisions = _revisions(migrated_database_url)
+    assert revisions[:12] == [f"{number:04}" for number in range(1, 13)]
+
+    for revision in reversed(["base", *revisions[:-1]]):
+        command.downgrade(config, revision)
+    for revision in revisions:
+        command.upgrade(config, revision)
+
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        context = MigrationContext.configure(
+            connection, opts={"compare_type": True, "compare_server_default": True}
+        )
+        differences = compare_metadata(context, metadata)
+    engine.dispose()
+    assert differences == []
+
+
+def _columns(database_url: str, table: str) -> set[str]:
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        found = {column["name"] for column in inspect(connection).get_columns(table)}
+    engine.dispose()
+    return found
+
+
+def test_the_task_format_keeps_one_grading_per_attempt_and_empties_its_result(
+    migrated_database_url: str,
+) -> None:
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0011")
+    assert "stage" in _columns(migrated_database_url, "gradings")
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        _grading(connection, "done", None, "key-12345678", 1)
+        _grading(connection, "done", None, None, 1, stage="final")
+        connection.execute(text("""UPDATE gradings SET verdict = '{"outcome": "accepted"}'"""))
+    engine.dispose()
+
+    command.upgrade(config, "0012")
+
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text("SELECT submission_number, idempotency_key, status, result FROM gradings")
+        ).all()
+    engine.dispose()
+    assert [tuple(row) for row in rows] == [(1, "key-12345678", "done", None)]
+    assert not {"stage", "verdict"} & _columns(migrated_database_url, "gradings")
+    assert "extension_tasks" in _columns(migrated_database_url, "contestants")
+    assert {"time_extension_seconds", "extension_tasks"} <= _columns(migrated_database_url, "teams")
+
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        connection.execute(text("""UPDATE gradings SET result = '{"schema_version": 5}'"""))
+    engine.dispose()
+    command.downgrade(config, "0011")
+
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        back = connection.execute(text("SELECT stage, verdict FROM gradings")).all()
+    engine.dispose()
+    assert [tuple(row) for row in back] == [("default", None)]
+    assert "result" not in _columns(migrated_database_url, "gradings")
+    assert "extension_tasks" not in _columns(migrated_database_url, "contestants")
+    assert not {"time_extension_seconds", "extension_tasks"} & _columns(
+        migrated_database_url, "teams"
+    )
+    # The stage is back in the key, so another stage of the same attempt goes in.
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        _grading(connection, "queued", None, None, 1, stage="final")
+    engine.dispose()
+    upgrade_to_head(migrated_database_url)

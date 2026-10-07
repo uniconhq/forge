@@ -1,6 +1,6 @@
 """The runner's contract files, as the package holds them: `schemas/` is a
-copy of the five schemas a runner release publishes, at `schema_version` 4,
-the plan, the envelope, the verdict, the primitive and the submission. The
+copy of the five schemas a runner release publishes, at `schema_version` 5,
+the plan, the envelope, the result, the primitive and the submission. The
 package checks what a run sends back, and what it hands a run, against
 them; its tests check the copy against the runner's own when that repo is
 checked out beside this one.
@@ -13,13 +13,13 @@ from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
 
-SCHEMA_VERSION = 4
-CONTRACTS = ("plan", "envelope", "verdict", "primitive", "submission")
+SCHEMA_VERSION = 5
+CONTRACTS = ("plan", "envelope", "result", "primitive", "submission")
 MESSAGE_LIMIT = 300
 
 
 def schema_text(contract: str) -> str:
-    """The schema of one contract, `verdict` for `verdict.schema.json` and so
+    """The schema of one contract, `result` for `result.schema.json` and so
     on, as the file holds it.
     """
     if contract not in CONTRACTS:

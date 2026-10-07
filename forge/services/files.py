@@ -5,8 +5,10 @@ role at the place and writing the manager role.
 
 Every write carries the token the file was read with, and a file that has
 moved since is `Conflict`, with nothing written. A write to a contest's
-`contest.yaml` is validated first and refused whole when it is not valid, and
-a manager's change to one of its admin-only keys is refused naming each. A
+`contest.yaml` is validated first and refused whole when it is not valid,
+or when it moves a task's timeline behind what rows already did or puts a
+worth or a due on a task that gives no points (`timelines.check_contest`),
+and a manager's change to one of its admin-only keys is refused naming each. A
 write to a task is a save of the task, which publishes it when it is valid
 (`publications.save`). A rollback is not an undo: the file as it was at the
 chosen version is written back as a new change through the same write, so a
@@ -24,15 +26,21 @@ from forge.domain.content import (
     Uploaded,
     check_path,
 )
-from forge.domain.definitions import CONTEST_FILE, admin_only_changes, parse_contest
+from forge.domain.definitions import (
+    CONTEST_FILE,
+    ContestDefinition,
+    admin_only_changes,
+    parse_contest,
+)
 from forge.domain.errors import AdminOnly, NotFound
 from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.roles import Role, ScopeKind, holds, scope_of_place, task_scope
 from forge.domain.uploads import refuse_pointer
+from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import publications, published
+from forge.services import publications, published, timelines
 from forge.services.access import Organiser, require
 from forge.services.publications import Draft, Published
 
@@ -110,15 +118,18 @@ async def write(
     contest = ContestId(place)
     refuse_pointer(path, content)
     if path == CONTEST_FILE:
-        parse_contest(content)
+        after = parse_contest(content)
+        before = await _current(ctx, organiser, contest, path)
         if not holds(organiser.grants, scope, Role.ADMIN):
-            before = await _current(ctx, organiser, contest, path)
             keys = admin_only_changes("contest", before, content)
             if keys:
                 log.info("files.refused", place=place, keys=keys, user_id=organiser.user.id)
                 raise AdminOnly(
                     f"Only an admin of {scope.name} may change {', '.join(keys)}.", keys=keys
                 )
+        problems = await timelines.check_contest(ctx, contest, _parsed(before), after)
+        if problems:
+            raise InvalidDefinition(CONTEST_FILE, problems)
     version = await ctx.forge.content.write_file(
         organiser.identity,
         contest,
@@ -165,6 +176,18 @@ async def rollback(
     )
     log.info("files.rolled_back", place=place, path=path, to=version, user_id=organiser.user.id)
     return written
+
+
+def _parsed(content: bytes | None) -> ContestDefinition | None:
+    """The contest's settings as they stood, or none when they did not read,
+    which leaves nothing for a move to be checked against.
+    """
+    if content is None:
+        return None
+    try:
+        return parse_contest(content)
+    except InvalidDefinition:
+        return None
 
 
 async def _current(ctx: Context, organiser: Organiser, place: ContestId, path: str) -> bytes | None:

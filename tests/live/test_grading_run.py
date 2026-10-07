@@ -1,4 +1,4 @@
-"""One grading run from its queued row to its verdict on the real stack: the
+"""One grading run from its queued row to its result on the real stack: the
 CI, a grading machine with its socket filter, and the harness and primitive
 images of the local registry. The test process stands in for the backend's
 three machine routes, serving each through the package's own actions, and
@@ -10,7 +10,7 @@ The CI asks the extension what the run is, signed with its own key; the
 answer passes the CI's checks and the run is started with it, which the test
 asserts in any case. Then the run checks the task out at its publication and
 the submission at its commit, and the harness fetches the envelope, runs the
-plan one sandboxed container per step, writes its log and posts the verdict.
+plan one sandboxed container per step, writes its log and posts the result.
 The checkouts clone from the host of the repository's clone URL, the forge's
 public URL, which is also the host the CI lends its credential for; on a
 stack whose public URL a step container cannot reach, such as one under
@@ -253,7 +253,7 @@ def people(admin: httpx.Client, stamp: str) -> Iterator[tuple[dict[str, Any], di
     delete_user(admin, contestant["login"])
 
 
-async def test_a_run_goes_from_its_queued_row_to_its_verdict(
+async def test_a_run_goes_from_its_queued_row_to_its_result(
     grading_setup: Setup,
     platform: Platform,
     admin: httpx.Client,
@@ -289,8 +289,11 @@ async def test_a_run_goes_from_its_queued_row_to_its_verdict(
     )
     await forge.workspaces.open_submission_place(workspace, task, [contestant["id"]])
     document = {
-        "schema_version": 4,
-        "inputs": {"submission": {"files": ["files/submission/main.py"], "language": "python"}},
+        "schema_version": 5,
+        "inputs": {
+            "submission": {"files": ["files/submission/main.py"]},
+            "language": {"value": "python"},
+        },
     }
     submitted = await forge.workspaces.record_submission(
         as_person(admin, contestant),
@@ -312,13 +315,12 @@ async def test_a_run_goes_from_its_queued_row_to_its_verdict(
     async with setup.unit_of_work() as ctx:
         current = await published.task(ctx, task)
         assert current is not None
-        [row] = gradings.queue_submission(
+        row = gradings.queue_submission(
             ctx,
             task=task,
             workspace=workspace,
             submission=submitted,
             publication=current.publication,
-            definition=current.definition,
             key="live-key-0001",
             at=ctx.now,
         )
@@ -342,10 +344,11 @@ async def test_a_run_goes_from_its_queued_row_to_its_verdict(
     checkout = dict(zip((step[0] for step in state["steps"]), state["steps"], strict=True))
     if checkout.get("task", ("task", "", 0))[1] == "failure":
         pytest.skip(f"the task checkout could not reach the forge: {state['logs']['task'][-2:]}")
-    assert found.status == GradingStatus.DONE, (found.error, found.verdict, state)
-    assert found.verdict is not None
-    assert violation(found.verdict, "verdict") is None
-    assert found.verdict["outcome"] == "accepted"
+    assert found.status == GradingStatus.DONE, (found.error, found.result, state)
+    assert found.result is not None
+    assert violation(found.result, "result") is None
+    assert found.result["stopped"] is None
+    assert [row["outcome"] for row in found.result["tests"]] == ["accepted"]
     assert found.log_key == f"logs/{grading}/1.log"
     assert any(path.endswith(f"/logs/{grading}/1.log") for path in platform.logs)
 
