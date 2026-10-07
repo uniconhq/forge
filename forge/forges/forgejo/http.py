@@ -23,6 +23,7 @@ closes when its block ends.
 import asyncio
 from collections.abc import Mapping
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -49,6 +50,27 @@ CONFLICT = 409
 ALREADY_EXISTS = "already exists"
 
 Params = Mapping[str, str | int]
+
+DOT_SEGMENTS = frozenset({"", ".", ".."})
+
+
+def segment(value: str) -> str:
+    """One segment of a request's path holding a name, quoted whole, so a
+    `/`, `?`, `#` or `%` in it stays part of the name and never reaches
+    another endpoint. `NotFound` for an empty name, `.` or `..`, which a path
+    resolves away and which name nothing at the host.
+    """
+    if value in DOT_SEGMENTS:
+        raise NotFound(f"{value!r} names nothing")
+    return quote(value, safe="")
+
+
+def file_path(path: str) -> str:
+    """A file's or a folder's path inside a request's path, each of its
+    segments quoted as `segment` quotes a name, empty ones left out, so the
+    empty path is the repository's root.
+    """
+    return "/".join(segment(part) for part in path.split("/") if part)
 
 
 class Auth(Protocol):

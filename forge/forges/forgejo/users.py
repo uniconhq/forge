@@ -9,7 +9,7 @@ from typing import Any
 
 from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM, User
-from forge.forges.forgejo.http import Http, json_of, list_of
+from forge.forges.forgejo.http import Http, json_of, list_of, segment
 from forge.port.identity import AccountVisibility
 
 
@@ -22,7 +22,7 @@ class Users:
 
     async def find_by_username(self, username: str) -> User:
         return user_from(
-            json_of(await self._http.call(PLATFORM, "GET", f"/api/v1/users/{username}"))
+            json_of(await self._http.call(PLATFORM, "GET", f"/api/v1/users/{segment(username)}"))
         )
 
     async def verified_emails(self, user_id: int) -> tuple[str, ...]:
@@ -72,7 +72,7 @@ class Users:
         await self._http.call(
             PLATFORM,
             "PATCH",
-            f"/api/v1/admin/users/{person['login']}",
+            f"/api/v1/admin/users/{segment(person['login'])}",
             json={
                 "password": password,
                 "must_change_password": False,
@@ -90,7 +90,7 @@ class Users:
         so the one that exists is deleted first and a rerun replaces it.
         """
         headers = {"Authorization": basic(username, password)}
-        path = f"/api/v1/users/{username}/tokens"
+        path = f"/api/v1/users/{segment(username)}/tokens"
         for token in list_of(await self._http.request("GET", path, headers=headers)):
             if token.get("name") == name:
                 await self._http.request("DELETE", f"{path}/{token['id']}", headers=headers)
@@ -104,7 +104,7 @@ class Users:
         await self._http.call(
             PLATFORM,
             "PATCH",
-            f"/api/v1/admin/users/{person['login']}",
+            f"/api/v1/admin/users/{segment(person['login'])}",
             json={
                 "active": False,
                 "login_name": person.get("login_name") or person["login"],
@@ -122,9 +122,11 @@ class Users:
         """
         person = await self._record(user_id)
         login = str(person["login"])
-        for repo in await self._http.get_all(PLATFORM, f"/api/v1/users/{login}/repos"):
-            await self._http.call(PLATFORM, "DELETE", f"/api/v1/repos/{login}/{repo['name']}")
-        await self._http.call(PLATFORM, "DELETE", f"/api/v1/admin/users/{login}")
+        for repo in await self._http.get_all(PLATFORM, f"/api/v1/users/{segment(login)}/repos"):
+            await self._http.call(
+                PLATFORM, "DELETE", f"/api/v1/repos/{segment(login)}/{segment(repo['name'])}"
+            )
+        await self._http.call(PLATFORM, "DELETE", f"/api/v1/admin/users/{segment(login)}")
 
     async def _record(self, user_id: int) -> dict[str, Any]:
         found = json_of(
