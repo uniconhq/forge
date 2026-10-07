@@ -104,11 +104,11 @@ forge/api/
   uploads.py    slot, task_file_slot, complete, door, the Slot a slot is, the
                 Upload complete returns with its UploadStatus, and the Door
                 the proxy is answered with
-  submissions.py  submit, mine, one, files, file, run_log, the SubmittedInput
-                submit takes, and the Submission, Result, SubmittedFiles,
-                GradingStatus and Show they return
-  gradings.py   cancel, retry, rejudge, list, task_of, and the GradingRecord,
-                Rejudged and GradingStatus they return
+  submissions.py  submit, mine, one, files, download, the SubmittedInput
+                submit takes, and the Submission, Result, GroupShown,
+                SubmittedFiles, GradingStatus and Show they return
+  gradings.py   cancel, retry, rejudge, list, run_log, task_of, and the
+                GradingRecord, Rejudged and GradingStatus they return
   runs.py       config, envelope, callback, the CiRequest config takes and the
                 CiAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
                 ENVELOPE_PATH and CALLBACK_PATH, where each is served
@@ -475,8 +475,8 @@ hosting process calls are actions, marked `@action` from
 | `clarifications` | `ask`, `mine`, `follow_up`, `inbox`, `of_contest`, `reply`, `mark`, `unmark`, `answer_publicly` |
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
-| `submissions` | `submit`, `mine`, `one`, `files`, `download`, `run_log` |
-| `gradings` | `cancel`, `retry`, `rejudge`, `list`, `task_of` |
+| `submissions` | `submit`, `mine`, `one`, `files`, `download` |
+| `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of` |
 | `runs` | `config`, `envelope`, `callback` |
 | `workflows` | `create` |
 
@@ -601,8 +601,8 @@ which must be there; each checks the name and makes the thing before it
 answers. A contest or task asked for with no title, or a blank one, is
 titled by its name. A contest takes two steps, its place with a starter
 `contest.yaml` that is valid as written and its roles and protection. A task
-takes four: its place with `task.yaml`, `statement.md` and an example
-testcase in `data/testcases/`; its roles and protection, its publications
+takes four: its place with `task.yaml`, `statement.md`, an empty `public/`
+and one test in `tests/main/1/`; its roles and protection, its publications
 reserved for the platform; its activation at the CI as the org's own
 account, which takes it for grading, trusts it for `volumes` and nothing
 else, and leaves it with no webhook, since the platform starts every run
@@ -610,9 +610,10 @@ itself; and its entry at the end of the `tasks` list in `contest.yaml`.
 Nothing is published until the first save. A contest's tasks are the tasks
 there are at the forge, which `tasks.list` reads as the organiser; the
 `tasks` list in `contest.yaml` orders, labels and scores them. The last step
-writes the new task's entry as the platform, with the next free letter as
-its label and 100 points, into the file's text so its comments and layout
-stay (`domain/contest_entries.py`); a `contest.yaml` that does not read, or
+writes the new task's entry as the platform, `{id: <name>}`, its label
+being its place in the list, and in a published contest with its
+`release_at` and `closes` at the contest's end, into the file's text so its
+comments and layout stay (`domain/contest_entries.py`); a `contest.yaml` that does not read, or
 a list written in flow style with items in it, is left alone and the task is
 made without an entry.
 
@@ -677,12 +678,19 @@ underneath and the history is theirs. Every path is checked first, and one
 that is not a plain path inside the place is `InvalidPath`, unread and
 unwritten. A write carries the token the file was read with, and one that has moved is `Conflict`. A write to `contest.yaml`
 is validated first and refused whole as `InvalidDefinition` when it is not
-valid, when it puts a `worth` or a `due` on a task whose latest publication
-gives no points, or when it moves a task's timeline behind what rows already
-did (C2, `services/timelines.py`): a `release_at` that has passed moved
-later, a `due` moved earlier than a submission it would make late, a close
-moved earlier than a submission already made, or later once the task has
-revealed. A manager's change to one of its admin-only keys, `name`,
+valid, when an entry of `tasks` names no task of the contest, when it puts a
+`worth` or a `due` on a task whose latest publication gives no points, or
+when it moves a task's timeline behind what rows already did (C2,
+`services/timelines.py`): the release of a task that has opened moved later,
+the entry of a task that has opened or has submissions dropped, a `due`
+moved earlier than a submission it would make late, a close moved earlier
+than a submission already made, or later once the task has revealed. A task
+has opened when the settings saved before released it, the contest
+published and past its start and the task's `release_at` passed, so a
+contest that was never published moves freely. A task reveals once it has
+closed for every row, with the longest extension in force on it: an
+approved contestant's who is in no team, or a team's with a member. A
+manager's change to one of its admin-only keys, `name`,
 `description`, `state`, `visibility` and `registration`, is refused as
 `AdminOnly`, naming each; nothing is written either way. A write to a task
 is a save of the task, below. A rollback reads the file at the chosen
@@ -706,9 +714,11 @@ takes each path with its new content and the token it was read with, as an
    one in an old format refused at the `workflow` line so its owner tags a
    new one; the tests are read from `tests/<group>/<test>/` and checked
    against `test_groups`; once the task has a graded submission, a group
-   shown `always` or `verdict` is not hidden again and a group the save
-   adds says its `show` (T7, T10); and the plan compiles over the files of
-   that state. When the latest publication used a workflow of the same
+   shown `always` or `verdict` under any publication a graded submission
+   ran under is not hidden again and a group the save adds says its `show`
+   (T7, T10); a task left giving no points is refused at `test_groups`
+   while its contest's entry gives it a `worth` or a `due`, naming that
+   line; and the plan compiles over the files of that state. When the latest publication used a workflow of the same
    `<owner>/<name>` and that name is now another workflow, by the forge's own
    id for it, the state is refused at that line: the owner may have been
    renamed and the name taken by someone else. A state that fails is a `Draft`: the organiser's
@@ -737,10 +747,14 @@ takes each path with its new content and the token it was read with, as an
    save landed between the check and the write, the change holds files this
    save never checked, so it comes back as a `Draft` saying so, and the next
    save checks and publishes the task as it then stands.
+6. A publication that changed how the task grades regrades every submission
+   to the task, as `gradings.rejudge` does: a new attempt of each one's
+   latest attempt against it.
 
 A valid save comes back as `Published`, with the publication, its number,
-whether it changed how the task grades and what, and its notes: the sealed
-steps, and a bounded value the task's `credit` does not name. `publications.list`
+whether it changed how the task grades and what, its notes, the sealed
+steps and a bounded value the task's `credit` does not name, and how many
+submissions it queued to be graded again. `publications.list`
 gives every publication with its flag and its changes, for the task's
 history.
 
@@ -774,9 +788,18 @@ works out which steps are sealed, running the contestant's code over a task
 file the contestant is not served, or reading what such a step wrote, and
 refuses a task with a sealed step that shows a group before it closes (T5),
 checks the plan fits a machine, its whole time within the 25 minutes a run
-may take and each step's memory and GPUs within `PLATFORM_MACHINE`, refused
-at the input that pushed it over, and checks `credit` against the report
-(T3, T4). Each step carries its primitive's image by digest, whether it may
+may take, each step's memory and GPUs within `PLATFORM_MACHINE` and no step
+reaching the network, which no machine gives yet, checks `credit` against
+the report (T3, T4), and checks the plan against the runner's contract. A
+raised limit past what is allowed is refused where its number came from:
+the task's input, the `test.yaml` of the test giving the most, or the
+`workflow` line when the workflow writes the number itself, saying what
+pushed it over ("150 tests at time_limit 2 give the run 26 minutes; a run
+may take 25"); a run too long is blamed on the raised time limit that adds
+the most, and on the number of tests when none is raised. A test id longer
+than 255 characters is refused at its folder.
+
+Each step carries its primitive's image by digest, whether it may
 reach the network, its six limits and its declared outputs, a `?` after an
 optional one; its container runs the image's own entrypoint. No org holds a
 secret yet, so a value given as `{secret: <name>}` is refused naming it.
@@ -1169,13 +1192,19 @@ groups show it (`domain/showing.py`): a group shown `always` with its
 outcome and its tests, one shown as a `verdict` with its outcome and its
 tests at the task's reveal, one shown `after_close` with its name and when
 it is shown; the outcome over the groups shown; the values reported once;
-and what stopped the run, unless a sealed step that runs once may have. A
-run in `system_error` is told to its contestant as still running, with
-nothing of it shown. `files` gives the inputs one was made with, as its
-`submission.json` names them, and `download` a door to one of those files,
-which the proxy streams from the forge. A run's log names every test, the
-hidden ones too, so it is the organisers'. Anyone else's submission is no
-such submission.
+and what stopped the run, unless the sealed step that runs once and stopped
+it, as the result's `stopped_by` names it, is held back. A grading is shown
+with the publication it ran under: that publication's sealed facts always,
+and the latest publication's `test_groups` when the two plans list the
+same tests, its own otherwise, so its rows are folded with the tests they
+ran on; a group with no rows did not run on it (`ran` false) and adds
+nothing to the outcome. A past publication's `task.yaml` and plan are read
+once per process. A run in `system_error` is told to its contestant as
+still running, with nothing of it shown. `files` gives the inputs one was
+made with, as its `submission.json` names them, and `download` a door to
+one of those files, which the proxy streams from the forge. A run's log
+names every test, the hidden ones too, so it is the organisers'
+(`gradings.run_log`). Anyone else's submission is no such submission.
 
 ## Grading
 
@@ -1339,7 +1368,11 @@ publication, cancelling first one still being graded against
 an older publication and leaving one being graded against the current one,
 and answers a `Rejudged` with its counts. `gradings.list(task)` gives the
 task's gradings, newest first, at most 500, to anyone observing the task, as
-`GradingRecord`s with the result whole. A route that names only the grading
+`GradingRecord`s with the result whole. `gradings.run_log(grading)` gives
+the grading's run log to anyone observing its task, read from the store up
+to `RUN_LOG_MAX`, 9 MiB, and refused above as `LogTooLarge`; a grading with
+no log is `NotFound`, and a store that fails is `Unavailable` in fixed
+words, with what it said in the log. A route that names only the grading
 checks the organiser at the task `gradings.task_of(grading)` gives.
 
 ## Errors
@@ -1369,6 +1402,7 @@ structured members in `extra`:
 | `UploadNotReady` | `upload_not_ready` | `uploads`, each id refused |
 | `UploadLimit` | `upload_limit` | `limit`, the open uploads one person may hold for a task, and `bytes`, what they may declare together |
 | `InvalidInputs` | `invalid_inputs` | `errors`, each `{"input", "message"}` |
+| `LogTooLarge` | `log_too_large` | `limit`, the most of a run log read, in bytes |
 
 The rest, `invalid_name`, `unauthenticated`, `session_expired`,
 `fresh_sign_in_required`, `sign_in_invalid`, `sign_in_denied`,
