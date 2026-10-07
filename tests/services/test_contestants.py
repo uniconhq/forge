@@ -10,12 +10,12 @@ observing it lists the registrations, and nobody else does. An extension is
 for the tasks it names, every task when it names none, and is refused on a
 task the contest does not list, on a task whose reveal has passed, and when
 shortening it would leave a submission after the due or the close it was
-made before.
+made before; a removed contestant's holds no reveal back.
 """
 
 import asyncio
 import re
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -43,7 +43,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import contestants, contests, roles, submissions
+from forge.services import contestants, contests, published, roles, submissions, timelines
 from forge.services.access import Organiser
 from forge.testing import FakeClock
 from tests.services.conftest import (
@@ -484,6 +484,23 @@ async def test_shortening_an_extension_is_refused_when_it_would_close_before_a_s
     longer = await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=2), tasks=["sum"])
 
     assert longer.time_extension == timedelta(hours=2)
+
+
+async def test_a_removed_contestants_extension_holds_no_reveal_back(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await write_contest(acme.fake, TIMED.format(times="closes: 2026-09-26T13:00:00Z"))
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+    await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=1), tasks=["sum"])
+
+    async def reveal() -> datetime | None:
+        async with setup.unit_of_work() as ctx:
+            settings = await published.contest(ctx, SPRING)
+            return await timelines.reveal(ctx, SPRING, settings, "sum")
+
+    assert await reveal() == datetime(2026, 9, 26, 14, tzinfo=UTC)
+    await contestants.remove(setup, manager, SPRING, 8)
+    assert await reveal() == datetime(2026, 9, 26, 13, tzinfo=UTC)
 
 
 async def test_a_decision_on_someone_who_never_registered_is_not_found(

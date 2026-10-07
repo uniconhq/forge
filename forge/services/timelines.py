@@ -6,18 +6,26 @@ A row is a contestant, or a team while a contestant works in one. Its
 extension sits on its row: on its `contestants` row while it works alone, on
 its `teams` row while it is in a team. It is a length and the tasks it is
 for, by name, every task when it names none, and it moves the row's due and
-close on those tasks, and so those tasks' reveal for everyone.
+close on those tasks, and so those tasks' reveal for everyone. The
+extensions in force are those of approved contestants who are in no team,
+and of teams with a member; a removed contestant's, or a team member's own,
+moves nothing.
 
 A contest save is checked against every row's submissions, read from the
 gradings, one per submission, at the moment it was taken:
 
-- C1 across files: `worth`, and `due` with `late_per_day`, are refused on a
-  task whose latest publication gives no points. A task with no publication
-  yet is not judged, since its first save says what it gives.
-- C2: a `release_at` that has passed does not move later; a `due` does not
-  move earlier past a submission it would make late; a close, the task's
-  `closes` or the contest's `end`, does not move earlier than a submission
-  already made, nor later once the task has revealed.
+- C1 across files: every entry of `tasks` names a task of the contest.
+  `worth`, and `due` with `late_per_day`, are refused on a task whose latest
+  publication gives no points. A task with no publication yet is not
+  judged, since its first save says what it gives.
+- C2, for what happened: a task released under the settings saved before,
+  its contest published and past its start and its `release_at` passed,
+  does not move its release later, nor lose its entry; a task with
+  submissions does not lose its entry either. A `due` does not move earlier
+  past a submission it would make late. A close, the task's `closes` or the
+  contest's `end`, does not move earlier than a submission already made,
+  nor later once the task has revealed under the settings saved before. A
+  contest that was never published released nothing, and moves freely.
 
 Changing an extension is checked the same way (`refuse_extension`): it may
 not let a row submit to a task whose reveal has passed, nor, shortened or
@@ -31,13 +39,15 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 
-from forge.db.tables import Contestant, Grading, Team
+from forge.db.tables import Contestant, Grading, Team, TeamMember
 from forge.domain.definitions import ContestDefinition, ContestTask
 from forge.domain.errors import InvalidExtension
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.domain.names import TeamOwner, UserOwner, WorkspaceOwner
-from forge.domain.release import Extension, close_of, due_of, reveal_of
+from forge.domain.registration import Status
+from forge.domain.release import Extension, close_of, due_of, released, reveal_of
+from forge.domain.teams import MemberStatus
 from forge.domain.yaml_models import Problem
 from forge.runtime.context import Context
 from forge.services import names, published
@@ -74,15 +84,26 @@ async def of_owner(ctx: Context, contest: ContestId, owner: WorkspaceOwner) -> E
 
 
 async def every_extension(ctx: Context, contest: ContestId) -> list[Extension]:
-    """Every row's extension in the contest that is more than nothing."""
+    """Every extension in force in the contest that is more than nothing:
+    each approved contestant's who is in no team, and each team's that has
+    a member.
+    """
+    members = select(TeamMember.user_id, TeamMember.team_id).where(
+        TeamMember.contest_id == contest, TeamMember.status == MemberStatus.MEMBER
+    )
     people = await ctx.db.execute(
         select(Contestant.time_extension_seconds, Contestant.extension_tasks).where(
-            Contestant.contest_id == contest, Contestant.time_extension_seconds > 0
+            Contestant.contest_id == contest,
+            Contestant.status == Status.APPROVED,
+            Contestant.time_extension_seconds > 0,
+            Contestant.user_id.not_in(members.with_only_columns(TeamMember.user_id)),
         )
     )
     teams = await ctx.db.execute(
         select(Team.time_extension_seconds, Team.extension_tasks).where(
-            Team.contest_id == contest, Team.time_extension_seconds > 0
+            Team.contest_id == contest,
+            Team.time_extension_seconds > 0,
+            Team.id.in_(members.with_only_columns(TeamMember.team_id)),
         )
     )
     return [extension_of(seconds, tasks) for seconds, tasks in [*people, *teams]]
@@ -151,15 +172,26 @@ async def check_contest(
     after: ContestDefinition,
 ) -> list[Problem]:
     """C1 across files and C2 for a contest save from `before` to `after`,
-    each problem at its path in `contest.yaml`.
+    each problem at its path in `contest.yaml`; a dropped entry's at
+    `tasks`, since the file no longer has a line for it.
     """
     listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
     tasks = {each.name: TaskId(each.id) for each in listed}
-    problems = await _points(ctx, after, tasks)
+    problems = [
+        Problem(path=f"tasks[{index}].id", message=f"{entry.id} is not a task of this contest.")
+        for index, entry in enumerate(after.tasks)
+        if entry.id not in tasks
+    ]
+    problems += await _points(ctx, after, tasks)
     if before is None:
         return problems
     made = await submissions(ctx, contest, tasks)
     extensions = await every_extension(ctx, contest)
+    for entry in before.tasks:
+        if after.entry(entry.id) is None:
+            message = _dropped(before, entry, made.get(entry.id, []), ctx.now)
+            if message is not None:
+                problems.append(Problem(path="tasks", message=message))
     for index, entry in enumerate(after.tasks):
         old = before.entry(entry.id)
         for path, message in _moved(
@@ -168,6 +200,21 @@ async def check_contest(
             at = path if path in ("start", "end") else f"tasks[{index}].{path}"
             problems.append(Problem(path=at, message=message))
     return problems
+
+
+def _dropped(
+    before: ContestDefinition, entry: ContestTask, made: Collection[Made], now: datetime
+) -> str | None:
+    """Why the task's entry may not leave `tasks`, or none: a task released
+    under `before`, or with submissions, would be hidden by it.
+    """
+    if released(before, entry.id, now):
+        opened = before.release_of(entry)
+        return f"{entry.id} opened at {opened.isoformat()}; it cannot be hidden again."
+    if made:
+        count = f"{len(made)} submission" + ("s" if len(made) > 1 else "")
+        return f"{entry.id} has {count}; it cannot be hidden, so keep its entry."
+    return None
 
 
 async def _points(
@@ -210,19 +257,21 @@ def _moved(
     extensions: Collection[Extension],
     now: datetime,
 ) -> list[tuple[str, str]]:
-    """C2 for one task: how its entry moved against what rows did. A task
-    the contest did not list was never released, so it neither opened nor
-    revealed. A time the entry leaves out is the contest's `start` or `end`,
-    and a problem with it is said at that key, never at one the entry does
-    not write.
+    """C2 for one task: how its entry moved against what rows did. Only a
+    task released under `before` opened, and only one that also passed its
+    reveal there revealed: a task the contest did not list, or listed in a
+    contest not yet published or not yet started, did neither. A time the
+    entry leaves out is the contest's `start` or `end`, and a problem with
+    it is said at that key, never at one the entry does not write.
     """
     found: list[tuple[str, str]] = []
     task = new.id
     old = listed if listed is not None else ContestTask(id=task)
+    opened = released(before, task, now)
     release_key = "release_at" if new.release_at is not None else "start"
     closes_key = "closes" if new.closes is not None else "end"
     old_release, new_release = before.release_of(old), after.release_of(new)
-    if listed is not None and old_release <= now and new_release > old_release:
+    if opened and new_release > old_release:
         found.append(
             (
                 release_key,
@@ -254,7 +303,7 @@ def _moved(
             )
             break
     revealed = reveal_of(before, old, extensions)
-    if listed is not None and revealed <= now and after.closes_of(new) > before.closes_of(old):
+    if opened and revealed <= now and after.closes_of(new) > before.closes_of(old):
         found.append(
             (
                 closes_key,

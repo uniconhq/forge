@@ -4,12 +4,13 @@ people in, lets requests in and removes members, up to the contest's
 `team_size`; a member leaves. Organisers make, delete and mend teams, and
 extend one on the tasks they name. The team is the contestant: one
 workspace its members reach as the membership changes, in the request that
-changes it, one count of submissions, one extension, and one desk of
+changes it, one count of submissions, one extension, which alone of its
+members' holds the task's reveal back while they work in it, and one desk of
 questions.
 """
 
 import re
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -36,7 +37,15 @@ from forge.domain.submissions import SubmittedInput
 from forge.forges.fake import FakeForge
 from forge.forges.ids import parse_task, parse_workspace
 from forge.runtime.setup import Setup
-from forge.services import clarifications, contestants, live, submissions, teams
+from forge.services import (
+    clarifications,
+    contestants,
+    live,
+    published,
+    submissions,
+    teams,
+    timelines,
+)
 from forge.testing import FakeClock
 from tests.services.conftest import (
     RUNNING,
@@ -326,6 +335,33 @@ async def test_an_organiser_extends_a_team_on_the_named_tasks_alone(
         await teams.organise_extend(
             setup, manager, SPRING, adders.id, timedelta(minutes=20), tasks=["sum"]
         )
+
+
+async def _reveal(setup: Setup) -> datetime | None:
+    """When sum reveals, by the extensions in force now."""
+    async with setup.unit_of_work() as ctx:
+        settings = await published.contest(ctx, SPRING)
+        return await timelines.reveal(ctx, SPRING, settings, "sum")
+
+
+async def test_only_a_teams_extension_holds_the_reveal_back_while_its_members_work_in_it(
+    setup: Setup, acme: Acme, entered: Entered, crowd: dict[str, Session]
+) -> None:
+    await write_contest(acme.fake, TIMED)
+    closes = datetime(2026, 9, 26, 13, tzinfo=UTC)
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+    await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=1), tasks=["sum"])
+    assert await _reveal(setup) == closes + timedelta(hours=1)
+
+    adders = await teams.organise_create(setup, manager, SPRING, "Adders", leader="bob")
+    nobody = await teams.organise_create(setup, manager, SPRING, "Nobody")
+    await teams.organise_extend(setup, manager, SPRING, nobody.id, timedelta(hours=2))
+    assert await _reveal(setup) == closes
+
+    await teams.organise_extend(
+        setup, manager, SPRING, adders.id, timedelta(minutes=30), tasks=["sum"]
+    )
+    assert await _reveal(setup) == closes + timedelta(minutes=30)
 
 
 async def test_a_contestant_removed_from_the_contest_leaves_their_team(
