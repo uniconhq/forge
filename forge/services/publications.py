@@ -59,7 +59,7 @@ steps in order, and refuses before anything is written.
 import builtins
 import hashlib
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -338,6 +338,21 @@ async def check(
     return Checked(definition, compiled, (), pins)
 
 
+async def _graded_under(ctx: Context, task: TaskId) -> set[str]:
+    """The publications a graded submission of the task ran under: once
+    there is one, T7 and T10 hold.
+    """
+    return set(
+        (
+            await ctx.db.scalars(
+                select(Grading.publication_id)
+                .where(Grading.task_id == task, Grading.status == GradingStatus.DONE)
+                .distinct()
+            )
+        ).all()
+    )
+
+
 async def _shown_before(
     ctx: Context, task: TaskId, definition: TaskDefinition
 ) -> builtins.list[Problem]:
@@ -347,15 +362,7 @@ async def _shown_before(
     removed and added back cannot come back hidden; and a group the save
     adds to the latest publication's says its `show`.
     """
-    graded = set(
-        (
-            await ctx.db.scalars(
-                select(Grading.publication_id)
-                .where(Grading.task_id == task, Grading.status == GradingStatus.DONE)
-                .distinct()
-            )
-        ).all()
-    )
+    graded = await _graded_under(ctx, task)
     if not graded:
         return []
     publications = await ctx.forge.workspaces.list_publications(task)
@@ -817,13 +824,16 @@ class WorkflowForm:
     names, as written, the inputs it declares and its test fields, in the
     order the workflow gives them, or `problem`, the reason there are none:
     no `task.yaml` or one that does not read as YAML, no workflow named, or
-    one that cannot be read or is in an old format.
+    one that cannot be read or is in an old format; and `graded`, whether
+    the task has a graded submission, from when on a save refuses a test
+    group it adds without its `show` (T10).
     """
 
     workflow: str | None
     inputs: tuple[DeclaredInput, ...] = ()
     test: tuple[DeclaredField, ...] = ()
     problem: str | None = None
+    graded: bool = False
 
 
 @action
@@ -833,8 +843,14 @@ async def workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wor
     organiser, the way a save reads it. Needs the observer role at the task.
     A task that names no workflow, or one that cannot be read, is answered
     with the reason and nothing else, since the form is how it is mended.
+    Either way it says whether the task has a graded submission.
     """
     require(organiser, task_scope(task), Role.OBSERVER)
+    graded = bool(await _graded_under(ctx, task))
+    return replace(await _workflow_form(ctx, organiser, task), graded=graded)
+
+
+async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> WorkflowForm:
     try:
         found = await ctx.forge.content.read_file(organiser.identity, task, TASK_FILE)
     except NotFound:

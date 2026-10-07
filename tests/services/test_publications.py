@@ -896,7 +896,11 @@ NEW_GROUP = {"tests/large/1/input": b"5 6\n", "tests/large/1/answer": b"11\n"}
 async def test_once_graded_a_new_group_must_say_its_show(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
+    before = await publications.workflow_form(setup, acme.ada, entered.task)
     await _graded(setup, acme, entered)
+    # The form hears of it, so it asks for the show of a group the save adds.
+    after = await publications.workflow_form(setup, acme.ada, entered.task)
+    assert (before.graded, after.graded) == (False, True)
     unsaid = _with(acme, b"  main: {each: 100}\n", b"  main: {each: 100}\n  large: {each: 50}\n")
 
     draft = await _save(setup, acme, entered.task, {**unsaid, **NEW_GROUP})
