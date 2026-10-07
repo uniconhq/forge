@@ -10,8 +10,9 @@ from typing import Any
 from forge.domain.errors import NotFound, Rejected
 from forge.domain.identity import PLATFORM, AsUser, User
 from forge.domain.ids import OrgId
+from forge.domain.names import OrgProfile
 from forge.domain.roles import Role, RoleGrant, Scope
-from forge.forges.forgejo.http import Http, list_of
+from forge.forges.forgejo.http import Http, json_of, list_of
 from forge.forges.forgejo.labels import LABELS
 from forge.forges.forgejo.teams import Teams, ci_team_name, scope_of_team, team_name
 from forge.forges.forgejo.users import Users, user_from
@@ -141,6 +142,16 @@ class ForgejoOrgs:
         if display_name is not None:
             change["full_name"] = display_name
         await self._http.call(PLATFORM, "PATCH", f"/api/v1/orgs/{name}", json=change)
+
+    async def read_org(self, name: OrgId) -> OrgProfile:
+        """Forgejo keeps the display name as `full_name`, empty while there is
+        none.
+        """
+        found = json_of(await self._http.call(PLATFORM, "GET", f"/api/v1/orgs/{name}"))
+        return OrgProfile(
+            display_name=str(found.get("full_name") or "") or None,
+            description=str(found.get("description") or ""),
+        )
 
     async def grant_role(self, user_id: int, scope: Scope, role: Role) -> None:
         team = await self._teams.ensure(scope, role)

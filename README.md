@@ -71,7 +71,8 @@ forge/api/
                 Named and ScopeNames the records carry
   sign_in.py    start, complete, sign_up_url, forge_url, SignInAttempt, and the
                 SignInStart start returns
-  orgs.py       create, create_by_operator, update
+  orgs.py       create, create_by_operator, update, read, and the
+                OrgProfile read returns
   contests.py   create, list, and contest_id_of, the id of the contest a scope
                 is in
   tasks.py      create, list, state, the TaskState state returns, and
@@ -290,6 +291,14 @@ and asks for a token. It runs inside the platform's process, where the two
 public URLs do not resolve, so it follows every redirect by hand and asks
 each URL at the internal host instead.
 
+An org's display name and description are its own fields at the host, which
+only an owner may change, so `orgs.update_org` writes them and
+`orgs.read_org` reads them back as an `OrgProfile`, both as the platform
+account (Forgejo: `PATCH` and `GET /orgs/<org>`, the display name kept as
+`full_name`). `orgs.update` is the org admin's change, and `orgs.read`
+gives the current values to anyone holding a role at the org or at
+anything in it.
+
 `orgs.roles_of_user` reads every role one person holds, as the platform
 account, for the rules that ask about someone other than the person signed
 in. Forgejo lists a user's teams only to that user, so the platform's
@@ -462,7 +471,7 @@ hosting process calls are actions, marked `@action` from
 | `names` | `scope_at` |
 | `account` | `create`, `deactivate`, `delete` |
 | `sign_in` | `complete` |
-| `orgs` | `create`, `create_by_operator`, `update` |
+| `orgs` | `create`, `create_by_operator`, `update`, `read` |
 | `contests` | `create`, `list` |
 | `tasks` | `create`, `list`, `state` |
 | `files` | `read`, `tree`, `history`, `write`, `rollback`, `write_upload` |

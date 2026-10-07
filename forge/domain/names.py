@@ -89,6 +89,16 @@ WorkspaceOwner = UserOwner | TeamOwner
 
 
 @dataclass(frozen=True, slots=True)
+class OrgProfile:
+    """An org's own fields at the forge, which its admin changes: the name it
+    is shown under, none while it has none of its own, and its description.
+    """
+
+    display_name: str | None
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
 class Named:
     """An org, a contest or a task by its id, with the name people call it."""
 
