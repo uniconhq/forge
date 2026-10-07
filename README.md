@@ -81,8 +81,9 @@ forge/api/
   workflows.py  create, and the NewWorkflow it returns
   files.py      read, tree, history, write, rollback, write_upload, and the
                 File, TreeEntry, UploadInfo, EntryKind and Change they return
-  publications.py  save, list, and the Published, Draft and Publication they
-                return
+  publications.py  save, list, workflow_form, and the Published, Draft,
+                Publication, WorkflowForm, DeclaredInput and DeclaredField
+                they return
   release.py    of_task, and the TaskRelease it returns with its Closed reason
   contestants.py  register, mine, list, approve, reject, reopen, remove, extend, and the
                 Registration they return with its Status
@@ -476,7 +477,7 @@ hosting process calls are actions, marked `@action` from
 | `contests` | `create`, `list` |
 | `tasks` | `create`, `list`, `state`, `standing` |
 | `files` | `read`, `tree`, `history`, `write`, `rollback`, `write_upload` |
-| `publications` | `save`, `list` |
+| `publications` | `save`, `list`, `workflow_form` |
 | `release` | `of_task` |
 | `contestants` | `register`, `mine`, `list`, `approve`, `reject`, `reopen`, `remove`, `extend` |
 | `contest_home` | `contests`, `home`, `task` |
@@ -793,6 +794,19 @@ steps and a bounded value the task's `credit` does not name, and how many
 submissions it queued to be graded again. `publications.list`
 gives every publication with its flag and its changes, for the task's
 history.
+
+`publications.workflow_form(task)` is what the form over `task.yaml` is
+built from, for an observer of the task: the workflow the task's
+`task.yaml` names as it is saved now, a draft included, read at its
+version as the organiser the way a save reads it, as a `WorkflowForm` with
+each input it declares (`DeclaredInput`: id, type, whether the contestant
+gives it, its options, `per_test`, `optional`) and each test field
+(`DeclaredField`: name, type, options), in the workflow's order. A workflow
+declares no defaults; a contestant input's `default` is the task's own.
+A `task.yaml` that is not there or does not read as YAML, one that names no
+workflow or names it wrongly, and a workflow that cannot be read or is in
+an old format are answered with `problem`, the reason, and no inputs, so the
+form can still be opened to mend them.
 
 ## The compiler
 
