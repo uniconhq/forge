@@ -77,8 +77,8 @@ forge/api/
   tasks.py      create, list, state, the TaskState state returns, and
                 task_id_of, the id of the task a scope names
   workflows.py  create, and the NewWorkflow it returns
-  files.py      read, tree, history, write, rollback, and the File, TreeEntry,
-                EntryKind and Change they return
+  files.py      read, tree, history, write, rollback, write_upload, and the
+                File, TreeEntry, EntryKind and Change they return
   publications.py  save, list, and the Published, Draft and Publication they
                 return
   release.py    of_task, and the TaskRelease it returns with its Closed reason
@@ -123,7 +123,7 @@ forge/api/
   errors.py     every error the package raises to its callers
   types.py      Session, User, Role, Scope, ScopeKind, RoleGrant, HeldRole,
                 Named, ScopeNames, OrgId, ContestId, TaskId, VersionId,
-                PublicationId, ConflictToken, Edit, Problem, and an invite's
+                PublicationId, ConflictToken, Edit, Uploaded, Problem, and an invite's
                 Grant, InviteStatus and MailStatus
 ```
 
@@ -464,7 +464,7 @@ hosting process calls are actions, marked `@action` from
 | `orgs` | `create`, `create_by_operator`, `update` |
 | `contests` | `create`, `list` |
 | `tasks` | `create`, `list`, `state` |
-| `files` | `read`, `tree`, `history`, `write`, `rollback` |
+| `files` | `read`, `tree`, `history`, `write`, `rollback`, `write_upload` |
 | `publications` | `save`, `list` |
 | `release` | `of_task` |
 | `contestants` | `register`, `mine`, `list`, `approve`, `reject`, `reopen`, `remove`, `extend` |
