@@ -160,9 +160,9 @@ def stored_as(status: GradingStatus) -> tuple[GradingStatus, ...]:
     for `system_error` every unfinished one too, since an overdue or lost
     grading reads so whatever its row still says.
     """
-    if status is GradingStatus.SYSTEM_ERROR:
+    if status == GradingStatus.SYSTEM_ERROR:
         return (GradingStatus.SYSTEM_ERROR, *UNFINISHED)
-    return (status,)
+    return (GradingStatus(status),)
 
 
 def overdue(

@@ -763,7 +763,7 @@ async def feed(
         kept.extend(
             record(ctx, row, gone)
             for row in rows
-            if status is None or status_of(ctx, row, gone) is status
+            if status is None or status_of(ctx, row, gone) == status
         )
         if len(rows) < size:
             break
