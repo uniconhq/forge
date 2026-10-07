@@ -5,7 +5,8 @@ grading row made by a submit included. A grading row round-trips with its
 result, its numbers exactly as written; the rows of states that are gone are
 moved to the ones that stand for them; and the task format's revision keeps
 one grading per submission and attempt, its result emptied, and gives
-extensions their tasks.
+extensions their tasks; and a submission staff cancelled before cancels
+carried a sentence is given a stock one.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -23,6 +24,10 @@ from sqlalchemy.exc import IntegrityError
 from forge.db.migrations import alembic_config, downgrade_to_base, upgrade_to_head
 from forge.db.tables import Grading, OrgAccount, metadata
 from forge.runtime.setup import Setup
+
+STOCK_REASON = "The organisers cancelled this grading."
+"""The sentence revision 0014 gives a submission staff cancelled before
+revision 0013."""
 
 TABLES = {
     "sessions",
@@ -460,4 +465,60 @@ def test_the_task_format_keeps_one_grading_per_attempt_and_empties_its_result(
     with engine.begin() as connection:
         _grading(connection, "queued", None, None, 1, stage="final")
     engine.dispose()
+    upgrade_to_head(migrated_database_url)
+
+
+def test_a_submission_staff_cancelled_before_reasons_is_given_the_stock_one(
+    migrated_database_url: str,
+) -> None:
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0013")
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        for number, attempt, status, reason in (
+            (1, 1, "cancelled", None),
+            (1, 2, "done", None),
+            (2, 1, "cancelled", None),
+            (3, 1, "cancelled", "The checker broke on this one."),
+        ):
+            connection.execute(
+                text(
+                    "INSERT INTO gradings (id, task_id, workspace_id, submission_id, "
+                    "submission_number, submission_version, submitted_at, publication_id, "
+                    "attempt, status, cancel_reason) VALUES (gen_random_uuid(), "
+                    "'acme/spring/sum', 'acme/spring/@u7', 'acme/spring/@u7/sum#' || :number, "
+                    ":number, 'c', now(), 'acme/spring/sum#1', :attempt, :status, :reason)"
+                ),
+                {"number": number, "attempt": attempt, "status": status, "reason": reason},
+            )
+    engine.dispose()
+
+    def reasons() -> list[tuple[Any, ...]]:
+        engine = create_engine(migrated_database_url)
+        with engine.connect() as connection:
+            found = connection.execute(
+                text(
+                    "SELECT submission_number, attempt, cancel_reason FROM gradings "
+                    "ORDER BY submission_number, attempt"
+                )
+            ).all()
+        engine.dispose()
+        return [tuple(row) for row in found]
+
+    command.upgrade(config, "0014")
+
+    # The latest attempts staff cancelled have a sentence; one a later attempt replaced has none.
+    assert reasons() == [
+        (1, 1, None),
+        (1, 2, None),
+        (2, 1, STOCK_REASON),
+        (3, 1, "The checker broke on this one."),
+    ]
+    command.downgrade(config, "0013")
+    assert reasons() == [
+        (1, 1, None),
+        (1, 2, None),
+        (2, 1, None),
+        (3, 1, "The checker broke on this one."),
+    ]
     upgrade_to_head(migrated_database_url)

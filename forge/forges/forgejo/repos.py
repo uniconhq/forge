@@ -31,7 +31,15 @@ from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
 from forge.domain.identity import PLATFORM, Identity, Platform
 from forge.domain.ids import VersionId
 from forge.domain.uploads import Door
-from forge.forges.forgejo.http import MAX_PAGES, PAGE_SIZE, Http, json_of, list_of
+from forge.forges.forgejo.http import (
+    MAX_PAGES,
+    PAGE_SIZE,
+    Http,
+    file_path,
+    json_of,
+    list_of,
+    segment,
+)
 
 DEFAULT_BRANCH = "main"
 CREATE_MESSAGE = "Create"
@@ -66,9 +74,9 @@ class Repos:
             "default_branch": DEFAULT_BRANCH,
         }
         target = (
-            f"/api/v1/orgs/{owner}/repos"
+            f"/api/v1/orgs/{segment(owner)}/repos"
             if await self._is_org(owner)
-            else f"/api/v1/admin/users/{owner}/repos"
+            else f"/api/v1/admin/users/{segment(owner)}/repos"
         )
         try:
             await self._http.call(PLATFORM, "POST", target, json=body)
@@ -82,7 +90,9 @@ class Repos:
         not there changes nothing.
         """
         try:
-            await self._http.call(PLATFORM, "DELETE", f"/api/v1/repos/{owner}/{name}")
+            await self._http.call(
+                PLATFORM, "DELETE", f"/api/v1/repos/{segment(owner)}/{segment(name)}"
+            )
         except NotFound:
             return
 
@@ -93,7 +103,7 @@ class Repos:
         branch refuses them all. Forgejo refuses a second protection of the
         branch, so one another maker put there meanwhile counts as there.
         """
-        path = f"/api/v1/repos/{owner}/{name}/branch_protections"
+        path = f"/api/v1/repos/{segment(owner)}/{segment(name)}/branch_protections"
         try:
             await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}")
         except NotFound:
@@ -171,7 +181,7 @@ class Repos:
         written = await self._http.call(
             as_,
             "POST",
-            f"/api/v1/repos/{owner}/{name}/contents",
+            f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents",
             json={"branch": DEFAULT_BRANCH, **first, "message": message, "files": operations},
         )
         return VersionId(str(json_of(written)["commit"]["sha"]))
@@ -215,7 +225,7 @@ class Repos:
         written = await self._http.call(
             as_,
             "POST",
-            f"/api/v1/repos/{owner}/{name}/contents",
+            f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents",
             json={"branch": DEFAULT_BRANCH, "message": message, "files": operations},
         )
         return VersionId(str(json_of(written)["commit"]["sha"]))
@@ -237,7 +247,10 @@ class Repos:
         params = {"ref": at} if at else {}
         entry = json_of(
             await self._http.call(
-                as_, "GET", f"/api/v1/repos/{owner}/{name}/contents/{path}", params=params
+                as_,
+                "GET",
+                f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents/{file_path(path)}",
+                params=params,
             )
         )
         if entry.get("type") != "file":
@@ -256,8 +269,9 @@ class Repos:
         from, with the path and the version encoded the way the request line
         carries them.
         """
+        media = f"/api/v1/repos/{segment(owner)}/{segment(name)}/media/{file_path(path)}"
         return Door(
-            path=f"/api/v1/repos/{owner}/{name}/media/{quote(path)}?ref={quote(at, safe='')}",
+            path=f"{media}?ref={quote(at, safe='')}",
             authorization=await self._http.authorization(as_),
         )
 
@@ -269,7 +283,10 @@ class Repos:
         `Rejected` for one over `max_size` bytes, read no further.
         """
         return await self._http.read_capped(
-            as_, f"/api/v1/repos/{owner}/{name}/media/{path}", params={"ref": at}, max_size=max_size
+            as_,
+            f"/api/v1/repos/{segment(owner)}/{segment(name)}/media/{file_path(path)}",
+            params={"ref": at},
+            max_size=max_size,
         )
 
     async def read_blob(
@@ -280,7 +297,10 @@ class Repos:
         for one over `max_size` bytes, read no further.
         """
         return await self._http.read_capped(
-            as_, f"/api/v1/repos/{owner}/{name}/raw/{path}", params={"ref": at}, max_size=max_size
+            as_,
+            f"/api/v1/repos/{segment(owner)}/{segment(name)}/raw/{file_path(path)}",
+            params={"ref": at},
+            max_size=max_size,
         )
 
     async def write_file(
@@ -299,7 +319,7 @@ class Repos:
             "message": message,
             "branch": DEFAULT_BRANCH,
         }
-        target = f"/api/v1/repos/{owner}/{name}/contents/{path}"
+        target = f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents/{file_path(path)}"
         if expected is None:
             if await self._exists(as_, owner, name, path):
                 raise Conflict(f"{path} already exists")
@@ -313,7 +333,11 @@ class Repos:
         self, as_: Identity, owner: str, name: str, path: str = ""
     ) -> tuple[TreeEntry, ...]:
         entries = list_of(
-            await self._http.call(as_, "GET", f"/api/v1/repos/{owner}/{name}/contents/{path}")
+            await self._http.call(
+                as_,
+                "GET",
+                f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents/{file_path(path)}",
+            )
         )
         return tuple(
             TreeEntry(
@@ -330,7 +354,9 @@ class Repos:
         params: dict[str, str | int] = {"sha": DEFAULT_BRANCH}
         if path:
             params["path"] = path
-        commits = await self._http.get_all(as_, f"/api/v1/repos/{owner}/{name}/commits", **params)
+        commits = await self._http.get_all(
+            as_, f"/api/v1/repos/{segment(owner)}/{segment(name)}/commits", **params
+        )
         return tuple(_change(commit) for commit in commits)
 
     async def files_at(self, as_: Identity, owner: str, name: str, at: str) -> Files:
@@ -343,7 +369,9 @@ class Repos:
     async def head(self, as_: Identity, owner: str, name: str) -> str:
         branch = json_of(
             await self._http.call(
-                as_, "GET", f"/api/v1/repos/{owner}/{name}/branches/{DEFAULT_BRANCH}"
+                as_,
+                "GET",
+                f"/api/v1/repos/{segment(owner)}/{segment(name)}/branches/{DEFAULT_BRANCH}",
             )
         )
         return str(branch["commit"]["id"])
@@ -353,7 +381,7 @@ class Repos:
 
     async def tags(self, as_: Identity, owner: str, name: str) -> list[dict[str, Any]]:
         """Every tag, with its message and the commit it points at."""
-        return await self._http.get_all(as_, f"/api/v1/repos/{owner}/{name}/tags")
+        return await self._http.get_all(as_, f"/api/v1/repos/{segment(owner)}/{segment(name)}/tags")
 
     async def create_version(
         self,
@@ -369,13 +397,15 @@ class Repos:
         body = {"tag_name": version, "target": target}
         if message is not None:
             body["message"] = message
-        await self._http.call(as_, "POST", f"/api/v1/repos/{owner}/{name}/tags", json=body)
+        await self._http.call(
+            as_, "POST", f"/api/v1/repos/{segment(owner)}/{segment(name)}/tags", json=body
+        )
 
     async def reserve_versions(self, owner: str, name: str, prefix: str) -> bool:
         """Reserve versions under `prefix` for the platform account, and say
         whether that had to be put back.
         """
-        path = f"/api/v1/repos/{owner}/{name}/tag_protections"
+        path = f"/api/v1/repos/{segment(owner)}/{segment(name)}/tag_protections"
         pattern = f"{prefix}*"
         allowed = [self._platform_account]
         for protection in list_of(await self._http.call(PLATFORM, "GET", path)):
@@ -403,7 +433,9 @@ class Repos:
         """
         if isinstance(as_, Platform):
             return
-        record = json_of(await self._http.call(as_, "GET", f"/api/v1/repos/{owner}/{name}"))
+        record = json_of(
+            await self._http.call(as_, "GET", f"/api/v1/repos/{segment(owner)}/{segment(name)}")
+        )
         if not (record.get("permissions") or {}).get("push"):
             raise Forbidden(f"the caller may not change {owner}/{name}")
 
@@ -413,13 +445,15 @@ class Repos:
         await self._http.call(
             PLATFORM,
             "PUT",
-            f"/api/v1/repos/{owner}/{name}/collaborators/{username}",
+            f"/api/v1/repos/{segment(owner)}/{segment(name)}/collaborators/{segment(username)}",
             json={"permission": permission},
         )
 
     async def remove_collaborator(self, owner: str, name: str, username: str) -> None:
         await self._http.call(
-            PLATFORM, "DELETE", f"/api/v1/repos/{owner}/{name}/collaborators/{username}"
+            PLATFORM,
+            "DELETE",
+            f"/api/v1/repos/{segment(owner)}/{segment(name)}/collaborators/{segment(username)}",
         )
 
     async def permission_of(self, owner: str, name: str, username: str) -> str | None:
@@ -431,7 +465,7 @@ class Repos:
                 await self._http.call(
                     PLATFORM,
                     "GET",
-                    f"/api/v1/repos/{owner}/{name}/collaborators/{username}/permission",
+                    f"/api/v1/repos/{segment(owner)}/{segment(name)}/collaborators/{segment(username)}/permission",
                 )
             )
         except NotFound:
@@ -440,19 +474,28 @@ class Repos:
 
     async def collaborators(self, owner: str, name: str) -> list[dict[str, Any]]:
         return list_of(
-            await self._http.call(PLATFORM, "GET", f"/api/v1/repos/{owner}/{name}/collaborators")
+            await self._http.call(
+                PLATFORM, "GET", f"/api/v1/repos/{segment(owner)}/{segment(name)}/collaborators"
+            )
         )
 
     async def set_private(self, owner: str, name: str, private: bool) -> None:
         await self._http.call(
-            PLATFORM, "PATCH", f"/api/v1/repos/{owner}/{name}", json={"private": private}
+            PLATFORM,
+            "PATCH",
+            f"/api/v1/repos/{segment(owner)}/{segment(name)}",
+            json={"private": private},
         )
 
     async def mark(self, owner: str, name: str, topic: str) -> None:
-        await self._http.call(PLATFORM, "PUT", f"/api/v1/repos/{owner}/{name}/topics/{topic}")
+        await self._http.call(
+            PLATFORM,
+            "PUT",
+            f"/api/v1/repos/{segment(owner)}/{segment(name)}/topics/{segment(topic)}",
+        )
 
     async def star(self, as_: Identity, owner: str, name: str) -> None:
-        await self._http.call(as_, "PUT", f"/api/v1/user/starred/{owner}/{name}")
+        await self._http.call(as_, "PUT", f"/api/v1/user/starred/{segment(owner)}/{segment(name)}")
 
     async def marked(self, topic: str) -> list[dict[str, Any]]:
         """Every repository carrying the topic the caller may see."""
@@ -468,11 +511,11 @@ class Repos:
         return repos
 
     async def owned_by(self, username: str) -> list[dict[str, Any]]:
-        return await self._http.get_all(PLATFORM, f"/api/v1/users/{username}/repos")
+        return await self._http.get_all(PLATFORM, f"/api/v1/users/{segment(username)}/repos")
 
     async def under(self, org: str, as_: Identity = PLATFORM) -> list[dict[str, Any]]:
         """Every repository in the org that `as_` may see."""
-        return await self._http.get_all(as_, f"/api/v1/orgs/{org}/repos")
+        return await self._http.get_all(as_, f"/api/v1/orgs/{segment(org)}/repos")
 
     async def named_with(
         self, org: str, part: str, as_: Identity = PLATFORM
@@ -512,13 +555,19 @@ class Repos:
         known = self._org_ids.get(org)
         if known is None:
             known = int(
-                json_of(await self._http.call(PLATFORM, "GET", f"/api/v1/orgs/{org}"))["id"]
+                json_of(await self._http.call(PLATFORM, "GET", f"/api/v1/orgs/{segment(org)}"))[
+                    "id"
+                ]
             )
             self._org_ids[org] = known
         return known
 
     async def record(self, owner: str, name: str) -> dict[str, Any]:
-        return json_of(await self._http.call(PLATFORM, "GET", f"/api/v1/repos/{owner}/{name}"))
+        return json_of(
+            await self._http.call(
+                PLATFORM, "GET", f"/api/v1/repos/{segment(owner)}/{segment(name)}"
+            )
+        )
 
     async def exists(self, owner: str, name: str) -> bool:
         try:
@@ -533,7 +582,9 @@ class Repos:
         """
         try:
             await self._http.call(
-                as_, "GET", f"/api/v1/repos/{owner}/{name}/branches/{DEFAULT_BRANCH}"
+                as_,
+                "GET",
+                f"/api/v1/repos/{segment(owner)}/{segment(name)}/branches/{DEFAULT_BRANCH}",
             )
         except NotFound:
             return None
@@ -549,7 +600,7 @@ class Repos:
                 await self._http.call(
                     as_,
                     "GET",
-                    f"/api/v1/repos/{owner}/{name}/git/trees/{at}",
+                    f"/api/v1/repos/{segment(owner)}/{segment(name)}/git/trees/{segment(at)}",
                     params={"recursive": "true", "per_page": TREE_PAGE, "page": page},
                 )
             )
@@ -564,14 +615,18 @@ class Repos:
 
     async def _exists(self, as_: Identity, owner: str, name: str, path: str) -> bool:
         try:
-            await self._http.call(as_, "GET", f"/api/v1/repos/{owner}/{name}/contents/{path}")
+            await self._http.call(
+                as_,
+                "GET",
+                f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents/{file_path(path)}",
+            )
         except NotFound:
             return False
         return True
 
     async def _is_org(self, owner: str) -> bool:
         try:
-            await self._http.call(PLATFORM, "GET", f"/api/v1/orgs/{owner}")
+            await self._http.call(PLATFORM, "GET", f"/api/v1/orgs/{segment(owner)}")
         except NotFound:
             return False
         return True

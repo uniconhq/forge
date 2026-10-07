@@ -5,7 +5,8 @@ code of its own, before anything is written:
 1. The task is open by the server's clock plus the contestant's own
    extension, and they are approved (`submitters.refuse`).
 2. They have submissions left (`submission_limit`), counted from the
-   submissions at the forge, and the task's rate holds (`rate_limited`),
+   submissions at the forge, leaving out one staff cancelled
+   (`gradings.staff_cancelled`), and the task's rate holds (`rate_limited`),
    counted from the grading rows of their submissions within its window.
 3. Every upload named is theirs, for this task (`upload_not_yours`), and a
    checked file no submission has used (`upload_not_ready`).
@@ -48,8 +49,11 @@ it again.
 
 A contestant reads their own submissions back, newest first, each with the
 latest attempt of its grading as the task's test groups show it
-(`forge.domain.showing`), how many started days late it was, and nothing of
-a run in `system_error` but that it is still being graded. A grading is
+(`forge.domain.showing`), how many started days late it was, nothing of
+a run in `system_error` but that it is still being graded, and of one staff
+then cancelled, that it is `cancelled` and the sentence they gave. A
+submission staff cancelled does not count against the task's
+`submissions.max`. A grading is
 shown with the publication it ran under: its sealed facts, and its
 `test_groups` unless the latest publication's plan lists the same tests. A
 past publication's `task.yaml` and plan are read once per process, since a
@@ -103,7 +107,7 @@ from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.release import due_of, late_days
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
-from forge.domain.showing import Graded, GroupShown, shown, under
+from forge.domain.showing import Graded, GroupShown, shown, told, under
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
 from forge.domain.uploads import (
     POINTER_MAX,
@@ -141,7 +145,9 @@ class Result:
     it: its id and attempt, where it stands, and once it is done, what
     stopped the run, the outcome over the groups shown, each test group as
     its `show` allows, and the values reported once. A run in
-    `system_error` is still `running` to its contestant, with nothing else.
+    `system_error` is still `running` to its contestant, with nothing else;
+    one staff cancelled is `cancelled`, with `reason`, the sentence they
+    gave.
     """
 
     id: uuid.UUID
@@ -151,6 +157,7 @@ class Result:
     outcome: str | None
     groups: tuple[GroupShown, ...]
     values: dict[str, Any]
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +227,8 @@ async def submit(
     made = await _listed(ctx, workspace, task) or ()
     await _finish_unrecorded(ctx, entrant, workspace, made)
     caps = entrant.published.definition.submissions
-    if len(made) >= caps.max:
+    cancelled = await _cancelled(ctx, workspace, task)
+    if len([found for found in made if found.id not in cancelled]) >= caps.max:
         raise SubmissionLimit(
             f"You have made all {caps.max} submissions this task allows.", limit=caps.max
         )
@@ -327,6 +335,22 @@ async def _submitted_before(ctx: Context, workspace: WorkspaceId, task: TaskId) 
         .limit(1)
     )
     return found is not None
+
+
+async def _cancelled(ctx: Context, workspace: WorkspaceId, task: TaskId) -> set[str]:
+    """The workspace's submissions of the task that staff cancelled: those
+    whose latest attempt is a cancel with a sentence.
+    """
+    rows = (
+        await ctx.db.execute(
+            select(Grading).where(Grading.workspace_id == workspace, Grading.task_id == task)
+        )
+    ).scalars()
+    latest: dict[str, Grading] = {}
+    for row in rows:
+        if row.submission_id not in latest or row.attempt > latest[row.submission_id].attempt:
+            latest[row.submission_id] = row
+    return {submission for submission, row in latest.items() if gradings.staff_cancelled(row)}
 
 
 async def _hold(ctx: Context, workspace: WorkspaceId, task: TaskId) -> None:
@@ -699,12 +723,13 @@ async def _result(
 ) -> Result:
     """The grading as its contestant may see it now, with the publication it
     ran under. A run in `system_error` is told as still running, with
-    nothing of it shown.
+    nothing of it shown, and one staff cancelled as cancelled, with the
+    sentence they gave.
     """
-    if status is GradingStatus.SYSTEM_ERROR:
-        return Result(row.id, row.attempt, GradingStatus.RUNNING, None, None, (), {})
+    if status is GradingStatus.CANCELLED:
+        return Result(row.id, row.attempt, status, None, None, (), {}, row.cancel_reason)
     if status is not GradingStatus.DONE or row.result is None:
-        return Result(row.id, row.attempt, status, None, None, (), {})
+        return Result(row.id, row.attempt, told(status), None, None, (), {})
     graded = await _shown_with(ctx, entrant, PublicationId(row.publication_id))
     if graded is None:
         return Result(row.id, row.attempt, status, None, None, (), {})

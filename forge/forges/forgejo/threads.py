@@ -21,7 +21,7 @@ from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import OrgId, ThreadId
 from forge.domain.threads import Comment, Thread, ThreadChange, ThreadKind, ThreadPlace
-from forge.forges.forgejo.http import Http, json_of, list_of
+from forge.forges.forgejo.http import Http, json_of, list_of, segment
 from forge.forges.forgejo.labels import ANSWERED
 from forge.forges.ids import (
     MalformedId,
@@ -53,7 +53,7 @@ class ForgejoThreads:
             await self._http.call(
                 as_,
                 "POST",
-                f"/api/v1/repos/{org}/{repo}/issues",
+                f"/api/v1/repos/{segment(org)}/{segment(repo)}/issues",
                 json={"title": title, "body": body, "labels": [label]},
             )
         )
@@ -67,7 +67,7 @@ class ForgejoThreads:
                 await self._http.call(
                     PLATFORM,
                     "POST",
-                    f"/api/v1/repos/{org}/{repo}/issues/{issue['number']}/labels",
+                    f"/api/v1/repos/{segment(org)}/{segment(repo)}/issues/{issue['number']}/labels",
                     json={"labels": [label]},
                 )
             )
@@ -78,7 +78,11 @@ class ForgejoThreads:
     ) -> tuple[Thread, ...]:
         org, repo = location(place)
         issues = await self._http.get_all(
-            as_, f"/api/v1/repos/{org}/{repo}/issues", state="all", labels=kind.value, type="issues"
+            as_,
+            f"/api/v1/repos/{segment(org)}/{segment(repo)}/issues",
+            state="all",
+            labels=kind.value,
+            type="issues",
         )
         threads = [
             await self._with_comments(as_, org, repo, issue)
@@ -91,7 +95,9 @@ class ForgejoThreads:
     async def read_thread(self, as_: Identity, thread: ThreadId) -> Thread:
         org, repo, number = parse_thread(thread)
         issue = json_of(
-            await self._http.call(as_, "GET", f"/api/v1/repos/{org}/{repo}/issues/{number}")
+            await self._http.call(
+                as_, "GET", f"/api/v1/repos/{segment(org)}/{segment(repo)}/issues/{number}"
+            )
         )
         if issue.get("pull_request"):
             raise NotFound(f"no thread {thread}")
@@ -139,7 +145,10 @@ class ForgejoThreads:
     async def comment(self, as_: Identity, thread: ThreadId, body: str) -> None:
         org, repo, number = parse_thread(thread)
         await self._http.call(
-            as_, "POST", f"/api/v1/repos/{org}/{repo}/issues/{number}/comments", json={"body": body}
+            as_,
+            "POST",
+            f"/api/v1/repos/{segment(org)}/{segment(repo)}/issues/{number}/comments",
+            json={"body": body},
         )
 
     async def mark_answered(self, as_: Identity, thread: ThreadId) -> None:
@@ -148,7 +157,7 @@ class ForgejoThreads:
         await self._http.call(
             as_,
             "POST",
-            f"/api/v1/repos/{org}/{repo}/issues/{number}/labels",
+            f"/api/v1/repos/{segment(org)}/{segment(repo)}/issues/{number}/labels",
             json={"labels": [label]},
         )
         await self._patch(as_, thread, {"state": "closed"})
@@ -158,7 +167,9 @@ class ForgejoThreads:
         label = await self._label(org, ANSWERED)
         with contextlib.suppress(NotFound):
             await self._http.call(
-                as_, "DELETE", f"/api/v1/repos/{org}/{repo}/issues/{number}/labels/{label}"
+                as_,
+                "DELETE",
+                f"/api/v1/repos/{segment(org)}/{segment(repo)}/issues/{number}/labels/{label}",
             )
         await self._patch(as_, thread, {"state": "open"})
 
@@ -170,7 +181,9 @@ class ForgejoThreads:
     ) -> Thread:
         comments = list_of(
             await self._http.call(
-                as_, "GET", f"/api/v1/repos/{org}/{repo}/issues/{issue['number']}/comments"
+                as_,
+                "GET",
+                f"/api/v1/repos/{segment(org)}/{segment(repo)}/issues/{issue['number']}/comments",
             )
         )
         return _thread(org, repo, issue, comments)
@@ -178,7 +191,10 @@ class ForgejoThreads:
     async def _patch(self, as_: Identity, thread: ThreadId, change: dict[str, str]) -> None:
         org, repo, number = parse_thread(thread)
         await self._http.call(
-            as_, "PATCH", f"/api/v1/repos/{org}/{repo}/issues/{number}", json=change
+            as_,
+            "PATCH",
+            f"/api/v1/repos/{segment(org)}/{segment(repo)}/issues/{number}",
+            json=change,
         )
 
     async def _label(self, org: str, name: str) -> int:
@@ -189,7 +205,7 @@ class ForgejoThreads:
         kept = self._labels.get((org, name))
         if kept is not None:
             return kept
-        for label in await self._http.get_all(PLATFORM, f"/api/v1/orgs/{org}/labels"):
+        for label in await self._http.get_all(PLATFORM, f"/api/v1/orgs/{segment(org)}/labels"):
             self._labels[(org, str(label["name"]))] = int(label["id"])
         found = self._labels.get((org, name))
         if found is None:

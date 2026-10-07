@@ -296,6 +296,9 @@ class ContestTask(Model):
 
 
 DEFAULT_WORTH = 100
+DEFAULT_LATE_PER_DAY = 1
+"""The fraction a started late day takes off a task whose entry gives a
+`due` and no `late_per_day`: all of it, so a late submission earns nothing."""
 
 
 class ContestDefinition(Model):
@@ -397,6 +400,15 @@ class ContestDefinition(Model):
 
     def closes_of(self, entry: ContestTask) -> datetime:
         return entry.closes if entry.closes is not None else self.end
+
+    def late_per_day_of(self, entry: ContestTask) -> int | float | None:
+        """The fraction a started late day takes off: the entry's, or
+        `DEFAULT_LATE_PER_DAY` when it gives a `due` and none, and none on a
+        task with no due, which has no late submissions.
+        """
+        if entry.due is None:
+            return None
+        return entry.late_per_day if entry.late_per_day is not None else DEFAULT_LATE_PER_DAY
 
     def label_of(self, task: str) -> str | None:
         """The task's label, its position as a letter, A, B, ..., Z, AA, ...;

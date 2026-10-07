@@ -17,7 +17,9 @@ stopped it; otherwise the first group outcome other than `accepted` among
 the groups whose verdict is shown, in `test_groups` order; otherwise
 `accepted`; and none when no group is shown. Once the task has revealed,
 everything is shown. A run in `system_error` shows nothing of itself: its
-row is told it is still being graded, until staff regrade or end it.
+row is told it is still being graded, until staff regrade it or end it by
+cancelling it, when its row is told it is `cancelled`, with the sentence
+staff gave (`told`).
 
 A grading is shown with the publication it ran under (`under`, TASK-FORMAT.md
 section 2, check 12): its sealed facts always, since they say what that
@@ -33,6 +35,7 @@ from datetime import datetime
 from typing import Any
 
 from forge.domain.definitions import Group, Show
+from forge.domain.grading import GradingStatus
 
 ACCEPTED = "accepted"
 
@@ -96,6 +99,15 @@ class Shown:
     outcome: str | None
     groups: tuple[GroupShown, ...]
     values: Mapping[str, Any]
+
+
+def told(status: GradingStatus) -> GradingStatus:
+    """Where a grading stands as its own row is told: as it reads, but for a
+    run in `system_error`, which is still being graded to its row until
+    staff end it, a fault of the platform's or of setter code and never of
+    the contestant's.
+    """
+    return GradingStatus.RUNNING if status is GradingStatus.SYSTEM_ERROR else status
 
 
 def group_of(test: str) -> str:

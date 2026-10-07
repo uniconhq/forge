@@ -13,6 +13,7 @@ from typing import Any, cast
 
 from forge.domain.identity import AsUser, Credential, User
 from forge.domain.ids import OrgId
+from forge.domain.names import OrgProfile
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.port import Forge
 from forge.port.identity import AccountVisibility, IdentityPort, SignedIn
@@ -176,6 +177,9 @@ class CachedOrgs:
         self, name: OrgId, *, description: str, display_name: str | None = None
     ) -> None:
         await self._inner.update_org(name, description=description, display_name=display_name)
+
+    async def read_org(self, name: OrgId) -> OrgProfile:
+        return await self._inner.read_org(name)
 
     async def grant_role(self, user_id: int, scope: Scope, role: Role) -> None:
         await self._inner.grant_role(user_id, scope, role)

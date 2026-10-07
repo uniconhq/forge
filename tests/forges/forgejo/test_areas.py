@@ -13,7 +13,7 @@ from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, Misconfigured, NotFound, Rejected
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId, WorkflowId, WorkspaceId
-from forge.domain.names import UserOwner
+from forge.domain.names import OrgProfile, UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
@@ -1179,6 +1179,27 @@ async def test_the_service_account_leaves_its_place_found_by_its_id(
     assert deletions == ["DELETE /api/v1/teams/5/members/unicon-ci-acme"]
 
 
+async def test_an_orgs_own_fields_are_read_as_the_platform(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on(
+        "GET",
+        "/api/v1/orgs/acme",
+        ok({"username": "acme", "full_name": "ACME", "description": "Acme Corp"}),
+        ok({"username": "acme", "full_name": "", "description": ""}),
+        ok({}, 404),
+    )
+
+    named = await forgejo.orgs.read_org(OrgId("acme"))
+    bare = await forgejo.orgs.read_org(OrgId("acme"))
+
+    assert named == OrgProfile(display_name="ACME", description="Acme Corp")
+    assert bare == OrgProfile(display_name=None, description="")
+    with pytest.raises(NotFound):
+        await forgejo.orgs.read_org(OrgId("acme"))
+    assert recorder.headers("GET", "/api/v1/orgs/acme") == ["token admin"] * 3
+
+
 async def test_an_org_is_deleted_and_one_not_there_is_no_error(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
@@ -1336,3 +1357,30 @@ async def test_the_ci_user_is_found_or_made(forgejo: ForgejoForge, recorder: Rec
 
     assert recorder.sent("POST", "/api/users") == [{"login": "unicon-ci-acme"}]
     assert recorder.headers("POST", "/api/users") == ["Bearer ci-admin"]
+
+
+async def test_a_name_goes_into_a_path_quoted_whole_and_a_dot_segment_reaches_nothing(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/bob/repos?x#y", ok({**USER, "login": "bob/repos?x#y"}))
+    content = base64.b64encode(b"x").decode()
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.contest/contents/notes/a b?.md",
+        ok({"type": "file", "sha": "blob-1", "content": content}),
+    )
+
+    found = await forgejo.identity.find_user_by_username("bob/repos?x#y")
+    await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "notes/a b?.md")
+
+    assert found.username == "bob/repos?x#y"
+    assert [request.url.raw_path for request in recorder.seen] == [
+        b"/api/v1/users/bob%2Frepos%3Fx%23y",
+        b"/api/v1/repos/acme/spring.contest/contents/notes/a%20b%3F.md",
+    ]
+    for dots in ("..", ".", ""):
+        with pytest.raises(NotFound):
+            await forgejo.identity.find_user_by_username(dots)
+    with pytest.raises(NotFound):
+        await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "../secrets")
+    assert len(recorder.seen) == 2

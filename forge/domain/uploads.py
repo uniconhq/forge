@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
 
-from forge.domain.content import UNSAFE_CHARACTERS
+from forge.domain.content import UNSAFE_CHARACTERS, UploadInfo
 from forge.domain.errors import InvalidInputs
 
 LIFETIME = timedelta(days=2)
@@ -137,6 +137,28 @@ def read_pointer(content: bytes) -> tuple[str, int] | None:
     if digest_problem(digest) is not None or not size.isdigit():
         return None
     return digest, int(size)
+
+
+POINTER_LEAST = len(pointer_text("0" * DIGEST_LENGTH, 0))
+POINTER_MOST = len(pointer_text("0" * DIGEST_LENGTH, 10**19 - 1))
+"""The shortest and the longest pointer `pointer_text` writes, a byte apart
+for each digit of the size: a file of any other size is not an upload, and
+is known so without reading it."""
+
+
+def may_be_pointer(size: int | None) -> bool:
+    """Whether a file of `size` bytes could be a pointer the platform wrote,
+    the only files worth reading to tell an upload from a typed file.
+    """
+    return size is not None and POINTER_LEAST <= size <= POINTER_MOST
+
+
+def upload_info(content: bytes) -> UploadInfo | None:
+    """What an upload holds, when `content` is a pointer the platform wrote,
+    or none for a typed file.
+    """
+    named = read_pointer(content)
+    return UploadInfo(size=named[1], digest=named[0]) if named is not None else None
 
 
 ATTRIBUTES_FILE = ".gitattributes"
