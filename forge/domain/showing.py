@@ -29,7 +29,9 @@ change to rule weights, `show` or `credit` alone counts at once, and its own
 otherwise, until its regrade ends, so a result's rows are always folded with
 the tests they ran on and a credit always names a value its plan reported.
 With a grading scored (`forge.domain.scoring`), each group shown carries
-its points and most points and each test row its credit.
+its points and most points, each test row its credit, and the result its
+points shown and pending and each value with a fold, folded over the tests
+shown (TASK-FORMAT.md section 1.7).
 """
 
 from collections.abc import Collection, Mapping, Sequence
@@ -40,7 +42,7 @@ from typing import Any
 
 from forge.domain.definitions import Group, Relative, Show
 from forge.domain.grading import GradingStatus
-from forge.domain.scoring import Measure, Scored, Seen, TestScore
+from forge.domain.scoring import Measure, Points, Scored, Seen, TestScore, points_seen
 
 ACCEPTED = "accepted"
 
@@ -108,7 +110,9 @@ class GroupShown:
     """One test group as a contestant sees it now: its name, its `show`, its
     outcome when its verdict is shown, its tests when they are, when what is
     held back is shown, and whether it ran on this grading at all. A group
-    that did not run has no outcome, no tests and nothing held back.
+    that did not run has no outcome, no tests and nothing held back; while a
+    sealed step's stop is held to the reveal, every group reads as hidden,
+    the ones it kept from running too.
     """
 
     group: str
@@ -123,12 +127,17 @@ class GroupShown:
 
 @dataclass(frozen=True, slots=True)
 class Shown:
-    """A result as a contestant sees it now."""
+    """A result as a contestant sees it now: what stopped it, its outcome,
+    its groups and its once values; scored, its points and each value with
+    a fold, folded over the tests shown.
+    """
 
     stopped: str | None
     outcome: str | None
     groups: tuple[GroupShown, ...]
     values: Mapping[str, Any]
+    points: Points | None = None
+    folded: Mapping[str, Fraction] = field(default_factory=dict)
 
 
 def told(status: GradingStatus) -> GradingStatus:
@@ -157,20 +166,21 @@ def shown(
     `test_groups`, with its sealed facts, before or after the task's
     reveal at `reveal_at`; with `scored`, the grading scored under those
     groups, each group's points and most points, its points only once its
-    verdict is shown, and each test's credit.
+    verdict is shown, each test's credit, the points shown and pending, and
+    the folded values.
     """
     rows: dict[str, list[Mapping[str, Any]]] = {}
     for row in result.get("tests") or ():
         rows.setdefault(group_of(str(row["test"])), []).append(row)
     hidden_values = sealed.values if not revealed else frozenset()
     scores = {group.group: group for group in scored.groups} if scored is not None else {}
-    seen = Seen(revealed)
+    seen = seen_of(result, sealed, revealed=revealed)
     found: list[GroupShown] = []
     for name, group in groups.items():
         show = group.shown
         score = scores.get(name)
         most = score.max if score is not None else None
-        if name not in rows:
+        if name not in rows and not seen.held:
             found.append(
                 GroupShown(
                     name,
@@ -185,7 +195,9 @@ def shown(
             )
             continue
         credits = {test.test: test for test in score.tests} if score is not None else {}
-        tests = tuple(_row(row, hidden_values, credits.get(str(row["test"]))) for row in rows[name])
+        tests = tuple(
+            _row(row, hidden_values, credits.get(str(row["test"]))) for row in rows.get(name, ())
+        )
         verdict_shown = seen.verdict(show)
         tests_shown = seen.tests(show)
         found.append(
@@ -199,15 +211,27 @@ def shown(
                 max=most,
             )
         )
-    stopped = result.get("stopped")
-    if result.get("stopped_by") in sealed.steps and not revealed:
-        stopped = None
+    stopped = None if seen.held else result.get("stopped")
     values = {
         name: value
         for name, value in (result.get("values") or {}).items()
         if name not in hidden_values
     }
-    return Shown(stopped, _viewed(stopped, found), tuple(found), values)
+    return Shown(
+        stopped,
+        _viewed(stopped, found),
+        tuple(found),
+        values,
+        points_seen(scored, seen, reveal_at) if scored is not None else None,
+        scored.values(seen) if scored is not None else {},
+    )
+
+
+def seen_of(result: Mapping[str, Any], sealed: Sealed, *, revealed: bool) -> Seen:
+    """What a contestant is shown of `result` now: held, nothing, while the
+    step that stopped it is sealed and the task has not revealed.
+    """
+    return Seen(revealed, held=not revealed and result.get("stopped_by") in sealed.steps)
 
 
 def _row(

@@ -77,7 +77,7 @@ import builtins
 import json
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from fractions import Fraction
 from typing import Any
@@ -107,7 +107,7 @@ from forge.domain.identity import AsUser
 from forge.domain.ids import PublicationId, SubmissionId, TaskId, WorkspaceId
 from forge.domain.release import due_of, late_days
 from forge.domain.roles import contest_id_of, task_scope
-from forge.domain.scoring import Points, Seen, points_seen
+from forge.domain.scoring import Points
 from forge.domain.sessions import Session
 from forge.domain.showing import GroupShown, shown, told
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
@@ -145,11 +145,12 @@ class Result:
     """The latest attempt of a submission's grading as its contestant sees
     it: its id and attempt, where it stands, and once it is done, what
     stopped the run, the outcome over the groups shown, each test group as
-    its `show` allows, and the values reported once; on a task that gives
-    points, the points shown and those pending until the reveal, and the
-    late factor they include. A run in `system_error` is still `running`
-    to its contestant, with nothing else; one staff cancelled is
-    `cancelled`, with `reason`, the sentence they gave.
+    its `show` allows, the values reported once, and each value with a
+    fold, folded over the tests shown; on a task that gives points, the
+    points shown and those pending until the reveal, and the late factor
+    they include. A run in `system_error` is still `running` to its
+    contestant, with nothing else; one staff cancelled is `cancelled`, with
+    `reason`, the sentence they gave.
     """
 
     id: uuid.UUID
@@ -162,6 +163,7 @@ class Result:
     reason: str | None = None
     points: Points | None = None
     factor: Fraction | None = None
+    folded: Mapping[str, Fraction] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -761,8 +763,9 @@ async def _result(
         seen.outcome,
         seen.groups,
         dict(seen.values),
-        points=points_seen(scored, Seen(revealed), reveal_at),
-        factor=factor,
+        points=seen.points,
+        factor=factor if scored.gives_points else None,
+        folded=seen.folded,
     )
 
 

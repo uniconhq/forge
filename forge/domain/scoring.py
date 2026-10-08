@@ -226,16 +226,19 @@ class Seen:
     """What a viewer below the organisers is shown of a task at a moment:
     before its reveal, verdicts of groups not `after_close` and tests of
     `always` groups; from it, everything. Organisers see everything live,
-    which is `Seen(revealed=True)`.
+    which is `Seen(revealed=True)`. A run whose stop a sealed step made is
+    `held` until the reveal: nothing of it is shown, so it reads as a run
+    whose every group is still hidden.
     """
 
     revealed: bool
+    held: bool = False
 
     def verdict(self, show: Show) -> bool:
-        return self.revealed or show is not Show.AFTER_CLOSE
+        return not self.held and (self.revealed or show is not Show.AFTER_CLOSE)
 
     def tests(self, show: Show) -> bool:
-        return self.revealed or show is Show.ALWAYS
+        return not self.held and (self.revealed or show is Show.ALWAYS)
 
 
 EVERYTHING = Seen(revealed=True)

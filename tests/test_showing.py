@@ -6,9 +6,11 @@ a grading is shown with.
 """
 
 from datetime import UTC, datetime
+from fractions import Fraction
 from typing import Any
 
 from forge.domain.definitions import Group, Show
+from forge.domain.scoring import Better, Measure, Points, score
 from forge.domain.showing import (
     NOTHING_SEALED,
     Graded,
@@ -18,6 +20,7 @@ from forge.domain.showing import (
     shown,
     under,
 )
+from forge.domain.workflow_definition import Fold
 
 REVEAL = datetime(2026, 6, 1, 14, tzinfo=UTC)
 
@@ -150,6 +153,68 @@ def test_a_sealed_steps_stop_and_values_wait_for_the_reveal() -> None:
     after = shown(result, AFTER_CLOSE, SEALED, revealed=True, reveal_at=REVEAL)
     assert (after.stopped, after.outcome) == ("runtime_error", "runtime_error")
     assert after.values == {"accuracy": 0.9, "log": "notebook ran"}
+
+
+def test_a_group_a_sealed_stop_kept_from_running_reads_as_hidden_until_the_reveal() -> None:
+    groups = {
+        "first": Group.model_validate({"each": 1, "show": "after_close"}),
+        "second": Group.model_validate({"each": 1, "show": "after_close"}),
+    }
+    ran = {**RESULT, "tests": [row("first/1"), row("second/1")]}
+    cut = {
+        **RESULT,
+        "stopped": "runtime_error",
+        "stopped_by": "evaluate",
+        "tests": [row("first/1", "runtime_error")],
+    }
+
+    before = [shown(each, groups, SEALED, revealed=False, reveal_at=REVEAL) for each in (ran, cut)]
+    assert before[0].groups == before[1].groups
+    assert before[1].groups[1] == GroupShown("second", Show.AFTER_CLOSE, None, None, REVEAL)
+
+    after = shown(cut, groups, SEALED, revealed=True, reveal_at=REVEAL)
+    assert after.groups[1] == GroupShown("second", Show.AFTER_CLOSE, None, (), None, ran=False)
+
+
+def test_a_held_stop_reads_the_same_as_a_run_that_was_not_stopped_until_the_reveal() -> None:
+    groups = {
+        "open": Group.model_validate({"each": 1, "show": "always"}),
+        "first": Group.model_validate({"each": 1, "show": "verdict"}),
+        "second": Group.model_validate({"each": 1, "show": "after_close"}),
+    }
+    tests = ("open/1", "first/1", "second/1")
+    time = {"time_ms": Measure(Fold.MAX, Better.LOWER, Fraction(0), Fraction(1000))}
+    ran = {**RESULT, "tests": [row(test, time_ms=5) for test in tests]}
+    cut = {
+        **RESULT,
+        "stopped": "runtime_error",
+        "stopped_by": "evaluate",
+        "tests": [row("open/1", "runtime_error", time_ms=900)],
+    }
+
+    def seen(result: dict[str, Any], revealed: bool) -> Any:
+        scored = score(result, tests, groups, None, time, worth=90)
+        return shown(result, groups, SEALED, revealed=revealed, reveal_at=REVEAL, scored=scored)
+
+    held, plain = seen(cut, False), seen(ran, False)
+    assert held.stopped is None and held.outcome is None
+    assert held.groups == tuple(
+        GroupShown(name, group.shown, None, None, REVEAL, max=Fraction(30))
+        for name, group in groups.items()
+    )
+    assert held.points == Points(Fraction(0), Fraction(90), REVEAL)
+    assert held.folded == {}
+    assert (plain.points, plain.folded) == (
+        Points(Fraction(60), Fraction(30), REVEAL),
+        {"time_ms": Fraction(5)},
+    )
+
+    after = seen(cut, True)
+    assert (after.stopped, after.points) == (
+        "runtime_error",
+        Points(Fraction(0), Fraction(0), None),
+    )
+    assert after.folded == {"time_ms": Fraction(1000)}
 
 
 def test_a_sealed_per_test_value_is_held_on_its_rows_until_the_reveal() -> None:
