@@ -14,7 +14,7 @@ from fractions import Fraction
 from typing import Any
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from forge.db.tables import Grading
 from forge.domain.content import Edit
@@ -23,6 +23,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId, VersionId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, Scope
+from forge.domain.sessions import Session
 from forge.domain.submissions import SubmittedInput
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
@@ -215,8 +216,123 @@ async def test_an_organiser_reads_now_every_row_and_final_as_every_task_revealed
     assert final.now.nothing_shown
     assert final.final.rows[0].keys == keys(0)
     assert standings.notes == final.notes == ()
-    picked = await boards.organised(setup, observer, SPRING, row=UserOwner(9))
-    assert picked[0].now.rows[0].cells["sum"].submissions is None
+
+
+async def _contestant(setup: Setup, acme: Acme, user_id: int, name: str) -> Session:
+    acme.fake.add_user(user_id, name)
+    session = await signed_in(setup, acme.fake, user_id)
+    await contestants.register(setup, session, SPRING)
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
+    await contestants.approve(setup, manager, SPRING, user_id)
+    return session
+
+
+async def test_an_organiser_picks_a_row_of_the_contest_and_reads_the_boards_it_sees_as_it_does(
+    setup: Setup, acme: Acme, ranked: Entered
+) -> None:
+    await write_contest(acme.fake, contest(BOARDS + "  - {name: Staff, who: organisers}\n"))
+    observer = await organiser(setup, acme.fake, 7, Scope("acme", "spring"))
+    await _contestant(setup, acme, 30, "cyd")
+
+    with pytest.raises(NotFound):
+        await boards.organised(setup, observer, SPRING, row=UserOwner(31))
+    picked = await boards.organised(setup, observer, SPRING, row=UserOwner(30))
+
+    assert [each.now.board.name for each in picked] == ["Standings", "Final"]
+    bob = next(row for row in picked[0].now.rows if row.name == "bob")
+    assert bob.cells["sum"].submissions is None
+    cyd = next(row for row in picked[0].now.rows if row.name == "cyd")
+    assert cyd.cells["sum"].submissions == ()
+
+
+def _main(outcome: str = "accepted", **values: Any) -> dict[str, Any]:
+    return {**RESULT, "tests": [{"test": "main/1", "outcome": outcome, "values": values}]}
+
+
+async def _grade_waiting(setup: Setup, result: dict[str, Any]) -> None:
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Grading).where(Grading.status != "done").values(status="done", result=result)
+        )
+
+
+async def test_a_compile_error_from_a_step_that_is_not_sealed_is_no_attempt(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, contest(BOARDS))
+    made = [
+        ({**RESULT, "stopped": "compile_error", "stopped_by": "compile", "tests": []}),
+        _main("wrong_answer"),
+        _main(),
+    ]
+    for index, result in enumerate(made):
+        await _submit(setup, acme, entered, f"key-000{index}-attempts")
+        await _grade_waiting(setup, result)
+        clock.advance(timedelta(minutes=1))
+
+    standings, _ = await boards.seen(setup, entered.session, SPRING)
+
+    (bob,) = standings.rows
+    assert bob.keys[0] == 100
+    assert (bob.cells["sum"].attempts, bob.cells["sum"].submissions) == (1, (3,))
+
+
+async def test_a_run_in_system_error_is_still_grading_to_its_row_and_no_attempt(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await write_contest(acme.fake, contest(BOARDS))
+    await _submit(setup, acme, entered, "key-0001-fault")
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(update(Grading).values(status="system_error", error="It crashed."))
+
+    standings, _ = await boards.seen(setup, entered.session, SPRING)
+
+    cell = standings.rows[0].cells["sum"]
+    assert (cell.counting, cell.attempts, cell.grading) == (False, 0, 1)
+
+
+async def test_relative_credit_is_against_the_best_of_the_rows_candidates_only(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await write_contest(acme.fake, contest(BOARDS))
+    current = await _task_yaml(acme, entered.task)
+    saved = await _save(
+        setup, acme, entered.task, {"task.yaml": current + b"credit: {relative: time_ms}\n"}
+    )
+    assert isinstance(saved, Published), saved
+    cyd = await _contestant(setup, acme, 30, "cyd")
+    await _submit(setup, acme, entered, "key-0001-bob")
+    await _grade_waiting(setup, _main(time_ms=10))
+    await _submit(setup, acme, Entered(cyd, entered.task), "key-0001-cyd")
+    await _grade_waiting(setup, _main(time_ms=20))
+
+    def points(standings: Any) -> dict[str, Fraction | None]:
+        return {row.name: row.keys[0] for row in standings.rows}
+
+    (before,) = await boards.seen(setup, None, SPRING)
+    async with setup.unit_of_work() as ctx:
+        first = await ctx.db.scalar(
+            select(Grading).where(Grading.idempotency_key == "key-0001-bob")
+        )
+        assert first is not None
+        ctx.db.add(
+            Grading(
+                task_id=first.task_id,
+                workspace_id=first.workspace_id,
+                submission_id=first.submission_id,
+                submission_number=first.submission_number,
+                submission_version=first.submission_version,
+                submitted_at=first.submitted_at,
+                publication_id=first.publication_id,
+                attempt=2,
+                status="cancelled",
+                cancel_reason="Copied.",
+            )
+        )
+    (after,) = await boards.seen(setup, None, SPRING)
+
+    assert points(before) == {"bob": 100, "cyd": 50}
+    assert points(after) == {"cyd": 100, "bob": 0}
 
 
 async def test_a_mark_holds_up_to_the_tasks_marks_and_freezes_at_the_close(
@@ -259,11 +375,7 @@ async def test_a_task_no_marked_board_covers_takes_no_marks(
 async def test_another_persons_submission_is_not_theirs_to_mark(
     setup: Setup, acme: Acme, ranked: Entered
 ) -> None:
-    acme.fake.add_user(30, "cyd")
-    cyd = await signed_in(setup, acme.fake, 30)
-    await contestants.register(setup, cyd, SPRING)
-    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await contestants.approve(setup, manager, SPRING, 30)
+    cyd = await _contestant(setup, acme, 30, "cyd")
 
     with pytest.raises(NotFound):
         await marks.mark(setup, cyd, ranked.task, 1)

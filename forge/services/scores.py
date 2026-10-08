@@ -9,8 +9,9 @@ publication never changes.
 
 Under relative credit a test's `B` is the best value any candidate reached
 on it among the task's gradings of the same generation, the publications
-that grade the same test content: each submission's latest finished
-attempt, its run not stopped, accepted on the test.
+that grade the same test content: over the contest's rows, each
+submission's attempt a board reads (`usable`), a candidate by it, its run
+not stopped, accepted on the test.
 
 Where a submission stands on a board is its latest attempt's: finished, it
 is a candidate when its run was not stopped, an attempt when a sealed step
@@ -38,12 +39,13 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import PublicationId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.release import Extension, due_of, late_days
+from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.scoring import ONE, Scored, best_of, late_factor, score
 from forge.domain.showing import Graded, under
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import gradings, published
+from forge.services import gradings, published, timelines
 from forge.services.published import PublishedTask
 
 log = get_logger(__name__)
@@ -163,28 +165,45 @@ class Scorer:
             return self._bests[graded.generation]
         measure = graded.measures.get(name)
         better = measure.better if measure is not None else None
-        rows = (
-            await self.ctx.db.scalars(
-                select(Grading).where(
-                    Grading.task_id == self.current.id, Grading.status == GradingStatus.DONE
-                )
-            )
-        ).all()
-        latest: dict[str, Grading] = {}
-        for row in rows:
-            held = latest.get(row.submission_id)
-            if held is None or row.attempt > held.attempt:
-                latest[row.submission_id] = row
         generations = {each.id: self.current.generation(each) for each in self.current.publications}
         results = [
             row.result
-            for row in latest.values()
+            for row in await self._candidates()
             if row.result is not None
             and row.result.get("stopped") is None
             and generations.get(PublicationId(row.publication_id)) == graded.generation
         ]
         found = best_of(results, name, better)
         self._bests[graded.generation] = found
+        return found
+
+    async def _candidates(self) -> list[Grading]:
+        """The attempt a board reads of every submission of the contest's
+        rows to the task, for each that is a candidate by it.
+        """
+        ctx = self.ctx
+        contest = contest_id_of(task_scope(self.current.id))
+        workspaces = sorted(
+            ctx.forge.workspaces.workspace_of(contest, owner)
+            for owner in await timelines.rows(ctx, contest)
+        )
+        if not workspaces:
+            return []
+        grouped: dict[tuple[str, int], list[Grading]] = {}
+        for row in await ctx.db.scalars(
+            select(Grading).where(
+                Grading.task_id == self.current.id, Grading.workspace_id.in_(workspaces)
+            )
+        ):
+            grouped.setdefault((row.workspace_id, row.submission_number), []).append(row)
+        lost = await gradings.lost(
+            ctx, [max(attempts, key=lambda row: row.attempt) for attempts in grouped.values()]
+        )
+        found: list[Grading] = []
+        for attempts in grouped.values():
+            read = usable(ctx, attempts, lost)
+            if read.state is State.CANDIDATE and read.row is not None:
+                found.append(read.row)
         return found
 
     async def _own(self, publication: PublicationId) -> Graded | None:

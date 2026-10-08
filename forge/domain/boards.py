@@ -241,7 +241,7 @@ def rank(
             tuple(view),
             (),
             (),
-            shown_at=_first_shown(columns, scope, first),
+            shown_at=_first_shown(view, scope, first),
             nothing_shown=True,
         )
     not_in_view = () if final else _not_in_view(view, scope, seen, keys)
@@ -312,8 +312,10 @@ def _shows_some(column: Column, scope: Callable[[Show], bool], seen: Seen, first
 def _first_shown(
     columns: Sequence[Column], scope: Callable[[Show], bool], first: Key
 ) -> datetime | None:
-    """When the board's scope first shows something: a covered task's
-    release, for a group shown before its reveal, otherwise its reveal.
+    """When the board's scope first shows something on the tasks of its
+    view: a task's release, for a group shown before its reveal, otherwise
+    its reveal; none while no covered task is released, since a task not
+    yet released is not on the board, nor its times.
     """
     reads = BEFORE_REVEAL.verdict if first.by == POINTS else BEFORE_REVEAL.tests
     times = [

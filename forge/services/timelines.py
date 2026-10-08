@@ -8,8 +8,8 @@ its `teams` row while it is in a team. It is a length and the tasks it is
 for, by name, every task when it names none, and it moves the row's due and
 close on those tasks, and so those tasks' reveal for everyone. The
 extensions in force are those of approved contestants who are in no team,
-and of teams with a member; a removed contestant's, or a team member's own,
-moves nothing.
+and of teams with an approved member; a removed contestant's, or a team
+member's own, moves nothing.
 
 A contest save is checked against every row's submissions, read from the
 gradings, one per submission, at the moment it was taken:
@@ -33,11 +33,12 @@ withdrawn, leave a submission after the due or the close it was made
 before.
 """
 
+import uuid
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 
 from forge.db.tables import Contestant, Grading, Team, TeamMember
 from forge.domain.definitions import ContestDefinition, ContestTask
@@ -51,7 +52,6 @@ from forge.domain.teams import MemberStatus
 from forge.domain.yaml_models import Problem
 from forge.runtime.context import Context
 from forge.services import names, published
-
 
 def extension_of(length_seconds: int, tasks: Sequence[str] | None) -> Extension:
     """An extension as a row keeps it."""
@@ -83,14 +83,78 @@ async def of_owner(ctx: Context, contest: ContestId, owner: WorkspaceOwner) -> E
     return of_contestant(row)
 
 
+async def of_owners(
+    ctx: Context, contest: ContestId, owners: Collection[WorkspaceOwner]
+) -> dict[WorkspaceOwner, Extension]:
+    """`of_owner` for every one of `owners`, in two reads."""
+    found: dict[WorkspaceOwner, Extension] = {owner: Extension() for owner in owners}
+    team_ids = sorted(owner.team_id for owner in owners if isinstance(owner, TeamOwner))
+    user_ids = sorted(owner.user_id for owner in owners if isinstance(owner, UserOwner))
+    if team_ids:
+        for team_id, seconds, tasks in await ctx.db.execute(
+            select(Team.id, Team.time_extension_seconds, Team.extension_tasks).where(
+                Team.id.in_(team_ids)
+            )
+        ):
+            found[TeamOwner(team_id)] = extension_of(seconds, tasks)
+    if user_ids:
+        for row in await ctx.db.scalars(
+            select(Contestant).where(
+                Contestant.contest_id == contest, Contestant.user_id.in_(user_ids)
+            )
+        ):
+            found[UserOwner(row.user_id)] = of_contestant(row)
+    return found
+
+
+def _members(contest: ContestId) -> Select[int, uuid.UUID]:
+    """Each approved contestant of the contest who is a member of a team,
+    with the team: the members that make a team one of the rows.
+    """
+    return (
+        select(TeamMember.user_id, TeamMember.team_id)
+        .join(
+            Contestant,
+            (Contestant.contest_id == TeamMember.contest_id)
+            & (Contestant.user_id == TeamMember.user_id),
+        )
+        .where(
+            TeamMember.contest_id == contest,
+            TeamMember.status == MemberStatus.MEMBER,
+            Contestant.status == Status.APPROVED,
+        )
+    )
+
+
+async def rows(ctx: Context, contest: ContestId) -> list[WorkspaceOwner]:
+    """Every row of the contest, the ones `every_extension` reads: each
+    approved contestant in no team, and each team with an approved member.
+    """
+    members = _members(contest)
+    people = await ctx.db.scalars(
+        select(Contestant.user_id).where(
+            Contestant.contest_id == contest,
+            Contestant.status == Status.APPROVED,
+            Contestant.user_id.not_in(members.with_only_columns(TeamMember.user_id)),
+        )
+    )
+    teams_with_members = await ctx.db.scalars(
+        select(Team.id).where(
+            Team.contest_id == contest,
+            Team.id.in_(members.with_only_columns(TeamMember.team_id)),
+        )
+    )
+    owners: list[WorkspaceOwner] = [UserOwner(user_id) for user_id in people]
+    owners += [TeamOwner(team_id) for team_id in teams_with_members]
+    return owners
+
+
 async def every_extension(ctx: Context, contest: ContestId) -> list[Extension]:
     """Every extension in force in the contest that is more than nothing:
     each approved contestant's who is in no team, and each team's that has
-    a member.
+    an approved member.
     """
-    members = select(TeamMember.user_id, TeamMember.team_id).where(
-        TeamMember.contest_id == contest, TeamMember.status == MemberStatus.MEMBER
-    )
+    members = _members(contest)
     people = await ctx.db.execute(
         select(Contestant.time_extension_seconds, Contestant.extension_tasks).where(
             Contestant.contest_id == contest,

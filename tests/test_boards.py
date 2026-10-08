@@ -269,6 +269,14 @@ def test_kaggle_private_is_shown_from_the_reveal_then_counts_marks_or_the_public
     assert before.shown_at == CLOSE
     assert before.rows == ()
 
+    unreleased = standings(
+        private,
+        [column("house-prices", KAGGLE, worth=None, released=False)],
+        kaggle_rows(),
+        directions=directions,
+    )
+    assert (unreleased.nothing_shown, unreleased.shown_at, unreleased.tasks) == (True, None, ())
+
     after = standings(
         private,
         [column("house-prices", KAGGLE, worth=None, revealed=True)],
