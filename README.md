@@ -716,7 +716,11 @@ has opened when the settings saved before released it, the contest
 published and past its start and the task's `release_at` passed, so a
 contest that was never published moves freely. A task reveals once it has
 closed for every row, with the longest extension in force on it: an
-approved contestant's who is in no team, or a team's with a member. A
+approved contestant's who is in no team, or a team's with an approved
+member. A save of the contest's settings, like a save of one of its tasks,
+holds the contest's rules alone until it commits and a mark change holds
+them shared (`timelines.hold_rules`), so the checks one save makes against
+the other's file, and against the marks rows hold, read what is there. A
 manager's change to one of its admin-only keys, `name`,
 `description`, `state`, `visibility` and `registration`, is refused as
 `AdminOnly`, naming each; nothing is written either way. A write to a task
@@ -1267,9 +1271,12 @@ row's due it was and the latest attempt of its grading, as the task's test
 groups show it (`domain/showing.py`): a group shown `always` with its
 outcome and its tests, one shown as a `verdict` with its outcome and its
 tests at the task's reveal, one shown `after_close` with its name and when
-it is shown; the outcome over the groups shown; the values reported once;
-and what stopped the run, unless the sealed step that runs once and stopped
-it, as the result's `stopped_by` names it, is held back. A grading is shown
+it is shown; the outcome over the groups shown; the values reported once,
+and each value folded over the tests shown (`folded`); and what stopped the
+run. A run that a sealed step stopped, as the result's `stopped_by` names
+it, is held whole until the reveal: no stop, every group hidden as if it
+ran, its points all pending and no folds, so nothing tells it from a run
+that has not stopped. A grading is shown
 with the publication it ran under: that publication's sealed facts always,
 and the latest publication's `test_groups` when the two plans list the
 same tests, its own otherwise, so its rows are folded with the tests they
@@ -1519,23 +1526,28 @@ sections 3.1 to 3.5): each test's credit, each group's points
 folded over the tests, all as exact rationals, a value written `0.1` read
 as one tenth. A grading is scored with the latest publication's groups,
 credit and value meanings while no grading change came between them, and
-with its own otherwise. Relative credit's best is taken over every
-candidate of the task graded under the same plan. A submission is read
-with its points shown and those still decided at the reveal.
+with its own otherwise. Relative credit's best is taken over the
+candidates the boards count, each row's of the task graded under the same
+plan. A submission is read with its points shown and those still decided
+at the reveal.
 
 `boards.seen(session, contest)` gives every board the reader's audience
-sees, a visitor reading with no session; `boards.organised(organiser,
-contest, row=)` gives every board as `now` and `final`, every row, or `now`
-as a picked row sees it, beside what the boards ask of their tasks that
-does not hold. A board is ranked on read (`domain/boards.py`) over the
-contest's rows, each approved contestant in no team and each team with a
-member: which submission counts per row and task (`best`,
+sees, a visitor reading with no session, and an archived contest's to its
+approved contestants alone; `boards.organised(organiser, contest, row=)`
+gives every board as `now` and `final`, every row, or, for a row of the
+contest, `now` of each board shown to contestants as that row sees it,
+beside what the boards ask of their tasks that does not hold. A board is
+ranked on read (`domain/boards.py`) over the contest's rows, each approved
+contestant in no team and each team with an approved member, read once a
+request: which submission counts per row and task (`best`,
 `best_per_group`, `marked`), its keys in turn, ties sharing a rank. A
 submission still grading, stopped by a step that is not sealed, or
 cancelled is no attempt; a regrade in progress leaves the earlier attempt
 counting. `marks.mark`, `unmark` and `held` keep a row's marks for the
 `marked` boards in `marks`, at most the task's `marks`, frozen at the row's
-close. A task's save is refused where a board covering it asks what it does
+close; the task page says how many (`TaskPage.marks`) to an approved
+contestant alone, and to anyone else an open task reads closed as
+`not_approved`. A task's save is refused where a board covering it asks what it does
 not give (T8) and reports the boards it moves (T9); a contest's save is
 refused where a board asks what its tasks do not give (C4), or lowers a
 task's `marks` below what a row holds (C1).
