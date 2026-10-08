@@ -10,7 +10,7 @@ advisory lock held until the unit of work ends, so a row never holds more
 than it may, and with the contest's rules held shared (`timelines.hold_rules`),
 so a save lowering a task's marks counts every mark already made. A mark
 already held is marked again without a change, and a mark not held unmarked
-the same way.
+the same way. Only an approved contestant is told whether a task takes marks.
 """
 
 from collections.abc import Collection
@@ -168,14 +168,14 @@ async def _place(ctx: Context, entrant: Entrant) -> tuple[WorkspaceId, int, date
     """The row's workspace, how many marks the task takes, and the row's
     close on it.
     """
+    row = entrant.row
+    if row is None or row.status != Status.APPROVED or entrant.workspace is None:
+        raise NotApproved("Only an approved contestant marks submissions.")
     settings: ContestDefinition = entrant.settings
     entry = settings.entry(entrant.published.name)
     most = settings.marks_of(entry) if entry is not None else None
     if entry is None or most is None:
         raise MarksOff(NOT_MARKED)
-    row = entrant.row
-    if row is None or row.status != Status.APPROVED or entrant.workspace is None:
-        raise NotApproved("Only an approved contestant marks submissions.")
     extension = await submitters.extension(ctx, entrant)
     return entrant.workspace, most, close_of(settings, entry, extension)
 

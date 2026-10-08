@@ -18,7 +18,7 @@ from sqlalchemy import select, update
 
 from forge.db.tables import Grading
 from forge.domain.content import Edit
-from forge.domain.errors import MarkLimit, MarksFrozen, MarksOff, NotFound
+from forge.domain.errors import MarkLimit, MarksFrozen, MarksOff, NotApproved, NotFound
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId, VersionId
 from forge.domain.names import UserOwner
@@ -29,6 +29,7 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import (
     boards,
+    contest_home,
     contestants,
     files,
     identity,
@@ -370,6 +371,22 @@ async def test_a_task_no_marked_board_covers_takes_no_marks(
     await write_contest(acme.fake, contest())
     with pytest.raises(MarksOff):
         await marks.held(setup, entered.session, entered.task)
+    assert (await contest_home.task(setup, entered.session, entered.task)).marks is None
+
+    await write_contest(acme.fake, contest(BOARDS))
+    assert (await contest_home.task(setup, entered.session, entered.task)).marks == 1
+
+
+async def test_someone_not_approved_is_not_told_whether_a_task_takes_marks(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    acme.fake.add_user(30, "cyd")
+    cyd = await signed_in(setup, acme.fake, 30)
+    for settings in (contest(), contest(BOARDS)):
+        await write_contest(acme.fake, settings)
+        with pytest.raises(NotApproved):
+            await marks.held(setup, cyd, entered.task)
+        assert (await contest_home.task(setup, cyd, entered.task)).marks is None
 
 
 async def test_another_persons_submission_is_not_theirs_to_mark(

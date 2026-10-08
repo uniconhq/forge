@@ -89,7 +89,11 @@ async def test_the_home_lists_only_the_released_tasks_in_the_contests_order(
         ("diff", "A", 100, None, at(15)),
         ("sum", "B", 50, at(13), at(14)),
     ]
-    assert all(task.release.open for task in home.tasks)
+    assert all(
+        (task.release.released, task.release.open, task.release.closed)
+        == (True, False, Closed.NOT_APPROVED)
+        for task in home.tasks
+    )
     assert home.name == "Spring 2026"
     assert (home.start, home.end) == (at(10), at(15))
     assert (home.registration, home.registration_open) == (None, True)

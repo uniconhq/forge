@@ -21,7 +21,7 @@ not see, is no such task or contest, the same answer as one that is not
 there at all.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from sqlalchemy import select
@@ -35,7 +35,7 @@ from forge.domain.identity import User
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.names import ScopeNames
 from forge.domain.registration import Status
-from forge.domain.release import Extension, close_of, due_of
+from forge.domain.release import Closed, Extension, close_of, due_of
 from forge.domain.roles import contest_id_of, contest_scope, task_scope
 from forge.domain.sessions import Session
 from forge.domain.submissions import Field
@@ -110,7 +110,10 @@ class ContestHome:
 class TaskPage:
     """A task as a person reads it: its statement, the caps a submit is
     counted against, the inputs a contestant gives, which the submit panel
-    is built from, and when it falls due and closes for the person's row.
+    is built from, when it falls due and closes for the person's row, and
+    how many of the row's submissions it may mark for the `marked` boards,
+    none unless such a board covers the task and the person is an approved
+    contestant.
     """
 
     task: TaskId
@@ -124,6 +127,7 @@ class TaskPage:
     release: TaskRelease
     due: datetime | None
     closes: datetime | None
+    marks: int | None = None
 
 
 @action
@@ -181,7 +185,7 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
             label=task.label or task.name,
             title=task.definition.name,
             worth=task.worth,
-            release=release.of(settings, task.name, now, extension),
+            release=_to(person, release.of(settings, task.name, now, extension)),
             due=_due(settings, task, extension),
             closes=_closes(settings, task, extension),
         )
@@ -238,9 +242,14 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
         statement=await published.statement(ctx, found),
         submissions=found.definition.submissions,
         inputs=form.fields,
-        release=release.of(settings, found.name, now, extension),
+        release=_to(person, release.of(settings, found.name, now, extension)),
         due=_due(settings, found, extension),
         closes=_closes(settings, found, extension),
+        marks=(
+            settings.marks_of(found.entry)
+            if found.entry is not None and _approved(person.row)
+            else None
+        ),
     )
 
 
@@ -266,3 +275,12 @@ def _session_user(session: Session) -> User:
 
 def _approved(row: Contestant | None) -> bool:
     return row is not None and row.status == Status.APPROVED
+
+
+def _to(person: release.Reader, found: TaskRelease) -> TaskRelease:
+    """Where a task stands for `person`: not open, as `not_approved`, where
+    it is open but they hold no approved row to submit from.
+    """
+    if found.open and not _approved(person.row):
+        return replace(found, open=False, closed=Closed.NOT_APPROVED)
+    return found
