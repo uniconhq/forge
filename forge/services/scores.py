@@ -18,7 +18,11 @@ is a candidate when its run was not stopped, an attempt when a sealed step
 stopped it, and nothing otherwise; staff cancelled, nothing; in
 `system_error`, still grading to its row; still running or queued, the
 latest attempt that finished before it while there is one, so a regrade in
-progress moves no board until it ends, and otherwise still grading.
+progress moves no board until it ends, and otherwise still grading. A
+fallback, staff's on the latest attempt or the contest's
+`on_system_error: last_result`, has a submission in `system_error` or staff
+cancelled stand as its latest earlier attempt that finished with a result
+(`fallen_back`), while there is one.
 """
 
 import uuid
@@ -32,7 +36,13 @@ from sqlalchemy import select
 
 from forge.db.tables import Grading
 from forge.domain.boards import State
-from forge.domain.definitions import TASK_FILE, ContestDefinition, Relative, parse_task
+from forge.domain.definitions import (
+    TASK_FILE,
+    ContestDefinition,
+    OnSystemError,
+    Relative,
+    parse_task,
+)
 from forge.domain.errors import NotFound
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
@@ -74,27 +84,49 @@ class Usable:
     row: Grading | None
 
 
-def usable(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -> Usable:
+def usable(
+    ctx: Context,
+    rows: Sequence[Grading],
+    lost: Collection[uuid.UUID],
+    contest: OnSystemError,
+) -> Usable:
     """Which of one submission's attempts a board reads, and where the
-    submission stands by it, before its run's stop is read.
+    submission stands by it, before its run's stop is read, `contest` being
+    the contest's `on_system_error`.
     """
-    ordered = sorted(rows, key=lambda row: row.attempt)
-    latest = ordered[-1]
+    latest = max(rows, key=lambda row: row.attempt)
     status = gradings.status_of(ctx, latest, lost)
     if status is GradingStatus.DONE and latest.result is not None:
         return Usable(State.CANDIDATE, latest)
-    if gradings.staff_cancelled(latest):
-        return Usable(State.VOID, None)
-    if status is GradingStatus.SYSTEM_ERROR:
+    good = gradings.last_good(rows, latest)
+    if gradings.broken(latest, status):
+        if good is not None and gradings.fallback_of(latest.falls_back, contest) is not None:
+            return Usable(State.CANDIDATE, good)
+        if gradings.staff_cancelled(latest):
+            return Usable(State.VOID, None)
         return Usable(State.GRADING, None)
-    earlier = [
-        row for row in ordered[:-1] if row.status == GradingStatus.DONE and row.result is not None
-    ]
-    if earlier:
-        return Usable(State.CANDIDATE, earlier[-1])
+    if good is not None:
+        return Usable(State.CANDIDATE, good)
     if status is GradingStatus.CANCELLED:
         return Usable(State.VOID, None)
     return Usable(State.GRADING, None)
+
+
+def fallen_back(
+    ctx: Context,
+    rows: Sequence[Grading],
+    lost: Collection[uuid.UUID],
+    contest: OnSystemError,
+) -> Grading | None:
+    """The earlier attempt a fallback counts in place of a submission's
+    broken latest attempt, or none while no fallback is in force for it.
+    """
+    latest = max(rows, key=lambda row: row.attempt)
+    if not gradings.broken(latest, gradings.status_of(ctx, latest, lost)):
+        return None
+    if gradings.fallback_of(latest.falls_back, contest) is None:
+        return None
+    return gradings.last_good(rows, latest)
 
 
 def stands(row: Grading, graded: Graded) -> State:
@@ -109,12 +141,14 @@ def stands(row: Grading, graded: Graded) -> State:
 
 class Scorer:
     """Scores one task's gradings for one read, `B` worked out once for
-    each generation it is asked for.
+    each generation it is asked for, by the attempts the contest's
+    `on_system_error` has a board read.
     """
 
-    def __init__(self, ctx: Context, current: PublishedTask) -> None:
+    def __init__(self, ctx: Context, current: PublishedTask, contest: OnSystemError) -> None:
         self.ctx = ctx
         self.current = current
+        self.contest = contest
         self._latest: Graded | None = None
         self._bests: dict[int, Mapping[str, Fraction]] = {}
 
@@ -201,7 +235,7 @@ class Scorer:
         )
         found: list[Grading] = []
         for attempts in grouped.values():
-            read = usable(ctx, attempts, lost)
+            read = usable(ctx, attempts, lost, self.contest)
             if read.state is State.CANDIDATE and read.row is not None:
                 found.append(read.row)
         return found

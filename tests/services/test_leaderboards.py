@@ -1,7 +1,9 @@
 """The contest's boards, read by a visitor, a contestant and an organiser,
 each given what their audience sees: one ranking, the viewer's own row the
 only one with its grading count and counted submissions, organisers every
-row `now` and `final`, and a picked row as it sees `now`. A row's marks:
+row `now` and `final`, and a picked row as it sees `now`. A broken attempt
+counts as still grading, or void once cancelled, unless a fallback, the
+contest's or staff's, counts its last good result. A row's marks:
 up to the task's `marks` of its own submissions, frozen at its close. What
 a board asks of its tasks, refused on a task's save (T8) and on the
 contest's (C4), with the save's report of the boards it moves (T9); and a
@@ -32,6 +34,7 @@ from forge.services import (
     contest_home,
     contestants,
     files,
+    gradings,
     identity,
     marks,
     publications,
@@ -290,6 +293,43 @@ async def test_a_run_in_system_error_is_still_grading_to_its_row_and_no_attempt(
 
     cell = standings.rows[0].cells["sum"]
     assert (cell.counting, cell.attempts, cell.grading) == (False, 0, 1)
+
+
+async def test_a_fallback_counts_the_last_good_result_of_a_broken_attempt_a_cancel_included(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await write_contest(acme.fake, contest(BOARDS))
+    await _submit(setup, acme, entered, "key-0001-fault")
+    await _grade_waiting(setup, _main())
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring", "sum"), Role.MANAGER)
+    async with setup.unit_of_work() as ctx:
+        first = await ctx.db.scalar(select(Grading.id))
+    assert first is not None
+    second = (await gradings.retry(setup, manager, first)).id
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Grading)
+            .where(Grading.id == second)
+            .values(status="system_error", error="It crashed.")
+        )
+
+    async def cell() -> tuple[Fraction | None, bool, int | None]:
+        standings, _ = await boards.seen(setup, entered.session, SPRING)
+        (bob,) = standings.rows
+        found = bob.cells["sum"]
+        return bob.keys[0], found.counting, found.grading
+
+    assert (await cell())[1:] == (False, 1)
+    await write_contest(acme.fake, contest(BOARDS + "on_system_error: last_result\n"))
+    assert await cell() == (Fraction(100), True, 0)
+    await gradings.cancel(setup, manager, second, "It crashes on every try.")
+    assert await cell() == (Fraction(100), True, 0)
+    await write_contest(acme.fake, contest(BOARDS))
+    assert (await cell())[1:] == (False, 0)
+    await gradings.fall_back(setup, manager, second)
+    assert await cell() == (Fraction(100), True, 0)
+    await gradings.clear_fallback(setup, manager, second)
+    assert (await cell())[1:] == (False, 0)
 
 
 async def test_relative_credit_is_against_the_best_of_the_rows_candidates_only(

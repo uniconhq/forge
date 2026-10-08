@@ -6,8 +6,9 @@ code of its own, before anything is written:
    extension, and they are approved (`submitters.refuse`).
 2. They have submissions left (`submission_limit`), counted from the
    submissions at the forge, leaving out one staff cancelled
-   (`gradings.staff_cancelled`), and the task's rate holds (`rate_limited`),
-   counted from the grading rows of their submissions within its window.
+   (`gradings.staff_cancelled`) that no fallback keeps a result for, and the
+   task's rate holds (`rate_limited`), counted from the grading rows of their
+   submissions within its window.
 3. Every upload named is theirs, for this task (`upload_not_yours`), and a
    checked file no submission has used (`upload_not_ready`).
 4. Each file is within its input's `max_size` (`too_large`).
@@ -53,6 +54,9 @@ latest attempt of its grading as the task's test groups show it
 a run in `system_error` but that it is still being graded, and of one staff
 then cancelled, that it is `cancelled` and the sentence they gave. A
 submission staff cancelled does not count against the task's
+`submissions.max`. While a fallback is in force for a submission in
+`system_error` or staff cancelled (`scores.fallen_back`), it is read by its
+last good result instead, as the boards count it, and counts against
 `submissions.max`. A grading is
 shown with the publication it ran under: its sealed facts, and its
 `test_groups` unless the latest publication's plan lists the same tests. A
@@ -87,6 +91,7 @@ from sqlalchemy import func, select, text
 from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
 from forge.domain import submissions as rules
+from forge.domain.definitions import OnSystemError
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -233,7 +238,7 @@ async def submit(
     made = await _listed(ctx, workspace, task) or ()
     await _finish_unrecorded(ctx, entrant, workspace, made)
     caps = entrant.published.definition.submissions
-    cancelled = await _cancelled(ctx, workspace, task)
+    cancelled = await _cancelled(ctx, workspace, task, entrant.settings.on_system_error)
     if len([found for found in made if found.id not in cancelled]) >= caps.max:
         raise SubmissionLimit(
             f"You have made all {caps.max} submissions this task allows.", limit=caps.max
@@ -343,20 +348,29 @@ async def _submitted_before(ctx: Context, workspace: WorkspaceId, task: TaskId) 
     return found is not None
 
 
-async def _cancelled(ctx: Context, workspace: WorkspaceId, task: TaskId) -> set[str]:
-    """The workspace's submissions of the task that staff cancelled: those
-    whose latest attempt is a cancel with a sentence.
+async def _cancelled(
+    ctx: Context, workspace: WorkspaceId, task: TaskId, contest: OnSystemError
+) -> set[str]:
+    """The workspace's submissions of the task that staff cancelled and that
+    no fallback keeps a result for: those whose latest attempt is a cancel
+    with a sentence, with no fallback in force for it by staff or by the
+    contest's `on_system_error`, or no earlier attempt that finished with a
+    result.
     """
     rows = (
         await ctx.db.execute(
             select(Grading).where(Grading.workspace_id == workspace, Grading.task_id == task)
         )
     ).scalars()
-    latest: dict[str, Grading] = {}
+    grouped: dict[str, builtins.list[Grading]] = {}
     for row in rows:
-        if row.submission_id not in latest or row.attempt > latest[row.submission_id].attempt:
-            latest[row.submission_id] = row
-    return {submission for submission, row in latest.items() if gradings.staff_cancelled(row)}
+        grouped.setdefault(row.submission_id, []).append(row)
+    return {
+        submission
+        for submission, attempts in grouped.items()
+        if gradings.staff_cancelled(_latest(attempts))
+        and scores.fallen_back(ctx, attempts, (), contest) is None
+    }
 
 
 async def _hold(ctx: Context, workspace: WorkspaceId, task: TaskId) -> None:
@@ -675,7 +689,7 @@ async def _read(
     for row in rows:
         grouped.setdefault(row.submission_number, []).append(row)
     gone = await gradings.lost(ctx, [_latest(found) for found in grouped.values()])
-    scorer = scores.Scorer(ctx, entrant.published)
+    scorer = scores.Scorer(ctx, entrant.published, entrant.settings.on_system_error)
     return [
         await _submission(
             ctx,
@@ -705,7 +719,8 @@ async def _submission(
     scorer: scores.Scorer | None = None,
 ) -> Submission:
     """The submission as its owner reads it, by the latest attempt of its
-    grading, with `lost` naming the gradings whose runs the CI has lost.
+    grading, or by its last good result while a fallback is in force for
+    it, with `lost` naming the gradings whose runs the CI has lost.
     """
     settings = entrant.settings
     task = entrant.published.name
@@ -714,13 +729,18 @@ async def _submission(
     late = late_days(due_of(settings, entry, extension), at) if entry is not None else 0
     if not rows:
         return Submission(entrant.task, number, at, late, None)
-    row = _latest(rows)
+    row = scores.fallen_back(ctx, rows, lost, settings.on_system_error) or _latest(rows)
     status = gradings.status_of(ctx, row, lost)
     contest = contest_id_of(task_scope(entrant.task))
     reveal_at = await timelines.reveal(ctx, contest, settings, task)
     factor = scores.factor(settings, entrant.published, extension, at)
     result = await _result(
-        ctx, scorer or scores.Scorer(ctx, entrant.published), row, status, reveal_at, factor
+        ctx,
+        scorer or scores.Scorer(ctx, entrant.published, settings.on_system_error),
+        row,
+        status,
+        reveal_at,
+        factor,
     )
     return Submission(entrant.task, number, at, late, result)
 
