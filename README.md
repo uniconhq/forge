@@ -114,9 +114,10 @@ forge/api/
                 Standings, Key, Column, NotInView, Ranked, Cell,
                 OrganisedBoard, Marks, Points, UserOwner and TeamOwner they
                 return
-  gradings.py   cancel, retry, rejudge, list, run_log, task_of, feed,
-                queue_depth, and the GradingRecord, Rejudged, FeedEntry,
-                Submitter, QueueDepth and GradingStatus they return; list
+  gradings.py   cancel, retry, fall_back, clear_fallback, rejudge, list,
+                run_log, task_of, feed, queue_depth, and the GradingRecord,
+                Rejudged, FeedEntry, Submitter, QueueDepth, GradingStatus and
+                Fallback they return; list
                 and feed both give FeedEntry
   runs.py       config, envelope, callback, the CiRequest config takes and the
                 CiAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
@@ -503,7 +504,7 @@ hosting process calls are actions, marked `@action` from
 | `submissions` | `submit`, `mine`, `one`, `files`, `download` |
 | `boards` | `seen`, `organised` |
 | `marks` | `held`, `mark`, `unmark` |
-| `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
+| `gradings` | `cancel`, `retry`, `fall_back`, `clear_fallback`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
 | `runs` | `config`, `envelope`, `callback` |
 | `workflows` | `create` |
 
@@ -1284,7 +1285,9 @@ ran on; a group with no rows did not run on it (`ran` false) and adds
 nothing to the outcome. A past publication's `task.yaml` and plan are read
 once per process. A run in `system_error` is told to its contestant as
 still running, with nothing of it shown, and one staff then cancelled as
-`cancelled` with the sentence they gave (`Result.reason`). `files` gives
+`cancelled` with the sentence they gave (`Result.reason`); while a fallback
+is in force for either (below), the submission is told by its last good
+result instead, the attempt the boards count. `files` gives
 the inputs one was made with, as its `submission.json` names them, and
 `download` a door to one of those files, which the proxy streams from the
 forge. A run's log
@@ -1457,6 +1460,24 @@ a save's regrade leave it as it is. Staff who want it graded after all tell
 the contestant, who submits again. Migration 0014 gives each submission
 cancelled before cancels carried a sentence a stock one, "The organisers
 cancelled this grading.", so it reads and counts the same.
+
+**Falling back.** A submission whose latest attempt is a `system_error`, or
+staff cancelled, counts as still grading, or void once cancelled, while the
+contest's `on_system_error` is `grading`, the default. A **fallback** has it
+count as its last good result instead, the latest earlier attempt that
+finished with a result, while there is one: on the boards, to its
+contestant, and under `submissions.max`, a cancel included. It is in force
+by the contest's `on_system_error: last_result`, or by staff on the one
+attempt: `gradings.fall_back(grading)` sets `falls_back` on a latest
+attempt that reads as `system_error` or staff cancelled (`WrongStatus`
+otherwise, `Conflict` for an earlier attempt or a submission with no
+earlier result), and `gradings.clear_fallback(grading)` takes it back, so
+the contest's word holds; both answer the grading as it then stands and
+need what a cancel needs. Migration 0016 adds the column, false on every
+grading so far. Every `GradingRecord` of a broken latest attempt carries
+`last_good`, the attempt a fallback counts, and `fallback`, `staff` or
+`contest` while one is in force and none otherwise; a contest whose
+settings do not read counts as `grading`.
 `gradings.retry` makes a new attempt of a submission's latest attempt once
 it is finished, against the publication it graded against, while no other
 attempt of it is being graded (`Conflict`). An earlier attempt is
