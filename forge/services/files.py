@@ -155,6 +155,7 @@ async def write(
                 raise AdminOnly(
                     f"Only an admin of {scope.name} may change {', '.join(keys)}.", keys=keys
                 )
+        await timelines.hold_rules(ctx, contest)
         problems = await timelines.check_contest(ctx, contest, _parsed(before), after)
         problems += await boards.check_contest(ctx, contest, after)
         if problems:

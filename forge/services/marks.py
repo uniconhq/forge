@@ -7,8 +7,10 @@ mark only on a candidate.
 
 Marks of one row on one task change one after another, under a Postgres
 advisory lock held until the unit of work ends, so a row never holds more
-than it may. A mark already held is marked again without a change, and a
-mark not held unmarked the same way.
+than it may, and with the contest's rules held shared (`timelines.hold_rules`),
+so a save lowering a task's marks counts every mark already made. A mark
+already held is marked again without a change, and a mark not held unmarked
+the same way.
 """
 
 from collections.abc import Collection
@@ -23,11 +25,12 @@ from forge.domain.errors import MarkLimit, MarksFrozen, MarksOff, NotApproved, N
 from forge.domain.ids import TaskId, WorkspaceId
 from forge.domain.registration import Status
 from forge.domain.release import close_of
+from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import submitters
+from forge.services import submitters, timelines
 from forge.services.submitters import Entrant
 
 log = get_logger(__name__)
@@ -185,6 +188,7 @@ async def _change(
     """
     if ctx.now >= closes_at:
         raise MarksFrozen("Your close on this task has passed, so your marks are frozen.")
+    await timelines.hold_rules(ctx, contest_id_of(task_scope(entrant.task)), shared=True)
     await ctx.db.execute(
         text("SELECT pg_advisory_xact_lock(:space, hashtext(:target))"),
         {"space": MARKS_LOCK, "target": f"{workspace}|{entrant.task}"},

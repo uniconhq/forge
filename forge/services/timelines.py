@@ -38,7 +38,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, text
 
 from forge.db.tables import Contestant, Grading, Team, TeamMember
 from forge.domain.definitions import ContestDefinition, ContestTask
@@ -52,6 +52,23 @@ from forge.domain.teams import MemberStatus
 from forge.domain.yaml_models import Problem
 from forge.runtime.context import Context
 from forge.services import names, published
+
+RULES_LOCK = 0x52554C45
+
+
+async def hold_rules(ctx: Context, contest: ContestId, *, shared: bool = False) -> None:
+    """Hold the contest's rules until the unit of work ends: alone, for a
+    save of its settings or of one of its tasks, so the checks each makes
+    against the other (C1, C4, T8) read what the other left; shared, for a
+    change to a row's marks, so C1's count of the marks rows hold is not
+    passed by a mark in flight.
+    """
+    lock = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
+    await ctx.db.execute(
+        text(f"SELECT {lock}(:space, hashtext(:contest))"),
+        {"space": RULES_LOCK, "contest": contest},
+    )
+
 
 def extension_of(length_seconds: int, tasks: Sequence[str] | None) -> Extension:
     """An extension as a row keeps it."""
