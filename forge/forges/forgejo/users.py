@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from forge.domain.errors import NotFound
-from forge.domain.identity import PLATFORM, User
+from forge.domain.identity import PLATFORM, Identity, User
 from forge.forges.forgejo.http import Http, json_of, list_of, segment
 from forge.port.identity import AccountVisibility
 
@@ -39,6 +39,14 @@ class Users:
         verified = [entry for entry in emails if entry.get("verified")]
         verified.sort(key=lambda entry: not entry.get("primary"))
         return tuple(str(entry["email"]) for entry in verified)
+
+    async def me(self, as_: Identity) -> dict[str, Any]:
+        """The account `as_` acts as, as the forge describes it."""
+        return json_of(await self._http.call(as_, "GET", "/api/v1/user"))
+
+    async def orgs_of(self, as_: Identity) -> list[dict[str, Any]]:
+        """Every org the account `as_` acts as belongs to."""
+        return await self._http.get_all(as_, "/api/v1/user/orgs")
 
     async def username_of(self, user_id: int) -> str:
         return str((await self._record(user_id))["login"])

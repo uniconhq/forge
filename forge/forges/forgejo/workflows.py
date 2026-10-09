@@ -137,8 +137,8 @@ class ForgejoWorkflows:
     ) -> File:
         ref = parse_workflow(workflow)
         await self._require_mark(as_, ref)
-        await self._repos.require_version(as_, ref.owner, ref.repo, version)
-        return await self._repos.read_file(as_, ref.owner, ref.repo, path, at=version)
+        at = await self._repos.require_version(as_, ref.owner, ref.repo, version)
+        return await self._repos.read_file(as_, ref.owner, ref.repo, path, at=at)
 
     async def search_public_workflows(self, query: str) -> tuple[Workflow, ...]:
         found = await self._repos.marked(WORKFLOW_TOPIC)
@@ -159,8 +159,8 @@ class ForgejoWorkflows:
     ) -> WorkflowId:
         origin = parse_workflow(source)
         await self._require_mark(as_, origin)
-        await self._repos.require_version(as_, origin.owner, origin.repo, version)
-        files = await self._repos.files_at(as_, origin.owner, origin.repo, version)
+        at = await self._repos.require_version(as_, origin.owner, origin.repo, version)
+        files = await self._repos.files_at(as_, origin.owner, origin.repo, at)
         return await self.create_workflow(as_, owner, name, files, Visibility.PRIVATE)
 
     async def describe_workflow(self, as_: Identity, workflow: WorkflowId) -> Workflow:
@@ -168,11 +168,22 @@ class ForgejoWorkflows:
         return await self._workflow(await self._require_mark(as_, ref))
 
     async def workflows_readable_by(self, as_: Identity) -> tuple[Workflow, ...]:
-        reached = await self._repos.reached_by(as_)
-        built_in = await self._repos.under(PLATFORM_ORG)
+        """Found by the mark, so the cost follows the workflows, not every
+        repository `as_` reaches: the private ones `as_` sees, which they
+        reach as owner, collaborator or through an org's team, and the public
+        ones of `as_`, of each org they belong to, and the platform's.
+        """
+        private = await self._repos.marked(WORKFLOW_TOPIC, as_, is_private="true")
+        public: list[dict[str, Any]] = []
+        for owner_id in await self._owners_of(as_):
+            public.extend(
+                await self._repos.marked(
+                    WORKFLOW_TOPIC, as_, uid=owner_id, exclusive="true", is_private="false"
+                )
+            )
         seen: set[str] = set()
         found: list[Workflow] = []
-        for repo in [*reached, *built_in]:
+        for repo in [*private, *public]:
             key = str(repo["full_name"])
             if key in seen or not _is_workflow(repo):
                 continue
@@ -181,6 +192,17 @@ class ForgejoWorkflows:
                 continue
             found.append(await self._workflow(repo))
         return tuple(found)
+
+    async def _owners_of(self, as_: Identity) -> list[int]:
+        """The forge's numbers for `as_`, each org they belong to, and the
+        platform's org, whose public workflows they reach.
+        """
+        owners = [await self._repos.org_id(PLATFORM_ORG)]
+        if isinstance(as_, Platform):
+            return owners
+        me = await self._users.me(as_)
+        orgs = await self._users.orgs_of(as_)
+        return [int(me["id"]), *(int(org["id"]) for org in orgs), *owners]
 
     async def _require_mark(self, as_: Identity, ref: WorkflowRef) -> dict[str, Any]:
         """The workflow's repository as `as_` sees it; `NotFound` for one they

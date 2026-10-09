@@ -1429,3 +1429,20 @@ async def test_a_name_goes_into_a_path_quoted_whole_and_a_dot_segment_reaches_no
     with pytest.raises(NotFound):
         await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "../secrets")
     assert len(recorder.seen) == 2
+
+
+async def test_a_version_is_read_at_its_tags_commit_whatever_its_name_spells(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    named, tagged = "a" * 40, "b" * 40
+    recorder.on("GET", repo, ok({"name": "grading.workflow", "topics": ["unicon-workflow"]}))
+    recorder.on("GET", f"{repo}/tags", ok([{"name": named, "commit": {"sha": tagged}}]))
+    recorder.on("GET", f"{repo}/contents/workflow.yaml", ok({"type": "file", "sha": "s"}))
+
+    await forgejo.workflows.read_workflow_file(
+        AsUser(7, _credential()), WorkflowId("acme/grading"), named, "workflow.yaml"
+    )
+
+    [read] = [seen for seen in recorder.seen if seen.url.path == f"{repo}/contents/workflow.yaml"]
+    assert read.url.params["ref"] == tagged

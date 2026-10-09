@@ -190,6 +190,12 @@ class FakeWorkflows:
                 return not repo.private
             if user_id is None:
                 return True
+            if not repo.private:
+                # A public one is reached when it is the person's own or an
+                # org's they belong to; anyone else's is the marketplace's.
+                return repo.owner.lower() == self._state.username(
+                    user_id
+                ).lower() or self._state.holds(user_id, repo, Role.OBSERVER)
             return (
                 user_id in repo.readers
                 or self._state.may_write(user_id, repo)

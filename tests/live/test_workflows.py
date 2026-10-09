@@ -312,15 +312,25 @@ async def test_the_workflows_one_reaches_are_ones_own_ones_orgs_and_ones_shared(
     orgs = await forge.workflows.create_workflow(
         acting["manager"], org, "reached", DEFINITION, Visibility.PRIVATE
     )
+    own_public = await forge.workflows.create_workflow(
+        acting["observer"], observer, "shown", DEFINITION, Visibility.PUBLIC
+    )
+    orgs_public = await forge.workflows.create_workflow(
+        acting["manager"], org, "shown", DEFINITION, Visibility.PUBLIC
+    )
     elsewhere = await forge.workflows.create_workflow(
         acting["author"], people["author"]["login"], "public", DEFINITION, Visibility.PUBLIC
     )
+    shared = await forge.workflows.create_workflow(
+        acting["author"], people["author"]["login"], "shared", DEFINITION, Visibility.PRIVATE
+    )
+    await forge.workflows.share_workflow(acting["author"], shared, int(people["observer"]["id"]))
 
     reached = {
         entry.id for entry in await forge.workflows.workflows_readable_by(acting["observer"])
     }
 
-    assert {own, orgs} <= reached
+    assert {own, orgs, own_public, orgs_public, shared} <= reached
     assert elsewhere not in reached
 
 
