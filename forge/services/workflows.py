@@ -254,13 +254,20 @@ async def save(
 
 @action
 async def create_version(
-    ctx: Context, session: Session, owner: str, name: str, version: str
+    ctx: Context,
+    session: Session,
+    owner: str,
+    name: str,
+    version: str,
+    token: ConflictToken | None = None,
 ) -> str:
     """Freeze the workflow's saved `workflow.yaml` under `version`, once it
     passes every check a version must, against the primitives its steps use
-    read as the caller. `InvalidDefinition` with every problem at its YAML
-    path, and no version made, when it does not; `Conflict` when the version
-    is there already; `InvalidName` for a name a version cannot have.
+    read as the caller. Given the `token` the caller saved it with, the
+    version is of that save or not made: `Conflict` when someone has saved
+    since. `InvalidDefinition` with every problem at its YAML path, and no
+    version made, when it does not check; `Conflict` when the version is
+    there already; `InvalidName` for a name a version cannot have.
     """
     writer = await _writer(ctx, session, owner)
     validate_version(version)
@@ -268,6 +275,11 @@ async def create_version(
     head, file = await ctx.forge.workflows.read_workflow_draft(
         writer.identity, workflow, WORKFLOW_FILE
     )
+    if token is not None and file.token != token:
+        raise Conflict(
+            f"{WORKFLOW_FILE} of {writer.label}/{name} has been saved since you saved it; "
+            "read it again before making a version of it."
+        )
     definition = parse_workflow(file.content)
     problems = await _problems(ctx, writer.identity, definition)
     if problems:

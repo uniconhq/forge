@@ -434,3 +434,36 @@ async def test_the_newest_version_is_named_once_it_comes_after_the_one_pinned(
         )
         stranger = AsUser(7, acme.fake.mint(7))
         assert await workflows.newer_version(ctx, stranger, pinned) is None
+
+
+async def test_a_version_is_of_the_save_the_person_made_or_not_made(
+    setup: Setup, acme: Acme
+) -> None:
+    bob = await _own(setup, acme)
+    page = await workflows.view(setup, bob, "bob", "tuned")
+    assert page.draft is not None
+    mine = await workflows.save(
+        setup, bob, "bob", "tuned", page.draft.text + "\n", page.draft.token
+    )
+    await workflows.save(setup, bob, "bob", "tuned", page.draft.text + "\n\n", mine.token)
+
+    with pytest.raises(Conflict, match="has been saved since you saved it"):
+        await workflows.create_version(setup, bob, "bob", "tuned", "v1", mine.token)
+    assert acme.fake.state.repos[("bob", "tuned.workflow")].versions == {}
+
+
+async def test_the_list_leaves_other_peoples_public_workflows_to_the_marketplace(
+    setup: Setup, acme: Acme
+) -> None:
+    bob = await _own(setup, acme)
+    ada = await signed_in(setup, acme.fake, 7)
+    await workflows.create(setup, ada, "ada", "open")
+    await workflows.set_visibility(setup, ada, "ada", "open", Visibility.PUBLIC)
+
+    listed = await workflows.listing(setup, bob)
+
+    assert [(item.owner, item.name) for item in listed] == [
+        ("bob", "tuned"),
+        ("unicon", "classic"),
+    ]
+    assert await workflows.read_version(setup, bob, "unicon/classic@v2")
