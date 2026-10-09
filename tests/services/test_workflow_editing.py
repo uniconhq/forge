@@ -514,3 +514,18 @@ async def test_a_repository_without_the_workflow_mark_is_no_workflow(
     with pytest.raises(NotFound):
         await workflows.view(setup, bob, "bob", "loose")
     assert "loose" not in [item.name for item in await workflows.listing(setup, bob)]
+    with pytest.raises(NotFound):
+        await workflows.save(setup, bob, "bob", "loose", CLASSIC.decode(), None)
+    with pytest.raises(NotFound):
+        await workflows.copy(setup, bob, "bob/loose@v1", "bob", "copied")
+
+
+async def test_a_create_of_a_name_left_unmarked_finishes_it(setup: Setup, acme: Acme) -> None:
+    bob = await signed_in(setup, acme.fake, 8)
+    acme.fake.state.create_repo(PLATFORM, "bob", "loose.workflow", {"workflow.yaml": CLASSIC})
+
+    with pytest.raises(Conflict):
+        await workflows.create(setup, bob, "bob", "loose")
+
+    assert (await workflows.view(setup, bob, "bob", "loose")).summary.editable
+    assert acme.fake.state.repo("bob", "loose.workflow").rewrites_refused

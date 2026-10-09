@@ -341,5 +341,15 @@ async def test_a_repository_without_the_workflow_mark_is_no_workflow(
         await forge.workflows.describe_workflow(acting["author"], workflow)
     with pytest.raises(NotFound):
         await forge.workflows.read_workflow_file(acting["author"], workflow, "v1", "workflow.yaml")
+    with pytest.raises(NotFound):
+        await forge.workflows.create_workflow_version(acting["author"], workflow, "v2")
+    with pytest.raises(NotFound):
+        await forge.workflows.copy_workflow(acting["author"], workflow, "v1", author, "copied")
     reached = await forge.workflows.workflows_readable_by(acting["author"])
     assert workflow not in [entry.id for entry in reached]
+
+    with pytest.raises(Conflict):
+        await forge.workflows.create_workflow(
+            acting["author"], author, "unmarked", DEFINITION, Visibility.PRIVATE
+        )
+    assert (await forge.workflows.describe_workflow(acting["author"], workflow)).id == workflow

@@ -35,7 +35,18 @@ class FakeWorkflows:
         self._state.record("create_workflow", as_, owner=owner, name=name, visibility=visibility)
         ref = WorkflowRef(owner, name)
         scope = Scope(owner) if owner in self._state.orgs else None
-        repo = self._state.create_repo(PLATFORM, owner, ref.repo, {}, scope=scope, marked=WORKFLOW)
+        try:
+            repo = self._state.create_repo(
+                PLATFORM, owner, ref.repo, {}, scope=scope, marked=WORKFLOW
+            )
+        except Conflict:
+            # One of the name without the mark is a create that stopped before
+            # the end, which Forgejo's create finishes.
+            existing = self._state.repo(owner, ref.repo)
+            if existing.marked is None:
+                existing.rewrites_refused = True
+                existing.marked = WORKFLOW
+            raise
         repo.private = visibility is not Visibility.PUBLIC
         repo.rewrites_refused = True
         if files:
