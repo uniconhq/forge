@@ -4,6 +4,9 @@ reference following it, the once steps of every source before their
 per-test steps, and a definition written back out that reads as it was.
 """
 
+import pytest
+import yaml
+
 from forge.domain.plans import check_workflow
 from forge.domain.primitives import parse_primitive
 from forge.domain.workflow_combine import combine_workflows
@@ -47,6 +50,31 @@ def test_one_workflow_is_written_back_as_it_reads() -> None:
     classic = parse_workflow(CLASSIC)
 
     assert parse_workflow(combine_workflows([classic])) == classic
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        b"line one\\nline two",
+        b"multi\\n  indented\\n",
+        b"a\\x85b",
+        b"x\\u2028y",
+        b"yes",
+        b"2026-01-01",
+        b"1e-9",
+        b"it's ${{ inputs.episodes }}",
+    ],
+)
+def test_a_value_yaml_reads_otherwise_is_written_back_as_it_reads(value: bytes) -> None:
+    tricky = TUNABLE.replace(b'"--episodes ${{ inputs.episodes }}"', b'"' + value + b'"')
+    workflow = parse_workflow(tricky)
+
+    combined = combine_workflows([workflow])
+
+    assert parse_workflow(combined) == workflow
+    # On one line, as a reader stricter than the forge's, the editor's, takes it.
+    [line] = [line for line in combined.splitlines() if "args:" in line]
+    assert yaml.safe_load(line.strip()) == {"args": workflow.steps[1].with_["args"]}
 
 
 def test_two_workflows_share_what_they_declare_alike_and_rename_the_rest() -> None:

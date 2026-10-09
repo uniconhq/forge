@@ -205,9 +205,7 @@ def _declaration(declared: WorkflowInput | TestField) -> str:
 
 
 def _flow(value: Mapping[str, Any]) -> str:
-    return str(
-        yaml.safe_dump(dict(value), default_flow_style=True, sort_keys=False, width=1 << 30)
-    ).strip()
+    return _one_line(dict(value), sort_keys=False)
 
 
 _PLAIN_REFERENCE = re.compile(r"^\$\{\{ [a-z][a-z0-9_.-]* \}\}$")
@@ -219,8 +217,27 @@ def _scalar(value: object) -> str:
     """
     if isinstance(value, str) and _PLAIN_REFERENCE.match(value) and whole_reference(value):
         return value
-    dumped = str(yaml.safe_dump(value, default_flow_style=True, width=1 << 30))
-    return dumped.removesuffix("\n").removesuffix("\n...").strip()
+    return _one_line(value)
+
+
+def _one_line(value: object, **options: Any) -> str:
+    """`value` as YAML on one line. Text over several lines would be written
+    across lines under the key, which only a lax reader takes, so it is
+    written double-quoted with its line breaks as escapes.
+    """
+    for style in (None, '"'):
+        dumped = str(
+            yaml.safe_dump(
+                value, default_flow_style=True, default_style=style, width=1 << 30, **options
+            )
+        )
+        dumped = dumped.removesuffix("\n").removesuffix("\n...").strip()
+        if not any(brk in dumped for brk in _LINE_BREAKS):
+            return dumped
+    raise AssertionError("a double-quoted scalar holds no line break")
+
+
+_LINE_BREAKS = ("\n", "\r", "\x85", "\u2028", "\u2029")
 
 
 __all__ = ["combine_workflows", "write_workflow"]
