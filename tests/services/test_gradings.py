@@ -289,6 +289,28 @@ async def test_a_run_whose_plan_cannot_be_read_is_not_started(
     assert acme.fake.calls_to("start_run") == []
 
 
+async def test_a_ci_handed_every_run_whole_grades_without_being_asked(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    """With a CI that is pushed to, the run starts with everything it runs and
+    the question a CI asks back is no door at all.
+    """
+    acme.fake.grading.asks = False
+    row = await _submit(setup, acme, entered)
+
+    assert (await _row(setup, row.id)).status == GradingStatus.DISPATCHED
+    [started] = acme.fake.calls_to("start_run")
+    assert started.arguments["spec"].harness_image == setup.settings.harness_image
+    variables = await _variables(setup, row)
+    with pytest.raises(NotFound):
+        await runs.config(
+            setup, acme.fake.grading.config_request(entered.task, variables, now=clock.now())
+        )
+    document = await runs.envelope(setup, row.id, _key(setup, row))
+    status = await _report(setup, await _row(setup, row.id), _finished(_result(document)))
+    assert status == GradingStatus.DONE
+
+
 async def test_two_starts_at_once_leave_one_run_and_cancel_the_other(
     setup: Setup,
     acme: Acme,

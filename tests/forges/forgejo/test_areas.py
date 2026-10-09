@@ -3,6 +3,7 @@ live forge accepts, asserted without one.
 """
 
 import base64
+import dataclasses
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -19,7 +20,7 @@ from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
 from forge.forges.forgejo import ForgejoForge
 from forge.forges.forgejo.ci_state import WoodpeckerState, read_state, written
-from tests.forges.forgejo.conftest import Recorder, ok
+from tests.forges.forgejo.conftest import CONFIG, Recorder, ok
 
 ACME = AsOrgAccount(
     "acme", forge_token="forge-acme", ci_state=written(WoodpeckerState(4, "ci-acme", None))
@@ -1462,3 +1463,8 @@ async def test_a_version_is_read_at_its_tags_commit_whatever_its_name_spells(
 
     [read] = [seen for seen in recorder.seen if seen.url.path == f"{repo}/contents/workflow.yaml"]
     assert read.url.params["ref"] == tagged
+
+
+def test_a_ci_the_forgejo_forge_does_not_grade_with_is_misconfigured() -> None:
+    with pytest.raises(Misconfigured, match="UNICON_CI=jenkins"):
+        ForgejoForge(dataclasses.replace(CONFIG, ci="jenkins"))

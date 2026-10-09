@@ -34,6 +34,7 @@ class FakeForge:
         sign_in_redirect_uri: str = "http://app.test/api/v1/auth/callback",
         clock: Clock | None = None,
         ci_login_lifetime: timedelta = timedelta(days=30),
+        ci_asks: bool = True,
     ) -> None:
         self.state = State(clock)
         self.identity = FakeIdentity(
@@ -41,7 +42,7 @@ class FakeForge:
         )
         self.orgs = FakeOrgs(self.state)
         self.content = FakeContent(self.state)
-        self.grading = FakeGrading(self.state, login_lifetime=ci_login_lifetime)
+        self.grading = FakeGrading(self.state, login_lifetime=ci_login_lifetime, asks=ci_asks)
         self.uploads = FakeUploads()
         self.workspaces = FakeWorkspaces(self.state, self.uploads)
         self.threads = FakeThreads(self.state)

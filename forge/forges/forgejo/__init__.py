@@ -9,6 +9,7 @@ from datetime import timedelta
 
 import httpx
 
+from forge.domain.errors import Misconfigured
 from forge.forges.forgejo.ci_login import CiLogin
 from forge.forges.forgejo.computes import WoodpeckerComputes
 from forge.forges.forgejo.content import ForgejoContent
@@ -39,7 +40,9 @@ class ForgejoConfig:
     Forgejo implementation reaches over S3; without it every call to the
     store is `Misconfigured`. `mail` is the server the forge sends its own
     mail through, which the platform's mail goes through too; without it
-    nothing is sent. `ci_login_lifetime` is how long the org account's
+    nothing is sent. `ci` names the CI the grading and compute areas talk
+    to, which the `ci_*` settings reach. `ci_login_lifetime` is how long the
+    org account's
     login at the forge lasts, which is how long its sign-in at the CI does:
     the session's hard lifetime.
     """
@@ -58,6 +61,7 @@ class ForgejoConfig:
     storage: StorageConfig | None = None
     mail: MailConfig | None = None
     ci_login_lifetime: timedelta = timedelta(days=30)
+    ci: str = "woodpecker"
 
 
 class ForgejoForge:
@@ -95,6 +99,8 @@ class ForgejoForge:
         )
         self.orgs = ForgejoOrgs(http, teams, users, platform_account=config.platform_account)
         self.content = ForgejoContent(repos, teams)
+        if config.ci != "woodpecker":
+            raise Misconfigured(f"UNICON_CI={config.ci} names no CI this forge grades with")
         self.grading = WoodpeckerGrading(
             http,
             ci,

@@ -15,6 +15,10 @@ extension refuses to say what the run is, and
 were lost. A CI credential in `revoked_ci_tokens` is refused, as the CI
 refuses one it no longer holds.
 
+With `asks` off the fake CI is handed every run whole, as a CI that is
+pushed to is, and never asks what one is: its `answer` is `NotFound`, so
+the services are tested both with and without the question.
+
 What an org account holds at the fake CI is written the way Woodpecker's
 is, its user id, its token and when it signed in, so a row the migration
 moved reads here too; `token_in` reads the token out of one for a test.
@@ -99,9 +103,12 @@ def _state(user_id: int | None, token: str, signed_in_at: datetime) -> CiState:
 
 
 class FakeGrading:
-    def __init__(self, state: State, *, login_lifetime: timedelta = timedelta(days=30)) -> None:
+    def __init__(
+        self, state: State, *, login_lifetime: timedelta = timedelta(days=30), asks: bool = True
+    ) -> None:
         self._state = state
         self.login_lifetime = login_lifetime
+        self.asks = asks
 
     async def set_up_org(self, org: OrgId, account: OrgAccountRef) -> CiState:
         """The account's user at the fake CI, then the sign-in dance in
@@ -191,6 +198,8 @@ class FakeGrading:
         self, request: InboundRequest, lookup: RunLookup, *, now: datetime
     ) -> InboundAnswer:
         self._state.record("answer", PLATFORM)
+        if not self.asks:
+            raise NotFound("this CI is handed every run whole and never asks")
         ask = self._ask(request, now)
         run, spec = await lookup(ask.grading, ask.task)
         if dict(ask.variables) != run_variables(run):

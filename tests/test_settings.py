@@ -340,3 +340,14 @@ def test_a_mail_server_without_a_sender_is_named_by_its_variable(
         load_settings()
 
     assert "UNICON_MAIL_FROM: Field required" in capsys.readouterr().err
+
+
+def test_the_ci_is_woodpecker_unless_the_variable_names_another(
+    environment: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert load_settings().ci == "woodpecker"
+    assert Settings.for_tests().ci == "woodpecker"
+
+    monkeypatch.setenv("UNICON_CI", "jenkins")
+    with pytest.raises(SystemExit):
+        load_settings()

@@ -14,9 +14,10 @@ from forge.settings import Settings
 
 
 def build(settings: Settings, *, sign_in_redirect_uri: str) -> Forge:
-    """The forge `UNICON_FORGE` picks, configured from the settings, behind
-    the cache `UNICON_FORGE_CACHE` turns on. `sign_in_redirect_uri` is where
-    the host sends a browser back to after sign-in.
+    """The forge `UNICON_FORGE` picks, grading with the CI `UNICON_CI`
+    picks, configured from the settings, behind the cache
+    `UNICON_FORGE_CACHE` turns on. `sign_in_redirect_uri` is where the host
+    sends a browser back to after sign-in.
     """
     return CachedForge(
         _implementation(settings, sign_in_redirect_uri), enabled=settings.forge_cache
@@ -61,6 +62,7 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
             ),
             mail=_mail(settings),
             ci_login_lifetime=settings.session_hard_ttl,
+            ci=settings.ci,
         )
     )
 

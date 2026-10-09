@@ -370,10 +370,13 @@ Both implementations name repositories and build and read ids with the one
 grammar in `forges/ids.py`, so an id from elsewhere is `NotFound` whichever
 is behind the port.
 
-`UNICON_FORGE=forgejo` runs against Forgejo and Woodpecker; `UNICON_FORGE=fake`
+`UNICON_FORGE=forgejo` runs against Forgejo, grading with the CI `UNICON_CI`
+names, `woodpecker` the one there is and the default; `UNICON_FORGE=fake`
 runs the whole stack against the in-memory forge, which records every call
 with its identity and refuses what a real forge refuses, a repository made
-by anyone but the platform among it. `CachedForge` wraps
+by anyone but the platform among it. Its CI asks what a run is, as
+Woodpecker does, unless it is made with `ci_asks` off, when it is handed
+every run whole, as a CI that is pushed to is. `CachedForge` wraps
 either and keeps a few reads in the process for up to a minute, dropping
 them on a write through the same area: user lookups always, the role reads
 when `UNICON_FORGE_CACHE` is on.
