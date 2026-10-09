@@ -497,11 +497,11 @@ class Repos:
     async def star(self, as_: Identity, owner: str, name: str) -> None:
         await self._http.call(as_, "PUT", f"/api/v1/user/starred/{segment(owner)}/{segment(name)}")
 
-    async def marked(self, topic: str) -> list[dict[str, Any]]:
-        """Every repository carrying the topic the caller may see."""
+    async def marked(self, topic: str, as_: Identity = PLATFORM) -> list[dict[str, Any]]:
+        """Every repository carrying the topic that `as_` may see."""
         found = json_of(
             await self._http.call(
-                PLATFORM,
+                as_,
                 "GET",
                 "/api/v1/repos/search",
                 params={"q": topic, "topic": "true", "limit": PAGE_LIMIT},
@@ -563,10 +563,14 @@ class Repos:
         return known
 
     async def record(self, owner: str, name: str) -> dict[str, Any]:
+        return await self.seen_by(PLATFORM, owner, name)
+
+    async def seen_by(self, as_: Identity, owner: str, name: str) -> dict[str, Any]:
+        """The repository's record as `as_` reads it. The forge answers a
+        private repository `as_` may not read as not there.
+        """
         return json_of(
-            await self._http.call(
-                PLATFORM, "GET", f"/api/v1/repos/{segment(owner)}/{segment(name)}"
-            )
+            await self._http.call(as_, "GET", f"/api/v1/repos/{segment(owner)}/{segment(name)}")
         )
 
     async def exists(self, owner: str, name: str) -> bool:

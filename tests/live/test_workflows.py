@@ -190,3 +190,85 @@ async def test_a_person_copies_a_public_workflow_into_their_own_name(
     await forge.workflows.star_workflow(acting["stranger"], source)
     found = await forge.workflows.search_public_workflows("shared")
     assert next(entry for entry in found if entry.id == source).stars == 1
+
+
+async def test_a_person_edits_the_draft_with_its_token_and_versions_a_commit_of_it(
+    forge: ForgejoForge,
+    admin: httpx.Client,
+    people: dict[str, dict[str, Any]],
+    acting: dict[str, AsUser],
+) -> None:
+    author = people["author"]["login"]
+    workflow = await forge.workflows.create_workflow(
+        acting["author"], author, "drafted", DEFINITION, Visibility.PRIVATE
+    )
+
+    head, draft = await forge.workflows.read_workflow_draft(
+        acting["author"], workflow, "workflow.yaml"
+    )
+    assert draft.content == DEFINITION["workflow.yaml"]
+    written = await forge.workflows.write_workflow_file(
+        acting["author"],
+        workflow,
+        "workflow.yaml",
+        b"steps: [one]\n",
+        expected=draft.token,
+        message="Edit workflow.yaml",
+    )
+    assert written.content == b"steps: [one]\n"
+    assert written.token != draft.token
+    with pytest.raises(Conflict):
+        await forge.workflows.write_workflow_file(
+            acting["author"],
+            workflow,
+            "workflow.yaml",
+            b"steps: [two]\n",
+            expected=draft.token,
+            message="Edit workflow.yaml",
+        )
+    with pytest.raises((Forbidden, NotFound)):
+        await forge.workflows.write_workflow_file(
+            acting["stranger"],
+            workflow,
+            "workflow.yaml",
+            b"steps: [two]\n",
+            expected=written.token,
+            message="Edit workflow.yaml",
+        )
+
+    await forge.workflows.create_workflow_version(acting["author"], workflow, "v1", at=head)
+    first = await forge.workflows.read_workflow_file(
+        acting["author"], workflow, "v1", "workflow.yaml"
+    )
+    assert first.content == DEFINITION["workflow.yaml"]
+    commits = admin.get(f"/api/v1/repos/{author}/drafted.workflow/commits", params={"sha": "main"})
+    assert commits.json()[0]["author"]["login"] == author
+
+
+async def test_who_reads_a_workflow_is_described_to_its_readers_alone(
+    forge: ForgejoForge,
+    people: dict[str, dict[str, Any]],
+    acting: dict[str, AsUser],
+) -> None:
+    author, stranger = people["author"]["login"], people["stranger"]
+    workflow = await forge.workflows.create_workflow(
+        acting["author"], author, "described", DEFINITION, Visibility.PRIVATE
+    )
+    await forge.workflows.create_workflow_version(acting["author"], workflow, "v1")
+
+    described = await forge.workflows.describe_workflow(acting["author"], workflow)
+    assert (described.visibility, described.versions) == (Visibility.PRIVATE, ("v1",))
+    with pytest.raises(NotFound):
+        await forge.workflows.describe_workflow(acting["stranger"], workflow)
+    readable = await forge.workflows.workflows_readable_by(acting["stranger"])
+    assert workflow not in [entry.id for entry in readable]
+
+    await forge.workflows.share_workflow(acting["author"], workflow, int(stranger["id"]))
+    (reader,) = await forge.workflows.workflow_readers(acting["author"], workflow)
+    assert (reader.id, reader.username) == (int(stranger["id"]), stranger["login"])
+    with pytest.raises(Forbidden):
+        await forge.workflows.workflow_readers(acting["stranger"], workflow)
+    shared = await forge.workflows.describe_workflow(acting["stranger"], workflow)
+    assert shared.visibility is Visibility.SHARED
+    readable = await forge.workflows.workflows_readable_by(acting["stranger"])
+    assert workflow in [entry.id for entry in readable]

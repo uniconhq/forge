@@ -16,10 +16,10 @@ credential, that they may write the workflow.
 
 from typing import Any
 
-from forge.domain.content import File, Files
+from forge.domain.content import ConflictToken, File, Files
 from forge.domain.errors import Forbidden
-from forge.domain.identity import PLATFORM, Identity
-from forge.domain.ids import WorkflowId
+from forge.domain.identity import PLATFORM, Identity, User
+from forge.domain.ids import VersionId, WorkflowId
 from forge.domain.workflows import Visibility, Workflow
 from forge.forges.forgejo.repos import DEFAULT_BRANCH, Repos
 from forge.forges.forgejo.users import Users
@@ -70,13 +70,47 @@ class ForgejoWorkflows:
         username = await self._users.username_of(user_id)
         await self._repos.remove_collaborator(ref.owner, ref.repo, username)
 
+    async def workflow_readers(self, as_: Identity, workflow: WorkflowId) -> tuple[User, ...]:
+        ref = parse_workflow(workflow)
+        await self._repos.require_write(as_, ref.owner, ref.repo)
+        readers = await self._repos.collaborators(ref.owner, ref.repo)
+        return tuple(
+            User(id=int(reader["id"]), username=str(reader["login"]))
+            for reader in sorted(readers, key=lambda reader: str(reader["login"]).lower())
+        )
+
     async def create_workflow_version(
-        self, as_: Identity, workflow: WorkflowId, version: str
+        self, as_: Identity, workflow: WorkflowId, version: str, at: VersionId | None = None
     ) -> None:
         if version.startswith(PROTECTED_PREFIXES):
             raise Forbidden(f"{version} is reserved for protected versions")
         ref = parse_workflow(workflow)
-        await self._repos.create_version(as_, ref.owner, ref.repo, version, DEFAULT_BRANCH)
+        await self._repos.create_version(
+            as_, ref.owner, ref.repo, version, str(at) if at is not None else DEFAULT_BRANCH
+        )
+
+    async def read_workflow_draft(
+        self, as_: Identity, workflow: WorkflowId, path: str
+    ) -> tuple[VersionId, File]:
+        ref = parse_workflow(workflow)
+        head = await self._repos.head(as_, ref.owner, ref.repo)
+        return VersionId(head), await self._repos.read_file(as_, ref.owner, ref.repo, path, at=head)
+
+    async def write_workflow_file(
+        self,
+        as_: Identity,
+        workflow: WorkflowId,
+        path: str,
+        content: bytes,
+        *,
+        expected: ConflictToken | None,
+        message: str,
+    ) -> File:
+        ref = parse_workflow(workflow)
+        version = await self._repos.commit_files(
+            as_, ref.owner, ref.repo, {path: content}, expected={path: expected}, message=message
+        )
+        return await self._repos.read_file(as_, ref.owner, ref.repo, path, at=str(version))
 
     async def read_workflow_file(
         self, as_: Identity, workflow: WorkflowId, version: str, path: str
@@ -103,6 +137,14 @@ class ForgejoWorkflows:
         origin = parse_workflow(source)
         files = await self._repos.files_at(as_, origin.owner, origin.repo, version)
         return await self.create_workflow(as_, owner, name, files, Visibility.PRIVATE)
+
+    async def describe_workflow(self, as_: Identity, workflow: WorkflowId) -> Workflow:
+        ref = parse_workflow(workflow)
+        return await self._workflow(await self._repos.seen_by(as_, ref.owner, ref.repo))
+
+    async def workflows_readable_by(self, as_: Identity) -> tuple[Workflow, ...]:
+        found = await self._repos.marked(WORKFLOW_TOPIC, as_)
+        return tuple([await self._workflow(repo) for repo in found if _is_workflow(repo)])
 
     async def workflows_owned_by(self, user_id: int) -> tuple[Workflow, ...]:
         username = await self._users.username_of(user_id)
