@@ -65,7 +65,9 @@ class Repos:
         as the platform, with its first commit written as `as_`. A repository
         of that name with no commit yet is one an earlier try made and did
         not fill, since only the platform makes repositories, so the files
-        are written into it; one with commits is `Conflict`.
+        are written into it; one with commits is `Conflict`. The first commit
+        is made only while there is none, so of two makers of one name at
+        once exactly one fills it and the other is `Conflict`.
         """
         body = {
             "name": name,
@@ -83,7 +85,30 @@ class Repos:
         except Conflict:
             if not files or await self._existing(PLATFORM, owner, name) is not None:
                 raise
-        await self.write_files(as_, owner, name, files, message=CREATE_MESSAGE)
+        if files:
+            await self._write_first(as_, owner, name, files)
+
+    async def _write_first(self, as_: Identity, owner: str, name: str, files: Files) -> None:
+        """The repository's first commit, which makes its default branch:
+        `Conflict` when the branch is there already, whoever made it.
+        """
+        if await self._existing(as_, owner, name) is not None:
+            raise Conflict(f"{owner}/{name} has a first commit already")
+        operations = [
+            {"operation": "create", "path": path, "content": _encoded(content)}
+            for path, content in sorted(files.items())
+        ]
+        await self._http.call(
+            as_,
+            "POST",
+            f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents",
+            json={
+                "branch": DEFAULT_BRANCH,
+                "new_branch": DEFAULT_BRANCH,
+                "message": CREATE_MESSAGE,
+                "files": operations,
+            },
+        )
 
     async def delete(self, owner: str, name: str) -> None:
         """Delete the repository, as the platform, with everything in it. One

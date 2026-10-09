@@ -7,6 +7,7 @@ versions and reads it; its visibility and who it is shared with change as
 the platform once the forge says the person may write it.
 """
 
+import asyncio
 import contextlib
 from collections.abc import Iterator
 from typing import Any
@@ -14,7 +15,7 @@ from typing import Any
 import httpx
 import pytest
 
-from forge.domain.errors import Conflict, Forbidden, NotFound
+from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
 from forge.domain.identity import AsUser
 from forge.domain.ids import OrgId
 from forge.domain.roles import Role, Scope
@@ -353,3 +354,44 @@ async def test_a_repository_without_the_workflow_mark_is_no_workflow(
             acting["author"], author, "unmarked", DEFINITION, Visibility.PRIVATE
         )
     assert (await forge.workflows.describe_workflow(acting["author"], workflow)).id == workflow
+
+
+async def test_of_two_creates_filling_one_empty_repository_exactly_one_makes_it(
+    forge: ForgejoForge,
+    admin: httpx.Client,
+    people: dict[str, dict[str, Any]],
+    acting: dict[str, AsUser],
+) -> None:
+    """Two makers of one name, both after the repository is made and before
+    its first commit: one fills it, and the other is refused, not let write
+    over the first.
+    """
+    author = people["author"]["login"]
+    made = admin.post(
+        f"/api/v1/admin/users/{author}/repos",
+        json={"name": "raced.workflow", "private": True, "auto_init": False},
+    )
+    assert made.status_code == 201, made.text
+    other = {"workflow.yaml": DEFINITION["workflow.yaml"] + b"# the other maker's\n"}
+
+    results = await asyncio.gather(
+        forge.workflows.create_workflow(
+            acting["author"], author, "raced", DEFINITION, Visibility.PRIVATE
+        ),
+        forge.workflows.create_workflow(
+            acting["author"], author, "raced", other, Visibility.PRIVATE
+        ),
+        return_exceptions=True,
+    )
+
+    # The host refuses the later of two first commits at once, though as an
+    # error of its own rather than a conflict; one made before the other is
+    # Conflict, as the forgejo area tests show.
+    refused = [result for result in results if isinstance(result, BaseException)]
+    assert len(refused) == 1 and isinstance(refused[0], Conflict | Unavailable), results
+    winner = DEFINITION if not isinstance(results[0], BaseException) else other
+    workflow = next(result for result in results if not isinstance(result, BaseException))
+    _, draft = await forge.workflows.read_workflow_draft(
+        acting["author"], workflow, "workflow.yaml"
+    )
+    assert draft.content == winner["workflow.yaml"]

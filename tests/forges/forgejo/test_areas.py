@@ -996,6 +996,31 @@ async def test_a_workflow_under_a_person_is_made_by_the_platform_and_written_by_
     ]
 
 
+async def test_a_create_whose_repository_another_maker_filled_first_writes_nothing(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    recorder.on("GET", "/api/v1/orgs/acme", ok({"username": "acme"}))
+    recorder.on("GET", f"{repo}/branches/main", ok({"name": "main"}))
+    recorder.on("GET", repo, ok({"name": "grading.workflow", "topics": ["unicon-workflow"]}))
+    recorder.on(
+        "GET",
+        f"{repo}/git/trees/main",
+        ok({"tree": [{"path": "workflow.yaml", "type": "blob", "sha": "b"}]}),
+    )
+
+    with pytest.raises(Conflict):
+        await forgejo.workflows.create_workflow(
+            AsUser(7, _credential()),
+            "acme",
+            "grading",
+            {"workflow.yaml": b"steps: []"},
+            Visibility.PRIVATE,
+        )
+
+    assert f"POST {repo}/contents" not in recorder.calls()
+
+
 async def test_an_org_workflow_is_made_and_marked_by_the_platform_and_written_by_its_manager(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
