@@ -26,7 +26,7 @@ from sqlalchemy import select
 
 from forge.db.tables import Grading
 from forge.domain.errors import Forbidden
-from forge.domain.grading import CiRequest, GradingStatus
+from forge.domain.grading import GradingRun, GradingStatus, InboundRequest, RunSpec
 from forge.domain.ids import (
     ContestId,
     OrgId,
@@ -39,6 +39,7 @@ from forge.domain.ids import (
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.forges.forgejo import ForgejoForge
+from forge.forges.forgejo.grading import run_variables
 from forge.runtime.setup import Setup
 from forge.services import (
     access,
@@ -91,6 +92,10 @@ async def _signed_in(setup: Setup, admin: httpx.Client, person: dict[str, Any]) 
         )
 
 
+async def _never_looked_up(grading: str | None, task: TaskId) -> tuple[GradingRun, RunSpec]:
+    raise AssertionError("a request that does not verify is never looked up")
+
+
 async def test_the_cis_key_is_read_and_a_request_it_did_not_sign_is_refused(
     forge: ForgejoForge,
 ) -> None:
@@ -105,7 +110,7 @@ async def test_the_cis_key_is_read_and_a_request_it_did_not_sign_is_refused(
         f'"@signature-params": {parameters}'
     )
     signature = base64.b64encode(Ed25519PrivateKey.generate().sign(base.encode())).decode()
-    request = CiRequest(
+    request = InboundRequest(
         method="POST",
         target="/api/v1/ci/config",
         headers={
@@ -117,7 +122,7 @@ async def test_the_cis_key_is_read_and_a_request_it_did_not_sign_is_refused(
     )
 
     with pytest.raises(Forbidden):
-        await forge.grading.read_config_request(request, now=now)
+        await forge.grading.answer(request, _never_looked_up, now=now)
 
     assert isinstance(forge.grading._key, Ed25519PublicKey)
 
@@ -165,7 +170,7 @@ async def test_a_grading_is_started_as_the_org_account_once_its_row_commits(
     async with live_setup.unit_of_work() as ctx:
         after = (await ctx.db.execute(select(Grading).where(Grading.id == grading))).scalar_one()
         run = await gradings.run_of(ctx, after)
-        expected = dict(ctx.forge.grading.run_variables(run))
+        expected = run_variables(run)
     assert expected["UNICON_COMPUTE"] == "pool:platform"
     if after.status == GradingStatus.SYSTEM_ERROR:
         assert (after.error, after.run_id) == (gradings.NO_RUN, None)

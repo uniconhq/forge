@@ -77,6 +77,7 @@ from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.submissions import SubmittedInput
+from forge.forges.fake.grading import run_variables
 from forge.runtime.setup import Setup
 from forge.services import gradings, org_accounts, publications, reconcile, runs, submissions
 from forge.services.access import Organiser
@@ -136,7 +137,7 @@ async def _set(setup: Setup, grading: uuid.UUID, **values: Any) -> None:
 
 async def _variables(setup: Setup, row: Grading) -> dict[str, str]:
     async with setup.unit_of_work() as ctx:
-        return dict(ctx.forge.grading.run_variables(await gradings.run_of(ctx, row)))
+        return run_variables(await gradings.run_of(ctx, row))
 
 
 def _key(setup: Setup, row: Grading) -> str:
@@ -425,6 +426,52 @@ async def test_the_extension_refuses_what_it_should_not_answer(
     with pytest.raises(CiRequestRefused) as refused:
         await runs.config(setup, request)
     assert refused.value.detail == runs.REFUSED
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "UNICON_ENVELOPE_URL",
+        "UNICON_PUBLICATION_COMMIT",
+        "UNICON_SUBMISSION",
+        "UNICON_SUBMISSION_COMMIT",
+        "UNICON_COMPUTE",
+        "UNICON_HARNESS_IMAGE",
+    ],
+)
+async def test_the_extension_refuses_variables_that_differ_by_one_value(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    clock: FakeClock,
+    unstarted: Start,
+    variable: str,
+) -> None:
+    """Rule 1: what runs is decided by the platform, so a run started by hand
+    with any variable of its own, a harness image among them, is answered
+    with nothing, though its grading is queued and of that task.
+    """
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+    variables[variable] = variables.get(variable, "ghcr.io/someone/harness:mine") + "x"
+    request = acme.fake.grading.config_request(entered.task, variables, now=clock.now())
+
+    with pytest.raises(CiRequestRefused):
+        await runs.config(setup, request)
+    assert (await _row(setup, row.id)).status == GradingStatus.QUEUED
+
+
+async def test_the_extension_refuses_a_grading_asked_about_for_another_task(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, unstarted: Start
+) -> None:
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+    request = acme.fake.grading.config_request(
+        TaskId(f"{entered.task}-other"), variables, now=clock.now()
+    )
+
+    with pytest.raises(CiRequestRefused):
+        await runs.config(setup, request)
 
 
 async def test_the_extension_refuses_a_grading_whose_run_was_started_already(

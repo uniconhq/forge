@@ -2,8 +2,8 @@
 
 The fake CI keeps every run it was asked to start with its variables, and
 signs the question it asks the platform about one the way a real CI signs
-its extension calls, with a key of its own: `config_request` is that
-question, which a test hands to the extension as the CI would.
+its questions, with a key of its own: `config_request` is that question,
+which a test hands to `answer` as the CI would.
 `X-Fake-Signature` is the hex
 HMAC-SHA256 of the key over the creation time, a newline and the body, and
 `X-Fake-Created` that time; a
@@ -21,15 +21,16 @@ import hmac
 import json
 import secrets
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.grading import (
-    CiAnswer,
-    CiRequest,
-    ConfigAsk,
     Enrolment,
     GradingRun,
+    InboundAnswer,
+    InboundRequest,
+    RunLookup,
     RunPlaces,
     RunSpec,
     RunState,
@@ -55,6 +56,26 @@ TASK_CHECKOUT = "/woodpecker/task"
 SUBMISSION_CHECKOUT = "/woodpecker/submission"
 
 
+@dataclass(frozen=True, slots=True)
+class _Ask:
+    task: TaskId
+    grading: str | None
+    variables: Mapping[str, str]
+    clone_url: str
+
+
+def run_variables(run: GradingRun) -> dict[str, str]:
+    """The variables the fake CI starts `run` with."""
+    return {
+        GRADING_VARIABLE: str(run.grading),
+        "UNICON_ENVELOPE_URL": run.envelope_url,
+        "UNICON_PUBLICATION_COMMIT": str(run.publication_version),
+        "UNICON_SUBMISSION": str(run.submission),
+        "UNICON_SUBMISSION_COMMIT": str(run.submission_version),
+        "UNICON_COMPUTE": run.compute,
+    }
+
+
 class FakeGrading:
     def __init__(self, state: State) -> None:
         self._state = state
@@ -71,18 +92,8 @@ class FakeGrading:
         _acting_for(self._state, as_, task)
         self._state.activated.discard(task)
 
-    def run_variables(self, run: GradingRun) -> Mapping[str, str]:
-        return {
-            GRADING_VARIABLE: str(run.grading),
-            "UNICON_ENVELOPE_URL": run.envelope_url,
-            "UNICON_PUBLICATION_COMMIT": str(run.publication_version),
-            "UNICON_SUBMISSION": str(run.submission),
-            "UNICON_SUBMISSION_COMMIT": str(run.submission_version),
-            "UNICON_COMPUTE": run.compute,
-        }
-
     async def start_run(self, as_: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
-        variables = dict(self.run_variables(run))
+        variables = run_variables(run)
         self._state.record("start_run", as_, task=run.task, variables=variables, spec=spec)
         self._state.check_up()
         _acting_for(self._state, as_, run.task)
@@ -111,7 +122,17 @@ class FakeGrading:
             raise NotFound(f"no run {run}")
         self._state.runs[run].cancelled = True
 
-    async def read_config_request(self, request: CiRequest, *, now: datetime) -> ConfigAsk:
+    async def answer(
+        self, request: InboundRequest, lookup: RunLookup, *, now: datetime
+    ) -> InboundAnswer:
+        self._state.record("answer", PLATFORM)
+        ask = self._ask(request, now)
+        run, spec = await lookup(ask.grading, ask.task)
+        if dict(ask.variables) != run_variables(run):
+            raise Rejected("the run was not started with the variables its grading starts it with")
+        return self._answer(run, ask, spec)
+
+    def _ask(self, request: InboundRequest, now: datetime) -> _Ask:
         headers = {name.lower(): value for name, value in request.headers.items()}
         created = headers.get(CREATED_HEADER.lower(), "")
         signature = headers.get(SIGNATURE_HEADER.lower(), "")
@@ -127,17 +148,16 @@ class FakeGrading:
         if not isinstance(document, dict) or not isinstance(document.get("task"), str):
             raise Rejected("the CI's request names no task")
         variables = document.get("variables") or {}
-        return ConfigAsk(
+        return _Ask(
             task=TaskId(document["task"]),
             grading=variables.get(GRADING_VARIABLE),
             variables=variables,
             clone_url=document["clone_url"],
         )
 
-    def config_answer(
-        self, run: GradingRun, ask: ConfigAsk, *, harness_image: str, clone_image: str
-    ) -> CiAnswer:
+    def _answer(self, run: GradingRun, ask: _Ask, spec: RunSpec) -> InboundAnswer:
         places = self.run_places(run)
+        clone_image, harness_image = spec.clone_image, spec.harness_image
         cache = [f"unicon-lfs-{places.task['org']}:/lfs-cache"]
         document = {
             "labels": run.compute,
@@ -160,7 +180,7 @@ class FakeGrading:
             ],
             "clone_url": ask.clone_url,
         }
-        return CiAnswer(
+        return InboundAnswer(
             body=json.dumps(document, sort_keys=True).encode(), content_type="application/json"
         )
 
@@ -190,7 +210,7 @@ class FakeGrading:
         now: datetime,
         body: bytes | None = None,
         key: bytes | None = None,
-    ) -> CiRequest:
+    ) -> InboundRequest:
         """The question the fake CI asks the platform about a run of the task
         started with `variables`, signed at `now`, as the platform's extension
         receives it; the CI asks it while the start is under way. `body`
@@ -201,7 +221,7 @@ class FakeGrading:
             {"task": str(task), "variables": dict(variables), "clone_url": CLONE_URL}
         ).encode()
         created = str(int(now.timestamp()))
-        return CiRequest(
+        return InboundRequest(
             method="POST",
             target="/api/v1/ci/config",
             headers={

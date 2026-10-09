@@ -51,6 +51,7 @@ import json
 import re
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -61,10 +62,10 @@ from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.grading import (
-    CiAnswer,
-    CiRequest,
-    ConfigAsk,
     GradingRun,
+    InboundAnswer,
+    InboundRequest,
+    RunLookup,
     RunPlaces,
     RunSpec,
     RunState,
@@ -119,6 +120,35 @@ FINISHED_STATUSES = frozenset(
 UNFINISHED_STATES = frozenset({"pending", "running"})
 
 
+@dataclass(frozen=True, slots=True)
+class _Ask:
+    """The extension's question once its signature is checked: the task
+    whose run it is, the grading id the run was started with as it was
+    given, every variable it was started with, and where the CI clones the
+    task from.
+    """
+
+    task: TaskId
+    grading: str | None
+    variables: Mapping[str, str]
+    clone_url: str
+
+
+def run_variables(run: GradingRun) -> dict[str, str]:
+    """The variables `run` is started with, the same every time for the same
+    run, and the only ones the extension answers a run started with.
+    """
+    workspace, task, _ = parse_submission(run.submission)
+    return {
+        GRADING_VARIABLE: str(run.grading),
+        ENVELOPE_VARIABLE: run.envelope_url,
+        PUBLICATION_VARIABLE: str(run.publication_version),
+        SUBMISSION_REPO_VARIABLE: f"{workspace.org}/{workspace.submission_repo(task)}",
+        SUBMISSION_VARIABLE: str(run.submission_version),
+        COMPUTE_VARIABLE: run.compute,
+    }
+
+
 class WoodpeckerGrading:
     def __init__(
         self, forge_http: Http, ci: Http, repos: Repos, *, ci_public_url: str, login: CiLogin
@@ -169,17 +199,6 @@ class WoodpeckerGrading:
         except NotFound:
             return
 
-    def run_variables(self, run: GradingRun) -> Mapping[str, str]:
-        workspace, task, _ = parse_submission(run.submission)
-        return {
-            GRADING_VARIABLE: str(run.grading),
-            ENVELOPE_VARIABLE: run.envelope_url,
-            PUBLICATION_VARIABLE: str(run.publication_version),
-            SUBMISSION_REPO_VARIABLE: f"{workspace.org}/{workspace.submission_repo(task)}",
-            SUBMISSION_VARIABLE: str(run.submission_version),
-            COMPUTE_VARIABLE: run.compute,
-        }
-
     async def start_run(self, as_: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
         """`spec` is not sent: Woodpecker asks what the run is while it
         starts it, and is answered from the platform's records then.
@@ -191,7 +210,7 @@ class WoodpeckerGrading:
             account,
             "POST",
             f"/api/repos/{repo['id']}/pipelines",
-            json={"branch": DEFAULT_BRANCH, "variables": dict(self.run_variables(run))},
+            json={"branch": DEFAULT_BRANCH, "variables": run_variables(run)},
         )
         body = started.json() if started.content else None
         if not isinstance(body, dict) or not isinstance(body.get("number"), int):
@@ -247,7 +266,23 @@ class WoodpeckerGrading:
         self._queue, self._queue_read_at = view, time.monotonic()
         return view
 
-    async def read_config_request(self, request: CiRequest, *, now: datetime) -> ConfigAsk:
+    async def answer(
+        self, request: InboundRequest, lookup: RunLookup, *, now: datetime
+    ) -> InboundAnswer:
+        """The configuration extension. Of the two checks that decide what a
+        run runs, `lookup` keeps the platform's, a grading of that task being
+        started, and this the CI's: anyone who may start a manual pipeline
+        on the task's repository may pass variables of their own, a harness
+        image among them, so a run started with any variable but exactly
+        those `run_variables` gives is answered with nothing.
+        """
+        ask = await self._ask(request, now)
+        run, spec = await lookup(ask.grading, ask.task)
+        if dict(ask.variables) != run_variables(run):
+            raise Rejected("the run was not started with the variables its grading starts it with")
+        return self._answer(run, ask, spec)
+
+    async def _ask(self, request: InboundRequest, now: datetime) -> _Ask:
         await self._verify(request, now)
         try:
             document = json.loads(request.body)
@@ -272,17 +307,16 @@ class WoodpeckerGrading:
         clone_url = repo.get("clone_url")
         if not isinstance(clone_url, str) or not clone_url:
             raise Rejected("the CI's request names no clone URL")
-        return ConfigAsk(
+        return _Ask(
             task=task.id,
             grading=variables.get(GRADING_VARIABLE),
             variables=dict(variables),
             clone_url=clone_url,
         )
 
-    def config_answer(
-        self, run: GradingRun, ask: ConfigAsk, *, harness_image: str, clone_image: str
-    ) -> CiAnswer:
+    def _answer(self, run: GradingRun, ask: _Ask, spec: RunSpec) -> InboundAnswer:
         places = self.run_places(run)
+        clone_image = spec.clone_image
         task_remote = _remote(ask.clone_url, places.task["org"], places.task["repo"])
         submission_remote = _remote(
             ask.clone_url, places.submission["org"], places.submission["repo"]
@@ -322,7 +356,7 @@ class WoodpeckerGrading:
             "steps": [
                 {
                     "name": "grade",
-                    "image": harness_image,
+                    "image": spec.harness_image,
                     "environment": {"DOCKER_HOST": FILTER_SOCKET},
                     "volumes": [FILTER_VOLUME],
                 }
@@ -330,7 +364,7 @@ class WoodpeckerGrading:
         }
         data = yaml.safe_dump(workflow, sort_keys=False, default_flow_style=False)
         body = {"configs": [{"name": WORKFLOW_NAME, "data": data}]}
-        return CiAnswer(body=json.dumps(body).encode(), content_type="application/json")
+        return InboundAnswer(body=json.dumps(body).encode(), content_type="application/json")
 
     def run_places(self, run: GradingRun) -> RunPlaces:
         task, publication = parse_publication(run.publication)
@@ -380,7 +414,7 @@ class WoodpeckerGrading:
     async def mint_ci_token(self, username: str, forge_password: str) -> str:
         return await self._login.mint_token(username, forge_password)
 
-    async def _verify(self, request: CiRequest, now: datetime) -> None:
+    async def _verify(self, request: InboundRequest, now: datetime) -> None:
         """Check the request against the CI's key, reading the key again once
         when it does not verify and the key was not read in the last minute.
         """
@@ -408,7 +442,12 @@ class WoodpeckerGrading:
 
     async def _read_key(self) -> Ed25519PublicKey:
         self._key_read_at = time.monotonic()
-        response = await self._ci.call(CI_ADMIN, "GET", PUBLIC_KEY_PATH)
+        try:
+            response = await self._ci.call(CI_ADMIN, "GET", PUBLIC_KEY_PATH)
+        except NotFound:
+            # Kept apart from a CI that never asks, which is what `NotFound`
+            # from `answer` says.
+            raise Unavailable("the CI has no signing key to read") from None
         try:
             key = load_pem_public_key(response.content)
         except ValueError as exc:
@@ -436,7 +475,7 @@ class WoodpeckerGrading:
                 )
 
 
-def _verify_with(key: Ed25519PublicKey, request: CiRequest, now: datetime) -> None:
+def _verify_with(key: Ed25519PublicKey, request: InboundRequest, now: datetime) -> None:
     signatures.verify(
         key,
         method=request.method,

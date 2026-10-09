@@ -62,7 +62,7 @@ import hashlib
 import hmac
 import math
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -266,11 +266,11 @@ class RunSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class CiRequest:
+class InboundRequest:
     """A request the CI made to the platform, as it arrived: its method, its
     target, the path and query exactly as sent, its headers, looked up
-    whatever their case, and its body, byte for byte, since the signature
-    covers them.
+    whatever their case, and its body, byte for byte, since what proves it
+    the CI's covers them.
     """
 
     method: str
@@ -280,25 +280,19 @@ class CiRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class ConfigAsk:
-    """The CI asking what a run is, once its signature is checked: the task
-    whose run it is, the grading id the run was started with as it was
-    given, every variable it was started with, and where the CI clones the
-    task from.
-    """
-
-    task: TaskId
-    grading: str | None
-    variables: Mapping[str, str]
-    clone_url: str
-
-
-@dataclass(frozen=True, slots=True)
-class CiAnswer:
+class InboundAnswer:
     """What the platform answers the CI with: the body and its media type."""
 
     body: bytes
     content_type: str
+
+
+RunLookup = Callable[[str | None, TaskId], Awaitable[tuple[GradingRun, RunSpec]]]
+"""How an implementation whose CI asks what a run is finds the run: by the
+grading id the run names, as it was given, and the task the CI asks about.
+It answers with the run and what it runs only for a grading of that task
+whose run is being started, and refuses anything else, so what runs comes
+from the platform's records and never from the request."""
 
 
 @dataclass(frozen=True, slots=True)

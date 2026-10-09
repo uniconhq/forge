@@ -3,18 +3,21 @@ what the run is, the harness fetching its envelope, and the harness
 reporting. Each call is handed over as it arrived and authenticated here,
 since a grading's id alone proves nothing.
 
-`config` is the CI's configuration extension. Its request is signed by the
-CI (the port checks the signature), names the grading in the run's
-variables, and every other variable must be the one the platform starts
-that grading's run with. The grading must be one whose run is being
-started, `queued`: the CI asks while the platform's start is under way,
-before its answer comes back. The answer is the three steps
-every run has, from the plan of the publication it grades against, which
-names the harness image by digest; it writes
-nothing, so it never waits on the start that is holding the row. Anything
-else is refused with an error, never an empty answer, since the CI would
-take an empty answer as leave to run what it found in the repository, and
-the reason goes to the log.
+`config` answers a CI that asks what a run is as it starts one. What runs
+is decided by the platform, never by the request or the repository, and
+that takes two checks, kept apart. The implementation proves the request
+the CI's own, reads which grading and task it is about, and asks `lookup`
+here, which answers with the run and what it runs only for a grading of
+that task whose run is being started, `queued`: the CI asks while the
+platform's start is under way, before its answer comes back. The
+implementation then refuses a run started with any variable other than
+those it starts that run with, and answers with the run's steps, from the
+plan of the publication it grades against, which names the harness image
+by digest. Nothing is written, so the answer never waits on the start that
+is holding the row. Anything else is refused with an error, never an empty
+answer, since a CI could take an empty answer as leave to run what it found
+in the repository, and the reason goes to the log. A CI that is handed every
+run whole never asks, and `config` is then `NotFound`.
 
 `envelope` is the one document the harness downloads, the runner's
 `envelope.schema.json` version 5, served once: only with the envelope key of
@@ -71,15 +74,17 @@ from forge.domain.errors import (
     Unavailable,
 )
 from forge.domain.grading import (
-    CiAnswer,
-    CiRequest,
     GradingRun,
     GradingStatus,
+    InboundAnswer,
+    InboundRequest,
+    RunSpec,
     log_key,
     run_deadline,
     token_hash,
     wall_seconds,
 )
+from forge.domain.ids import TaskId
 from forge.domain.plans import Plan
 from forge.domain.reports import ERROR_LIMIT, Event, read_report, result_problem
 from forge.log import get_logger
@@ -96,41 +101,67 @@ WRONG_TOKEN = "The report's token is not this grading's."
 SHORTEST_URL = timedelta(seconds=1)
 
 
-@action
-async def config(ctx: Context, request: CiRequest) -> CiAnswer:
-    """The CI's configuration extension: the steps of the run the request
-    names. `CiRequestRefused` for a request that does not verify, names no
-    grading, or names one that is not being started with these variables.
+class _ForgeDown(Exception):
+    """The forge did not answer `lookup`, carried past the implementation so
+    it is not taken for the CI's own trouble.
     """
+
+    def __init__(self, error: Unavailable) -> None:
+        self.error = error
+
+
+@action
+async def config(ctx: Context, request: InboundRequest) -> InboundAnswer:
+    """The answer to a CI asking what the run it is starting is.
+    `CiRequestRefused` for a request that does not verify, names no grading,
+    names one of another task or one not being started, or one started with
+    other variables; `NotFound` from a CI that never asks.
+    """
+    looked_up: list[GradingRun] = []
+
+    async def lookup(grading: str | None, task: TaskId) -> tuple[GradingRun, RunSpec]:
+        run, spec = await _starting(ctx, grading, task)
+        looked_up.append(run)
+        return run, spec
+
     try:
-        ask = await ctx.forge.grading.read_config_request(request, now=ctx.now)
+        answer = await ctx.forge.grading.answer(request, lookup, now=ctx.now)
+    except _ForgeDown as down:
+        raise down.error from None
+    except NotFound:
+        log.info("runs.config_unasked")
+        raise NotFound("This CI does not ask what a run is.") from None
     except (Forbidden, Rejected) as exc:
-        log.warning("runs.config_refused", reason="unverified", detail=exc.detail)
+        reason = "unverified" if isinstance(exc, Forbidden) else "rejected"
+        grading = str(looked_up[0].grading) if looked_up else None
+        log.warning("runs.config_refused", reason=reason, grading=grading, detail=exc.detail)
         raise CiRequestRefused(REFUSED) from None
     except PortError as exc:
         log.warning("runs.config_key_unread", error=type(exc).__name__, detail=exc.detail)
         raise Unavailable("The CI's signing key could not be read.") from None
-    row = await _named(ctx, ask.grading)
-    if row is None or row.task_id != ask.task:
-        log.warning("runs.config_refused", reason="no_grading", task=ask.task)
+    [run] = looked_up
+    log.info("runs.configured", grading=str(run.grading), task=run.task)
+    return answer
+
+
+async def _starting(ctx: Context, grading: str | None, task: TaskId) -> tuple[GradingRun, RunSpec]:
+    """The platform's half of what decides a run: the run and what it runs,
+    for a grading of `task` whose run is being started. `CiRequestRefused`
+    for any other.
+    """
+    row = await _named(ctx, grading)
+    if row is None or row.task_id != task:
+        log.warning("runs.config_refused", reason="no_grading", task=task)
         raise CiRequestRefused(REFUSED)
     if row.status != GradingStatus.QUEUED:
         log.warning("runs.config_refused", reason="not_starting", grading=str(row.id))
         raise CiRequestRefused(REFUSED)
-    run = await _run(ctx, row, CiRequestRefused(REFUSED))
-    if dict(ask.variables) != dict(ctx.forge.grading.run_variables(run)):
-        log.warning("runs.config_refused", reason="variables", grading=str(row.id))
-        raise CiRequestRefused(REFUSED)
-    plan = await _plan(ctx, row, run, CiRequestRefused(REFUSED))
     try:
-        answer = ctx.forge.grading.config_answer(
-            run, ask, harness_image=plan.harness_image, clone_image=ctx.settings.clone_image
-        )
-    except Rejected as exc:
-        log.warning("runs.config_refused", reason="answer", grading=str(row.id), detail=exc.detail)
-        raise CiRequestRefused(REFUSED) from None
-    log.info("runs.configured", grading=str(row.id), task=row.task_id)
-    return answer
+        run = await _run(ctx, row, CiRequestRefused(REFUSED))
+        plan = await _plan(ctx, row, run, CiRequestRefused(REFUSED))
+    except Unavailable as exc:
+        raise _ForgeDown(exc) from None
+    return run, gradings.spec_of(ctx, plan)
 
 
 @action

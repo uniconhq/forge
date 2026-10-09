@@ -19,8 +19,8 @@ import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from forge.domain.errors import Forbidden, Rejected, Unavailable
-from forge.domain.grading import CiRequest, GradingRun, RunSpec, RunState
+from forge.domain.errors import CiRequestRefused, Forbidden, Rejected, Unavailable
+from forge.domain.grading import GradingRun, InboundRequest, RunLookup, RunSpec, RunState
 from forge.domain.identity import AsOrgAccount
 from forge.domain.ids import PublicationId, RunId, SubmissionId, TaskId, VersionId
 from forge.forges.forgejo import ForgejoForge, grading
@@ -35,7 +35,7 @@ HARNESS = "ghcr.io/uniconhq/harness@sha256:" + "1" * 64
 CLONE = "ghcr.io/uniconhq/clone@sha256:" + "2" * 64
 TARGET = "/api/v1/ci/config"
 
-SPEC = RunSpec(harness_image="harness@sha256:h", clone_image="clone@sha256:c")
+SPEC = RunSpec(harness_image=HARNESS, clone_image=CLONE)
 RUN = GradingRun(
     grading=GRADING,
     task=TaskId("acme/spring/sum"),
@@ -71,7 +71,7 @@ def _signed(
     target: str = TARGET,
     sent_body: bytes | None = None,
     expires: datetime | None = None,
-) -> CiRequest:
+) -> InboundRequest:
     """A request signed the way Woodpecker signs an extension call, with an
     expiry when one is given.
     """
@@ -87,7 +87,7 @@ def _signed(
         f'"@signature-params": {parameters}'
     )
     signature = base64.b64encode(key.sign(base.encode())).decode()
-    return CiRequest(
+    return InboundRequest(
         method="POST",
         target=target,
         headers={
@@ -219,18 +219,29 @@ async def test_a_start_for_another_org_is_forbidden(forgejo: ForgejoForge) -> No
         await forgejo.grading.start_run(other, RUN, SPEC)
 
 
-async def test_a_signed_request_reads_as_the_run_it_asks_about(
+def _lookup(seen: list[tuple[str | None, TaskId]] | None = None) -> RunLookup:
+    """The platform's half of the check, answering with `RUN` and `SPEC`
+    and noting what it was asked.
+    """
+
+    async def lookup(grading: str | None, task: TaskId) -> tuple[GradingRun, RunSpec]:
+        if seen is not None:
+            seen.append((grading, task))
+        return RUN, SPEC
+
+    return lookup
+
+
+async def test_a_signed_request_is_answered_for_the_run_it_asks_about(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
 
-    ask = await forgejo.grading.read_config_request(_signed(key, _ask_body()), now=NOW)
+    seen: list[tuple[str | None, TaskId]] = []
+    await forgejo.grading.answer(_signed(key, _ask_body()), _lookup(seen), now=NOW)
 
-    assert ask.task == "acme/spring/sum"
-    assert ask.grading == str(GRADING)
-    assert ask.variables == VARIABLES
-    assert ask.clone_url == "http://forgejo:3000/acme/spring.sum.task.git"
+    assert seen == [(str(GRADING), TaskId("acme/spring/sum"))]
     assert recorder.headers("GET", "/api/signature/public-key") == ["Bearer ci-admin"]
 
 
@@ -239,7 +250,7 @@ async def test_the_key_is_read_once_and_kept(forgejo: ForgejoForge, recorder: Re
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
 
     for _ in range(3):
-        await forgejo.grading.read_config_request(_signed(key, _ask_body()), now=NOW)
+        await forgejo.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
 
     assert recorder.calls().count("GET /api/signature/public-key") == 1
 
@@ -266,7 +277,9 @@ async def test_the_key_is_read_once_and_kept(forgejo: ForgejoForge, recorder: Re
             lambda key, other: _signed(key, _ask_body(), target="/api/v1/other"),
             id="signed-for-another-target",
         ),
-        pytest.param(lambda key, other: CiRequest("POST", TARGET, {}, _ask_body()), id="unsigned"),
+        pytest.param(
+            lambda key, other: InboundRequest("POST", TARGET, {}, _ask_body()), id="unsigned"
+        ),
     ],
 )
 async def test_a_request_that_does_not_verify_is_forbidden(
@@ -277,8 +290,8 @@ async def test_a_request_that_does_not_verify_is_forbidden(
     made = request_of(key, other)  # type: ignore[operator]
 
     with pytest.raises(Forbidden):
-        await forgejo.grading.read_config_request(
-            CiRequest(made.method, TARGET, made.headers, made.body), now=NOW
+        await forgejo.grading.answer(
+            InboundRequest(made.method, TARGET, made.headers, made.body), _lookup(), now=NOW
         )
 
 
@@ -287,15 +300,14 @@ async def test_a_request_that_does_not_verify_has_the_key_read_again_once(
 ) -> None:
     old, new = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(old), _pem_answer(new))
-    await forgejo.grading.read_config_request(_signed(old, _ask_body()), now=NOW)
+    await forgejo.grading.answer(_signed(old, _ask_body()), _lookup(), now=NOW)
     forgejo.grading._key_read_at -= 120
 
-    ask = await forgejo.grading.read_config_request(_signed(new, _ask_body()), now=NOW)
+    await forgejo.grading.answer(_signed(new, _ask_body()), _lookup(), now=NOW)
 
-    assert ask.grading == str(GRADING)
     assert recorder.calls().count("GET /api/signature/public-key") == 2
     with pytest.raises(Forbidden):
-        await forgejo.grading.read_config_request(_signed(old, _ask_body()), now=NOW)
+        await forgejo.grading.answer(_signed(old, _ask_body()), _lookup(), now=NOW)
     assert recorder.calls().count("GET /api/signature/public-key") == 2
 
 
@@ -308,12 +320,11 @@ async def test_a_key_that_could_not_be_read_is_not_asked_for_again_within_a_minu
 
     for _ in range(3):
         with pytest.raises(Unavailable):
-            await forgejo.grading.read_config_request(_signed(key, _ask_body()), now=NOW)
+            await forgejo.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
     assert recorder.calls().count("GET /api/signature/public-key") == 1
     forgejo.grading._key_read_at -= 120
-    ask = await forgejo.grading.read_config_request(_signed(key, _ask_body()), now=NOW)
+    await forgejo.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
 
-    assert ask.grading == str(GRADING)
     assert recorder.calls().count("GET /api/signature/public-key") == 2
 
 
@@ -327,7 +338,7 @@ async def test_a_signed_request_about_no_task_is_rejected(
     ).encode()
 
     with pytest.raises(Rejected):
-        await forgejo.grading.read_config_request(_signed(key, body), now=NOW)
+        await forgejo.grading.answer(_signed(key, body), _lookup(), now=NOW)
 
 
 async def test_the_answer_is_two_full_clone_steps_and_the_harness(
@@ -335,10 +346,8 @@ async def test_the_answer_is_two_full_clone_steps_and_the_harness(
 ) -> None:
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
-    ask = await forgejo.grading.read_config_request(_signed(key, _ask_body()), now=NOW)
-
-    answer = forgejo.grading.config_answer(RUN, ask, harness_image=HARNESS, clone_image=CLONE)
-    again = forgejo.grading.config_answer(RUN, ask, harness_image=HARNESS, clone_image=CLONE)
+    answer = await forgejo.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
+    again = await forgejo.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
 
     assert answer == again
     assert answer.content_type == "application/json"
@@ -384,6 +393,59 @@ async def test_the_answer_is_two_full_clone_steps_and_the_harness(
         ],
     }
     assert all("environment" not in step for step in workflow["clone"])
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "UNICON_GRADING_ID",
+        "UNICON_ENVELOPE_URL",
+        "UNICON_PUBLICATION_COMMIT",
+        "UNICON_SUBMISSION_REPO",
+        "UNICON_SUBMISSION_COMMIT",
+        "UNICON_COMPUTE",
+        "UNICON_HARNESS_IMAGE",
+    ],
+)
+async def test_a_run_started_with_any_other_variable_is_answered_with_nothing(
+    forgejo: ForgejoForge, recorder: Recorder, variable: str
+) -> None:
+    """Rule 1, the CI's half: anyone who may start a manual pipeline on the
+    task's repository may pass variables of their own, a harness image among
+    them. The platform's half says the grading is being started; this one
+    refuses the run unless every variable is the one it was started with.
+    """
+    key = Ed25519PrivateKey.generate()
+    recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
+    variables = {**VARIABLES, variable: VARIABLES.get(variable, "ghcr.io/someone/harness") + "x"}
+
+    with pytest.raises(Rejected):
+        await forgejo.grading.answer(_signed(key, _ask_body(variables)), _lookup(), now=NOW)
+
+
+async def test_what_the_platform_refuses_is_refused_and_nothing_is_answered(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
+
+    async def refused(grading: str | None, task: TaskId) -> tuple[GradingRun, RunSpec]:
+        raise CiRequestRefused("not this one")
+
+    with pytest.raises(CiRequestRefused):
+        await forgejo.grading.answer(_signed(key, _ask_body()), refused, now=NOW)
+
+
+async def test_a_request_that_does_not_verify_is_never_looked_up(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    key, other = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+    recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
+    seen: list[tuple[str | None, TaskId]] = []
+
+    with pytest.raises(Forbidden):
+        await forgejo.grading.answer(_signed(other, _ask_body()), _lookup(seen), now=NOW)
+    assert seen == []
 
 
 def test_each_org_has_its_own_store_of_large_files() -> None:
