@@ -487,6 +487,24 @@ async def test_a_primitive_version_with_no_declaration_is_listed_with_why(
     assert any(found.ref == "unicon/compile@v2" and found.declaration for found in listed)
 
 
+async def test_a_capitalised_username_lists_and_opens_its_workflows_in_lower_case(
+    setup: Setup, acme: Acme
+) -> None:
+    acme.fake.add_user(33, "Bob2")
+    bob = await signed_in(setup, acme.fake, 33)
+    await workflows.create(setup, bob, "Bob2", "tuned")
+    await workflows.create_version(setup, bob, "bob2", "tuned", "v1")
+
+    (mine,) = [item for item in await workflows.listing(setup, bob) if item.editable]
+
+    assert (mine.owner, mine.name) == ("bob2", "tuned")
+    assert (await workflows.view(setup, bob, mine.owner, mine.name)).summary.editable
+    made = await workflows.combine(
+        setup, bob, [f"{mine.owner}/tuned@v1", "unicon/classic@v2"], "bob2", "both"
+    )
+    assert made.owner == "bob2"
+
+
 async def test_a_repository_without_the_workflow_mark_is_no_workflow(
     setup: Setup, acme: Acme
 ) -> None:
