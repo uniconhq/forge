@@ -996,6 +996,31 @@ async def test_a_workflow_under_a_person_is_made_by_the_platform_and_written_by_
     ]
 
 
+async def test_a_create_whose_repository_another_maker_filled_first_writes_nothing(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    recorder.on("GET", "/api/v1/orgs/acme", ok({"username": "acme"}))
+    recorder.on("GET", f"{repo}/branches/main", ok({"name": "main"}))
+    recorder.on("GET", repo, ok({"name": "grading.workflow", "topics": ["unicon-workflow"]}))
+    recorder.on(
+        "GET",
+        f"{repo}/git/trees/main",
+        ok({"tree": [{"path": "workflow.yaml", "type": "blob", "sha": "b"}]}),
+    )
+
+    with pytest.raises(Conflict):
+        await forgejo.workflows.create_workflow(
+            AsUser(7, _credential()),
+            "acme",
+            "grading",
+            {"workflow.yaml": b"steps: []"},
+            Visibility.PRIVATE,
+        )
+
+    assert f"POST {repo}/contents" not in recorder.calls()
+
+
 async def test_an_org_workflow_is_made_and_marked_by_the_platform_and_written_by_its_manager(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
@@ -1025,7 +1050,17 @@ async def test_who_reads_a_workflow_changes_as_the_platform_for_someone_who_may_
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     repo = "/api/v1/repos/acme/grading.workflow"
-    recorder.on("GET", repo, ok({"permissions": {"admin": False, "push": True, "pull": True}}))
+    recorder.on(
+        "GET",
+        repo,
+        ok(
+            {
+                "name": "grading.workflow",
+                "topics": ["unicon-workflow"],
+                "permissions": {"admin": False, "push": True, "pull": True},
+            }
+        ),
+    )
     recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 9, "login": "eve"}]}))
     manager = AsUser(7, _credential())
     workflow = WorkflowId("acme/grading")
@@ -1046,7 +1081,17 @@ async def test_someone_who_only_reads_a_workflow_changes_nobodys_access_to_it(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     repo = "/api/v1/repos/acme/grading.workflow"
-    recorder.on("GET", repo, ok({"permissions": {"admin": False, "push": False, "pull": True}}))
+    recorder.on(
+        "GET",
+        repo,
+        ok(
+            {
+                "name": "grading.workflow",
+                "topics": ["unicon-workflow"],
+                "permissions": {"admin": False, "push": False, "pull": True},
+            }
+        ),
+    )
     observer = AsUser(8, _credential())
     workflow = WorkflowId("acme/grading")
 
@@ -1384,3 +1429,20 @@ async def test_a_name_goes_into_a_path_quoted_whole_and_a_dot_segment_reaches_no
     with pytest.raises(NotFound):
         await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "../secrets")
     assert len(recorder.seen) == 2
+
+
+async def test_a_version_is_read_at_its_tags_commit_whatever_its_name_spells(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    named, tagged = "a" * 40, "b" * 40
+    recorder.on("GET", repo, ok({"name": "grading.workflow", "topics": ["unicon-workflow"]}))
+    recorder.on("GET", f"{repo}/tags", ok([{"name": named, "commit": {"sha": tagged}}]))
+    recorder.on("GET", f"{repo}/contents/workflow.yaml", ok({"type": "file", "sha": "s"}))
+
+    await forgejo.workflows.read_workflow_file(
+        AsUser(7, _credential()), WorkflowId("acme/grading"), named, "workflow.yaml"
+    )
+
+    [read] = [seen for seen in recorder.seen if seen.url.path == f"{repo}/contents/workflow.yaml"]
+    assert read.url.params["ref"] == tagged

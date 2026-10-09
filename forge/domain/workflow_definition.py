@@ -45,6 +45,9 @@ VERSION_MAX = 40
 HANDLE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 REPORT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 RESERVED_NAMES = ("outcome", "points", "penalty")
+MAX_USES = 32
+"""The most distinct `use:` references one definition holds; each costs a
+read at every check."""
 
 _REF_EXAMPLE = "such as unicon/classic@v2"
 
@@ -277,6 +280,12 @@ class WorkflowDefinition(Model):
                     ("test", key), "No field is named test, since test.yaml would match it."
                 )
         problems.duplicates([step.id for step in self.steps], ("steps",))
+        if len({str(step.use) for step in self.steps}) > MAX_USES:
+            problems.add(
+                ("steps",),
+                f"A workflow uses at most {MAX_USES} primitive versions, so a check reads few "
+                "enough of them.",
+            )
         seen_per_test = False
         for index, step in enumerate(self.steps):
             if step.per_test:
@@ -334,6 +343,11 @@ class WorkflowDefinition(Model):
             return f"{found.name} is not an input of the workflow."
         if declared_input.contestant or declared_input.type is not Type.ENUM:
             return f"{found.name} must be an enum input the task gives, not the contestant."
+        if declared_input.optional:
+            return (
+                f"{found.name} is optional, so it is given whole to optional ports, never "
+                "read for which way is better."
+            )
         if not set(declared_input.options or ()) <= {"higher", "lower"}:
             return f"The options of {found.name} must be higher and lower."
         return None

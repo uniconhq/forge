@@ -765,3 +765,38 @@ def test_a_once_number_may_carry_bounds_and_a_per_test_one_a_fold_and_a_directio
     }
 
     assert checked(document) == []
+
+
+def test_an_optional_input_never_says_which_way_is_better() -> None:
+    text = (
+        CLASSIC.decode()
+        .replace(
+            "  memory_limit: number\n",
+            "  memory_limit: number\n"
+            "  dir: {type: enum, options: [higher, lower], optional: true}\n",
+        )
+        .replace(
+            "better: lower, at_least: 0}\n  log:",
+            'better: "${{ inputs.dir }}", at_least: 0}\n  log:',
+        )
+    )
+
+    with pytest.raises(InvalidDefinition) as refused:
+        parse_workflow(text)
+
+    assert refused.value.errors == [
+        {
+            "path": "report.memory_kb.better",
+            "message": "dir is optional, so it is given whole to optional ports, never read "
+            "for which way is better.",
+        }
+    ]
+
+
+def test_a_definition_names_at_most_32_primitive_versions() -> None:
+    steps = "".join(f"  - {{id: s{n}, use: unicon/p{n}@v1}}\n" for n in range(33))
+
+    with pytest.raises(InvalidDefinition) as refused:
+        parse_workflow(f"test: {{input: file}}\nsteps:\n{steps}")
+
+    assert [error["path"] for error in refused.value.errors] == ["steps"]
