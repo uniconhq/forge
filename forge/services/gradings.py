@@ -81,6 +81,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import ColumnElement, and_, func, not_, or_, select, tuple_
 
 from forge.db.tables import Grading, Team
@@ -109,6 +110,7 @@ from forge.domain.grading import (
     Fallback,
     GradingRun,
     GradingStatus,
+    RunSpec,
     RunState,
     callback_token,
     cancel_reason,
@@ -118,7 +120,7 @@ from forge.domain.grading import (
     token_hash,
     worth_asking,
 )
-from forge.domain.identity import AsOrgAccount
+from forge.domain.identity import PLATFORM, AsOrgAccount
 from forge.domain.ids import (
     ContestId,
     OrgId,
@@ -132,6 +134,7 @@ from forge.domain.ids import (
 )
 from forge.domain.live import Nudge, NudgeKind
 from forge.domain.names import TeamOwner, UserOwner, is_username
+from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.publications import Publication
 from forge.domain.roles import (
     Role,
@@ -367,9 +370,19 @@ async def start(ctx: Context, grading: uuid.UUID) -> None:
     except PortError as exc:
         await _not_started(ctx, grading, exc, NO_ANSWER)
         return
+    try:
+        spec = spec_of(ctx, await plan_of(ctx, run))
+    except (NotFound, Forbidden, ValidationError) as exc:
+        # Refused as the CI refused a run whose plan its question could not
+        # be answered from, before the plan was read at the start.
+        await _not_started(ctx, grading, exc, NO_RUN)
+        return
+    except PortError as exc:
+        await _not_started(ctx, grading, exc, NO_ANSWER)
+        return
     await ctx.db.commit()
     try:
-        found = await _start_run(ctx, account, run)
+        found = await _start_run(ctx, account, run, spec)
     except (PortError, CannotDecrypt) as exc:
         reason = _start_failure(exc) if isinstance(exc, PortError) else ACCOUNT_NOT_READY
         await _not_started(ctx, grading, exc, reason)
@@ -399,17 +412,17 @@ async def _superseded(ctx: Context, row: Grading) -> bool:
     return later is not None
 
 
-async def _start_run(ctx: Context, account: AsOrgAccount, run: GradingRun) -> RunId:
+async def _start_run(ctx: Context, account: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
     """Start the run, and when the CI refuses the org's account, sign it in
     again and try once more, so a login the CI lost heals at the next start.
     Nothing is held while the CI is called.
     """
     try:
-        return await ctx.forge.grading.start_run(account, run)
+        return await ctx.forge.grading.start_run(account, run, spec)
     except Forbidden:
         account = await org_accounts.renew(ctx, account)
         await ctx.db.commit()
-        return await ctx.forge.grading.start_run(account, run)
+        return await ctx.forge.grading.start_run(account, run, spec)
 
 
 async def _not_started(ctx: Context, grading: uuid.UUID, exc: Exception, reason: str) -> None:
@@ -515,6 +528,24 @@ async def run_of(ctx: Context, row: Grading) -> GradingRun:
         envelope_url=envelope_url(ctx, row),
         compute=PLATFORM_POOL,
     )
+
+
+async def plan_of(ctx: Context, run: GradingRun) -> Plan:
+    """The plan of the publication `run` grades against, as it froze it.
+    `NotFound` or `Forbidden` when the file cannot be read, and pydantic's
+    `ValidationError` when it is not a plan.
+    """
+    found = await ctx.forge.content.read_file(
+        PLATFORM, run.task, PLAN_PATH, at=run.publication_version
+    )
+    return Plan.from_bytes(found.content)
+
+
+def spec_of(ctx: Context, plan: Plan) -> RunSpec:
+    """What a run of `plan` runs: the harness image it names and the
+    platform's clone image.
+    """
+    return RunSpec(harness_image=plan.harness_image, clone_image=ctx.settings.clone_image)
 
 
 def org_of(row: Grading) -> OrgId:

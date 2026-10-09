@@ -66,6 +66,7 @@ from forge.domain.grading import (
     Fallback,
     GradingRun,
     GradingStatus,
+    RunSpec,
     RunState,
     callback_token,
     envelope_key,
@@ -243,6 +244,50 @@ async def test_a_submit_starts_one_run_as_the_org_account_on_the_platform_pool(
     )
 
 
+async def test_a_run_is_started_with_what_its_plan_runs(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _submit(setup, acme, entered)
+
+    [started] = acme.fake.calls_to("start_run")
+    assert started.arguments["spec"] == RunSpec(
+        harness_image=setup.settings.harness_image, clone_image=setup.settings.clone_image
+    )
+
+
+@pytest.mark.parametrize(
+    ("trouble", "reason"),
+    [(NotFound("no plans/plan.json"), gradings.NO_RUN), (Unavailable("down"), gradings.NO_ANSWER)],
+)
+async def test_a_run_whose_plan_cannot_be_read_is_not_started(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    monkeypatch: pytest.MonkeyPatch,
+    unstarted: Start,
+    trouble: Exception,
+    reason: str,
+) -> None:
+    """Ended as the CI's refusal ended it when the CI asked for the plan
+    while starting the run: a system error saying the CI started none, or
+    did not answer when the forge did not.
+    """
+    read_file = acme.fake.content.read_file
+
+    async def no_plan(as_: Any, place: Any, path: str, *, at: Any = None) -> Any:
+        if path == PLAN_PATH:
+            raise trouble
+        return await read_file(as_, place, path, at=at)
+
+    row = await _submit(setup, acme, entered)
+    monkeypatch.setattr(acme.fake.content, "read_file", no_plan)
+    await unstarted(setup, row)
+
+    row = await _row(setup, row.id)
+    assert (row.status, row.error, row.run_id) == (GradingStatus.SYSTEM_ERROR, reason, None)
+    assert acme.fake.calls_to("start_run") == []
+
+
 async def test_two_starts_at_once_leave_one_run_and_cancel_the_other(
     setup: Setup,
     acme: Acme,
@@ -258,10 +303,10 @@ async def test_two_starts_at_once_leave_one_run_and_cancel_the_other(
     starting, release = asyncio.Event(), asyncio.Event()
     start = acme.fake.grading.start_run
 
-    async def held_start(as_: AsOrgAccount, run: GradingRun) -> RunId:
+    async def held_start(as_: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
         starting.set()
         await release.wait()
-        return await start(as_, run)
+        return await start(as_, run, spec)
 
     monkeypatch.setattr(acme.fake.grading, "start_run", held_start)
     first = asyncio.create_task(unstarted(setup, row))

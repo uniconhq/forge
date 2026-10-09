@@ -31,6 +31,7 @@ from forge.domain.grading import (
     Enrolment,
     GradingRun,
     RunPlaces,
+    RunSpec,
     RunState,
 )
 from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount
@@ -80,9 +81,9 @@ class FakeGrading:
             "UNICON_COMPUTE": run.compute,
         }
 
-    async def start_run(self, as_: AsOrgAccount, run: GradingRun) -> RunId:
+    async def start_run(self, as_: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
         variables = dict(self.run_variables(run))
-        self._state.record("start_run", as_, task=run.task, variables=variables)
+        self._state.record("start_run", as_, task=run.task, variables=variables, spec=spec)
         self._state.check_up()
         _acting_for(self._state, as_, run.task)
         self._task_repo(run.task)

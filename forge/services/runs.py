@@ -80,9 +80,7 @@ from forge.domain.grading import (
     token_hash,
     wall_seconds,
 )
-from forge.domain.identity import PLATFORM
-from forge.domain.ids import TaskId
-from forge.domain.plans import PLAN_PATH, Plan
+from forge.domain.plans import Plan
 from forge.domain.reports import ERROR_LIMIT, Event, read_report, result_problem
 from forge.log import get_logger
 from forge.runtime.actions import action
@@ -298,10 +296,7 @@ async def _run(ctx: Context, row: Grading, refusal: Exception) -> GradingRun:
 async def _plan(ctx: Context, row: Grading, run: GradingRun, refusal: Exception) -> Plan:
     """The plan of the publication the grading grades against."""
     try:
-        found = await ctx.forge.content.read_file(
-            PLATFORM, TaskId(row.task_id), PLAN_PATH, at=run.publication_version
-        )
-        return Plan.from_bytes(found.content)
+        return await gradings.plan_of(ctx, run)
     except (NotFound, Forbidden, ValidationError) as exc:
         log.warning("runs.plan_unreadable", grading=str(row.id), error=type(exc).__name__)
         raise refusal from None

@@ -10,7 +10,7 @@ import pytest
 
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected
-from forge.domain.grading import GradingRun
+from forge.domain.grading import GradingRun, RunSpec
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Platform
 from forge.domain.ids import (
     ContestId,
@@ -97,7 +97,7 @@ async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> 
         envelope_url="http://machines.test/envelope",
         compute="pool:platform",
     )
-    await fake.grading.start_run(acme, run)
+    await fake.grading.start_run(acme, run, RunSpec(harness_image="h", clone_image="c"))
 
     assert [call.identity for call in fake.calls_to("activate")] == [acme]
     assert [call.identity for call in fake.calls_to("start_run")] == [acme]

@@ -66,6 +66,7 @@ from forge.domain.grading import (
     ConfigAsk,
     GradingRun,
     RunPlaces,
+    RunSpec,
     RunState,
 )
 from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, Identity
@@ -179,7 +180,10 @@ class WoodpeckerGrading:
             COMPUTE_VARIABLE: run.compute,
         }
 
-    async def start_run(self, as_: AsOrgAccount, run: GradingRun) -> RunId:
+    async def start_run(self, as_: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
+        """`spec` is not sent: Woodpecker asks what the run is while it
+        starts it, and is answered from the platform's records then.
+        """
         ref = parse_task(run.task)
         account = _acting_for(as_, ref.org)
         repo = await self._lookup(account, ref.org, ref.repo)

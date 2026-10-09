@@ -20,7 +20,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from forge.domain.errors import Forbidden, Rejected, Unavailable
-from forge.domain.grading import CiRequest, GradingRun, RunState
+from forge.domain.grading import CiRequest, GradingRun, RunSpec, RunState
 from forge.domain.identity import AsOrgAccount
 from forge.domain.ids import PublicationId, RunId, SubmissionId, TaskId, VersionId
 from forge.forges.forgejo import ForgejoForge, grading
@@ -35,6 +35,7 @@ HARNESS = "ghcr.io/uniconhq/harness@sha256:" + "1" * 64
 CLONE = "ghcr.io/uniconhq/clone@sha256:" + "2" * 64
 TARGET = "/api/v1/ci/config"
 
+SPEC = RunSpec(harness_image="harness@sha256:h", clone_image="clone@sha256:c")
 RUN = GradingRun(
     grading=GRADING,
     task=TaskId("acme/spring/sum"),
@@ -185,7 +186,7 @@ async def test_a_run_is_started_on_main_as_the_org_account_with_its_variables(
     recorder.on("GET", "/api/repos/lookup/acme/spring.sum.task", ok({"id": 5}))
     recorder.on("POST", "/api/repos/5/pipelines", ok({"number": 3, "status": "pending"}))
 
-    run = await forgejo.grading.start_run(ACME, RUN)
+    run = await forgejo.grading.start_run(ACME, RUN, SPEC)
 
     assert run == "5/3"
     assert recorder.headers("POST", "/api/repos/5/pipelines") == ["Bearer ci-acme"]
@@ -208,14 +209,14 @@ async def test_a_start_answered_without_a_run_is_rejected(
     recorder.on("POST", "/api/repos/5/pipelines", answer)
 
     with pytest.raises(Rejected):
-        await forgejo.grading.start_run(ACME, RUN)
+        await forgejo.grading.start_run(ACME, RUN, SPEC)
 
 
 async def test_a_start_for_another_org_is_forbidden(forgejo: ForgejoForge) -> None:
     other = AsOrgAccount("other", forge_token="f", ci_token="c")
 
     with pytest.raises(Forbidden):
-        await forgejo.grading.start_run(other, RUN)
+        await forgejo.grading.start_run(other, RUN, SPEC)
 
 
 async def test_a_signed_request_reads_as_the_run_it_asks_about(

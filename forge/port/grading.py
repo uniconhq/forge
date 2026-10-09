@@ -16,7 +16,15 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Protocol
 
-from forge.domain.grading import CiAnswer, CiRequest, ConfigAsk, GradingRun, RunPlaces, RunState
+from forge.domain.grading import (
+    CiAnswer,
+    CiRequest,
+    ConfigAsk,
+    GradingRun,
+    RunPlaces,
+    RunSpec,
+    RunState,
+)
 from forge.domain.identity import AsOrgAccount
 from forge.domain.ids import RunId, TaskId
 
@@ -42,9 +50,10 @@ class GradingPort(Protocol):
         """
         ...
 
-    async def start_run(self, as_: AsOrgAccount, run: GradingRun) -> RunId:
+    async def start_run(self, as_: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
         """Start `run` at the CI as the task's org account, with its variables,
-        pinned to the machines carrying its label. `Rejected` when the CI
+        pinned to the machines carrying its label, to run what `spec` says.
+        `Rejected` when the CI
         answers without a run; `Unavailable` when no answer came back;
         `NotFound` when the task is not activated at the CI; `Forbidden` when
         `as_` is another org's account.

@@ -253,6 +253,19 @@ class GradingRun:
 
 
 @dataclass(frozen=True, slots=True)
+class RunSpec:
+    """What a run runs, read from the platform's own records as it is
+    started: the harness image the plan of its publication names, by digest,
+    and the image its two checkouts are made with. A CI that is handed a run
+    has all of it at the start; one that asks what a run is is answered
+    from it.
+    """
+
+    harness_image: str
+    clone_image: str
+
+
+@dataclass(frozen=True, slots=True)
 class CiRequest:
     """A request the CI made to the platform, as it arrived: its method, its
     target, the path and query exactly as sent, its headers, looked up
