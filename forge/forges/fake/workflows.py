@@ -6,7 +6,7 @@ from forge.domain.content import ConflictToken, File, Files
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, Identity, User
 from forge.domain.ids import PrimitiveId, VersionId, WorkflowId
-from forge.domain.roles import Scope
+from forge.domain.roles import Role, Scope
 from forge.domain.workflows import Primitive, Visibility, Workflow
 from forge.forges.fake.state import Repo, State, token_of
 from forge.forges.ids import (
@@ -173,10 +173,22 @@ class FakeWorkflows:
         self._state.record("workflows_readable_by", as_)
         self._state.check_up()
         user_id = self._state.author(as_)
+
+        def reached(repo: Repo) -> bool:
+            if repo.owner == PLATFORM_ORG:
+                return not repo.private
+            if user_id is None:
+                return True
+            return (
+                user_id in repo.readers
+                or self._state.may_write(user_id, repo)
+                or self._state.holds(user_id, repo, Role.OBSERVER)
+            )
+
         return tuple(
             _workflow(repo)
             for repo in self._state.repos.values()
-            if repo.marked == WORKFLOW and (user_id is None or self._state.may_read(user_id, repo))
+            if repo.marked == WORKFLOW and reached(repo)
         )
 
     async def workflow_key(self, workflow: WorkflowId) -> str:

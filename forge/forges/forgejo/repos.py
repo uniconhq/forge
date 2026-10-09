@@ -379,6 +379,14 @@ class Repos:
     async def versions(self, as_: Identity, owner: str, name: str) -> list[str]:
         return [str(entry["name"]) for entry in await self.tags(as_, owner, name)]
 
+    async def require_version(self, as_: Identity, owner: str, name: str, version: str) -> None:
+        """Refuse as `NotFound` a version that is not one of the repository's
+        tags, as `as_` reads them. Forgejo's `ref` also takes a branch or a
+        commit, which move, so a version is looked up among the tags first.
+        """
+        if version not in await self.versions(as_, owner, name):
+            raise NotFound(f"{owner}/{name} has no version {version}")
+
     async def tags(self, as_: Identity, owner: str, name: str) -> list[dict[str, Any]]:
         """Every tag, with its message and the commit it points at."""
         return await self._http.get_all(as_, f"/api/v1/repos/{segment(owner)}/{segment(name)}/tags")
@@ -509,6 +517,12 @@ class Repos:
         )
         repos: list[dict[str, Any]] = found.get("data") or []
         return repos
+
+    async def reached_by(self, as_: Identity) -> list[dict[str, Any]]:
+        """Every repository `as_` owns or reaches as a collaborator or through
+        an org's team, page by page.
+        """
+        return await self._http.get_all(as_, "/api/v1/user/repos")
 
     async def owned_by(self, username: str) -> list[dict[str, Any]]:
         return await self._http.get_all(PLATFORM, f"/api/v1/users/{segment(username)}/repos")

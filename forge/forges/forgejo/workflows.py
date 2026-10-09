@@ -23,7 +23,13 @@ from forge.domain.ids import VersionId, WorkflowId
 from forge.domain.workflows import Visibility, Workflow
 from forge.forges.forgejo.repos import DEFAULT_BRANCH, Repos
 from forge.forges.forgejo.users import Users
-from forge.forges.ids import PROTECTED_PREFIXES, WORKFLOW, WorkflowRef, parse_workflow
+from forge.forges.ids import (
+    PLATFORM_ORG,
+    PROTECTED_PREFIXES,
+    WORKFLOW,
+    WorkflowRef,
+    parse_workflow,
+)
 
 READ = "read"
 WORKFLOW_TOPIC = "unicon-workflow"
@@ -116,6 +122,7 @@ class ForgejoWorkflows:
         self, as_: Identity, workflow: WorkflowId, version: str, path: str
     ) -> File:
         ref = parse_workflow(workflow)
+        await self._repos.require_version(as_, ref.owner, ref.repo, version)
         return await self._repos.read_file(as_, ref.owner, ref.repo, path, at=version)
 
     async def search_public_workflows(self, query: str) -> tuple[Workflow, ...]:
@@ -135,6 +142,7 @@ class ForgejoWorkflows:
         self, as_: Identity, source: WorkflowId, version: str, owner: str, name: str
     ) -> WorkflowId:
         origin = parse_workflow(source)
+        await self._repos.require_version(as_, origin.owner, origin.repo, version)
         files = await self._repos.files_at(as_, origin.owner, origin.repo, version)
         return await self.create_workflow(as_, owner, name, files, Visibility.PRIVATE)
 
@@ -143,8 +151,19 @@ class ForgejoWorkflows:
         return await self._workflow(await self._repos.seen_by(as_, ref.owner, ref.repo))
 
     async def workflows_readable_by(self, as_: Identity) -> tuple[Workflow, ...]:
-        found = await self._repos.marked(WORKFLOW_TOPIC, as_)
-        return tuple([await self._workflow(repo) for repo in found if _is_workflow(repo)])
+        reached = await self._repos.reached_by(as_)
+        built_in = await self._repos.under(PLATFORM_ORG)
+        seen: set[str] = set()
+        found: list[Workflow] = []
+        for repo in [*reached, *built_in]:
+            key = str(repo["full_name"])
+            if key in seen or not _is_workflow(repo):
+                continue
+            seen.add(key)
+            if repo["owner"]["login"] == PLATFORM_ORG and repo.get("private"):
+                continue
+            found.append(await self._workflow(repo))
+        return tuple(found)
 
     async def workflows_owned_by(self, user_id: int) -> tuple[Workflow, ...]:
         username = await self._users.username_of(user_id)

@@ -97,8 +97,9 @@ class WorkflowPort(Protocol):
     async def read_workflow_file(
         self, as_: Identity, workflow: WorkflowId, version: str, path: str
     ) -> File:
-        """One file at a version. `NotFound` when there is no such version or
-        file; `Forbidden` when the identity may not read the workflow.
+        """One file at a version, one of the names `create_workflow_version`
+        gave, never the moving head or a commit. `NotFound` when there is no such version
+        or file; `Forbidden` when the identity may not read the workflow.
         """
         ...
 
@@ -129,8 +130,9 @@ class WorkflowPort(Protocol):
         ...
 
     async def workflows_readable_by(self, as_: Identity) -> tuple[Workflow, ...]:
-        """Every workflow the identity may read: its own, its orgs', those
-        shared with it and the public ones.
+        """Every workflow the identity reaches: its own, its orgs', those
+        shared with it, and the platform's public built-ins. Other people's
+        public workflows are the marketplace's to find.
         """
         ...
 

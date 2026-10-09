@@ -357,7 +357,7 @@ async def test_workflows_are_created_versioned_searched_and_copied(
     assert next(entry for entry in found if entry.id == workflow).versions == ("v1",)
 
     copied = await forge.workflows.copy_workflow(PLATFORM, workflow, "v1", org, "mine")
-    copy = await forge.workflows.read_workflow_file(PLATFORM, copied, "main", "workflow.yaml")
+    _, copy = await forge.workflows.read_workflow_draft(PLATFORM, copied, "workflow.yaml")
     assert copy.content == b"steps: []\n"
 
     await forge.workflows.set_workflow_visibility(PLATFORM, workflow, Visibility.PRIVATE)
