@@ -35,7 +35,18 @@ class FakeWorkflows:
         self._state.record("create_workflow", as_, owner=owner, name=name, visibility=visibility)
         ref = WorkflowRef(owner, name)
         scope = Scope(owner) if owner in self._state.orgs else None
-        repo = self._state.create_repo(PLATFORM, owner, ref.repo, {}, scope=scope, marked=WORKFLOW)
+        try:
+            repo = self._state.create_repo(
+                PLATFORM, owner, ref.repo, {}, scope=scope, marked=WORKFLOW
+            )
+        except Conflict:
+            # One of the name without the mark is a create that stopped before
+            # the end, which Forgejo's create finishes.
+            existing = self._state.repo(owner, ref.repo)
+            if existing.marked is None:
+                existing.rewrites_refused = True
+                existing.marked = WORKFLOW
+            raise
         repo.private = visibility is not Visibility.PUBLIC
         repo.rewrites_refused = True
         if files:
@@ -179,6 +190,12 @@ class FakeWorkflows:
                 return not repo.private
             if user_id is None:
                 return True
+            if not repo.private:
+                # A public one is reached when it is the person's own or an
+                # org's they belong to; anyone else's is the marketplace's.
+                return repo.owner.lower() == self._state.username(
+                    user_id
+                ).lower() or self._state.holds(user_id, repo, Role.OBSERVER)
             return (
                 user_id in repo.readers
                 or self._state.may_write(user_id, repo)
@@ -197,8 +214,14 @@ class FakeWorkflows:
         return str(self._repo(workflow).id)
 
     def _repo(self, workflow: WorkflowId) -> Repo:
+        """The workflow's repository, which carries the workflow mark;
+        `NotFound` for one that does not.
+        """
         ref = parse_workflow(workflow)
-        return self._state.repo(ref.owner, ref.repo)
+        repo = self._state.repo(ref.owner, ref.repo)
+        if repo.marked != WORKFLOW:
+            raise NotFound(f"{workflow} is not a workflow")
+        return repo
 
 
 class FakePrimitives:

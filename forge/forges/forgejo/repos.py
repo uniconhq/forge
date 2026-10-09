@@ -45,7 +45,6 @@ DEFAULT_BRANCH = "main"
 CREATE_MESSAGE = "Create"
 TREE_PAGE = 1000
 MAX_TREE_PAGES = 100
-PAGE_LIMIT = 50
 WRITE_ATTEMPTS = 4
 
 
@@ -65,7 +64,9 @@ class Repos:
         as the platform, with its first commit written as `as_`. A repository
         of that name with no commit yet is one an earlier try made and did
         not fill, since only the platform makes repositories, so the files
-        are written into it; one with commits is `Conflict`.
+        are written into it; one with commits is `Conflict`. The first commit
+        is made only while there is none, so of two makers of one name at
+        once exactly one fills it and the other is `Conflict`.
         """
         body = {
             "name": name,
@@ -83,7 +84,30 @@ class Repos:
         except Conflict:
             if not files or await self._existing(PLATFORM, owner, name) is not None:
                 raise
-        await self.write_files(as_, owner, name, files, message=CREATE_MESSAGE)
+        if files:
+            await self._write_first(as_, owner, name, files)
+
+    async def _write_first(self, as_: Identity, owner: str, name: str, files: Files) -> None:
+        """The repository's first commit, which makes its default branch:
+        `Conflict` when the branch is there already, whoever made it.
+        """
+        if await self._existing(as_, owner, name) is not None:
+            raise Conflict(f"{owner}/{name} has a first commit already")
+        operations = [
+            {"operation": "create", "path": path, "content": _encoded(content)}
+            for path, content in sorted(files.items())
+        ]
+        await self._http.call(
+            as_,
+            "POST",
+            f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents",
+            json={
+                "branch": DEFAULT_BRANCH,
+                "new_branch": DEFAULT_BRANCH,
+                "message": CREATE_MESSAGE,
+                "files": operations,
+            },
+        )
 
     async def delete(self, owner: str, name: str) -> None:
         """Delete the repository, as the platform, with everything in it. One
@@ -379,13 +403,16 @@ class Repos:
     async def versions(self, as_: Identity, owner: str, name: str) -> list[str]:
         return [str(entry["name"]) for entry in await self.tags(as_, owner, name)]
 
-    async def require_version(self, as_: Identity, owner: str, name: str, version: str) -> None:
-        """Refuse as `NotFound` a version that is not one of the repository's
-        tags, as `as_` reads them. Forgejo's `ref` also takes a branch or a
-        commit, which move, so a version is looked up among the tags first.
+    async def require_version(self, as_: Identity, owner: str, name: str, version: str) -> str:
+        """The commit the version, one of the repository's tags as `as_`
+        reads them, stands at; `NotFound` for a version that is no tag. A
+        version is read at this commit, never by its name: Forgejo's `ref`
+        takes a branch, or a commit whose sha the name spells, before a tag.
         """
-        if version not in await self.versions(as_, owner, name):
-            raise NotFound(f"{owner}/{name} has no version {version}")
+        for tag in await self.tags(as_, owner, name):
+            if tag["name"] == version:
+                return str(tag["commit"]["sha"])
+        raise NotFound(f"{owner}/{name} has no version {version}")
 
     async def tags(self, as_: Identity, owner: str, name: str) -> list[dict[str, Any]]:
         """Every tag, with its message and the commit it points at."""
@@ -505,31 +532,36 @@ class Repos:
     async def star(self, as_: Identity, owner: str, name: str) -> None:
         await self._http.call(as_, "PUT", f"/api/v1/user/starred/{segment(owner)}/{segment(name)}")
 
-    async def marked(self, topic: str, as_: Identity = PLATFORM) -> list[dict[str, Any]]:
-        """Every repository carrying the topic that `as_` may see."""
-        found = json_of(
-            await self._http.call(
-                as_,
-                "GET",
-                "/api/v1/repos/search",
-                params={"q": topic, "topic": "true", "limit": PAGE_LIMIT},
-            )
-        )
-        repos: list[dict[str, Any]] = found.get("data") or []
-        return repos
-
-    async def reached_by(self, as_: Identity) -> list[dict[str, Any]]:
-        """Every repository `as_` owns or reaches as a collaborator or through
-        an org's team, page by page.
+    async def marked(
+        self, topic: str, as_: Identity = PLATFORM, **filters: str | int
+    ) -> list[dict[str, Any]]:
+        """Every repository carrying the topic that `as_` may see, narrowed
+        by the search's own `filters`, page by page.
         """
-        return await self._http.get_all(as_, "/api/v1/user/repos")
+        collected: list[dict[str, Any]] = []
+        for page in range(1, MAX_PAGES + 1):
+            found = json_of(
+                await self._http.call(
+                    as_,
+                    "GET",
+                    "/api/v1/repos/search",
+                    params={
+                        "q": topic,
+                        "topic": "true",
+                        **filters,
+                        "limit": PAGE_SIZE,
+                        "page": page,
+                    },
+                )
+            )
+            batch: list[dict[str, Any]] = found.get("data") or []
+            collected.extend(batch)
+            if len(batch) < PAGE_SIZE:
+                return collected
+        raise Unavailable(f"the search for {topic} did not end within {MAX_PAGES} pages")
 
     async def owned_by(self, username: str) -> list[dict[str, Any]]:
         return await self._http.get_all(PLATFORM, f"/api/v1/users/{segment(username)}/repos")
-
-    async def under(self, org: str, as_: Identity = PLATFORM) -> list[dict[str, Any]]:
-        """Every repository in the org that `as_` may see."""
-        return await self._http.get_all(as_, f"/api/v1/orgs/{segment(org)}/repos")
 
     async def named_with(
         self, org: str, part: str, as_: Identity = PLATFORM
@@ -541,7 +573,7 @@ class Repos:
         The caller still checks each name, since the search matches anywhere
         in it.
         """
-        owner = await self._org_id(org)
+        owner = await self.org_id(org)
         found: list[dict[str, Any]] = []
         for page in range(1, MAX_PAGES + 1):
             response = await self._http.call(
@@ -562,7 +594,7 @@ class Repos:
                 return found
         raise Unavailable(f"the search for {part} in {org} did not end within {MAX_PAGES} pages")
 
-    async def _org_id(self, org: str) -> int:
+    async def org_id(self, org: str) -> int:
         """The forge's number for the org, read once: an org is named by a key
         that is never reused, so the number never changes under its name.
         """

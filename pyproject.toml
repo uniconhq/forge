@@ -1,6 +1,6 @@
 [project]
 name = "unicon-forge"
-version = "0.17.0"
+version = "0.17.1"
 description = "The Unicon contest API as a Python package: domain, services, tables, and the forge port with its implementations"
 readme = "README.md"
 license = "MIT"

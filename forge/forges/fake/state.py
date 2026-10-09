@@ -162,10 +162,13 @@ class State:
             raise NotFound(f"no org {name}") from None
 
     def repo(self, owner: str, name: str) -> Repo:
-        try:
-            return self.repos[(owner, name)]
-        except KeyError:
-            raise NotFound(f"no {name} under {owner}") from None
+        found = self.repos.get((owner, name))
+        if found is not None:
+            return found
+        for (held, repo_name), repo in self.repos.items():
+            if held.lower() == owner.lower() and repo_name.lower() == name.lower():
+                return repo
+        raise NotFound(f"no {name} under {owner}")
 
     def create_repo(
         self,
@@ -183,7 +186,10 @@ class State:
         """
         if not isinstance(as_, Platform):
             raise Forbidden(f"only the platform may create {owner}/{name}")
-        if (owner, name) in self.repos:
+        if any(
+            held.lower() == owner.lower() and repo_name.lower() == name.lower()
+            for held, repo_name in self.repos
+        ):
             raise Conflict(f"{owner}/{name} already exists")
         self.next_repo_id += 1
         repo = Repo(owner=owner, name=name, id=self.next_repo_id, scope=scope, marked=marked)

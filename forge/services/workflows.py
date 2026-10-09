@@ -169,7 +169,7 @@ async def listing(ctx: Context, session: Session) -> tuple[WorkflowSummary, ...]
     username = (await _username_now(ctx, session)).lower()
     summaries = [
         WorkflowSummary(
-            owner=labels.get(workflow.owner, workflow.owner),
+            owner=labels.get(workflow.owner, workflow.owner.lower()),
             name=workflow.name,
             visibility=workflow.visibility,
             versions=tuple(sorted(workflow.versions, key=natural)),
