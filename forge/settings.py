@@ -424,7 +424,10 @@ class Settings(BaseSettings):
 
 
 class DatabaseSettings(BaseSettings):
-    """The one setting a migration needs."""
+    """The setting every migration needs. Revision `0017` also reads
+    `UNICON_TOKEN_ENCRYPTION_KEY` from the environment, and only when it has
+    an org's CI credentials to move.
+    """
 
     model_config = SettingsConfigDict(env_prefix="UNICON_", extra="ignore")
 
