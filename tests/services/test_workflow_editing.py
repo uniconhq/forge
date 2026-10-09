@@ -10,7 +10,7 @@ names.
 import pytest
 
 from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, Rejected
-from forge.domain.identity import AsUser
+from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import WorkflowId
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
@@ -18,7 +18,7 @@ from forge.domain.workflow_definition import parse_workflow, parse_workflow_ref
 from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import workflows
+from forge.services import primitives, workflows
 from forge.testing import CLASSIC
 from tests.services.conftest import Acme, signed_in
 
@@ -467,3 +467,21 @@ async def test_the_list_leaves_other_peoples_public_workflows_to_the_marketplace
         ("unicon", "classic"),
     ]
     assert await workflows.read_version(setup, bob, "unicon/classic@v2")
+
+
+async def test_a_primitive_version_with_no_declaration_is_listed_with_why(
+    setup: Setup, acme: Acme
+) -> None:
+    bob = await signed_in(setup, acme.fake, 8)
+    repo = acme.fake.state.repos[("unicon", "compile.primitive")]
+    acme.fake.state.commit(repo, {"primitive.yaml": None}, "empty", None)
+    acme.fake.state.create_version(PLATFORM, repo, "v3")
+
+    listed = await primitives.listing(setup, bob)
+
+    empty = next(found for found in listed if found.ref == "unicon/compile@v3")
+    assert (empty.declaration, empty.problem) == (
+        None,
+        "unicon/compile@v3 has no declaration to read.",
+    )
+    assert any(found.ref == "unicon/compile@v2" and found.declaration for found in listed)

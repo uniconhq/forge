@@ -81,7 +81,14 @@ async def listing(ctx: Context, session: Session) -> tuple[PrimitiveVersion, ...
     found: list[PrimitiveVersion] = []
     for primitive in sorted(await ctx.forge.primitives.list_primitives(), key=lambda p: p.name):
         for version in sorted(primitive.versions, key=natural):
-            text = await ctx.forge.primitives.read_declaration(as_, primitive.id, version)
+            try:
+                text = await ctx.forge.primitives.read_declaration(as_, primitive.id, version)
+            except NotFound, Forbidden:
+                problem = (
+                    f"{PRIMITIVE_OWNER}/{primitive.name}@{version} has no declaration to read."
+                )
+                found.append(PrimitiveVersion(primitive.name, version, None, problem))
+                continue
             try:
                 found.append(PrimitiveVersion(primitive.name, version, parse_primitive(text)))
             except InvalidDefinition as invalid:
