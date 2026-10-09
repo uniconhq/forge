@@ -164,3 +164,15 @@ report: {run: "${{ steps.run.time_ms }}", run_2: "${{ steps.run.memory_kb }}"}
     assert list(combined.inputs) == ["t", "t-3", "t-2"]
     assert combined.steps[1].with_ == {"args": "${{ inputs.t-3 }} ${{ inputs.t-2 }}"}
     assert list(combined.report) == ["run", "run_2"]
+
+
+def test_a_name_yaml_reads_otherwise_is_written_back_as_it_reads() -> None:
+    tricky = (
+        TUNABLE.replace(b"  episodes:", b'  "on":')
+        .replace(b"inputs.episodes", b"inputs.on")
+        .replace(b"- id: run", b'- id: "1"')
+        .replace(b"steps.run.", b"steps.1.")
+    )
+    workflow = parse_workflow(tricky)
+
+    assert parse_workflow(combine_workflows([workflow])) == workflow

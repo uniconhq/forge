@@ -173,13 +173,13 @@ def write_workflow(
     lines: list[str] = []
     if inputs:
         lines.append("inputs:")
-        lines.extend(f"  {key}: {_declaration(value)}" for key, value in inputs.items())
+        lines.extend(f"  {_one_line(key)}: {_declaration(value)}" for key, value in inputs.items())
     lines.append("test:")
-    lines.extend(f"  {key}: {_declaration(value)}" for key, value in test.items())
+    lines.extend(f"  {_one_line(key)}: {_declaration(value)}" for key, value in test.items())
     lines.append("steps:")
     for step in steps:
-        lines.append(f"  - id: {step['id']}")
-        lines.append(f"    use: {step['use']}")
+        lines.append(f"  - id: {_one_line(step['id'])}")
+        lines.append(f"    use: {_one_line(str(step['use']))}")
         if step.get("per_test"):
             lines.append("    per_test: true")
         given = step.get("with") or {}
@@ -187,12 +187,12 @@ def write_workflow(
             lines.append("    with: {}")
             continue
         lines.append("    with:")
-        lines.extend(f"      {port}: {_scalar(value)}" for port, value in given.items())
+        lines.extend(f"      {_one_line(port)}: {_scalar(value)}" for port, value in given.items())
     if report:
         lines.append("report:")
         for name, entry in report.items():
             shown = _flow(dict(entry)) if isinstance(entry, Mapping) else _scalar(entry)
-            lines.append(f"  {name}: {shown}")
+            lines.append(f"  {_one_line(name)}: {shown}")
     return "\n".join(lines) + "\n"
 
 
