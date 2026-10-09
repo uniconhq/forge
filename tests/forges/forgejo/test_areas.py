@@ -1025,7 +1025,17 @@ async def test_who_reads_a_workflow_changes_as_the_platform_for_someone_who_may_
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     repo = "/api/v1/repos/acme/grading.workflow"
-    recorder.on("GET", repo, ok({"permissions": {"admin": False, "push": True, "pull": True}}))
+    recorder.on(
+        "GET",
+        repo,
+        ok(
+            {
+                "name": "grading.workflow",
+                "topics": ["unicon-workflow"],
+                "permissions": {"admin": False, "push": True, "pull": True},
+            }
+        ),
+    )
     recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 9, "login": "eve"}]}))
     manager = AsUser(7, _credential())
     workflow = WorkflowId("acme/grading")
@@ -1046,7 +1056,17 @@ async def test_someone_who_only_reads_a_workflow_changes_nobodys_access_to_it(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     repo = "/api/v1/repos/acme/grading.workflow"
-    recorder.on("GET", repo, ok({"permissions": {"admin": False, "push": False, "pull": True}}))
+    recorder.on(
+        "GET",
+        repo,
+        ok(
+            {
+                "name": "grading.workflow",
+                "topics": ["unicon-workflow"],
+                "permissions": {"admin": False, "push": False, "pull": True},
+            }
+        ),
+    )
     observer = AsUser(8, _credential())
     workflow = WorkflowId("acme/grading")
 

@@ -18,7 +18,7 @@ from typing import Any
 
 from forge.domain.content import ConflictToken, File, Files
 from forge.domain.errors import Conflict, Forbidden, NotFound
-from forge.domain.identity import PLATFORM, Identity, User
+from forge.domain.identity import PLATFORM, Identity, Platform, User
 from forge.domain.ids import VersionId, WorkflowId
 from forge.domain.workflows import Visibility, Workflow
 from forge.forges.forgejo.repos import DEFAULT_BRANCH, Repos
@@ -70,30 +70,26 @@ class ForgejoWorkflows:
         self, as_: Identity, workflow: WorkflowId, visibility: Visibility
     ) -> None:
         ref = parse_workflow(workflow)
-        await self._require_mark(as_, ref)
-        await self._repos.require_write(as_, ref.owner, ref.repo)
+        await self._require_writer(as_, ref)
         await self._repos.set_private(
             ref.owner, ref.repo, private=visibility is not Visibility.PUBLIC
         )
 
     async def share_workflow(self, as_: Identity, workflow: WorkflowId, user_id: int) -> None:
         ref = parse_workflow(workflow)
-        await self._require_mark(as_, ref)
-        await self._repos.require_write(as_, ref.owner, ref.repo)
+        await self._require_writer(as_, ref)
         username = await self._users.username_of(user_id)
         await self._repos.add_collaborator(ref.owner, ref.repo, username, permission=READ)
 
     async def unshare_workflow(self, as_: Identity, workflow: WorkflowId, user_id: int) -> None:
         ref = parse_workflow(workflow)
-        await self._require_mark(as_, ref)
-        await self._repos.require_write(as_, ref.owner, ref.repo)
+        await self._require_writer(as_, ref)
         username = await self._users.username_of(user_id)
         await self._repos.remove_collaborator(ref.owner, ref.repo, username)
 
     async def workflow_readers(self, as_: Identity, workflow: WorkflowId) -> tuple[User, ...]:
         ref = parse_workflow(workflow)
-        await self._require_mark(as_, ref)
-        await self._repos.require_write(as_, ref.owner, ref.repo)
+        await self._require_writer(as_, ref)
         readers = await self._repos.collaborators(ref.owner, ref.repo)
         return tuple(
             User(id=int(reader["id"]), username=str(reader["login"]))
@@ -194,6 +190,15 @@ class ForgejoWorkflows:
         if not _is_workflow(record):
             raise NotFound(f"{ref.owner}/{ref.repo} is not a workflow")
         return record
+
+    async def _require_writer(self, as_: Identity, ref: WorkflowRef) -> None:
+        """Refuse as `Forbidden` unless the forge says, to `as_`'s own
+        credential, that they may write the workflow, for a change the
+        platform then makes in their name; `NotFound` as `_require_mark`.
+        """
+        record = await self._require_mark(as_, ref)
+        if not isinstance(as_, Platform) and not (record.get("permissions") or {}).get("push"):
+            raise Forbidden(f"the caller may not change {ref.owner}/{ref.repo}")
 
     async def workflows_owned_by(self, user_id: int) -> tuple[Workflow, ...]:
         username = await self._users.username_of(user_id)
