@@ -107,3 +107,32 @@ def test_a_workflow_combined_with_itself_runs_twice() -> None:
     assert combined.test == classic.test
     assert combined.steps[5].with_["actual"] == "${{ steps.run-2.output }}"
     assert check_workflow(combined, DECLARATIONS) == []
+
+
+def test_a_renamed_input_never_lands_on_another_of_the_same_source() -> None:
+    first = parse_workflow(
+        b"""inputs: {t: number}
+test: {input: file}
+steps:
+  - {id: run, use: unicon/sandbox-run@v2, per_test: true, with: {time_limit: "${{ inputs.t }}"}}
+"""
+    )
+    second = parse_workflow(
+        b"""inputs: {t: text, t-2: text}
+test: {input: file}
+steps:
+  - id: run
+    use: unicon/sandbox-run@v2
+    per_test: true
+    with: {args: "${{ inputs.t }} ${{ inputs.t-2 }}"}
+report: {run: "${{ steps.run.time_ms }}", run_2: "${{ steps.run.memory_kb }}"}
+"""
+    )
+
+    combined = parse_workflow(
+        combine_workflows([first, parse_workflow(combine_workflows([second]))])
+    )
+
+    assert list(combined.inputs) == ["t", "t-3", "t-2"]
+    assert combined.steps[1].with_ == {"args": "${{ inputs.t-3 }} ${{ inputs.t-2 }}"}
+    assert list(combined.report) == ["run", "run_2"]

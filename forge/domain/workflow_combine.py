@@ -49,36 +49,50 @@ def combine_workflows(sources: Sequence[WorkflowDefinition]) -> str:
             "test": _merge(source.test, test, "-"),
             "steps": {},
         }
-        for step in source.steps:
-            new_id = _free(step.id, step_ids, "-")
-            step_ids.add(new_id)
-            renamed["steps"][step.id] = new_id
+        renamed["steps"] = _renames([step.id for step in source.steps], step_ids, "-")
+        step_ids.update(renamed["steps"].values())
         rename = _renamer(renamed)
         for step in source.steps:
             (per_test if step.per_test else once).append(
                 _step(renamed["steps"][step.id], step, rename)
             )
+        names = _renames(list(source.report), set(report), "_")
         for name, entry in source.report.items():
-            report[_free(name, set(report), "_")] = _entry(entry, rename)
+            report[names[name]] = _entry(entry, rename)
     return write_workflow(inputs, test, [*once, *per_test], report)
+
+
+def _renames(keys: list[str], earlier: set[str], separator: str) -> dict[str, str]:
+    """Each of a source's keys as the result holds it: itself when no
+    earlier source took it, otherwise the first free one, free of every key
+    taken so far and of the source's own others.
+    """
+    taken = earlier | set(keys)
+    renames: dict[str, str] = {}
+    for key in keys:
+        if key not in earlier:
+            renames[key] = key
+            continue
+        new_key = _free(key, taken, separator)
+        taken.add(new_key)
+        renames[key] = new_key
+    return renames
 
 
 def _merge[D: (WorkflowInput, TestField)](
     declared: Mapping[str, D], into: dict[str, D], separator: str
 ) -> dict[str, str]:
-    """Add a source's declarations to the result's: one declared alike under
-    a taken id is that one, and one declared otherwise takes a free id. The
-    renames, old id to new.
+    """Add a source's declarations to the result's: one an earlier source
+    declared alike under the same id is that one, and one an earlier source
+    took otherwise gets a free id. The renames, old id to new.
     """
-    renames: dict[str, str] = {}
-    for key, declaration in declared.items():
-        if into.get(key) == declaration:
-            renames[key] = key
-            continue
-        new_key = _free(key, set(into), separator)
-        into[new_key] = declaration
-        renames[key] = new_key
-    return renames
+    earlier = dict(into)
+    shared = {key for key, declaration in declared.items() if earlier.get(key) == declaration}
+    rest = [key for key in declared if key not in shared]
+    renames = _renames(rest, set(earlier), separator)
+    for key in rest:
+        into[renames[key]] = declared[key]
+    return {**{key: key for key in shared}, **renames}
 
 
 def _free(key: str, taken: set[str], separator: str) -> str:
