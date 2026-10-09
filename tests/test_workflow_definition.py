@@ -467,7 +467,10 @@ def test_a_required_port_left_out_is_refused_and_an_optional_one_is_not() -> Non
     del document["steps"][2]["with"]["expected"]
 
     assert checked(document) == [
-        {"path": "steps[2].with", "message": "unicon/diff-check@v2 needs the input expected."}
+        {
+            "path": "steps[2].with.expected",
+            "message": "unicon/diff-check@v2 needs the input expected.",
+        }
     ]
     assert "args" not in classic()["steps"][1]["with"]
 

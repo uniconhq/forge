@@ -613,7 +613,7 @@ def check_workflow(
             if not port.optional and name not in step.with_:
                 problems.append(
                     Problem(
-                        path=path_text((*where, "with")),
+                        path=path_text((*where, "with", name)),
                         message=f"{step.use} needs the input {name}.",
                     )
                 )

@@ -12,9 +12,9 @@ said the person may write it.
 
 from typing import Protocol
 
-from forge.domain.content import File, Files
-from forge.domain.identity import Identity
-from forge.domain.ids import WorkflowId
+from forge.domain.content import ConflictToken, File, Files
+from forge.domain.identity import Identity, User
+from forge.domain.ids import VersionId, WorkflowId
 from forge.domain.workflows import Visibility, Workflow
 
 
@@ -51,19 +51,55 @@ class WorkflowPort(Protocol):
         """
         ...
 
+    async def workflow_readers(self, as_: Identity, workflow: WorkflowId) -> tuple[User, ...]:
+        """The users the workflow is shared with, read as the platform once
+        the host says `as_` may write it; `Forbidden` otherwise.
+        """
+        ...
+
     async def create_workflow_version(
-        self, as_: Identity, workflow: WorkflowId, version: str
+        self, as_: Identity, workflow: WorkflowId, version: str, at: VersionId | None = None
     ) -> None:
-        """Name the current state as a version. `Conflict` when the name is
-        taken; `Forbidden` for a name reserved for protected versions.
+        """Name the state `at`, a commit of the workflow, or its head when
+        none is given, as a version, as `as_`. `Conflict` when the name is
+        taken; `Forbidden` for a name reserved for protected versions or for
+        an identity that may not write the workflow.
+        """
+        ...
+
+    async def read_workflow_draft(
+        self, as_: Identity, workflow: WorkflowId, path: str
+    ) -> tuple[VersionId, File]:
+        """One file as the workflow holds it now, at the head of its main
+        line, and the commit that head is. `NotFound` when there is no such
+        file; `Forbidden` when the identity may not read the workflow.
+        """
+        ...
+
+    async def write_workflow_file(
+        self,
+        as_: Identity,
+        workflow: WorkflowId,
+        path: str,
+        content: bytes,
+        *,
+        expected: ConflictToken | None,
+        message: str,
+    ) -> File:
+        """Write one file on the main line as `as_` and return it as written,
+        with its new token. `expected` is the token it was read with, or
+        none to create it; `Conflict` when it has changed since, or is there
+        when none was expected; `Forbidden` when the identity
+        may not write the workflow.
         """
         ...
 
     async def read_workflow_file(
         self, as_: Identity, workflow: WorkflowId, version: str, path: str
     ) -> File:
-        """One file at a version. `NotFound` when there is no such version or
-        file; `Forbidden` when the identity may not read the workflow.
+        """One file at a version, one of the names `create_workflow_version`
+        gave, never the moving head or a commit. `NotFound` when there is no such version
+        or file; `Forbidden` when the identity may not read the workflow.
         """
         ...
 
@@ -84,6 +120,20 @@ class WorkflowPort(Protocol):
 
     async def workflows_owned_by(self, user_id: int) -> tuple[Workflow, ...]:
         """Every workflow the user owns, with its visibility."""
+        ...
+
+    async def describe_workflow(self, as_: Identity, workflow: WorkflowId) -> Workflow:
+        """The workflow with its visibility, stars and versions, for an
+        identity that may read it. `NotFound` when there is none it may read,
+        whether there is none or it is not shared with them.
+        """
+        ...
+
+    async def workflows_readable_by(self, as_: Identity) -> tuple[Workflow, ...]:
+        """Every workflow the identity reaches: its own, its orgs', those
+        shared with it, and the platform's public built-ins. Other people's
+        public workflows are the marketplace's to find.
+        """
         ...
 
     async def workflow_key(self, workflow: WorkflowId) -> str:

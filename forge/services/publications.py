@@ -123,14 +123,13 @@ from forge.domain.plans import (
     spelled,
     test_yaml_paths,
 )
-from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
+from forge.domain.primitives import PrimitiveDeclaration
 from forge.domain.publications import Publication, write_note
 from forge.domain.release import has_started, reveal_of
 from forge.domain.roles import (
     Role,
     contest_id_of,
     holds,
-    primitive_id_of,
     task_scope,
 )
 from forge.domain.scoring import ZERO, exact, written
@@ -153,7 +152,16 @@ from forge.log import get_logger
 from forge.port.uploads import TaskPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, gradings, names, places, timelines, uploads
+from forge.services import (
+    boards,
+    gradings,
+    names,
+    places,
+    primitives,
+    timelines,
+    uploads,
+    workflows,
+)
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -681,46 +689,12 @@ async def _primitives(
             continue
         tried.add(use)
         where = f"In {definition.workflow}, steps[{index}].use: "
-        declaration, problem = await _primitive(ctx, as_, step.use)
+        declaration, problem = await primitives.declaration(ctx, as_, step.use)
         if problem is not None:
             problems.append(Problem(path="workflow", message=where + problem))
         elif declaration is not None:
             found[use] = declaration
     return found, tuple(problems)
-
-
-async def _primitive(
-    ctx: Context, as_: Identity, use: WorkflowRef
-) -> tuple[PrimitiveDeclaration | None, str | None]:
-    """The declaration a `use:` names, or what is wrong with it. A `use:` that
-    names a workflow the organiser can read is refused as not supported yet,
-    and one they cannot read is refused naming it, the same whether it is not
-    there or not shared with them.
-    """
-    primitive = primitive_id_of(use)
-    if primitive is not None:
-        try:
-            text = await ctx.forge.primitives.read_declaration(as_, primitive, use.version)
-        except NotFound, Forbidden:
-            pass
-        else:
-            try:
-                return parse_primitive(text), None
-            except InvalidDefinition as invalid:
-                return None, (
-                    f"The primitive {use} is not in the current format; use a later version of "
-                    f"it: {invalid.detail}"
-                )
-    try:
-        await ctx.forge.workflows.read_workflow_file(
-            as_, await names.workflow_id(ctx, use), use.version, WORKFLOW_FILE
-        )
-    except NotFound, Forbidden:
-        return None, (
-            f"{use} cannot be read: there is no such primitive or workflow at that version, "
-            "or it is not shared with you."
-        )
-    return None, f"{use} is not a primitive: a step uses a primitive, never a workflow."
 
 
 async def _published_snapshot(
@@ -927,9 +901,11 @@ class WorkflowForm:
     names, as written, the inputs it declares and its test fields, in the
     order the workflow gives them, or `problem`, the reason there are none:
     no `task.yaml` or one that does not read as YAML, no workflow named, or
-    one that cannot be read or is in an old format; and `graded`, whether
+    one that cannot be read or is in an old format; `graded`, whether
     the task has a graded submission, from when on a save refuses a test
-    group it adds without its `show` (T10).
+    group it adds without its `show` (T10); and `newer`, the workflow's
+    latest version when it comes after the one the task names, which the
+    task keeps until someone saves it naming another (Task 10.6.5).
     """
 
     workflow: str | None
@@ -937,6 +913,7 @@ class WorkflowForm:
     test: tuple[DeclaredField, ...] = ()
     problem: str | None = None
     graded: bool = False
+    newer: str | None = None
 
 
 @action
@@ -970,11 +947,15 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
         ref = parse_workflow_ref(named.strip())
     except InvalidName as invalid:
         return WorkflowForm(named, problem=invalid.detail)
+    newer = await workflows.newer_version(ctx, organiser.identity, ref)
     workflow, _, problems = await _workflow(ctx, organiser.identity, ref)
     if workflow is None:
-        return WorkflowForm(str(ref), problem=problems[0]["message"] if problems else None)
+        return WorkflowForm(
+            str(ref), problem=problems[0]["message"] if problems else None, newer=newer
+        )
     return WorkflowForm(
         str(ref),
+        newer=newer,
         inputs=tuple(
             DeclaredInput(
                 id=name,
