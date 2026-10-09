@@ -16,6 +16,7 @@ import pytest
 
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, AsUser, Credential
+from forge.forges.forgejo.ci_state import WoodpeckerState, written
 from forge.forges.forgejo.http import (
     CONCURRENT_CALLS,
     ForgejoAuth,
@@ -24,7 +25,11 @@ from forge.forges.forgejo.http import (
     new_client,
 )
 
-ACME = AsOrgAccount("acme", forge_token="forge-token-acme", ci_token="ci-token-acme")
+ACME = AsOrgAccount(
+    "acme",
+    forge_token="forge-token-acme",
+    ci_state=written(WoodpeckerState(4, "ci-token-acme", None)),
+)
 
 
 def _client(answers: list[httpx.Response | Exception], seen: list[httpx.Request]) -> Http:

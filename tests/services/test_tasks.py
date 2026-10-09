@@ -29,6 +29,7 @@ from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.names import Named
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.yaml_models import InvalidDefinition
+from forge.forges.fake.grading import token_in
 from forge.runtime.setup import Setup
 from forge.services import making, names, org_accounts, publications, tasks
 from forge.services.access import Organiser
@@ -360,12 +361,12 @@ async def test_a_task_whose_activation_the_ci_refuses_signs_the_org_account_in_a
 ) -> None:
     async with setup.unit_of_work() as ctx:
         lost = await org_accounts.identity(ctx, OrgId("acme"))
-    acme.fake.state.revoked_ci_tokens.add(lost.ci_token)
+    acme.fake.state.revoked_ci_tokens.add(token_in(lost.ci_state))
 
     await tasks.create(setup, acme.ada, spring, "sum")
 
     assert len(acme.fake.calls_to("activate")) == 2
-    assert len(acme.fake.calls_to("mint_ci_token")) == 1
+    assert len(acme.fake.calls_to("refresh")) == 1
 
 
 STANDING = CONTEST_HEAD + (

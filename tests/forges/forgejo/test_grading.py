@@ -21,12 +21,15 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from forge.domain.errors import CiRequestRefused, Forbidden, Rejected, Unavailable
 from forge.domain.grading import GradingRun, InboundRequest, RunLookup, RunSpec, RunState
-from forge.domain.identity import AsOrgAccount
-from forge.domain.ids import PublicationId, RunId, SubmissionId, TaskId, VersionId
+from forge.domain.identity import AsOrgAccount, CiState
+from forge.domain.ids import OrgId, PublicationId, RunId, SubmissionId, TaskId, VersionId
 from forge.forges.forgejo import ForgejoForge, grading
+from forge.forges.forgejo.ci_state import WoodpeckerState, read_state, written
 from tests.forges.forgejo.conftest import Recorder, ok
 
-ACME = AsOrgAccount("acme", forge_token="forge-acme", ci_token="ci-acme")
+ACME = AsOrgAccount(
+    "acme", forge_token="forge-acme", ci_state=written(WoodpeckerState(4, "ci-acme", None))
+)
 GRADING = uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31")
 NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 TASK_COMMIT = "9c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d"
@@ -164,8 +167,8 @@ async def test_the_ci_user_is_deleted_as_the_administrator(
     recorder.on("DELETE", "/api/users/unicon-ci-acme", httpx.Response(204), ok({}, 404))
     recorder.on("GET", "/api/users/unicon-ci-acme", ok({}, 404))
 
-    await forgejo.grading.delete_ci_user("unicon-ci-acme")
-    await forgejo.grading.delete_ci_user("unicon-ci-acme")
+    await forgejo.grading.tear_down_org(OrgId("acme"), CiState(""))
+    await forgejo.grading.tear_down_org(OrgId("acme"), ACME.ci_state)
 
     assert recorder.headers("DELETE", "/api/users/unicon-ci-acme") == ["Bearer ci-admin"] * 2
 
@@ -177,7 +180,41 @@ async def test_a_ci_user_the_ci_keeps_after_a_404_is_refused(
     recorder.on("GET", "/api/users/unicon-ci-acme", ok({"id": 4}))
 
     with pytest.raises(Rejected):
-        await forgejo.grading.delete_ci_user("unicon-ci-acme")
+        await forgejo.grading.tear_down_org(OrgId("acme"), CiState(""))
+
+
+def test_a_sign_in_older_than_two_thirds_of_the_login_lifetime_needs_refreshing(
+    forgejo: ForgejoForge,
+) -> None:
+    lifetime = forgejo.grading._login_lifetime
+    fresh = written(WoodpeckerState(4, "t", NOW - lifetime * 2 / 3))
+    stale = written(WoodpeckerState(4, "t", NOW - lifetime * 2 / 3 - timedelta(seconds=1)))
+
+    assert forgejo.grading.needs_refresh(fresh, NOW) is False
+    assert forgejo.grading.needs_refresh(stale, NOW) is True
+    assert forgejo.grading.needs_refresh(written(WoodpeckerState(4, "t", None)), NOW) is True
+
+
+async def test_a_refresh_signs_the_account_in_with_a_fresh_password_and_keeps_its_user(
+    forgejo: ForgejoForge, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder.on("GET", "/api/v1/users/unicon-ci-acme", ok({"id": 9, "login": "unicon-ci-acme"}))
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{"id": 9, "login": "unicon-ci-acme"}]}))
+    recorder.on("PATCH", "/api/v1/admin/users/unicon-ci-acme", ok({}))
+    signed_in: list[tuple[str, str]] = []
+
+    async def mint_token(username: str, forge_password: str) -> str:
+        signed_in.append((username, forge_password))
+        return "fresh"
+
+    monkeypatch.setattr(forgejo.grading._login, "mint_token", mint_token)
+
+    refreshed = read_state(await forgejo.grading.refresh(OrgId("acme"), ACME.ci_state))
+
+    [patched] = recorder.sent("PATCH", "/api/v1/admin/users/unicon-ci-acme")
+    assert signed_in == [("unicon-ci-acme", patched["password"])]
+    assert (refreshed.user_id, refreshed.token) == (4, "fresh")
+    assert refreshed.signed_in_at is not None
 
 
 async def test_a_run_is_started_on_main_as_the_org_account_with_its_variables(
@@ -213,7 +250,7 @@ async def test_a_start_answered_without_a_run_is_rejected(
 
 
 async def test_a_start_for_another_org_is_forbidden(forgejo: ForgejoForge) -> None:
-    other = AsOrgAccount("other", forge_token="f", ci_token="c")
+    other = AsOrgAccount("other", forge_token="f", ci_state=written(WoodpeckerState(4, "c", None)))
 
     with pytest.raises(Forbidden):
         await forgejo.grading.start_run(other, RUN, SPEC)

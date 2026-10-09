@@ -29,6 +29,7 @@ import httpx
 
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import AsOrgAccount, AsUser, CiAdmin, Identity, Platform
+from forge.forges.forgejo.ci_state import read_state
 from forge.log import get_logger
 
 log = get_logger(__name__)
@@ -104,8 +105,8 @@ class WoodpeckerAuth:
         match as_:
             case CiAdmin():
                 return f"Bearer {self._admin_token}"
-            case AsOrgAccount(ci_token=token):
-                return f"Bearer {token}"
+            case AsOrgAccount(ci_state=state):
+                return f"Bearer {read_state(state).token}"
         raise Forbidden("only the CI administrator and org accounts reach the CI")
 
 

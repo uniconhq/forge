@@ -5,6 +5,7 @@ the object store beside them over S3. May import `forge.port` and
 """
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 import httpx
 
@@ -38,7 +39,9 @@ class ForgejoConfig:
     Forgejo implementation reaches over S3; without it every call to the
     store is `Misconfigured`. `mail` is the server the forge sends its own
     mail through, which the platform's mail goes through too; without it
-    nothing is sent.
+    nothing is sent. `ci_login_lifetime` is how long the org account's
+    login at the forge lasts, which is how long its sign-in at the CI does:
+    the session's hard lifetime.
     """
 
     public_url: str
@@ -54,6 +57,7 @@ class ForgejoConfig:
     ci_admin_token: str
     storage: StorageConfig | None = None
     mail: MailConfig | None = None
+    ci_login_lifetime: timedelta = timedelta(days=30)
 
 
 class ForgejoForge:
@@ -95,7 +99,9 @@ class ForgejoForge:
             http,
             ci,
             repos,
+            users,
             ci_public_url=config.ci_public_url,
+            login_lifetime=config.ci_login_lifetime,
             login=CiLogin(
                 forge_public_url=config.public_url,
                 forge_url=config.internal_url,

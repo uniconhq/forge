@@ -5,6 +5,18 @@ the CI's administrator, the configuration extension's signed question and
 the answer to it, and the org account's own user and token at the CI, made
 and deleted by the administrator and signed in by the sign-in dance.
 
+What the org account holds at Woodpecker is its user id, the token its
+sign-in minted and when that was (`ci_state.py`). Woodpecker keeps the
+account's login at the forge fresh only while the account calls it, and
+that login lasts as long as the forge's refresh token, which deploy sets to
+the session's hard lifetime, `UNICON_SESSION_HARD_TTL`, 30 days unless the
+operator says otherwise; an org that grades nothing for longer would lose
+it. So a sign-in older than `SIGN_IN_SHARE` of that lifetime, 20 days by
+default, needs refreshing: an org that grades every day signs in again
+every 20 days, and one that was quiet for months on its first use. A
+refresh gives the account a fresh password at the forge, signs it in with
+that, and throws the password away.
+
 A run is a manual pipeline on the task's repository, started on `main`,
 since the CI starts a run only on a branch, with the run's variables:
 
@@ -49,10 +61,11 @@ do not verify never make the platform call the CI more often than that.
 
 import json
 import re
+import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -70,12 +83,22 @@ from forge.domain.grading import (
     RunSpec,
     RunState,
 )
-from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, Identity
-from forge.domain.ids import RunId, TaskId
+from forge.domain.identity import (
+    CI_ADMIN,
+    PLATFORM,
+    AsOrgAccount,
+    CiState,
+    Identity,
+    OrgAccountRef,
+)
+from forge.domain.ids import OrgId, RunId, TaskId
+from forge.domain.names import service_account_name
 from forge.forges.forgejo import signatures
 from forge.forges.forgejo.ci_login import CiLogin
+from forge.forges.forgejo.ci_state import WoodpeckerState, read_state, written
 from forge.forges.forgejo.http import Http, json_of, segment
 from forge.forges.forgejo.repos import DEFAULT_BRANCH, Repos
+from forge.forges.forgejo.users import Users
 from forge.forges.ids import (
     PUBLISHED_PREFIX,
     SUBMISSION_PREFIX,
@@ -118,6 +141,8 @@ FINISHED_STATUSES = frozenset(
     {"success", "failure", "killed", "canceled", "error", "blocked", "declined", "skipped"}
 )
 UNFINISHED_STATES = frozenset({"pending", "running"})
+SIGN_IN_SHARE = 2 / 3
+PASSWORD_BYTES = 24
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,17 +176,66 @@ def run_variables(run: GradingRun) -> dict[str, str]:
 
 class WoodpeckerGrading:
     def __init__(
-        self, forge_http: Http, ci: Http, repos: Repos, *, ci_public_url: str, login: CiLogin
+        self,
+        forge_http: Http,
+        ci: Http,
+        repos: Repos,
+        users: Users,
+        *,
+        ci_public_url: str,
+        login: CiLogin,
+        login_lifetime: timedelta,
     ) -> None:
+        """`login_lifetime` is how long the account's login at the forge
+        lasts, the session's hard lifetime.
+        """
         self._forge = forge_http
         self._ci = ci
         self._repos = repos
+        self._users = users
         self._ci_public_url = ci_public_url.rstrip("/")
         self._login = login
+        self._login_lifetime = login_lifetime
         self._key: Ed25519PublicKey | None = None
         self._key_read_at = -KEY_REFETCH_SECONDS
         self._queue: dict[tuple[int, int], RunState] = {}
         self._queue_read_at = -QUEUE_KEPT_SECONDS
+
+    async def set_up_org(self, org: OrgId, account: OrgAccountRef) -> CiState:
+        """The account's user at the CI, made by the administrator, then
+        signed in with its password at the forge.
+        """
+        user_id = await self._ci_user(account.username)
+        token = await self._login.mint_token(account.username, account.password)
+        return written(WoodpeckerState(user_id, token, datetime.now(UTC)))
+
+    async def tear_down_org(self, org: OrgId, state: CiState) -> None:
+        """Woodpecker deletes a user's own org along with it, and when that
+        org is gone already it answers 404 and keeps the user (measured on
+        3.18.1), so a 404 is believed only once the user reads as gone too.
+        """
+        username = service_account_name(org)
+        path = f"/api/users/{segment(username)}"
+        try:
+            await self._ci.call(CI_ADMIN, "DELETE", path)
+        except NotFound:
+            try:
+                await self._ci.call(CI_ADMIN, "GET", path)
+            except NotFound:
+                return
+            raise Rejected(f"the CI answered 404 to deleting {username} and kept it") from None
+
+    def needs_refresh(self, state: CiState, now: datetime) -> bool:
+        signed_in_at = read_state(state).signed_in_at
+        return signed_in_at is None or now - signed_in_at > self._login_lifetime * SIGN_IN_SHARE
+
+    async def refresh(self, org: OrgId, state: CiState) -> CiState:
+        username = service_account_name(org)
+        account = await self._users.find_by_username(username)
+        password = secrets.token_urlsafe(PASSWORD_BYTES)
+        await self._users.set_password(account.id, password)
+        token = await self._login.mint_token(username, password)
+        return written(WoodpeckerState(read_state(state).user_id, token, datetime.now(UTC)))
 
     async def activate(self, as_: AsOrgAccount, task: TaskId) -> None:
         ref = parse_task(task)
@@ -384,7 +458,7 @@ class WoodpeckerGrading:
             checkouts={"task": TASK_CHECKOUT, "submission": SUBMISSION_CHECKOUT},
         )
 
-    async def create_ci_user(self, username: str) -> int:
+    async def _ci_user(self, username: str) -> int:
         """Looked up before it is made: Woodpecker answers a duplicate with a
         server error, which the client would take for a CI that is down.
         """
@@ -395,24 +469,6 @@ class WoodpeckerGrading:
                 await self._ci.call(CI_ADMIN, "POST", "/api/users", json={"login": username})
             )
         return int(found["id"])
-
-    async def delete_ci_user(self, username: str) -> None:
-        """Woodpecker deletes a user's own org along with it, and when that
-        org is gone already it answers 404 and keeps the user (measured on
-        3.18.1), so a 404 is believed only once the user reads as gone too.
-        """
-        path = f"/api/users/{segment(username)}"
-        try:
-            await self._ci.call(CI_ADMIN, "DELETE", path)
-        except NotFound:
-            try:
-                await self._ci.call(CI_ADMIN, "GET", path)
-            except NotFound:
-                return
-            raise Rejected(f"the CI answered 404 to deleting {username} and kept it") from None
-
-    async def mint_ci_token(self, username: str, forge_password: str) -> str:
-        return await self._login.mint_token(username, forge_password)
 
     async def _verify(self, request: InboundRequest, now: datetime) -> None:
         """Check the request against the CI's key, reading the key again once

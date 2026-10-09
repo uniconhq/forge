@@ -30,6 +30,7 @@ from forge.domain.names import Named, OrgProfile
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
+from forge.forges.fake.grading import token_in
 from forge.log import JsonFormatter
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
@@ -48,11 +49,10 @@ STEPS = [
     ("identity", "create_user"),
     ("orgs", "ensure_account_membership"),
     ("identity", "mint_token"),
-    ("grading", "create_ci_user"),
-    ("grading", "mint_ci_token"),
+    ("grading", "set_up_org"),
 ]
 OPERATIONS = [operation for _, operation in STEPS]
-REMOVALS = ["delete_ci_user", "remove_account_membership", "delete_user", "delete_org"]
+REMOVALS = ["tear_down_org", "remove_account_membership", "delete_user", "delete_org"]
 
 
 @pytest.fixture
@@ -92,7 +92,7 @@ async def test_create_makes_the_org_before_it_answers(
         identity = await org_accounts.identity(ctx, ACME)
     assert identity.org == "acme"
     assert fake.state.tokens[identity.forge_token] == account.id
-    assert fake.state.ci_tokens[identity.ci_token] == "unicon-ci-acme"
+    assert fake.state.ci_tokens[token_in(identity.ci_state)] == "unicon-ci-acme"
 
 
 async def test_a_second_create_of_the_same_name_is_a_conflict(setup: Setup, ada: Session) -> None:
@@ -220,16 +220,19 @@ async def test_a_failure_at_any_step_removes_what_the_earlier_ones_made_and_the_
 async def test_the_org_is_undone_in_the_reverse_of_the_order_it_was_made(
     setup: Setup, fake: FakeForge, ada: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def broken(*args: Any, **kwargs: Any) -> Any:
+    def broken(*args: Any, **kwargs: Any) -> Any:
         raise Unavailable("the CI went away")
 
-    monkeypatch.setattr(fake.grading, "mint_ci_token", broken)
+    # The sign-in fails after the account's user at the CI was made, so the
+    # set-up stops partway and is torn down whole.
+    monkeypatch.setattr(fake.grading, "_sign_in", broken)
     with pytest.raises(Unavailable):
         await orgs.create(setup, ada, ACME, description="Acme")
 
     assert fake.calls_to("create_user")
     assert [call.operation for call in fake.calls if call.operation in REMOVALS] == REMOVALS
-    assert fake.calls_to("delete_ci_user")[0].arguments == {"username": "unicon-ci-acme"}
+    assert fake.calls_to("tear_down_org")[0].arguments == {"org": "acme"}
+    assert fake.state.ci_users == {}
     (deleted,) = fake.calls_to("delete_user")
     assert deleted.arguments["user_id"] not in fake.state.users
     assert fake.calls_to("delete_org")[0].arguments == {"name": "acme"}
@@ -261,13 +264,13 @@ async def test_a_removal_that_fails_is_logged_and_the_steps_own_error_is_raised(
 ) -> None:
     caplog.set_level(logging.INFO)
 
-    async def refused(*args: Any, **kwargs: Any) -> Any:
+    def refused(*args: Any, **kwargs: Any) -> Any:
         raise Rejected("the CI said no")
 
     async def down(*args: Any, **kwargs: Any) -> Any:
         raise Unavailable("the forge went away")
 
-    monkeypatch.setattr(fake.grading, "mint_ci_token", refused)
+    monkeypatch.setattr(fake.grading, "_sign_in", refused)
     monkeypatch.setattr(fake.orgs, "delete_org", down)
     with pytest.raises(Rejected) as failed:
         await orgs.create(setup, ada, ACME, description="Acme")
@@ -301,7 +304,7 @@ async def test_a_commit_that_fails_after_every_step_removes_what_they_made(
         await orgs.create(setup, ada, ACME, description="Acme")
     monkeypatch.undo()
 
-    assert fake.calls_to("mint_ci_token")
+    assert fake.calls_to("set_up_org")
     assert forge_state(fake) == before
     await _nothing_recorded(setup, "acme")
 
@@ -328,10 +331,11 @@ async def test_the_service_accounts_password_is_never_written_or_logged(
         blob = value if isinstance(value, bytes) else str(value).encode()
         assert password.encode() not in blob
         assert identity.forge_token.encode() not in blob
-        assert identity.ci_token.encode() not in blob
+        assert identity.ci_state.encode() not in blob
+        assert token_in(identity.ci_state).encode() not in blob
     assert row["username"] == "unicon-ci-acme"
     assert row["forge_user_id"] == account.id
-    assert row["ci_user_id"] == 1
+    assert fake.state.ci_users == {"unicon-ci-acme": 1}
 
 
 async def _organiser(

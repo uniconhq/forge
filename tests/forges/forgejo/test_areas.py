@@ -11,16 +11,19 @@ import pytest
 
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, Misconfigured, NotFound, Rejected
-from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
+from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential, OrgAccountRef
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId, WorkflowId, WorkspaceId
 from forge.domain.names import OrgProfile, UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
 from forge.forges.forgejo import ForgejoForge
+from forge.forges.forgejo.ci_state import WoodpeckerState, read_state, written
 from tests.forges.forgejo.conftest import Recorder, ok
 
-ACME = AsOrgAccount("acme", forge_token="forge-acme", ci_token="ci-acme")
+ACME = AsOrgAccount(
+    "acme", forge_token="forge-acme", ci_state=written(WoodpeckerState(4, "ci-acme", None))
+)
 
 USER = {"id": 7, "login": "ada", "full_name": "Ada", "email": None, "avatar_url": None}
 
@@ -1393,15 +1396,28 @@ async def test_an_account_is_created_given_a_password_and_a_token(
     assert recorder.headers("POST", "/api/v1/users/unicon-ci-acme/tokens") == [f"Basic {basic}"]
 
 
-async def test_the_ci_user_is_found_or_made(forgejo: ForgejoForge, recorder: Recorder) -> None:
+async def test_an_org_is_set_up_with_its_user_found_or_made_then_signed_in(
+    forgejo: ForgejoForge, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
     recorder.on("GET", "/api/users/unicon-ci-acme", ok({}, 404), ok({"id": 4}))
     recorder.on("POST", "/api/users", ok({"id": 4}))
+    signed_in: list[tuple[str, str]] = []
 
-    assert await forgejo.grading.create_ci_user("unicon-ci-acme") == 4
-    assert await forgejo.grading.create_ci_user("unicon-ci-acme") == 4
+    async def mint_token(username: str, forge_password: str) -> str:
+        signed_in.append((username, forge_password))
+        return f"token-{len(signed_in)}"
+
+    monkeypatch.setattr(forgejo.grading._login, "mint_token", mint_token)
+    account = OrgAccountRef("unicon-ci-acme", 9, "pw-1")
+
+    first = await forgejo.grading.set_up_org(OrgId("acme"), account)
+    again = await forgejo.grading.set_up_org(OrgId("acme"), account)
 
     assert recorder.sent("POST", "/api/users") == [{"login": "unicon-ci-acme"}]
     assert recorder.headers("POST", "/api/users") == ["Bearer ci-admin"]
+    assert signed_in == [("unicon-ci-acme", "pw-1")] * 2
+    assert (read_state(first).user_id, read_state(first).token) == (4, "token-1")
+    assert (read_state(again).user_id, read_state(again).token) == (4, "token-2")
 
 
 async def test_a_name_goes_into_a_path_quoted_whole_and_a_dot_segment_reaches_nothing(

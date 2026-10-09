@@ -14,6 +14,10 @@ extension refuses to say what the run is, and
 `lose_start_answer` starts the next run and then fails as if its answer
 were lost. A CI credential in `revoked_ci_tokens` is refused, as the CI
 refuses one it no longer holds.
+
+What an org account holds at the fake CI is written the way Woodpecker's
+is, its user id, its token and when it signed in, so a row the migration
+moved reads here too; `token_in` reads the token out of one for a test.
 """
 
 import hashlib
@@ -35,8 +39,9 @@ from forge.domain.grading import (
     RunSpec,
     RunState,
 )
-from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount
+from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, CiState, OrgAccountRef
 from forge.domain.ids import AgentId, OrgId, RunId, TaskId
+from forge.domain.names import service_account_name
 from forge.forges.fake.state import StartedRun, State
 from forge.forges.ids import (
     PUBLISHED_PREFIX,
@@ -54,6 +59,7 @@ FRESHNESS = timedelta(minutes=5)
 CLONE_URL = "http://forge.test"
 TASK_CHECKOUT = "/woodpecker/task"
 SUBMISSION_CHECKOUT = "/woodpecker/submission"
+SIGN_IN_SHARE = 2 / 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,9 +82,68 @@ def run_variables(run: GradingRun) -> dict[str, str]:
     }
 
 
+def token_in(state: CiState) -> str:
+    """The CI token an org account's state holds."""
+    return str(json.loads(state)["token"])
+
+
+def _signed_in_at(state: CiState) -> datetime | None:
+    found = json.loads(state)["signed_in_at"]
+    return datetime.fromisoformat(found) if found else None
+
+
+def _state(user_id: int | None, token: str, signed_in_at: datetime) -> CiState:
+    return CiState(
+        json.dumps({"user_id": user_id, "token": token, "signed_in_at": signed_in_at.isoformat()})
+    )
+
+
 class FakeGrading:
-    def __init__(self, state: State) -> None:
+    def __init__(self, state: State, *, login_lifetime: timedelta = timedelta(days=30)) -> None:
         self._state = state
+        self.login_lifetime = login_lifetime
+
+    async def set_up_org(self, org: OrgId, account: OrgAccountRef) -> CiState:
+        """The account's user at the fake CI, then the sign-in dance in
+        memory: the password must be the account's at the forge.
+        """
+        self._state.record("set_up_org", CI_ADMIN, org=org, username=account.username)
+        self._state.check_up()
+        user_id = self._state.ci_users.setdefault(account.username, len(self._state.ci_users) + 1)
+        token = self._sign_in(account.username, account.password)
+        return _state(user_id, token, self._state.clock.now())
+
+    async def tear_down_org(self, org: OrgId, state: CiState) -> None:
+        self._state.record("tear_down_org", CI_ADMIN, org=org)
+        self._state.check_up()
+        username = service_account_name(org)
+        self._state.ci_users.pop(username, None)
+        for token in [token for token, owner in self._state.ci_tokens.items() if owner == username]:
+            del self._state.ci_tokens[token]
+
+    def needs_refresh(self, state: CiState, now: datetime) -> bool:
+        signed_in_at = _signed_in_at(state)
+        return signed_in_at is None or now - signed_in_at > self.login_lifetime * SIGN_IN_SHARE
+
+    async def refresh(self, org: OrgId, state: CiState) -> CiState:
+        """A fresh password at the forge, and the sign-in made with it."""
+        self._state.record("refresh", PLATFORM, org=org)
+        self._state.check_up()
+        username = service_account_name(org)
+        password = secrets.token_urlsafe(16)
+        self._state.passwords[self._state.user_named(username).id] = password
+        token = self._sign_in(username, password)
+        return _state(json.loads(state)["user_id"], token, self._state.clock.now())
+
+    def _sign_in(self, username: str, forge_password: str) -> str:
+        user = self._state.user_named(username)
+        if self._state.passwords.get(user.id) != forge_password:
+            raise Forbidden(f"the forge did not accept the sign-in as {username}")
+        if username not in self._state.ci_users:
+            raise Forbidden(f"the CI admits no user named {username}")
+        token = secrets.token_urlsafe(16)
+        self._state.ci_tokens[token] = username
+        return token
 
     async def activate(self, as_: AsOrgAccount, task: TaskId) -> None:
         self._state.record("activate", as_, task=task)
@@ -232,35 +297,6 @@ class FakeGrading:
             body=sent if body is None else body,
         )
 
-    async def create_ci_user(self, username: str) -> int:
-        self._state.record("create_ci_user", CI_ADMIN, username=username)
-        self._state.check_up()
-        if username not in self._state.ci_users:
-            self._state.ci_users[username] = len(self._state.ci_users) + 1
-        return self._state.ci_users[username]
-
-    async def delete_ci_user(self, username: str) -> None:
-        self._state.record("delete_ci_user", CI_ADMIN, username=username)
-        self._state.check_up()
-        self._state.ci_users.pop(username, None)
-        for token in [token for token, owner in self._state.ci_tokens.items() if owner == username]:
-            del self._state.ci_tokens[token]
-
-    async def mint_ci_token(self, username: str, forge_password: str) -> str:
-        """The sign-in dance in memory: the password must be the account's
-        at the forge and the CI must have been told about the account.
-        """
-        self._state.record("mint_ci_token", PLATFORM, username=username)
-        self._state.check_up()
-        user = self._state.user_named(username)
-        if self._state.passwords.get(user.id) != forge_password:
-            raise Forbidden(f"the forge did not accept the sign-in as {username}")
-        if username not in self._state.ci_users:
-            raise Forbidden(f"the CI admits no user named {username}")
-        token = secrets.token_urlsafe(16)
-        self._state.ci_tokens[token] = username
-        return token
-
     def _task_repo(self, task: TaskId) -> None:
         self._state.repo(*location(task))
 
@@ -273,7 +309,7 @@ def _acting_for(state: State, as_: AsOrgAccount, task: TaskId) -> None:
     org = parse_task(task).org
     if as_.org != org:
         raise Forbidden(f"the org account of {as_.org} does not act for {org}")
-    if as_.ci_token in state.revoked_ci_tokens:
+    if as_.ci_state and token_in(as_.ci_state) in state.revoked_ci_tokens:
         raise Forbidden("the CI no longer holds that credential")
 
 

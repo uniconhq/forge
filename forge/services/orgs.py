@@ -2,12 +2,12 @@
 afterwards, and reading them back. `create` makes everything an org needs before it answers: its
 account row, the org itself, its roles, the labels its threads are marked
 with, its signed event push, its first admin, its service account at the
-forge, that account's place in the org and its forge credential, its user at
-the CI, and its sign-in at the CI. A step that fails fails the whole
-request, which writes nothing here, and what the try already made at the
-forge and the CI is removed again, the latest first, before the person is
-told: the account's user at the CI, its place in the org, the account, and
-the org with everything in it. That is best effort; what a removal could
+forge, that account's place in the org and its forge credential, and its
+set-up at the CI. A step that fails fails the whole request, which writes
+nothing here, and what the try already made at the forge and the CI is
+removed again, the latest first, before the person is told: what the CI
+was given, the account's place in the org, the account, and the org with
+everything in it. That is best effort; what a removal could
 not remove is logged (`forge.services.making`). The person asks again.
 
 The org's name is a label: `create` reserves it and the org is made at the
@@ -21,8 +21,9 @@ is on; with it off the operator creates an org from the command line with
 """
 
 from forge.domain.errors import Conflict, Forbidden, NotFound, PortError
+from forge.domain.identity import CiState
 from forge.domain.ids import OrgId
-from forge.domain.names import Named, OrgProfile, service_account_name, validate_org_name
+from forge.domain.names import Named, OrgProfile, validate_org_name
 from forge.domain.roles import Role, Scope, holds
 from forge.domain.sessions import Session
 from forge.log import get_logger
@@ -91,7 +92,7 @@ async def _steps(
     event push and the admin's role, along. The account is noted once it is
     made, by the id the forge gave it: a username someone else holds is
     refused, and their account is never noted. Its place in the org and its
-    user at the CI belong to it and are noted before the steps that make
+    set-up at the CI belong to it and are noted before the steps that make
     them, so a step that fails halfway is undone too; the forge deletes an
     account only once it has left its place, which is why that is noted
     after the account and so removed before it.
@@ -116,10 +117,8 @@ async def _steps(
     )
     await org_accounts.join_org(ctx, org)
     await org_accounts.mint_forge_token(ctx, org, password)
-    username = service_account_name(org)
-    made.add("ci_user", username, lambda: ctx.forge.grading.delete_ci_user(username))
-    await org_accounts.create_ci_user(ctx, org)
-    await org_accounts.sign_in_at_ci(ctx, org, password)
+    made.add("ci", org, lambda: ctx.forge.grading.tear_down_org(org, CiState("")))
+    await org_accounts.set_up_at_ci(ctx, org, password)
 
 
 @action

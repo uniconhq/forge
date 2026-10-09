@@ -77,7 +77,7 @@ from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.submissions import SubmittedInput
-from forge.forges.fake.grading import run_variables
+from forge.forges.fake.grading import run_variables, token_in
 from forge.runtime.setup import Setup
 from forge.services import gradings, org_accounts, publications, reconcile, runs, submissions
 from forge.services.access import Organiser
@@ -1208,14 +1208,14 @@ async def test_a_start_the_ci_refuses_signs_the_org_account_in_again_and_starts(
 ) -> None:
     async with setup.unit_of_work() as ctx:
         lost = await org_accounts.identity(ctx, OrgId("acme"))
-    acme.fake.state.revoked_ci_tokens.add(lost.ci_token)
+    acme.fake.state.revoked_ci_tokens.add(token_in(lost.ci_state))
 
     row = await _submit(setup, acme, entered)
 
     after = await _row(setup, row.id)
     assert after.status == GradingStatus.DISPATCHED
     assert len(acme.fake.calls_to("start_run")) == 2
-    assert len(acme.fake.calls_to("mint_ci_token")) == 1
+    assert len(acme.fake.calls_to("refresh")) == 1
 
 
 async def test_a_run_still_waiting_in_the_queue_is_left_alone_however_long(
