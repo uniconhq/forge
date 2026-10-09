@@ -108,11 +108,16 @@ forge/api/
                 Upload complete returns with its UploadStatus, and the Door
                 the proxy is answered with
   submissions.py  submit, mine, one, files, download, the SubmittedInput
-                submit takes, and the Submission, Result, GroupShown,
+                submit takes, and the Submission, Result, GroupShown, Points,
                 SubmittedFiles, GradingStatus and Show they return
-  gradings.py   cancel, retry, rejudge, list, run_log, task_of, feed,
-                queue_depth, and the GradingRecord, Rejudged, FeedEntry,
-                Submitter, QueueDepth and GradingStatus they return; list
+  boards.py     seen, organised, held, mark, unmark, written, and the
+                Standings, Key, Column, NotInView, Ranked, Cell,
+                OrganisedBoard, Marks, Points, UserOwner and TeamOwner they
+                return
+  gradings.py   cancel, retry, fall_back, clear_fallback, rejudge, list,
+                run_log, task_of, feed, queue_depth, and the GradingRecord,
+                Rejudged, FeedEntry, Submitter, QueueDepth, GradingStatus and
+                Fallback they return; list
                 and feed both give FeedEntry
   runs.py       config, envelope, callback, the CiRequest config takes and the
                 CiAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
@@ -165,7 +170,10 @@ rules of an upload's slot and parts. `grading.py` holds what a grading run
 is, its two secrets, its clock and the machine a plan must fit,
 `reports.py` what a run reports back and which results are kept,
 `exact_json.py` the JSON that keeps a result's numbers exactly as written,
-`showing.py` what a contestant is shown of a result and when, and
+`showing.py` what a contestant is shown of a result and when,
+`scoring.py` a result's credit, points and folded values, exact,
+`boards.py` a board ranked from scored results, `board_checks.py` what a
+board asks of the tasks it covers (T8, C4), and
 `contracts.py` checks a document against `schemas/`, a copy of the five
 contract files of the runner release the package pins, which the tests
 check against the runner's own when that repo is checked out beside this
@@ -494,7 +502,9 @@ hosting process calls are actions, marked `@action` from
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
 | `submissions` | `submit`, `mine`, `one`, `files`, `download` |
-| `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
+| `boards` | `seen`, `organised` |
+| `marks` | `held`, `mark`, `unmark` |
+| `gradings` | `cancel`, `retry`, `fall_back`, `clear_fallback`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
 | `runs` | `config`, `envelope`, `callback` |
 | `workflows` | `create` |
 
@@ -707,7 +717,11 @@ has opened when the settings saved before released it, the contest
 published and past its start and the task's `release_at` passed, so a
 contest that was never published moves freely. A task reveals once it has
 closed for every row, with the longest extension in force on it: an
-approved contestant's who is in no team, or a team's with a member. A
+approved contestant's who is in no team, or a team's with an approved
+member. A save of the contest's settings, like a save of one of its tasks,
+holds the contest's rules alone until it commits and a mark change holds
+them shared (`timelines.hold_rules`), so the checks one save makes against
+the other's file, and against the marks rows hold, read what is there. A
 manager's change to one of its admin-only keys, `name`,
 `description`, `state`, `visibility` and `registration`, is refused as
 `AdminOnly`, naming each; nothing is written either way. A write to a task
@@ -1258,9 +1272,12 @@ row's due it was and the latest attempt of its grading, as the task's test
 groups show it (`domain/showing.py`): a group shown `always` with its
 outcome and its tests, one shown as a `verdict` with its outcome and its
 tests at the task's reveal, one shown `after_close` with its name and when
-it is shown; the outcome over the groups shown; the values reported once;
-and what stopped the run, unless the sealed step that runs once and stopped
-it, as the result's `stopped_by` names it, is held back. A grading is shown
+it is shown; the outcome over the groups shown; the values reported once,
+and each value folded over the tests shown (`folded`); and what stopped the
+run. A run that a sealed step stopped, as the result's `stopped_by` names
+it, is held whole until the reveal: no stop, every group hidden as if it
+ran, its points all pending and no folds, so nothing tells it from a run
+that has not stopped. A grading is shown
 with the publication it ran under: that publication's sealed facts always,
 and the latest publication's `test_groups` when the two plans list the
 same tests, its own otherwise, so its rows are folded with the tests they
@@ -1268,7 +1285,9 @@ ran on; a group with no rows did not run on it (`ran` false) and adds
 nothing to the outcome. A past publication's `task.yaml` and plan are read
 once per process. A run in `system_error` is told to its contestant as
 still running, with nothing of it shown, and one staff then cancelled as
-`cancelled` with the sentence they gave (`Result.reason`). `files` gives
+`cancelled` with the sentence they gave (`Result.reason`); while a fallback
+is in force for either (below), the submission is told by its last good
+result instead, the attempt the boards count. `files` gives
 the inputs one was made with, as its `submission.json` names them, and
 `download` a door to one of those files, which the proxy streams from the
 forge. A run's log
@@ -1441,6 +1460,24 @@ a save's regrade leave it as it is. Staff who want it graded after all tell
 the contestant, who submits again. Migration 0014 gives each submission
 cancelled before cancels carried a sentence a stock one, "The organisers
 cancelled this grading.", so it reads and counts the same.
+
+**Falling back.** A submission whose latest attempt is a `system_error`, or
+staff cancelled, counts as still grading, or void once cancelled, while the
+contest's `on_system_error` is `grading`, the default. A **fallback** has it
+count as its last good result instead, the latest earlier attempt that
+finished with a result, while there is one: on the boards, to its
+contestant, and under `submissions.max`, a cancel included. It is in force
+by the contest's `on_system_error: last_result`, or by staff on the one
+attempt: `gradings.fall_back(grading)` sets `falls_back` on a latest
+attempt that reads as `system_error` or staff cancelled (`WrongStatus`
+otherwise, `Conflict` for an earlier attempt or a submission with no
+earlier result), and `gradings.clear_fallback(grading)` takes it back, so
+the contest's word holds; both answer the grading as it then stands and
+need what a cancel needs. Migration 0016 adds the column, false on every
+grading so far. Every `GradingRecord` of a broken latest attempt carries
+`last_good`, the attempt a fallback counts, and `fallback`, `staff` or
+`contest` while one is in force and none otherwise; a contest whose
+settings do not read counts as `grading`.
 `gradings.retry` makes a new attempt of a submission's latest attempt once
 it is finished, against the publication it graded against, while no other
 attempt of it is being graded (`Conflict`). An earlier attempt is
@@ -1501,6 +1538,41 @@ as a `QueueDepth` of `queued` and `dispatched`, by the status they read as:
 one overdue or lost reads as `system_error` and is not counted. Nothing
 stores the count.
 
+## Scores and boards
+
+Nothing scored is stored. A result keeps the run's raw facts, and every read
+scores it again (`services/scores.py`, `domain/scoring.py`, TASK-FORMAT.md
+sections 3.1 to 3.5): each test's credit, each group's points
+`worth * late * E_g / W` and most `worth * R_g / W`, and each reported value
+folded over the tests, all as exact rationals, a value written `0.1` read
+as one tenth. A grading is scored with the latest publication's groups,
+credit and value meanings while no grading change came between them, and
+with its own otherwise. Relative credit's best is taken over the
+candidates the boards count, each row's of the task graded under the same
+plan. A submission is read with its points shown and those still decided
+at the reveal.
+
+`boards.seen(session, contest)` gives every board the reader's audience
+sees, a visitor reading with no session, and an archived contest's to its
+approved contestants alone; `boards.organised(organiser, contest, row=)`
+gives every board as `now` and `final`, every row, or, for a row of the
+contest, `now` of each board shown to contestants as that row sees it,
+beside what the boards ask of their tasks that does not hold. A board is
+ranked on read (`domain/boards.py`) over the contest's rows, each approved
+contestant in no team and each team with an approved member, read once a
+request: which submission counts per row and task (`best`,
+`best_per_group`, `marked`), its keys in turn, ties sharing a rank. A
+submission still grading, stopped by a step that is not sealed, or
+cancelled is no attempt; a regrade in progress leaves the earlier attempt
+counting. `marks.mark`, `unmark` and `held` keep a row's marks for the
+`marked` boards in `marks`, at most the task's `marks`, frozen at the row's
+close; the task page says how many (`TaskPage.marks`) to an approved
+contestant alone, and to anyone else an open task reads closed as
+`not_approved`. A task's save is refused where a board covering it asks what it does
+not give (T8) and reports the boards it moves (T9); a contest's save is
+refused where a board asks what its tasks do not give (C4), or lowers a
+task's `marks` below what a row holds (C1).
+
 ## Errors
 
 Every error has a stable `code` and a `detail` for a person, and some carry
@@ -1529,6 +1601,7 @@ structured members in `extra`:
 | `UploadLimit` | `upload_limit` | `limit`, the open uploads one person may hold for a task, and `bytes`, what they may declare together |
 | `InvalidInputs` | `invalid_inputs` | `errors`, each `{"input", "message"}` |
 | `LogTooLarge` | `log_too_large` | `limit`, the most of a run log read, in bytes |
+| `MarkLimit` | `mark_limit` | `limit`, the marks a row may hold on the task |
 
 The rest, `invalid_name`, `unauthenticated`, `session_expired`,
 `fresh_sign_in_required`, `sign_in_invalid`, `sign_in_denied`,
@@ -1544,16 +1617,17 @@ teams' refusals (above) and `team_changed`, and
 `ci_request_refused` (the CI's request does not verify or names no grading
 being started), `invalid_token` (a report without its grading's token),
 `grading_closed` (the grading takes no envelope or report now) and
-`invalid_callback` (a report that is not one), carry nothing beyond the
-detail. The refusals of an upload or a submit share the base class
+`invalid_callback` (a report that is not one), and the marks' `marks_off`
+(no marked board covers the task) and `marks_frozen` (the row's close has
+passed), carry nothing beyond the detail. The refusals of an upload or a submit share the base class
 `SubmitRefused`.
 
 ## The tables
 
-Nine tables, keyed by UUID v7 but for `names`, keyed by the id it names,
+Ten tables, keyed by UUID v7 but for `names`, keyed by the id it names,
 with every enumeration as `text` under a `CHECK`: `sessions`,
 `contestants`, `gradings`, `uploads`, `org_accounts`, `names`,
-`invites`, `teams` and `team_members`. They
+`invites`, `teams`, `team_members` and `marks`. They
 hold what a forge cannot: of users, orgs, contests and tasks only the names
 people gave the last three (above), the rest read live. `org_accounts` is
 one row per org, by the org's id, its service account's
@@ -1581,7 +1655,9 @@ size, digest, status, the id of its parts while they arrive, the submission
 that consumed it, and when its lifetime ends. An `invites` row is one
 invite: the scope's keys, what it grants, the username or the address it
 names, who it is for once known, who sent it, its token's SHA-256, its
-status, its expiry, when it was decided, and what became of its mail.
+status, its expiry, when it was decided, and what became of its mail. A
+`marks` row is one submission a row marked: the workspace, the task, the
+submission's number, and who marked it.
 `unicon-forge migrate` reads `UNICON_DATABASE_URL`, applies the migrations
 under `forge/db/alembic/` and exits. A deployment runs it before the host
 starts, from the host's image, which has the package and its command

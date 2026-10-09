@@ -147,6 +147,16 @@ class GradingStatus(StrEnum):
     SYSTEM_ERROR = "system_error"
 
 
+class Fallback(StrEnum):
+    """Why a submission counts as its last good result in place of its
+    latest attempt, a system error or staff cancelled: staff asked so on
+    that attempt, or the contest's `on_system_error` says so.
+    """
+
+    STAFF = "staff"
+    CONTEST = "contest"
+
+
 UNFINISHED = (GradingStatus.QUEUED, GradingStatus.DISPATCHED, GradingStatus.RUNNING)
 AT_THE_CI = (GradingStatus.DISPATCHED, GradingStatus.RUNNING)
 """The statuses of a grading whose run the CI holds."""

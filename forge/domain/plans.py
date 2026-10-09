@@ -62,6 +62,7 @@ from forge.domain.definitions import (
 )
 from forge.domain.grading import BASE_WALL, STEP_OVERHEAD, WALL_CEILING, Machine
 from forge.domain.primitives import BATCH_SCALED, IMAGE, LIMIT_NAMES, Port, PrimitiveDeclaration
+from forge.domain.scoring import Better, Measure, exact
 from forge.domain.showing import NOTHING_SEALED, Sealed
 from forge.domain.types import FILES, SCALARS, Type
 from forge.domain.workflow_definition import (
@@ -888,6 +889,7 @@ class Compiled:
     sealed: tuple[str, ...]
     notes: tuple[str, ...] = ()
     held: Sealed = NOTHING_SEALED
+    measures: Mapping[str, Measure] = field(default_factory=dict)
 
 
 @dataclass
@@ -1345,6 +1347,7 @@ def compile_plan(
         tuple(sorted(compiler.sealed)),
         (*_sealed_notes(compiler), *_credit_notes(task, values)),
         held,
+        measures(values, task),
     )
 
 
@@ -1479,6 +1482,29 @@ def reported(
         port = primitives[str(step.use)].outputs[reference.output]
         found[name] = ReportedValue(
             step.per_test, port.type, entry if isinstance(entry, Meaning) else None
+        )
+    return found
+
+
+def measures(values: Mapping[str, ReportedValue], task: TaskDefinition) -> dict[str, Measure]:
+    """What each per-test number the workflow reports means for this task:
+    its fold, its direction with the task's values in, and its bounds, each
+    bound the exact rational of the decimal it is written as.
+    """
+    found: dict[str, Measure] = {}
+    for name, value in sorted(values.items()):
+        if not _per_test_number(value):
+            continue
+        meaning = value.meaning
+        if meaning is None:
+            found[name] = Measure()
+            continue
+        better = _better(meaning, task)
+        found[name] = Measure(
+            fold=meaning.fold,
+            better=Better(better) if better in ("higher", "lower") else None,
+            at_least=exact(meaning.at_least),
+            at_most=exact(meaning.at_most),
         )
     return found
 

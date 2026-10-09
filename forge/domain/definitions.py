@@ -70,6 +70,7 @@ __all__ = [
     "Group",
     "InvalidDefinition",
     "Leaderboard",
+    "OnSystemError",
     "Over",
     "Penalty",
     "Rate",
@@ -141,6 +142,17 @@ class Who(StrEnum):
     ORGANISERS = "organisers"
     CONTESTANTS = "contestants"
     EVERYONE = "everyone"
+
+
+class OnSystemError(StrEnum):
+    """What a submission whose latest attempt is a `system_error`, or one
+    staff cancelled after one, counts as: still grading, or void once
+    cancelled, until staff end it; or the latest earlier attempt of it that
+    finished with a result, while there is one.
+    """
+
+    GRADING = "grading"
+    LAST_RESULT = "last_result"
 
 
 class Show(StrEnum):
@@ -303,8 +315,8 @@ DEFAULT_LATE_PER_DAY = 1
 
 class ContestDefinition(Model):
     """A `contest.yaml`. `registration` defaults to open with manual
-    approval, `team_size` to no teams, and `leaderboards` and `tasks` to
-    none.
+    approval, `team_size` to no teams, `on_system_error` to still grading,
+    and `leaderboards` and `tasks` to none.
     """
 
     name: Line
@@ -315,6 +327,7 @@ class ContestDefinition(Model):
     visibility: ContestVisibility
     registration: Registration = Registration()
     team_size: Annotated[int, Field(strict=True, ge=2)] | None = None
+    on_system_error: OnSystemError = OnSystemError.GRADING
     leaderboards: tuple[Leaderboard, ...] = ()
     tasks: tuple[ContestTask, ...] = ()
 
