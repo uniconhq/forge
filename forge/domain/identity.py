@@ -81,14 +81,6 @@ class AsOrgAccount:
     ci_state: CiState = field(repr=False)
 
 
-@dataclass(frozen=True, slots=True)
-class CiAdmin:
-    """The CI's own administrator, which creates users and agents at the CI
-    and reads nothing at the forge.
-    """
-
-
-Identity = Platform | AsUser | AsOrgAccount | CiAdmin
+Identity = Platform | AsUser | AsOrgAccount
 
 PLATFORM = Platform()
-CI_ADMIN = CiAdmin()

@@ -14,8 +14,8 @@ grading has one run: a retry or a rejudge is a new row with a new id, so it
 is handed new secrets.
 
 The times agree with each other and with the CI. A machine gives one run
-`RUN_TIMEOUT`, the CI's pipeline timeout, which the deployment sets to 30
-minutes (`WOODPECKER_DEFAULT_PIPELINE_TIMEOUT`). Of that, the two checkouts
+`RUN_TIMEOUT`, the longest the CI lets a run take, which the deployment
+sets to 30 minutes. Of that, the two checkouts
 are allowed `CHECKOUT_ALLOWANCE` and the reports `REPORT_ALLOWANCE`, which
 leaves `WALL_CEILING` for the harness: an envelope's `limits.wall_seconds` is
 what its plan's steps may take, their time limits summed with a margin for
@@ -40,16 +40,14 @@ was made, since its run is started as soon as it is committed; one
 or that never reached the harness; and one `running` past its deadline,
 whose token is refused from then on.
 
-A `dispatched` grading may also have a run the CI has lost: Woodpecker
-3.18.1 drops a run from its queue for good when the machine it handed the
-run to does not renew its claim within a minute, after a dropped network
-or a machine that died during the checkout, and leaves the pipeline saying
-`pending` (woodpecker-ci/woodpecker#7063). Waiting long is not being lost:
-at a contest's start a run can wait a quarter of an hour behind others. So
-the CI is asked where the run is (`RunState`), once the grading has been
-`dispatched` `LOST_CHECK_AFTER`, by the queue it is in and not the
-pipeline's status, which says `pending` either way; a run the CI no longer
-holds reads as a system error, `LOST`, like an overdue one.
+A `dispatched` grading may also have a run the CI has lost: one it dropped
+for good after the machine it handed the run to went quiet, while still
+saying the run waits (the CI's implementation names the case it knows).
+Waiting long is not being lost: at a contest's start a run can wait a
+quarter of an hour behind others. So the CI is asked where the run is
+(`RunState`) once the grading has been `dispatched` `LOST_CHECK_AFTER`; a
+run the CI no longer holds reads as a system error, `LOST`, like an
+overdue one.
 
 A grading in `system_error` is ended by staff, by regrading it or, when a
 regrade would only repeat the fault, by cancelling it with a sentence its

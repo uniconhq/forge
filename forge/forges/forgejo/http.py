@@ -22,13 +22,14 @@ closes when its block ends.
 
 import asyncio
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import quote
 
 import httpx
 
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
-from forge.domain.identity import AsOrgAccount, AsUser, CiAdmin, Identity, Platform
+from forge.domain.identity import AsOrgAccount, AsUser, Identity, Platform
 from forge.forges.forgejo.ci_state import read_state
 from forge.log import get_logger
 
@@ -74,8 +75,22 @@ def file_path(path: str) -> str:
     return "/".join(segment(part) for part in path.split("/") if part)
 
 
+@dataclass(frozen=True, slots=True)
+class CiAdmin:
+    """The CI's own administrator, which creates users and agents at the CI
+    and reads nothing at the forge. Only this implementation acts as it, so
+    it is no identity of the port's.
+    """
+
+
+CI_ADMIN = CiAdmin()
+
+Caller = Identity | CiAdmin
+"""Whom a call to the forge or the CI is made as."""
+
+
 class Auth(Protocol):
-    async def header(self, as_: Identity) -> str:
+    async def header(self, as_: Caller) -> str:
         """The `Authorization` value for a call made as `as_`."""
         ...
 
@@ -84,7 +99,7 @@ class ForgejoAuth:
     def __init__(self, admin_token: str) -> None:
         self._admin_token = admin_token
 
-    async def header(self, as_: Identity) -> str:
+    async def header(self, as_: Caller) -> str:
         match as_:
             case Platform():
                 return f"token {self._admin_token}"
@@ -101,7 +116,7 @@ class WoodpeckerAuth:
     def __init__(self, admin_token: str) -> None:
         self._admin_token = admin_token
 
-    async def header(self, as_: Identity) -> str:
+    async def header(self, as_: Caller) -> str:
         match as_:
             case CiAdmin():
                 return f"Bearer {self._admin_token}"
@@ -126,7 +141,7 @@ class Http:
 
     async def call(
         self,
-        as_: Identity,
+        as_: Caller,
         method: str,
         path: str,
         *,
@@ -157,14 +172,14 @@ class Http:
             return response
         raise refusal(response)
 
-    async def authorization(self, as_: Identity) -> str:
+    async def authorization(self, as_: Caller) -> str:
         """The `Authorization` value a call as `as_` carries, for a request
         someone else makes on its behalf.
         """
         return await self._auth.header(as_)
 
     async def read_capped(
-        self, as_: Identity, path: str, *, params: Params | None, max_size: int
+        self, as_: Caller, path: str, *, params: Params | None, max_size: int
     ) -> bytes:
         """The body of a GET as `as_`, read only while it stays within
         `max_size` bytes: `Rejected` past that, before the rest is read, so a
@@ -190,7 +205,7 @@ class Http:
         except httpx.HTTPError as exc:
             raise Unavailable(f"no answer from {path}: {type(exc).__name__}") from exc
 
-    async def get_all(self, as_: Identity, path: str, **params: str | int) -> list[dict[str, Any]]:
+    async def get_all(self, as_: Caller, path: str, **params: str | int) -> list[dict[str, Any]]:
         """Every page of a list endpoint."""
         collected: list[dict[str, Any]] = []
         for page in range(1, MAX_PAGES + 1):

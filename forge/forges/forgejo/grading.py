@@ -50,6 +50,8 @@ workflow, `grading`, the same every time for the same run:
 
 The checkouts land at `/woodpecker/task` and `/woodpecker/submission`, inside
 the run's workspace volume, which is what the envelope tells the harness.
+The deployment sets Woodpecker's pipeline timeout,
+`WOODPECKER_DEFAULT_PIPELINE_TIMEOUT`, to the platform's `RUN_TIMEOUT`.
 
 The extension's request is signed by the CI's ed25519 key (RFC 9421,
 `signatures.py`). The key is read from `GET /api/signature/public-key` with
@@ -83,20 +85,13 @@ from forge.domain.grading import (
     RunSpec,
     RunState,
 )
-from forge.domain.identity import (
-    CI_ADMIN,
-    PLATFORM,
-    AsOrgAccount,
-    CiState,
-    Identity,
-    OrgAccountRef,
-)
+from forge.domain.identity import PLATFORM, AsOrgAccount, CiState, OrgAccountRef
 from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.names import service_account_name
 from forge.forges.forgejo import signatures
 from forge.forges.forgejo.ci_login import CiLogin
 from forge.forges.forgejo.ci_state import WoodpeckerState, read_state, written
-from forge.forges.forgejo.http import Http, json_of, segment
+from forge.forges.forgejo.http import CI_ADMIN, Caller, Http, json_of, segment
 from forge.forges.forgejo.repos import DEFAULT_BRANCH, Repos
 from forge.forges.forgejo.users import Users
 from forge.forges.ids import (
@@ -296,7 +291,14 @@ class WoodpeckerGrading:
         await self._ci.call(CI_ADMIN, "POST", f"/api/repos/{repo_id}/pipelines/{number}/cancel")
 
     async def run_state(self, run: RunId) -> RunState:
-        """From the queue, which lists every task with its repository and
+        """Woodpecker 3.18.1 drops a run from its queue for good when the
+        machine it handed the run to does not renew its claim within a
+        minute, after a dropped network or a machine that died during the
+        checkout, and leaves the pipeline saying `pending`
+        (woodpecker-ci/woodpecker#7063), so the pipeline's status says
+        nothing either way.
+
+        So from the queue, which lists every task with its repository and
         pipeline number under `pending`, `waiting_on_deps` or `running`, read
         at most once every `QUEUE_KEPT_SECONDS` however many runs are asked
         about; only a run the queue does not hold costs a read of its
@@ -513,7 +515,7 @@ class WoodpeckerGrading:
         self._key = key
         return key
 
-    async def _lookup(self, as_: Identity, org: str, repo: str) -> dict[str, Any]:
+    async def _lookup(self, as_: Caller, org: str, repo: str) -> dict[str, Any]:
         return json_of(
             await self._ci.call(as_, "GET", f"/api/repos/lookup/{segment(org)}/{segment(repo)}")
         )

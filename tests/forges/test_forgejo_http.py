@@ -15,9 +15,10 @@ import httpx
 import pytest
 
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
-from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, AsUser, Credential
+from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
 from forge.forges.forgejo.ci_state import WoodpeckerState, written
 from forge.forges.forgejo.http import (
+    CI_ADMIN,
     CONCURRENT_CALLS,
     ForgejoAuth,
     Http,

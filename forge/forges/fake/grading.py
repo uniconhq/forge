@@ -39,7 +39,7 @@ from forge.domain.grading import (
     RunSpec,
     RunState,
 )
-from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, CiState, OrgAccountRef
+from forge.domain.identity import PLATFORM, AsOrgAccount, CiState, OrgAccountRef
 from forge.domain.ids import AgentId, OrgId, RunId, TaskId
 from forge.domain.names import service_account_name
 from forge.forges.fake.state import StartedRun, State
@@ -107,14 +107,14 @@ class FakeGrading:
         """The account's user at the fake CI, then the sign-in dance in
         memory: the password must be the account's at the forge.
         """
-        self._state.record("set_up_org", CI_ADMIN, org=org, username=account.username)
+        self._state.record("set_up_org", PLATFORM, org=org, username=account.username)
         self._state.check_up()
         user_id = self._state.ci_users.setdefault(account.username, len(self._state.ci_users) + 1)
         token = self._sign_in(account.username, account.password)
         return _state(user_id, token, self._state.clock.now())
 
     async def tear_down_org(self, org: OrgId, state: CiState) -> None:
-        self._state.record("tear_down_org", CI_ADMIN, org=org)
+        self._state.record("tear_down_org", PLATFORM, org=org)
         self._state.check_up()
         username = service_account_name(org)
         self._state.ci_users.pop(username, None)
@@ -174,7 +174,7 @@ class FakeGrading:
         return made
 
     async def run_state(self, run: RunId) -> RunState:
-        self._state.record("run_state", CI_ADMIN, run=run)
+        self._state.record("run_state", PLATFORM, run=run)
         found = self._state.runs.get(run)
         if found is None:
             return RunState.LOST
