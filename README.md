@@ -295,11 +295,13 @@ who it is shared with. `copy_workflow` reads the source's files at a
 version as the person and makes the copy the same way. The draft is read
 at the head of `main` with the commit that head is, and written with the
 token it was read with, so a write over someone else's is `Conflict`; a
-version is a tag at the commit the draft was read at. `describe_workflow`
-reads a workflow as the person, and one they may not read is `NotFound`;
-`workflows_readable_by` is the forge's search by the workflow mark, as the
-person, so it finds their own, their orgs', those shared with them and the
-public ones. Who may change a workflow under an owner, the person themself
+version is a tag at the commit the draft was read at, and a read or a copy
+at a version looks the name up among the tags first, since Forgejo's `ref`
+also takes a branch or a commit, which move. `describe_workflow` reads a
+workflow as the person, and one they may not read is `NotFound`;
+`workflows_readable_by` is every repository the person reaches, their own,
+their orgs' and those shared with them, page by page, and the platform's
+public built-ins; other people's public workflows are the marketplace's. Who may change a workflow under an owner, the person themself
 or a manager at the org, is the services' rule (`workflows`, below).
 
 The org account is made by the platform too, through six more operations
@@ -680,7 +682,7 @@ it is named for or a manager or admin of its org, and every change is made
 as them, so the forge's own check is underneath. Reading is the forge's to
 decide, as the person: `view` and `read_version` answer a workflow they may
 not read as `NotFound` in the same words as one that is not there.
-`listing` is every workflow the person may read, each saying whether they
+`listing` is every workflow the person reaches, each saying whether they
 may edit it. `view` gives the editor the draft with its token and the
 people it is shared with; anyone else gets the workflow without them. A
 `save` writes whatever it is given, problems and all, up to 256 KB, since a
@@ -689,7 +691,10 @@ draft may stop half done; `Conflict` when the file moved since it was read.
 (`check_workflow`, with each `use:` read as the person: one that cannot be
 read, or names a workflow, is a problem at its own `steps[n].use`), and
 tags the commit it read only when there is none, so a version is never of
-a draft with problems and never changes after. `check` runs the same checks
+a draft with problems and never changes after; given the token the person
+saved with, it is `Conflict` when someone has saved since, so a version is
+of the save they made. A port with no value is a problem at its own
+`steps[n].with.<port>`. `check` runs the same checks
 over a text without writing anything, the editor's validate. A workflow is
 private, shared or public: shared is private with a list of readers, and
 reads back as shared once the list holds someone; `set_visibility` to
@@ -697,9 +702,10 @@ private or public empties the list, and `share` is refused while it is
 public. `copy` makes a private workflow of the source's files at a version,
 read as the caller, with nothing written about where it came from; `combine`
 inlines two or more versions into one new private definition
-(`domain/workflow_combine.py`): an input or test field declared alike in two
-sources is one, anything else that clashes takes the first free `-2`, `-3`
-(`_2` for a reported name), every reference follows, and the once steps of
+(`domain/workflow_combine.py`): an input or test field an earlier source
+declared alike is one, anything else that clashes with an earlier source
+takes the first free `-2`, `-3` (`_2` for a reported name), free of every
+id already taken and of the source's own others, every reference follows, and the once steps of
 every source come before their per-test steps. `primitives.listing` is every
 primitive at every version with its declaration, for the editor's palette;
 a version in a format no longer read comes with the reason instead.
