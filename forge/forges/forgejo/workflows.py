@@ -17,7 +17,7 @@ credential, that they may write the workflow.
 from typing import Any
 
 from forge.domain.content import ConflictToken, File, Files
-from forge.domain.errors import Forbidden
+from forge.domain.errors import Forbidden, NotFound
 from forge.domain.identity import PLATFORM, Identity, User
 from forge.domain.ids import VersionId, WorkflowId
 from forge.domain.workflows import Visibility, Workflow
@@ -122,6 +122,7 @@ class ForgejoWorkflows:
         self, as_: Identity, workflow: WorkflowId, version: str, path: str
     ) -> File:
         ref = parse_workflow(workflow)
+        await self._require_mark(as_, ref)
         await self._repos.require_version(as_, ref.owner, ref.repo, version)
         return await self._repos.read_file(as_, ref.owner, ref.repo, path, at=version)
 
@@ -142,13 +143,17 @@ class ForgejoWorkflows:
         self, as_: Identity, source: WorkflowId, version: str, owner: str, name: str
     ) -> WorkflowId:
         origin = parse_workflow(source)
+        await self._require_mark(as_, origin)
         await self._repos.require_version(as_, origin.owner, origin.repo, version)
         files = await self._repos.files_at(as_, origin.owner, origin.repo, version)
         return await self.create_workflow(as_, owner, name, files, Visibility.PRIVATE)
 
     async def describe_workflow(self, as_: Identity, workflow: WorkflowId) -> Workflow:
         ref = parse_workflow(workflow)
-        return await self._workflow(await self._repos.seen_by(as_, ref.owner, ref.repo))
+        record = await self._repos.seen_by(as_, ref.owner, ref.repo)
+        if not _is_workflow(record):
+            raise NotFound(f"{ref.owner}/{ref.repo} is not a workflow")
+        return await self._workflow(record)
 
     async def workflows_readable_by(self, as_: Identity) -> tuple[Workflow, ...]:
         reached = await self._repos.reached_by(as_)
@@ -164,6 +169,10 @@ class ForgejoWorkflows:
                 continue
             found.append(await self._workflow(repo))
         return tuple(found)
+
+    async def _require_mark(self, as_: Identity, ref: WorkflowRef) -> None:
+        if not _is_workflow(await self._repos.seen_by(as_, ref.owner, ref.repo)):
+            raise NotFound(f"{ref.owner}/{ref.repo} is not a workflow")
 
     async def workflows_owned_by(self, user_id: int) -> tuple[Workflow, ...]:
         username = await self._users.username_of(user_id)
@@ -190,4 +199,9 @@ class ForgejoWorkflows:
 
 
 def _is_workflow(repo: dict[str, Any]) -> bool:
-    return str(repo["name"]).endswith(f".{WORKFLOW}")
+    """Whether a repository is a workflow: named as one and carrying the
+    workflow mark, which a create sets after making the repository, so one
+    left unmarked by a create that failed between the two is not one.
+    """
+    marked = WORKFLOW_TOPIC in (repo.get("topics") or [])
+    return marked and str(repo["name"]).endswith(f".{WORKFLOW}")

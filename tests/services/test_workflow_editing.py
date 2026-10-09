@@ -485,3 +485,14 @@ async def test_a_primitive_version_with_no_declaration_is_listed_with_why(
         "unicon/compile@v3 has no declaration to read.",
     )
     assert any(found.ref == "unicon/compile@v2" and found.declaration for found in listed)
+
+
+async def test_a_repository_without_the_workflow_mark_is_no_workflow(
+    setup: Setup, acme: Acme
+) -> None:
+    bob = await signed_in(setup, acme.fake, 8)
+    acme.fake.state.create_repo(PLATFORM, "bob", "loose.workflow", {"workflow.yaml": CLASSIC})
+
+    with pytest.raises(NotFound):
+        await workflows.view(setup, bob, "bob", "loose")
+    assert "loose" not in [item.name for item in await workflows.listing(setup, bob)]

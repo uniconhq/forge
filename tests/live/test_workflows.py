@@ -321,3 +321,25 @@ async def test_the_workflows_one_reaches_are_ones_own_ones_orgs_and_ones_shared(
 
     assert {own, orgs} <= reached
     assert elsewhere not in reached
+
+
+async def test_a_repository_without_the_workflow_mark_is_no_workflow(
+    forge: ForgejoForge,
+    admin: httpx.Client,
+    people: dict[str, dict[str, Any]],
+    acting: dict[str, AsUser],
+) -> None:
+    author = people["author"]["login"]
+    workflow = await forge.workflows.create_workflow(
+        acting["author"], author, "unmarked", DEFINITION, Visibility.PRIVATE
+    )
+    await forge.workflows.create_workflow_version(acting["author"], workflow, "v1")
+    removed = admin.delete(f"/api/v1/repos/{author}/unmarked.workflow/topics/{TOPIC}")
+    assert removed.status_code == 204, removed.text
+
+    with pytest.raises(NotFound):
+        await forge.workflows.describe_workflow(acting["author"], workflow)
+    with pytest.raises(NotFound):
+        await forge.workflows.read_workflow_file(acting["author"], workflow, "v1", "workflow.yaml")
+    reached = await forge.workflows.workflows_readable_by(acting["author"])
+    assert workflow not in [entry.id for entry in reached]

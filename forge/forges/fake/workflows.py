@@ -197,8 +197,14 @@ class FakeWorkflows:
         return str(self._repo(workflow).id)
 
     def _repo(self, workflow: WorkflowId) -> Repo:
+        """The workflow's repository, which carries the workflow mark;
+        `NotFound` for one that does not.
+        """
         ref = parse_workflow(workflow)
-        return self._state.repo(ref.owner, ref.repo)
+        repo = self._state.repo(ref.owner, ref.repo)
+        if repo.marked != WORKFLOW:
+            raise NotFound(f"{workflow} is not a workflow")
+        return repo
 
 
 class FakePrimitives:
