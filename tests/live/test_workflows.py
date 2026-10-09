@@ -7,6 +7,7 @@ versions and reads it; its visibility and who it is shared with change as
 the platform once the forge says the person may write it.
 """
 
+import asyncio
 import contextlib
 from collections.abc import Iterator
 from typing import Any
@@ -14,7 +15,7 @@ from typing import Any
 import httpx
 import pytest
 
-from forge.domain.errors import Conflict, Forbidden, NotFound
+from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
 from forge.domain.identity import AsUser
 from forge.domain.ids import OrgId
 from forge.domain.roles import Role, Scope
@@ -311,13 +312,96 @@ async def test_the_workflows_one_reaches_are_ones_own_ones_orgs_and_ones_shared(
     orgs = await forge.workflows.create_workflow(
         acting["manager"], org, "reached", DEFINITION, Visibility.PRIVATE
     )
+    own_public = await forge.workflows.create_workflow(
+        acting["observer"], observer, "shown", DEFINITION, Visibility.PUBLIC
+    )
+    orgs_public = await forge.workflows.create_workflow(
+        acting["manager"], org, "shown", DEFINITION, Visibility.PUBLIC
+    )
     elsewhere = await forge.workflows.create_workflow(
         acting["author"], people["author"]["login"], "public", DEFINITION, Visibility.PUBLIC
     )
+    shared = await forge.workflows.create_workflow(
+        acting["author"], people["author"]["login"], "shared", DEFINITION, Visibility.PRIVATE
+    )
+    await forge.workflows.share_workflow(acting["author"], shared, int(people["observer"]["id"]))
 
     reached = {
         entry.id for entry in await forge.workflows.workflows_readable_by(acting["observer"])
     }
 
-    assert {own, orgs} <= reached
+    assert {own, orgs, own_public, orgs_public, shared} <= reached
     assert elsewhere not in reached
+
+
+async def test_a_repository_without_the_workflow_mark_is_no_workflow(
+    forge: ForgejoForge,
+    admin: httpx.Client,
+    people: dict[str, dict[str, Any]],
+    acting: dict[str, AsUser],
+) -> None:
+    author = people["author"]["login"]
+    workflow = await forge.workflows.create_workflow(
+        acting["author"], author, "unmarked", DEFINITION, Visibility.PRIVATE
+    )
+    await forge.workflows.create_workflow_version(acting["author"], workflow, "v1")
+    removed = admin.delete(f"/api/v1/repos/{author}/unmarked.workflow/topics/{TOPIC}")
+    assert removed.status_code == 204, removed.text
+
+    with pytest.raises(NotFound):
+        await forge.workflows.describe_workflow(acting["author"], workflow)
+    with pytest.raises(NotFound):
+        await forge.workflows.read_workflow_file(acting["author"], workflow, "v1", "workflow.yaml")
+    with pytest.raises(NotFound):
+        await forge.workflows.create_workflow_version(acting["author"], workflow, "v2")
+    with pytest.raises(NotFound):
+        await forge.workflows.copy_workflow(acting["author"], workflow, "v1", author, "copied")
+    reached = await forge.workflows.workflows_readable_by(acting["author"])
+    assert workflow not in [entry.id for entry in reached]
+
+    with pytest.raises(Conflict):
+        await forge.workflows.create_workflow(
+            acting["author"], author, "unmarked", DEFINITION, Visibility.PRIVATE
+        )
+    assert (await forge.workflows.describe_workflow(acting["author"], workflow)).id == workflow
+
+
+async def test_of_two_creates_filling_one_empty_repository_exactly_one_makes_it(
+    forge: ForgejoForge,
+    admin: httpx.Client,
+    people: dict[str, dict[str, Any]],
+    acting: dict[str, AsUser],
+) -> None:
+    """Two makers of one name, both after the repository is made and before
+    its first commit: one fills it, and the other is refused, not let write
+    over the first.
+    """
+    author = people["author"]["login"]
+    made = admin.post(
+        f"/api/v1/admin/users/{author}/repos",
+        json={"name": "raced.workflow", "private": True, "auto_init": False},
+    )
+    assert made.status_code == 201, made.text
+    other = {"workflow.yaml": DEFINITION["workflow.yaml"] + b"# the other maker's\n"}
+
+    results = await asyncio.gather(
+        forge.workflows.create_workflow(
+            acting["author"], author, "raced", DEFINITION, Visibility.PRIVATE
+        ),
+        forge.workflows.create_workflow(
+            acting["author"], author, "raced", other, Visibility.PRIVATE
+        ),
+        return_exceptions=True,
+    )
+
+    # The host refuses the later of two first commits at once, though as an
+    # error of its own rather than a conflict; one made before the other is
+    # Conflict, as the forgejo area tests show.
+    refused = [result for result in results if isinstance(result, BaseException)]
+    assert len(refused) == 1 and isinstance(refused[0], Conflict | Unavailable), results
+    winner = DEFINITION if not isinstance(results[0], BaseException) else other
+    workflow = next(result for result in results if not isinstance(result, BaseException))
+    _, draft = await forge.workflows.read_workflow_draft(
+        acting["author"], workflow, "workflow.yaml"
+    )
+    assert draft.content == winner["workflow.yaml"]
