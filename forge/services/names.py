@@ -248,10 +248,17 @@ async def workflow_id(ctx: Context, ref: WorkflowRef) -> WorkflowId:
     and anyone else as the person of that username, whose workflows the
     forge keeps under it.
     """
-    if ref.owner == PRIMITIVE_OWNER:
-        return WorkflowId(f"{ref.owner}/{ref.name}")
-    org = await org_id(ctx, ref.owner)
-    return WorkflowId(f"{org if org is not None else ref.owner}/{ref.name}")
+    return await workflow_place(ctx, ref.owner, ref.name)
+
+
+async def workflow_place(ctx: Context, owner: str, name: str) -> WorkflowId:
+    """The id of the workflow `<owner>/<name>`, read as `workflow_id` reads
+    a reference's.
+    """
+    if owner == PRIMITIVE_OWNER:
+        return WorkflowId(f"{owner}/{name}")
+    org = await org_id(ctx, owner)
+    return WorkflowId(f"{org if org is not None else owner}/{name}")
 
 
 async def _reserve(ctx: Context, kind: str, parent: str, name: str) -> str:

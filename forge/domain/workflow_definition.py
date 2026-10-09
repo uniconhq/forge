@@ -73,6 +73,11 @@ def _validate_version(version: str) -> str:
     return version
 
 
+def validate_version(version: str) -> str:
+    """`version` when it can name a version; `InvalidName` saying why not."""
+    return _validate_version(version)
+
+
 def _owner_and_name(text: str) -> tuple[str, str]:
     owner, slash, name = text.partition("/")
     if not slash:
@@ -499,5 +504,6 @@ __all__ = [
     "parse_workflow_ref",
     "references",
     "starter_workflow",
+    "validate_version",
     "whole_reference",
 ]

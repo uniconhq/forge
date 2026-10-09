@@ -2,11 +2,11 @@
 
 from collections.abc import Mapping
 
-from forge.domain.content import File, Files
-from forge.domain.errors import NotFound
-from forge.domain.identity import PLATFORM, Identity
-from forge.domain.ids import PrimitiveId, WorkflowId
-from forge.domain.roles import Scope
+from forge.domain.content import ConflictToken, File, Files
+from forge.domain.errors import Conflict, Forbidden, NotFound
+from forge.domain.identity import PLATFORM, Identity, User
+from forge.domain.ids import PrimitiveId, VersionId, WorkflowId
+from forge.domain.roles import Role, Scope
 from forge.domain.workflows import Primitive, Visibility, Workflow
 from forge.forges.fake.state import Repo, State, token_of
 from forge.forges.ids import (
@@ -63,13 +63,54 @@ class FakeWorkflows:
         self._state.require_write(as_, repo)
         repo.readers.discard(user_id)
 
-    async def create_workflow_version(
-        self, as_: Identity, workflow: WorkflowId, version: str
-    ) -> None:
-        self._state.record("create_workflow_version", as_, workflow=workflow, version=version)
+    async def workflow_readers(self, as_: Identity, workflow: WorkflowId) -> tuple[User, ...]:
+        self._state.record("workflow_readers", as_, workflow=workflow)
         repo = self._repo(workflow)
         self._state.require_write(as_, repo)
-        self._state.create_version(as_, repo, version)
+        return tuple(self._state.user(user_id) for user_id in sorted(repo.readers))
+
+    async def create_workflow_version(
+        self, as_: Identity, workflow: WorkflowId, version: str, at: VersionId | None = None
+    ) -> None:
+        self._state.record(
+            "create_workflow_version", as_, workflow=workflow, version=version, at=at
+        )
+        repo = self._repo(workflow)
+        self._state.require_write(as_, repo)
+        if at is not None and at not in repo.snapshots:
+            raise NotFound(f"{workflow} has no commit {at}")
+        self._state.create_version(as_, repo, version, at=at)
+
+    async def read_workflow_draft(
+        self, as_: Identity, workflow: WorkflowId, path: str
+    ) -> tuple[VersionId, File]:
+        self._state.record("read_workflow_draft", as_, workflow=workflow, path=path)
+        self._state.check_up()
+        repo = self._repo(workflow)
+        self._state.require_read(as_, repo)
+        if path not in repo.files:
+            raise NotFound(f"{path} is not in {workflow}")
+        content = repo.files[path]
+        return VersionId(repo.head), File(path=path, content=content, token=repo.tokens[path])
+
+    async def write_workflow_file(
+        self,
+        as_: Identity,
+        workflow: WorkflowId,
+        path: str,
+        content: bytes,
+        *,
+        expected: ConflictToken | None,
+        message: str,
+    ) -> File:
+        self._state.record("write_workflow_file", as_, workflow=workflow, path=path)
+        self._state.check_up()
+        repo = self._repo(workflow)
+        self._state.require_write(as_, repo)
+        if repo.tokens.get(path) != expected:
+            raise Conflict(f"{path} in {workflow} has changed since it was read")
+        self._state.commit(repo, {path: content}, message, self._state.author(as_))
+        return File(path=path, content=content, token=repo.tokens[path])
 
     async def read_workflow_file(
         self, as_: Identity, workflow: WorkflowId, version: str, path: str
@@ -106,9 +147,8 @@ class FakeWorkflows:
         )
         origin = self._repo(source)
         self._state.require_read(as_, origin)
-        if version not in origin.versions:
-            raise NotFound(f"{source} has no version {version}")
-        return await self.create_workflow(as_, owner, name, dict(origin.files), Visibility.PRIVATE)
+        files = dict(self._state.version_files(origin, version))
+        return await self.create_workflow(as_, owner, name, files, Visibility.PRIVATE)
 
     async def workflows_owned_by(self, user_id: int) -> tuple[Workflow, ...]:
         self._state.record("workflows_owned_by", PLATFORM, user_id=user_id)
@@ -117,6 +157,38 @@ class FakeWorkflows:
             _workflow(repo)
             for repo in self._state.repos.values()
             if repo.marked == WORKFLOW and repo.owner == username
+        )
+
+    async def describe_workflow(self, as_: Identity, workflow: WorkflowId) -> Workflow:
+        self._state.record("describe_workflow", as_, workflow=workflow)
+        self._state.check_up()
+        repo = self._repo(workflow)
+        try:
+            self._state.require_read(as_, repo)
+        except Forbidden:
+            raise NotFound(f"no workflow {workflow}") from None
+        return _workflow(repo)
+
+    async def workflows_readable_by(self, as_: Identity) -> tuple[Workflow, ...]:
+        self._state.record("workflows_readable_by", as_)
+        self._state.check_up()
+        user_id = self._state.author(as_)
+
+        def reached(repo: Repo) -> bool:
+            if repo.owner == PLATFORM_ORG:
+                return not repo.private
+            if user_id is None:
+                return True
+            return (
+                user_id in repo.readers
+                or self._state.may_write(user_id, repo)
+                or self._state.holds(user_id, repo, Role.OBSERVER)
+            )
+
+        return tuple(
+            _workflow(repo)
+            for repo in self._state.repos.values()
+            if repo.marked == WORKFLOW and reached(repo)
         )
 
     async def workflow_key(self, workflow: WorkflowId) -> str:
