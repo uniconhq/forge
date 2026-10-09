@@ -35,11 +35,15 @@ DAY = timedelta(days=1)
 
 
 class Closed(StrEnum):
-    """Why a task is not open to a row, the first of these that applies."""
+    """Why a task is not open to a row, the first of these that applies; and,
+    to a person who holds no approved row, `not_approved` where it is
+    otherwise open, as a submit would be refused.
+    """
 
     NOT_RELEASED = "not_released"
     ARCHIVED = "archived"
     CLOSED = "closed"
+    NOT_APPROVED = "not_approved"
 
 
 @dataclass(frozen=True, slots=True)

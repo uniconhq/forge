@@ -6,6 +6,7 @@ and the types they take and come back as.
 
 from forge.domain.definitions import Show
 from forge.domain.grading import GradingStatus
+from forge.domain.scoring import Points
 from forge.domain.showing import GroupShown
 from forge.domain.submissions import SubmittedInput
 from forge.services.submissions import (
@@ -22,6 +23,7 @@ from forge.services.submissions import (
 __all__ = [
     "GradingStatus",
     "GroupShown",
+    "Points",
     "Result",
     "Show",
     "Submission",

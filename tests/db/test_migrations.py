@@ -39,6 +39,7 @@ TABLES = {
     "invites",
     "teams",
     "team_members",
+    "marks",
 }
 
 

@@ -1,12 +1,13 @@
-"""The nine tables the platform owns: what a forge cannot hold. `metadata` is
-the metadata with every one of them on it, which is what the migrations and
-the tests compare against; reading it from here is what puts them there.
+"""The tables the platform owns: what a forge cannot hold. `metadata` is the
+metadata with every one of them on it, which is what the migrations and the
+tests compare against; reading it from here is what puts them there.
 """
 
 from forge.db.base import Base
 from forge.db.tables.contestants import Contestant
 from forge.db.tables.gradings import Grading
 from forge.db.tables.invites import Invite
+from forge.db.tables.marks import Mark
 from forge.db.tables.names import Name
 from forge.db.tables.org_accounts import OrgAccount
 from forge.db.tables.sessions import Session
@@ -17,6 +18,7 @@ __all__ = [
     "Contestant",
     "Grading",
     "Invite",
+    "Mark",
     "Name",
     "OrgAccount",
     "Session",
