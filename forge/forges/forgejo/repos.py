@@ -379,6 +379,14 @@ class Repos:
     async def versions(self, as_: Identity, owner: str, name: str) -> list[str]:
         return [str(entry["name"]) for entry in await self.tags(as_, owner, name)]
 
+    async def require_version(self, as_: Identity, owner: str, name: str, version: str) -> None:
+        """Refuse as `NotFound` a version that is not one of the repository's
+        tags, as `as_` reads them. Forgejo's `ref` also takes a branch or a
+        commit, which move, so a version is looked up among the tags first.
+        """
+        if version not in await self.versions(as_, owner, name):
+            raise NotFound(f"{owner}/{name} has no version {version}")
+
     async def tags(self, as_: Identity, owner: str, name: str) -> list[dict[str, Any]]:
         """Every tag, with its message and the commit it points at."""
         return await self._http.get_all(as_, f"/api/v1/repos/{segment(owner)}/{segment(name)}/tags")
@@ -497,11 +505,11 @@ class Repos:
     async def star(self, as_: Identity, owner: str, name: str) -> None:
         await self._http.call(as_, "PUT", f"/api/v1/user/starred/{segment(owner)}/{segment(name)}")
 
-    async def marked(self, topic: str) -> list[dict[str, Any]]:
-        """Every repository carrying the topic the caller may see."""
+    async def marked(self, topic: str, as_: Identity = PLATFORM) -> list[dict[str, Any]]:
+        """Every repository carrying the topic that `as_` may see."""
         found = json_of(
             await self._http.call(
-                PLATFORM,
+                as_,
                 "GET",
                 "/api/v1/repos/search",
                 params={"q": topic, "topic": "true", "limit": PAGE_LIMIT},
@@ -509,6 +517,12 @@ class Repos:
         )
         repos: list[dict[str, Any]] = found.get("data") or []
         return repos
+
+    async def reached_by(self, as_: Identity) -> list[dict[str, Any]]:
+        """Every repository `as_` owns or reaches as a collaborator or through
+        an org's team, page by page.
+        """
+        return await self._http.get_all(as_, "/api/v1/user/repos")
 
     async def owned_by(self, username: str) -> list[dict[str, Any]]:
         return await self._http.get_all(PLATFORM, f"/api/v1/users/{segment(username)}/repos")
@@ -563,10 +577,14 @@ class Repos:
         return known
 
     async def record(self, owner: str, name: str) -> dict[str, Any]:
+        return await self.seen_by(PLATFORM, owner, name)
+
+    async def seen_by(self, as_: Identity, owner: str, name: str) -> dict[str, Any]:
+        """The repository's record as `as_` reads it. The forge answers a
+        private repository `as_` may not read as not there.
+        """
         return json_of(
-            await self._http.call(
-                PLATFORM, "GET", f"/api/v1/repos/{segment(owner)}/{segment(name)}"
-            )
+            await self._http.call(as_, "GET", f"/api/v1/repos/{segment(owner)}/{segment(name)}")
         )
 
     async def exists(self, owner: str, name: str) -> bool:

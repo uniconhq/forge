@@ -181,12 +181,143 @@ async def test_a_person_copies_a_public_workflow_into_their_own_name(
 
     copied = await forge.workflows.copy_workflow(acting["stranger"], source, "v1", stranger, "kept")
 
-    read = await forge.workflows.read_workflow_file(
-        acting["stranger"], copied, "main", "workflow.yaml"
-    )
+    _, read = await forge.workflows.read_workflow_draft(acting["stranger"], copied, "workflow.yaml")
     assert read.content == DEFINITION["workflow.yaml"]
     assert _repo(admin, stranger, "kept")["private"] is True
     _made_as_asked(admin, stranger, "kept", stranger)
     await forge.workflows.star_workflow(acting["stranger"], source)
     found = await forge.workflows.search_public_workflows("shared")
     assert next(entry for entry in found if entry.id == source).stars == 1
+
+
+async def test_a_person_edits_the_draft_with_its_token_and_versions_a_commit_of_it(
+    forge: ForgejoForge,
+    admin: httpx.Client,
+    people: dict[str, dict[str, Any]],
+    acting: dict[str, AsUser],
+) -> None:
+    author = people["author"]["login"]
+    workflow = await forge.workflows.create_workflow(
+        acting["author"], author, "drafted", DEFINITION, Visibility.PRIVATE
+    )
+
+    head, draft = await forge.workflows.read_workflow_draft(
+        acting["author"], workflow, "workflow.yaml"
+    )
+    assert draft.content == DEFINITION["workflow.yaml"]
+    written = await forge.workflows.write_workflow_file(
+        acting["author"],
+        workflow,
+        "workflow.yaml",
+        b"steps: [one]\n",
+        expected=draft.token,
+        message="Edit workflow.yaml",
+    )
+    assert written.content == b"steps: [one]\n"
+    assert written.token != draft.token
+    with pytest.raises(Conflict):
+        await forge.workflows.write_workflow_file(
+            acting["author"],
+            workflow,
+            "workflow.yaml",
+            b"steps: [two]\n",
+            expected=draft.token,
+            message="Edit workflow.yaml",
+        )
+    with pytest.raises((Forbidden, NotFound)):
+        await forge.workflows.write_workflow_file(
+            acting["stranger"],
+            workflow,
+            "workflow.yaml",
+            b"steps: [two]\n",
+            expected=written.token,
+            message="Edit workflow.yaml",
+        )
+
+    await forge.workflows.create_workflow_version(acting["author"], workflow, "v1", at=head)
+    first = await forge.workflows.read_workflow_file(
+        acting["author"], workflow, "v1", "workflow.yaml"
+    )
+    assert first.content == DEFINITION["workflow.yaml"]
+    commits = admin.get(f"/api/v1/repos/{author}/drafted.workflow/commits", params={"sha": "main"})
+    assert commits.json()[0]["author"]["login"] == author
+
+
+async def test_who_reads_a_workflow_is_described_to_its_readers_alone(
+    forge: ForgejoForge,
+    people: dict[str, dict[str, Any]],
+    acting: dict[str, AsUser],
+) -> None:
+    author, stranger = people["author"]["login"], people["stranger"]
+    workflow = await forge.workflows.create_workflow(
+        acting["author"], author, "described", DEFINITION, Visibility.PRIVATE
+    )
+    await forge.workflows.create_workflow_version(acting["author"], workflow, "v1")
+
+    described = await forge.workflows.describe_workflow(acting["author"], workflow)
+    assert (described.visibility, described.versions) == (Visibility.PRIVATE, ("v1",))
+    with pytest.raises(NotFound):
+        await forge.workflows.describe_workflow(acting["stranger"], workflow)
+    readable = await forge.workflows.workflows_readable_by(acting["stranger"])
+    assert workflow not in [entry.id for entry in readable]
+
+    await forge.workflows.share_workflow(acting["author"], workflow, int(stranger["id"]))
+    (reader,) = await forge.workflows.workflow_readers(acting["author"], workflow)
+    assert (reader.id, reader.username) == (int(stranger["id"]), stranger["login"])
+    with pytest.raises(Forbidden):
+        await forge.workflows.workflow_readers(acting["stranger"], workflow)
+    shared = await forge.workflows.describe_workflow(acting["stranger"], workflow)
+    assert shared.visibility is Visibility.SHARED
+    readable = await forge.workflows.workflows_readable_by(acting["stranger"])
+    assert workflow in [entry.id for entry in readable]
+
+
+async def test_a_version_is_a_tag_and_never_a_branch(
+    forge: ForgejoForge,
+    people: dict[str, dict[str, Any]],
+    acting: dict[str, AsUser],
+) -> None:
+    author = people["author"]["login"]
+    workflow = await forge.workflows.create_workflow(
+        acting["author"], author, "tagged", DEFINITION, Visibility.PUBLIC
+    )
+    await forge.workflows.create_workflow_version(acting["author"], workflow, "v1")
+
+    with pytest.raises(NotFound):
+        await forge.workflows.read_workflow_file(
+            acting["stranger"], workflow, "main", "workflow.yaml"
+        )
+    with pytest.raises(NotFound):
+        await forge.workflows.copy_workflow(
+            acting["stranger"], workflow, "main", people["stranger"]["login"], "drafted"
+        )
+    read = await forge.workflows.read_workflow_file(
+        acting["stranger"], workflow, "v1", "workflow.yaml"
+    )
+    assert read.content == DEFINITION["workflow.yaml"]
+
+
+async def test_the_workflows_one_reaches_are_ones_own_ones_orgs_and_ones_shared(
+    forge: ForgejoForge,
+    org: str,
+    people: dict[str, dict[str, Any]],
+    acting: dict[str, AsUser],
+) -> None:
+    await _org_with_roles(forge, org, people)
+    observer = people["observer"]["login"]
+    own = await forge.workflows.create_workflow(
+        acting["observer"], observer, "mine", DEFINITION, Visibility.PRIVATE
+    )
+    orgs = await forge.workflows.create_workflow(
+        acting["manager"], org, "reached", DEFINITION, Visibility.PRIVATE
+    )
+    elsewhere = await forge.workflows.create_workflow(
+        acting["author"], people["author"]["login"], "public", DEFINITION, Visibility.PUBLIC
+    )
+
+    reached = {
+        entry.id for entry in await forge.workflows.workflows_readable_by(acting["observer"])
+    }
+
+    assert {own, orgs} <= reached
+    assert elsewhere not in reached

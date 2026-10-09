@@ -29,6 +29,7 @@ class ForgejoPrimitives:
         return tuple(found)
 
     async def read_declaration(self, as_: Identity, primitive: PrimitiveId, version: str) -> bytes:
+        await self._repos.require_version(as_, PLATFORM_ORG, primitive_repo(primitive), version)
         found = await self._repos.read_file(
             as_, PLATFORM_ORG, primitive_repo(primitive), DECLARATION, at=version
         )

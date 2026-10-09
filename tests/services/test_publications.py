@@ -1077,6 +1077,19 @@ async def test_the_task_form_reads_the_inputs_and_test_fields_its_workflow_decla
     assert {call.identity for call in reads} == {acme.ada.identity}
 
 
+async def test_the_task_form_names_a_newer_version_and_the_task_keeps_its_own(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    assert (await publications.workflow_form(setup, acme.ada, sum_task)).newer is None
+    classic = acme.fake.state.repos[("unicon", "classic.workflow")]
+    acme.fake.state.create_version(PLATFORM, classic, "v3")
+
+    form = await publications.workflow_form(setup, acme.ada, sum_task)
+
+    assert (form.workflow, form.newer) == ("unicon/classic@v2", "v3")
+    assert len(form.inputs) == 4
+
+
 async def test_a_draft_still_shows_its_workflows_inputs(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
