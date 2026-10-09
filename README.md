@@ -78,7 +78,11 @@ forge/api/
   tasks.py      create, list, state, standing, the TaskState state returns,
                 the TaskStanding and Timeline standing returns, and
                 task_id_of, the id of the task a scope names
-  workflows.py  create, and the NewWorkflow it returns
+  workflows.py  create, listing, view, read_version, save, create_version,
+                check, set_visibility, share, unshare, copy, combine,
+                primitives, and the NewWorkflow, WorkflowSummary,
+                WorkflowView, Draft, PrimitiveVersion and Problem they
+                return
   files.py      read, tree, history, write, rollback, write_upload, and the
                 File, TreeEntry, UploadInfo, EntryKind and Change they return
   publications.py  save, list, workflow_form, and the Published, Draft,
@@ -286,12 +290,17 @@ and sets the workflow mark; the person writes its first commit, names its
 versions and reads it as themself. Making it public or private, and sharing
 it with a named person or taking that away, need a repository admin, which
 no organiser's team is, so the platform does them once the forge has said,
-to the person's own credential, that they may write it. `copy_workflow`
-reads the source as the person and makes the copy the same way. Who may
-create a workflow under an owner, the person themself or a manager at the
-org, is the services' rule (`workflows.create`, below); the rest of these
-operations are called by nothing yet, since the workflow pages are feature
-10.
+to the person's own credential, that they may write it, and so is reading
+who it is shared with. `copy_workflow` reads the source's files at a
+version as the person and makes the copy the same way. The draft is read
+at the head of `main` with the commit that head is, and written with the
+token it was read with, so a write over someone else's is `Conflict`; a
+version is a tag at the commit the draft was read at. `describe_workflow`
+reads a workflow as the person, and one they may not read is `NotFound`;
+`workflows_readable_by` is the forge's search by the workflow mark, as the
+person, so it finds their own, their orgs', those shared with them and the
+public ones. Who may change a workflow under an owner, the person themself
+or a manager at the org, is the services' rule (`workflows`, below).
 
 The org account is made by the platform too, through six more operations
 the port declares: `identity.create_user` and `mint_token` make the account
@@ -506,7 +515,8 @@ hosting process calls are actions, marked `@action` from
 | `marks` | `held`, `mark`, `unmark` |
 | `gradings` | `cancel`, `retry`, `fall_back`, `clear_fallback`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
 | `runs` | `config`, `envelope`, `callback` |
-| `workflows` | `create` |
+| `workflows` | `create`, `listing`, `view`, `read_version`, `save`, `create_version`, `check`, `set_visibility`, `share`, `unshare`, `copy`, `combine` |
+| `primitives` | `listing` |
 
 A hosting process reaches them through `forge.api`. An action is one unit of
 work. Called as `account.delete(session)`, it opens a transaction on the setup
@@ -663,6 +673,36 @@ owner and name, and a name the owner has already is `Conflict`. Any other
 failure at the forge is told in fixed words and logged, like a create's. It
 answers with a `NewWorkflow`: its id, and the owner and name a person calls
 it by, since an org's id is built from its key.
+
+The same rule says who may change a workflow once it is made: `save`,
+`create_version`, `set_visibility`, `share` and `unshare` are the person
+it is named for or a manager or admin of its org, and every change is made
+as them, so the forge's own check is underneath. Reading is the forge's to
+decide, as the person: `view` and `read_version` answer a workflow they may
+not read as `NotFound` in the same words as one that is not there.
+`listing` is every workflow the person may read, each saying whether they
+may edit it. `view` gives the editor the draft with its token and the
+people it is shared with; anyone else gets the workflow without them. A
+`save` writes whatever it is given, problems and all, up to 256 KB, since a
+draft may stop half done; `Conflict` when the file moved since it was read.
+`create_version` reads the draft, runs every check a version must pass
+(`check_workflow`, with each `use:` read as the person: one that cannot be
+read, or names a workflow, is a problem at its own `steps[n].use`), and
+tags the commit it read only when there is none, so a version is never of
+a draft with problems and never changes after. `check` runs the same checks
+over a text without writing anything, the editor's validate. A workflow is
+private, shared or public: shared is private with a list of readers, and
+reads back as shared once the list holds someone; `set_visibility` to
+private or public empties the list, and `share` is refused while it is
+public. `copy` makes a private workflow of the source's files at a version,
+read as the caller, with nothing written about where it came from; `combine`
+inlines two or more versions into one new private definition
+(`domain/workflow_combine.py`): an input or test field declared alike in two
+sources is one, anything else that clashes takes the first free `-2`, `-3`
+(`_2` for a reported name), every reference follows, and the once steps of
+every source come before their per-test steps. `primitives.listing` is every
+primitive at every version with its declaration, for the editor's palette;
+a version in a format no longer read comes with the reason instead.
 
 Who may do what is decided once per request: `access.organiser` checks the
 session, reads the person's roles with their own credential, applies the
@@ -833,6 +873,10 @@ form can still be opened to mend them. Either way `graded` says whether the
 task has a graded submission, a grading of it `done`, the condition T7 and
 T10 hold from: from then on a save refuses a test group it adds without its
 `show`, so the form asks for one there instead of offering a default.
+`newer` is the workflow's latest version, in natural order, when it comes
+after the one the task names, so the task page can say a newer one exists;
+the task keeps grading with the one it names until it is saved naming
+another.
 
 ## The compiler
 
