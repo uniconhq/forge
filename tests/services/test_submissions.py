@@ -19,6 +19,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from fractions import Fraction
 from typing import Any
 
 import pytest
@@ -48,6 +49,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, Scope
+from forge.domain.scoring import Points
 from forge.domain.showing import GroupShown
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import pointer_text
@@ -905,6 +907,12 @@ async def _three_groups(setup: Setup, acme: Acme, task: TaskId) -> None:
     await _save(setup, acme, task, files)
 
 
+def _credited(index: int) -> dict[str, Any]:
+    """RESULT's test row as shown, with the credit it earned."""
+    row = RESULT["tests"][index]
+    return {**row, "credit": 1 if row["outcome"] == "accepted" else 0}
+
+
 async def _graded(setup: Setup, result: dict[str, Any], status: str = "done") -> None:
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(update(Grading).values(status=status, result=result))
@@ -924,6 +932,8 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
     # The groups whose verdict is shown passed; large's verdict waits.
     assert before.grading.outcome == "accepted"
     assert before.grading.values == {"log": "compiled"}
+    # Worth 100 over rule weights 100, 30 and 70: main 50, small 15 and
+    # large's 35 decided at the reveal.
     assert before.grading.groups == (
         GroupShown(
             group="main",
@@ -934,12 +944,33 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
                     "test": "main/1",
                     "outcome": "accepted",
                     "values": {"time_ms": 10, "memory_kb": 7},
+                    "credit": 1,
                 },
             ),
             shown_at=None,
+            points=Fraction(50),
+            max=Fraction(50),
         ),
-        GroupShown(group="small", show=Show.VERDICT, outcome="accepted", tests=None, shown_at=END),
-        GroupShown(group="large", show=Show.AFTER_CLOSE, outcome=None, tests=None, shown_at=END),
+        GroupShown(
+            group="small",
+            show=Show.VERDICT,
+            outcome="accepted",
+            tests=None,
+            shown_at=END,
+            points=Fraction(15),
+            max=Fraction(15),
+        ),
+        GroupShown(
+            group="large",
+            show=Show.AFTER_CLOSE,
+            outcome=None,
+            tests=None,
+            shown_at=END,
+            max=Fraction(35),
+        ),
+    )
+    assert before.grading.points == Points(
+        shown=Fraction(65), pending=Fraction(35), pending_until=END
     )
 
     clock.set(END)
@@ -953,8 +984,12 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
         ("small", "accepted", None),
         ("large", "wrong_answer", None),
     ]
-    assert after.grading.groups[2].tests == (RESULT["tests"][0],)
-    assert after.grading.groups[1].tests == (RESULT["tests"][2],)
+    assert after.grading.groups[2].tests == (_credited(0),)
+    assert after.grading.groups[1].tests == (_credited(2),)
+    assert after.grading.points == Points(
+        shown=Fraction(65), pending=Fraction(0), pending_until=None
+    )
+    assert after.grading.groups[2].points == 0
 
 
 async def _first_attempts_only(setup: Setup) -> None:
@@ -978,7 +1013,7 @@ async def test_a_change_to_show_alone_shows_a_grading_with_the_latest_groups(
 
     assert submission.grading is not None
     small = submission.grading.groups[1]
-    assert (small.show, small.tests) == (Show.ALWAYS, (RESULT["tests"][2],))
+    assert (small.show, small.tests) == (Show.ALWAYS, (_credited(2),))
 
 
 async def test_a_grading_whose_tests_changed_since_is_shown_with_its_own_publication(
@@ -1008,7 +1043,7 @@ async def test_a_grading_whose_tests_changed_since_is_shown_with_its_own_publica
     assert submission.grading is not None
     assert submission.grading.outcome == "accepted"
     assert [(group.group, group.show, group.tests) for group in submission.grading.groups] == [
-        ("main", Show.ALWAYS, (RESULT["tests"][1],)),
+        ("main", Show.ALWAYS, (_credited(1),)),
         ("small", Show.VERDICT, None),
         ("large", Show.AFTER_CLOSE, None),
     ]
@@ -1034,6 +1069,7 @@ async def test_an_extension_holds_the_reveal_back_for_everyone(
         outcome=None,
         tests=None,
         shown_at=END + timedelta(hours=1),
+        max=Fraction(35),
     )
 
 

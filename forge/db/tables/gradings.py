@@ -18,7 +18,10 @@ its run at the CI, `dispatched_at` when that run was started,
 run's deadline from then. `progress` is the last progress its run reported,
 `{"step", "done", "total"}`, and `error` a line for staff about a grading
 that ended in `system_error`, kept when staff then cancel it with
-`cancel_reason`, the sentence its contestant reads.
+`cancel_reason`, the sentence its contestant reads. `falls_back` is staff
+asking, on such a latest attempt, that its submission count as the latest
+earlier attempt that finished with a result, whatever the contest's
+`on_system_error` says.
 """
 
 import uuid
@@ -63,6 +66,7 @@ class Grading(Base, Timestamped):
     deadline_at: Mapped[datetime | None]
     error: Mapped[str | None]
     cancel_reason: Mapped[str | None]
+    falls_back: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
 
     __table_args__ = (
         CheckConstraint(f"status in {STATUSES}", name="status"),

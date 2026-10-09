@@ -494,3 +494,23 @@ class TeamChanged(ServiceError):
     """
 
     code = "team_changed"
+
+
+class MarksOff(ServiceError):
+    """No board with `select: marked` covers the task, so it takes no marks."""
+
+    code = "marks_off"
+
+
+class MarksFrozen(ServiceError):
+    """The row's close on the task has passed, so its marks are frozen."""
+
+    code = "marks_frozen"
+
+
+class MarkLimit(ServiceError):
+    """The row holds as many marks on the task as it may. `limit` is that
+    many.
+    """
+
+    code = "mark_limit"

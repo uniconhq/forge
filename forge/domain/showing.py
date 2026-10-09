@@ -23,19 +23,26 @@ staff gave (`told`).
 
 A grading is shown with the publication it ran under (`under`, TASK-FORMAT.md
 section 2, check 12): its sealed facts always, since they say what that
-plan's steps read; and the `test_groups` of the task's latest publication
-when the two plans list the same tests, so a change to rule weights or
-`show` alone counts at once, and its own `test_groups` otherwise, so a
-result's rows are always folded with the tests they ran on.
+plan's steps read; and the `test_groups`, `credit` and value meanings of the
+task's latest publication while no grading change was published since, so a
+change to rule weights, `show` or `credit` alone counts at once, and its own
+otherwise, until its regrade ends, so a result's rows are always folded with
+the tests they ran on and a credit always names a value its plan reported.
+With a grading scored (`forge.domain.scoring`), each group shown carries
+its points and most points, each test row its credit, and the result its
+points shown and pending and each value with a fold, folded over the tests
+shown (TASK-FORMAT.md section 1.7).
 """
 
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
+from fractions import Fraction
 from typing import Any
 
-from forge.domain.definitions import Group, Show
+from forge.domain.definitions import Group, Relative, Show
 from forge.domain.grading import GradingStatus
+from forge.domain.scoring import Measure, Points, Scored, Seen, TestScore, points_seen
 
 ACCEPTED = "accepted"
 
@@ -57,22 +64,45 @@ NOTHING_SEALED = Sealed()
 
 @dataclass(frozen=True, slots=True)
 class Graded:
-    """A publication as a grading made under it is shown with: the tests its
-    plan lists, its `test_groups`, and what its sealed steps hold back.
+    """A publication as a grading made under it is shown and scored with:
+    the tests its plan lists, its `test_groups`, what its sealed steps hold
+    back, its `credit`, what each per-test number its workflow reports
+    means, and its generation, the number of the latest publication up to
+    it that changed how the task grades, which publications grading the
+    same test content share.
     """
 
     tests: tuple[str, ...]
     groups: Mapping[str, Group]
     sealed: Sealed
+    credit: str | Relative | None = None
+    measures: Mapping[str, Measure] = field(default_factory=dict)
+    generation: int = 0
 
 
 def under(own: Graded, latest: Graded) -> Graded:
     """What a grading made under `own` is shown with while `latest` is the
-    task's latest publication: `own`'s sealed facts, and `latest`'s
-    `test_groups` when the two plans list the same tests, `own`'s otherwise.
+    task's latest publication: `own`'s tests and sealed facts, and
+    `latest`'s `test_groups`, `credit` and meanings while no grading change
+    came between them, `own`'s otherwise.
     """
-    groups = latest.groups if own.tests == latest.tests else own.groups
-    return Graded(own.tests, groups, own.sealed)
+    if own.generation != latest.generation or own.tests != latest.tests:
+        return own
+    return replace(own, groups=latest.groups, credit=latest.credit, measures=latest.measures)
+
+
+def generation_of(changed: Sequence[tuple[int, bool]], number: int) -> int:
+    """The generation of publication `number`, from every publication's
+    number and whether it changed how the task grades: the latest number up
+    to it that did, the first publication counting as one.
+    """
+    found = 0
+    for each, grading_changed in sorted(changed):
+        if each > number:
+            break
+        if grading_changed or not found:
+            found = each
+    return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +110,9 @@ class GroupShown:
     """One test group as a contestant sees it now: its name, its `show`, its
     outcome when its verdict is shown, its tests when they are, when what is
     held back is shown, and whether it ran on this grading at all. A group
-    that did not run has no outcome, no tests and nothing held back.
+    that did not run has no outcome, no tests and nothing held back; while a
+    sealed step's stop is held to the reveal, every group reads as hidden,
+    the ones it kept from running too.
     """
 
     group: str
@@ -89,16 +121,23 @@ class GroupShown:
     tests: tuple[Mapping[str, Any], ...] | None
     shown_at: datetime | None
     ran: bool = True
+    points: Fraction | None = None
+    max: Fraction | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Shown:
-    """A result as a contestant sees it now."""
+    """A result as a contestant sees it now: what stopped it, its outcome,
+    its groups and its once values; scored, its points and each value with
+    a fold, folded over the tests shown.
+    """
 
     stopped: str | None
     outcome: str | None
     groups: tuple[GroupShown, ...]
     values: Mapping[str, Any]
+    points: Points | None = None
+    folded: Mapping[str, Fraction] = field(default_factory=dict)
 
 
 def told(status: GradingStatus) -> GradingStatus:
@@ -121,24 +160,46 @@ def shown(
     *,
     revealed: bool,
     reveal_at: datetime | None,
+    scored: Scored | None = None,
 ) -> Shown:
     """What of `result` a contestant sees under `groups`, the task's
     `test_groups`, with its sealed facts, before or after the task's
-    reveal at `reveal_at`.
+    reveal at `reveal_at`; with `scored`, the grading scored under those
+    groups, each group's points and most points, its points only once its
+    verdict is shown, each test's credit, the points shown and pending, and
+    the folded values.
     """
     rows: dict[str, list[Mapping[str, Any]]] = {}
     for row in result.get("tests") or ():
         rows.setdefault(group_of(str(row["test"])), []).append(row)
     hidden_values = sealed.values if not revealed else frozenset()
+    scores = {group.group: group for group in scored.groups} if scored is not None else {}
+    seen = seen_of(result, sealed, revealed=revealed)
     found: list[GroupShown] = []
     for name, group in groups.items():
         show = group.shown
-        if name not in rows:
-            found.append(GroupShown(name, show, None, (), None, ran=False))
+        score = scores.get(name)
+        most = score.max if score is not None else None
+        if name not in rows and not seen.held:
+            found.append(
+                GroupShown(
+                    name,
+                    show,
+                    None,
+                    (),
+                    None,
+                    ran=False,
+                    points=score.points if score is not None and seen.verdict(show) else None,
+                    max=most,
+                )
+            )
             continue
-        tests = tuple(_row(row, hidden_values) for row in rows[name])
-        verdict_shown = revealed or show is not Show.AFTER_CLOSE
-        tests_shown = revealed or show is Show.ALWAYS
+        credits = {test.test: test for test in score.tests} if score is not None else {}
+        tests = tuple(
+            _row(row, hidden_values, credits.get(str(row["test"]))) for row in rows.get(name, ())
+        )
+        verdict_shown = seen.verdict(show)
+        tests_shown = seen.tests(show)
         found.append(
             GroupShown(
                 group=name,
@@ -146,24 +207,45 @@ def shown(
                 outcome=_outcome(tests) if verdict_shown else None,
                 tests=tests if tests_shown else None,
                 shown_at=None if tests_shown else reveal_at,
+                points=score.points if score is not None and verdict_shown else None,
+                max=most,
             )
         )
-    stopped = result.get("stopped")
-    if result.get("stopped_by") in sealed.steps and not revealed:
-        stopped = None
+    stopped = None if seen.held else result.get("stopped")
     values = {
         name: value
         for name, value in (result.get("values") or {}).items()
         if name not in hidden_values
     }
-    return Shown(stopped, _viewed(stopped, found), tuple(found), values)
+    return Shown(
+        stopped,
+        _viewed(stopped, found),
+        tuple(found),
+        values,
+        points_seen(scored, seen, reveal_at) if scored is not None else None,
+        scored.values(seen) if scored is not None else {},
+    )
 
 
-def _row(row: Mapping[str, Any], hidden: Collection[str]) -> Mapping[str, Any]:
+def seen_of(result: Mapping[str, Any], sealed: Sealed, *, revealed: bool) -> Seen:
+    """What a contestant is shown of `result` now: held, nothing, while the
+    step that stopped it is sealed and the task has not revealed.
+    """
+    return Seen(revealed, held=not revealed and result.get("stopped_by") in sealed.steps)
+
+
+def _row(
+    row: Mapping[str, Any], hidden: Collection[str], score: TestScore | None = None
+) -> Mapping[str, Any]:
     values = {
         name: value for name, value in (row.get("values") or {}).items() if name not in hidden
     }
-    return {"test": row["test"], "outcome": row["outcome"], "values": values}
+    found: dict[str, Any] = {"test": row["test"], "outcome": row["outcome"], "values": values}
+    if score is not None:
+        found["credit"] = score.credit
+        if score.best is not None:
+            found["best"] = score.best
+    return found
 
 
 def _outcome(tests: Sequence[Mapping[str, Any]]) -> str:
