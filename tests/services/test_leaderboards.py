@@ -10,6 +10,7 @@ contest's (C4), with the save's report of the boards it moves (T9); and a
 task's `marks` never lowered below what a row holds (C1).
 """
 
+import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from fractions import Fraction
@@ -21,6 +22,7 @@ from sqlalchemy import select, update
 from forge.db.tables import Grading
 from forge.domain.content import Edit
 from forge.domain.errors import MarkLimit, MarksFrozen, MarksOff, NotApproved, NotFound
+from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId, VersionId
 from forge.domain.names import UserOwner
@@ -40,6 +42,7 @@ from forge.services import (
     publications,
     submissions,
 )
+from forge.services.access import Organiser
 from forge.services.publications import Draft, Published
 from forge.testing import FakeClock
 from tests.services.conftest import (
@@ -295,15 +298,18 @@ async def test_a_run_in_system_error_is_still_grading_to_its_row_and_no_attempt(
     assert (cell.counting, cell.attempts, cell.grading) == (False, 0, 1)
 
 
-async def test_a_fallback_counts_the_last_good_result_of_a_broken_attempt_a_cancel_included(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    await write_contest(acme.fake, contest(BOARDS))
-    await _submit(setup, acme, entered, "key-0001-fault")
-    await _grade_waiting(setup, _main())
-    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring", "sum"), Role.MANAGER)
+async def _manager(setup: Setup, acme: Acme) -> Organiser:
+    return await organiser(setup, acme.fake, 7, Scope("acme", "spring", "sum"), Role.MANAGER)
+
+
+async def _broken_retry(setup: Setup, manager: Organiser, key: str) -> uuid.UUID:
+    """The submission made with `key` retried, and the retry ended in a
+    system error: the retry's id.
+    """
     async with setup.unit_of_work() as ctx:
-        first = await ctx.db.scalar(select(Grading.id))
+        first = await ctx.db.scalar(
+            select(Grading.id).where(Grading.idempotency_key == key, Grading.attempt == 1)
+        )
     assert first is not None
     second = (await gradings.retry(setup, manager, first)).id
     async with setup.unit_of_work() as ctx:
@@ -312,6 +318,17 @@ async def test_a_fallback_counts_the_last_good_result_of_a_broken_attempt_a_canc
             .where(Grading.id == second)
             .values(status="system_error", error="It crashed.")
         )
+    return second
+
+
+async def test_a_fallback_counts_the_last_good_result_of_a_broken_attempt_a_cancel_included(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await write_contest(acme.fake, contest(BOARDS))
+    await _submit(setup, acme, entered, "key-0001-fault")
+    await _grade_waiting(setup, _main())
+    manager = await _manager(setup, acme)
+    second = await _broken_retry(setup, manager, "key-0001-fault")
 
     async def cell() -> tuple[Fraction | None, bool, int | None]:
         standings, _ = await boards.seen(setup, entered.session, SPRING)
@@ -374,6 +391,62 @@ async def test_relative_credit_is_against_the_best_of_the_rows_candidates_only(
 
     assert points(before) == {"bob": 100, "cyd": 50}
     assert points(after) == {"cyd": 100, "bob": 0}
+
+
+async def test_relative_credit_counts_a_fallen_back_result_while_the_fallback_holds(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await write_contest(acme.fake, contest(BOARDS))
+    current = await _task_yaml(acme, entered.task)
+    saved = await _save(
+        setup, acme, entered.task, {"task.yaml": current + b"credit: {relative: time_ms}\n"}
+    )
+    assert isinstance(saved, Published), saved
+    cyd = await _contestant(setup, acme, 30, "cyd")
+    await _submit(setup, acme, entered, "key-0001-bob")
+    await _grade_waiting(setup, _main(time_ms=10))
+    await _submit(setup, acme, Entered(cyd, entered.task), "key-0001-cyd")
+    await _grade_waiting(setup, _main(time_ms=20))
+    manager = await _manager(setup, acme)
+    broken = await _broken_retry(setup, manager, "key-0001-bob")
+
+    async def points() -> dict[str, Fraction | None]:
+        (standings,) = await boards.seen(setup, None, SPRING)
+        return {row.name: row.keys[0] for row in standings.rows}
+
+    assert await points() == {"cyd": 100, "bob": 0}
+    await gradings.fall_back(setup, manager, broken)
+    assert await points() == {"bob": 100, "cyd": 50}
+    await gradings.clear_fallback(setup, manager, broken)
+    assert await points() == {"cyd": 100, "bob": 0}
+
+
+async def test_a_fallen_back_result_shows_only_what_is_shown_and_counts_its_mark_at_the_reveal(
+    setup: Setup, acme: Acme, ranked: Entered, clock: FakeClock
+) -> None:
+    await _broken_retry(setup, await _manager(setup, acme), "key-0002-bbbb")
+    await marks.mark(setup, ranked.session, ranked.task, 2)
+    await write_contest(acme.fake, contest(BOARDS + "on_system_error: last_result\n"))
+
+    standings, final = await boards.seen(setup, ranked.session, SPRING)
+    told = (await submissions.one(setup, ranked.session, ranked.task, 2)).grading
+
+    # Before the reveal the second's large group is held back, as it was
+    # before its retry broke: 65 shown and 35 pending, and nothing of Final.
+    assert standings.rows[0].keys == keys(65, 120)
+    assert final.nothing_shown
+    assert told is not None and (told.attempt, told.status) == (1, GradingStatus.DONE)
+    assert told.points is not None
+    assert (told.points.shown, told.points.pending) == keys(65, 35)
+    assert [group.outcome for group in told.groups if group.group == "large"] == [None]
+
+    clock.set(END)
+    await identity.current(ranked.session.id, setup=setup)
+    _, final = await boards.seen(setup, ranked.session, SPRING)
+    assert (final.rows[0].keys, final.rows[0].cells["sum"].submissions) == (keys(35), (2,))
+    await write_contest(acme.fake, contest(BOARDS))
+    _, final = await boards.seen(setup, ranked.session, SPRING)
+    assert final.rows[0].keys == keys(0)
 
 
 async def test_a_mark_holds_up_to_the_tasks_marks_and_freezes_at_the_close(

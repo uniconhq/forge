@@ -190,7 +190,9 @@ class GradingRecord:
     On a latest attempt that is a system error or staff cancelled,
     `last_good` is the latest earlier attempt that finished with a result,
     and `fallback` why the submission counts as that attempt now, none
-    while it does not; `falls_back` is staff having asked so on this one.
+    while it does not; `falls_back` is staff having asked so on this one,
+    told only on a latest attempt, since a flag on an earlier one counts
+    for nothing.
     """
 
     id: uuid.UUID
@@ -563,18 +565,23 @@ def broken(row: Grading, status: GradingStatus) -> bool:
     return status is GradingStatus.SYSTEM_ERROR or staff_cancelled(row)
 
 
+def good(row: Grading) -> bool:
+    """Whether an attempt finished with a result, one a fallback may count:
+    `GOOD` told on a row in hand.
+    """
+    return row.status == GradingStatus.DONE and row.result is not None
+
+
+GOOD = and_(Grading.status == GradingStatus.DONE, Grading.result.is_not(None))
+"""`good` told in a query."""
+
+
 def last_good(attempts: Iterable[Grading], row: Grading) -> Grading | None:
     """The latest attempt of `row`'s submission before it that finished
     with a result, what a fallback counts in its place, or none.
     """
     return max(
-        (
-            other
-            for other in attempts
-            if other.attempt < row.attempt
-            and other.status == GradingStatus.DONE
-            and other.result is not None
-        ),
+        (other for other in attempts if other.attempt < row.attempt and good(other)),
         key=lambda other: other.attempt,
         default=None,
     )
@@ -782,11 +789,7 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
         raise Conflict("A later attempt of this submission exists; retry that one.")
     if any(status_of(ctx, other, gone) in UNFINISHED for other in attempts):
         raise Conflict("Another attempt of this grading is still being graded.")
-    stored = GradingStatus(row.status)
-    if stored in UNFINISHED:
-        finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=overdue_of(ctx, row, gone))
-    if row.run_id is not None and stored not in (GradingStatus.DONE, GradingStatus.CANCELLED):
-        _cancel_after_commit(ctx, RunId(row.run_id))
+    _settle(ctx, row, gone)
     made = _next_attempt(ctx, row, PublicationId(row.publication_id), attempts)
     await ctx.db.flush()
     log.info("gradings.retried", grading=str(row.id), attempt=made.attempt)
@@ -798,7 +801,9 @@ async def fall_back(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> G
     """Count a submission whose latest grading is a system error, or staff
     cancelled, as the latest earlier attempt of it that finished with a
     result, whatever the contest's `on_system_error` says, until
-    `clear_fallback`.
+    `clear_fallback`. One that reads so only because it is overdue or lost
+    is written so and its run stopped, as a retry does, so a late report
+    cannot take the fallback away.
     Asked again, it changes nothing. `WrongStatus` for a grading that is
     neither, and `Conflict` for one with a later attempt, which is the one
     that counts, and for a submission with no earlier result to count.
@@ -819,6 +824,7 @@ async def fall_back(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> G
         raise Conflict("A later attempt of this submission exists; that one counts.")
     if last_good(attempts, row) is None:
         raise Conflict("No earlier attempt of this submission finished with a result.")
+    _settle(ctx, row, gone)
     row.falls_back = True
     await ctx.db.flush()
     log.info("gradings.fell_back", grading=str(row.id), user_id=organiser.user.id)
@@ -870,6 +876,18 @@ def _placed(found: GradingRecord, settings: ContestDefinition | None) -> Grading
         return found
     contest = settings.on_system_error if settings is not None else OnSystemError.GRADING
     return replace(found, fallback=fallback_of(found.falls_back, contest))
+
+
+def _settle(ctx: Context, row: Grading, gone: Collection[uuid.UUID]) -> None:
+    """Write an attempt that reads as a system error while its row says it
+    is still being graded, overdue or lost, as one, with why, and stop any
+    run of it the CI may still hold once the unit of work has committed.
+    """
+    stored = GradingStatus(row.status)
+    if stored in UNFINISHED:
+        finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=overdue_of(ctx, row, gone))
+    if row.run_id is not None and stored not in (GradingStatus.DONE, GradingStatus.CANCELLED):
+        _cancel_after_commit(ctx, RunId(row.run_id))
 
 
 def _cancel_after_commit(ctx: Context, run: RunId) -> None:
@@ -1213,7 +1231,7 @@ def record(
         finished_at=row.finished_at,
         deadline_at=row.deadline_at,
         cancel_reason=row.cancel_reason,
-        falls_back=row.falls_back,
+        falls_back=row.falls_back and latest,
         last_good=last_good if latest and broken(row, status) else None,
     )
 
@@ -1246,9 +1264,7 @@ async def _last_goods(ctx: Context, rows: Iterable[Grading]) -> dict[uuid.UUID, 
         return {}
     found = await ctx.db.execute(
         select(Grading.submission_id, Grading.attempt).where(
-            Grading.submission_id.in_(submissions),
-            Grading.status == GradingStatus.DONE,
-            Grading.result.is_not(None),
+            Grading.submission_id.in_(submissions), GOOD
         )
     )
     done: dict[str, builtins.list[int]] = {}

@@ -897,6 +897,10 @@ async def test_under_a_fallback_a_cancel_keeps_the_last_good_result_and_its_plac
     assert (cancelled.status, cancelled.fallback) == (GradingStatus.CANCELLED, Fallback.CONTEST)
     shown = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert shown is not None and (shown.attempt, shown.status) == (1, GradingStatus.DONE)
+    # A cancel stays final for grading: a rejudge passes the submission over.
+    rejudged = await gradings.rejudge(setup, manager, entered.task)
+    assert rejudged.queued == 0
+    assert [found.attempt for found in await _rows(setup)] == [1, 2]
     # The submission still stands at its result, so it still takes its place under the max.
     await _limit_to_one(setup, acme, entered)
     clock.advance(timedelta(seconds=31))
@@ -907,6 +911,57 @@ async def test_under_a_fallback_a_cancel_keeps_the_last_good_result_and_its_plac
     assert voided is not None and (voided.attempt, voided.status) == (2, GradingStatus.CANCELLED)
     second = await _submit(setup, acme, entered, key="key-0002-bbbb")
     assert second.submission_number == 2
+
+
+async def test_a_retry_ends_a_staff_fallback_and_its_attempt_starts_without_one(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    _, broken = await _broken_after_a_result(setup, acme, entered, manager)
+    await gradings.fall_back(setup, manager, broken)
+
+    retried = await gradings.retry(setup, manager, broken)
+    await _set(setup, retried.id, status=GradingStatus.SYSTEM_ERROR, error="Again.")
+
+    listed = {found.attempt: found for found in await _listed(setup, manager, entered.task)}
+    assert (listed[3].latest, listed[3].falls_back, listed[3].fallback) == (True, False, None)
+    assert (listed[2].latest, listed[2].falls_back) == (False, False)
+    told = (await submissions.one(setup, entered.session, entered.task, 1)).grading
+    assert told is not None and (told.attempt, told.status) == (3, GradingStatus.RUNNING)
+
+
+async def test_a_fallback_on_a_lost_grading_ends_it_saying_why_and_cancels_its_run(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    row, envelope = await _running(setup, acme, entered)
+    await _report(setup, row, _finished(_result(envelope)))
+    retried = await gradings.retry(setup, manager, row.id)
+    run = RunId(str((await _row(setup, retried.id)).run_id))
+    acme.fake.state.runs[run].ci_state = RunState.LOST
+    clock.advance(LOST_CHECK_AFTER)
+
+    fell = await gradings.fall_back(setup, manager, retried.id)
+
+    assert (fell.status, fell.fallback) == (GradingStatus.SYSTEM_ERROR, Fallback.STAFF)
+    _, lost = await _rows(setup)
+    assert (lost.status, lost.error, lost.falls_back) == (GradingStatus.SYSTEM_ERROR, LOST, True)
+    assert acme.fake.state.runs[run].cancelled is True
+
+
+async def test_a_contest_whose_settings_do_not_read_counts_a_broken_attempt_as_grading(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    await write_contest(
+        acme.fake, RUNNING.format(visibility="everyone") + "on_system_error: last_result\n"
+    )
+    await _broken_after_a_result(setup, acme, entered, manager)
+    await write_contest(acme.fake, "tasks: [\n")
+
+    (listed,) = [found for found in await _listed(setup, manager, entered.task) if found.latest]
+
+    assert (listed.last_good, listed.fallback) == (1, None)
 
 
 async def test_a_grading_is_no_such_grading_to_an_organiser_who_does_not_observe_its_task(

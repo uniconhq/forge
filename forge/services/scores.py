@@ -98,13 +98,14 @@ def usable(
     status = gradings.status_of(ctx, latest, lost)
     if status is GradingStatus.DONE and latest.result is not None:
         return Usable(State.CANDIDATE, latest)
-    good = gradings.last_good(rows, latest)
     if gradings.broken(latest, status):
-        if good is not None and gradings.fallback_of(latest.falls_back, contest) is not None:
-            return Usable(State.CANDIDATE, good)
+        standing = _standing_in(rows, latest, contest)
+        if standing is not None:
+            return Usable(State.CANDIDATE, standing)
         if gradings.staff_cancelled(latest):
             return Usable(State.VOID, None)
         return Usable(State.GRADING, None)
+    good = gradings.last_good(rows, latest)
     if good is not None:
         return Usable(State.CANDIDATE, good)
     if status is GradingStatus.CANCELLED:
@@ -119,11 +120,23 @@ def fallen_back(
     contest: OnSystemError,
 ) -> Grading | None:
     """The earlier attempt a fallback counts in place of a submission's
-    broken latest attempt, or none while no fallback is in force for it.
+    broken latest attempt, the one `usable` reads for it, or none while no
+    fallback is in force for it. An attempt still being graded is not
+    broken, so its contestant reads it as grading while a board holds the
+    earlier result until it ends.
     """
     latest = max(rows, key=lambda row: row.attempt)
     if not gradings.broken(latest, gradings.status_of(ctx, latest, lost)):
         return None
+    return _standing_in(rows, latest, contest)
+
+
+def _standing_in(
+    rows: Sequence[Grading], latest: Grading, contest: OnSystemError
+) -> Grading | None:
+    """The last good result that stands in for the broken latest attempt
+    `latest` while a fallback by staff or by the contest is in force, or none.
+    """
     if gradings.fallback_of(latest.falls_back, contest) is None:
         return None
     return gradings.last_good(rows, latest)

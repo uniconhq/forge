@@ -66,7 +66,7 @@ class Grading(Base, Timestamped):
     deadline_at: Mapped[datetime | None]
     error: Mapped[str | None]
     cancel_reason: Mapped[str | None]
-    falls_back: Mapped[bool] = mapped_column(server_default=text("false"))
+    falls_back: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
 
     __table_args__ = (
         CheckConstraint(f"status in {STATUSES}", name="status"),
