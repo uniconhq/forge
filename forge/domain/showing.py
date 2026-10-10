@@ -251,6 +251,19 @@ def shown(
     )
 
 
+def filled_in(row: Shown, revealed: Shown) -> Shown:
+    """A result as organisers read it: `revealed`, the result shown as after
+    the task's reveal, with nothing held back, and each group's `shown_at`
+    kept from `row`, what its contestant is shown now, as the note of when
+    they see it.
+    """
+    when = {group.group: group.shown_at for group in row.groups}
+    return replace(
+        revealed,
+        groups=tuple(replace(group, shown_at=when.get(group.group)) for group in revealed.groups),
+    )
+
+
 def seen_of(result: Mapping[str, Any], sealed: Sealed, *, revealed: bool) -> Seen:
     """What a contestant is shown of `result` now: held, nothing, while the
     step that stopped it is sealed and the task has not revealed.

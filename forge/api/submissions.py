@@ -1,7 +1,8 @@
 """A contestant's submissions: submitting uploads and values to a task, and
 reading their own submissions, each with its grading as the task's test
-groups show it, the files one was made with and the door to download one,
-and the types they take and come back as.
+groups show it, the files one was made with and the door to download one;
+any row's submission as organisers read it, everything filled in; and the
+types they take and come back as.
 """
 
 from forge.domain.definitions import Show
@@ -17,6 +18,7 @@ from forge.services.submissions import (
     files,
     mine,
     one,
+    organised,
     submit,
 )
 
@@ -34,5 +36,6 @@ __all__ = [
     "files",
     "mine",
     "one",
+    "organised",
     "submit",
 ]

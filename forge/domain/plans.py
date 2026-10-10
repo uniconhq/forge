@@ -43,7 +43,7 @@ one entry per test.
 
 import math
 import re
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Annotated, Any, Literal
@@ -1674,7 +1674,11 @@ class Snapshot:
     data: Mapping[str, str]
 
 
-def _differences(before: Mapping[str, object], after: Mapping[str, object]) -> list[str]:
+def _differences(
+    before: Mapping[str, object],
+    after: Mapping[str, object],
+    why: Callable[[object, object], list[str]] | None = None,
+) -> list[str]:
     changes: list[str] = []
     for key in sorted(before.keys() | after.keys()):
         if key not in before:
@@ -1683,7 +1687,42 @@ def _differences(before: Mapping[str, object], after: Mapping[str, object]) -> l
             changes.append(f"{key} removed")
         elif not _same(before[key], after[key]):
             changes.append(f"{key} changed")
+            if why is not None:
+                changes += why(before[key], after[key])
     return changes
+
+
+def _moved_images(before: object, after: object) -> list[str]:
+    """Each primitive version two plans both run whose image differs between
+    them: a release moved that version's image in place, so a save picks it
+    up though nothing the organiser wrote changed it.
+    """
+    old, new = _images(before), _images(after)
+    return [
+        f"{ref.partition('/')[2]}'s image moved with a release"
+        for ref in sorted(old.keys() & new.keys())
+        if old[ref] != new[ref]
+    ]
+
+
+def _images(plan: object) -> dict[str, str]:
+    """The image each primitive version a plan's steps run is pinned to, or
+    nothing for a plan that does not read.
+    """
+    if not isinstance(plan, bytes):
+        return {}
+    try:
+        document = exact_json.loads(plan)
+    except ValueError:
+        return {}
+    steps = document.get("steps") if isinstance(document, dict) else None
+    return {
+        step["primitive"]: step["image"]
+        for step in (steps if isinstance(steps, list) else [])
+        if isinstance(step, dict)
+        and isinstance(step.get("primitive"), str)
+        and isinstance(step.get("image"), str)
+    }
 
 
 def _same(before: object, after: object) -> bool:
@@ -1704,9 +1743,14 @@ def _same(before: object, after: object) -> bool:
 def grading_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...]:
     """What changed how the task grades between the previous publication and
     this one, in words a person reads: `plans/plan.json changed`,
-    `tests/main/1/input added`. Empty when nothing did, and for a first
-    publication, which has nothing before it.
+    `tests/main/1/input added`, and after a changed plan each primitive
+    version whose image a release moved, `sandbox-run@v2's image moved with
+    a release`. Empty when nothing did, and for a first publication, which
+    has nothing before it.
     """
     if before is None:
         return ()
-    return (*_differences(before.plans, after.plans), *_differences(before.data, after.data))
+    return (
+        *_differences(before.plans, after.plans, _moved_images),
+        *_differences(before.data, after.data),
+    )

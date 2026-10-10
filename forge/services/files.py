@@ -10,7 +10,9 @@ or when it moves a task's timeline behind what rows already did or puts a
 worth or a due on a task that gives no points (`timelines.check_contest`),
 or when a board asks what a covered task's latest publication does not give
 or a task's marks fall below what a row holds (`boards.check_contest`),
-and a manager's change to one of its admin-only keys is refused naming each. A
+and a manager's change to one of its admin-only keys is refused naming each.
+One that is written answers with what C4 reports of its boards beside the
+version, as a task's save answers T9's (`Written`). A
 write to a task is a save of the task, which publishes it when it is valid
 (`publications.save`). A rollback is not an undo: the file as it was at the
 chosen version is written back as a new change through the same write, so a
@@ -23,7 +25,7 @@ it is changed by uploading it again (`write_upload`).
 """
 
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from forge.domain.content import (
     Change,
@@ -56,6 +58,18 @@ from forge.services.publications import Draft, Published
 log = get_logger(__name__)
 
 Place = ContestId | TaskId
+
+
+@dataclass(frozen=True, slots=True)
+class Written:
+    """A contest's file written: the version the change made, and, for
+    `contest.yaml`, each board's notes on the tasks it covers, such as one
+    that counts nothing from a task; the organisers' reading of the boards
+    carries the same notes beside each.
+    """
+
+    version: VersionId
+    notes: tuple[str, ...] = ()
 
 
 @action
@@ -147,10 +161,10 @@ async def write(
     message: str | None = None,
     confirm: bool = False,
     keep_as_draft: bool = False,
-) -> VersionId | Published | Draft:
+) -> Written | Published | Draft:
     """Write one file, `expected` being the token it was read with or none
-    for a new file. A contest's file comes back as the version written; a
-    task's as the save's publication or draft, `confirm` and `keep_as_draft`
+    for a new file. A contest's file comes back as the version written, with
+    its boards' notes; a task's as the save's publication or draft, `confirm` and `keep_as_draft`
     doing what they do for a save.
     """
     scope = scope_of_place(place)
@@ -168,6 +182,7 @@ async def write(
         )
     contest = ContestId(place)
     refuse_pointer(path, content)
+    notes: list[str] = []
     if path == CONTEST_FILE:
         after = parse_contest(content)
         before = await _current(ctx, organiser, contest, path)
@@ -180,7 +195,9 @@ async def write(
                 )
         await timelines.hold_rules(ctx, contest)
         problems = await timelines.check_contest(ctx, contest, _parsed(before), after)
-        problems += await boards.check_contest(ctx, contest, after)
+        checked = await boards.check_contest(ctx, contest, after)
+        problems += checked.problems
+        notes = checked.notes
         if problems:
             raise InvalidDefinition(CONTEST_FILE, problems)
     version = await ctx.forge.content.write_file(
@@ -194,7 +211,7 @@ async def write(
     if path == CONTEST_FILE:
         published.forget_contests(ctx)
     log.info("files.written", place=place, path=path, version=version, user_id=organiser.user.id)
-    return version
+    return Written(version, tuple(notes))
 
 
 @action
@@ -209,7 +226,7 @@ async def rollback(
     message: str | None = None,
     confirm: bool = False,
     keep_as_draft: bool = False,
-) -> VersionId | Published | Draft:
+) -> Written | Published | Draft:
     """Write the file as it was at `version` back as a new change, through
     `write`, `expected` being the token of the file as it is now. `NotFound`
     when the file was not there at that version.

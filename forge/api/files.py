@@ -5,7 +5,7 @@ by a save, and what they return.
 """
 
 from forge.domain.content import Change, EntryKind, File, TreeEntry, UploadInfo
-from forge.services.files import history, read, rollback, tree, write, write_upload
+from forge.services.files import Written, history, read, rollback, tree, write, write_upload
 
 __all__ = [
     "Change",
@@ -13,6 +13,7 @@ __all__ = [
     "File",
     "TreeEntry",
     "UploadInfo",
+    "Written",
     "history",
     "read",
     "rollback",

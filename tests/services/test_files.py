@@ -125,13 +125,14 @@ async def test_a_manager_writes_a_manager_key_and_a_stale_token_is_a_conflict(
     changed = before.content.replace(b"end: 2026-10-03T17:00:00Z", b"end: 2026-10-03T18:00:00Z")
     assert changed != before.content
 
-    version = await files.write(setup, manager, spring, "contest.yaml", changed, before.token)
+    written = await files.write(setup, manager, spring, "contest.yaml", changed, before.token)
 
-    assert isinstance(version, str)
+    assert isinstance(written, files.Written)
+    assert isinstance(written.version, str)
     (call,) = acme.fake.calls_to("write_file")
     assert call.identity == manager.identity
-    written = await files.read(setup, manager, spring, "contest.yaml")
-    assert parse_contest(written.content).end.hour == 18
+    after = await files.read(setup, manager, spring, "contest.yaml")
+    assert parse_contest(after.content).end.hour == 18
     assert (await files.history(setup, manager, spring, "contest.yaml"))[0].author_id == 8
     with pytest.raises(Conflict):
         await files.write(setup, manager, spring, "contest.yaml", changed, before.token)
@@ -195,13 +196,14 @@ async def test_a_rollback_writes_the_old_content_as_a_new_change(
     await files.write(setup, acme.ada, spring, "contest.yaml", edited, first.token)
     current = await files.read(setup, acme.ada, spring, "contest.yaml")
 
-    version = await files.rollback(
+    rolled_back = await files.rollback(
         setup, acme.ada, spring, "contest.yaml", created.version, current.token
     )
 
     assert (await files.read(setup, acme.ada, spring, "contest.yaml")).content == first.content
     history = await files.history(setup, acme.ada, spring, "contest.yaml")
-    assert history[0].version == version
+    assert isinstance(rolled_back, files.Written)
+    assert history[0].version == rolled_back.version
     assert len(history) == 3
     assert history[0].message == f"Roll back contest.yaml to {created.version}"
     assert history[2].version == created.version
@@ -271,8 +273,8 @@ async def _write_contest(setup: Setup, acme: Acme, content: bytes) -> VersionId:
     """`contest.yaml` written by ada through the editor's write."""
     current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
     written = await files.write(setup, acme.ada, SPRING, "contest.yaml", content, current.token)
-    assert isinstance(written, str)
-    return VersionId(written)
+    assert isinstance(written, files.Written)
+    return written.version
 
 
 async def _refused(setup: Setup, acme: Acme, content: bytes) -> list[tuple[str, str]]:
