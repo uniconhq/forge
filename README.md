@@ -226,7 +226,7 @@ account, the account
 `UNICON_FORGE_PLATFORM_ACCOUNT` names and the admin token belongs to.
 Activating a task at the CI and starting its runs are done as the org's own
 account, which the caller hands in as an `AsOrgAccount` carrying that
-account's two credentials.
+account's credential at the forge and its state at the CI.
 
 A contest or a task is made bare, with its starter files, by
 `content.create_contest` and `content.create_task`, and `content.secure`
@@ -620,23 +620,23 @@ fixed words; an undo with nothing left logs `<subject>.undone` once. The
 undo runs from `ctx.after_rollback`, so a commit that fails after every step
 worked, the database gone away, undoes them as well. A process that dies
 halfway leaves what it made under keys no name points at. An org is undone
-as its CI user, its service account's place in the org, the account, and
-the org, which takes its roles, labels, event push and first admin's role
-with it; the account must leave its place before Forgejo deletes it. A
+as its set-up at the CI, its service account's place in the org, the
+account, and the org, which takes its roles, labels, event push and first
+admin's role with it; the account must leave its place before Forgejo deletes it. A
 contest is undone as its place with its own roles. A task is undone as its
 entry in `contest.yaml`, taken out only while the file still says exactly
 what the create wrote, its activation at the CI, and its place with its own
 roles. The port operations the undo uses are `orgs.delete_org`,
 `orgs.remove_account_membership`, `identity.delete_user`,
-`content.delete_place`, `grading.deactivate` and `grading.delete_ci_user`.
+`content.delete_place`, `grading.deactivate` and `grading.tear_down_org`.
 A name is one row in `names`, so two requests for one name at once make one
 thing and the second is `Conflict`. Each create answers with the `Named`
 thing, its id and its name. An org takes ten steps: its account row, the
 org, its roles, its labels, its signed event push, its first admin, its
 service account at the forge, that account's place in the org and its forge
-credential, its user at the CI, and its sign-in at the CI. The service
-account's password is made for the request, mints the account's two
-credentials and is thrown away, so it is never in the database. A service
+credential, and its set-up at the CI. The service account's password is
+made for the request, mints its forge credential, signs it in at the CI
+and is thrown away, so it is never in the database. A service
 account name someone already took at the forge is refused rather than
 adopted, since anyone may sign up there. The service account is named
 from the org's key, `unicon-ci-<key>`, 36 characters, so an org's name
