@@ -1374,6 +1374,37 @@ def _stop_quietly(ctx: Context, row: Grading) -> None:
     finish(ctx, row, GradingStatus.CANCELLED)
 
 
+def _regraded(rows: Sequence[Grading]) -> dict[str, Grading]:
+    """The latest attempt of each submission `regrade` gives a new one, from
+    every attempt to the task in submission and attempt order: all of them
+    but one staff cancelled.
+    """
+    latest: dict[str, Grading] = {}
+    for row in rows:
+        latest[row.submission_id] = row
+    return {submission: row for submission, row in latest.items() if not staff_cancelled(row)}
+
+
+async def to_regrade(ctx: Context, task: TaskId) -> int:
+    """How many submissions `regrade` would grade again against a publication
+    not made yet, chosen as it chooses them: each submission's latest
+    attempt, but one staff cancelled. What a save's confirmation says it
+    will cost.
+    """
+    rows = (
+        (
+            await ctx.db.execute(
+                select(Grading)
+                .where(Grading.task_id == task)
+                .order_by(Grading.submission_id, Grading.attempt)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return len(_regraded(rows))
+
+
 async def regrade(ctx: Context, task: TaskId, publication: PublicationId) -> Rejudged:
     """A new attempt of every submission's latest attempt to the task,
     against `publication`, for a rejudge and for a save that publishes a
@@ -1403,15 +1434,11 @@ async def regrade(ctx: Context, task: TaskId, publication: PublicationId) -> Rej
         .scalars()
         .all()
     )
-    latest: dict[str, Grading] = {}
     attempts: dict[str, builtins.list[Grading]] = {}
     for row in rows:
-        latest[row.submission_id] = row
         attempts.setdefault(row.submission_id, []).append(row)
     queued = cancelled = left_running = 0
-    for submission, row in latest.items():
-        if staff_cancelled(row):
-            continue
+    for submission, row in _regraded(rows).items():
         status = status_of(ctx, row, gone)
         if status in UNFINISHED:
             if row.publication_id == publication:

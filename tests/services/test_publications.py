@@ -16,6 +16,7 @@ while its contest's entry gives it a worth or a due.
 
 import json
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -42,7 +43,7 @@ from forge.runtime.setup import Setup
 from forge.services import publications, submissions, tasks
 from forge.services.access import Organiser
 from forge.services.publications import Draft, Published
-from forge.testing import CLASSIC, PRIMITIVES
+from forge.testing import CLASSIC, PRIMITIVES, FakeClock
 from tests.services.conftest import Acme, Entered, organiser, upload, write_contest
 
 RUNNING = """\
@@ -728,7 +729,7 @@ async def test_a_grading_change_once_the_contest_has_started_asks_first_and_writ
         await _save(setup, acme, running, files)
 
     assert asked.value.code == "confirmation_required"
-    assert asked.value.extra["changes"] == listed
+    assert asked.value.extra == {"changes": listed, "regrades": 0}
     assert _written(acme) == []
     confirmed = await _save(setup, acme, running, files, confirm=True)
     assert isinstance(confirmed, Published)
@@ -815,7 +816,7 @@ async def test_outside_a_started_contest_a_grading_change_publishes_without_aski
     assert set(contest_reads) == {PLATFORM}
 
 
-async def _graded(setup: Setup, acme: Acme, entered: Entered) -> None:
+async def _graded(setup: Setup, acme: Acme, entered: Entered, key: str = "key-0001-aaaa") -> None:
     """bob's submission to the task, its grading done."""
     made = await upload(setup, acme.fake, entered.session, entered.task, b"print(3)\n")
     await submissions.submit(
@@ -826,7 +827,7 @@ async def _graded(setup: Setup, acme: Acme, entered: Entered) -> None:
             "submission": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
         },
-        idempotency_key="key-0001-aaaa",
+        idempotency_key=key,
     )
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(update(Grading).values(status=GradingStatus.DONE))
@@ -1002,6 +1003,31 @@ async def _attempts(setup: Setup) -> list[tuple[int, int, str, GradingStatus]]:
             (row.submission_number, row.attempt, row.publication_id, GradingStatus(row.status))
             for row in rows
         ]
+
+
+async def test_the_confirmation_counts_the_submissions_the_save_regrades_and_no_cancelled_one(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await _graded(setup, acme, entered)
+    clock.advance(timedelta(minutes=1))
+    await _graded(setup, acme, entered, key="key-0002-bbbb")
+    clock.advance(timedelta(minutes=1))
+    await _graded(setup, acme, entered, key="key-0003-cccc")
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Grading)
+            .where(Grading.submission_number == 1)
+            .values(status=GradingStatus.CANCELLED, cancel_reason="The machine broke.")
+        )
+    change = _with(acme, b"time_limit: 2", b"time_limit: 1")
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _save(setup, acme, entered.task, change)
+    confirmed = await _save(setup, acme, entered.task, change, confirm=True)
+
+    assert asked.value.extra == {"changes": ["plans/plan.json changed"], "regrades": 2}
+    assert isinstance(confirmed, Published)
+    assert confirmed.regraded == 2
 
 
 async def test_a_published_grading_change_regrades_every_submission_and_a_scoring_one_none(

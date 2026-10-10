@@ -38,8 +38,9 @@ steps in order, and refuses before anything is written.
    to be kept as a draft is written as one here, saying what it held back,
    and publishes nothing, whatever else holds. Once the contest has started,
    and until it is archived, a save that changes how the task grades is
-   refused with `ConfirmationRequired`, listing the changes, unless the
-   caller confirms it.
+   refused with `ConfirmationRequired`, listing the changes and saying how
+   many submissions it would grade again, counted as the regrade (6)
+   chooses them, unless the caller confirms it.
 4. The organiser's files and `plans/plan.json` are written as one change, as
    the organiser, so the history is theirs and a publication never catches a
    task half saved.
@@ -270,6 +271,7 @@ async def save(
             "The contest is running and this save changes how the task grades. Send it "
             "again confirmed to publish it, or keep it as a draft.",
             changes=[*changed],
+            regrades=await gradings.to_regrade(ctx, task),
         )
 
     plans = await _plan_files(ctx, as_, task, head, checked)

@@ -871,8 +871,11 @@ takes each path with its new content and the token it was read with, as an
    plan names. Groups, rule weights, `show`, `credit` and `submissions` are
    read on every read and change nothing that grades. Once the contest has
    started, until it is archived, a save that changes how the task grades is
-   refused with `ConfirmationRequired`, listing the changes, and nothing is
-   written; the same save with `confirm=True` publishes. A save with
+   refused with `ConfirmationRequired`, listing the changes and how many
+   submissions it would grade again (`gradings.to_regrade`, counted as the
+   regrade chooses them: each submission's latest attempt, but one staff
+   cancelled), and nothing is written; the same save with `confirm=True`
+   publishes. A save with
    `keep_as_draft=True` is written as a draft that says what it held back
    and publishes nothing, on any save, valid or not, started contest or not.
 4. The organiser's files and `plans/plan.json` are written as one change,
@@ -1699,7 +1702,7 @@ structured members in `extra`:
 | `InvalidPath` | `invalid_path` | `path`, the path refused |
 | `AdminOnly` | `admin_only` | `keys`, each admin-only key or file |
 | `ReservedPath` | `reserved_path` | `paths` inside `plans/` |
-| `ConfirmationRequired` | `confirmation_required` | `changes`, what would change |
+| `ConfirmationRequired` | `confirmation_required` | `changes`, what would change; `regrades`, how many submissions it would grade again |
 | `SoleAdmin` | `sole_admin` | `scopes`, each `{"kind", "name"}` |
 | `ContestantConflict` | `contestant_conflict` | `contests` |
 | `SharedWorkflowOwner` | `shared_workflow_owner` | `workflows` |
