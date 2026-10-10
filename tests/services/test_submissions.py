@@ -44,13 +44,13 @@ from forge.domain.errors import (
     UploadNotReady,
     UploadNotYours,
 )
-from forge.domain.grading import GradingStatus, callback_token, token_hash
+from forge.domain.grading import callback_token, token_hash
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.scoring import Points
-from forge.domain.showing import GroupShown
+from forge.domain.showing import GroupShown, SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import pointer_text
 from forge.domain.workflows import Visibility
@@ -170,7 +170,7 @@ async def test_a_submit_commits_as_the_contestant_names_it_and_queues_one_gradin
     )
     assert submission.late_days == 0
     assert submission.grading is not None
-    assert (submission.grading.attempt, submission.grading.status) == (1, GradingStatus.QUEUED)
+    assert (submission.grading.attempt, submission.grading.status) == (1, SubmissionState.QUEUED)
     repo = acme.fake.state.repos[("acme", "spring.sum.u8.sub")]
     head = repo.history[-1]
     assert head.author_id == 8
@@ -928,7 +928,7 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
     [before] = await submissions.mine(setup, entered.session, entered.task)
 
     assert before.grading is not None
-    assert (before.grading.status, before.grading.stopped) == (GradingStatus.DONE, None)
+    assert (before.grading.status, before.grading.stopped) == (SubmissionState.GRADED, None)
     # The groups whose verdict is shown passed; large's verdict waits.
     assert before.grading.outcome == "accepted"
     assert before.grading.values == {"log": "compiled"}
@@ -1109,7 +1109,7 @@ async def test_a_system_error_is_read_by_its_contestant_as_still_running(
     [submission] = await submissions.mine(setup, entered.session, entered.task)
 
     assert submission.grading is not None
-    assert submission.grading.status == GradingStatus.RUNNING
+    assert submission.grading.status == SubmissionState.GRADING
     assert (
         submission.grading.stopped,
         submission.grading.outcome,

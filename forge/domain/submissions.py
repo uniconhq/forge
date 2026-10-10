@@ -28,16 +28,17 @@ submit's idempotency key, so a submit tried again after its answer was lost
 finds the submission it made instead of making a second.
 """
 
-import json
 import re
 import uuid
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 import yaml
 
+from forge.domain import exact_json
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, Form
 from forge.domain.errors import InvalidInputs
@@ -70,8 +71,8 @@ class Field:
     options: tuple[str, ...] | None = None
     per_test: bool = False
     default: Any = None
-    min: int | float | None = None
-    max: int | float | None = None
+    min: int | Decimal | None = None
+    max: int | Decimal | None = None
     max_size: int = DEFAULT_MAX_SIZE
 
     @property
@@ -231,7 +232,7 @@ def lay_out(
     if problems:
         first = problems[0]
         raise InvalidInputs(f"{first['input']}: {first['message']}", errors=problems)
-    text = json.dumps(document, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+    text = exact_json.dumps(document, sort_keys=True, indent=2) + "\n"
     return Layout(files=files, document=text.encode(), inputs=inputs)
 
 
@@ -333,7 +334,7 @@ def value_problem(entry: Field, value: object) -> str | None:
         case Type.NUMBER:
             if not is_number(value):
                 return "Must be a number."
-            assert isinstance(value, int | float)
+            assert isinstance(value, int | Decimal | float)
             if entry.min is not None and value < entry.min:
                 return f"Must be at least {entry.min}."
             if entry.max is not None and value > entry.max:

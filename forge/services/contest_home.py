@@ -23,6 +23,7 @@ there at all.
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 
@@ -75,7 +76,7 @@ class TaskEntry:
     name: str
     label: str
     title: str
-    worth: int | float | None
+    worth: int | Decimal | None
     release: TaskRelease
     due: datetime | None
     closes: datetime | None
@@ -120,7 +121,7 @@ class TaskPage:
     name: str
     label: str
     title: str
-    worth: int | float | None
+    worth: int | Decimal | None
     statement: str
     submissions: Submissions
     inputs: tuple[Field, ...]

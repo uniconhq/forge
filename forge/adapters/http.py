@@ -159,8 +159,10 @@ class Http[C]:
         except httpx.HTTPError as exc:
             raise Unavailable(f"no answer from {path}: {type(exc).__name__}") from exc
 
-    async def get_all(self, as_: C, path: str, **params: str | int) -> list[dict[str, Any]]:
-        """Every page of a list endpoint."""
+    async def get_all(self, as_: C, path: str, /, **params: str | int) -> list[dict[str, Any]]:
+        """Every page of a list endpoint, `params` its query, which may name a
+        `path` of its own, such as one file's history.
+        """
         collected: list[dict[str, Any]] = []
         for page in range(1, MAX_PAGES + 1):
             response = await self.call(

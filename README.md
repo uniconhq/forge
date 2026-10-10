@@ -168,8 +168,15 @@ The format is the proposal's `TASK-FORMAT.md`. `forge/domain/definitions.py`
 reads `contest.yaml` and `task.yaml` into models, `workflow_definition.py` a
 `workflow.yaml` and `primitives.py` a `primitive.yaml`, with the YAML loading
 and the error paths they share in `yaml_models.py` and the six value types in
-`types.py`. Each refuses a key the format does not know, refuses a key it no
-longer has at that key with the sentence that says what replaced it (a
+`types.py`. Every file is read as YAML 1.2's core schema, whatever `%YAML`
+line it carries (`ruamel.yaml` with the core schema's own patterns): only
+`true` and `false` are booleans, so a group named `no` is text, and
+`1_000`, `1:30` and a date are text too. Every number that is not whole is
+the exact `Decimal` it is written as, never a float, and `one_line` writes a
+value back so the same reader reads the same value. The platform's own tag
+notes, which only it writes and reads, and the pipeline file handed to
+Woodpecker are written and read with PyYAML as before. Each refuses a key
+the format does not know, refuses a key it no longer has at that key with the sentence that says what replaced it (a
 `Retired` rule), and reports every problem as `InvalidDefinition`, whose
 `errors` pair a YAML path such as `test_groups.main.pass_at` with a sentence a
 form shows beside that field. What a file says of itself is checked there: a
@@ -177,10 +184,13 @@ contest's times and each task entry's timeline in order (C1), each board's
 own rules (C3), a task's test groups, rule weights, test weights and `show`
 words (T1, T2, T6), a workflow's report (W1 to W5) and a primitive's `runs`
 marks (P1). `admin_only_changes` names the admin-only keys a save changes,
+a time compared as the moment it names,
 `starter_contest` and `starter_task` are the files a new contest or task is
 created with, and `starter_workflow` the `workflow.yaml` a new workflow is.
 `plans.py` is the compiler (below) and names what changed how a task grades
-between two publications. `submissions.py` lays out what a contestant gives
+between two publications, a plan compared by what it says, so a number
+spelled otherwise is no change. A plan is written and read with
+`exact_json`, so its numbers are the digits the files gave. `submissions.py` lays out what a contestant gives
 as the files and `submission.json` of one commit, and `uploads.py` holds the
 rules of an upload's slot and parts. `grading.py` holds what a grading run
 is, its two secrets, its clock and the machine a plan must fit,
@@ -272,7 +282,8 @@ back a `CiState`, what the account holds there, which only the
 implementation reads; the platform keeps it encrypted, asks
 `grading.needs_refresh` before using it, and has it refreshed with
 `grading.refresh`, and `grading.tear_down_org` removes it again.
-`grading.activate` takes a task for grading at the CI, as the org account.
+`grading.activate` takes a task for grading at the CI, as the org account,
+and says whether the CI did not know it before.
 `grading.start_run` starts a `GradingRun`, what one run of one grading is
 in the platform's words, as the org account, with a `RunSpec` of what it
 runs, read from the plan as it starts, and `grading.cancel_run` stops one.
@@ -787,7 +798,12 @@ package enforces deadlines with.
 `files.read`, `tree` and `history` need the observer role at the contest or
 task, and `write` and `rollback` the manager role; each goes through the
 port as the organiser's own identity, so the forge's own check stays
-underneath and the history is theirs. Every path is checked first, and one
+underneath and the history is theirs. `history` names each change's author
+by username as well as id (`Change.author`, which Forgejo's commits
+carry; an author given by id alone is looked up once), so
+someone who no longer holds a role at the place is still named, to those
+who may read the history alone; an account the forge does not know is left
+unnamed. Every path is checked first, and one
 that is not a plain path inside the place is `InvalidPath`, unread and
 unwritten. A write carries the token the file was read with, and one that has moved is `Conflict`. A write to `contest.yaml`
 is validated first and refused whole as `InvalidDefinition` when it is not
@@ -860,8 +876,11 @@ takes each path with its new content and the token it was read with, as an
    plan names. Groups, rule weights, `show`, `credit` and `submissions` are
    read on every read and change nothing that grades. Once the contest has
    started, until it is archived, a save that changes how the task grades is
-   refused with `ConfirmationRequired`, listing the changes, and nothing is
-   written; the same save with `confirm=True` publishes. A save with
+   refused with `ConfirmationRequired`, listing the changes and how many
+   submissions it would grade again (`gradings.to_regrade`, counted as the
+   regrade chooses them: each submission's latest attempt, but one staff
+   cancelled), and nothing is written; the same save with `confirm=True`
+   publishes. A save with
    `keep_as_draft=True` is written as a draft that says what it held back
    and publishes nothing, on any save, valid or not, started contest or not.
 4. The organiser's files and `plans/plan.json` are written as one change,
@@ -1372,8 +1391,12 @@ and the latest publication's `test_groups` when the two plans list the
 same tests, its own otherwise, so its rows are folded with the tests they
 ran on; a group with no rows did not run on it (`ran` false) and adds
 nothing to the outcome. A past publication's `task.yaml` and plan are read
-once per process. A run in `system_error` is told to its contestant as
-still running, with nothing of it shown, and one staff then cancelled as
+once per process. A contestant is told where a submission stands in
+TASK-FORMAT.md section 1.7's words (`SubmissionState`): `queued` until its
+run is started, `grading` while the CI holds or runs it, `graded` once it
+has a result and `cancelled` once staff end it; organisers read the
+grading's own status. A run in `system_error` is told to its contestant as
+still `grading`, with nothing of it shown, and one staff then cancelled as
 `cancelled` with the sentence they gave (`Result.reason`); while a fallback
 is in force for either (below), the submission is told by its last good
 result instead, the attempt the boards count. `files` gives
@@ -1533,7 +1556,13 @@ in `contestants` for the contest, whatever became of their registration, it
 lists that person's submissions of the task and inserts, for any with no
 grading, one queued grading against the current
 publication, carrying the idempotency key its tag's note carries. Their runs
-start once it commits. It logs what it did as `reconcile.done`.
+start once it commits. Before a task's submissions it activates the task at
+the CI as the org's account, signing it in again once if the CI refuses it,
+since the CI's database restored from a dump taken at another moment, or
+alone, may not know a task made since; a task the CI knows is unchanged,
+and one it cannot activate is logged as `reconcile.activation_failed` and
+its gradings are still inserted. It logs what it did as `reconcile.done`,
+with how many tasks it activated that the CI did not know.
 
 **The organiser's controls.** Each takes the `Organiser` from
 `access.organiser` and needs manager at the grading's task; a grading whose
@@ -1682,7 +1711,7 @@ structured members in `extra`:
 | `InvalidPath` | `invalid_path` | `path`, the path refused |
 | `AdminOnly` | `admin_only` | `keys`, each admin-only key or file |
 | `ReservedPath` | `reserved_path` | `paths` inside `plans/` |
-| `ConfirmationRequired` | `confirmation_required` | `changes`, what would change |
+| `ConfirmationRequired` | `confirmation_required` | `changes`, what would change; `regrades`, how many submissions it would grade again |
 | `SoleAdmin` | `sole_admin` | `scopes`, each `{"kind", "name"}` |
 | `ContestantConflict` | `contestant_conflict` | `contests` |
 | `SharedWorkflowOwner` | `shared_workflow_owner` | `workflows` |
@@ -1761,8 +1790,9 @@ submission's number, and who marked it.
 under `forge/db/alembic/` and exits. A deployment runs it before the host
 starts, from the host's image, which has the package and its command
 installed; the host has no migrate command of its own. `unicon-forge
-reconcile` gives every submission at the forge without gradings its
-gradings (above), and the operator runs it once after a restore.
+reconcile` activates every published task at the CI and gives every
+submission at the forge without gradings its gradings (above), and the
+operator runs it once after a restore.
 
 There is no jobs table, and nothing in the package runs on a timer. Each
 piece of upkeep is done by a request that already touches what it keeps:
@@ -1859,7 +1889,8 @@ question it asks the extension with a key of its own:
 `fake.grading.config_request(task, variables, now=)` is that question;
 `fake.ci.refuse_starts = n` answers the next `n` starts without a run,
 and `fake.ci.lose_start_answer` starts the next run and fails as if its
-answer were lost. The fake refuses a user id
+answer were lost. A run of a task not in `fake.ci.activated` is
+`NotFound`, as at a CI that does not know the task. The fake refuses a user id
 it already has, since the accounts the package makes take the next free ids.
 
 ## Checks

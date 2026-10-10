@@ -25,11 +25,44 @@ def loads(text: str | bytes) -> Any:
     return json.loads(text, parse_float=Decimal, parse_constant=refuse)
 
 
-def dumps(value: Any) -> str:
+def dumps(value: Any, *, indent: int | None = None, sort_keys: bool = False) -> str:
     """`value` as JSON, a `Decimal` written as the digits it holds. A float
-    or a `Decimal` that is not finite is refused with `ValueError`.
+    or a `Decimal` that is not finite is refused with `ValueError`. With
+    `indent` and `sort_keys` it is laid out exactly as `json.dumps` lays
+    them out, with `ensure_ascii` off.
     """
+    if indent is None and not sort_keys:
+        return "".join(_parts(value))
+    return _laid_out(value, indent, sort_keys, 0)
+
+
+def _laid_out(value: Any, indent: int | None, sort_keys: bool, level: int) -> str:
+    if isinstance(value, dict):
+        items = sorted(value.items()) if sort_keys else list(value.items())
+        if not items:
+            return "{}"
+        for key, _ in items:
+            if not isinstance(key, str):
+                raise ValueError("a JSON object's keys are text")
+        deeper = level + 1
+        parts = [
+            f"{json.dumps(key, ensure_ascii=False)}: {_laid_out(item, indent, sort_keys, deeper)}"
+            for key, item in items
+        ]
+        return _joined("{", parts, "}", indent, level)
+    if isinstance(value, list | tuple):
+        if not value:
+            return "[]"
+        parts = [_laid_out(item, indent, sort_keys, level + 1) for item in value]
+        return _joined("[", parts, "]", indent, level)
     return "".join(_parts(value))
+
+
+def _joined(opening: str, parts: list[str], closing: str, indent: int | None, level: int) -> str:
+    if indent is None:
+        return opening + ", ".join(parts) + closing
+    inner = "\n" + " " * (indent * (level + 1))
+    return opening + inner + ("," + inner).join(parts) + "\n" + " " * (indent * level) + closing
 
 
 def _parts(value: Any) -> list[str]:
