@@ -9,10 +9,10 @@ from pathlib import Path
 import pytest
 
 from forge import port
+from forge.adapters.cached import CachedForge
+from forge.adapters.fakes import FakeForge
 from forge.domain import errors
 from forge.domain.errors import UniconError
-from forge.forges.cached import CachedForge
-from forge.forges.fake import FakeForge
 from forge.port import Forge
 
 HOST_WORDS = re.compile(

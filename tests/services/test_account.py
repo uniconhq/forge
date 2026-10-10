@@ -9,6 +9,7 @@ from datetime import timedelta
 
 import pytest
 
+from forge.adapters.fakes import FakeForge
 from forge.domain.errors import (
     FreshSignInRequired,
     InvalidName,
@@ -23,7 +24,6 @@ from forge.domain.ids import OrgId
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.sessions import Session
 from forge.domain.workflows import Visibility
-from forge.forges.fake import FakeForge
 from forge.log import JsonFormatter
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup

@@ -42,12 +42,17 @@ FORGEJO_VARIABLES = {
     "oauth_client_secret": "UNICON_FORGE_OAUTH_CLIENT_SECRET",
     "registration_open": "UNICON_FORGE_REGISTRATION_OPEN",
     "platform_account": "UNICON_FORGE_PLATFORM_ACCOUNT",
-    "woodpecker_url": "UNICON_WOODPECKER_URL",
-    "woodpecker_public_url": "UNICON_WOODPECKER_PUBLIC_URL",
-    "woodpecker_token": "UNICON_WOODPECKER_TOKEN",
 }
 
-DEFAULTED_FORGEJO_FIELDS = ("internal_url", "woodpecker_public_url")
+DEFAULTED_FORGEJO_FIELDS = ("internal_url",)
+
+WOODPECKER_VARIABLES = {
+    "url": "UNICON_WOODPECKER_URL",
+    "public_url": "UNICON_WOODPECKER_PUBLIC_URL",
+    "token": "UNICON_WOODPECKER_TOKEN",
+}
+
+DEFAULTED_WOODPECKER_FIELDS = ("public_url",)
 
 IMAGE_VARIABLES = {
     "harness_image": "UNICON_HARNESS_IMAGE",
@@ -82,12 +87,11 @@ MailProtocol = Literal["smtp", "smtps", "smtp+starttls"]
 
 
 class ForgejoSettings(BaseModel):
-    """The settings of the Forgejo implementation, each read from the variable
+    """The settings of the Forgejo adapter, each read from the variable
     `FORGEJO_VARIABLES` names. `internal_url` is where the package reaches
     Forgejo, the public URL unless given. `platform_account` is the Forgejo
     account the admin token belongs to, the one account protected versions
-    are reserved for. `woodpecker_public_url` is the URL the CI knows itself
-    by, `woodpecker_url` unless given.
+    are reserved for.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -98,15 +102,31 @@ class ForgejoSettings(BaseModel):
     oauth_client_secret: SecretStr
     registration_open: bool = False
     platform_account: str
-    woodpecker_url: HttpUrl
-    woodpecker_public_url: HttpUrl
-    woodpecker_token: SecretStr
+
+    @field_validator("*")
+    @classmethod
+    def _no_blank_values(cls, value: Any) -> Any:
+        return not_blank(value)
+
+
+class WoodpeckerSettings(BaseModel):
+    """The settings of the Woodpecker adapter, each read from the variable
+    `WOODPECKER_VARIABLES` names. `url` is where the package reaches the CI,
+    `public_url` the URL the CI knows itself by, `url` unless given, and
+    `token` its administrator's.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    url: HttpUrl
+    public_url: HttpUrl
+    token: SecretStr
 
     @model_validator(mode="before")
     @classmethod
-    def _ci_public_url_follows_the_ci_url(cls, data: Any) -> Any:
-        if isinstance(data, dict) and data.get("woodpecker_public_url") is None:
-            return {**data, "woodpecker_public_url": data.get("woodpecker_url")}
+    def _public_url_follows_the_url(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("public_url") is None:
+            return {**data, "public_url": data.get("url")}
         return data
 
     @field_validator("*")
@@ -176,8 +196,9 @@ class MailSettings(BaseModel):
 class NestedVariables(PydanticBaseSettingsSource):
     """Reads the variables a mapping names into one nested setting, so a
     group of settings travels together and every variable keeps its name:
-    the `UNICON_FORGE_*` and `UNICON_WOODPECKER_*` ones into `forgejo`, the
-    `UNICON_S3_*` ones into `s3`, and the `UNICON_MAIL_*` ones into `mail`.
+    the `UNICON_FORGE_*` ones into `forgejo`, the `UNICON_WOODPECKER_*` ones
+    into `woodpecker`, the `UNICON_S3_*` ones into `s3`, and the
+    `UNICON_MAIL_*` ones into `mail`.
     """
 
     def __init__(
@@ -203,8 +224,9 @@ class NestedVariables(PydanticBaseSettingsSource):
 class Settings(BaseSettings):
     """The package's configuration. `forge` picks the implementation behind
     the port, and `ci` the CI it grades with, `woodpecker` the one there is.
-    `forgejo`, the settings of the Forgejo implementation, is
-    required when it is chosen and none otherwise. `forge_public_url` is
+    `forgejo`, the settings of the Forgejo adapter, and `woodpecker`, the
+    Woodpecker adapter's, are both required with `UNICON_FORGE=forgejo` and
+    none otherwise; the fake forge grades with the fake CI. `forge_public_url` is
     where browsers reach the forge, for either implementation. `internal_url`
     is where the forge reaches the platform inside the deployment, the public
     URL unless given: the org event push points there. `machine_url` is
@@ -261,6 +283,7 @@ class Settings(BaseSettings):
     forge_public_url: HttpUrl | None = None
     forge_cache: bool = False
     forgejo: ForgejoSettings | None = None
+    woodpecker: WoodpeckerSettings | None = None
     s3: S3Settings | None = None
     mail: MailSettings | None = None
     harness_image: str
@@ -284,6 +307,7 @@ class Settings(BaseSettings):
             init_settings,
             env_settings,
             NestedVariables(settings_cls, "forgejo", FORGEJO_VARIABLES),
+            NestedVariables(settings_cls, "woodpecker", WOODPECKER_VARIABLES),
             NestedVariables(settings_cls, "s3", S3_VARIABLES),
             NestedVariables(settings_cls, "mail", MAIL_VARIABLES),
             dotenv_settings,
@@ -318,11 +342,13 @@ class Settings(BaseSettings):
             return data
         if data.get("forge", "forgejo") != "forgejo":
             images = {name: image for name, image in FAKE_IMAGES.items() if data.get(name) is None}
-            return {**data, **images, "forgejo": None}
+            return {**data, **images, "forgejo": None, "woodpecker": None}
         given = data.get("forgejo")
-        if isinstance(given, ForgejoSettings):
+        ci = data.get("woodpecker")
+        if isinstance(given, ForgejoSettings) and isinstance(ci, WoodpeckerSettings):
             return data
-        values = dict(given or {})
+        values = given.model_dump() if isinstance(given, ForgejoSettings) else dict(given or {})
+        ci_values = ci if isinstance(ci, WoodpeckerSettings) else dict(ci or {})
         missing = [] if data.get("forge_public_url") is not None else [FORGE_PUBLIC_URL]
         missing += [
             FORGEJO_VARIABLES[name]
@@ -331,6 +357,14 @@ class Settings(BaseSettings):
             and name not in DEFAULTED_FORGEJO_FIELDS
             and values.get(name) is None
         ]
+        if isinstance(ci_values, dict):
+            missing += [
+                WOODPECKER_VARIABLES[name]
+                for name, field in WoodpeckerSettings.model_fields.items()
+                if field.is_required()
+                and name not in DEFAULTED_WOODPECKER_FIELDS
+                and ci_values.get(name) is None
+            ]
         storage = data.get("s3")
         if not isinstance(storage, S3Settings):
             given_s3 = dict(storage or {})
@@ -346,7 +380,7 @@ class Settings(BaseSettings):
             raise ValueError(f"UNICON_FORGE=forgejo needs {', '.join(missing)}")
         if values.get("internal_url") is None:
             values["internal_url"] = data["forge_public_url"]
-        return {**data, "forgejo": values}
+        return {**data, "forgejo": values, "woodpecker": ci_values}
 
     @field_validator("harness_image", "clone_image")
     @classmethod
@@ -533,6 +567,8 @@ def _variable(location: tuple[int | str, ...]) -> str:
     head = str(location[0])
     if head == "forgejo" and len(location) > 1:
         return FORGEJO_VARIABLES.get(str(location[1]), "UNICON_FORGEJO")
+    if head == "woodpecker" and len(location) > 1:
+        return WOODPECKER_VARIABLES.get(str(location[1]), "UNICON_WOODPECKER")
     if head == "s3" and len(location) > 1:
         return S3_VARIABLES.get(str(location[1]), "UNICON_S3")
     if head == "mail" and len(location) > 1:

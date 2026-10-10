@@ -9,6 +9,7 @@ has come to mean another workflow is refused at the save.
 import pytest
 from sqlalchemy import update
 
+from forge.adapters.fakes import FakeForge
 from forge.db.tables import Name
 from forge.domain.content import Edit
 from forge.domain.errors import Forbidden, NotFound
@@ -18,7 +19,6 @@ from forge.domain.names import Named, ScopeNames
 from forge.domain.roles import Role, Scope, contest_id_of, task_id_of
 from forge.domain.workflow_definition import parse_workflow_ref
 from forge.domain.workflows import Visibility
-from forge.forges.fake import FakeForge
 from forge.runtime.setup import Setup
 from forge.services import contests, identity, names, orgs, publications, roles, tasks
 from forge.services.publications import Draft, Published

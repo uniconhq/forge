@@ -11,10 +11,10 @@ from datetime import timedelta
 import psycopg
 import pytest
 
+from forge.adapters.fakes import FakeForge
 from forge.domain.errors import NotFound, SessionExpired, Unauthenticated, Unavailable
 from forge.domain.identity import Credential
 from forge.domain.sessions import Session
-from forge.forges.fake import FakeForge
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import sessions

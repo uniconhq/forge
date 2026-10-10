@@ -16,8 +16,8 @@ from datetime import timedelta
 import httpx
 import pytest
 
+from forge.adapters.objects.s3 import S3Objects, StorageConfig
 from forge.domain.errors import NotFound, Rejected
-from forge.forges.forgejo.objects import S3Objects, StorageConfig
 
 ENDPOINT = os.environ.get("UNICON_LIVE_S3_ENDPOINT")
 ACCESS_KEY = os.environ.get("UNICON_LIVE_S3_ACCESS_KEY")

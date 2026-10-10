@@ -21,12 +21,12 @@ import pytest
 import sqlalchemy.exc
 from sqlalchemy import text
 
+from forge.adapters.fakes import FakeForge
 from forge.domain.errors import SessionExpired
 from forge.domain.keys import key_from_name
 from forge.domain.roles import Role
 from forge.domain.sessions import Session
 from forge.domain.submissions import SubmittedInput
-from forge.forges.fake import FakeForge
 from forge.runtime.setup import Setup
 from forge.services import (
     access,

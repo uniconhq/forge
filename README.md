@@ -3,8 +3,9 @@
 The Unicon contest API as a Python package, `unicon-forge`. It knows what a
 contest is and nothing about HTTP: the domain types, the services, the
 database tables and their migrations, the forge port, which is the interface
-this package calls a git host through, the implementations behind that port,
-and the pytest plugin a dependant tests with. The backend is an HTTP shell
+this package calls the services outside it through (the git host, the CI,
+the object store and the mail server), the adapters behind that port, and
+the pytest plugin a dependant tests with. The backend is an HTTP shell
 over it, pins one release of it, and imports `forge.api` and nothing else.
 
 ## Layout
@@ -30,26 +31,37 @@ forge/
                      grading's rules and clock,
                      the runner's contract files in schemas/ and the clock;
                      imports nothing else in the package
-  port/              the interface a git host is called through, one area per module
+  port/              the interface the services outside are called through, one
+                     area per module, in four groups
   services/          the actions and their building blocks, the cookies and the
                      credential at rest; the only layer that writes to the database
   db/                the tables, the engine and the migrations
-  forges/__init__.py build, which picks the implementation the settings name
-  forges/ids.py      how both implementations name repositories and build and
-                     read ids
-  forges/forgejo/    the port over Forgejo and Woodpecker, including the sign-in
-                     dance that mints an org account's CI token
-  forges/fake/       the port in memory, one module per area over one state
-  forges/cached.py   the port wrapped in a small per-read cache
-  forges/README.md   what any git host must provide to sit behind the port
+  adapters/          one group per service behind the port, which never
+                     import each other:
+    __init__.py      build, which picks one of each from the settings and
+                     joins them into one forge
+    git/forgejo/     the git host's areas over Forgejo, and what a CI needs of it
+    git/fake/        the git host in memory
+    ci/host.py       CiHost, what a CI needs from the git host
+    ci/woodpecker/   the CI's areas over Woodpecker, including the sign-in that
+                     mints an org account's CI token
+    ci/fake.py       the CI in memory
+    objects/         the run log store: s3.py, fake.py
+    mail/            the mail server: smtp.py, fake.py
+    fakes.py         the fakes joined into the forge tests use, in one world
+                     (fake_world.py)
+    http.py, browser.py, ids.py, cached.py  the shared HTTP client, the
+                     browser a sign-in walks with, the naming grammar every
+                     git host uses, and the per-read cache
+    README.md        what each service must provide to sit behind the port
 tests/
   test_*.py          the domain, the front door, the port's shape, the settings,
                      the log, the command and the plugin
   runtime/           the setup, the actions over it, and the memo
-  forges/            each implementation against the port's contract
+  adapters/          each adapter against the port's contract, by group
   services/          the services over a real Postgres and the fake
   db/                the migrations, up and down
-  live/              the Forgejo implementation against a running Forgejo, and the
+  live/              the Forgejo adapter against a running Forgejo, and the
                      organiser's whole path against Forgejo and Woodpecker
 ```
 
@@ -187,17 +199,19 @@ task reveals, and who sees a contest at all.
 
 ## The port
 
-`forge/port/` declares every operation the platform needs from a git host,
-in the platform's words, as one `Protocol` per area: `identity`, `orgs`,
-`content`, `workspaces`, `threads`, `workflows`, `primitives`, `grading`,
-`computes`, `uploads`, `objects` and `mail`. `Forge` composes the areas, so a service reaches a host as
-`ctx.forge.orgs.grant_role(...)` and an implementation is a set of area
-classes over one HTTP client. Every reference the package stores is an id
+`forge/port/` declares every operation the platform needs from the
+services outside it, in the platform's words, as one `Protocol` per area,
+in four groups by the service behind them: the git host's (`GitHost`:
+`identity`, `orgs`, `content`, `workspaces`, `threads`, `workflows`,
+`primitives` and `uploads`), the CI's (`Ci`: `grading` and `computes`),
+`objects` and `mail`. `Forge` composes the areas, so a service reaches one
+as `ctx.forge.orgs.grant_role(...)`, and each group is filled by an adapter
+of its own (`adapters/README.md`). Every reference the package stores is an id
 the port hands out, built from keys (below). Above the port only
 `domain/roles.py` reads one, turning a contest's or a task's id into the
 scope its roles are held at and back; every other id is opaque. Every failure is one of five
 typed errors: `NotFound`, `Forbidden`, `Conflict`, `Rejected` and
-`Unavailable`. Retries with backoff live inside the implementation, so a forge
+`Unavailable`. Retries with backoff live inside the adapter, so a forge
 that is busy reaches the services only as `Unavailable` once the retries are
 used up. A retry never makes something twice: a request that sets a state is
 retried on a busy server or a lost answer, and a request that creates
@@ -205,8 +219,8 @@ something, a POST, only when it never reached the server; otherwise it is
 `Unavailable` at once and the request that sent it fails. A process keeps at
 most eight calls in flight to Forgejo and eight to the CI, one connection
 each; a call waits its turn for a free connection for 30 seconds at most and
-is then `Unavailable`, not asked again. The Forgejo implementation puts every
-name it is handed into a request's path quoted whole (`http.segment`), a
+is then `Unavailable`, not asked again. The adapters put every
+name they are handed into a request's path quoted whole (`http.segment`), a
 username, an org, a repository or a ref, and a file's path segment by
 segment (`http.file_path`), so a `/`, `?`, `#` or `%` in one stays in it and
 never reaches another endpoint; an empty name, `.` or `..` is `NotFound`
@@ -265,11 +279,11 @@ runs, read from the plan as it starts, and `grading.cancel_run` stops one.
 A CI that asks the platform what a run is as it starts one is answered by
 `grading.answer`, which checks the request is the CI's own, has the service
 find the run (`lookup`, a queued grading of that task) and refuses a run
-started with any variable but those the implementation starts it with; a
+started with any variable but those the adapter starts it with; a
 CI that is pushed to never asks, and its `answer` is `NotFound`.
 `grading.run_places` says what the envelope names of the run's places at
-the forge. The Forgejo implementation writes the Woodpecker side of each
-(below), and the runner's README states what any CI owes the machine.
+the forge. The Woodpecker adapter writes its side of each (below), and
+the runner's README states what any CI owes the machine.
 `workspaces.publish` names a version a save already wrote as the next
 publication, with a note, and `workspaces.list_publications` reads each back
 as a `Publication` with what its note says. A contestant's workspace is made
@@ -316,15 +330,24 @@ port declares: `identity.create_user` and `mint_token` make the account at
 the host and its credential there, `orgs.ensure_account_membership` puts it
 in its place in the org, and `grading.set_up_org` sets it up at the CI with
 the password it was just given. Woodpecker admits nobody it was not told
-about and mints a token only through its web UI, so the Forgejo
-implementation makes the account's user there as the CI's administrator
-and then signs in for real: into Forgejo with the account's password,
-through Woodpecker's OAuth round trip approving consent, reading the CSRF
-token Woodpecker hands its own page, and asking for a token. It runs inside
-the platform's process, where the two public URLs do not resolve, so it
-follows every redirect by hand and asks each URL at the internal host
-instead. Its `refresh` gives the account a fresh password at the forge and
-signs in the same way.
+about and mints a token only through its web UI, so the Woodpecker
+adapter makes the account's user there as the CI's administrator and then
+signs in for real: into the git host with the account's password, through
+the git host's own sign-in page, then Woodpecker's OAuth round trip
+approving the git host's consent page, reading the CSRF token Woodpecker
+hands its own page, and asking for a token. The git host's two pages are
+its own adapter's (`CiHost`, below). It runs inside the platform's
+process, where the two public URLs do not resolve, so it follows every
+redirect by hand and asks each URL at the internal host instead
+(`adapters/browser.py`). Its `refresh` finds the account at the git host by
+the id the state keeps, gives it a fresh password there and signs in the
+same way.
+
+A CI reaches the git host only through `CiHost` (`adapters/ci/host.py`):
+the account by its id and a fresh password for it, a repository's id, the
+webhooks the CI left on a repository, the branch runs start on, and the
+sign-in and consent pages. Forgejo answers it as `ForgejoForge.ci_host`,
+and `build` hands it to the CI it picks.
 
 An org's display name and description are its own fields at the host, which
 only an owner may change, so `orgs.update_org` writes them and
@@ -348,7 +371,7 @@ platform.
 
 The `uploads` area (`port/uploads.py`) is where a person's files go: the
 address one object's bytes are sent to for a place, as that person, and
-whether a place holds an object. The Forgejo implementation addresses its
+whether a place holds an object. The Forgejo adapter addresses its
 git-lfs endpoints and presents the person's own access token in the password
 half of a Basic header, which is the only form those routes take; Forgejo
 hashes what arrives and keeps nothing that is not the digest and length the
@@ -356,15 +379,15 @@ address names. The fake holds its objects in memory, refuses the same
 things, and resolves a pointer the way Forgejo's media endpoint does.
 
 The `objects` area (`port/objects.py`) is the grading run log store alone: a
-URL a machine writes a result with, and reading one up to a size given. The
-Forgejo implementation reaches Garage over S3 with boto3 at
+URL a machine writes a result with, and reading one up to a size given.
+Its adapter, `objects/s3.py`, reaches Garage over S3 with boto3 at
 `UNICON_S3_ENDPOINT` and signs what a machine is handed for
 `UNICON_MACHINE_URL`, path-style; the proxy passes `/unicon-results/` to
 Garage with the Host header unchanged.
 
 The `mail` area (`port/mail.py`) hands one plain-text message to the mail
-server the forge sends its own mail through, which travels with the forge
-for the reason the object store does. The Forgejo implementation speaks SMTP
+server the forge sends its own mail through. Its adapter, `mail/smtp.py`,
+speaks SMTP
 with Python's `smtplib` on a thread, giving each step 15 seconds, to the
 one address the message names; a server that does not answer or answers
 busy is `Unavailable`, and one that refuses the address or the login, or
@@ -374,17 +397,20 @@ is not configured and sends nothing. The fake keeps what it was handed in
 `fake.mail.configured` stand for a server that does not answer, one that
 refuses and none at all.
 
-Both implementations name repositories and build and read ids with the one
-grammar in `forges/ids.py`, so an id from elsewhere is `NotFound` whichever
-is behind the port.
+Every git host's adapter names repositories and builds and reads ids with
+the one grammar in `adapters/ids.py`, since the platform names every
+repository itself, so an id from elsewhere is `NotFound` whichever is behind
+the port.
 
 `UNICON_FORGE=forgejo` runs against Forgejo, grading with the CI `UNICON_CI`
-names, `woodpecker` the one there is and the default; `UNICON_FORGE=fake`
-runs the whole stack against the in-memory forge, which records every call
-with its identity and refuses what a real forge refuses, a repository made
-by anyone but the platform among it. Its CI asks what a run is, as
-Woodpecker does, unless it is made with `ci_asks` off, when it is handed
-every run whole, as a CI that is pushed to is. `CachedForge` wraps
+names, `woodpecker` the one there is and the default, each built by its own
+adapter and joined by `adapters.build`; `UNICON_FORGE=fake` runs the whole
+stack against the fakes (`adapters/fakes.py`), which record every call with
+its identity in one log and refuse what a real forge refuses, a repository
+made by anyone but the platform among it. The fake CI asks what a run is,
+as Woodpecker does, unless it is made with `ci_asks` off, when it is handed
+every run whole, as a CI that is pushed to is; a test reads its records as
+`fake.ci`. `CachedForge` wraps
 either and keeps a few reads in the process for up to a minute, dropping
 them on a write through the same area: user lookups always, the role reads
 when `UNICON_FORGE_CACHE` is on.
@@ -398,7 +424,7 @@ everything else is built from it: the ids the tables store, `<org>`,
 `<org>/<contest>` and `<org>/<contest>/<task>` with each part a key; the
 org's name at the forge and its service account's, `unicon-ci-<org key>`;
 every repository's name, such as `<contest key>.<task key>.task`; and every
-role team's. The Forgejo implementation lists an org's contests and a
+role team's. The Forgejo adapter lists an org's contests and a
 contest's tasks through Forgejo's repository search for names holding
 `.contest` or `.task`, checking each name it gets back, since the org also
 holds a repository for every contestant at every task and reading them all
@@ -431,7 +457,7 @@ never another's; a workspace's owner is `u<user id>`, never a username.
 ## The setup
 
 `forge/runtime/setup.py` sets the package up for one process: the forge
-behind the port, which `forges.build` picks and configures from the settings,
+behind the port, which `adapters.build` picks and configures from the settings,
 the pool of database connections and the clock. Nothing runs in the
 background: every piece of work is done by the request that asks for it.
 The process that hosts the package calls
@@ -457,11 +483,13 @@ because every org mints a service account and a login at the CI.
 `UNICON_COOKIE_SECURE` defaults to on exactly when `UNICON_PUBLIC_URL` is
 https, and the package refuses to start when the URL is https and the flag
 is set off. The Forgejo settings travel together as
-`settings.forgejo`, read from the `UNICON_FORGE_*` and `UNICON_WOODPECKER_*`
-variables, and the object store's as `settings.s3`, read from
+`settings.forgejo`, read from the `UNICON_FORGE_*` variables, Woodpecker's
+as `settings.woodpecker`, read from `UNICON_WOODPECKER_URL`,
+`UNICON_WOODPECKER_PUBLIC_URL` (the URL unless given) and
+`UNICON_WOODPECKER_TOKEN`, and the object store's as `settings.s3`, read from
 `UNICON_S3_ENDPOINT`, `UNICON_S3_REGION` (`garage` unless given),
 `UNICON_S3_ACCESS_KEY`, `UNICON_S3_SECRET_KEY` and
-`UNICON_S3_RESULTS_BUCKET` (`unicon-results`); both are
+`UNICON_S3_RESULTS_BUCKET` (`unicon-results`); all three are
 required only when `UNICON_FORGE=forgejo`. The mail server invite mail goes
 through travels as `settings.mail`, read from `UNICON_MAIL_SMTP_ADDR`,
 `UNICON_MAIL_SMTP_PORT` (587 unless given), `UNICON_MAIL_PROTOCOL`
@@ -1387,7 +1415,7 @@ either way. A lost one reads as `system_error` with `LOST` as its reason;
 one still queued is left alone however long it waits, since at a
 contest's start a run waits minutes behind others. The CI is asked about a
 run at most once every fifteen seconds by a process, through the memo,
-and the Forgejo implementation reads the queue at most once every ten
+and the Woodpecker adapter reads the queue at most once every ten
 seconds for all runs, so contestants' pages polling every few seconds
 cost it little. Nothing is written when a grading is read; the reader's
 connection is let go of before the CI is asked, and a CI that does not
@@ -1424,10 +1452,10 @@ body, and hands it to `grading.answer` with the service's `lookup`. What a
 run runs is decided by the platform, never by the request or the
 repository, and that takes two checks kept apart: `lookup` answers only for
 a grading of the task the request names that is `queued`, and the
-implementation refuses a run started with any variable but those it starts
+CI's adapter refuses a run started with any variable but those it starts
 that run with, since anyone who may start a manual pipeline on the task's
 repository may pass variables of their own, a harness image among them. The
-Forgejo implementation checks its RFC 9421 signature, over the request target
+Woodpecker adapter checks its RFC 9421 signature, over the request target
 and the body's `Content-Digest`, made within five minutes, against the CI's
 ed25519 key, read from `GET /api/signature/public-key` with the CI
 administrator's token, kept, and read again once when a request does not
@@ -1759,15 +1787,19 @@ forge, signs in with it and throws it away.
 
 ## Layer rules
 
-Five import-linter contracts in `pyproject.toml`, run by `lint-imports` in
+Seven import-linter contracts in `pyproject.toml`, run by `lint-imports` in
 CI, so a cross-layer import fails the build:
 
-- `domain`, `services` and `db` never import anything under `forges`.
-- Only `runtime` and `testing` import `forges` themselves; `api` reaches an
-  implementation through `runtime`.
-- `forges.forgejo` never imports `services` or `db`. It may import `port` and
-  `domain`.
-- `forges.fake` never imports `services`, `db` or `runtime`.
+- `domain`, `services` and `db` never import anything under `adapters`.
+- Only `runtime` and `testing` import `adapters` themselves; `api` reaches an
+  adapter through `runtime`.
+- `adapters.git`, `adapters.ci`, `adapters.objects` and `adapters.mail` never
+  import each other, so a CI reaches the git host only through `CiHost`.
+- The shared adapter modules (`browser`, `cached`, `fake_world`, `http`,
+  `ids`) import no group, so only `adapters/__init__.py` and
+  `adapters/fakes.py` join them.
+- No adapter imports `services` or `db`.
+- The fakes never import `services`, `db` or `runtime`.
 - `domain` imports nothing else in the package, `port` included.
 
 ## Logging
@@ -1825,8 +1857,8 @@ collide with `n` others for its number, and `fake.lose_submission_answer`
 names it and then fails as if the answer were lost. The fake CI signs the
 question it asks the extension with a key of its own:
 `fake.grading.config_request(task, variables, now=)` is that question;
-`fake.state.refuse_starts = n` answers the next `n` starts without a run,
-and `fake.state.lose_start_answer` starts the next run and fails as if its
+`fake.ci.refuse_starts = n` answers the next `n` starts without a run,
+and `fake.ci.lose_start_answer` starts the next run and fails as if its
 answer were lost. The fake refuses a user id
 it already has, since the accounts the package makes take the next free ids.
 

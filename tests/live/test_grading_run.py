@@ -25,7 +25,6 @@ images the stack's `.env` names in `UNICON_LIVE_HARNESS_IMAGE` and
 
 import asyncio
 import base64
-import dataclasses
 import json
 import os
 import threading
@@ -39,6 +38,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+from forge.adapters.objects.s3 import S3Objects, StorageConfig
 from forge.db.tables import Grading
 from forge.domain.contracts import violation
 from forge.domain.errors import UniconError
@@ -47,8 +47,6 @@ from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.keys import key_from_name
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, Scope
-from forge.forges.forgejo import ForgejoForge
-from forge.forges.forgejo.objects import StorageConfig
 from forge.runtime.setup import Setup
 from forge.services import (
     access,
@@ -72,6 +70,7 @@ from tests.live.conftest import (
     delete_org,
     delete_user,
     forge_config,
+    live_forge,
     make_user,
     needs_ci,
 )
@@ -219,7 +218,7 @@ async def grading_setup(
     built = Setup.build(
         settings,
         callback_path=CALLBACK_PATH,
-        forge=ForgejoForge(dataclasses.replace(config, storage=storage)),
+        forge=live_forge(config, S3Objects(storage)),
         keys=key_from_name,
     )
     platform.setup = built

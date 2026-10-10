@@ -12,12 +12,12 @@ from datetime import timedelta
 
 import pytest
 
+from forge.adapters.ci.fake import token_in
+from forge.adapters.fakes import FakeForge
 from forge.domain.errors import NotFound, Unavailable
 from forge.domain.identity import AsOrgAccount, CiState
 from forge.domain.ids import OrgId
 from forge.domain.sessions import Session
-from forge.forges.fake import FakeForge
-from forge.forges.fake.grading import token_in
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import org_accounts, orgs, sessions
@@ -64,7 +64,7 @@ async def test_an_account_last_signed_in_long_ago_signs_in_again_first(
     assert [call.operation for call in fake.calls] == ["refresh"]
     assert token_in(after.ci_state) != token_in(before.ci_state)
     assert after.forge_token == before.forge_token
-    assert fake.state.ci_tokens[token_in(after.ci_state)] == "unicon-ci-acme"
+    assert fake.ci.ci_tokens[token_in(after.ci_state)] == "unicon-ci-acme"
     assert [record["org"] for record in logged(caplog, "org_accounts.signed_in_again")] == ["acme"]
     fake.reset_calls()
     assert await _identity(setup, ACME) == after
@@ -139,7 +139,7 @@ async def test_a_refused_credential_is_renewed_once_for_every_caller_it_failed(
     setup: Setup, fake: FakeForge, made: None
 ) -> None:
     refused = await _identity(setup, ACME)
-    fake.state.revoked_ci_tokens.add(token_in(refused.ci_state))
+    fake.ci.revoked_ci_tokens.add(token_in(refused.ci_state))
 
     async def renewed() -> AsOrgAccount:
         async with setup.unit_of_work() as ctx:
