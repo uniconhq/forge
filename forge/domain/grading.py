@@ -14,8 +14,8 @@ grading has one run: a retry or a rejudge is a new row with a new id, so it
 is handed new secrets.
 
 The times agree with each other and with the CI. A machine gives one run
-`RUN_TIMEOUT`, the CI's pipeline timeout, which the deployment sets to 30
-minutes (`WOODPECKER_DEFAULT_PIPELINE_TIMEOUT`). Of that, the two checkouts
+`RUN_TIMEOUT`, the longest the CI lets a run take, which the deployment
+sets to 30 minutes. Of that, the two checkouts
 are allowed `CHECKOUT_ALLOWANCE` and the reports `REPORT_ALLOWANCE`, which
 leaves `WALL_CEILING` for the harness: an envelope's `limits.wall_seconds` is
 what its plan's steps may take, their time limits summed with a margin for
@@ -40,16 +40,14 @@ was made, since its run is started as soon as it is committed; one
 or that never reached the harness; and one `running` past its deadline,
 whose token is refused from then on.
 
-A `dispatched` grading may also have a run the CI has lost: Woodpecker
-3.18.1 drops a run from its queue for good when the machine it handed the
-run to does not renew its claim within a minute, after a dropped network
-or a machine that died during the checkout, and leaves the pipeline saying
-`pending` (woodpecker-ci/woodpecker#7063). Waiting long is not being lost:
-at a contest's start a run can wait a quarter of an hour behind others. So
-the CI is asked where the run is (`RunState`), once the grading has been
-`dispatched` `LOST_CHECK_AFTER`, by the queue it is in and not the
-pipeline's status, which says `pending` either way; a run the CI no longer
-holds reads as a system error, `LOST`, like an overdue one.
+A `dispatched` grading may also have a run the CI has lost: one it dropped
+for good after the machine it handed the run to went quiet, while still
+saying the run waits (the CI's implementation names the case it knows).
+Waiting long is not being lost: at a contest's start a run can wait a
+quarter of an hour behind others. So the CI is asked where the run is
+(`RunState`) once the grading has been `dispatched` `LOST_CHECK_AFTER`; a
+run the CI no longer holds reads as a system error, `LOST`, like an
+overdue one.
 
 A grading in `system_error` is ended by staff, by regrading it or, when a
 regrade would only repeat the fault, by cancelling it with a sentence its
@@ -62,7 +60,7 @@ import hashlib
 import hmac
 import math
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -253,11 +251,24 @@ class GradingRun:
 
 
 @dataclass(frozen=True, slots=True)
-class CiRequest:
+class RunSpec:
+    """What a run runs, read from the platform's own records as it is
+    started: the harness image the plan of its publication names, by digest,
+    and the image its two checkouts are made with. A CI that is handed a run
+    has all of it at the start; one that asks what a run is is answered
+    from it.
+    """
+
+    harness_image: str
+    clone_image: str
+
+
+@dataclass(frozen=True, slots=True)
+class InboundRequest:
     """A request the CI made to the platform, as it arrived: its method, its
     target, the path and query exactly as sent, its headers, looked up
-    whatever their case, and its body, byte for byte, since the signature
-    covers them.
+    whatever their case, and its body, byte for byte, since what proves it
+    the CI's covers them.
     """
 
     method: str
@@ -267,25 +278,19 @@ class CiRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class ConfigAsk:
-    """The CI asking what a run is, once its signature is checked: the task
-    whose run it is, the grading id the run was started with as it was
-    given, every variable it was started with, and where the CI clones the
-    task from.
-    """
-
-    task: TaskId
-    grading: str | None
-    variables: Mapping[str, str]
-    clone_url: str
-
-
-@dataclass(frozen=True, slots=True)
-class CiAnswer:
+class InboundAnswer:
     """What the platform answers the CI with: the body and its media type."""
 
     body: bytes
     content_type: str
+
+
+RunLookup = Callable[[str | None, TaskId], Awaitable[tuple[GradingRun, RunSpec]]]
+"""How an implementation whose CI asks what a run is finds the run: by the
+grading id the run names, as it was given, and the task the CI asks about.
+It answers with the run and what it runs only for a grading of that task
+whose run is being started, and refuses anything else, so what runs comes
+from the platform's records and never from the request."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -23,8 +23,10 @@ gives a submission without gradings its rows.
 
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import Callable, Coroutine
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 from fractions import Fraction
@@ -66,6 +68,7 @@ from forge.domain.grading import (
     Fallback,
     GradingRun,
     GradingStatus,
+    RunSpec,
     RunState,
     callback_token,
     envelope_key,
@@ -76,10 +79,11 @@ from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.submissions import SubmittedInput
+from forge.forges.fake.grading import run_variables, token_in
 from forge.runtime.setup import Setup
 from forge.services import gradings, org_accounts, publications, reconcile, runs, submissions
 from forge.services.access import Organiser
-from forge.testing import FakeClock
+from forge.testing import FakeClock, logged
 from tests.services.conftest import (
     RUNNING,
     Acme,
@@ -135,7 +139,7 @@ async def _set(setup: Setup, grading: uuid.UUID, **values: Any) -> None:
 
 async def _variables(setup: Setup, row: Grading) -> dict[str, str]:
     async with setup.unit_of_work() as ctx:
-        return dict(ctx.forge.grading.run_variables(await gradings.run_of(ctx, row)))
+        return run_variables(await gradings.run_of(ctx, row))
 
 
 def _key(setup: Setup, row: Grading) -> str:
@@ -243,6 +247,80 @@ async def test_a_submit_starts_one_run_as_the_org_account_on_the_platform_pool(
     )
 
 
+async def test_a_run_is_started_with_what_its_plan_runs(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _submit(setup, acme, entered)
+
+    [started] = acme.fake.calls_to("start_run")
+    assert started.arguments["spec"] == RunSpec(
+        harness_image=setup.settings.harness_image, clone_image=setup.settings.clone_image
+    )
+
+
+@pytest.mark.parametrize(
+    ("trouble", "reason"),
+    [
+        (NotFound("no plans/plan.json"), gradings.NO_RUN),
+        (Forbidden("not the platform's to read"), gradings.NO_RUN),
+        ("not a plan", gradings.NO_RUN),
+        (Unavailable("down"), gradings.NO_RUN),
+    ],
+)
+async def test_a_run_whose_plan_cannot_be_read_is_not_started(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    monkeypatch: pytest.MonkeyPatch,
+    unstarted: Start,
+    trouble: Exception | str,
+    reason: str,
+) -> None:
+    """Ended as it was when the CI asked for the plan while starting the run,
+    and the platform's refusal or its 503 made the CI answer the start with
+    no run: a system error saying the CI started none.
+    """
+    read_file = acme.fake.content.read_file
+
+    async def no_plan(as_: Any, place: Any, path: str, *, at: Any = None) -> Any:
+        if path != PLAN_PATH:
+            return await read_file(as_, place, path, at=at)
+        if isinstance(trouble, Exception):
+            raise trouble
+        found = await read_file(as_, place, path, at=at)
+        return replace(found, content=b'{"plan": "' + trouble.encode() + b'"}')
+
+    row = await _submit(setup, acme, entered)
+    monkeypatch.setattr(acme.fake.content, "read_file", no_plan)
+    await unstarted(setup, row)
+
+    row = await _row(setup, row.id)
+    assert (row.status, row.error, row.run_id) == (GradingStatus.SYSTEM_ERROR, reason, None)
+    assert acme.fake.calls_to("start_run") == []
+
+
+async def test_a_ci_handed_every_run_whole_grades_without_being_asked(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    """With a CI that is pushed to, the run starts with everything it runs and
+    the question a CI asks back is no door at all.
+    """
+    acme.fake.grading.asks = False
+    row = await _submit(setup, acme, entered)
+
+    assert (await _row(setup, row.id)).status == GradingStatus.DISPATCHED
+    [started] = acme.fake.calls_to("start_run")
+    assert started.arguments["spec"].harness_image == setup.settings.harness_image
+    variables = await _variables(setup, row)
+    with pytest.raises(NotFound):
+        await runs.config(
+            setup, acme.fake.grading.config_request(entered.task, variables, now=clock.now())
+        )
+    document = await runs.envelope(setup, row.id, _key(setup, row))
+    status = await _report(setup, await _row(setup, row.id), _finished(_result(document)))
+    assert status == GradingStatus.DONE
+
+
 async def test_two_starts_at_once_leave_one_run_and_cancel_the_other(
     setup: Setup,
     acme: Acme,
@@ -258,10 +336,10 @@ async def test_two_starts_at_once_leave_one_run_and_cancel_the_other(
     starting, release = asyncio.Event(), asyncio.Event()
     start = acme.fake.grading.start_run
 
-    async def held_start(as_: AsOrgAccount, run: GradingRun) -> RunId:
+    async def held_start(as_: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
         starting.set()
         await release.wait()
-        return await start(as_, run)
+        return await start(as_, run, spec)
 
     monkeypatch.setattr(acme.fake.grading, "start_run", held_start)
     first = asyncio.create_task(unstarted(setup, row))
@@ -382,6 +460,75 @@ async def test_the_extension_refuses_what_it_should_not_answer(
     assert refused.value.detail == runs.REFUSED
 
 
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "UNICON_ENVELOPE_URL",
+        "UNICON_PUBLICATION_COMMIT",
+        "UNICON_SUBMISSION",
+        "UNICON_SUBMISSION_COMMIT",
+        "UNICON_COMPUTE",
+        "UNICON_HARNESS_IMAGE",
+    ],
+)
+async def test_the_extension_refuses_variables_that_differ_by_one_value(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    clock: FakeClock,
+    unstarted: Start,
+    variable: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Rule 1: what runs is decided by the platform, so a run started by hand
+    with any variable of its own, a harness image among them, is answered
+    with nothing, though its grading is queued and of that task.
+    """
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+    variables[variable] = variables.get(variable, "ghcr.io/someone/harness:mine") + "x"
+    request = acme.fake.grading.config_request(entered.task, variables, now=clock.now())
+
+    caplog.set_level(logging.INFO)
+    with pytest.raises(CiRequestRefused):
+        await runs.config(setup, request)
+    assert (await _row(setup, row.id)).status == GradingStatus.QUEUED
+    [refused] = logged(caplog, "runs.config_refused")
+    assert (refused["reason"], refused["grading"]) == ("variables", str(row.id))
+
+
+async def test_a_request_that_does_not_verify_is_logged_as_unverified(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    clock: FakeClock,
+    unstarted: Start,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+    request = acme.fake.grading.config_request(entered.task, variables, now=clock.now(), key=b"x")
+
+    with pytest.raises(CiRequestRefused):
+        await runs.config(setup, request)
+    [refused] = logged(caplog, "runs.config_refused")
+    assert (refused["reason"], refused["grading"]) == ("unverified", None)
+
+
+async def test_the_extension_refuses_a_grading_asked_about_for_another_task(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, unstarted: Start
+) -> None:
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+    request = acme.fake.grading.config_request(
+        TaskId(f"{entered.task}-other"), variables, now=clock.now()
+    )
+
+    with pytest.raises(CiRequestRefused):
+        await runs.config(setup, request)
+
+
 async def test_the_extension_refuses_a_grading_whose_run_was_started_already(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, unstarted: Start
 ) -> None:
@@ -393,6 +540,63 @@ async def test_the_extension_refuses_a_grading_whose_run_was_started_already(
         await runs.config(
             setup, acme.fake.grading.config_request(entered.task, variables, now=clock.now())
         )
+
+
+async def test_the_extension_answers_503_when_the_forge_does_not_answer_its_lookup(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    clock: FakeClock,
+    unstarted: Start,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The forge's own outage while the request is looked up is not the CI's
+    trouble nor a refusal: the CI is told to ask again.
+    """
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+
+    async def down(*args: Any, **kwargs: Any) -> Any:
+        raise Unavailable("the forge went away")
+
+    monkeypatch.setattr(gradings, "run_of", down)
+    caplog.set_level(logging.INFO)
+    with pytest.raises(Unavailable, match="The forge did not answer"):
+        await runs.config(
+            setup, acme.fake.grading.config_request(entered.task, variables, now=clock.now())
+        )
+    [warned] = logged(caplog, "runs.forge_unavailable")
+    assert warned["grading"] == str(row.id)
+    assert (await _row(setup, row.id)).status == GradingStatus.QUEUED
+
+
+@pytest.mark.parametrize("trouble", [NotFound("gone"), Forbidden("hidden")])
+async def test_the_extension_refuses_a_grading_whose_plan_cannot_be_read(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    clock: FakeClock,
+    unstarted: Start,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    trouble: Exception,
+) -> None:
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+
+    async def unreadable(*args: Any, **kwargs: Any) -> Any:
+        raise trouble
+
+    monkeypatch.setattr(gradings, "plan_of", unreadable)
+    caplog.set_level(logging.INFO)
+    with pytest.raises(CiRequestRefused) as refused:
+        await runs.config(
+            setup, acme.fake.grading.config_request(entered.task, variables, now=clock.now())
+        )
+    assert refused.value.detail == runs.REFUSED
+    [warned] = logged(caplog, "runs.plan_unreadable")
+    assert warned["grading"] == str(row.id)
 
 
 async def test_the_envelope_is_the_runs_served_once_and_its_fetch_starts_the_clock(
@@ -1116,14 +1320,14 @@ async def test_a_start_the_ci_refuses_signs_the_org_account_in_again_and_starts(
 ) -> None:
     async with setup.unit_of_work() as ctx:
         lost = await org_accounts.identity(ctx, OrgId("acme"))
-    acme.fake.state.revoked_ci_tokens.add(lost.ci_token)
+    acme.fake.state.revoked_ci_tokens.add(token_in(lost.ci_state))
 
     row = await _submit(setup, acme, entered)
 
     after = await _row(setup, row.id)
     assert after.status == GradingStatus.DISPATCHED
     assert len(acme.fake.calls_to("start_run")) == 2
-    assert len(acme.fake.calls_to("mint_ci_token")) == 1
+    assert len(acme.fake.calls_to("refresh")) == 1
 
 
 async def test_a_run_still_waiting_in_the_queue_is_left_alone_however_long(

@@ -2,7 +2,9 @@
 the host's image:
 
 - `migrate` brings the database `UNICON_DATABASE_URL` names up to the
-  package's latest migration, then exits. Migrating is the package's job and
+  package's latest migration, then exits. Revision `0017` also needs
+  `UNICON_TOKEN_ENCRYPTION_KEY` when the database holds an org's CI
+  credentials to move. Migrating is the package's job and
   not the hosting process's, so the command is the package's own; a
   deployment runs it once, before the host starts.
 - `reconcile` gives every submission at the forge that has no grading its

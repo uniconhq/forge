@@ -1,8 +1,9 @@
-"""An org account's identity is read from its row, signed in at the CI again
-first once its last sign-in there is older than two thirds of the session's
-hard lifetime, 20 days by default, by one caller at a time; a credential the
-CI refused is signed in again once however many callers were refused; the
-account's event secret is read from its row too.
+"""An org account's identity is read from its row, its state at the CI
+refreshed first once the CI's implementation says so (the fake, like
+Woodpecker, once its last sign-in is older than two thirds of the session's
+hard lifetime, 20 days by default), by one caller at a time; a state the CI
+refused is refreshed once however many callers were refused; the account's
+event secret is read from its row too.
 """
 
 import asyncio
@@ -12,10 +13,11 @@ from datetime import timedelta
 import pytest
 
 from forge.domain.errors import NotFound, Unavailable
-from forge.domain.identity import AsOrgAccount
+from forge.domain.identity import AsOrgAccount, CiState
 from forge.domain.ids import OrgId
 from forge.domain.sessions import Session
 from forge.forges.fake import FakeForge
+from forge.forges.fake.grading import token_in
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import org_accounts, orgs, sessions
@@ -59,10 +61,10 @@ async def test_an_account_last_signed_in_long_ago_signs_in_again_first(
 
     after = await _identity(setup, ACME)
 
-    assert [call.operation for call in fake.calls] == ["set_password", "mint_ci_token"]
-    assert after.ci_token != before.ci_token
+    assert [call.operation for call in fake.calls] == ["refresh"]
+    assert token_in(after.ci_state) != token_in(before.ci_state)
     assert after.forge_token == before.forge_token
-    assert fake.state.ci_tokens[after.ci_token] == "unicon-ci-acme"
+    assert fake.state.ci_tokens[token_in(after.ci_state)] == "unicon-ci-acme"
     assert [record["org"] for record in logged(caplog, "org_accounts.signed_in_again")] == ["acme"]
     fake.reset_calls()
     assert await _identity(setup, ACME) == after
@@ -77,7 +79,7 @@ async def test_two_callers_at_once_sign_the_account_in_once(
     first, second = await asyncio.gather(_identity(setup, ACME), _identity(setup, ACME))
 
     assert first == second
-    assert len(fake.calls_to("mint_ci_token")) == 1
+    assert len(fake.calls_to("refresh")) == 1
 
 
 async def test_a_sign_in_that_fails_fails_the_caller_and_is_tried_again_next_time(
@@ -87,19 +89,19 @@ async def test_a_sign_in_that_fails_fails_the_caller_and_is_tried_again_next_tim
     clock: FakeClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original = fake.grading.mint_ci_token
+    original = fake.grading.refresh
 
-    async def broken(username: str, forge_password: str) -> str:
+    async def broken(org: OrgId, state: CiState) -> CiState:
         raise Unavailable("the CI went away")
 
     clock.advance(timedelta(days=21))
-    monkeypatch.setattr(fake.grading, "mint_ci_token", broken)
+    monkeypatch.setattr(fake.grading, "refresh", broken)
     with pytest.raises(Unavailable):
         await _identity(setup, ACME)
 
-    monkeypatch.setattr(fake.grading, "mint_ci_token", original)
+    monkeypatch.setattr(fake.grading, "refresh", original)
     await _identity(setup, ACME)
-    assert len(fake.calls_to("mint_ci_token")) == 1
+    assert len(fake.calls_to("refresh")) == 1
 
 
 async def test_the_identity_and_the_event_secret_come_from_the_row(ctx: Context) -> None:
@@ -125,20 +127,19 @@ async def test_a_shorter_session_lifetime_signs_the_account_in_sooner(
     clock: FakeClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    shorter = setup.settings.model_copy(update={"session_hard_ttl": timedelta(days=6)})
-    monkeypatch.setattr(setup, "_settings", shorter)
+    monkeypatch.setattr(fake.grading, "login_lifetime", timedelta(days=6))
     clock.advance(timedelta(days=4, seconds=1))
 
     await _identity(setup, ACME)
 
-    assert [call.operation for call in fake.calls] == ["set_password", "mint_ci_token"]
+    assert [call.operation for call in fake.calls] == ["refresh"]
 
 
 async def test_a_refused_credential_is_renewed_once_for_every_caller_it_failed(
     setup: Setup, fake: FakeForge, made: None
 ) -> None:
     refused = await _identity(setup, ACME)
-    fake.state.revoked_ci_tokens.add(refused.ci_token)
+    fake.state.revoked_ci_tokens.add(token_in(refused.ci_state))
 
     async def renewed() -> AsOrgAccount:
         async with setup.unit_of_work() as ctx:
@@ -147,6 +148,6 @@ async def test_a_refused_credential_is_renewed_once_for_every_caller_it_failed(
     first, second = await asyncio.gather(renewed(), renewed())
 
     assert first == second
-    assert first.ci_token != refused.ci_token
-    assert len(fake.calls_to("mint_ci_token")) == 1
+    assert first.ci_state != refused.ci_state
+    assert len(fake.calls_to("refresh")) == 1
     assert await _identity(setup, ACME) == first

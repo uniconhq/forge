@@ -61,9 +61,6 @@ class ForgejoIdentity:
             visibility=visibility,
         )
 
-    async def set_password(self, user_id: int, password: str) -> None:
-        await self._users.set_password(user_id, password)
-
     async def mint_token(
         self, username: str, password: str, *, name: str, scopes: Sequence[str]
     ) -> str:

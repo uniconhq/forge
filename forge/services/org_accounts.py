@@ -1,42 +1,34 @@
 """An org's service account, `unicon-ci-<org>`: the one account that
 activates the org's tasks at the CI and starts their runs. It is a user at
 the forge, a member of the org account's place in the org and nothing else,
-and a user at the CI. The `org_accounts` row holds its two credentials and
+and whatever the CI's implementation sets up for it there. The
+`org_accounts` row holds its forge credential, what it holds at the CI and
 the secret the org's event push is signed with, each as ciphertext; its
-password at the forge is never stored. Whenever the account has to sign in
-again, the package sets a fresh password with its administrator rights,
-signs in with it, and throws it away.
+password at the forge is never stored.
 
 The building blocks here are the steps making an org runs, and `identity`
 and `event_secret_of` are what the rest of the package reads.
 
-The CI keeps the account's login at the forge fresh only while the account
-calls it, and that login lasts as long as the forge's refresh token, which
-deploy sets to the session's hard lifetime, `UNICON_SESSION_HARD_TTL`, 30
-days unless the operator says otherwise; an org that grades nothing for
-longer would lose it. `identity` therefore signs the account in at the CI
-again before handing it out whenever its last sign-in there is older than
-`SIGN_IN_SHARE` of that lifetime, 20 days by default: an org that grades
-every day signs in again every 20 days, and one that was quiet for months
-signs in on its first use. A login the CI refuses for any other reason, a
-restored CI database or a revoked token, is signed in again by `renew`,
+What the account holds at the CI is the implementation's own, and so is
+when it goes stale: `identity` refreshes it first whenever the
+implementation says it needs refreshing, holding the row so two callers
+never refresh it at once. A state the CI refuses for any other reason, a
+restored CI database or a revoked credential, is refreshed by `renew`,
 which whoever was refused calls before trying once more.
 """
 
 import secrets
-from datetime import datetime
 
 from sqlalchemy import select
 
 from forge.db.tables import OrgAccount
 from forge.domain.errors import NotFound
-from forge.domain.identity import AsOrgAccount
+from forge.domain.identity import AsOrgAccount, CiState, OrgAccountRef
 from forge.domain.ids import OrgId
 from forge.domain.names import service_account_name
 from forge.log import get_logger
 from forge.runtime.context import Context
 from forge.services import credentials
-from forge.services.passwords import new_password
 
 log = get_logger(__name__)
 
@@ -44,7 +36,6 @@ TOKEN_NAME = "unicon"
 TOKEN_SCOPES = ("read:user", "read:organization", "read:repository")
 EMAIL_DOMAIN = "unicon.invalid"
 SECRET_BYTES = 32
-SIGN_IN_SHARE = 2 / 3
 
 
 async def ensure_row(ctx: Context, org: OrgId) -> None:
@@ -58,7 +49,7 @@ async def ensure_row(ctx: Context, org: OrgId) -> None:
             org_id=org,
             username=service_account_name(org),
             forge_token=b"",
-            ci_token=b"",
+            ci_state=b"",
             event_secret=credentials.encrypt_text(
                 secrets.token_urlsafe(SECRET_BYTES), ctx.settings
             ),
@@ -104,46 +95,42 @@ async def mint_forge_token(ctx: Context, org: OrgId, password: str) -> None:
     await ctx.db.flush()
 
 
-async def create_ci_user(ctx: Context, org: OrgId) -> None:
-    row = await _row(ctx, org)
-    row.ci_user_id = await ctx.forge.grading.create_ci_user(row.username)
-    await ctx.db.flush()
-
-
-async def sign_in_at_ci(ctx: Context, org: OrgId, password: str) -> None:
-    """Sign the account in at the CI with `password` and keep the CI
-    credential that comes out of it.
+async def set_up_at_ci(ctx: Context, org: OrgId, password: str) -> None:
+    """Set the org up at the CI for its account, which `password` signs in
+    at the forge, and keep what the account holds there.
     """
     row = await _row(ctx, org)
-    token = await ctx.forge.grading.mint_ci_token(row.username, password)
-    row.ci_token = credentials.encrypt_text(token, ctx.settings)
-    row.ci_signed_in_at = ctx.now
+    if row.forge_user_id is None:
+        raise NotFound(f"the org account of {org} has not been made at the forge")
+    state = await ctx.forge.grading.set_up_org(
+        org, OrgAccountRef(row.username, row.forge_user_id, password)
+    )
+    _keep(ctx, row, state)
     await ctx.db.flush()
 
 
 async def identity(ctx: Context, org: OrgId) -> AsOrgAccount:
-    """The account as a call through the port is made under it, signed in
-    at the CI again first when that sign-in is older than `SIGN_IN_SHARE` of
-    the session's hard lifetime. `NotFound` when the org has no account with
-    both credentials.
+    """The account as a call through the port is made under it, its state
+    at the CI refreshed first when the CI's implementation says it needs
+    it. `NotFound` when the org has no account ready at both.
     """
     row = await _row(ctx, org)
-    if row.ci_token and _stale(ctx, row.ci_signed_in_at):
+    if row.ci_state and ctx.forge.grading.needs_refresh(_state(ctx, row), ctx.now):
         row = await _row(ctx, org, lock=True)
-        if _stale(ctx, row.ci_signed_in_at):
-            await _sign_in_again(ctx, row)
+        if ctx.forge.grading.needs_refresh(_state(ctx, row), ctx.now):
+            await _refresh(ctx, row)
             log.info("org_accounts.signed_in_again", org=org, reason="age")
     return _identity(row, ctx)
 
 
 async def renew(ctx: Context, refused: AsOrgAccount) -> AsOrgAccount:
-    """The account signed in at the CI again, for a caller the CI refused
-    under `refused`. When another caller signed it in meanwhile, its new
-    credential is handed out as it is, so a burst of refusals signs in once.
+    """The account's state at the CI refreshed, for a caller the CI refused
+    under `refused`. When another caller refreshed it meanwhile, its new
+    state is handed out as it is, so a burst of refusals refreshes once.
     """
     row = await _row(ctx, OrgId(refused.org), lock=True)
-    if _identity(row, ctx).ci_token == refused.ci_token:
-        await _sign_in_again(ctx, row)
+    if _identity(row, ctx).ci_state == refused.ci_state:
+        await _refresh(ctx, row)
         log.warning("org_accounts.signed_in_again", org=refused.org, reason="refused")
     return _identity(row, ctx)
 
@@ -176,29 +163,28 @@ async def service_account_ids(ctx: Context) -> frozenset[int]:
     return frozenset(user_id for user_id in found.scalars() if user_id is not None)
 
 
-def _stale(ctx: Context, signed_in_at: datetime | None) -> bool:
-    longest = ctx.settings.session_hard_ttl * SIGN_IN_SHARE
-    return signed_in_at is None or ctx.now - signed_in_at > longest
-
-
-async def _sign_in_again(ctx: Context, row: OrgAccount) -> None:
+async def _refresh(ctx: Context, row: OrgAccount) -> None:
     if row.forge_user_id is None:
         raise NotFound(f"the org account of {row.org_id} has not been made at the forge")
-    password = new_password()
-    await ctx.forge.identity.set_password(row.forge_user_id, password)
-    token = await ctx.forge.grading.mint_ci_token(row.username, password)
-    row.ci_token = credentials.encrypt_text(token, ctx.settings)
-    row.ci_signed_in_at = ctx.now
+    _keep(ctx, row, await ctx.forge.grading.refresh(OrgId(row.org_id), _state(ctx, row)))
     await ctx.db.flush()
 
 
+def _state(ctx: Context, row: OrgAccount) -> CiState:
+    return CiState(credentials.decrypt_text(row.ci_state, ctx.settings))
+
+
+def _keep(ctx: Context, row: OrgAccount, state: CiState) -> None:
+    row.ci_state = credentials.encrypt_text(state, ctx.settings)
+
+
 def _identity(row: OrgAccount, ctx: Context) -> AsOrgAccount:
-    if not row.forge_token or not row.ci_token:
+    if not row.forge_token or not row.ci_state:
         raise NotFound(f"the org account of {row.org_id} is not ready")
     return AsOrgAccount(
         row.org_id,
         forge_token=credentials.decrypt_text(row.forge_token, ctx.settings),
-        ci_token=credentials.decrypt_text(row.ci_token, ctx.settings),
+        ci_state=_state(ctx, row),
     )
 
 
@@ -211,7 +197,7 @@ async def _row(ctx: Context, org: OrgId, *, lock: bool = False) -> OrgAccount:
 
 async def _find(ctx: Context, org: OrgId, *, lock: bool = False) -> OrgAccount | None:
     """The org's row, held until the unit of work ends and read afresh when
-    `lock`, so two units of work never sign the account in at once.
+    `lock`, so two units of work never refresh the account at once.
     """
     query = select(OrgAccount).where(OrgAccount.org_id == org)
     if lock:
