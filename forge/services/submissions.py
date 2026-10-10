@@ -114,7 +114,7 @@ from forge.domain.release import due_of, late_days
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.scoring import Points
 from forge.domain.sessions import Session
-from forge.domain.showing import GroupShown, shown, told
+from forge.domain.showing import GroupShown, SubmissionState, shown, told
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
 from forge.domain.uploads import (
     POINTER_MAX,
@@ -153,14 +153,15 @@ class Result:
     its `show` allows, the values reported once, and each value with a
     fold, folded over the tests shown; on a task that gives points, the
     points shown and those pending until the reveal, and the late factor
-    they include. A run in `system_error` is still `running` to its
+    they include. Where it stands is in the contestant's words
+    (`SubmissionState`): a run in `system_error` is still `grading` to its
     contestant, with nothing else; one staff cancelled is `cancelled`, with
     `reason`, the sentence they gave.
     """
 
     id: uuid.UUID
     attempt: int
-    status: GradingStatus
+    status: SubmissionState
     stopped: str | None
     outcome: str | None
     groups: tuple[GroupShown, ...]
@@ -754,17 +755,18 @@ async def _result(
     factor: Fraction,
 ) -> Result:
     """The grading as its contestant may see it now, with the publication it
-    ran under, scored. A run in `system_error` is told as still running,
+    ran under, scored. A run in `system_error` is told as still grading,
     with nothing of it shown, and one staff cancelled as cancelled, with the
     sentence they gave.
     """
+    state = told(status)
     if status is GradingStatus.CANCELLED:
-        return Result(row.id, row.attempt, status, None, None, (), {}, row.cancel_reason)
+        return Result(row.id, row.attempt, state, None, None, (), {}, row.cancel_reason)
     if status is not GradingStatus.DONE or row.result is None:
         return Result(row.id, row.attempt, told(status), None, None, (), {})
     graded = await scorer.graded(PublicationId(row.publication_id))
     if graded is None:
-        return Result(row.id, row.attempt, status, None, None, (), {})
+        return Result(row.id, row.attempt, state, None, None, (), {})
     revealed = reveal_at is not None and ctx.now >= reveal_at
     scored = await scorer.scored(row, graded, factor)
     seen = shown(
@@ -778,7 +780,7 @@ async def _result(
     return Result(
         row.id,
         row.attempt,
-        status,
+        state,
         seen.stopped,
         seen.outcome,
         seen.groups,

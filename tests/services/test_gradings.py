@@ -79,6 +79,7 @@ from forge.domain.identity import PLATFORM, AsOrgAccount, User
 from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.roles import Role, RoleGrant, Scope
+from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
 from forge.services import gradings, org_accounts, publications, reconcile, runs, submissions
@@ -674,7 +675,7 @@ async def test_a_run_that_does_not_report_by_its_deadline_reads_as_a_system_erro
     assert (after.status, after.error) == (GradingStatus.SYSTEM_ERROR, OVERDUE)
     # The contestant is told it is still being graded until staff end it.
     result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert result is not None and result.status == GradingStatus.RUNNING
+    assert result is not None and result.status == SubmissionState.GRADING
     with pytest.raises(GradingClosed):
         await _report(setup, row, _finished(_result(envelope)))
     retried = await gradings.retry(setup, manager, row.id)
@@ -710,7 +711,7 @@ async def test_a_valid_result_lands_on_the_row_with_its_log_and_the_contestant_r
     mine = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert mine is not None
     assert (mine.status, mine.stopped, mine.outcome, mine.values) == (
-        GradingStatus.DONE,
+        SubmissionState.GRADED,
         None,
         "accepted",
         {"log": ""},
@@ -818,7 +819,7 @@ async def test_a_run_stopped_by_a_system_error_is_kept_as_one_with_its_error(
     )
     mine = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert mine is not None
-    assert (mine.status, mine.stopped, mine.groups) == (GradingStatus.RUNNING, None, ())
+    assert (mine.status, mine.stopped, mine.groups) == (SubmissionState.GRADING, None, ())
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
     (listed,) = await _listed(setup, manager, entered.task)
     assert (listed.status, listed.error) == (GradingStatus.SYSTEM_ERROR, after.error)
@@ -951,13 +952,13 @@ async def test_a_cancelled_submission_reads_as_cancelled_and_frees_its_place_und
     await _set(setup, row.id, status=GradingStatus.SYSTEM_ERROR, error="The checker crashed.")
     before = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert before is not None
-    assert (before.status, before.reason) == (GradingStatus.RUNNING, None)
+    assert (before.status, before.reason) == (SubmissionState.GRADING, None)
 
     await gradings.cancel(setup, manager, row.id, REASON)
 
     after = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert after is not None
-    assert (after.status, after.reason) == (GradingStatus.CANCELLED, REASON)
+    assert (after.status, after.reason) == (SubmissionState.CANCELLED, REASON)
     assert (await _row(setup, row.id)).error == "The checker crashed."
     # A task that takes one submission takes another once that one is cancelled.
     await _limit_to_one(setup, acme, entered)
@@ -1051,7 +1052,7 @@ async def test_staff_fall_back_to_a_submissions_last_good_result_and_clear_it(
     (before,) = [found for found in await _listed(setup, manager, entered.task) if found.latest]
     assert (before.last_good, before.fallback, before.falls_back) == (1, None, False)
     told = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert told is not None and (told.attempt, told.status) == (2, GradingStatus.RUNNING)
+    assert told is not None and (told.attempt, told.status) == (2, SubmissionState.GRADING)
 
     fell = await gradings.fall_back(setup, manager, broken)
 
@@ -1060,13 +1061,13 @@ async def test_staff_fall_back_to_a_submissions_last_good_result_and_clear_it(
     (listed,) = [found for found in await _listed(setup, manager, entered.task) if found.latest]
     assert (listed.fallback, listed.falls_back) == (Fallback.STAFF, True)
     shown = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert shown is not None and (shown.attempt, shown.status) == (1, GradingStatus.DONE)
+    assert shown is not None and (shown.attempt, shown.status) == (1, SubmissionState.GRADED)
 
     cleared = await gradings.clear_fallback(setup, manager, broken)
 
     assert (cleared.last_good, cleared.fallback, cleared.falls_back) == (1, None, False)
     again = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert again is not None and (again.attempt, again.status) == (2, GradingStatus.RUNNING)
+    assert again is not None and (again.attempt, again.status) == (2, SubmissionState.GRADING)
 
 
 async def test_a_fallback_needs_the_latest_attempt_and_an_earlier_result(
@@ -1100,7 +1101,7 @@ async def test_under_a_fallback_a_cancel_keeps_the_last_good_result_and_its_plac
 
     assert (cancelled.status, cancelled.fallback) == (GradingStatus.CANCELLED, Fallback.CONTEST)
     shown = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert shown is not None and (shown.attempt, shown.status) == (1, GradingStatus.DONE)
+    assert shown is not None and (shown.attempt, shown.status) == (1, SubmissionState.GRADED)
     # A cancel stays final for grading: a rejudge passes the submission over.
     rejudged = await gradings.rejudge(setup, manager, entered.task)
     assert rejudged.queued == 0
@@ -1112,7 +1113,7 @@ async def test_under_a_fallback_a_cancel_keeps_the_last_good_result_and_its_plac
         await _submit(setup, acme, entered, key="key-0002-bbbb")
     await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     voided = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert voided is not None and (voided.attempt, voided.status) == (2, GradingStatus.CANCELLED)
+    assert voided is not None and (voided.attempt, voided.status) == (2, SubmissionState.CANCELLED)
     second = await _submit(setup, acme, entered, key="key-0002-bbbb")
     assert second.submission_number == 2
 
@@ -1131,7 +1132,7 @@ async def test_a_retry_ends_a_staff_fallback_and_its_attempt_starts_without_one(
     assert (listed[3].latest, listed[3].falls_back, listed[3].fallback) == (True, False, None)
     assert (listed[2].latest, listed[2].falls_back) == (False, False)
     told = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert told is not None and (told.attempt, told.status) == (3, GradingStatus.RUNNING)
+    assert told is not None and (told.attempt, told.status) == (3, SubmissionState.GRADING)
 
 
 async def test_a_fallback_on_a_lost_grading_ends_it_saying_why_and_cancels_its_run(
@@ -1211,7 +1212,7 @@ async def test_a_retry_makes_a_new_attempt_and_keeps_the_old(
         await gradings.retry(setup, manager, row.id)
     result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert result is not None
-    assert (result.attempt, result.status) == (2, GradingStatus.DISPATCHED)
+    assert (result.attempt, result.status) == (2, SubmissionState.GRADING)
 
 
 async def test_a_rejudge_grades_every_submission_again_against_the_current_publication(
@@ -1420,7 +1421,7 @@ async def test_a_run_still_waiting_in_the_queue_is_left_alone_however_long(
     assert result is not None
     (listed,) = await _listed(setup, manager, entered.task)
 
-    assert result.status == GradingStatus.DISPATCHED
+    assert result.status == SubmissionState.GRADING
     assert (listed.status, listed.error) == (GradingStatus.DISPATCHED, None)
     assert (await _row(setup, row.id)).status == GradingStatus.DISPATCHED
 
@@ -1439,7 +1440,7 @@ async def test_a_run_the_ci_lost_reads_as_a_system_error_saying_so_and_nothing_i
     (listed,) = await _listed(setup, manager, entered.task)
 
     # Its contestant is told it is still being graded until staff end it.
-    assert result.status == GradingStatus.RUNNING
+    assert result.status == SubmissionState.GRADING
     assert (listed.status, listed.error) == (GradingStatus.SYSTEM_ERROR, LOST)
     after = await _row(setup, row.id)
     assert (after.status, after.error) == (GradingStatus.DISPATCHED, None)
@@ -1474,7 +1475,7 @@ async def test_a_ci_that_does_not_say_where_a_run_is_loses_nothing(
 
     result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert result is not None
-    assert result.status == GradingStatus.DISPATCHED
+    assert result.status == SubmissionState.GRADING
 
 
 async def test_a_retry_of_a_lost_grading_ends_it_saying_why_and_cancels_its_run(

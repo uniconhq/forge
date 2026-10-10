@@ -37,6 +37,7 @@ shown (TASK-FORMAT.md section 1.7).
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from enum import StrEnum
 from fractions import Fraction
 from typing import Any
 
@@ -140,13 +141,36 @@ class Shown:
     folded: Mapping[str, Fraction] = field(default_factory=dict)
 
 
-def told(status: GradingStatus) -> GradingStatus:
-    """Where a grading stands as its own row is told: as it reads, but for a
-    run in `system_error`, which is still being graded to its row until
-    staff end it, a fault of the platform's or of setter code and never of
-    the contestant's.
+class SubmissionState(StrEnum):
+    """Where a submission stands as its contestant is told, in TASK-FORMAT.md
+    section 1.7's words, which say nothing of the CI's stages: `queued`
+    until its run is started, `grading` while the CI holds it or runs it,
+    `graded` once it has a result, and `cancelled` once staff ended it.
     """
-    return GradingStatus.RUNNING if status is GradingStatus.SYSTEM_ERROR else status
+
+    QUEUED = "queued"
+    GRADING = "grading"
+    GRADED = "graded"
+    CANCELLED = "cancelled"
+
+
+_TOLD = {
+    GradingStatus.QUEUED: SubmissionState.QUEUED,
+    GradingStatus.DISPATCHED: SubmissionState.GRADING,
+    GradingStatus.RUNNING: SubmissionState.GRADING,
+    GradingStatus.SYSTEM_ERROR: SubmissionState.GRADING,
+    GradingStatus.DONE: SubmissionState.GRADED,
+    GradingStatus.CANCELLED: SubmissionState.CANCELLED,
+}
+
+
+def told(status: GradingStatus) -> SubmissionState:
+    """Where a grading stands as its own row is told. A run in
+    `system_error` is still `grading` to its row until staff end it, a
+    fault of the platform's or of setter code and never of the
+    contestant's; organisers read the grading's own status.
+    """
+    return _TOLD[status]
 
 
 def group_of(test: str) -> str:

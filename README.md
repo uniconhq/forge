@@ -1386,8 +1386,12 @@ and the latest publication's `test_groups` when the two plans list the
 same tests, its own otherwise, so its rows are folded with the tests they
 ran on; a group with no rows did not run on it (`ran` false) and adds
 nothing to the outcome. A past publication's `task.yaml` and plan are read
-once per process. A run in `system_error` is told to its contestant as
-still running, with nothing of it shown, and one staff then cancelled as
+once per process. A contestant is told where a submission stands in
+TASK-FORMAT.md section 1.7's words (`SubmissionState`): `queued` until its
+run is started, `grading` while the CI holds or runs it, `graded` once it
+has a result and `cancelled` once staff end it; organisers read the
+grading's own status. A run in `system_error` is told to its contestant as
+still `grading`, with nothing of it shown, and one staff then cancelled as
 `cancelled` with the sentence they gave (`Result.reason`); while a fallback
 is in force for either (below), the submission is told by its last good
 result instead, the attempt the boards count. `files` gives
