@@ -6,9 +6,7 @@ import uuid
 
 import pytest
 
-from forge.domain.ids import ContestId, TaskId, WorkspaceId
-from forge.domain.names import TeamOwner, UserOwner
-from forge.forges.ids import (
+from forge.adapters.ids import (
     ContestRef,
     MalformedId,
     TaskRef,
@@ -27,6 +25,8 @@ from forge.forges.ids import (
     task_of_repo,
     thread_id,
 )
+from forge.domain.ids import ContestId, TaskId, WorkspaceId
+from forge.domain.names import TeamOwner, UserOwner
 
 TEAM = uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31")
 

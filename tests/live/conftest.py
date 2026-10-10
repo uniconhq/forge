@@ -17,9 +17,9 @@ from typing import Any
 import httpx
 import pytest
 
+from forge.adapters.git.forgejo import ForgejoConfig, ForgejoForge
 from forge.domain.identity import AsUser, Credential
 from forge.domain.keys import key_from_name
-from forge.forges.forgejo import ForgejoConfig, ForgejoForge
 from forge.runtime.setup import Setup
 from forge.settings import Settings
 from forge.testing import APP_URL, CALLBACK_PATH

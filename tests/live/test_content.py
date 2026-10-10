@@ -19,13 +19,13 @@ from urllib.parse import quote
 import httpx
 import pytest
 
+from forge.adapters.git.forgejo import ForgejoForge
 from forge.domain.definitions import starter_contest, starter_task
 from forge.domain.errors import Conflict
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.publications import write_note
 from forge.domain.roles import Role, Scope
-from forge.forges.forgejo import ForgejoForge
 from tests.live.conftest import (
     LIVE,
     PASSWORD,

@@ -18,12 +18,12 @@ from typing import Any
 
 import pytest
 
+from forge.adapters.git.fake import FakeForge
 from forge.domain.content import Edit
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.roles import Role, Scope, task_id_of
 from forge.domain.sessions import Session
-from forge.forges.fake import FakeForge
 from forge.runtime.setup import Setup
 from forge.services import (
     access,

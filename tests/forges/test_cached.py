@@ -2,11 +2,11 @@
 caches only the reads that grow with the forge while the flag is off.
 """
 
+from forge.adapters.cached import Cache, CachedForge
+from forge.adapters.git.fake import FakeForge
 from forge.domain.identity import AsUser
 from forge.domain.ids import OrgId
 from forge.domain.roles import Role, Scope
-from forge.forges.cached import Cache, CachedForge
-from forge.forges.fake import FakeForge
 
 
 def _ada(fake: FakeForge) -> AsUser:

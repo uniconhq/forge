@@ -14,10 +14,8 @@ from typing import Any
 import httpx
 import pytest
 
-from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
-from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
-from forge.forges.forgejo.ci_state import WoodpeckerState, written
-from forge.forges.forgejo.http import (
+from forge.adapters.git.forgejo.ci_state import WoodpeckerState, written
+from forge.adapters.git.forgejo.http import (
     CI_ADMIN,
     CONCURRENT_CALLS,
     ForgejoAuth,
@@ -25,6 +23,8 @@ from forge.forges.forgejo.http import (
     WoodpeckerAuth,
     new_client,
 )
+from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
+from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
 
 ACME = AsOrgAccount(
     "acme",

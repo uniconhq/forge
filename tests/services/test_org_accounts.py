@@ -12,12 +12,12 @@ from datetime import timedelta
 
 import pytest
 
+from forge.adapters.git.fake import FakeForge
+from forge.adapters.git.fake.grading import token_in
 from forge.domain.errors import NotFound, Unavailable
 from forge.domain.identity import AsOrgAccount, CiState
 from forge.domain.ids import OrgId
 from forge.domain.sessions import Session
-from forge.forges.fake import FakeForge
-from forge.forges.fake.grading import token_in
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import org_accounts, orgs, sessions

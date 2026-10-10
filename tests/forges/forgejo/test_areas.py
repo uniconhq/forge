@@ -10,6 +10,8 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
+from forge.adapters.git.forgejo import ForgejoForge
+from forge.adapters.git.forgejo.ci_state import WoodpeckerState, read_state, written
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, Misconfigured, NotFound, Rejected
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential, OrgAccountRef
@@ -18,8 +20,6 @@ from forge.domain.names import OrgProfile, UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
-from forge.forges.forgejo import ForgejoForge
-from forge.forges.forgejo.ci_state import WoodpeckerState, read_state, written
 from tests.forges.forgejo.conftest import CONFIG, Recorder, ok
 
 ACME = AsOrgAccount(

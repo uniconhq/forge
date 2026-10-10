@@ -9,8 +9,8 @@ from typing import Any
 import httpx
 import pytest
 
-from forge.forges.forgejo import ForgejoConfig, ForgejoForge
-from forge.forges.forgejo.http import ForgejoAuth, Http, WoodpeckerAuth
+from forge.adapters.git.forgejo import ForgejoConfig, ForgejoForge
+from forge.adapters.git.forgejo.http import ForgejoAuth, Http, WoodpeckerAuth
 
 CONFIG = ForgejoConfig(
     public_url="http://forge.test",

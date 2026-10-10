@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge.adapters.git.fake.grading import token_in
 from forge.domain.content import Edit
 from forge.domain.definitions import parse_contest, parse_task
 from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
@@ -29,7 +30,6 @@ from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.names import Named
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.yaml_models import InvalidDefinition
-from forge.forges.fake.grading import token_in
 from forge.runtime.setup import Setup
 from forge.services import making, names, org_accounts, publications, tasks
 from forge.services.access import Organiser

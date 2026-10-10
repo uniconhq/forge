@@ -8,6 +8,8 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
+from forge.adapters.git.fake import FakeForge
+from forge.adapters.git.fake.grading import token_in
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected
 from forge.domain.grading import GradingRun, RunSpec
@@ -27,8 +29,6 @@ from forge.domain.names import UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
-from forge.forges.fake import FakeForge
-from forge.forges.fake.grading import token_in
 
 
 def _as(fake: FakeForge, user_id: int) -> AsUser:

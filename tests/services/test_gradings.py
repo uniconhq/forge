@@ -35,6 +35,7 @@ from typing import Any
 import pytest
 from sqlalchemy import delete, select, update
 
+from forge.adapters.git.fake.grading import run_variables, token_in
 from forge.db.tables import Grading
 from forge.domain import exact_json
 from forge.domain.content import Edit
@@ -79,7 +80,6 @@ from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.submissions import SubmittedInput
-from forge.forges.fake.grading import run_variables, token_in
 from forge.runtime.setup import Setup
 from forge.services import gradings, org_accounts, publications, reconcile, runs, submissions
 from forge.services.access import Organiser

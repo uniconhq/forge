@@ -26,12 +26,12 @@ from pydantic import SecretStr
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 
+from forge.adapters.git.fake import FakeForge
+from forge.adapters.git.forgejo.ci_state import read_state
+from forge.adapters.git.forgejo.http import WoodpeckerAuth
 from forge.db.migrations import alembic_config, downgrade_to_base, upgrade_to_head
 from forge.db.tables import Grading, OrgAccount, metadata
 from forge.domain.ids import OrgId
-from forge.forges.fake import FakeForge
-from forge.forges.forgejo.ci_state import read_state
-from forge.forges.forgejo.http import WoodpeckerAuth
 from forge.runtime.setup import Setup
 from forge.services import org_accounts
 from forge.settings import TEST_KEY, decode_key

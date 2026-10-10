@@ -34,14 +34,14 @@ forge/
   services/          the actions and their building blocks, the cookies and the
                      credential at rest; the only layer that writes to the database
   db/                the tables, the engine and the migrations
-  forges/__init__.py build, which picks the implementation the settings name
-  forges/ids.py      how both implementations name repositories and build and
+  adapters/__init__.py  build, which picks the implementation the settings name
+  adapters/ids.py    how both implementations name repositories and build and
                      read ids
-  forges/forgejo/    the port over Forgejo and Woodpecker, including the sign-in
-                     dance that mints an org account's CI token
-  forges/fake/       the port in memory, one module per area over one state
-  forges/cached.py   the port wrapped in a small per-read cache
-  forges/README.md   what any git host must provide to sit behind the port
+  adapters/git/forgejo/  the port over Forgejo and Woodpecker, including the
+                     sign-in dance that mints an org account's CI token
+  adapters/git/fake/ the port in memory, one module per area over one state
+  adapters/cached.py the port wrapped in a small per-read cache
+  adapters/README.md what any git host must provide to sit behind the port
 tests/
   test_*.py          the domain, the front door, the port's shape, the settings,
                      the log, the command and the plugin
@@ -375,7 +375,7 @@ is not configured and sends nothing. The fake keeps what it was handed in
 refuses and none at all.
 
 Both implementations name repositories and build and read ids with the one
-grammar in `forges/ids.py`, so an id from elsewhere is `NotFound` whichever
+grammar in `adapters/ids.py`, so an id from elsewhere is `NotFound` whichever
 is behind the port.
 
 `UNICON_FORGE=forgejo` runs against Forgejo, grading with the CI `UNICON_CI`
@@ -431,7 +431,7 @@ never another's; a workspace's owner is `u<user id>`, never a username.
 ## The setup
 
 `forge/runtime/setup.py` sets the package up for one process: the forge
-behind the port, which `forges.build` picks and configures from the settings,
+behind the port, which `adapters.build` picks and configures from the settings,
 the pool of database connections and the clock. Nothing runs in the
 background: every piece of work is done by the request that asks for it.
 The process that hosts the package calls
@@ -1762,12 +1762,12 @@ forge, signs in with it and throws it away.
 Five import-linter contracts in `pyproject.toml`, run by `lint-imports` in
 CI, so a cross-layer import fails the build:
 
-- `domain`, `services` and `db` never import anything under `forges`.
-- Only `runtime` and `testing` import `forges` themselves; `api` reaches an
+- `domain`, `services` and `db` never import anything under `adapters`.
+- Only `runtime` and `testing` import `adapters` themselves; `api` reaches an
   implementation through `runtime`.
-- `forges.forgejo` never imports `services` or `db`. It may import `port` and
+- `adapters.git.forgejo` never imports `services` or `db`. It may import `port` and
   `domain`.
-- `forges.fake` never imports `services`, `db` or `runtime`.
+- `adapters.git.fake` never imports `services`, `db` or `runtime`.
 - `domain` imports nothing else in the package, `port` included.
 
 ## Logging

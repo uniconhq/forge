@@ -19,6 +19,8 @@ from typing import Any
 import httpx
 import pytest
 
+from forge.adapters.git.forgejo import ForgejoForge
+from forge.adapters.git.forgejo.ci_state import read_state
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, AsUser, OrgAccountRef
 from forge.domain.ids import OrgId, ThreadId
@@ -27,8 +29,6 @@ from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.uploads import POINTER_MAX, pointer_text
 from forge.domain.workflows import Visibility
-from forge.forges.forgejo import ForgejoForge
-from forge.forges.forgejo.ci_state import read_state
 from tests.live.conftest import (
     CI_ADMIN_TOKEN,
     CI_URL,

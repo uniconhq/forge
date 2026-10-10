@@ -14,13 +14,13 @@ import logging
 import pytest
 from sqlalchemy import select
 
+from forge.adapters.git.fake import FakeForge
 from forge.db.tables import Contestant, OrgAccount
 from forge.domain.errors import ContestantConflict, Forbidden, NotFound, SoleAdmin
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, OrgId
 from forge.domain.names import ScopeNames
 from forge.domain.roles import Role, RoleGrant, Scope
-from forge.forges.fake import FakeForge
 from forge.log import JsonFormatter
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup

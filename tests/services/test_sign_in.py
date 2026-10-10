@@ -8,9 +8,9 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from forge.adapters.git.fake import FakeForge
 from forge.domain.errors import SessionExpired, SignInInvalid
 from forge.domain.sessions import Session
-from forge.forges.fake import FakeForge
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import identity, sessions, sign_in

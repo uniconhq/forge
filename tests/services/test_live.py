@@ -20,12 +20,12 @@ from datetime import timedelta
 import psycopg
 import pytest
 
+from forge.adapters.git.fake import FakeForge
 from forge.db.tables import Session as SessionRow
 from forge.domain.ids import OrgId
 from forge.domain.live import CHANNEL, Audience, Nudge, NudgeKind, read_payload
 from forge.domain.roles import Role, RoleGrant, Scope, contest_scope, task_scope
 from forge.domain.submissions import SubmittedInput
-from forge.forges.fake import FakeForge
 from forge.runtime.broker import QUEUE_MOST, STREAMS_PER_SESSION, Subscription
 from forge.runtime.setup import Setup
 from forge.services import events, gradings, live, runs, sessions, submissions

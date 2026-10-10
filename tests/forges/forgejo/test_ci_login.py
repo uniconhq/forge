@@ -10,8 +10,8 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
+from forge.adapters.git.forgejo.ci_login import CiLogin, hidden_inputs, javascript_string
 from forge.domain.errors import Forbidden, Rejected, Unavailable
-from forge.forges.forgejo.ci_login import CiLogin, hidden_inputs, javascript_string
 
 FORGE_PUBLIC = "http://forge.test"
 FORGE_INTERNAL = "http://forge.internal"

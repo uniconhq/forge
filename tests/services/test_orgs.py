@@ -16,6 +16,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge.adapters.git.fake import FakeForge
+from forge.adapters.git.fake.grading import token_in
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -29,8 +31,6 @@ from forge.domain.keys import key_from_name
 from forge.domain.names import Named, OrgProfile
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
-from forge.forges.fake import FakeForge
-from forge.forges.fake.grading import token_in
 from forge.log import JsonFormatter
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup

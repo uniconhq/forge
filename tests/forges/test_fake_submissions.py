@@ -11,12 +11,12 @@ from datetime import timedelta
 
 import pytest
 
+from forge.adapters.git.fake import FakeForge
 from forge.domain.clock import FakeClock
 from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import OrgId, PrimitiveId, TaskId, WorkspaceId
 from forge.domain.names import UserOwner
-from forge.forges.fake import FakeForge
 from forge.port.uploads import SubmissionPlace, TaskPlace
 from forge.testing import PRIMITIVES, seed_primitives
 

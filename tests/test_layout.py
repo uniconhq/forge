@@ -5,7 +5,7 @@ satisfy the port.
 import importlib
 
 import forge
-from forge.forges.fake import FakeForge
+from forge.adapters.git.fake import FakeForge
 from forge.port import Forge
 
 LAYERS = [
@@ -13,9 +13,9 @@ LAYERS = [
     "forge.services",
     "forge.db",
     "forge.port",
-    "forge.forges",
-    "forge.forges.forgejo",
-    "forge.forges.fake",
+    "forge.adapters",
+    "forge.adapters.git.forgejo",
+    "forge.adapters.git.fake",
     "forge.runtime",
     "forge.log",
     "forge.settings",

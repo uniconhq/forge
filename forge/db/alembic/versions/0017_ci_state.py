@@ -1,7 +1,7 @@
 """What an org account holds at the CI becomes one value, `ci_state`, that the
 CI's implementation alone reads: the three columns Woodpecker's sign-in
 filled, `ci_token`, `ci_user_id` and `ci_signed_in_at`, go into it as the
-JSON object that implementation keeps (`forges/forgejo/ci_state.py`), with
+JSON object that implementation keeps (`adapters/git/forgejo/ci_state.py`), with
 the account's id at the forge beside them, encrypted the way the token was. Each token is moved as it is, so no org
 signs in again; an account that was never signed in at the CI holds an
 empty state. Going back gives the three columns back from the state.

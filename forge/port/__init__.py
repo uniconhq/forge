@@ -1,7 +1,7 @@
 """The forge port: the one interface between this package and the git host
 behind it, in the platform's own words. It is a set of areas, each a
-`Protocol` in its own module, composed into one `Forge`. `forges.forgejo` and
-`forges.fake` implement every area. The object store the platform keeps
+`Protocol` in its own module, composed into one `Forge`. `adapters.git.forgejo` and
+`adapters.git.fake` implement every area. The object store the platform keeps
 uploads and logs in travels with the forge as its `objects` area, since the
 deployment that runs the forge runs the store beside it, and the mail server
 the forge sends through travels with it as its `mail` area for the same

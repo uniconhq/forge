@@ -19,6 +19,8 @@ import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from forge.adapters.git.forgejo import ForgejoForge, grading
+from forge.adapters.git.forgejo.ci_state import WoodpeckerState, read_state, written
 from forge.domain.errors import (
     CiRequestRefused,
     Forbidden,
@@ -29,8 +31,6 @@ from forge.domain.errors import (
 from forge.domain.grading import GradingRun, InboundRequest, RunLookup, RunSpec, RunState
 from forge.domain.identity import AsOrgAccount, CiState
 from forge.domain.ids import OrgId, PublicationId, RunId, SubmissionId, TaskId, VersionId
-from forge.forges.forgejo import ForgejoForge, grading
-from forge.forges.forgejo.ci_state import WoodpeckerState, read_state, written
 from tests.forges.forgejo.conftest import Recorder, ok
 
 ACME = AsOrgAccount(

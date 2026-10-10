@@ -24,10 +24,10 @@ import pytest
 from sqlalchemy import update
 
 import forge.api
+from forge.adapters.git.fake import FakeForge
 from forge.db.tables import Session as SessionRow
 from forge.domain.errors import Conflict, NotReady, SessionExpired, Unauthenticated
 from forge.domain.sessions import Session
-from forge.forges.fake import FakeForge
 from forge.runtime import setup as runtime_setup
 from forge.runtime.actions import action
 from forge.runtime.context import Context

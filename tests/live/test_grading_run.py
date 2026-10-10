@@ -39,6 +39,8 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+from forge.adapters.git.forgejo import ForgejoForge
+from forge.adapters.git.forgejo.objects import StorageConfig
 from forge.db.tables import Grading
 from forge.domain.contracts import violation
 from forge.domain.errors import UniconError
@@ -47,8 +49,6 @@ from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.keys import key_from_name
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, Scope
-from forge.forges.forgejo import ForgejoForge
-from forge.forges.forgejo.objects import StorageConfig
 from forge.runtime.setup import Setup
 from forge.services import (
     access,

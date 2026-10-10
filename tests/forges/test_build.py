@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from forge import forges
-from forge.forges.fake import FakeForge
+from forge import adapters
+from forge.adapters.git.fake import FakeForge
 from forge.settings import ForgejoSettings, S3Settings, Settings
 
 SHORTER = timedelta(days=6)
@@ -18,7 +18,7 @@ IMAGE = "ghcr.io/uniconhq/{}@sha256:" + "1" * 64
 
 
 def test_the_fakes_ci_login_lasts_the_sessions_hard_lifetime() -> None:
-    forge = forges.build(
+    forge = adapters.build(
         Settings.for_tests(session_hard_ttl=SHORTER, session_idle_ttl=IDLE),
         sign_in_redirect_uri="http://app.test/cb",
     )
@@ -37,7 +37,7 @@ def test_forgejo_is_given_the_sessions_hard_lifetime_and_the_ci(
             built.append(config)
             super().__init__()
 
-    monkeypatch.setattr(forges, "ForgejoForge", Recorded)
+    monkeypatch.setattr(adapters, "ForgejoForge", Recorded)
     settings = Settings.for_tests(
         forge="forgejo",
         forge_public_url="http://forge.test",
@@ -62,7 +62,7 @@ def test_forgejo_is_given_the_sessions_hard_lifetime_and_the_ci(
         ),
     )
 
-    forges.build(settings, sign_in_redirect_uri="http://app.test/cb")
+    adapters.build(settings, sign_in_redirect_uri="http://app.test/cb")
 
     [config] = built
     assert (config.ci_login_lifetime, config.ci) == (SHORTER, "woodpecker")

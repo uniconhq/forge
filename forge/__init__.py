@@ -9,12 +9,12 @@ Layers, each a package here, and what each may import:
     services    the actions and their building blocks; composes domain, db and the port
     db          the tables and migrations
     port        the interface a git host is called through
-    forges/     the implementations of the port: forgejo/, fake/ and cached
+    adapters/   the implementations of the port: git/forgejo/, git/fake/ and cached
     runtime     how a call runs: the context, @action, the setup and its loops
 
-`domain`, `services` and `db` never import `forges`, and only `runtime` and
-`forge.testing` build an implementation; `forges.forgejo` never imports
-`services` or `db`, and `forges.fake` never imports `services`, `db` or
+`domain`, `services` and `db` never import `adapters`, and only `runtime` and
+`forge.testing` build an implementation; `adapters.git.forgejo` never imports
+`services` or `db`, and `adapters.git.fake` never imports `services`, `db` or
 `runtime`. import-linter contracts in `pyproject.toml` fail the build on a
 leak.
 
