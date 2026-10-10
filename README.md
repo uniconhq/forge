@@ -798,7 +798,11 @@ package enforces deadlines with.
 `files.read`, `tree` and `history` need the observer role at the contest or
 task, and `write` and `rollback` the manager role; each goes through the
 port as the organiser's own identity, so the forge's own check stays
-underneath and the history is theirs. Every path is checked first, and one
+underneath and the history is theirs. `history` names each change's author
+by username as well as id (`Change.author`, looked up once an author), so
+someone who no longer holds a role at the place is still named, to those
+who may read the history alone; an account the forge does not know is left
+unnamed. Every path is checked first, and one
 that is not a plain path inside the place is `InvalidPath`, unread and
 unwritten. A write carries the token the file was read with, and one that has moved is `Conflict`. A write to `contest.yaml`
 is validated first and refused whole as `InvalidDefinition` when it is not

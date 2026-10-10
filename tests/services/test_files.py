@@ -48,6 +48,34 @@ async def manager(setup: Setup, acme: Acme, spring: ContestId) -> Organiser:
     return found
 
 
+async def test_the_history_names_an_author_who_no_longer_holds_a_role(
+    setup: Setup, acme: Acme, spring: ContestId, manager: Organiser
+) -> None:
+    before = await files.read(setup, manager, spring, "contest.yaml")
+    changed = before.content.replace(b"end: 2026-10-03T17:00:00Z", b"end: 2026-10-03T18:00:00Z")
+    await files.write(setup, manager, spring, "contest.yaml", changed, before.token)
+    await acme.fake.orgs.revoke_role(8, Scope("acme", "spring"), Role.MANAGER)
+    bob = (await acme.fake.identity.find_user(8)).username
+
+    latest, *_ = await files.history(setup, acme.ada, spring, "contest.yaml")
+
+    assert (latest.author_id, latest.author) == (8, bob)
+
+
+async def test_the_history_leaves_an_author_the_forge_does_not_know_unnamed(
+    setup: Setup, acme: Acme, spring: ContestId, manager: Organiser
+) -> None:
+    before = await files.read(setup, manager, spring, "contest.yaml")
+    changed = before.content.replace(b"end: 2026-10-03T17:00:00Z", b"end: 2026-10-03T18:00:00Z")
+    await files.write(setup, manager, spring, "contest.yaml", changed, before.token)
+    del acme.fake.state.users[8]
+
+    latest, *rest = await files.history(setup, acme.ada, spring, "contest.yaml")
+
+    assert (latest.author_id, latest.author) == (8, None)
+    assert all(change.author is not None for change in rest if change.author_id is not None)
+
+
 async def test_an_observer_reads_the_file_the_tree_and_the_history_as_themself(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
