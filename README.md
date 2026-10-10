@@ -562,7 +562,7 @@ hosting process calls are actions, marked `@action` from
 | `clarifications` | `ask`, `mine`, `follow_up`, `inbox`, `of_contest`, `reply`, `mark`, `unmark`, `answer_publicly` |
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
-| `submissions` | `submit`, `mine`, `one`, `files`, `download` |
+| `submissions` | `submit`, `mine`, `one`, `organised`, `files`, `download` |
 | `boards` | `seen`, `organised` |
 | `marks` | `held`, `mark`, `unmark` |
 | `gradings` | `cancel`, `retry`, `fall_back`, `clear_fallback`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
@@ -1421,6 +1421,19 @@ the inputs one was made with, as its `submission.json` names them, and
 forge. A run's log
 names every test, the hidden ones too, so it is the organisers'
 (`gradings.run_log`). Anyone else's submission is no such submission.
+
+`organised` gives organisers who observe the task one submission of any
+row, picked as the boards pick one (a contestant's `UserOwner` or a team's
+`TeamOwner`) and its number, as its row reads it with everything filled in
+(TASK-FORMAT.md section 1.7): the same attempt, the same publication and
+the same scoring, shown as once the task has revealed, so a hidden group's
+outcome, tests and points and every sealed value are there, the points all
+shown and none pending; each group's `shown_at` is kept from the row's own
+view now, null once the row sees the group's tests, so it says when the row
+sees what it does not yet; and `status` is the grading's own
+(`GradingStatus`). A row with no such submission is `NotFound`, and an
+organiser who does not observe the task is `Forbidden`, as for its
+gradings.
 
 ## Grading
 

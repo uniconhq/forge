@@ -72,6 +72,13 @@ person, so its bytes, two gigabytes or two, never pass through the
 platform. A run's log names every test, hidden ones too, so it is the
 organisers' alone.
 
+Organisers who observe the task read any row's submission the same way
+(`organised`, TASK-FORMAT.md section 1.7): the same attempt, scored by the
+same code, shown as it is once the task has revealed, so every group's
+outcome, tests and points and every sealed value are filled in, with each
+group's `shown_at` kept from what the row is shown now, when it sees that
+group, and the grading's own status in place of the row's words for it.
+
 What the store or the forge says when it fails goes to the log, and the
 contestant is told only that it did not answer, refused the platform, or
 refused the submission, in fixed words.
@@ -91,7 +98,7 @@ from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
 from forge.domain import exact_json
 from forge.domain import submissions as rules
-from forge.domain.definitions import OnSystemError
+from forge.domain.definitions import ContestDefinition, OnSystemError
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -110,11 +117,12 @@ from forge.domain.errors import (
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import AsUser
 from forge.domain.ids import PublicationId, SubmissionId, TaskId, WorkspaceId
+from forge.domain.names import WorkspaceOwner
 from forge.domain.release import due_of, late_days
-from forge.domain.roles import contest_id_of, task_scope
+from forge.domain.roles import Role, contest_id_of, task_scope
 from forge.domain.scoring import Points
 from forge.domain.sessions import Session
-from forge.domain.showing import GroupShown, SubmissionState, shown, told
+from forge.domain.showing import GroupShown, SubmissionState, filled_in, shown, told
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
 from forge.domain.uploads import (
     POINTER_MAX,
@@ -129,6 +137,8 @@ from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import gradings, published, scores, sessions, submitters, timelines, uploads
+from forge.services.access import Organiser, require
+from forge.services.published import PublishedTask
 from forge.services.submitters import Entrant
 
 log = get_logger(__name__)
@@ -156,12 +166,13 @@ class Result:
     they include. Where it stands is in the contestant's words
     (`SubmissionState`): a run in `system_error` is still `grading` to its
     contestant, with nothing else; one staff cancelled is `cancelled`, with
-    `reason`, the sentence they gave.
+    `reason`, the sentence they gave. Read by organisers, everything is
+    shown and where it stands is the grading's own `GradingStatus`.
     """
 
     id: uuid.UUID
     attempt: int
-    status: SubmissionState
+    status: SubmissionState | GradingStatus
     stopped: str | None
     outcome: str | None
     groups: tuple[GroupShown, ...]
@@ -274,7 +285,9 @@ async def submit(
         number=recorded.number,
         user_id=entrant.session.user_id,
     )
-    return await _submission(ctx, entrant, recorded.number, ctx.now, [grading])
+    return await _submission(
+        ctx, Reading.of(entrant, workspace), recorded.number, ctx.now, [grading]
+    )
 
 
 @action
@@ -284,7 +297,7 @@ async def mine(ctx: Context, session: Session, task: TaskId) -> tuple[Submission
     workspace = entrant.workspace
     if workspace is None:
         return ()
-    return tuple(await _read(ctx, entrant, workspace))
+    return tuple(await _read(ctx, Reading.of(entrant, workspace)))
 
 
 @action
@@ -294,7 +307,9 @@ async def one(ctx: Context, session: Session, task: TaskId, number: int) -> Subm
     """
     entrant = await submitters.entrant(ctx, session, task)
     workspace = entrant.workspace
-    found = await _read(ctx, entrant, workspace, number) if workspace is not None else []
+    found = (
+        await _read(ctx, Reading.of(entrant, workspace), number) if workspace is not None else []
+    )
     if not found:
         raise NotFound(NO_SUCH_SUBMISSION)
     return found[0]
@@ -407,18 +422,18 @@ async def _again(
     if rows:
         number = rows[0].submission_number
         log.info("submissions.repeated", task=entrant.task, number=number)
-        return (await _read(ctx, entrant, workspace, number))[0]
+        return (await _read(ctx, Reading.of(entrant, workspace), number))[0]
     found = next(
         (made for made in await _listed(ctx, workspace, entrant.task) or () if made.key == key),
         None,
     )
     if found is None:
         return None
-    existing = await _read(ctx, entrant, workspace, found.number)
+    existing = await _read(ctx, Reading.of(entrant, workspace), found.number)
     if existing:
         return existing[0]
     grading = await _recover(ctx, entrant, workspace, found)
-    return await _submission(ctx, entrant, found.number, found.at, [grading])
+    return await _submission(ctx, Reading.of(entrant, workspace), found.number, found.at, [grading])
 
 
 async def _finish_unrecorded(
@@ -674,14 +689,60 @@ def _insert(
     )
 
 
+@action
+async def organised(
+    ctx: Context, organiser: Organiser, task: TaskId, owner: WorkspaceOwner, number: int
+) -> Submission:
+    """The submission numbered `number` of the row `owner`, a contestant or a
+    team, as organisers read it: as its row reads it, with everything its
+    row is not shown yet filled in, each group's `shown_at` saying when the
+    row is shown it, and the grading's own status. Needs the observer role
+    at the task, as its gradings do. `NotFound` for a task with no
+    publication or a row with no such submission.
+    """
+    require(organiser, task_scope(task), Role.OBSERVER)
+    settings = await published.contest(ctx, contest_id_of(task_scope(task)))
+    found = await published.task(ctx, task, settings)
+    if found is None:
+        raise NotFound(NO_SUCH_SUBMISSION)
+    workspace = ctx.forge.workspaces.workspace_of(contest_id_of(task_scope(task)), owner)
+    read = await _read(ctx, Reading(task, settings, found, workspace), number, everything=True)
+    if not read:
+        raise NotFound(NO_SUCH_SUBMISSION)
+    log.info(
+        "submissions.organised",
+        task=task,
+        number=number,
+        user_id=organiser.user.id,
+    )
+    return read[0]
+
+
+@dataclass(frozen=True, slots=True)
+class Reading:
+    """Whose submissions of a task are read: the task as its latest
+    publication froze it, the contest's settings, and the workspace.
+    """
+
+    task: TaskId
+    settings: ContestDefinition
+    published: PublishedTask
+    workspace: WorkspaceId
+
+    @classmethod
+    def of(cls, entrant: Entrant, workspace: WorkspaceId) -> Reading:
+        return cls(entrant.task, entrant.settings, entrant.published, workspace)
+
+
 async def _read(
-    ctx: Context, entrant: Entrant, workspace: WorkspaceId, number: int | None = None
+    ctx: Context, reading: Reading, number: int | None = None, *, everything: bool = False
 ) -> builtins.list[Submission]:
     """The workspace's submissions of the task from their grading rows,
-    newest first, or the one numbered `number`.
+    newest first, or the one numbered `number`; with `everything`, as
+    organisers read them.
     """
     query = select(Grading).where(
-        Grading.workspace_id == workspace, Grading.task_id == entrant.task
+        Grading.workspace_id == reading.workspace, Grading.task_id == reading.task
     )
     if number is not None:
         query = query.where(Grading.submission_number == number)
@@ -690,16 +751,17 @@ async def _read(
     for row in rows:
         grouped.setdefault(row.submission_number, []).append(row)
     gone = await gradings.lost(ctx, [_latest(found) for found in grouped.values()])
-    scorer = scores.Scorer(ctx, entrant.published, entrant.settings.on_system_error)
+    scorer = scores.Scorer(ctx, reading.published, reading.settings.on_system_error)
     return [
         await _submission(
             ctx,
-            entrant,
+            reading,
             found,
             min(row.submitted_at for row in grouped[found]),
             grouped[found],
             gone,
             scorer,
+            everything=everything,
         )
         for found in sorted(grouped, reverse=True)
     ]
@@ -712,38 +774,44 @@ def _latest(rows: Sequence[Grading]) -> Grading:
 
 async def _submission(
     ctx: Context,
-    entrant: Entrant,
+    reading: Reading,
     number: int,
     at: datetime,
     rows: Sequence[Grading],
     lost: frozenset[uuid.UUID] = frozenset(),
     scorer: scores.Scorer | None = None,
+    *,
+    everything: bool = False,
 ) -> Submission:
     """The submission as its owner reads it, by the latest attempt of its
     grading, or by its last good result while a fallback is in force for
-    it, with `lost` naming the gradings whose runs the CI has lost.
+    it, with `lost` naming the gradings whose runs the CI has lost; with
+    `everything`, as organisers read it.
     """
-    settings = entrant.settings
-    task = entrant.published.name
+    settings = reading.settings
+    task = reading.published.name
     entry = settings.entry(task)
-    extension = await submitters.extension(ctx, entrant)
+    contest = contest_id_of(task_scope(reading.task))
+    extension = await timelines.of_owner(
+        ctx, contest, ctx.forge.workspaces.owner_of(reading.workspace)
+    )
     late = late_days(due_of(settings, entry, extension), at) if entry is not None else 0
     if not rows:
-        return Submission(entrant.task, number, at, late, None)
+        return Submission(reading.task, number, at, late, None)
     row = scores.fallen_back(ctx, rows, lost, settings.on_system_error) or _latest(rows)
     status = gradings.status_of(ctx, row, lost)
-    contest = contest_id_of(task_scope(entrant.task))
     reveal_at = await timelines.reveal(ctx, contest, settings, task)
-    factor = scores.factor(settings, entrant.published, extension, at)
+    factor = scores.factor(settings, reading.published, extension, at)
     result = await _result(
         ctx,
-        scorer or scores.Scorer(ctx, entrant.published, settings.on_system_error),
+        scorer or scores.Scorer(ctx, reading.published, settings.on_system_error),
         row,
         status,
         reveal_at,
         factor,
+        everything=everything,
     )
-    return Submission(entrant.task, number, at, late, result)
+    return Submission(reading.task, number, at, late, result)
 
 
 async def _result(
@@ -753,17 +821,21 @@ async def _result(
     status: GradingStatus,
     reveal_at: datetime | None,
     factor: Fraction,
+    *,
+    everything: bool = False,
 ) -> Result:
     """The grading as its contestant may see it now, with the publication it
     ran under, scored. A run in `system_error` is told as still grading,
     with nothing of it shown, and one staff cancelled as cancelled, with the
-    sentence they gave.
+    sentence they gave. With `everything`, as organisers read it: where it
+    stands in its own words, and shown as after the reveal, each group's
+    `shown_at` kept from what its contestant is shown now.
     """
-    state = told(status)
+    state: SubmissionState | GradingStatus = status if everything else told(status)
     if status is GradingStatus.CANCELLED:
         return Result(row.id, row.attempt, state, None, None, (), {}, row.cancel_reason)
     if status is not GradingStatus.DONE or row.result is None:
-        return Result(row.id, row.attempt, told(status), None, None, (), {})
+        return Result(row.id, row.attempt, state, None, None, (), {})
     graded = await scorer.graded(PublicationId(row.publication_id))
     if graded is None:
         return Result(row.id, row.attempt, state, None, None, (), {})
@@ -777,6 +849,18 @@ async def _result(
         reveal_at=reveal_at,
         scored=scored,
     )
+    if everything:
+        seen = filled_in(
+            seen,
+            shown(
+                row.result,
+                graded.groups,
+                graded.sealed,
+                revealed=True,
+                reveal_at=reveal_at,
+                scored=scored,
+            ),
+        )
     return Result(
         row.id,
         row.attempt,
