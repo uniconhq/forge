@@ -42,6 +42,7 @@ does not list is not on it.
 import builtins
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from forge.domain.contest_entries import Unlisted, with_entry
 from forge.domain.definitions import (
@@ -105,10 +106,10 @@ class Timeline:
     the contest's end unless the entry says.
     """
 
-    worth: int | float | None
+    worth: int | Decimal | None
     release_at: datetime
     due: datetime | None
-    late_per_day: int | float | None
+    late_per_day: int | Decimal | None
     closes: datetime
 
 

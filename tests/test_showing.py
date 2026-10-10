@@ -9,15 +9,20 @@ from datetime import UTC, datetime
 from fractions import Fraction
 from typing import Any
 
+import pytest
+
 from forge.domain.definitions import Group, Show
+from forge.domain.grading import GradingStatus
 from forge.domain.scoring import Better, Measure, Points, score
 from forge.domain.showing import (
     NOTHING_SEALED,
     Graded,
     GroupShown,
     Sealed,
+    SubmissionState,
     group_of,
     shown,
+    told,
     under,
 )
 from forge.domain.workflow_definition import Fold
@@ -273,3 +278,20 @@ def test_a_grading_whose_tests_changed_is_shown_with_its_own_publication() -> No
     )
 
     assert under(OWN, latest) == OWN
+
+
+@pytest.mark.parametrize(
+    ("status", "state"),
+    [
+        (GradingStatus.QUEUED, SubmissionState.QUEUED),
+        (GradingStatus.DISPATCHED, SubmissionState.GRADING),
+        (GradingStatus.RUNNING, SubmissionState.GRADING),
+        (GradingStatus.SYSTEM_ERROR, SubmissionState.GRADING),
+        (GradingStatus.DONE, SubmissionState.GRADED),
+        (GradingStatus.CANCELLED, SubmissionState.CANCELLED),
+    ],
+)
+def test_a_contestant_is_told_where_a_grading_stands_in_their_own_words(
+    status: GradingStatus, state: SubmissionState
+) -> None:
+    assert told(status) is state

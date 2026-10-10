@@ -695,4 +695,5 @@ def _change(commit: dict[str, Any]) -> Change:
         author_id=int(author["id"]) if author.get("id") is not None else None,
         message=str(inner.get("message", "")).rstrip("\n"),
         at=datetime.fromisoformat(str(at)),
+        author=str(author["login"]) if author.get("login") else None,
     )

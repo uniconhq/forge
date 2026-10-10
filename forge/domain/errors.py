@@ -178,7 +178,8 @@ class AdminOnly(ServiceError):
 
 class ConfirmationRequired(ServiceError):
     """A save during a running contest would change how the task grades.
-    `changes` lists what would change, in words a person reads; the same save
+    `changes` lists what would change, in words a person reads, and
+    `regrades` how many submissions the save would grade again; the same save
     sent again with the confirmation publishes it.
     """
 

@@ -16,7 +16,8 @@ starts answer without a run, as the real CI does when the platform's
 extension refuses to say what the run is, and
 `lose_start_answer` starts the next run and then fails as if its answer
 were lost. A CI credential in `revoked_ci_tokens` is refused, as the CI
-refuses one it no longer holds.
+refuses one it no longer holds, and a run of a task not in `activated` is
+not found, as the CI knows no such task.
 
 With `asks` off the fake CI is handed every run whole, as a CI that is
 pushed to is, and never asks what one is: its `answer` is `NotFound`, so
@@ -232,11 +233,13 @@ class FakeGrading:
         self._ci.ci_tokens[token] = username
         return token
 
-    async def activate(self, as_: AsOrgAccount, task: TaskId) -> None:
+    async def activate(self, as_: AsOrgAccount, task: TaskId) -> bool:
         self._world.record("activate", as_, task=task)
         _acting_for(self._ci, as_, task)
         await self._task_repo(task)
+        known = task in self._ci.activated
         self._ci.activated.add(task)
+        return not known
 
     async def deactivate(self, as_: AsOrgAccount, task: TaskId) -> None:
         self._world.record("deactivate", as_, task=task)
@@ -250,6 +253,8 @@ class FakeGrading:
         self._world.check_up()
         _acting_for(self._ci, as_, run.task)
         await self._task_repo(run.task)
+        if run.task not in self._ci.activated:
+            raise NotFound(f"the CI does not know {run.task}")
         if self._ci.refuse_starts > 0:
             self._ci.refuse_starts -= 1
             raise Rejected("the CI answered 204 without a run")

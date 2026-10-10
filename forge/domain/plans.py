@@ -41,7 +41,6 @@ that takes a batch is one step with an item per test, and over any other
 one entry per test.
 """
 
-import json
 import math
 import re
 from collections.abc import Collection, Mapping, Sequence
@@ -51,6 +50,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, PlainValidator, model_validator
 
+from forge.domain import exact_json
 from forge.domain.contracts import violation
 from forge.domain.definitions import (
     PUBLIC_FOLDER,
@@ -77,7 +77,9 @@ from forge.domain.workflow_definition import (
 from forge.domain.yaml_models import (
     InvalidDefinition,
     Model,
+    Number,
     Problem,
+    exact_number,
     is_number,
     load_mapping,
     path_text,
@@ -197,8 +199,8 @@ class ContestantInput(Model):
 class ReportEntry(Model):
     step: Annotated[str, Field(pattern=STEP_ID)]
     output: Annotated[str, Field(min_length=1)]
-    at_least: int | float | None = None
-    at_most: int | float | None = None
+    at_least: Number | None = None
+    at_most: Number | None = None
 
 
 class Plan(Model):
@@ -222,12 +224,20 @@ class Plan(Model):
         """The plan as the file it is committed as: JSON with sorted keys, two
         spaces of indent and a final newline, the same bytes every time.
         """
-        document = self.model_dump(mode="json", exclude_none=True)
-        return (json.dumps(document, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode()
+        document = self.model_dump(exclude_none=True)
+        return (exact_json.dumps(document, sort_keys=True, indent=2) + "\n").encode()
 
     @classmethod
     def from_bytes(cls, data: bytes) -> Plan:
-        return cls.model_validate_json(data)
+        """The plan in a `plans/plan.json`, its numbers read exactly. Bytes
+        that are not JSON are pydantic's `ValidationError`, as any other
+        plan that does not validate.
+        """
+        try:
+            document = exact_json.loads(data)
+        except ValueError:
+            return cls.model_validate_json(data)
+        return cls.model_validate(document)
 
     def task_paths(self) -> tuple[str, ...]:
         """Every file or folder of the publication a value names, sorted; a
@@ -267,8 +277,8 @@ def spelled(value: object) -> str:
         return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
-    if isinstance(value, float):
-        number = Decimal(repr(value))
+    if isinstance(value, float | Decimal):
+        number = Decimal(exact_number(value))
         if number == number.to_integral_value():
             return str(int(number))
         return format(number.normalize(), "f")
@@ -1233,9 +1243,7 @@ class _Compiler:
                 if value is None or set(value) != {"value"} or not is_number(value["value"]):
                     continue
                 number = value["value"]
-                wanted = Decimal(repr(number)) * Decimal(repr(source.scale)) + Decimal(
-                    repr(source.add)
-                )
+                wanted = exact_number(number) * source.scale + source.add
                 ceiling = math.ceil(wanted)
                 if ceiling > limits[name]:
                     limits[name] = ceiling
@@ -1323,7 +1331,7 @@ def compile_plan(
     problems = [*_fit(compiler, plan), *_credit(task, values), *_sealed(task, compiler)]
     if problems:
         raise InvalidDefinition("task.yaml", problems)
-    broken = violation(plan.model_dump(mode="json", exclude_none=True), "plan")
+    broken = violation(exact_json.loads(plan.to_bytes()), "plan")
     if broken is not None:
         raise InvalidDefinition(
             "task.yaml",
@@ -1673,9 +1681,24 @@ def _differences(before: Mapping[str, object], after: Mapping[str, object]) -> l
             changes.append(f"{key} added")
         elif key not in after:
             changes.append(f"{key} removed")
-        elif before[key] != after[key]:
+        elif not _same(before[key], after[key]):
             changes.append(f"{key} changed")
     return changes
+
+
+def _same(before: object, after: object) -> bool:
+    """Whether two plans, or two digests, are the same: a plan by what it
+    says, so a number written `2.50` in one and `2.5` in the other is no
+    change, and anything that does not read as JSON by its bytes.
+    """
+    if before == after:
+        return True
+    if not isinstance(before, bytes) or not isinstance(after, bytes):
+        return False
+    try:
+        return bool(exact_json.loads(before) == exact_json.loads(after))
+    except ValueError:
+        return False
 
 
 def grading_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...]:

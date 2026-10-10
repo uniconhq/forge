@@ -104,13 +104,18 @@ class TreeEntry:
 @dataclass(frozen=True, slots=True)
 class Change:
     """One entry of a place's history: the version it made, who made it, what
-    they said about it and when.
+    they said about it and when. `author` is the username of `author_id`,
+    which the history names whether or not they still hold a role there, and
+    none when the forge knows no such account or the change has no author.
     """
 
     version: VersionId
     author_id: int | None
     message: str
     at: datetime
+    author: str | None = None
+    """Given by the port where the forge names the author with the change,
+    and filled in by the history otherwise."""
 
 
 @dataclass(frozen=True, slots=True)

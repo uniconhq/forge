@@ -90,7 +90,8 @@ async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> 
     task = await fake.content.create_task(contest, "sum", {})
     acme = AsOrgAccount("acme", forge_token="f", ci_state=CI_STATE)
 
-    await fake.grading.activate(acme, task)
+    assert await fake.grading.activate(acme, task)
+    assert not await fake.grading.activate(acme, task)
     run = GradingRun(
         grading=uuid.uuid4(),
         task=task,
@@ -103,10 +104,31 @@ async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> 
     )
     await fake.grading.start_run(acme, run, RunSpec(harness_image="h", clone_image="c"))
 
-    assert [call.identity for call in fake.calls_to("activate")] == [acme]
+    assert [call.identity for call in fake.calls_to("activate")] == [acme, acme]
     assert [call.identity for call in fake.calls_to("start_run")] == [acme]
     with pytest.raises(Forbidden):
         await fake.grading.activate(AsOrgAccount("other", forge_token="f", ci_state=CI_STATE), task)
+
+
+async def test_a_run_of_a_task_the_ci_does_not_know_is_not_found(fake: FakeForge) -> None:
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
+    contest = await fake.content.create_contest(OrgId("acme"), "spring", {})
+    task = await fake.content.create_task(contest, "sum", {})
+    acme = AsOrgAccount("acme", forge_token="f", ci_state=CI_STATE)
+    run = GradingRun(
+        grading=uuid.uuid4(),
+        task=task,
+        publication=PublicationId(f"{task}#1"),
+        publication_version=VersionId("0" * 40),
+        submission=SubmissionId("acme/spring/@u8/sum#1"),
+        submission_version=VersionId("1" * 40),
+        envelope_url="http://machines.test/envelope",
+        compute="pool:platform",
+    )
+
+    with pytest.raises(NotFound):
+        await fake.grading.start_run(acme, run, RunSpec(harness_image="h", clone_image="c"))
+    assert fake.ci.runs == {}
 
 
 async def test_every_call_is_recorded_with_its_identity(fake: FakeForge) -> None:
