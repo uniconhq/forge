@@ -5,6 +5,19 @@ the CI's administrator, the configuration extension's signed question and
 the answer to it, and the org account's own user and token at the CI, made
 and deleted by the administrator and signed in by the sign-in dance.
 
+What the org account holds at Woodpecker is its user id, the token its
+sign-in minted, when that was, and the account's id at the forge, by which
+a refresh finds it (`ci_state.py`). Woodpecker keeps the
+account's login at the forge fresh only while the account calls it, and
+that login lasts as long as the forge's refresh token, which deploy sets to
+the session's hard lifetime, `UNICON_SESSION_HARD_TTL`, 30 days unless the
+operator says otherwise; an org that grades nothing for longer would lose
+it. So a sign-in older than `SIGN_IN_SHARE` of that lifetime, 20 days by
+default, needs refreshing: an org that grades every day signs in again
+every 20 days, and one that was quiet for months on its first use. A
+refresh gives the account a fresh password at the forge, signs it in with
+that, and throws the password away.
+
 A run is a manual pipeline on the task's repository, started on `main`,
 since the CI starts a run only on a branch, with the run's variables:
 
@@ -22,9 +35,9 @@ workflow, `grading`, the same every time for the same run:
 - `when` the run is started by hand, which every grading run is;
 - `labels` from `UNICON_COMPUTE`, `pool:platform` becoming `pool: platform`;
 - under `clone:`, two full steps, `task` and `submission`, each running the
-  clone image with `remote`, `sha`, `ref` and `path` set, `lfs` on for the
-  task alone, and the machine's store of large files of the task's org
-  mounted as `unicon-lfs-<org>:/lfs-cache`, one store per org, so no org's
+  clone image with `remote`, `sha`, `ref` and `path` set, `lfs` on, and the
+  machine's store of large files of the task's org mounted as
+  `unicon-lfs-<org>:/lfs-cache`, one store per org, so no org's
   task is served a large file another org's task brought to the machine by
   naming its object id. Neither carries `environment`: a clone step
   with one stops counting as a clone plugin and is lent no credential. The
@@ -38,6 +51,8 @@ workflow, `grading`, the same every time for the same run:
 
 The checkouts land at `/woodpecker/task` and `/woodpecker/submission`, inside
 the run's workspace volume, which is what the envelope tells the harness.
+The deployment sets Woodpecker's pipeline timeout,
+`WOODPECKER_DEFAULT_PIPELINE_TIMEOUT`, to the platform's `RUN_TIMEOUT`.
 
 The extension's request is signed by the CI's ed25519 key (RFC 9421,
 `signatures.py`). The key is read from `GET /api/signature/public-key` with
@@ -49,9 +64,11 @@ do not verify never make the platform call the CI more often than that.
 
 import json
 import re
+import secrets
 import time
 from collections.abc import Mapping
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -59,21 +76,32 @@ import yaml
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
-from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
+from forge.domain.errors import (
+    Conflict,
+    Forbidden,
+    NotFound,
+    Rejected,
+    Unavailable,
+    VariablesDiffer,
+)
 from forge.domain.grading import (
-    CiAnswer,
-    CiRequest,
-    ConfigAsk,
     GradingRun,
+    InboundAnswer,
+    InboundRequest,
+    RunLookup,
     RunPlaces,
+    RunSpec,
     RunState,
 )
-from forge.domain.identity import CI_ADMIN, PLATFORM, AsOrgAccount, Identity
-from forge.domain.ids import RunId, TaskId
+from forge.domain.identity import PLATFORM, AsOrgAccount, CiState, OrgAccountRef
+from forge.domain.ids import OrgId, RunId, TaskId
+from forge.domain.names import service_account_name
 from forge.forges.forgejo import signatures
 from forge.forges.forgejo.ci_login import CiLogin
-from forge.forges.forgejo.http import Http, json_of, segment
+from forge.forges.forgejo.ci_state import WoodpeckerState, read_state, written
+from forge.forges.forgejo.http import CI_ADMIN, Caller, Http, json_of, segment
 from forge.forges.forgejo.repos import DEFAULT_BRANCH, Repos
+from forge.forges.forgejo.users import Users
 from forge.forges.ids import (
     PUBLISHED_PREFIX,
     SUBMISSION_PREFIX,
@@ -116,21 +144,109 @@ FINISHED_STATUSES = frozenset(
     {"success", "failure", "killed", "canceled", "error", "blocked", "declined", "skipped"}
 )
 UNFINISHED_STATES = frozenset({"pending", "running"})
+SIGN_IN_SHARE = 2 / 3
+PASSWORD_BYTES = 24
+
+
+@dataclass(frozen=True, slots=True)
+class _Ask:
+    """The extension's question once its signature is checked: the task
+    whose run it is, the grading id the run was started with as it was
+    given, every variable it was started with, and where the CI clones the
+    task from.
+    """
+
+    task: TaskId
+    grading: str | None
+    variables: Mapping[str, str]
+    clone_url: str
+
+
+def run_variables(run: GradingRun) -> dict[str, str]:
+    """The variables `run` is started with, the same every time for the same
+    run, and the only ones the extension answers a run started with.
+    """
+    workspace, task, _ = parse_submission(run.submission)
+    return {
+        GRADING_VARIABLE: str(run.grading),
+        ENVELOPE_VARIABLE: run.envelope_url,
+        PUBLICATION_VARIABLE: str(run.publication_version),
+        SUBMISSION_REPO_VARIABLE: f"{workspace.org}/{workspace.submission_repo(task)}",
+        SUBMISSION_VARIABLE: str(run.submission_version),
+        COMPUTE_VARIABLE: run.compute,
+    }
 
 
 class WoodpeckerGrading:
     def __init__(
-        self, forge_http: Http, ci: Http, repos: Repos, *, ci_public_url: str, login: CiLogin
+        self,
+        forge_http: Http,
+        ci: Http,
+        repos: Repos,
+        users: Users,
+        *,
+        ci_public_url: str,
+        login: CiLogin,
+        login_lifetime: timedelta,
     ) -> None:
+        """`login_lifetime` is how long the account's login at the forge
+        lasts, the session's hard lifetime.
+        """
         self._forge = forge_http
         self._ci = ci
         self._repos = repos
+        self._users = users
         self._ci_public_url = ci_public_url.rstrip("/")
         self._login = login
+        self._login_lifetime = login_lifetime
         self._key: Ed25519PublicKey | None = None
         self._key_read_at = -KEY_REFETCH_SECONDS
         self._queue: dict[tuple[int, int], RunState] = {}
         self._queue_read_at = -QUEUE_KEPT_SECONDS
+
+    async def set_up_org(self, org: OrgId, account: OrgAccountRef) -> CiState:
+        """The account's user at the CI, made by the administrator, then
+        signed in with its password at the forge.
+        """
+        user_id = await self._ci_user(account.username)
+        token = await self._login.mint_token(account.username, account.password)
+        return written(WoodpeckerState(user_id, token, datetime.now(UTC), account.forge_user_id))
+
+    async def tear_down_org(self, org: OrgId, state: CiState) -> None:
+        """Woodpecker deletes a user's own org along with it, and when that
+        org is gone already it answers 404 and keeps the user (measured on
+        3.18.1), so a 404 is believed only once the user reads as gone too.
+        """
+        username = service_account_name(org)
+        path = f"/api/users/{segment(username)}"
+        try:
+            await self._ci.call(CI_ADMIN, "DELETE", path)
+        except NotFound:
+            try:
+                await self._ci.call(CI_ADMIN, "GET", path)
+            except NotFound:
+                return
+            raise Rejected(f"the CI answered 404 to deleting {username} and kept it") from None
+
+    def needs_refresh(self, state: CiState, now: datetime) -> bool:
+        signed_in_at = read_state(state).signed_in_at
+        return signed_in_at is None or now - signed_in_at > self._login_lifetime * SIGN_IN_SHARE
+
+    async def refresh(self, org: OrgId, state: CiState) -> CiState:
+        """The account found at the forge by the id it was made with, never
+        by its name, and refused unless it is still the org's account, so a
+        fresh password is never set on anyone else's.
+        """
+        current = read_state(state)
+        if current.account_id is None:
+            raise Rejected(f"the CI state of {org}'s account names no account at the forge")
+        account = await self._users.find(current.account_id)
+        if account.username.lower() != service_account_name(org).lower():
+            raise Rejected(f"the account the CI state of {org} names is not the org's account")
+        password = secrets.token_urlsafe(PASSWORD_BYTES)
+        await self._users.set_password(account.id, password)
+        token = await self._login.mint_token(account.username, password)
+        return written(replace(current, token=token, signed_in_at=datetime.now(UTC)))
 
     async def activate(self, as_: AsOrgAccount, task: TaskId) -> None:
         ref = parse_task(task)
@@ -168,18 +284,10 @@ class WoodpeckerGrading:
         except NotFound:
             return
 
-    def run_variables(self, run: GradingRun) -> Mapping[str, str]:
-        workspace, task, _ = parse_submission(run.submission)
-        return {
-            GRADING_VARIABLE: str(run.grading),
-            ENVELOPE_VARIABLE: run.envelope_url,
-            PUBLICATION_VARIABLE: str(run.publication_version),
-            SUBMISSION_REPO_VARIABLE: f"{workspace.org}/{workspace.submission_repo(task)}",
-            SUBMISSION_VARIABLE: str(run.submission_version),
-            COMPUTE_VARIABLE: run.compute,
-        }
-
-    async def start_run(self, as_: AsOrgAccount, run: GradingRun) -> RunId:
+    async def start_run(self, as_: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
+        """`spec` is not sent: Woodpecker asks what the run is while it
+        starts it, and is answered from the platform's records then.
+        """
         ref = parse_task(run.task)
         account = _acting_for(as_, ref.org)
         repo = await self._lookup(account, ref.org, ref.repo)
@@ -187,7 +295,7 @@ class WoodpeckerGrading:
             account,
             "POST",
             f"/api/repos/{repo['id']}/pipelines",
-            json={"branch": DEFAULT_BRANCH, "variables": dict(self.run_variables(run))},
+            json={"branch": DEFAULT_BRANCH, "variables": run_variables(run)},
         )
         body = started.json() if started.content else None
         if not isinstance(body, dict) or not isinstance(body.get("number"), int):
@@ -199,7 +307,14 @@ class WoodpeckerGrading:
         await self._ci.call(CI_ADMIN, "POST", f"/api/repos/{repo_id}/pipelines/{number}/cancel")
 
     async def run_state(self, run: RunId) -> RunState:
-        """From the queue, which lists every task with its repository and
+        """Woodpecker 3.18.1 drops a run from its queue for good when the
+        machine it handed the run to does not renew its claim within a
+        minute, after a dropped network or a machine that died during the
+        checkout, and leaves the pipeline saying `pending`
+        (woodpecker-ci/woodpecker#7063), so the pipeline's status says
+        nothing either way.
+
+        So from the queue, which lists every task with its repository and
         pipeline number under `pending`, `waiting_on_deps` or `running`, read
         at most once every `QUEUE_KEPT_SECONDS` however many runs are asked
         about; only a run the queue does not hold costs a read of its
@@ -243,7 +358,25 @@ class WoodpeckerGrading:
         self._queue, self._queue_read_at = view, time.monotonic()
         return view
 
-    async def read_config_request(self, request: CiRequest, *, now: datetime) -> ConfigAsk:
+    async def answer(
+        self, request: InboundRequest, lookup: RunLookup, *, now: datetime
+    ) -> InboundAnswer:
+        """The configuration extension. Of the two checks that decide what a
+        run runs, `lookup` keeps the platform's, a grading of that task being
+        started, and this the CI's: anyone who may start a manual pipeline
+        on the task's repository may pass variables of their own, a harness
+        image among them, so a run started with any variable but exactly
+        those `run_variables` gives is answered with nothing.
+        """
+        ask = await self._ask(request, now)
+        run, spec = await lookup(ask.grading, ask.task)
+        if dict(ask.variables) != run_variables(run):
+            raise VariablesDiffer(
+                "the run was not started with the variables its grading starts it with"
+            )
+        return self._answer(run, ask, spec)
+
+    async def _ask(self, request: InboundRequest, now: datetime) -> _Ask:
         await self._verify(request, now)
         try:
             document = json.loads(request.body)
@@ -268,17 +401,16 @@ class WoodpeckerGrading:
         clone_url = repo.get("clone_url")
         if not isinstance(clone_url, str) or not clone_url:
             raise Rejected("the CI's request names no clone URL")
-        return ConfigAsk(
+        return _Ask(
             task=task.id,
             grading=variables.get(GRADING_VARIABLE),
             variables=dict(variables),
             clone_url=clone_url,
         )
 
-    def config_answer(
-        self, run: GradingRun, ask: ConfigAsk, *, harness_image: str, clone_image: str
-    ) -> CiAnswer:
+    def _answer(self, run: GradingRun, ask: _Ask, spec: RunSpec) -> InboundAnswer:
         places = self.run_places(run)
+        clone_image = spec.clone_image
         task_remote = _remote(ask.clone_url, places.task["org"], places.task["repo"])
         submission_remote = _remote(
             ask.clone_url, places.submission["org"], places.submission["repo"]
@@ -318,7 +450,7 @@ class WoodpeckerGrading:
             "steps": [
                 {
                     "name": "grade",
-                    "image": harness_image,
+                    "image": spec.harness_image,
                     "environment": {"DOCKER_HOST": FILTER_SOCKET},
                     "volumes": [FILTER_VOLUME],
                 }
@@ -326,7 +458,7 @@ class WoodpeckerGrading:
         }
         data = yaml.safe_dump(workflow, sort_keys=False, default_flow_style=False)
         body = {"configs": [{"name": WORKFLOW_NAME, "data": data}]}
-        return CiAnswer(body=json.dumps(body).encode(), content_type="application/json")
+        return InboundAnswer(body=json.dumps(body).encode(), content_type="application/json")
 
     def run_places(self, run: GradingRun) -> RunPlaces:
         task, publication = parse_publication(run.publication)
@@ -346,7 +478,7 @@ class WoodpeckerGrading:
             checkouts={"task": TASK_CHECKOUT, "submission": SUBMISSION_CHECKOUT},
         )
 
-    async def create_ci_user(self, username: str) -> int:
+    async def _ci_user(self, username: str) -> int:
         """Looked up before it is made: Woodpecker answers a duplicate with a
         server error, which the client would take for a CI that is down.
         """
@@ -358,25 +490,7 @@ class WoodpeckerGrading:
             )
         return int(found["id"])
 
-    async def delete_ci_user(self, username: str) -> None:
-        """Woodpecker deletes a user's own org along with it, and when that
-        org is gone already it answers 404 and keeps the user (measured on
-        3.18.1), so a 404 is believed only once the user reads as gone too.
-        """
-        path = f"/api/users/{segment(username)}"
-        try:
-            await self._ci.call(CI_ADMIN, "DELETE", path)
-        except NotFound:
-            try:
-                await self._ci.call(CI_ADMIN, "GET", path)
-            except NotFound:
-                return
-            raise Rejected(f"the CI answered 404 to deleting {username} and kept it") from None
-
-    async def mint_ci_token(self, username: str, forge_password: str) -> str:
-        return await self._login.mint_token(username, forge_password)
-
-    async def _verify(self, request: CiRequest, now: datetime) -> None:
+    async def _verify(self, request: InboundRequest, now: datetime) -> None:
         """Check the request against the CI's key, reading the key again once
         when it does not verify and the key was not read in the last minute.
         """
@@ -404,7 +518,12 @@ class WoodpeckerGrading:
 
     async def _read_key(self) -> Ed25519PublicKey:
         self._key_read_at = time.monotonic()
-        response = await self._ci.call(CI_ADMIN, "GET", PUBLIC_KEY_PATH)
+        try:
+            response = await self._ci.call(CI_ADMIN, "GET", PUBLIC_KEY_PATH)
+        except NotFound:
+            # Kept apart from a CI that never asks, which is what `NotFound`
+            # from `answer` says.
+            raise Unavailable("the CI has no signing key to read") from None
         try:
             key = load_pem_public_key(response.content)
         except ValueError as exc:
@@ -414,7 +533,7 @@ class WoodpeckerGrading:
         self._key = key
         return key
 
-    async def _lookup(self, as_: Identity, org: str, repo: str) -> dict[str, Any]:
+    async def _lookup(self, as_: Caller, org: str, repo: str) -> dict[str, Any]:
         return json_of(
             await self._ci.call(as_, "GET", f"/api/repos/lookup/{segment(org)}/{segment(repo)}")
         )
@@ -432,7 +551,7 @@ class WoodpeckerGrading:
                 )
 
 
-def _verify_with(key: Ed25519PublicKey, request: CiRequest, now: datetime) -> None:
+def _verify_with(key: Ed25519PublicKey, request: InboundRequest, now: datetime) -> None:
     signatures.verify(
         key,
         method=request.method,

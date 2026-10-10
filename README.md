@@ -123,8 +123,8 @@ forge/api/
                 Rejudged, FeedEntry, Submitter, QueueDepth, GradingStatus and
                 Fallback they return; list
                 and feed both give FeedEntry
-  runs.py       config, envelope, callback, the CiRequest config takes and the
-                CiAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
+  runs.py       config, envelope, callback, the InboundRequest config takes
+                and the InboundAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
                 ENVELOPE_PATH and CALLBACK_PATH, where each is served
   roles.py      holders, grant, revoke, and the Holder holders returns
   invites.py    create, at, send_again, withdraw, mine, by_token, accept,
@@ -226,7 +226,7 @@ account, the account
 `UNICON_FORGE_PLATFORM_ACCOUNT` names and the admin token belongs to.
 Activating a task at the CI and starting its runs are done as the org's own
 account, which the caller hands in as an `AsOrgAccount` carrying that
-account's two credentials.
+account's credential at the forge and its state at the CI.
 
 A contest or a task is made bare, with its starter files, by
 `content.create_contest` and `content.create_task`, and `content.secure`
@@ -253,16 +253,23 @@ of its files at its version, big ones included, and `read_submission_blob`
 one as the commit holds it, a large file's pointer rather than its bytes
 (Forgejo's `raw` endpoint), which is how a recovered submission finds the
 uploads it used.
+`grading.set_up_org` sets an org up at the CI for its account and gives
+back a `CiState`, what the account holds there, which only the
+implementation reads; the platform keeps it encrypted, asks
+`grading.needs_refresh` before using it, and has it refreshed with
+`grading.refresh`, and `grading.tear_down_org` removes it again.
 `grading.activate` takes a task for grading at the CI, as the org account.
 `grading.start_run` starts a `GradingRun`, what one run of one grading is
-in the platform's words, as the org account, with the variables
-`grading.run_variables` writes for it, and `grading.cancel_run` stops one as
-the CI's administrator.
-`grading.read_config_request` checks the CI's signed question of what a run
-is and reads it as a `ConfigAsk`, and `grading.config_answer` answers it with
-the run's three steps; `grading.run_places` says what the envelope names of
-the run's places at the forge. The Forgejo implementation writes the
-Woodpecker side of each (below).
+in the platform's words, as the org account, with a `RunSpec` of what it
+runs, read from the plan as it starts, and `grading.cancel_run` stops one.
+A CI that asks the platform what a run is as it starts one is answered by
+`grading.answer`, which checks the request is the CI's own, has the service
+find the run (`lookup`, a queued grading of that task) and refuses a run
+started with any variable but those the implementation starts it with; a
+CI that is pushed to never asks, and its `answer` is `NotFound`.
+`grading.run_places` says what the envelope names of the run's places at
+the forge. The Forgejo implementation writes the Woodpecker side of each
+(below), and the runner's README states what any CI owes the machine.
 `workspaces.publish` names a version a save already wrote as the next
 publication, with a note, and `workspaces.list_publications` reads each back
 as a `Publication` with what its note says. A contestant's workspace is made
@@ -304,19 +311,20 @@ their orgs' and those shared with them, page by page, and the platform's
 public built-ins; other people's public workflows are the marketplace's. Who may change a workflow under an owner, the person themself
 or a manager at the org, is the services' rule (`workflows`, below).
 
-The org account is made by the platform too, through six more operations
-the port declares: `identity.create_user` and `mint_token` make the account
-at the host and its credential there, `orgs.ensure_account_membership` puts
-it in its place in the org, `grading.create_ci_user` and `mint_ci_token`
-make its user at the CI and sign it in there, and `identity.set_password`
-gives it a fresh password whenever it has to sign in again. The CI admits
-nobody it was not told about and mints a token only through its web UI, so
-`mint_ci_token` in the Forgejo implementation is a real sign-in: it signs
-into Forgejo with the account's password, walks Woodpecker's OAuth round
-trip approving consent, reads the CSRF token Woodpecker hands its own page,
-and asks for a token. It runs inside the platform's process, where the two
-public URLs do not resolve, so it follows every redirect by hand and asks
-each URL at the internal host instead.
+The org account is made by the platform too, through more operations the
+port declares: `identity.create_user` and `mint_token` make the account at
+the host and its credential there, `orgs.ensure_account_membership` puts it
+in its place in the org, and `grading.set_up_org` sets it up at the CI with
+the password it was just given. Woodpecker admits nobody it was not told
+about and mints a token only through its web UI, so the Forgejo
+implementation makes the account's user there as the CI's administrator
+and then signs in for real: into Forgejo with the account's password,
+through Woodpecker's OAuth round trip approving consent, reading the CSRF
+token Woodpecker hands its own page, and asking for a token. It runs inside
+the platform's process, where the two public URLs do not resolve, so it
+follows every redirect by hand and asks each URL at the internal host
+instead. Its `refresh` gives the account a fresh password at the forge and
+signs in the same way.
 
 An org's display name and description are its own fields at the host, which
 only an owner may change, so `orgs.update_org` writes them and
@@ -370,10 +378,13 @@ Both implementations name repositories and build and read ids with the one
 grammar in `forges/ids.py`, so an id from elsewhere is `NotFound` whichever
 is behind the port.
 
-`UNICON_FORGE=forgejo` runs against Forgejo and Woodpecker; `UNICON_FORGE=fake`
+`UNICON_FORGE=forgejo` runs against Forgejo, grading with the CI `UNICON_CI`
+names, `woodpecker` the one there is and the default; `UNICON_FORGE=fake`
 runs the whole stack against the in-memory forge, which records every call
 with its identity and refuses what a real forge refuses, a repository made
-by anyone but the platform among it. `CachedForge` wraps
+by anyone but the platform among it. Its CI asks what a run is, as
+Woodpecker does, unless it is made with `ci_asks` off, when it is handed
+every run whole, as a CI that is pushed to is. `CachedForge` wraps
 either and keeps a few reads in the process for up to a minute, dropping
 them on a write through the same area: user lookups always, the role reads
 when `UNICON_FORGE_CACHE` is on.
@@ -609,23 +620,23 @@ fixed words; an undo with nothing left logs `<subject>.undone` once. The
 undo runs from `ctx.after_rollback`, so a commit that fails after every step
 worked, the database gone away, undoes them as well. A process that dies
 halfway leaves what it made under keys no name points at. An org is undone
-as its CI user, its service account's place in the org, the account, and
-the org, which takes its roles, labels, event push and first admin's role
-with it; the account must leave its place before Forgejo deletes it. A
+as its set-up at the CI, its service account's place in the org, the
+account, and the org, which takes its roles, labels, event push and first
+admin's role with it; the account must leave its place before Forgejo deletes it. A
 contest is undone as its place with its own roles. A task is undone as its
 entry in `contest.yaml`, taken out only while the file still says exactly
 what the create wrote, its activation at the CI, and its place with its own
 roles. The port operations the undo uses are `orgs.delete_org`,
 `orgs.remove_account_membership`, `identity.delete_user`,
-`content.delete_place`, `grading.deactivate` and `grading.delete_ci_user`.
+`content.delete_place`, `grading.deactivate` and `grading.tear_down_org`.
 A name is one row in `names`, so two requests for one name at once make one
 thing and the second is `Conflict`. Each create answers with the `Named`
 thing, its id and its name. An org takes ten steps: its account row, the
 org, its roles, its labels, its signed event push, its first admin, its
 service account at the forge, that account's place in the org and its forge
-credential, its user at the CI, and its sign-in at the CI. The service
-account's password is made for the request, mints the account's two
-credentials and is thrown away, so it is never in the database. A service
+credential, and its set-up at the CI. The service account's password is
+made for the request, mints its forge credential, signs it in at the CI
+and is thrown away, so it is never in the database. A service
 account name someone already took at the forge is refused rather than
 adopted, since anyone may sign up there. The service account is named
 from the org's key, `unicon-ci-<key>`, 36 characters, so an org's name
@@ -1408,7 +1419,14 @@ it sees that at once and tries again, a contestant by submitting, an
 organiser with `retry`.
 
 **The configuration extension.** `runs.config(request)` takes the CI's
-request as it arrived, a `CiRequest` of method, target, headers and body. The
+request as it arrived, an `InboundRequest` of method, target, headers and
+body, and hands it to `grading.answer` with the service's `lookup`. What a
+run runs is decided by the platform, never by the request or the
+repository, and that takes two checks kept apart: `lookup` answers only for
+a grading of the task the request names that is `queued`, and the
+implementation refuses a run started with any variable but those it starts
+that run with, since anyone who may start a manual pipeline on the task's
+repository may pass variables of their own, a harness image among them. The
 Forgejo implementation checks its RFC 9421 signature, over the request target
 and the body's `Content-Digest`, made within five minutes, against the CI's
 ed25519 key, read from `GET /api/signature/public-key` with the CI
@@ -1423,7 +1441,7 @@ grading's run with. The answer, `{"configs": [{"name": "grading", "data":
 `UNICON_COMPUTE`; under `clone:` two full steps, `task` and `submission`,
 each running `UNICON_CLONE_IMAGE` with `remote`, `sha`, `ref` (the
 `published/<n>` or `submission/<n>` tag) and `path` (`/woodpecker/task`,
-`/woodpecker/submission`) set, `lfs` on for the task alone, the machine's
+`/woodpecker/submission`) set, `lfs` on for both, the machine's
 store of large files for the task's org as `unicon-lfs-<org>:/lfs-cache`, one
 per org, so no org's task is served a large file another org's task brought
 to the machine by naming its object id, and no `environment`, since a clone
@@ -1681,11 +1699,14 @@ with every enumeration as `text` under a `CHECK`: `sessions`,
 hold what a forge cannot: of users, orgs, contests and tasks only the names
 people gave the last three (above), the rest read live. `org_accounts` is
 one row per org, by the org's id, its service account's
-forge credential, CI credential and event secret each as AES-256-GCM
+forge credential, its `ci_state` and its event secret each as AES-256-GCM
 ciphertext under `UNICON_TOKEN_ENCRYPTION_KEY`, the way a session's
-credential is, so a copy of the table hands out no access, and
-`ci_signed_in_at`, when the account last signed in at the CI;
-`services/credentials.py` is the one place either is sealed or opened.
+credential is, so a copy of the table hands out no access;
+`services/credentials.py` is the one place either is sealed or opened,
+but for revision `0017`, which keeps a frozen copy of the sealing so it
+reads the same whatever the package does later. Revision `0017` moved the three columns Woodpecker's sign-in filled into
+`ci_state`, which reads `UNICON_TOKEN_ENCRYPTION_KEY` whenever there is a
+token to move and stops before changing anything without it.
 A `contestants` row is one person's registration for one contest, and
 names no workspace, since a workspace's id comes from the contest and the
 person. A `gradings` row names the task, the workspace, the submission with
@@ -1721,19 +1742,20 @@ piece of upkeep is done by a request that already touches what it keeps:
 ended longer ago than a session's hard lifetime (`sessions.sweep`);
 `uploads.slot` removes the rows of the person's own lapsed, unused uploads;
 and `org_accounts.identity`
-signs an org's account in at the CI again when its `ci_signed_in_at` is
-older than `SIGN_IN_SHARE`, two thirds, of the session's hard lifetime (20
-days by default), under a lock on its row so two callers sign it in once.
-The CI keeps the account's login at the forge fresh only while the account
-calls it, and that login lasts as long as the forge's refresh token, which
-deploy sets to the session's hard lifetime; so an org that grades every day
-signs in again every 20 days and one that was quiet for months signs in on
-its first use. A login the CI refuses for any other reason is mended by
+refreshes an org's account at the CI when the CI's implementation says its
+state needs it, under a lock on its row so two callers refresh it once.
+Woodpecker keeps the account's login at the forge fresh only while the
+account calls it, and that login lasts as long as the forge's refresh
+token, which deploy sets to the session's hard lifetime; so its
+implementation says a sign-in older than two thirds of that lifetime (20
+days by default) needs refreshing, and an org that grades every day signs
+in again every 20 days and one that was quiet for months on its first use.
+A state the CI refuses for any other reason is mended by
 `org_accounts.renew`: a grading's start and a task's activation that the CI
-refuses as the org's account sign it in again and try once more, and
-`renew` hands a caller the credential another caller already renewed, so a
-burst of refusals signs in once. Signing in again sets a fresh password at
-the forge, signs in with it and throws it away.
+refuses as the org's account refresh it and try once more, and `renew`
+hands a caller the state another caller already refreshed, so a burst of
+refusals refreshes once. Woodpecker's refresh sets a fresh password at the
+forge, signs in with it and throws it away.
 
 ## Layer rules
 

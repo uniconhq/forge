@@ -10,8 +10,8 @@ import pytest
 
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected
-from forge.domain.grading import GradingRun
-from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Platform
+from forge.domain.grading import GradingRun, RunSpec
+from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, CiState, OrgAccountRef, Platform
 from forge.domain.ids import (
     ContestId,
     OrgId,
@@ -28,10 +28,14 @@ from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
 from forge.forges.fake import FakeForge
+from forge.forges.fake.grading import token_in
 
 
 def _as(fake: FakeForge, user_id: int) -> AsUser:
     return AsUser(user_id=user_id, credential=fake.mint(user_id))
+
+
+CI_STATE = CiState('{"user_id": 1, "token": "c", "signed_in_at": null}')
 
 
 async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
@@ -84,7 +88,7 @@ async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> 
     await fake.orgs.create_org(OrgId("acme"), description="Acme")
     contest = await fake.content.create_contest(OrgId("acme"), "spring", {})
     task = await fake.content.create_task(contest, "sum", {})
-    acme = AsOrgAccount("acme", forge_token="f", ci_token="c")
+    acme = AsOrgAccount("acme", forge_token="f", ci_state=CI_STATE)
 
     await fake.grading.activate(acme, task)
     run = GradingRun(
@@ -97,12 +101,12 @@ async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> 
         envelope_url="http://machines.test/envelope",
         compute="pool:platform",
     )
-    await fake.grading.start_run(acme, run)
+    await fake.grading.start_run(acme, run, RunSpec(harness_image="h", clone_image="c"))
 
     assert [call.identity for call in fake.calls_to("activate")] == [acme]
     assert [call.identity for call in fake.calls_to("start_run")] == [acme]
     with pytest.raises(Forbidden):
-        await fake.grading.activate(AsOrgAccount("other", forge_token="f", ci_token="c"), task)
+        await fake.grading.activate(AsOrgAccount("other", forge_token="f", ci_state=CI_STATE), task)
 
 
 async def test_every_call_is_recorded_with_its_identity(fake: FakeForge) -> None:
@@ -332,16 +336,25 @@ async def test_a_service_account_is_made_placed_and_signed_in_at_the_ci(
     assert fake.state.tokens[token] == account.id
     with pytest.raises(Forbidden):
         await fake.identity.mint_token("unicon-ci-acme", "wrong", name="unicon", scopes=["a"])
-    await fake.identity.set_password(account.id, "pw-2")
+    fake.state.passwords[account.id] = "pw-2"
     with pytest.raises(Forbidden):
-        await fake.grading.mint_ci_token("unicon-ci-acme", "pw-1")
-    with pytest.raises(Forbidden, match="admits no user"):
-        await fake.grading.mint_ci_token("unicon-ci-acme", "pw-2")
+        await fake.grading.set_up_org(
+            OrgId("acme"), OrgAccountRef("unicon-ci-acme", account.id, "pw-1")
+        )
 
-    assert await fake.grading.create_ci_user("unicon-ci-acme") == 1
-    assert await fake.grading.create_ci_user("unicon-ci-acme") == 1
-    ci_token = await fake.grading.mint_ci_token("unicon-ci-acme", "pw-2")
-    assert fake.state.ci_tokens[ci_token] == "unicon-ci-acme"
+    state = await fake.grading.set_up_org(
+        OrgId("acme"), OrgAccountRef("unicon-ci-acme", account.id, "pw-2")
+    )
+    again = await fake.grading.set_up_org(
+        OrgId("acme"), OrgAccountRef("unicon-ci-acme", account.id, "pw-2")
+    )
+    assert fake.state.ci_users == {"unicon-ci-acme": 1}
+    assert fake.state.ci_tokens[token_in(state)] == "unicon-ci-acme"
+    assert token_in(again) != token_in(state)
+
+    await fake.grading.tear_down_org(OrgId("acme"), state)
+    assert fake.state.ci_users == {}
+    assert fake.state.ci_tokens == {}
 
 
 async def test_anyones_roles_are_read_as_the_platform(fake: FakeForge) -> None:

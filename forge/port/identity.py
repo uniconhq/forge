@@ -91,13 +91,6 @@ class IdentityPort(Protocol):
         """
         ...
 
-    async def set_password(self, user_id: int, password: str) -> None:
-        """Replace the user's password, as the platform, without knowing the
-        old one. How the platform signs a service account in again without
-        ever storing its password.
-        """
-        ...
-
     async def mint_token(
         self, username: str, password: str, *, name: str, scopes: Sequence[str]
     ) -> str:

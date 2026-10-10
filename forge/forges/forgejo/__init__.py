@@ -5,9 +5,11 @@ the object store beside them over S3. May import `forge.port` and
 """
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 import httpx
 
+from forge.domain.errors import Misconfigured
 from forge.forges.forgejo.ci_login import CiLogin
 from forge.forges.forgejo.computes import WoodpeckerComputes
 from forge.forges.forgejo.content import ForgejoContent
@@ -38,7 +40,11 @@ class ForgejoConfig:
     Forgejo implementation reaches over S3; without it every call to the
     store is `Misconfigured`. `mail` is the server the forge sends its own
     mail through, which the platform's mail goes through too; without it
-    nothing is sent.
+    nothing is sent. `ci` names the CI the grading and compute areas talk
+    to, which the `ci_*` settings reach. `ci_login_lifetime` is how long the
+    org account's
+    login at the forge lasts, which is how long its sign-in at the CI does:
+    the session's hard lifetime.
     """
 
     public_url: str
@@ -54,6 +60,8 @@ class ForgejoConfig:
     ci_admin_token: str
     storage: StorageConfig | None = None
     mail: MailConfig | None = None
+    ci_login_lifetime: timedelta = timedelta(days=30)
+    ci: str = "woodpecker"
 
 
 class ForgejoForge:
@@ -91,25 +99,33 @@ class ForgejoForge:
         )
         self.orgs = ForgejoOrgs(http, teams, users, platform_account=config.platform_account)
         self.content = ForgejoContent(repos, teams)
-        self.grading = WoodpeckerGrading(
-            http,
-            ci,
-            repos,
-            ci_public_url=config.ci_public_url,
-            login=CiLogin(
-                forge_public_url=config.public_url,
-                forge_url=config.internal_url,
-                ci_public_url=config.ci_public_url,
-                ci_url=config.ci_url,
-                transport=browser_transport,
-            ),
-        )
+        # The CI `config.ci` names gives both areas that talk to it, grading
+        # and the machines' enrolment; the one there is is Woodpecker.
+        match config.ci:
+            case "woodpecker":
+                self.grading = WoodpeckerGrading(
+                    http,
+                    ci,
+                    repos,
+                    users,
+                    ci_public_url=config.ci_public_url,
+                    login_lifetime=config.ci_login_lifetime,
+                    login=CiLogin(
+                        forge_public_url=config.public_url,
+                        forge_url=config.internal_url,
+                        ci_public_url=config.ci_public_url,
+                        ci_url=config.ci_url,
+                        transport=browser_transport,
+                    ),
+                )
+                self.computes = WoodpeckerComputes(ci)
+            case _:
+                raise Misconfigured(f"UNICON_CI={config.ci} names no CI this forge grades with")
         self.workspaces = ForgejoWorkspaces(repos, users, teams)
         self.threads = ForgejoThreads(http)
         self.uploads = ForgejoUploads(http)
         self.workflows = ForgejoWorkflows(repos, users)
         self.primitives = ForgejoPrimitives(repos)
-        self.computes = WoodpeckerComputes(ci)
         self.objects: S3Objects | NoStore = (
             S3Objects(config.storage) if config.storage is not None else NoStore()
         )

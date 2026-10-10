@@ -9,6 +9,9 @@ extensions their tasks; and a submission staff cancelled before cancels
 carried a sentence is given a stock one.
 """
 
+import base64
+import json
+import secrets
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -18,12 +21,21 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from pydantic import SecretStr
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 
 from forge.db.migrations import alembic_config, downgrade_to_base, upgrade_to_head
 from forge.db.tables import Grading, OrgAccount, metadata
+from forge.domain.ids import OrgId
+from forge.forges.fake import FakeForge
+from forge.forges.forgejo.ci_state import read_state
+from forge.forges.forgejo.http import WoodpeckerAuth
 from forge.runtime.setup import Setup
+from forge.services import org_accounts
+from forge.settings import TEST_KEY, decode_key
+from forge.testing import FakeClock
 
 STOCK_REASON = "The organisers cancelled this grading."
 """The sentence revision 0014 gives a submission staff cancelled before
@@ -158,18 +170,14 @@ async def test_an_org_account_carries_its_ciphertext(setup: Setup) -> None:
                 org_id="acme",
                 username="unicon-ci-acme",
                 forge_token=b"\x01",
-                ci_token=b"",
+                ci_state=b"\x03",
                 event_secret=b"\x02",
             )
         )
     async with setup.unit_of_work() as ctx:
         account = (await ctx.db.execute(select(OrgAccount))).scalar_one()
-    assert account.forge_token == b"\x01"
-    assert (account.forge_user_id, account.ci_user_id, account.ci_signed_in_at) == (
-        None,
-        None,
-        None,
-    )
+    assert (account.forge_token, account.ci_state) == (b"\x01", b"\x03")
+    assert account.forge_user_id is None
     assert account.created_at is not None
 
 
@@ -181,7 +189,7 @@ async def test_a_time_reads_back_in_utc_whatever_zone_the_server_is_in(setup: Se
                 org_id="acme",
                 username="unicon-ci-acme",
                 forge_token=b"",
-                ci_token=b"",
+                ci_state=b"",
                 event_secret=b"",
             )
         )
@@ -531,3 +539,206 @@ def test_a_submission_staff_cancelled_before_reasons_is_given_the_stock_one(
         (3, 1, "The checker broke on this one."),
     ]
     upgrade_to_head(migrated_database_url)
+
+
+SIGNED_IN_AT = datetime(2026, 10, 1, 9, 30, tzinfo=UTC)
+
+
+def _sealed(plaintext: bytes) -> bytes:
+    nonce = secrets.token_bytes(12)
+    return nonce + AESGCM(decode_key(SecretStr(TEST_KEY))).encrypt(nonce, plaintext, None)
+
+
+def _opened(blob: bytes) -> bytes:
+    return AESGCM(decode_key(SecretStr(TEST_KEY))).decrypt(blob[:12], blob[12:], None)
+
+
+def _accounts_before_the_state(database_url: str, token: bytes) -> None:
+    """Two org accounts as revision 0016 holds them: one signed in at the CI
+    with `token` sealed under the test key, one not signed in yet.
+    """
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO org_accounts (id, org_id, forge_user_id, username, forge_token, "
+                "ci_token, ci_user_id, event_secret, ci_signed_in_at) VALUES "
+                "(gen_random_uuid(), 'acme', 9, 'unicon-ci-acme', :forge, :ci, 4, :secret, :at), "
+                "(gen_random_uuid(), 'beta', NULL, 'unicon-ci-beta', '', '', NULL, :secret, NULL)"
+            ),
+            {
+                "forge": _sealed(b"forge-token-acme"),
+                "ci": _sealed(token),
+                "secret": _sealed(b"secret"),
+                "at": SIGNED_IN_AT,
+            },
+        )
+    engine.dispose()
+
+
+def _rows(database_url: str, columns: str) -> dict[str, Any]:
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        found = connection.execute(
+            text(f"SELECT org_id, {columns} FROM org_accounts ORDER BY org_id")
+        ).mappings()
+        rows = {row["org_id"]: dict(row) for row in found}
+    engine.dispose()
+    return rows
+
+
+def test_the_ci_credentials_move_into_one_state_and_back_with_the_same_token(
+    migrated_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", TEST_KEY)
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0016")
+    _accounts_before_the_state(migrated_database_url, b"ci-token-acme")
+
+    command.upgrade(config, "head")
+
+    moved = _rows(migrated_database_url, "ci_state")
+    assert json.loads(_opened(moved["acme"]["ci_state"])) == {
+        "user_id": 4,
+        "token": "ci-token-acme",
+        "signed_in_at": SIGNED_IN_AT.isoformat(),
+        "account_id": 9,
+    }
+    assert moved["beta"]["ci_state"] == b""
+    assert {"ci_token", "ci_user_id", "ci_signed_in_at"} & _columns(
+        migrated_database_url, "org_accounts"
+    ) == set()
+
+    command.downgrade(config, "0016")
+
+    back = _rows(migrated_database_url, "ci_token, ci_user_id, ci_signed_in_at")
+    assert _opened(back["acme"]["ci_token"]) == b"ci-token-acme"
+    assert (back["acme"]["ci_user_id"], back["acme"]["ci_signed_in_at"]) == (4, SIGNED_IN_AT)
+    assert (back["beta"]["ci_token"], back["beta"]["ci_user_id"]) == (b"", None)
+    assert back["beta"]["ci_signed_in_at"] is None
+    assert "ci_state" not in _columns(migrated_database_url, "org_accounts")
+    command.upgrade(config, "head")
+
+
+def test_without_the_key_a_token_is_not_moved_and_nothing_changes(
+    migrated_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("UNICON_TOKEN_ENCRYPTION_KEY", raising=False)
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0016")
+    _accounts_before_the_state(migrated_database_url, b"ci-token-acme")
+
+    with pytest.raises(RuntimeError, match="UNICON_TOKEN_ENCRYPTION_KEY"):
+        command.upgrade(config, "head")
+
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        assert MigrationContext.configure(connection).get_current_revision() == "0016"
+    engine.dispose()
+    kept = _rows(migrated_database_url, "ci_token")
+    assert _opened(kept["acme"]["ci_token"]) == b"ci-token-acme"
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", TEST_KEY)
+    command.upgrade(config, "head")
+
+
+async def test_an_orgs_ci_token_still_works_after_the_state_is_made(
+    migrated_database_url: str,
+    setup: Setup,
+    fake: FakeForge,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The org signed in a day before the migration grades on with the token
+    it had: nothing is refreshed, and the CI is shown the same token.
+    """
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", TEST_KEY)
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0016")
+    _accounts_before_the_state(migrated_database_url, b"ci-token-acme")
+    command.upgrade(config, "head")
+    clock.set(SIGNED_IN_AT + timedelta(days=1))
+
+    async with setup.unit_of_work() as ctx:
+        account = await org_accounts.identity(ctx, OrgId("acme"))
+
+    assert account.forge_token == "forge-token-acme"
+    assert read_state(account.ci_state).token == "ci-token-acme"
+    assert await WoodpeckerAuth("ci-admin").header(account) == "Bearer ci-token-acme"
+    assert fake.calls_to("refresh") == []
+
+
+async def test_an_orgs_state_made_by_the_migration_is_refreshed_once_stale(
+    migrated_database_url: str,
+    setup: Setup,
+    fake: FakeForge,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The state the migration made names the account by its forge id, so
+    once it is stale the org signs in again as that account.
+    """
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", TEST_KEY)
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0016")
+    _accounts_before_the_state(migrated_database_url, b"ci-token-acme")
+    command.upgrade(config, "head")
+    fake.add_user(9, "unicon-ci-acme")
+    fake.state.ci_users["unicon-ci-acme"] = 4
+    clock.set(SIGNED_IN_AT + timedelta(days=21))
+
+    async with setup.unit_of_work() as ctx:
+        account = await org_accounts.identity(ctx, OrgId("acme"))
+
+    state = read_state(account.ci_state)
+    assert (state.user_id, state.account_id) == (4, 9)
+    assert state.token not in ("", "ci-token-acme")
+    assert state.signed_in_at == clock.now()
+    assert len(fake.calls_to("refresh")) == 1
+
+
+OTHER_KEY = base64.urlsafe_b64encode(b"\x01" * 32).decode().rstrip("=")
+
+
+def _revision(database_url: str) -> str | None:
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        found = MigrationContext.configure(connection).get_current_revision()
+    engine.dispose()
+    return found
+
+
+def test_a_wrong_key_moves_nothing_in_either_direction(
+    migrated_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0016")
+    _accounts_before_the_state(migrated_database_url, b"ci-token-acme")
+
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", OTHER_KEY)
+    with pytest.raises(RuntimeError, match="does not open"):
+        command.upgrade(config, "head")
+    assert _revision(migrated_database_url) == "0016"
+
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", TEST_KEY)
+    command.upgrade(config, "head")
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", OTHER_KEY)
+    with pytest.raises(RuntimeError, match="does not open"):
+        command.downgrade(config, "0016")
+    assert _revision(migrated_database_url) == "0017"
+
+
+def test_going_back_without_the_key_moves_nothing(
+    migrated_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0016")
+    _accounts_before_the_state(migrated_database_url, b"ci-token-acme")
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", TEST_KEY)
+    command.upgrade(config, "head")
+
+    monkeypatch.delenv("UNICON_TOKEN_ENCRYPTION_KEY")
+    with pytest.raises(RuntimeError, match="UNICON_TOKEN_ENCRYPTION_KEY"):
+        command.downgrade(config, "0016")
+
+    assert _revision(migrated_database_url) == "0017"
+    assert _rows(migrated_database_url, "ci_state")["acme"]["ci_state"] != b""

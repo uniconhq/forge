@@ -42,7 +42,7 @@ from sqlalchemy import select
 from forge.db.tables import Grading
 from forge.domain.contracts import violation
 from forge.domain.errors import UniconError
-from forge.domain.grading import CiRequest, GradingStatus
+from forge.domain.grading import GradingStatus, InboundRequest
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.keys import key_from_name
 from forge.domain.names import UserOwner
@@ -161,7 +161,9 @@ class Platform:
             return 200, b"", "text/plain"
         try:
             if method == "POST" and path == gradings.CI_CONFIG_PATH:
-                answer = self._run(runs.config(setup, CiRequest(method, target, headers, body)))
+                answer = self._run(
+                    runs.config(setup, InboundRequest(method, target, headers, body))
+                )
                 self.answers.append(answer.body)
                 return 200, answer.body, answer.content_type
             grading = uuid.UUID(parts[3])
