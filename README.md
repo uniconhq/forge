@@ -272,7 +272,8 @@ back a `CiState`, what the account holds there, which only the
 implementation reads; the platform keeps it encrypted, asks
 `grading.needs_refresh` before using it, and has it refreshed with
 `grading.refresh`, and `grading.tear_down_org` removes it again.
-`grading.activate` takes a task for grading at the CI, as the org account.
+`grading.activate` takes a task for grading at the CI, as the org account,
+and says whether the CI did not know it before.
 `grading.start_run` starts a `GradingRun`, what one run of one grading is
 in the platform's words, as the org account, with a `RunSpec` of what it
 runs, read from the plan as it starts, and `grading.cancel_run` stops one.
@@ -1533,7 +1534,13 @@ in `contestants` for the contest, whatever became of their registration, it
 lists that person's submissions of the task and inserts, for any with no
 grading, one queued grading against the current
 publication, carrying the idempotency key its tag's note carries. Their runs
-start once it commits. It logs what it did as `reconcile.done`.
+start once it commits. Before a task's submissions it activates the task at
+the CI as the org's account, signing it in again once if the CI refuses it,
+since the CI's database restored from a dump taken at another moment, or
+alone, may not know a task made since; a task the CI knows is unchanged,
+and one it cannot activate is logged as `reconcile.activation_failed` and
+its gradings are still inserted. It logs what it did as `reconcile.done`,
+with how many tasks it activated that the CI did not know.
 
 **The organiser's controls.** Each takes the `Organiser` from
 `access.organiser` and needs manager at the grading's task; a grading whose
@@ -1761,8 +1768,9 @@ submission's number, and who marked it.
 under `forge/db/alembic/` and exits. A deployment runs it before the host
 starts, from the host's image, which has the package and its command
 installed; the host has no migrate command of its own. `unicon-forge
-reconcile` gives every submission at the forge without gradings its
-gradings (above), and the operator runs it once after a restore.
+reconcile` activates every published task at the CI and gives every
+submission at the forge without gradings its gradings (above), and the
+operator runs it once after a restore.
 
 There is no jobs table, and nothing in the package runs on a timer. Each
 piece of upkeep is done by a request that already touches what it keeps:
@@ -1859,7 +1867,8 @@ question it asks the extension with a key of its own:
 `fake.grading.config_request(task, variables, now=)` is that question;
 `fake.ci.refuse_starts = n` answers the next `n` starts without a run,
 and `fake.ci.lose_start_answer` starts the next run and fails as if its
-answer were lost. The fake refuses a user id
+answer were lost. A run of a task not in `fake.ci.activated` is
+`NotFound`, as at a CI that does not know the task. The fake refuses a user id
 it already has, since the accounts the package makes take the next free ids.
 
 ## Checks
