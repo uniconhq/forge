@@ -880,7 +880,10 @@ takes each path with its new content and the token it was read with, as an
    froze.
 3. What the save changes about how the task grades is worked out against
    the latest publication: its plan and the digests of the task's files the
-   plan names. Groups, rule weights, `show`, `credit` and `submissions` are
+   plan names. A changed plan in which a primitive version runs on another
+   image than before, because a release moved that version's image in
+   place, also names it: `sandbox-run@v2's image moved with a release`, so a
+   save that changed only the statement says why it asks. Groups, rule weights, `show`, `credit` and `submissions` are
    read on every read and change nothing that grades. Once the contest has
    started, until it is archived, a save that changes how the task grades is
    refused with `ConfirmationRequired`, listing the changes and how many
