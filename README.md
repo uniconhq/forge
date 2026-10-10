@@ -1807,9 +1807,9 @@ what came back, `error` a line for staff, and `cancel_reason` the sentence
 staff cancelled it with, which its contestant reads, on every submission
 staff cancelled (a stock one on those cancelled before 0013) and on no
 attempt a rejudge replaced. An `uploads` row is one
-browser upload: its owner, task and input, name, declared and measured
-size, digest, status, the id of its parts while they arrive, the submission
-that consumed it, and when its lifetime ends. An `invites` row is one
+browser upload: its owner, its purpose, task and input (or, for a task's
+own file, the path it goes in the task), name, type, size, digest, status,
+the submission that consumed it, and when its lifetime ends. An `invites` row is one
 invite: the scope's keys, what it grants, the username or the address it
 names, who it is for once known, who sent it, its token's SHA-256, its
 status, its expiry, when it was decided, and what became of its mail. A
