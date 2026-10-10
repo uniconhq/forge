@@ -737,7 +737,10 @@ may edit it. `view` gives the editor the draft with its token and the
 people it is shared with; anyone else gets the workflow without them. A
 `save` writes whatever it is given, problems and all, up to 256 KB, since a
 draft may stop half done; `Conflict` when the file moved since it was read.
-`create_version` reads the draft, runs every check a version must pass
+`create_version` takes a name that is `v` and a whole number from 1 with
+no leading zero (`v1`, `v2`, `v10`) and refuses any other as `InvalidName`;
+a tag already at the forge under another name is still read. It reads the
+draft, runs every check a version must pass
 (`check_workflow`, with each `use:` read as the person: one that cannot be
 read, or names a workflow, is a problem at its own `steps[n].use`), and
 tags the commit it read only when there is none, so a version is never of
@@ -941,8 +944,10 @@ form can still be opened to mend them. Either way `graded` says whether the
 task has a graded submission, a grading of it `done`, the condition T7 and
 T10 hold from: from then on a save refuses a test group it adds without its
 `show`, so the form asks for one there instead of offering a default.
-`newer` is the workflow's latest version, in natural order, when it comes
-after the one the task names, so the task page can say a newer one exists;
+`newer` is the workflow's version with the largest number when it is larger
+than the one the task names, so the task page can say a newer one exists; a
+tag under any other name has no number, so it is never newer and nothing is
+newer than it;
 the task keeps grading with the one it names until it is saved naming
 another.
 

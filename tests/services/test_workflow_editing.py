@@ -102,14 +102,30 @@ async def test_a_version_of_a_draft_that_does_not_parse_is_refused(
     assert {error["path"] for error in refused.value.errors} == {"test", "steps"}
 
 
-@pytest.mark.parametrize("version", ["", "v 1", "-v1", "published/1", "v" * 41])
+@pytest.mark.parametrize(
+    "version",
+    ["", "v 1", "-v1", "published/1", "v" * 41, "v0", "v01", "V2", "2", "v2.1", "beta"],
+)
 async def test_a_version_name_that_breaks_the_rules_is_refused(
     setup: Setup, acme: Acme, version: str
 ) -> None:
     bob = await _own(setup, acme)
 
-    with pytest.raises(InvalidName):
+    with pytest.raises(InvalidName) as refused:
         await workflows.create_version(setup, bob, "bob", "tuned", version)
+
+    assert str(refused.value) == (
+        f"{version!r} cannot name a version: a version is v and a whole number from 1, "
+        "with no leading zero, such as v1, v2 or v10"
+    )
+    assert acme.fake.state.repos[("bob", "tuned.workflow")].versions == {}
+
+
+@pytest.mark.parametrize("version", ["v1", "v9", "v10", "v123"])
+async def test_a_version_is_v_and_a_whole_number(setup: Setup, acme: Acme, version: str) -> None:
+    bob = await _own(setup, acme)
+
+    assert await workflows.create_version(setup, bob, "bob", "tuned", version) == version
 
 
 async def test_a_version_name_taken_is_a_conflict(setup: Setup, acme: Acme) -> None:
@@ -434,6 +450,38 @@ async def test_the_newest_version_is_named_once_it_comes_after_the_one_pinned(
         )
         stranger = AsUser(7, acme.fake.mint(7))
         assert await workflows.newer_version(ctx, stranger, pinned) is None
+
+
+async def test_the_larger_number_is_newer(setup: Setup, acme: Acme) -> None:
+    bob = await _own(setup, acme)
+    for version in ("v9", "v10"):
+        await workflows.create_version(setup, bob, "bob", "tuned", version)
+    as_bob = AsUser(8, acme.fake.mint(8))
+
+    async with setup.unit_of_work() as ctx:
+        nine = parse_workflow_ref("bob/tuned@v9")
+        assert await workflows.newer_version(ctx, as_bob, nine) == "v10"
+
+
+async def test_a_tag_under_another_name_is_read_but_never_offered_as_newer(
+    setup: Setup, acme: Acme
+) -> None:
+    bob = await _own(setup, acme)
+    await workflows.create_version(setup, bob, "bob", "tuned", "v1")
+    repo = acme.fake.state.repos[("bob", "tuned.workflow")]
+    acme.fake.state.create_version(PLATFORM, repo, "beta")
+    as_bob = AsUser(8, acme.fake.mint(8))
+
+    read = await workflows.read_version(setup, bob, "bob/tuned@beta")
+    (listed,) = [item for item in await workflows.listing(setup, bob) if item.name == "tuned"]
+    async with setup.unit_of_work() as ctx:
+        on_v1 = await workflows.newer_version(ctx, as_bob, parse_workflow_ref("bob/tuned@v1"))
+        on_beta = await workflows.newer_version(ctx, as_bob, parse_workflow_ref("bob/tuned@beta"))
+
+    assert read == repo.files["workflow.yaml"].decode()
+    assert listed.versions == ("beta", "v1")
+    assert on_v1 is None
+    assert on_beta is None
 
 
 async def test_a_version_is_of_the_save_the_person_made_or_not_made(
