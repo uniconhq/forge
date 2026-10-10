@@ -143,7 +143,7 @@ async def test_a_task_is_activated_once_as_the_org_account(
         ),
     )
 
-    await woodpecker.grading.activate(ACME, TaskId("acme/spring/sum"))
+    assert await woodpecker.grading.activate(ACME, TaskId("acme/spring/sum"))
 
     assert recorder.headers("POST", "/api/repos") == ["Bearer ci-acme"]
     (activated,) = [seen for seen in recorder.seen if seen.url.path == "/api/repos"]
@@ -160,6 +160,21 @@ async def test_a_task_is_activated_once_as_the_org_account(
         assert seen.url.host == ("forge.internal" if at_forge else "ci.internal")
         if at_forge:
             assert seen.headers["Authorization"] == "token admin"
+
+
+async def test_a_task_the_ci_knows_is_activated_again_and_says_so(
+    woodpecker: WoodpeckerCi, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/repos/acme/spring.sum.task", ok({"id": 55}))
+    recorder.on("POST", "/api/repos", ok({"message": "exists"}, 409))
+    recorder.on("GET", "/api/repos/lookup/acme/spring.sum.task", ok({"id": 5}))
+    recorder.on("GET", "/api/v1/repos/acme/spring.sum.task/hooks", ok([]))
+
+    assert not await woodpecker.grading.activate(ACME, TaskId("acme/spring/sum"))
+
+    assert recorder.sent("PATCH", "/api/repos/5") == [
+        {"trusted": {"network": False, "volumes": True, "security": False}}
+    ]
 
 
 async def test_a_task_is_deactivated_and_forgotten_as_the_org_account(

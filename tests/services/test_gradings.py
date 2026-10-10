@@ -1272,6 +1272,82 @@ async def test_the_reconcile_gives_a_submission_without_gradings_its_rows_and_st
     assert len(await _rows(setup)) == 1
 
 
+async def test_the_reconcile_activates_a_published_task_the_ci_has_forgotten(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    """The CI's database restored from before the task was made, while the
+    platform's database lost the grading: one run mends both, and the
+    grading it makes starts at the CI.
+    """
+    row = await _submit(setup, acme, entered)
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(delete(Grading))
+    acme.fake.ci.activated.clear()
+
+    async with setup.unit_of_work() as ctx:
+        done = await reconcile.reconcile(ctx)
+
+    assert entered.task in acme.fake.ci.activated
+    assert (done.activated, done.inserted) == (1, 1)
+    [made] = await _rows(setup)
+    assert (made.submission_id, made.status) == (row.submission_id, GradingStatus.DISPATCHED)
+    async with setup.unit_of_work() as ctx:
+        again = await reconcile.reconcile(ctx)
+    assert (again.activated, again.inserted) == (0, 0)
+
+
+async def test_the_reconcile_leaves_a_task_never_published_alone(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    acme.fake.ci.activated.clear()
+
+    async with setup.unit_of_work() as ctx:
+        done = await reconcile.reconcile(ctx)
+
+    assert done.activated == 0
+    assert acme.fake.calls_to("activate") == []
+    assert sum_task not in acme.fake.ci.activated
+
+
+async def test_the_reconcile_renews_an_org_account_the_ci_refuses_and_activates(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    async with setup.unit_of_work() as ctx:
+        lost = await org_accounts.identity(ctx, OrgId("acme"))
+    acme.fake.ci.revoked_ci_tokens.add(token_in(lost.ci_state))
+    acme.fake.ci.activated.clear()
+
+    async with setup.unit_of_work() as ctx:
+        done = await reconcile.reconcile(ctx)
+
+    assert done.activated == 1
+    assert entered.task in acme.fake.ci.activated
+    assert len(acme.fake.calls_to("activate")) == 2
+
+
+async def test_a_task_the_reconcile_cannot_activate_is_logged_and_the_rest_still_run(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    await _submit(setup, acme, entered)
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(delete(Grading))
+
+    async def down(*args: Any, **kwargs: Any) -> Any:
+        raise Unavailable("the CI went away")
+
+    monkeypatch.setattr(acme.fake.grading, "activate", down)
+    async with setup.unit_of_work() as ctx:
+        done = await reconcile.reconcile(ctx)
+
+    assert (done.activated, done.inserted) == (0, 1)
+    (failed,) = logged(caplog, "reconcile.activation_failed")
+    assert (failed["task"], failed["error"]) == (entered.task, "Unavailable")
+
+
 async def test_a_grading_whose_run_was_never_started_reads_as_a_system_error(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, unstarted: Start
 ) -> None:

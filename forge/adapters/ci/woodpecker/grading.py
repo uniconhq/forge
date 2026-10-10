@@ -244,7 +244,10 @@ class WoodpeckerGrading:
         token = await self._login.mint_token(account.username, password)
         return written(replace(current, token=token, signed_in_at=datetime.now(UTC)))
 
-    async def activate(self, as_: AsOrgAccount, task: TaskId) -> None:
+    async def activate(self, as_: AsOrgAccount, task: TaskId) -> bool:
+        """The CI knew the task when it answers the activation with a
+        conflict; its settings are applied again either way.
+        """
         ref = parse_task(task)
         account = _acting_for(as_, ref.org)
         repo_id = await self._host.repo_id(ref.org, ref.repo)
@@ -254,8 +257,10 @@ class WoodpeckerGrading:
                     account, "POST", "/api/repos", params={"forge_remote_id": repo_id}
                 )
             )
+            new = True
         except Conflict:
             activated = await self._lookup(account, ref.org, ref.repo)
+            new = False
         await self._ci.call(
             CI_ADMIN,
             "PATCH",
@@ -263,6 +268,7 @@ class WoodpeckerGrading:
             json={"trusted": {"network": False, "volumes": True, "security": False}},
         )
         await self._host.remove_hooks(ref.org, ref.repo, self._ci_public_url)
+        return new
 
     async def deactivate(self, as_: AsOrgAccount, task: TaskId) -> None:
         """As the org account, which activated the repository: Woodpecker
