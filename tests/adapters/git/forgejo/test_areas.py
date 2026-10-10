@@ -253,7 +253,7 @@ async def test_a_file_is_read_with_a_token_and_written_back_with_it(
         "PUT",
         "/api/v1/repos/acme/spring.contest/contents/contest.yaml",
         ok({"commit": {"sha": "commit-2"}}),
-        ok({"message": "sha does not match"}, 422),
+        ok({"message": "sha does not match"}, 409),
     )
     ada = AsUser(7, _credential())
 
@@ -271,7 +271,8 @@ async def test_a_file_is_read_with_a_token_and_written_back_with_it(
     assert recorder.headers("PUT", "/api/v1/repos/acme/spring.contest/contents/contest.yaml") == [
         "Bearer access"
     ]
-    with pytest.raises(Rejected):
+    # Forgejo answers a write over a moved file 409, as the live test sees.
+    with pytest.raises(Conflict):
         await forgejo.content.write_file(
             ada, ContestId("acme/spring"), "contest.yaml", b"y", message="Edit", expected=read.token
         )
