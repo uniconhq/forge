@@ -50,7 +50,7 @@ from forge.domain.ids import PublicationId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.release import Extension, due_of, late_days
 from forge.domain.roles import contest_id_of, task_scope
-from forge.domain.scoring import ONE, Scored, best_of, late_factor, score
+from forge.domain.scoring import ONE, Better, Scored, best_of, late_factor, score
 from forge.domain.showing import Graded, under
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
@@ -154,8 +154,9 @@ def stands(row: Grading, graded: Graded) -> State:
 
 class Scorer:
     """Scores one task's gradings for one read, `B` worked out once for
-    each generation it is asked for, by the attempts the contest's
-    `on_system_error` has a board read.
+    each generation, value and direction it is asked for (two publications
+    of one generation may name different values in `relative`), by the
+    attempts the contest's `on_system_error` has a board read.
     """
 
     def __init__(self, ctx: Context, current: PublishedTask, contest: OnSystemError) -> None:
@@ -163,7 +164,7 @@ class Scorer:
         self.current = current
         self.contest = contest
         self._latest: Graded | None = None
-        self._bests: dict[int, Mapping[str, Fraction]] = {}
+        self._bests: dict[tuple[int, str, Better | None], Mapping[str, Fraction]] = {}
 
     async def latest(self) -> Graded:
         if self._latest is None:
@@ -208,10 +209,11 @@ class Scorer:
         )
 
     async def _best(self, graded: Graded, name: str) -> Mapping[str, Fraction]:
-        if graded.generation in self._bests:
-            return self._bests[graded.generation]
         measure = graded.measures.get(name)
         better = measure.better if measure is not None else None
+        key = (graded.generation, name, better)
+        if key in self._bests:
+            return self._bests[key]
         generations = {each.id: self.current.generation(each) for each in self.current.publications}
         results = [
             row.result
@@ -221,7 +223,7 @@ class Scorer:
             and generations.get(PublicationId(row.publication_id)) == graded.generation
         ]
         found = best_of(results, name, better)
-        self._bests[graded.generation] = found
+        self._bests[key] = found
         return found
 
     async def _candidates(self) -> list[Grading]:
