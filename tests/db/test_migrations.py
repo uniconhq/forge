@@ -43,6 +43,14 @@ TABLES = {
 }
 
 
+@pytest.fixture
+def migrated_database_url(private_migrated_database_url: str) -> str:
+    """These tests move the schema up and down, so each has a database of
+    its own rather than the one the process's other tests share.
+    """
+    return private_migrated_database_url
+
+
 def test_the_schema_has_exactly_the_tables_the_package_owns(migrated_database_url: str) -> None:
     engine = create_engine(migrated_database_url)
     names = set(inspect(engine).get_table_names()) - {"alembic_version"}
