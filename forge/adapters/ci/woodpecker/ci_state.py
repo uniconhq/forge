@@ -1,7 +1,7 @@
 """What the org account holds at Woodpecker, as the platform stores it whole
 and encrypted, and only this implementation reads it: the account's user id
 at the CI, the token its last sign-in minted, when that sign-in was, and
-the account's id at the forge, by which a refresh finds it: anyone may sign
+the account's id at the git host, by which a refresh finds it: anyone may sign
 up under a name that looks like the account's, so the name decides nothing.
 
 It is a stored format. Every org's row holds one, and the migration that

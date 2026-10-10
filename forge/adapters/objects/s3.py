@@ -135,8 +135,8 @@ class S3Objects:
 
 
 class NoStore:
-    """The object store of a Forgejo implementation built without one, as a
-    test of another area builds it: every call is `Misconfigured`.
+    """The object store of a forge joined without one, as a test of another
+    area joins it: every call is `Misconfigured`.
     """
 
     def put_url(self, key: str, *, expires_in: timedelta) -> str:

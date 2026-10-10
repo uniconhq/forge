@@ -6,16 +6,16 @@ the answer to it, and the org account's own user and token at the CI, made
 and deleted by the administrator and signed in by the sign-in dance.
 
 What the org account holds at Woodpecker is its user id, the token its
-sign-in minted, when that was, and the account's id at the forge, by which
+sign-in minted, when that was, and the account's id at the git host, by which
 a refresh finds it (`ci_state.py`). Woodpecker keeps the
-account's login at the forge fresh only while the account calls it, and
-that login lasts as long as the forge's refresh token, which deploy sets to
+account's login at the git host fresh only while the account calls it, and
+that login lasts as long as the git host's refresh token, which deploy sets to
 the session's hard lifetime, `UNICON_SESSION_HARD_TTL`, 30 days unless the
 operator says otherwise; an org that grades nothing for longer would lose
 it. So a sign-in older than `SIGN_IN_SHARE` of that lifetime, 20 days by
 default, needs refreshing: an org that grades every day signs in again
 every 20 days, and one that was quiet for months on its first use. A
-refresh gives the account a fresh password at the forge, signs it in with
+refresh gives the account a fresh password at the git host, signs it in with
 that, and throws the password away.
 
 A run is a manual pipeline on the task's repository, started on `main`,
@@ -202,7 +202,7 @@ class WoodpeckerGrading:
 
     async def set_up_org(self, org: OrgId, account: OrgAccountRef) -> CiState:
         """The account's user at the CI, made by the administrator, then
-        signed in with its password at the forge.
+        signed in with its password at the git host.
         """
         user_id = await self._ci_user(account.username)
         token = await self._login.mint_token(account.username, account.password)
@@ -229,7 +229,7 @@ class WoodpeckerGrading:
         return signed_in_at is None or now - signed_in_at > self._login_lifetime * SIGN_IN_SHARE
 
     async def refresh(self, org: OrgId, state: CiState) -> CiState:
-        """The account found at the forge by the id it was made with, never
+        """The account found at the git host by the id it was made with, never
         by its name, and refused unless it is still the org's account, so a
         fresh password is never set on anyone else's.
         """
@@ -266,7 +266,7 @@ class WoodpeckerGrading:
 
     async def deactivate(self, as_: AsOrgAccount, task: TaskId) -> None:
         """As the org account, which activated the repository: Woodpecker
-        asks the forge to drop its webhook with the credential of whoever
+        asks the git host to drop its webhook with the credential of whoever
         deactivates, and the org account's is the one kept fresh. `remove`
         has the CI forget the repository rather than keep it switched off.
         """
