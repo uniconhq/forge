@@ -23,7 +23,7 @@ from forge.db.tables import Grading
 from forge.domain.content import Edit
 from forge.domain.errors import MarkLimit, MarksFrozen, MarksOff, NotApproved, NotFound
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import TaskId, VersionId
+from forge.domain.ids import TaskId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
@@ -511,13 +511,13 @@ async def test_another_persons_submission_is_not_theirs_to_mark(
         await marks.mark(setup, cyd, ranked.task, 1)
 
 
-async def _write(setup: Setup, acme: Acme, content: str) -> VersionId:
+async def _write(setup: Setup, acme: Acme, content: str) -> files.Written:
     current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
     written = await files.write(
         setup, acme.ada, SPRING, "contest.yaml", content.encode(), current.token
     )
-    assert isinstance(written, str)
-    return VersionId(written)
+    assert isinstance(written, files.Written)
+    return written
 
 
 async def _refused(setup: Setup, acme: Acme, content: str) -> list[tuple[str, str]]:
@@ -608,3 +608,31 @@ async def test_a_tasks_save_reports_each_groups_most_its_reveal_and_the_boards_i
     assert isinstance(pointless, Published), pointless
     assert "Standings counts nothing from sum." in pointless.notes
     assert "Final counts nothing from sum." in pointless.notes
+
+
+async def test_the_contests_save_answers_each_board_that_counts_nothing_from_a_task(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    current = await _task_yaml(acme, entered.task)
+    pointless = current[: current.index(b"test_groups:")] + b"test_groups:\n  main: {}\n"
+    assert isinstance(await _save(setup, acme, entered.task, {"task.yaml": pointless}), Published)
+
+    written = await _write(setup, acme, contest(BOARDS))
+
+    assert written.notes == (
+        "Standings counts nothing from sum.",
+        "Final counts nothing from sum.",
+    )
+    (standings, final) = await boards.organised(setup, acme.ada, SPRING)
+    assert standings.notes + final.notes == written.notes
+
+
+async def test_the_contests_save_with_nothing_to_report_answers_no_notes(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    counting = "leaderboards:\n  - {name: Standings, who: everyone, order: [points, penalty]}\n"
+    written = await _write(setup, acme, contest(counting))
+    plain = await _write(setup, acme, contest())
+
+    assert written.notes == plain.notes == ()
+    assert written.version != plain.version

@@ -825,7 +825,11 @@ them shared (`timelines.hold_rules`), so the checks one save makes against
 the other's file, and against the marks rows hold, read what is there. A
 manager's change to one of its admin-only keys, `name`,
 `description`, `state`, `visibility` and `registration`, is refused as
-`AdminOnly`, naming each; nothing is written either way. A write to a task
+`AdminOnly`, naming each; nothing is written either way. A contest's file
+written answers `Written`, the version and, for `contest.yaml`, each board's
+notes on the tasks it covers, such as one that counts nothing from a task:
+the same notes the organisers' reading carries beside each board, met at the
+save that made them so, as a task's save answers T9's. A write to a task
 is a save of the task, below. A rollback reads the file at the chosen
 version and writes it back as a new change through `write`, so a task's
 rollback is a save too and the history stays whole.
@@ -1696,7 +1700,7 @@ contestant alone, and to anyone else an open task reads closed as
 `not_approved`. A task's save is refused where a board covering it asks what it does
 not give (T8) and reports the boards it moves (T9); a contest's save is
 refused where a board asks what its tasks do not give (C4), or lowers a
-task's `marks` below what a row holds (C1).
+task's `marks` below what a row holds (C1), and answers the notes C4 reports.
 
 ## Errors
 
