@@ -32,18 +32,21 @@ puts it at a real forge, from `CLASSIC`, a copy of that file,
 two agree when the deploy repo is checked out beside this one.
 """
 
+import hashlib
 import json
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import psycopg
 import pytest
 
 from forge.db.migrations import upgrade_to_head
-from forge.db.tables import Contestant, Name
+from forge.db.tables import Contestant, Name, metadata
 from forge.domain.clock import FakeClock
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId
@@ -281,20 +284,180 @@ def _connect(url: str) -> psycopg.Connection[tuple[object, ...]]:
 def database_url() -> Iterator[str]:
     """An empty database of its own, dropped when the test ends."""
     server_url = _server_url()
-    name = f"unicon_test_{uuid.uuid4().hex[:12]}"
-    with _connect(server_url) as connection:
-        connection.execute(f'CREATE DATABASE "{name}"')
+    name = _create(server_url)
     try:
-        yield server_url.rsplit("/", 1)[0] + "/" + name
+        yield _database(server_url, name)
     finally:
-        with _connect(server_url) as connection:
-            connection.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        _drop(server_url, name)
+
+
+@pytest.fixture(scope="session")
+def migrated_template() -> str:
+    """A database at the latest migration that this process's databases are
+    copied from, since copying one takes a fraction of the time migrating
+    one does. It is kept between runs under a name carrying a hash of the
+    migrations, so it is built again only once a migration changes, and
+    the ones a changed migration left behind are dropped. Each process of a
+    parallel run has its own, so none waits on another's.
+    """
+    server_url = _server_url()
+    prefix = f"unicon_template_{_worker()}_"
+    name = prefix + _schema_mark()
+    with _connect(server_url) as connection:
+        # Another run on the same server, with the same process name, may be
+        # building it: the second waits, then finds it built.
+        connection.execute("SELECT pg_advisory_lock(hashtext(%s))", (prefix,))
+        _drop_others(connection, prefix, keep=name)
+        if _exists(connection, name):
+            return name
+        # Built under a name of its own and renamed once migrated, so a run
+        # stopped halfway leaves nothing that looks finished.
+        building = name + "_building"
+        connection.execute(f'DROP DATABASE IF EXISTS "{building}" WITH (FORCE)')
+        connection.execute(f'CREATE DATABASE "{building}"')
+        upgrade_to_head(_database(server_url, building))
+        # A database is renamed or copied only while nothing is connected.
+        _disconnect(connection, building)
+        connection.execute(f'ALTER DATABASE "{building}" RENAME TO "{name}"')
+        connection.execute(f'ALTER DATABASE "{name}" WITH IS_TEMPLATE true')
+    return name
+
+
+@pytest.fixture(scope="session")
+def process_database(migrated_template: str) -> Iterator[ProcessDatabase]:
+    """This process's database at the latest migration, which every test
+    that needs one shares, emptied before the first and after each, and the
+    one connection that empties it, open for the run, since opening one
+    costs more than the emptying does. Like the template it is kept between
+    runs, since dropping a database on Windows waits for a checkpoint.
+    """
+    server_url = _server_url()
+    prefix = f"unicon_shared_{_worker()}_"
+    name = prefix + _schema_mark()
+    with _connect(server_url) as connection:
+        # Held for the run, so another run on the same server never empties
+        # it under this one's tests; that run makes one of its own instead.
+        taken = connection.execute("SELECT pg_try_advisory_lock(hashtext(%s))", (prefix,))
+        if taken.fetchone() != (True,):
+            name = _create(server_url, template=migrated_template)
+            try:
+                with _connect(_database(server_url, name)) as cleaner:
+                    yield ProcessDatabase(_database(server_url, name), cleaner)
+            finally:
+                _drop(server_url, name)
+            return
+        _drop_others(connection, prefix, keep=name)
+        if not _exists(connection, name):
+            connection.execute(f'CREATE DATABASE "{name}" TEMPLATE "{migrated_template}"')
+        with _connect(_database(server_url, name)) as cleaner:
+            shared = ProcessDatabase(_database(server_url, name), cleaner)
+            shared.empty()
+            yield shared
+
+
+@dataclass(frozen=True)
+class ProcessDatabase:
+    url: str
+    cleaner: psycopg.Connection[tuple[object, ...]]
+
+    def empty(self) -> None:
+        """Let go of whatever a test left connected, then delete every row
+        of every table the package owns, those that point at others first.
+        Deleting the few rows a test leaves touches no file, where a
+        truncate makes every table's files again.
+        """
+        self.cleaner.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
+            " WHERE datname = current_database() AND pid <> pg_backend_pid()"
+        )
+        with self.cleaner.transaction():
+            for table in reversed(metadata.sorted_tables):
+                self.cleaner.execute(f'DELETE FROM "{table.name}"')
 
 
 @pytest.fixture
-def migrated_database_url(database_url: str) -> str:
-    upgrade_to_head(database_url)
-    return database_url
+def migrated_database_url(process_database: ProcessDatabase) -> Iterator[str]:
+    """A database at the latest migration with nothing in it, the process's
+    own, emptied again when the test ends. A test that moves the schema
+    takes `private_migrated_database_url` instead.
+    """
+    yield process_database.url
+    process_database.empty()
+
+
+@pytest.fixture
+def private_migrated_database_url(migrated_template: str) -> Iterator[str]:
+    """A database of its own at the latest migration, copied from the
+    template and dropped when the test ends, for a test that moves the
+    schema, which the shared one must never be.
+    """
+    server_url = _server_url()
+    name = _create(server_url, template=migrated_template)
+    try:
+        yield _database(server_url, name)
+    finally:
+        _drop(server_url, name)
+
+
+def _create(server_url: str, *, template: str | None = None) -> str:
+    name = f"unicon_test_{_worker()}_{uuid.uuid4().hex[:8]}"
+    copied = f' TEMPLATE "{template}"' if template is not None else ""
+    with _connect(server_url) as connection:
+        connection.execute(f'CREATE DATABASE "{name}"{copied}')
+    return name
+
+
+def _drop(server_url: str, name: str) -> None:
+    with _connect(server_url) as connection:
+        connection.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+def _disconnect(connection: psycopg.Connection[tuple[object, ...]], name: str) -> None:
+    connection.execute(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
+        " WHERE datname = %s AND pid <> pg_backend_pid()",
+        (name,),
+    )
+
+
+def _worker() -> str:
+    return os.environ.get("PYTEST_XDIST_WORKER", "main")
+
+
+def _schema_mark() -> str:
+    """A short hash of every migration, which names the databases kept
+    between runs.
+    """
+    alembic = Path(upgrade_to_head.__code__.co_filename).parent / "alembic"
+    digest = hashlib.sha256()
+    for path in sorted(alembic.rglob("*.py")):
+        digest.update(path.relative_to(alembic).as_posix().encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+def _exists(connection: psycopg.Connection[tuple[object, ...]], name: str) -> bool:
+    found = connection.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,))
+    return found.fetchone() is not None
+
+
+def _drop_others(
+    connection: psycopg.Connection[tuple[object, ...]], prefix: str, *, keep: str
+) -> None:
+    """Drop the databases under `prefix` but `keep`: ones a changed migration
+    left behind, or a run stopped while building one.
+    """
+    found = connection.execute(
+        "SELECT datname FROM pg_database WHERE starts_with(datname, %s)", (prefix,)
+    )
+    for (name,) in found.fetchall():
+        if name != keep:
+            connection.execute(f'ALTER DATABASE "{name}" WITH IS_TEMPLATE false')
+            connection.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+def _database(server_url: str, name: str) -> str:
+    return server_url.rsplit("/", 1)[0] + "/" + name
 
 
 @pytest.fixture
