@@ -234,6 +234,31 @@ def test_a_left_out_number_takes_its_decimal_default_to_the_digit() -> None:
     assert b'"value": 0.123456789012345678901234567891' in layout.document
 
 
+THIRTY = "0.123456789012345678901234567891"
+"""A bound and a value of 30 significant digits, past what a float holds."""
+
+
+def test_a_number_given_as_its_digits_reaches_submission_json_to_the_digit() -> None:
+    ratio = Field(id="ratio", type=Type.NUMBER, label="ratio", max=Decimal(THIRTY))
+
+    layout = lay_out((ratio,), TESTS, {"ratio": SubmittedInput(value=THIRTY)}, {})
+
+    assert exact_json.loads(layout.document)["inputs"]["ratio"] == {"value": Decimal(THIRTY)}
+    assert f'"value": {THIRTY}'.encode() in layout.document
+
+
+def test_a_number_one_past_a_bound_of_thirty_digits_is_refused() -> None:
+    ratio = Field(id="ratio", type=Type.NUMBER, label="ratio", max=Decimal(THIRTY))
+    past = THIRTY[:-1] + "2"
+
+    with pytest.raises(InvalidInputs) as refused:
+        lay_out((ratio,), TESTS, {"ratio": SubmittedInput(value=past)}, {})
+
+    assert refused.value.extra["errors"] == [
+        {"input": "ratio", "message": f"Must be at most {THIRTY}."}
+    ]
+
+
 def test_a_per_test_input_may_answer_some_tests_only() -> None:
     layout = lay_out(FIELDS, TESTS, {**COMPLETE, "answers": SubmittedInput(uploads=(A2,))}, UPLOADS)
 
@@ -261,13 +286,41 @@ MORE = {
     [
         ({"language": SubmittedInput(value="rust")}, "language", "Choose one of python, cpp."),
         ({"language": SubmittedInput(value="java")}, "language", "Choose one of python, cpp."),
-        ({"alpha": SubmittedInput(value=2)}, "alpha", "Must be at most 1."),
-        ({"alpha": SubmittedInput(value=-0.5)}, "alpha", "Must be at least 0."),
-        ({"alpha": SubmittedInput(value=True)}, "alpha", "Must be a number."),
-        ({"alpha": SubmittedInput(value=float("nan"))}, "alpha", "Must be a number."),
+        ({"alpha": SubmittedInput(value="2")}, "alpha", "Must be at most 1."),
+        ({"alpha": SubmittedInput(value="-0.5")}, "alpha", "Must be at least 0."),
+        (
+            {"alpha": SubmittedInput(value=True)},
+            "alpha",
+            "Must be a number written as plain decimal digits, such as 2.5.",
+        ),
+        (
+            {"alpha": SubmittedInput(value="NaN")},
+            "alpha",
+            "Must be a number written as plain decimal digits, such as 2.5.",
+        ),
+        (
+            {"alpha": SubmittedInput(value="1e3")},
+            "alpha",
+            "Must be a number written as plain decimal digits, such as 2.5.",
+        ),
+        (
+            {"alpha": SubmittedInput(value="0x10")},
+            "alpha",
+            "Must be a number written as plain decimal digits, such as 2.5.",
+        ),
+        (
+            {"alpha": SubmittedInput(value="")},
+            "alpha",
+            "Must be a number written as plain decimal digits, such as 2.5.",
+        ),
+        (
+            {"alpha": SubmittedInput(value=" 0.5")},
+            "alpha",
+            "Must be a number written as plain decimal digits, such as 2.5.",
+        ),
         ({"fast": SubmittedInput(value="yes")}, "fast", "Must be true or false."),
         ({"note": SubmittedInput()}, "note", "This input is required."),
-        ({"note": SubmittedInput(value=7)}, "note", "Must be text."),
+        ({"note": SubmittedInput(value=True)}, "note", "Must be text."),
         ({"note": SubmittedInput(uploads=(W1,))}, "note", "Give this input a value, not files."),
         ({"submission": SubmittedInput(value="print(1)")}, "submission", "needs a file"),
         (
@@ -300,7 +353,7 @@ MORE = {
             "answers",
             "Two files answer the same test.",
         ),
-        ({"ghost": SubmittedInput(value=1)}, "ghost", "The task has no such input."),
+        ({"ghost": SubmittedInput(value="1")}, "ghost", "The task has no such input."),
     ],
     ids=[
         "enum-outside-the-tasks-options",
@@ -309,6 +362,10 @@ MORE = {
         "below-min",
         "boolean-for-number",
         "nan-for-number",
+        "exponent-for-number",
+        "hex-for-number",
+        "empty-for-number",
+        "spaced-number",
         "text-for-boolean",
         "required-text",
         "number-for-text",
@@ -414,7 +471,7 @@ def test_a_folders_files_together_are_within_its_size() -> None:
 
 def test_every_input_that_does_not_fit_is_named_together() -> None:
     errors = refusal(
-        {"alpha": SubmittedInput(value=5), "note": SubmittedInput(), "ghost": SubmittedInput()},
+        {"alpha": SubmittedInput(value="5"), "note": SubmittedInput(), "ghost": SubmittedInput()},
         {},
     )
 

@@ -43,7 +43,7 @@ from forge.runtime.setup import Setup
 from forge.services import publications, submissions, tasks
 from forge.services.access import Organiser
 from forge.services.publications import Draft, Published
-from forge.testing import CLASSIC, PRIMITIVES, FakeClock
+from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES, FakeClock
 from tests.services.conftest import Acme, Entered, organiser, upload, write_contest
 
 RUNNING = """\
@@ -1028,6 +1028,27 @@ async def test_the_confirmation_counts_the_submissions_the_save_regrades_and_no_
     assert asked.value.extra == {"changes": ["plans/plan.json changed"], "regrades": 2}
     assert isinstance(confirmed, Published)
     assert confirmed.regraded == 2
+
+
+async def test_a_save_that_picks_up_a_moved_image_names_it_beside_the_regrade_count(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _graded(setup, acme, entered)
+    repo = acme.fake.state.repos[("unicon", "sandbox-run.primitive")]
+    declaration = acme.fake.state.version_files(repo, "v2")["primitive.yaml"]
+    moved = declaration.replace(PLACEHOLDER_DIGEST.encode(), b"sha256:" + b"7" * 64)
+    assert moved != declaration
+    acme.fake.state.commit(repo, {"primitive.yaml": moved}, "Release 2.0.1", None)
+    repo.versions["v2"] = repo.head
+    statement = {"statement.md": b"Add two numbers, now said more plainly.\n"}
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _save(setup, acme, entered.task, statement)
+
+    assert asked.value.extra == {
+        "changes": ["plans/plan.json changed", "sandbox-run@v2's image moved with a release"],
+        "regrades": 1,
+    }
 
 
 async def test_a_published_grading_change_regrades_every_submission_and_a_scoring_one_none(

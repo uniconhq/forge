@@ -155,23 +155,36 @@ async def organised(
     return tuple(found)
 
 
+@dataclass(frozen=True, slots=True)
+class ContestCheck:
+    """What C4 and C1 found of a save of the contest's settings: each
+    refusal, and, for a save none refuses, what each board reports of its
+    tasks, the notes the organisers' reading carries beside it.
+    """
+
+    problems: list[Problem]
+    notes: list[str]
+
+
 async def check_contest(
     ctx: Context, contest: ContestId, settings: ContestDefinition
-) -> list[Problem]:
+) -> ContestCheck:
     """C4 for a save of the contest's settings, what each board asks of the
     latest publication of every task it covers, each refusal at the
-    board's line; and C1's last rule, a task's marks not lowered below the
-    marks a row holds on it.
+    board's line, and each board's notes; and C1's last rule, a task's marks
+    not lowered below the marks a row holds on it.
     """
     problems = await _held_marks(ctx, contest, settings)
     if not settings.leaderboards:
-        return problems
+        return ContestCheck(problems, [])
     tasks = await _covered_tasks(ctx, contest, settings, settings.leaderboards)
     shapes = {task.name: _covered(task) for task in tasks}
+    notes: list[str] = []
     for index, board in enumerate(settings.leaderboards):
         for breach in _breaches(settings, board, shapes):
             problems.append(Problem(path=_board_path(index, board, breach), message=breach.message))
-    return problems
+        notes += _notes(settings, board, shapes)
+    return ContestCheck(problems, notes)
 
 
 async def _held_marks(

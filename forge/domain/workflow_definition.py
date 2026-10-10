@@ -42,6 +42,10 @@ WORKFLOW_FILE = "workflow.yaml"
 
 VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 VERSION_MAX = 40
+NEW_VERSION = re.compile(r"^v([1-9][0-9]*)$")
+"""The name a version is made under: `v` and a whole number from 1, with no
+leading zero. A tag already at the forge under another name is still read
+by the wider `VERSION`, and is never newer than a numbered one."""
 HANDLE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 REPORT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 RESERVED_NAMES = ("outcome", "points", "penalty")
@@ -77,8 +81,23 @@ def _validate_version(version: str) -> str:
 
 
 def validate_version(version: str) -> str:
-    """`version` when it can name a version; `InvalidName` saying why not."""
-    return _validate_version(version)
+    """`version` when a version may be made under it, `v` and a whole number
+    from 1; `InvalidName` saying why not.
+    """
+    if not NEW_VERSION.match(version) or len(version) > VERSION_MAX:
+        raise InvalidName(
+            f"{version!r} cannot name a version: a version is v and a whole number from 1, "
+            "with no leading zero, such as v1, v2 or v10"
+        )
+    return version
+
+
+def version_number(version: str) -> int | None:
+    """The number of a version named `v` and a whole number, or none for a
+    tag under any other name.
+    """
+    found = NEW_VERSION.match(version)
+    return int(found.group(1)) if found is not None else None
 
 
 def _owner_and_name(text: str) -> tuple[str, str]:
@@ -519,5 +538,6 @@ __all__ = [
     "references",
     "starter_workflow",
     "validate_version",
+    "version_number",
     "whole_reference",
 ]
