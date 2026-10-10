@@ -1158,7 +1158,10 @@ class _Compiler:
         assert isinstance(raw, str)
         whole = whole_reference(raw)
         if whole is None:
-            return self._written(raw, test), _Taint()
+            written = self._written(raw, test)
+            # A contestant's value written into text is theirs as much as one
+            # given whole (TASK-FORMAT.md section 3.5): it is a template part.
+            return written, _Taint(contestant="parts" in written)
         return self._reference(whole, port, test)
 
     def _reference(
