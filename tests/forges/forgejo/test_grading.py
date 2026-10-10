@@ -28,7 +28,9 @@ from forge.forges.forgejo.ci_state import WoodpeckerState, read_state, written
 from tests.forges.forgejo.conftest import Recorder, ok
 
 ACME = AsOrgAccount(
-    "acme", forge_token="forge-acme", ci_state=written(WoodpeckerState(4, "ci-acme", None))
+    "acme",
+    forge_token="forge-acme",
+    ci_state=written(WoodpeckerState(4, "ci-acme", None, account_id=9)),
 )
 GRADING = uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31")
 NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
@@ -198,7 +200,9 @@ def test_a_sign_in_older_than_two_thirds_of_the_login_lifetime_needs_refreshing(
 async def test_a_refresh_signs_the_account_in_with_a_fresh_password_and_keeps_its_user(
     forgejo: ForgejoForge, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    recorder.on("GET", "/api/v1/users/unicon-ci-acme", ok({"id": 9, "login": "unicon-ci-acme"}))
+    """The account is found by the id it was made with, never by its name,
+    which anyone could have taken.
+    """
     recorder.on("GET", "/api/v1/users/search", ok({"data": [{"id": 9, "login": "unicon-ci-acme"}]}))
     recorder.on("PATCH", "/api/v1/admin/users/unicon-ci-acme", ok({}))
     signed_in: list[tuple[str, str]] = []
@@ -213,8 +217,29 @@ async def test_a_refresh_signs_the_account_in_with_a_fresh_password_and_keeps_it
 
     [patched] = recorder.sent("PATCH", "/api/v1/admin/users/unicon-ci-acme")
     assert signed_in == [("unicon-ci-acme", patched["password"])]
-    assert (refreshed.user_id, refreshed.token) == (4, "fresh")
+    assert (refreshed.user_id, refreshed.account_id, refreshed.token) == (4, 9, "fresh")
     assert refreshed.signed_in_at is not None
+    searches = [seen for seen in recorder.seen if seen.url.path == "/api/v1/users/search"]
+    assert searches and all(seen.url.params["uid"] == "9" for seen in searches)
+    assert "GET /api/v1/users/unicon-ci-acme" not in recorder.calls()
+
+
+async def test_a_refresh_sets_no_password_on_an_account_that_is_not_the_orgs(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{"id": 9, "login": "someone-else"}]}))
+
+    with pytest.raises(Rejected):
+        await forgejo.grading.refresh(OrgId("acme"), ACME.ci_state)
+    assert recorder.sent("PATCH", "/api/v1/admin/users/someone-else") == []
+
+
+async def test_a_refresh_of_a_state_that_names_no_account_is_refused(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    with pytest.raises(Rejected):
+        await forgejo.grading.refresh(OrgId("acme"), written(WoodpeckerState(4, "t", None)))
+    assert recorder.calls() == []
 
 
 async def test_a_run_is_started_on_main_as_the_org_account_with_its_variables(

@@ -560,10 +560,10 @@ def _accounts_before_the_state(database_url: str, token: bytes) -> None:
     with engine.begin() as connection:
         connection.execute(
             text(
-                "INSERT INTO org_accounts (id, org_id, username, forge_token, ci_token, "
-                "ci_user_id, event_secret, ci_signed_in_at) VALUES "
-                "(gen_random_uuid(), 'acme', 'unicon-ci-acme', :forge, :ci, 4, :secret, :at), "
-                "(gen_random_uuid(), 'beta', 'unicon-ci-beta', '', '', NULL, :secret, NULL)"
+                "INSERT INTO org_accounts (id, org_id, forge_user_id, username, forge_token, "
+                "ci_token, ci_user_id, event_secret, ci_signed_in_at) VALUES "
+                "(gen_random_uuid(), 'acme', 9, 'unicon-ci-acme', :forge, :ci, 4, :secret, :at), "
+                "(gen_random_uuid(), 'beta', NULL, 'unicon-ci-beta', '', '', NULL, :secret, NULL)"
             ),
             {
                 "forge": _sealed(b"forge-token-acme"),
@@ -601,6 +601,7 @@ def test_the_ci_credentials_move_into_one_state_and_back_with_the_same_token(
         "user_id": 4,
         "token": "ci-token-acme",
         "signed_in_at": SIGNED_IN_AT.isoformat(),
+        "account_id": 9,
     }
     assert moved["beta"]["ci_state"] == b""
     assert {"ci_token", "ci_user_id", "ci_signed_in_at"} & _columns(

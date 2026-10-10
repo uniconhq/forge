@@ -96,9 +96,18 @@ def _signed_in_at(state: CiState) -> datetime | None:
     return datetime.fromisoformat(found) if found else None
 
 
-def _state(user_id: int | None, token: str, signed_in_at: datetime) -> CiState:
+def _state(
+    user_id: int | None, token: str, signed_in_at: datetime, account_id: int | None
+) -> CiState:
     return CiState(
-        json.dumps({"user_id": user_id, "token": token, "signed_in_at": signed_in_at.isoformat()})
+        json.dumps(
+            {
+                "user_id": user_id,
+                "token": token,
+                "signed_in_at": signed_in_at.isoformat(),
+                "account_id": account_id,
+            }
+        )
     )
 
 
@@ -118,7 +127,7 @@ class FakeGrading:
         self._state.check_up()
         user_id = self._state.ci_users.setdefault(account.username, len(self._state.ci_users) + 1)
         token = self._sign_in(account.username, account.password)
-        return _state(user_id, token, self._state.clock.now())
+        return _state(user_id, token, self._state.clock.now(), account.forge_user_id)
 
     async def tear_down_org(self, org: OrgId, state: CiState) -> None:
         self._state.record("tear_down_org", PLATFORM, org=org)
@@ -133,14 +142,20 @@ class FakeGrading:
         return signed_in_at is None or now - signed_in_at > self.login_lifetime * SIGN_IN_SHARE
 
     async def refresh(self, org: OrgId, state: CiState) -> CiState:
-        """A fresh password at the forge, and the sign-in made with it."""
+        """A fresh password at the forge for the account the state names by
+        its id, and the sign-in made with it; refused for an account that is
+        not the org's.
+        """
         self._state.record("refresh", PLATFORM, org=org)
         self._state.check_up()
-        username = service_account_name(org)
+        found = json.loads(state)
+        account = self._state.users.get(found.get("account_id") or 0)
+        if account is None or account.username.lower() != service_account_name(org).lower():
+            raise Rejected(f"the CI state of {org}'s account names no account of the org")
         password = secrets.token_urlsafe(16)
-        self._state.passwords[self._state.user_named(username).id] = password
-        token = self._sign_in(username, password)
-        return _state(json.loads(state)["user_id"], token, self._state.clock.now())
+        self._state.passwords[account.id] = password
+        token = self._sign_in(account.username, password)
+        return _state(found["user_id"], token, self._state.clock.now(), account.id)
 
     def _sign_in(self, username: str, forge_password: str) -> str:
         user = self._state.user_named(username)

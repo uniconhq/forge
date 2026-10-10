@@ -66,7 +66,7 @@ import re
 import secrets
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -202,7 +202,7 @@ class WoodpeckerGrading:
         """
         user_id = await self._ci_user(account.username)
         token = await self._login.mint_token(account.username, account.password)
-        return written(WoodpeckerState(user_id, token, datetime.now(UTC)))
+        return written(WoodpeckerState(user_id, token, datetime.now(UTC), account.forge_user_id))
 
     async def tear_down_org(self, org: OrgId, state: CiState) -> None:
         """Woodpecker deletes a user's own org along with it, and when that
@@ -225,12 +225,20 @@ class WoodpeckerGrading:
         return signed_in_at is None or now - signed_in_at > self._login_lifetime * SIGN_IN_SHARE
 
     async def refresh(self, org: OrgId, state: CiState) -> CiState:
-        username = service_account_name(org)
-        account = await self._users.find_by_username(username)
+        """The account found at the forge by the id it was made with, never
+        by its name, and refused unless it is still the org's account, so a
+        fresh password is never set on anyone else's.
+        """
+        current = read_state(state)
+        if current.account_id is None:
+            raise Rejected(f"the CI state of {org}'s account names no account at the forge")
+        account = await self._users.find(current.account_id)
+        if account.username.lower() != service_account_name(org).lower():
+            raise Rejected(f"the account the CI state of {org} names is not the org's account")
         password = secrets.token_urlsafe(PASSWORD_BYTES)
         await self._users.set_password(account.id, password)
-        token = await self._login.mint_token(username, password)
-        return written(WoodpeckerState(read_state(state).user_id, token, datetime.now(UTC)))
+        token = await self._login.mint_token(account.username, password)
+        return written(replace(current, token=token, signed_in_at=datetime.now(UTC)))
 
     async def activate(self, as_: AsOrgAccount, task: TaskId) -> None:
         ref = parse_task(task)
