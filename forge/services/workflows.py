@@ -63,6 +63,7 @@ from forge.domain.workflow_definition import (
     parse_workflow_ref,
     starter_workflow,
     validate_version,
+    version_number,
 )
 from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
@@ -423,20 +424,29 @@ async def combine(
 
 
 async def newer_version(ctx: Context, as_: Identity, ref: WorkflowRef) -> str | None:
-    """The workflow's latest version in natural order when it comes after
-    the one `ref` names, read as `as_`, or none: when there is no later one,
-    or the workflow cannot be read.
+    """The workflow's version with the largest number when it is larger than
+    the one `ref` names, read as `as_`, or none: when there is no larger
+    one, or the workflow cannot be read. A tag under a name that is not `v`
+    and a number has no number, so it is never newer, and nothing is newer
+    than it.
     """
+    pinned = version_number(ref.version)
+    if pinned is None:
+        return None
     try:
         described = await ctx.forge.workflows.describe_workflow(
             as_, await names.workflow_id(ctx, ref)
         )
     except NotFound, Forbidden:
         return None
-    if not described.versions:
+    numbered = {
+        number: version
+        for version in described.versions
+        if (number := version_number(version)) is not None
+    }
+    if not numbered or max(numbered) <= pinned:
         return None
-    latest = max(described.versions, key=natural)
-    return latest if natural(latest) > natural(ref.version) else None
+    return numbered[max(numbered)]
 
 
 # Building blocks

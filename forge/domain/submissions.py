@@ -45,7 +45,6 @@ from forge.domain.errors import InvalidInputs
 from forge.domain.ids import SubmissionId, VersionId
 from forge.domain.types import FILES, Type
 from forge.domain.uploads import filename_problem
-from forge.domain.yaml_models import is_number
 
 SCHEMA_VERSION = 5
 SUBMISSION_FILE = "submission.json"
@@ -170,14 +169,22 @@ def path_problem(entry: Field, name: str, tests: Collection[str]) -> str | None:
     return None
 
 
+PLAIN_DECIMAL = re.compile(r"^-?[0-9]+(\.[0-9]+)?$")
+"""A number as a contestant gives it: plain decimal digits, as the API serves
+every number, with no exponent, no sign but a leading minus and no space."""
+
+
 @dataclass(frozen=True, slots=True)
 class SubmittedInput:
     """What a contestant gives for one input: the uploads of its files; or,
-    for a text, number, true-or-false or enum input, its value.
+    for a text, number, true-or-false or enum input, its value. A number is
+    given as the text of its plain decimal digits, `2.5`, the form every
+    number is served in, so it is checked and written exactly, never read
+    into a float on the way.
     """
 
     uploads: tuple[uuid.UUID, ...] = ()
-    value: str | int | float | bool | None = None
+    value: str | bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,7 +277,12 @@ def _one(
     if given.uploads:
         return "Give this input a value, not files."
     problem = value_problem(entry, given.value)
-    return problem if problem is not None else {"value": given.value}
+    if problem is not None:
+        return problem
+    if entry.type is Type.NUMBER:
+        assert isinstance(given.value, str)
+        return {"value": Decimal(given.value)}
+    return {"value": given.value}
 
 
 def _files(
@@ -332,12 +344,12 @@ def value_problem(entry: Field, value: object) -> str | None:
             if len(value.encode()) > TEXT_MAX:
                 return f"Must be at most {TEXT_MAX} bytes."
         case Type.NUMBER:
-            if not is_number(value):
-                return "Must be a number."
-            assert isinstance(value, int | Decimal | float)
-            if entry.min is not None and value < entry.min:
+            if not isinstance(value, str) or PLAIN_DECIMAL.match(value) is None:
+                return "Must be a number written as plain decimal digits, such as 2.5."
+            number = Decimal(value)
+            if entry.min is not None and number < entry.min:
                 return f"Must be at least {entry.min}."
-            if entry.max is not None and value > entry.max:
+            if entry.max is not None and number > entry.max:
                 return f"Must be at most {entry.max}."
         case Type.BOOLEAN:
             if not isinstance(value, bool):

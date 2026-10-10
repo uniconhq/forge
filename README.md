@@ -562,7 +562,7 @@ hosting process calls are actions, marked `@action` from
 | `clarifications` | `ask`, `mine`, `follow_up`, `inbox`, `of_contest`, `reply`, `mark`, `unmark`, `answer_publicly` |
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
-| `submissions` | `submit`, `mine`, `one`, `files`, `download` |
+| `submissions` | `submit`, `mine`, `one`, `organised`, `files`, `download` |
 | `boards` | `seen`, `organised` |
 | `marks` | `held`, `mark`, `unmark` |
 | `gradings` | `cancel`, `retry`, `fall_back`, `clear_fallback`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
@@ -737,7 +737,10 @@ may edit it. `view` gives the editor the draft with its token and the
 people it is shared with; anyone else gets the workflow without them. A
 `save` writes whatever it is given, problems and all, up to 256 KB, since a
 draft may stop half done; `Conflict` when the file moved since it was read.
-`create_version` reads the draft, runs every check a version must pass
+`create_version` takes a name that is `v` and a whole number from 1 with
+no leading zero (`v1`, `v2`, `v10`) and refuses any other as `InvalidName`;
+a tag already at the forge under another name is still read. It reads the
+draft, runs every check a version must pass
 (`check_workflow`, with each `use:` read as the person: one that cannot be
 read, or names a workflow, is a problem at its own `steps[n].use`), and
 tags the commit it read only when there is none, so a version is never of
@@ -825,7 +828,11 @@ them shared (`timelines.hold_rules`), so the checks one save makes against
 the other's file, and against the marks rows hold, read what is there. A
 manager's change to one of its admin-only keys, `name`,
 `description`, `state`, `visibility` and `registration`, is refused as
-`AdminOnly`, naming each; nothing is written either way. A write to a task
+`AdminOnly`, naming each; nothing is written either way. A contest's file
+written answers `Written`, the version and, for `contest.yaml`, each board's
+notes on the tasks it covers, such as one that counts nothing from a task:
+the same notes the organisers' reading carries beside each board, met at the
+save that made them so, as a task's save answers T9's. A write to a task
 is a save of the task, below. A rollback reads the file at the chosen
 version and writes it back as a new change through `write`, so a task's
 rollback is a save too and the history stays whole.
@@ -873,7 +880,10 @@ takes each path with its new content and the token it was read with, as an
    froze.
 3. What the save changes about how the task grades is worked out against
    the latest publication: its plan and the digests of the task's files the
-   plan names. Groups, rule weights, `show`, `credit` and `submissions` are
+   plan names. A changed plan in which a primitive version runs on another
+   image than before, because a release moved that version's image in
+   place, also names it: `sandbox-run@v2's image moved with a release`, so a
+   save that changed only the statement says why it asks. Groups, rule weights, `show`, `credit` and `submissions` are
    read on every read and change nothing that grades. Once the contest has
    started, until it is archived, a save that changes how the task grades is
    refused with `ConfirmationRequired`, listing the changes and how many
@@ -937,8 +947,10 @@ form can still be opened to mend them. Either way `graded` says whether the
 task has a graded submission, a grading of it `done`, the condition T7 and
 T10 hold from: from then on a save refuses a test group it adds without its
 `show`, so the form asks for one there instead of offering a default.
-`newer` is the workflow's latest version, in natural order, when it comes
-after the one the task names, so the task page can say a newer one exists;
+`newer` is the workflow's version with the largest number when it is larger
+than the one the task names, so the task page can say a newer one exists; a
+tag under any other name has no number, so it is never newer and nothing is
+newer than it;
 the task keeps grading with the one it names until it is saved naming
 another.
 
@@ -1339,7 +1351,11 @@ cancelled; the task's rate holds
 window; every upload named is theirs for this task (`upload_not_yours`), a
 checked file no submission used (`upload_not_ready`), and each and all of
 them within the sizes allowed (`too_large`); and what is given fits the
-task's contestant inputs (`invalid_inputs`, each problem at its input). The
+task's contestant inputs (`invalid_inputs`, each problem at its input). A
+number input's value is given as the text of its plain decimal digits
+(`2.5`; not `1e3`, `0x10`, `NaN` or a JSON number), checked against the
+input's bounds exactly and written into `submission.json` as those digits,
+and `files` reads them back exactly. The
 forge is asked once more that the place still holds each upload's object,
 so a commit never points at bytes that are not there (`upload_not_ready`).
 A file upload made the contestant's place to submit the task already; a
@@ -1405,6 +1421,19 @@ the inputs one was made with, as its `submission.json` names them, and
 forge. A run's log
 names every test, the hidden ones too, so it is the organisers'
 (`gradings.run_log`). Anyone else's submission is no such submission.
+
+`organised` gives organisers who observe the task one submission of any
+row, picked as the boards pick one (a contestant's `UserOwner` or a team's
+`TeamOwner`) and its number, as its row reads it with everything filled in
+(TASK-FORMAT.md section 1.7): the same attempt, the same publication and
+the same scoring, shown as once the task has revealed, so a hidden group's
+outcome, tests and points and every sealed value are there, the points all
+shown and none pending; each group's `shown_at` is kept from the row's own
+view now, null once the row sees the group's tests, so it says when the row
+sees what it does not yet; and `status` is the grading's own
+(`GradingStatus`). A row with no such submission is `NotFound`, and an
+organiser who does not observe the task is `Forbidden`, as for its
+gradings.
 
 ## Grading
 
@@ -1696,7 +1725,7 @@ contestant alone, and to anyone else an open task reads closed as
 `not_approved`. A task's save is refused where a board covering it asks what it does
 not give (T8) and reports the boards it moves (T9); a contest's save is
 refused where a board asks what its tasks do not give (C4), or lowers a
-task's `marks` below what a row holds (C1).
+task's `marks` below what a row holds (C1), and answers the notes C4 reports.
 
 ## Errors
 

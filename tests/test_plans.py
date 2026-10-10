@@ -1605,6 +1605,40 @@ def test_a_plan_whose_numbers_are_only_spelled_otherwise_changes_nothing() -> No
     )
 
 
+def _plan(**images: str) -> bytes:
+    """A plan whose steps run these primitive versions, each on its image,
+    the run step twice as a per-test step is.
+    """
+    steps = [
+        {"id": ref.split("/")[1].split("@")[0], "primitive": ref, "image": image}
+        for ref, image in images.items()
+    ]
+    steps += [step for step in steps if step["id"] == "sandbox-run"]
+    return exact_json.dumps({"steps": steps}, sort_keys=True).encode()
+
+
+OLD_RUN = "ghcr.io/uniconhq/primitive-sandbox-run@sha256:" + "1" * 64
+NEW_RUN = "ghcr.io/uniconhq/primitive-sandbox-run@sha256:" + "2" * 64
+COMPILE = "ghcr.io/uniconhq/primitive-compile@sha256:" + "3" * 64
+
+
+def test_a_plan_differing_only_in_a_steps_image_names_the_primitive_version_moved() -> None:
+    before = snapshot(_plan(**{"unicon/compile@v2": COMPILE, "unicon/sandbox-run@v2": OLD_RUN}))
+    after = snapshot(_plan(**{"unicon/compile@v2": COMPILE, "unicon/sandbox-run@v2": NEW_RUN}))
+
+    assert grading_changes(before, after) == (
+        "plans/plan.json changed",
+        "sandbox-run@v2's image moved with a release",
+    )
+
+
+def test_a_step_moved_to_another_version_is_no_moved_image() -> None:
+    before = snapshot(_plan(**{"unicon/sandbox-run@v1": OLD_RUN}))
+    after = snapshot(_plan(**{"unicon/sandbox-run@v2": NEW_RUN}))
+
+    assert grading_changes(before, after) == ("plans/plan.json changed",)
+
+
 def test_a_data_file_added_removed_or_changed_is_named() -> None:
     before = snapshot(tests__main__1__input="a", tests__main__1__answer="b")
     after = snapshot(tests__main__1__input="c", tests__main__2__input="d")
