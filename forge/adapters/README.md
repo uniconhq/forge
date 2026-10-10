@@ -23,8 +23,9 @@ the platform names every repository itself; `http.py` is the retrying client
 the adapters that speak HTTP share, and `browser.py` the browser a CI's
 sign-in walks with.
 
-The groups never import each other, and none imports `services` or `db`; the
-import-linter contracts in `pyproject.toml` fail the build otherwise. A CI
+The groups never import each other, none imports `services` or `db`, and the
+shared modules import no group; the import-linter contracts in
+`pyproject.toml` fail the build otherwise. A CI
 reaches the git host only through `CiHost`, so any git host can be paired
 with any CI that needs no more than it.
 
@@ -70,7 +71,7 @@ the git host's adapter answers it:
 | `repo_id(owner, repo)` | activating a task's repository at the CI | the repository's id |
 | `remove_hooks(owner, repo, url_prefix)` | deleting the webhooks the CI left on a repository | the hooks API |
 | `default_branch` | the branch a run starts on | `main` |
-| `web_sign_in` (`web_address`, `sign_in`, `approve_consent`) | a CI that admits only people who signed in through the git host | the sign-in form and the consent form |
+| `WebSignIn`: `web_address`, `sign_in`, `approve_consent` | a CI that admits only people who signed in through the git host | the sign-in form and the consent form |
 
 The sign-in part differs for every git host, since each has its own pages:
 a GitLab adapter would write its own once, and every CI that signs people in

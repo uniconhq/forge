@@ -153,6 +153,13 @@ async def test_a_task_is_activated_once_as_the_org_account(
     ]
     assert "DELETE /api/v1/repos/acme/spring.sum.task/hooks/1" in recorder.calls()
     assert "DELETE /api/v1/repos/acme/spring.sum.task/hooks/2" not in recorder.calls()
+    # Everything asked of the git host went to Forgejo as the platform, and
+    # everything else to Woodpecker.
+    for seen in recorder.seen:
+        at_forge = seen.url.path.startswith("/api/v1/")
+        assert seen.url.host == ("forge.internal" if at_forge else "ci.internal")
+        if at_forge:
+            assert seen.headers["Authorization"] == "token admin"
 
 
 async def test_a_task_is_deactivated_and_forgotten_as_the_org_account(
@@ -230,6 +237,9 @@ async def test_a_refresh_signs_the_account_in_with_a_fresh_password_and_keeps_it
     searches = [seen for seen in recorder.seen if seen.url.path == "/api/v1/users/search"]
     assert searches and all(seen.url.params["uid"] == "9" for seen in searches)
     assert "GET /api/v1/users/unicon-ci-acme" not in recorder.calls()
+    assert {(seen.url.host, seen.headers["Authorization"]) for seen in recorder.seen} == {
+        ("forge.internal", "token admin")
+    }
 
 
 async def test_a_refresh_sets_no_password_on_an_account_that_is_not_the_orgs(

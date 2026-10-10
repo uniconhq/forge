@@ -1787,15 +1787,17 @@ forge, signs in with it and throws it away.
 
 ## Layer rules
 
-Six import-linter contracts in `pyproject.toml`, run by `lint-imports` in
+Seven import-linter contracts in `pyproject.toml`, run by `lint-imports` in
 CI, so a cross-layer import fails the build:
 
 - `domain`, `services` and `db` never import anything under `adapters`.
 - Only `runtime` and `testing` import `adapters` themselves; `api` reaches an
   adapter through `runtime`.
 - `adapters.git`, `adapters.ci`, `adapters.objects` and `adapters.mail` never
-  import each other, so a CI reaches the git host only through `CiHost`, and
-  only `adapters/__init__.py` and `adapters/fakes.py` join them.
+  import each other, so a CI reaches the git host only through `CiHost`.
+- The shared adapter modules (`browser`, `cached`, `fake_world`, `http`,
+  `ids`) import no group, so only `adapters/__init__.py` and
+  `adapters/fakes.py` join them.
 - No adapter imports `services` or `db`.
 - The fakes never import `services`, `db` or `runtime`.
 - `domain` imports nothing else in the package, `port` included.
@@ -1855,8 +1857,8 @@ collide with `n` others for its number, and `fake.lose_submission_answer`
 names it and then fails as if the answer were lost. The fake CI signs the
 question it asks the extension with a key of its own:
 `fake.grading.config_request(task, variables, now=)` is that question;
-`fake.state.refuse_starts = n` answers the next `n` starts without a run,
-and `fake.state.lose_start_answer` starts the next run and fails as if its
+`fake.ci.refuse_starts = n` answers the next `n` starts without a run,
+and `fake.ci.lose_start_answer` starts the next run and fails as if its
 answer were lost. The fake refuses a user id
 it already has, since the accounts the package makes take the next free ids.
 

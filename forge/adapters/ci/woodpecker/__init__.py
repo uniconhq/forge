@@ -1,8 +1,9 @@
 """The CI's areas over Woodpecker: grading runs and the machines' enrolment.
 The git host is reached only through the `CiHost` it is paired with, and
 Woodpecker itself through its API, as its administrator or as an org
-account. May import `forge.port`, `forge.domain` and `adapters.ci.host`,
-never `adapters.git`, `forge.services` or `forge.db`.
+account. May import `forge.port`, `forge.domain`, `adapters.ci.host` and
+the shared `adapters` modules, never `adapters.git`, `forge.services` or
+`forge.db`.
 """
 
 from dataclasses import dataclass

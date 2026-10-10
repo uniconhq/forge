@@ -78,6 +78,9 @@ class State:
     """The whole forge, shared by every area of the fake."""
 
     def __init__(self, clock: Clock | None = None, *, world: FakeWorld | None = None) -> None:
+        """In `world`, or a world of its own on `clock`."""
+        if world is not None and clock is not None:
+            raise ValueError("a state in a given world keeps the world's clock")
         self.world = world or FakeWorld(clock)
         self.users: dict[int, User] = {}
         self.orgs: dict[str, Org] = {}

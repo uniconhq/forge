@@ -51,7 +51,6 @@ __all__ = [
 ]
 
 
-@runtime_checkable
 class GitHost(Protocol):
     """The git host's areas: the people, the orgs and their roles, the
     contests, tasks, workspaces and workflows and what is in them, and the
@@ -92,7 +91,6 @@ class GitHost(Protocol):
         ...
 
 
-@runtime_checkable
 class Ci(Protocol):
     """The CI's areas: the grading runs and the machines that run them."""
 

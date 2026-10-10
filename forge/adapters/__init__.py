@@ -110,7 +110,7 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
                 git.ci_host,
             )
         case _:
-            raise Misconfigured(f"UNICON_CI={settings.ci} names no CI this platform grades with")
+            raise Misconfigured(f"UNICON_CI={settings.ci} names no CI this forge grades with")
     return JoinedForge(
         git=git,
         ci=ci,

@@ -225,8 +225,8 @@ class Settings(BaseSettings):
     """The package's configuration. `forge` picks the implementation behind
     the port, and `ci` the CI it grades with, `woodpecker` the one there is.
     `forgejo`, the settings of the Forgejo adapter, and `woodpecker`, the
-    Woodpecker adapter's, are each required when it is chosen and none
-    otherwise; the fake forge grades with the fake CI. `forge_public_url` is
+    Woodpecker adapter's, are both required with `UNICON_FORGE=forgejo` and
+    none otherwise; the fake forge grades with the fake CI. `forge_public_url` is
     where browsers reach the forge, for either implementation. `internal_url`
     is where the forge reaches the platform inside the deployment, the public
     URL unless given: the org event push points there. `machine_url` is
@@ -344,10 +344,10 @@ class Settings(BaseSettings):
             images = {name: image for name, image in FAKE_IMAGES.items() if data.get(name) is None}
             return {**data, **images, "forgejo": None, "woodpecker": None}
         given = data.get("forgejo")
-        if isinstance(given, ForgejoSettings):
-            return data
-        values = dict(given or {})
         ci = data.get("woodpecker")
+        if isinstance(given, ForgejoSettings) and isinstance(ci, WoodpeckerSettings):
+            return data
+        values = given.model_dump() if isinstance(given, ForgejoSettings) else dict(given or {})
         ci_values = ci if isinstance(ci, WoodpeckerSettings) else dict(ci or {})
         missing = [] if data.get("forge_public_url") is not None else [FORGE_PUBLIC_URL]
         missing += [

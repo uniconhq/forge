@@ -18,7 +18,6 @@ from forge.adapters.git.fake.threads import FakeThreads
 from forge.adapters.git.fake.uploads import FakeUploads
 from forge.adapters.git.fake.workflows import FakePrimitives, FakeWorkflows
 from forge.adapters.git.fake.workspaces import FakeWorkspaces
-from forge.domain.clock import Clock
 from forge.domain.identity import Credential, User
 
 __all__ = ["Call", "FakeGitHost", "State"]
@@ -30,10 +29,9 @@ class FakeGitHost:
         *,
         public_url: str = "http://forge.test",
         sign_in_redirect_uri: str = "http://app.test/api/v1/auth/callback",
-        clock: Clock | None = None,
         world: FakeWorld | None = None,
     ) -> None:
-        self.state = State(clock, world=world)
+        self.state = State(world=world)
         self.identity = FakeIdentity(
             self.state, public_url=public_url, redirect_uri=sign_in_redirect_uri
         )
