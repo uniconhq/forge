@@ -269,15 +269,16 @@ class Repos:
         self, as_: Identity, owner: str, name: str, path: str, *, at: str | None = None
     ) -> File:
         params = {"ref": at} if at else {}
-        entry = json_of(
+        entry: object = (
             await self._http.call(
                 as_,
                 "GET",
                 f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents/{file_path(path)}",
                 params=params,
             )
-        )
-        if entry.get("type") != "file":
+        ).json()
+        # A folder answers a list of its entries, which is no file.
+        if not isinstance(entry, dict) or entry.get("type") != "file":
             raise NotFound(f"{path} is not a file")
         return File(
             path=path,
@@ -356,13 +357,16 @@ class Repos:
     async def tree(
         self, as_: Identity, owner: str, name: str, path: str = ""
     ) -> tuple[TreeEntry, ...]:
-        entries = list_of(
+        entries: object = (
             await self._http.call(
                 as_,
                 "GET",
                 f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents/{file_path(path)}",
             )
-        )
+        ).json()
+        # A file answers one entry of its own, which is no folder.
+        if not isinstance(entries, list):
+            raise NotFound(f"{path} is not a folder")
         return tuple(
             TreeEntry(
                 path=str(entry["path"]),

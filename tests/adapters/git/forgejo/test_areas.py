@@ -1475,3 +1475,18 @@ async def test_a_search_answering_another_user_is_no_user(
 
     with pytest.raises(NotFound):
         await forgejo.identity.find_user(8)
+
+
+async def test_reading_a_folder_as_a_file_or_a_file_as_a_folder_is_not_found(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    """Forgejo's contents answer a list for a folder and one entry for a
+    file, so either asked as the other is not there, as the fake says."""
+    contents = "/api/v1/repos/acme/spring.contest/contents"
+    recorder.on("GET", f"{contents}/public", ok([{"type": "file", "path": "public/a", "size": 1}]))
+    recorder.on("GET", f"{contents}/contest.yaml", ok({"type": "file", "path": "contest.yaml"}))
+
+    with pytest.raises(NotFound):
+        await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "public")
+    with pytest.raises(NotFound):
+        await forgejo.content.list_tree(PLATFORM, ContestId("acme/spring"), "contest.yaml")
