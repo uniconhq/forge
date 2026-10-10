@@ -23,7 +23,7 @@ is on; with it off the operator creates an org from the command line with
 from forge.domain.errors import Conflict, Forbidden, NotFound, PortError
 from forge.domain.identity import CiState
 from forge.domain.ids import OrgId
-from forge.domain.names import Named, OrgProfile, validate_org_name
+from forge.domain.names import Named, OrgProfile, service_account_name, validate_org_name
 from forge.domain.roles import Role, Scope, holds
 from forge.domain.sessions import Session
 from forge.log import get_logger
@@ -117,7 +117,11 @@ async def _steps(
     )
     await org_accounts.join_org(ctx, org)
     await org_accounts.mint_forge_token(ctx, org, password)
-    made.add("ci", org, lambda: ctx.forge.grading.tear_down_org(org, CiState("")))
+    made.add(
+        "ci_user",
+        service_account_name(org),
+        lambda: ctx.forge.grading.tear_down_org(org, CiState("")),
+    )
     await org_accounts.set_up_at_ci(ctx, org, password)
 
 

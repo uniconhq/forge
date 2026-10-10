@@ -33,6 +33,7 @@ def read_state(state: CiState) -> WoodpeckerState:
         found = json.loads(state)
         user_id, token, signed_in_at = found["user_id"], found["token"], found["signed_in_at"]
         account_id = found.get("account_id")
+        when = datetime.fromisoformat(signed_in_at) if signed_in_at is not None else None
     except ValueError, TypeError, KeyError, AttributeError:
         raise Rejected("the org account's CI state is not Woodpecker's") from None
     numbers = (user_id, account_id)
@@ -40,12 +41,7 @@ def read_state(state: CiState) -> WoodpeckerState:
         number is not None and not isinstance(number, int) for number in numbers
     ):
         raise Rejected("the org account's CI state is not Woodpecker's")
-    return WoodpeckerState(
-        user_id=user_id,
-        token=token,
-        signed_in_at=datetime.fromisoformat(signed_in_at) if signed_in_at else None,
-        account_id=account_id,
-    )
+    return WoodpeckerState(user_id=user_id, token=token, signed_in_at=when, account_id=account_id)
 
 
 def written(state: WoodpeckerState) -> CiState:

@@ -8,7 +8,8 @@ each a new row with a new id and so new secrets, and the old rows stay as
 they were, so what was graded when stays readable. Each row is inserted
 `queued` with the SHA-256 of its run's callback token, and its run is
 started as soon as the unit of work that made it commits (`start`), since
-the CI asks the platform about the grading while the start is under way. A
+a CI that asks may ask the platform about the grading while the start is
+under way. A
 start the CI refuses, or does not answer, ends the grading in
 `system_error` saying why: whoever reads it sees that at once and tries
 again, a contestant by submitting, an organiser with `retry`.
@@ -335,9 +336,9 @@ async def start(ctx: Context, grading: uuid.UUID) -> None:
     machine. A start that fails ends the grading in `system_error`, saying
     why in the platform's words; what the CI said goes to the log.
 
-    The call to the CI holds neither a connection nor a lock, since the CI
-    asks the platform about the grading while the start is under way, and a
-    rush of starts must leave it a connection to answer on. So what the
+    The call to the CI holds neither a connection nor a lock, since a CI
+    that asks may ask the platform about the grading while the start is
+    under way, and a rush of starts must leave it a connection to answer on. So what the
     start needs is read and that much committed, the run is started, and
     only then is the row taken and the run recorded, or the run cancelled
     when the grading moved on meanwhile. The work after a commit owns its
@@ -378,7 +379,9 @@ async def start(ctx: Context, grading: uuid.UUID) -> None:
         await _not_started(ctx, grading, exc, NO_RUN)
         return
     except PortError as exc:
-        await _not_started(ctx, grading, exc, NO_ANSWER)
+        # Likewise a plan the forge could not hand over, which the CI
+        # answered with no run.
+        await _not_started(ctx, grading, exc, NO_RUN)
         return
     await ctx.db.commit()
     try:

@@ -35,9 +35,9 @@ workflow, `grading`, the same every time for the same run:
 - `when` the run is started by hand, which every grading run is;
 - `labels` from `UNICON_COMPUTE`, `pool:platform` becoming `pool: platform`;
 - under `clone:`, two full steps, `task` and `submission`, each running the
-  clone image with `remote`, `sha`, `ref` and `path` set, `lfs` on for the
-  task alone, and the machine's store of large files of the task's org
-  mounted as `unicon-lfs-<org>:/lfs-cache`, one store per org, so no org's
+  clone image with `remote`, `sha`, `ref` and `path` set, `lfs` on, and the
+  machine's store of large files of the task's org mounted as
+  `unicon-lfs-<org>:/lfs-cache`, one store per org, so no org's
   task is served a large file another org's task brought to the machine by
   naming its object id. Neither carries `environment`: a clone step
   with one stops counting as a clone plugin and is lent no credential. The

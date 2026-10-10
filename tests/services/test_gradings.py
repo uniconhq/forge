@@ -264,7 +264,7 @@ async def test_a_run_is_started_with_what_its_plan_runs(
         (NotFound("no plans/plan.json"), gradings.NO_RUN),
         (Forbidden("not the platform's to read"), gradings.NO_RUN),
         ("not a plan", gradings.NO_RUN),
-        (Unavailable("down"), gradings.NO_ANSWER),
+        (Unavailable("down"), gradings.NO_RUN),
     ],
 )
 async def test_a_run_whose_plan_cannot_be_read_is_not_started(
@@ -276,9 +276,9 @@ async def test_a_run_whose_plan_cannot_be_read_is_not_started(
     trouble: Exception | str,
     reason: str,
 ) -> None:
-    """Ended as the CI's refusal ended it when the CI asked for the plan
-    while starting the run: a system error saying the CI started none, or
-    did not answer when the forge did not.
+    """Ended as it was when the CI asked for the plan while starting the run,
+    and the platform's refusal or its 503 made the CI answer the start with
+    no run: a system error saying the CI started none.
     """
     read_file = acme.fake.content.read_file
 
@@ -540,6 +540,63 @@ async def test_the_extension_refuses_a_grading_whose_run_was_started_already(
         await runs.config(
             setup, acme.fake.grading.config_request(entered.task, variables, now=clock.now())
         )
+
+
+async def test_the_extension_answers_503_when_the_forge_does_not_answer_its_lookup(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    clock: FakeClock,
+    unstarted: Start,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The forge's own outage while the request is looked up is not the CI's
+    trouble nor a refusal: the CI is told to ask again.
+    """
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+
+    async def down(*args: Any, **kwargs: Any) -> Any:
+        raise Unavailable("the forge went away")
+
+    monkeypatch.setattr(gradings, "run_of", down)
+    caplog.set_level(logging.INFO)
+    with pytest.raises(Unavailable, match="The forge did not answer"):
+        await runs.config(
+            setup, acme.fake.grading.config_request(entered.task, variables, now=clock.now())
+        )
+    [warned] = logged(caplog, "runs.forge_unavailable")
+    assert warned["grading"] == str(row.id)
+    assert (await _row(setup, row.id)).status == GradingStatus.QUEUED
+
+
+@pytest.mark.parametrize("trouble", [NotFound("gone"), Forbidden("hidden")])
+async def test_the_extension_refuses_a_grading_whose_plan_cannot_be_read(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    clock: FakeClock,
+    unstarted: Start,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    trouble: Exception,
+) -> None:
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+
+    async def unreadable(*args: Any, **kwargs: Any) -> Any:
+        raise trouble
+
+    monkeypatch.setattr(gradings, "plan_of", unreadable)
+    caplog.set_level(logging.INFO)
+    with pytest.raises(CiRequestRefused) as refused:
+        await runs.config(
+            setup, acme.fake.grading.config_request(entered.task, variables, now=clock.now())
+        )
+    assert refused.value.detail == runs.REFUSED
+    [warned] = logged(caplog, "runs.plan_unreadable")
+    assert warned["grading"] == str(row.id)
 
 
 async def test_the_envelope_is_the_runs_served_once_and_its_fetch_starts_the_clock(

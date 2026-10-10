@@ -667,6 +667,35 @@ async def test_an_orgs_ci_token_still_works_after_the_state_is_made(
     assert fake.calls_to("refresh") == []
 
 
+async def test_an_orgs_state_made_by_the_migration_is_refreshed_once_stale(
+    migrated_database_url: str,
+    setup: Setup,
+    fake: FakeForge,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The state the migration made names the account by its forge id, so
+    once it is stale the org signs in again as that account.
+    """
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", TEST_KEY)
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0016")
+    _accounts_before_the_state(migrated_database_url, b"ci-token-acme")
+    command.upgrade(config, "head")
+    fake.add_user(9, "unicon-ci-acme")
+    fake.state.ci_users["unicon-ci-acme"] = 4
+    clock.set(SIGNED_IN_AT + timedelta(days=21))
+
+    async with setup.unit_of_work() as ctx:
+        account = await org_accounts.identity(ctx, OrgId("acme"))
+
+    state = read_state(account.ci_state)
+    assert (state.user_id, state.account_id) == (4, 9)
+    assert state.token not in ("", "ci-token-acme")
+    assert state.signed_in_at == clock.now()
+    assert len(fake.calls_to("refresh")) == 1
+
+
 OTHER_KEY = base64.urlsafe_b64encode(b"\x01" * 32).decode().rstrip("=")
 
 

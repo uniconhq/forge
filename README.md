@@ -1441,7 +1441,7 @@ grading's run with. The answer, `{"configs": [{"name": "grading", "data":
 `UNICON_COMPUTE`; under `clone:` two full steps, `task` and `submission`,
 each running `UNICON_CLONE_IMAGE` with `remote`, `sha`, `ref` (the
 `published/<n>` or `submission/<n>` tag) and `path` (`/woodpecker/task`,
-`/woodpecker/submission`) set, `lfs` on for the task alone, the machine's
+`/woodpecker/submission`) set, `lfs` on for both, the machine's
 store of large files for the task's org as `unicon-lfs-<org>:/lfs-cache`, one
 per org, so no org's task is served a large file another org's task brought
 to the machine by naming its object id, and no `environment`, since a clone
@@ -1702,8 +1702,9 @@ one row per org, by the org's id, its service account's
 forge credential, its `ci_state` and its event secret each as AES-256-GCM
 ciphertext under `UNICON_TOKEN_ENCRYPTION_KEY`, the way a session's
 credential is, so a copy of the table hands out no access;
-`services/credentials.py` is the one place either is sealed or opened.
-Revision `0017` moved the three columns Woodpecker's sign-in filled into
+`services/credentials.py` is the one place either is sealed or opened,
+but for revision `0017`, which keeps a frozen copy of the sealing so it
+reads the same whatever the package does later. Revision `0017` moved the three columns Woodpecker's sign-in filled into
 `ci_state`, which reads `UNICON_TOKEN_ENCRYPTION_KEY` whenever there is a
 token to move and stops before changing anything without it.
 A `contestants` row is one person's registration for one contest, and

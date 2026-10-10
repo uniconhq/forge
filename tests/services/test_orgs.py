@@ -291,6 +291,30 @@ async def test_a_removal_that_fails_is_logged_and_the_steps_own_error_is_raised(
     await _nothing_recorded(setup, "acme")
 
 
+async def test_a_ci_set_up_that_cannot_be_undone_is_logged_by_the_accounts_name(
+    setup: Setup,
+    fake: FakeForge,
+    ada: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+
+    def refused(*args: Any, **kwargs: Any) -> Any:
+        raise Rejected("the CI said no")
+
+    async def down(*args: Any, **kwargs: Any) -> Any:
+        raise Unavailable("the CI went away")
+
+    monkeypatch.setattr(fake.grading, "_sign_in", refused)
+    monkeypatch.setattr(fake.grading, "tear_down_org", down)
+    with pytest.raises(Rejected):
+        await orgs.create(setup, ada, ACME, description="Acme")
+
+    (left,) = logged(caplog, "orgs.undo_left")
+    assert (left["kind"], left["key"]) == ("ci_user", "unicon-ci-acme")
+
+
 async def test_a_commit_that_fails_after_every_step_removes_what_they_made(
     setup: Setup, fake: FakeForge, ada: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

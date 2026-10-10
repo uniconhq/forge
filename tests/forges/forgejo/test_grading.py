@@ -622,3 +622,21 @@ async def test_the_queue_is_read_at_most_once_in_ten_seconds(
 
     assert (first, kept, fresh) == (RunState.QUEUED, RunState.QUEUED, RunState.TAKEN)
     assert recorder.calls() == ["GET /api/queue/info", "GET /api/queue/info"]
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "",
+        "[]",
+        '{"user_id": 4, "token": "t"}',
+        '{"user_id": "4", "token": "t", "signed_in_at": null}',
+        '{"user_id": 4, "token": 7, "signed_in_at": null}',
+        '{"user_id": 4, "token": "t", "signed_in_at": "yesterday"}',
+        '{"user_id": 4, "token": "t", "signed_in_at": 7}',
+        '{"user_id": 4, "token": "t", "signed_in_at": null, "account_id": "9"}',
+    ],
+)
+def test_a_state_this_implementation_did_not_write_is_rejected(state: str) -> None:
+    with pytest.raises(Rejected, match="not Woodpecker's"):
+        read_state(CiState(state))
