@@ -108,25 +108,29 @@ async def history(
     named whether or not they still hold a role at the place, since a
     history that cannot name its authors is no true record; only those who
     may read the history read the names in it, and no other route names a
-    user by id.
+    user by id. The forge names most authors itself, as the history comes;
+    one it gives an id for and no name is looked up once.
     """
     require(organiser, scope_of_place(place), Role.OBSERVER)
     changes = await ctx.forge.content.history(
         organiser.identity, place, check_path(path) if path is not None else None
     )
+    unnamed = dict.fromkeys(
+        change.author_id
+        for change in changes
+        if change.author_id is not None and change.author is None
+    )
+    if not unnamed:
+        return changes
     await ctx.let_go()
     names: dict[int, str | None] = {}
-    for author in dict.fromkeys(change.author_id for change in changes):
-        if author is None:
-            continue
+    for author in unnamed:
         try:
             names[author] = (await ctx.forge.identity.find_user(author)).username
         except PortError:
             names[author] = None
     return tuple(
-        replace(change, author=names.get(change.author_id))
-        if change.author_id is not None
-        else change
+        replace(change, author=names[change.author_id]) if change.author_id in names else change
         for change in changes
     )
 

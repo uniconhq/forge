@@ -55,11 +55,16 @@ async def test_the_history_names_an_author_who_no_longer_holds_a_role(
     changed = before.content.replace(b"end: 2026-10-03T17:00:00Z", b"end: 2026-10-03T18:00:00Z")
     await files.write(setup, manager, spring, "contest.yaml", changed, before.token)
     await acme.fake.orgs.revoke_role(8, Scope("acme", "spring"), Role.MANAGER)
-    bob = (await acme.fake.identity.find_user(8)).username
+    bob = acme.fake.state.users[8].username
 
     latest, *_ = await files.history(setup, acme.ada, spring, "contest.yaml")
+    await acme.fake.orgs.grant_role(9, Scope("acme", "spring"), Role.OBSERVER)
+    observer = await organiser(setup, acme.fake, 9, Scope("acme", "spring"), Role.OBSERVER)
+    seen, *_ = await files.history(setup, observer, spring, "contest.yaml")
 
     assert (latest.author_id, latest.author) == (8, bob)
+    assert seen.author == bob
+    assert acme.fake.calls_to("find_user") == []
 
 
 async def test_the_history_leaves_an_author_the_forge_does_not_know_unnamed(

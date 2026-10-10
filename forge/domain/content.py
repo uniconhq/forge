@@ -114,6 +114,8 @@ class Change:
     message: str
     at: datetime
     author: str | None = None
+    """Given by the port where the forge names the author with the change,
+    and filled in by the history otherwise."""
 
 
 @dataclass(frozen=True, slots=True)

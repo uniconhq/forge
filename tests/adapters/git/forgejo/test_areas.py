@@ -287,7 +287,7 @@ async def test_one_files_history_is_listed_by_its_path_on_the_default_branch(
             [
                 {
                     "sha": "commit-2",
-                    "author": {"id": 8},
+                    "author": {"id": 8, "login": "bob"},
                     "commit": {
                         "message": "Add a hint\n",
                         "committer": {"date": "2026-10-10T11:41:57Z"},
@@ -300,7 +300,12 @@ async def test_one_files_history_is_listed_by_its_path_on_the_default_branch(
 
     (change,) = await forgejo.content.history(ada, ContestId("acme/spring"), "public/hint.txt")
 
-    assert (change.version, change.author_id, change.message) == ("commit-2", 8, "Add a hint")
+    assert (change.version, change.author_id, change.author, change.message) == (
+        "commit-2",
+        8,
+        "bob",
+        "Add a hint",
+    )
     (asked,) = [seen for seen in recorder.seen if seen.url.path.endswith("/commits")]
     assert (asked.url.params["path"], asked.url.params["sha"]) == ("public/hint.txt", "main")
 

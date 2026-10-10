@@ -799,7 +799,8 @@ package enforces deadlines with.
 task, and `write` and `rollback` the manager role; each goes through the
 port as the organiser's own identity, so the forge's own check stays
 underneath and the history is theirs. `history` names each change's author
-by username as well as id (`Change.author`, looked up once an author), so
+by username as well as id (`Change.author`, which Forgejo's commits
+carry; an author given by id alone is looked up once), so
 someone who no longer holds a role at the place is still named, to those
 who may read the history alone; an account the forge does not know is left
 unnamed. Every path is checked first, and one
