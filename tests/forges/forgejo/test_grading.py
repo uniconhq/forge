@@ -146,6 +146,8 @@ async def test_a_task_is_activated_once_as_the_org_account(
     await forgejo.grading.activate(ACME, TaskId("acme/spring/sum"))
 
     assert recorder.headers("POST", "/api/repos") == ["Bearer ci-acme"]
+    (activated,) = [seen for seen in recorder.seen if seen.url.path == "/api/repos"]
+    assert activated.url.params["forge_remote_id"] == "55"
     assert recorder.sent("PATCH", "/api/repos/5") == [
         {"trusted": {"network": False, "volumes": True, "security": False}}
     ]

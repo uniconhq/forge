@@ -8,6 +8,7 @@ from datetime import timedelta
 
 import httpx
 
+from forge.adapters.git.forgejo.ci_host import ForgejoCiHost
 from forge.adapters.git.forgejo.ci_login import CiLogin
 from forge.adapters.git.forgejo.computes import WoodpeckerComputes
 from forge.adapters.git.forgejo.content import ForgejoContent
@@ -89,20 +90,21 @@ class ForgejoForge:
         )
         self.orgs = ForgejoOrgs(http, teams, users, platform_account=config.platform_account)
         self.content = ForgejoContent(repos, teams)
+        # What a CI needs from Forgejo, handed to the CI that grades.
+        self.ci_host = ForgejoCiHost(
+            http, users, repos, public_url=config.public_url, internal_url=config.internal_url
+        )
         # The CI `config.ci` names gives both areas that talk to it, grading
         # and the machines' enrolment; the one there is is Woodpecker.
         match config.ci:
             case "woodpecker":
                 self.grading = WoodpeckerGrading(
-                    http,
                     ci,
-                    repos,
-                    users,
+                    self.ci_host,
                     ci_public_url=config.ci_public_url,
                     login_lifetime=config.ci_login_lifetime,
                     login=CiLogin(
-                        forge_public_url=config.public_url,
-                        forge_url=config.internal_url,
+                        self.ci_host,
                         ci_public_url=config.ci_public_url,
                         ci_url=config.ci_url,
                         transport=browser_transport,

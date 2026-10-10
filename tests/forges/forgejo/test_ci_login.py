@@ -10,7 +10,8 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from forge.adapters.git.forgejo.ci_login import CiLogin, hidden_inputs, javascript_string
+from forge.adapters.git.forgejo.ci_host import ForgejoWebSignIn, hidden_inputs
+from forge.adapters.git.forgejo.ci_login import CiLogin, javascript_string
 from forge.domain.errors import Forbidden, Rejected, Unavailable
 
 FORGE_PUBLIC = "http://forge.test"
@@ -120,8 +121,7 @@ def _cookies(request: httpx.Request) -> dict[str, str]:
 
 def _login(stack: Stack) -> CiLogin:
     return CiLogin(
-        forge_public_url=FORGE_PUBLIC,
-        forge_url=FORGE_INTERNAL,
+        ForgejoWebSignIn(public_url=FORGE_PUBLIC, internal_url=FORGE_INTERNAL),
         ci_public_url=CI_PUBLIC,
         ci_url=CI_INTERNAL,
         transport=httpx.MockTransport(stack.handle),
@@ -183,8 +183,7 @@ async def test_a_service_that_does_not_answer_is_unavailable() -> None:
         raise httpx.ConnectError("refused")
 
     login = CiLogin(
-        forge_public_url=FORGE_PUBLIC,
-        forge_url=FORGE_INTERNAL,
+        ForgejoWebSignIn(public_url=FORGE_PUBLIC, internal_url=FORGE_INTERNAL),
         ci_public_url=CI_PUBLIC,
         ci_url=CI_INTERNAL,
         transport=httpx.MockTransport(down),

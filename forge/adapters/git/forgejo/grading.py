@@ -76,12 +76,11 @@ import yaml
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
+from forge.adapters.ci.host import CiHost
 from forge.adapters.git.forgejo import signatures
 from forge.adapters.git.forgejo.ci_login import CiLogin
 from forge.adapters.git.forgejo.ci_state import WoodpeckerState, read_state, written
 from forge.adapters.git.forgejo.http import CI_ADMIN, Caller, Http, json_of, segment
-from forge.adapters.git.forgejo.repos import DEFAULT_BRANCH, Repos
-from forge.adapters.git.forgejo.users import Users
 from forge.adapters.ids import (
     PUBLISHED_PREFIX,
     SUBMISSION_PREFIX,
@@ -108,7 +107,7 @@ from forge.domain.grading import (
     RunSpec,
     RunState,
 )
-from forge.domain.identity import PLATFORM, AsOrgAccount, CiState, OrgAccountRef
+from forge.domain.identity import AsOrgAccount, CiState, OrgAccountRef
 from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.names import service_account_name
 from forge.log import get_logger
@@ -180,22 +179,19 @@ def run_variables(run: GradingRun) -> dict[str, str]:
 class WoodpeckerGrading:
     def __init__(
         self,
-        forge_http: Http,
         ci: Http,
-        repos: Repos,
-        users: Users,
+        host: CiHost,
         *,
         ci_public_url: str,
         login: CiLogin,
         login_lifetime: timedelta,
     ) -> None:
-        """`login_lifetime` is how long the account's login at the forge
+        """`host` is the git host, reached only through what a CI needs of
+        it. `login_lifetime` is how long the account's login at the git host
         lasts, the session's hard lifetime.
         """
-        self._forge = forge_http
         self._ci = ci
-        self._repos = repos
-        self._users = users
+        self._host = host
         self._ci_public_url = ci_public_url.rstrip("/")
         self._login = login
         self._login_lifetime = login_lifetime
@@ -240,22 +236,22 @@ class WoodpeckerGrading:
         current = read_state(state)
         if current.account_id is None:
             raise Rejected(f"the CI state of {org}'s account names no account at the forge")
-        account = await self._users.find(current.account_id)
+        account = await self._host.account(current.account_id)
         if account.username.lower() != service_account_name(org).lower():
             raise Rejected(f"the account the CI state of {org} names is not the org's account")
         password = secrets.token_urlsafe(PASSWORD_BYTES)
-        await self._users.set_password(account.id, password)
+        await self._host.set_password(account.id, password)
         token = await self._login.mint_token(account.username, password)
         return written(replace(current, token=token, signed_in_at=datetime.now(UTC)))
 
     async def activate(self, as_: AsOrgAccount, task: TaskId) -> None:
         ref = parse_task(task)
         account = _acting_for(as_, ref.org)
-        record = await self._repos.record(ref.org, ref.repo)
+        repo_id = await self._host.repo_id(ref.org, ref.repo)
         try:
             activated = json_of(
                 await self._ci.call(
-                    account, "POST", "/api/repos", params={"forge_remote_id": int(record["id"])}
+                    account, "POST", "/api/repos", params={"forge_remote_id": repo_id}
                 )
             )
         except Conflict:
@@ -266,7 +262,7 @@ class WoodpeckerGrading:
             f"/api/repos/{activated['id']}",
             json={"trusted": {"network": False, "volumes": True, "security": False}},
         )
-        await self._delete_ci_webhooks(ref.org, ref.repo)
+        await self._host.remove_hooks(ref.org, ref.repo, self._ci_public_url)
 
     async def deactivate(self, as_: AsOrgAccount, task: TaskId) -> None:
         """As the org account, which activated the repository: Woodpecker
@@ -295,7 +291,7 @@ class WoodpeckerGrading:
             account,
             "POST",
             f"/api/repos/{repo['id']}/pipelines",
-            json={"branch": DEFAULT_BRANCH, "variables": run_variables(run)},
+            json={"branch": self._host.default_branch, "variables": run_variables(run)},
         )
         body = started.json() if started.content else None
         if not isinstance(body, dict) or not isinstance(body.get("number"), int):
@@ -537,18 +533,6 @@ class WoodpeckerGrading:
         return json_of(
             await self._ci.call(as_, "GET", f"/api/repos/lookup/{segment(org)}/{segment(repo)}")
         )
-
-    async def _delete_ci_webhooks(self, org: str, repo: str) -> None:
-        for hook in await self._forge.get_all(
-            PLATFORM, f"/api/v1/repos/{segment(org)}/{segment(repo)}/hooks"
-        ):
-            url = str((hook.get("config") or {}).get("url", ""))
-            if url.startswith(self._ci_public_url):
-                await self._forge.call(
-                    PLATFORM,
-                    "DELETE",
-                    f"/api/v1/repos/{segment(org)}/{segment(repo)}/hooks/{hook['id']}",
-                )
 
 
 def _verify_with(key: Ed25519PublicKey, request: InboundRequest, now: datetime) -> None:
