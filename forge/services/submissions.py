@@ -58,8 +58,10 @@ submission staff cancelled does not count against the task's
 `system_error` or staff cancelled (`scores.fallen_back`), it is read by its
 last good result instead, as the boards count it, and counts against
 `submissions.max`. A grading is
-shown with the publication it ran under: its sealed facts, and its
-`test_groups` unless the latest publication's plan lists the same tests. A
+shown with the publication it ran under: its sealed facts always, and
+the latest publication's `test_groups`, `credit` and value meanings when
+its own is of the same generation (no grading change published since) and
+the latest plan lists the same tests, its own otherwise (`showing.under`). A
 past publication's `task.yaml` and plan are read once per process, since a
 publication never changes; one that does not read shows nothing of its
 gradings but where they stand. Each grading is scored on read
