@@ -1491,3 +1491,25 @@ async def test_reading_a_folder_as_a_file_or_a_file_as_a_folder_is_not_found(
         await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "public")
     with pytest.raises(NotFound):
         await forgejo.content.list_tree(PLATFORM, ContestId("acme/spring"), "contest.yaml")
+
+
+async def test_a_file_over_forgejos_inline_size_is_read_whole_from_its_blob(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    """Forgejo's contents leave `content` empty past its largest inline blob
+    (10 MiB by default), and an empty read saved back would empty the file."""
+    whole = b"x" * 20
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.contest/contents/data.txt",
+        ok({"type": "file", "sha": "blob-9", "content": "", "size": len(whole)}),
+    )
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.contest/git/blobs/blob-9",
+        ok({"sha": "blob-9", "content": base64.b64encode(whole).decode(), "size": len(whole)}),
+    )
+
+    read = await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "data.txt")
+
+    assert (read.content, read.token) == (whole, ConflictToken("blob-9"))

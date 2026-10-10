@@ -280,11 +280,21 @@ class Repos:
         # A folder answers a list of its entries, which is no file.
         if not isinstance(entry, dict) or entry.get("type") != "file":
             raise NotFound(f"{path} is not a file")
-        return File(
-            path=path,
-            content=base64.b64decode(entry.get("content") or ""),
-            token=ConflictToken(str(entry["sha"])),
-        )
+        content = base64.b64decode(entry.get("content") or "")
+        size = entry.get("size")
+        if isinstance(size, int) and len(content) != size:
+            # Past its largest inline blob Forgejo leaves `content` empty; the
+            # blob itself, by the sha the token is, is read whole instead.
+            blob = json_of(
+                await self._http.call(
+                    as_,
+                    "GET",
+                    f"/api/v1/repos/{segment(owner)}/{segment(name)}/git/blobs/"
+                    f"{segment(str(entry['sha']))}",
+                )
+            )
+            content = base64.b64decode(blob.get("content") or "")
+        return File(path=path, content=content, token=ConflictToken(str(entry["sha"])))
 
     async def media_door(self, as_: Identity, owner: str, name: str, path: str, *, at: str) -> Door:
         """Where one file's bytes at a version are read whole, big files
