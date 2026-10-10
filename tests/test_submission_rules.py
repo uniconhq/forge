@@ -271,8 +271,10 @@ def refusal(given: dict[str, SubmittedInput], uploads: dict[uuid.UUID, UploadedF
     return refused.value.extra["errors"]
 
 
-EXTRA, BIG, TWIN, NOT_A_TEST, SECOND_1 = (uuid.uuid4() for _ in range(5))
+EXTRA, BIG, TWIN, NOT_A_TEST, SECOND_1, INSIDE, GIT = (uuid.uuid4() for _ in range(7))
 MORE = {
+    INSIDE: UploadedFile(INSIDE, "weights", "a.bin/b.bin", 1),
+    GIT: UploadedFile(GIT, "weights", ".git/config", 1),
     EXTRA: UploadedFile(EXTRA, "submission", "other.py", 10),
     BIG: UploadedFile(BIG, "submission", "big.py", 1025),
     TWIN: UploadedFile(TWIN, "weights", "a.bin", 1),
@@ -354,6 +356,16 @@ MORE = {
             "Two files answer the same test.",
         ),
         ({"ghost": SubmittedInput(value="1")}, "ghost", "The task has no such input."),
+        (
+            {"weights": SubmittedInput(uploads=(W2, INSIDE))},
+            "weights",
+            "a.bin is a file and a folder at once.",
+        ),
+        (
+            {"weights": SubmittedInput(uploads=(GIT,))},
+            "weights",
+            ".git/config: A file name cannot be .git: git keeps its own data there.",
+        ),
     ],
     ids=[
         "enum-outside-the-tasks-options",
@@ -381,6 +393,8 @@ MORE = {
         "not-a-plan-test",
         "one-test-twice",
         "unknown-input",
+        "file-and-folder-at-once",
+        "git-folder",
     ],
 )
 def test_a_submission_that_does_not_fit_the_inputs_is_refused_naming_the_input(
