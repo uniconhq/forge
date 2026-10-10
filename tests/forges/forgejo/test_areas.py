@@ -1373,7 +1373,7 @@ async def test_an_account_is_created_given_a_password_and_a_token(
         must_change_password=False,
         visibility="private",
     )
-    await forgejo.identity.set_password(9, "pw-2")
+    await forgejo.grading._users.set_password(9, "pw-2")
     found = await forgejo.identity.find_user_by_username("unicon-ci-acme")
     token = await forgejo.identity.mint_token(
         "unicon-ci-acme", "pw-2", name="unicon", scopes=["read:user"]

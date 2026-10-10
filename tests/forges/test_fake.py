@@ -336,7 +336,7 @@ async def test_a_service_account_is_made_placed_and_signed_in_at_the_ci(
     assert fake.state.tokens[token] == account.id
     with pytest.raises(Forbidden):
         await fake.identity.mint_token("unicon-ci-acme", "wrong", name="unicon", scopes=["a"])
-    await fake.identity.set_password(account.id, "pw-2")
+    fake.state.passwords[account.id] = "pw-2"
     with pytest.raises(Forbidden):
         await fake.grading.set_up_org(
             OrgId("acme"), OrgAccountRef("unicon-ci-acme", account.id, "pw-1")

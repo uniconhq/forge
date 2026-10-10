@@ -469,7 +469,7 @@ async def test_the_service_account_is_made_placed_and_given_a_token(
     assert [member["login"] for member in members] == [account_name]
 
     fresh = "live-" + secrets.token_urlsafe(12)
-    await forge.identity.set_password(account.id, fresh)
+    await forge.grading._users.set_password(account.id, fresh)
     with pytest.raises(Forbidden):
         await forge.identity.mint_token(account_name, password, name="unicon", scopes=["read:user"])
     await forge.identity.mint_token(account_name, fresh, name="unicon", scopes=["read:user"])
@@ -482,7 +482,7 @@ async def test_an_org_is_set_up_at_the_ci_and_refreshed_with_a_working_token(
     assert CI_URL and CI_ADMIN_TOKEN
     account = await forge.identity.find_user_by_username(account_name)
     password = "live-" + secrets.token_urlsafe(12)
-    await forge.identity.set_password(account.id, password)
+    await forge.grading._users.set_password(account.id, password)
     ci_admin = {"Authorization": f"Bearer {CI_ADMIN_TOKEN}"}
 
     with pytest.raises(Forbidden):
