@@ -28,7 +28,6 @@ submit's idempotency key, so a submit tried again after its answer was lost
 finds the submission it made instead of making a second.
 """
 
-import json
 import re
 import uuid
 from collections.abc import Collection, Mapping
@@ -39,6 +38,7 @@ from typing import Any
 
 import yaml
 
+from forge.domain import exact_json
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, Form
 from forge.domain.errors import InvalidInputs
@@ -232,7 +232,7 @@ def lay_out(
     if problems:
         first = problems[0]
         raise InvalidInputs(f"{first['input']}: {first['message']}", errors=problems)
-    text = json.dumps(document, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+    text = exact_json.dumps(document, sort_keys=True, indent=2) + "\n"
     return Layout(files=files, document=text.encode(), inputs=inputs)
 
 
