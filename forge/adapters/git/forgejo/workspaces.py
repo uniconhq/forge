@@ -222,12 +222,13 @@ class ForgejoWorkspaces:
         self, as_: Identity, submission: SubmissionId, path: str, *, max_size: int
     ) -> bytes:
         ref, task_name, number = parse_submission(submission)
+        repo = ref.submission_repo(task_name)
         return await self._repos.read_raw(
             as_,
             ref.org,
-            ref.submission_repo(task_name),
+            repo,
             path,
-            at=f"{SUBMISSION_PREFIX}{number}",
+            at=await self._submitted_at(as_, ref.org, repo, number),
             max_size=max_size,
         )
 
@@ -235,20 +236,29 @@ class ForgejoWorkspaces:
         self, as_: Identity, submission: SubmissionId, path: str, *, max_size: int
     ) -> bytes:
         ref, task_name, number = parse_submission(submission)
+        repo = ref.submission_repo(task_name)
         return await self._repos.read_blob(
             as_,
             ref.org,
-            ref.submission_repo(task_name),
+            repo,
             path,
-            at=f"{SUBMISSION_PREFIX}{number}",
+            at=await self._submitted_at(as_, ref.org, repo, number),
             max_size=max_size,
         )
 
     async def download(self, as_: Identity, submission: SubmissionId, path: str) -> Door:
         ref, task_name, number = parse_submission(submission)
+        repo = ref.submission_repo(task_name)
         return await self._repos.media_door(
-            as_, ref.org, ref.submission_repo(task_name), path, at=f"{SUBMISSION_PREFIX}{number}"
+            as_, ref.org, repo, path, at=await self._submitted_at(as_, ref.org, repo, number)
         )
+
+    async def _submitted_at(self, as_: Identity, org: str, repo: str, number: int) -> str:
+        """The commit submission `number`'s version stands at. Its files are
+        read there and never by the version's name, which Forgejo's `ref`
+        would read as a branch of that name first (`Repos.require_version`).
+        """
+        return await self._repos.require_version(as_, org, repo, f"{SUBMISSION_PREFIX}{number}")
 
     async def publish(self, task: TaskId, at: VersionId, note: str) -> PublicationId:
         ref = parse_task(task)

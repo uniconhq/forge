@@ -687,7 +687,7 @@ async def test_a_submission_number_another_took_first_is_taken_by_the_next(
     assert written["new_branch"] == "main"
 
 
-async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_through_media(
+async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_at_its_commit(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     repo = "/api/v1/repos/acme/spring.sum.u8.sub"
@@ -718,7 +718,7 @@ async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_thr
     door = await forgejo.workspaces.download(
         AsUser(8, _credential()), listed[1].id, "files/submission/my main.py"
     )
-    assert door.path == (f"{repo}/media/files/submission/my%20main.py?ref=submission%2F2")
+    assert door.path == (f"{repo}/media/files/submission/my%20main.py?ref=c-2")
     assert door.authorization == "Bearer access"
     with pytest.raises(Rejected, match="larger than 0 bytes"):
         await forgejo.workspaces.read_submission_file(
@@ -731,13 +731,13 @@ async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_thr
     ]
     assert content == b"x"
     read = next(request for request in recorder.seen if "/media/" in request.url.path)
-    assert read.url.params["ref"] == "submission/2"
+    assert read.url.params["ref"] == "c-2"
     blob = await forgejo.workspaces.read_submission_blob(
         AsUser(8, _credential()), listed[1].id, "files/submission/main.py", max_size=1
     )
     assert blob == b"p"
     raw = next(request for request in recorder.seen if "/raw/" in request.url.path)
-    assert raw.url.params["ref"] == "submission/2"
+    assert raw.url.params["ref"] == "c-2"
     assert read.headers["Authorization"] == "Bearer access"
 
 
