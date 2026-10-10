@@ -78,7 +78,6 @@ refused the submission, in fixed words.
 """
 
 import builtins
-import json
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -90,6 +89,7 @@ from sqlalchemy import func, select, text
 
 from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
+from forge.domain import exact_json
 from forge.domain import submissions as rules
 from forge.domain.definitions import OnSystemError
 from forge.domain.errors import (
@@ -844,10 +844,10 @@ def _paths(document: Mapping[str, Any]) -> set[str]:
 
 
 def _document(content: bytes) -> dict[str, Any]:
-    """The inputs a `submission.json` names. `ValueError` for one that does
-    not read.
+    """The inputs a `submission.json` names, each number read exactly.
+    `ValueError` for one that does not read.
     """
-    document = json.loads(content)
+    document = exact_json.loads(content)
     if not isinstance(document, dict) or not isinstance(document.get("inputs"), dict):
         raise ValueError("not a submission document")
     inputs: dict[str, Any] = document["inputs"]

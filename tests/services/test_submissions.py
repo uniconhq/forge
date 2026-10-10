@@ -562,8 +562,8 @@ async def test_a_file_over_the_size_its_input_takes_now_is_refused_naming_the_in
     [
         ({"language": SubmittedInput(value="rust")}, "language", "Choose one of python."),
         ({"language": SubmittedInput()}, "language", "This input is required."),
-        ({"time_limit": SubmittedInput(value=5)}, "time_limit", "The task has no such input."),
-        ({"language": SubmittedInput(value=2)}, "language", "Choose one of python."),
+        ({"time_limit": SubmittedInput(value="5")}, "time_limit", "The task has no such input."),
+        ({"language": SubmittedInput(value="2")}, "language", "Choose one of python."),
     ],
 )
 async def test_what_does_not_fit_the_inputs_is_refused_and_nothing_is_written(

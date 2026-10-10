@@ -1351,7 +1351,11 @@ cancelled; the task's rate holds
 window; every upload named is theirs for this task (`upload_not_yours`), a
 checked file no submission used (`upload_not_ready`), and each and all of
 them within the sizes allowed (`too_large`); and what is given fits the
-task's contestant inputs (`invalid_inputs`, each problem at its input). The
+task's contestant inputs (`invalid_inputs`, each problem at its input). A
+number input's value is given as the text of its plain decimal digits
+(`2.5`; not `1e3`, `0x10`, `NaN` or a JSON number), checked against the
+input's bounds exactly and written into `submission.json` as those digits,
+and `files` reads them back exactly. The
 forge is asked once more that the place still holds each upload's object,
 so a commit never points at bytes that are not there (`upload_not_ready`).
 A file upload made the contestant's place to submit the task already; a
