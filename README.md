@@ -1818,13 +1818,23 @@ uv run ruff format --check .
 uv run ruff check .
 uv run lint-imports
 uv run mypy
-UNICON_TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/postgres uv run pytest
+UNICON_TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/postgres uv run pytest -n 8
 uv build
 ```
 
-The service and migration tests need a real Postgres; they create and drop a
-database of their own on the server the URL names. Without the variable those
-tests are skipped. The tests under `tests/live/` drive the Forgejo
+The service and migration tests need a real Postgres, on the server the URL
+names; without the variable those tests are skipped. `-n` runs the tests in
+that many processes side by side (`pytest-xdist`); a run without it is one
+process. Each process migrates one template database and copies from it one
+database that all its tests share, emptied after each test, so a test starts
+with every table empty without a database being made for it. The tests that
+move the schema up and down take a copy of their own instead. The template
+and the shared database are kept on the server between runs, under names
+carrying a hash of the migrations (`unicon_template_<process>_<hash>`,
+`unicon_shared_<process>_<hash>`): a run that finds them starts at once, and
+one after a migration changed builds new ones and drops the old. On this
+repo's own laptop the whole suite took 800 seconds as one process making a
+database per test, and takes about 70 on eight. The tests under `tests/live/` drive the Forgejo
 implementation against a running Forgejo, named by `UNICON_LIVE_FORGE_URL`
 with an administrator token in `UNICON_LIVE_FORGE_ADMIN_TOKEN`, whose own
 account is the platform account; they are skipped without both, and
