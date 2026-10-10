@@ -5,6 +5,7 @@ scope's three roles are attached together, and `secure` counts each.
 """
 
 from collections.abc import Mapping
+from dataclasses import replace
 
 from forge.adapters.git.fake.state import Repo, State, token_of
 from forge.adapters.ids import (
@@ -208,10 +209,17 @@ class FakeContent:
         repo = self._state.repo(*location(place))
         self._state.require_read(as_, repo)
         return tuple(
-            change
+            replace(change, author=self._login_of(change.author_id))
             for change in reversed(repo.history)
             if path is None or path in repo.touched.get(change.version, set())
         )
+
+    def _login_of(self, user_id: int | None) -> str | None:
+        """An author's username as Forgejo's commits name it, from the account
+        it has now, or none for an account it no longer has.
+        """
+        found = self._state.users.get(user_id) if user_id is not None else None
+        return found.username if found is not None else None
 
     def _readable(self, as_: Identity, org: str) -> list[Repo]:
         user_id = self._state.author(as_)

@@ -17,8 +17,6 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-import yaml
-
 from forge.domain.workflow_definition import (
     Meaning,
     Reference,
@@ -29,6 +27,7 @@ from forge.domain.workflow_definition import (
     references,
     whole_reference,
 )
+from forge.domain.yaml_models import one_line
 
 _MAX_ID = 40
 
@@ -205,7 +204,7 @@ def _declaration(declared: WorkflowInput | TestField) -> str:
 
 
 def _flow(value: Mapping[str, Any]) -> str:
-    return _one_line(dict(value), sort_keys=False)
+    return _one_line(dict(value))
 
 
 _PLAIN_REFERENCE = re.compile(r"^\$\{\{ [a-z][a-z0-9_.-]* \}\}$")
@@ -220,18 +219,13 @@ def _scalar(value: object) -> str:
     return _one_line(value)
 
 
-def _one_line(value: object, **options: Any) -> str:
-    """`value` as YAML on one line. Text over several lines would be written
-    across lines under the key, which only a lax reader takes, so it is
-    written double-quoted with its line breaks as escapes.
+def _one_line(value: object) -> str:
+    """`value` as YAML 1.2 on one line. Text over several lines would be
+    written across lines under the key, which only a lax reader takes, so it
+    is written double-quoted with its line breaks as escapes.
     """
-    for style in (None, '"'):
-        dumped = str(
-            yaml.safe_dump(
-                value, default_flow_style=True, default_style=style, width=1 << 30, **options
-            )
-        )
-        dumped = dumped.removesuffix("\n").removesuffix("\n...").strip()
+    for double_quoted in (False, True):
+        dumped = one_line(value, double_quoted=double_quoted)
         if not any(brk in dumped for brk in _LINE_BREAKS):
             return dumped
     raise AssertionError("a double-quoted scalar holds no line break")

@@ -27,6 +27,7 @@ import json
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from enum import StrEnum
 from itertools import pairwise
 from typing import Annotated, Any, Literal
@@ -52,6 +53,7 @@ from forge.domain.yaml_models import (
     mapping_or_empty,
     parse_size,
     problems_of,
+    read_time,
     validate,
 )
 
@@ -414,7 +416,7 @@ class ContestDefinition(Model):
     def closes_of(self, entry: ContestTask) -> datetime:
         return entry.closes if entry.closes is not None else self.end
 
-    def late_per_day_of(self, entry: ContestTask) -> int | float | None:
+    def late_per_day_of(self, entry: ContestTask) -> int | Decimal | None:
         """The fraction a started late day takes off: the entry's, or
         `DEFAULT_LATE_PER_DAY` when it gives a `due` and none, and none on a
         task with no due, which has no late submissions.
@@ -509,9 +511,13 @@ class Group(Model):
     show: Show | None = None
 
     @property
-    def weight(self) -> int | float:
+    def weight(self) -> int | Decimal:
         """What the group can earn, `R_g`: its rule weights summed."""
-        return sum(value or 0 for value in (self.each, self.worst, self.pass_))
+        total: int | Decimal = 0
+        for value in (self.each, self.worst, self.pass_):
+            if value is not None:
+                total += value
+        return total
 
     @property
     def shown(self) -> Show:
@@ -778,7 +784,26 @@ def admin_only_changes(
     """
     keys = CONTEST_ADMIN_KEYS if kind == "contest" else TASK_ADMIN_KEYS
     old, new = mapping_or_empty(before), mapping_or_empty(after)
-    return [key for key in keys if old.get(key, _MISSING) != new.get(key, _MISSING)]
+    return [
+        key
+        for key in keys
+        if _compared(old.get(key, _MISSING)) != _compared(new.get(key, _MISSING))
+    ]
+
+
+def _compared(value: object) -> object:
+    """`value` with every text that is a date and time with a timezone read
+    as that moment, so one time written two ways is the same value.
+    """
+    if isinstance(value, dict):
+        return {key: _compared(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_compared(item) for item in value]
+    if isinstance(value, str):
+        moment = read_time(value)
+        if isinstance(moment, datetime) and moment.tzinfo is not None:
+            return moment
+    return value
 
 
 def title_of(title: str | None, name: str) -> str:

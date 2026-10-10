@@ -22,12 +22,12 @@ from sqlalchemy import select, update
 from forge.db.tables import Grading
 from forge.domain.content import Edit
 from forge.domain.errors import MarkLimit, MarksFrozen, MarksOff, NotApproved, NotFound
-from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId, VersionId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
+from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
@@ -435,7 +435,7 @@ async def test_a_fallen_back_result_shows_only_what_is_shown_and_counts_its_mark
     # before its retry broke: 65 shown and 35 pending, and nothing of Final.
     assert standings.rows[0].keys == keys(65, 120)
     assert final.nothing_shown
-    assert told is not None and (told.attempt, told.status) == (1, GradingStatus.DONE)
+    assert told is not None and (told.attempt, told.status) == (1, SubmissionState.GRADED)
     assert told.points is not None
     assert (told.points.shown, told.points.pending) == keys(65, 35)
     assert [group.outcome for group in told.groups if group.group == "large"] == [None]

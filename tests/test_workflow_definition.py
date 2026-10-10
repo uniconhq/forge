@@ -10,7 +10,6 @@ that may feed it.
 from typing import Any
 
 import pytest
-import yaml
 
 from forge.domain.errors import InvalidName
 from forge.domain.plans import check_workflow
@@ -29,7 +28,7 @@ from forge.domain.workflow_definition import (
     starter_workflow,
     whole_reference,
 )
-from forge.domain.yaml_models import InvalidDefinition, Problem
+from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line
 from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES
 from tests.conftest import sibling
 
@@ -65,14 +64,14 @@ PRIMITIVES_WITH_ECHO = {**SEEDED, "acme/echo@v1": ECHO}
 
 
 def classic() -> dict[str, Any]:
-    document = yaml.safe_load(CLASSIC)
+    document = load_yaml(CLASSIC)
     assert isinstance(document, dict)
     return document
 
 
 def refused(document: dict[str, Any]) -> list[Problem]:
     with pytest.raises(InvalidDefinition) as raised:
-        parse_workflow(yaml.safe_dump(document, sort_keys=False))
+        parse_workflow(one_line(document))
     return raised.value.errors
 
 
@@ -83,7 +82,7 @@ def paths(problems: list[Problem]) -> list[str]:
 def checked(
     document: dict[str, Any], primitives: dict[str, PrimitiveDeclaration] | None = None
 ) -> list[Problem]:
-    workflow = parse_workflow(yaml.safe_dump(document, sort_keys=False))
+    workflow = parse_workflow(one_line(document))
     return check_workflow(workflow, primitives if primitives is not None else PRIMITIVES_WITH_ECHO)
 
 
@@ -155,7 +154,7 @@ def test_a_declaration_may_be_just_its_types_name() -> None:
     document = classic()
     document["inputs"]["time_limit"] = {"type": "number"}
 
-    assert parse_workflow(yaml.safe_dump(document)) == parse_workflow(CLASSIC)
+    assert parse_workflow(one_line(document)) == parse_workflow(CLASSIC)
 
 
 @pytest.mark.parametrize(
@@ -383,7 +382,7 @@ def test_better_may_be_a_task_enum_of_higher_and_lower() -> None:
     document = classic()
     document["inputs"]["better"] = {"type": "enum", "options": ["higher", "lower"]}
     document["report"]["x"] = {"from": "${{ steps.run.time_ms }}", "better": "${{ inputs.better }}"}
-    parse_workflow(yaml.safe_dump(document))
+    parse_workflow(one_line(document))
 
     document["inputs"]["better"] = {"type": "enum", "options": ["higher", "sideways"]}
     assert refused(document) == [

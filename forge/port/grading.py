@@ -53,10 +53,11 @@ class GradingPort(Protocol):
         """
         ...
 
-    async def activate(self, as_: AsOrgAccount, task: TaskId) -> None:
+    async def activate(self, as_: AsOrgAccount, task: TaskId) -> bool:
         """Switch the CI on for the task, as the task's org account, so it can
-        be graded. Activating twice changes nothing. `Forbidden` when `as_`
-        is another org's account.
+        be graded, and say whether the CI did not know the task before.
+        Activating twice changes nothing. `Forbidden` when `as_` is another
+        org's account.
         """
         ...
 

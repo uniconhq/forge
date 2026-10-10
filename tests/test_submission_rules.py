@@ -10,10 +10,12 @@ import ast
 import json
 import re
 import uuid
+from decimal import Decimal
 from typing import Any
 
 import pytest
 
+from forge.domain import exact_json
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE
 from forge.domain.errors import InvalidInputs
@@ -214,6 +216,22 @@ def test_a_left_out_input_takes_its_default() -> None:
     layout = lay_out(FIELDS, TESTS, {**COMPLETE, "language": SubmittedInput()}, UPLOADS)
 
     assert json.loads(layout.document)["inputs"]["language"] == {"value": "python"}
+
+
+def test_a_left_out_number_takes_its_decimal_default_to_the_digit() -> None:
+    ratio = Field(
+        id="ratio",
+        type=Type.NUMBER,
+        label="ratio",
+        default=Decimal("0.123456789012345678901234567891"),
+    )
+
+    layout = lay_out((ratio,), TESTS, {}, {})
+
+    assert exact_json.loads(layout.document)["inputs"]["ratio"] == {
+        "value": Decimal("0.123456789012345678901234567891")
+    }
+    assert b'"value": 0.123456789012345678901234567891' in layout.document
 
 
 def test_a_per_test_input_may_answer_some_tests_only() -> None:
