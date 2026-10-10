@@ -6,7 +6,14 @@ chosen, and cookies are secure whenever the platform is served over https.
 import pytest
 from pydantic import ValidationError
 
-from forge.settings import FAKE_IMAGES, Settings, load_log_settings, load_settings
+from forge.settings import (
+    FAKE_IMAGES,
+    ForgejoSettings,
+    S3Settings,
+    Settings,
+    load_log_settings,
+    load_settings,
+)
 
 COMPLETE = {
     "UNICON_PUBLIC_URL": "http://localhost:8080",
@@ -136,14 +143,14 @@ def test_a_key_of_the_wrong_length_is_refused() -> None:
 def test_the_ci_public_url_follows_the_ci_url_unless_given(
     environment: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    forgejo = load_settings().forgejo
-    assert forgejo is not None
-    assert str(forgejo.woodpecker_public_url) == "http://woodpecker-server:8000/"
+    woodpecker = load_settings().woodpecker
+    assert woodpecker is not None
+    assert str(woodpecker.public_url) == "http://woodpecker-server:8000/"
 
     monkeypatch.setenv("UNICON_WOODPECKER_PUBLIC_URL", "http://ci.example.test")
-    forgejo = load_settings().forgejo
-    assert forgejo is not None
-    assert str(forgejo.woodpecker_public_url) == "http://ci.example.test/"
+    woodpecker = load_settings().woodpecker
+    assert woodpecker is not None
+    assert str(woodpecker.public_url) == "http://ci.example.test/"
 
 
 def test_cookies_are_secure_by_default_exactly_when_the_public_url_is_https() -> None:
@@ -351,3 +358,24 @@ def test_the_ci_is_woodpecker_unless_the_variable_names_another(
     monkeypatch.setenv("UNICON_CI", "jenkins")
     with pytest.raises(SystemExit):
         load_settings()
+
+
+def test_forgejo_settings_given_whole_still_need_the_cis() -> None:
+    """Woodpecker's settings are their own, so Forgejo's given whole in code
+    still leave them to be named.
+    """
+    with pytest.raises(ValidationError, match="UNICON_WOODPECKER_URL"):
+        Settings.for_tests(
+            forge="forgejo",
+            forge_public_url="http://forge.test",
+            harness_image=FAKE_IMAGES["harness_image"].replace("0", "1"),
+            clone_image=FAKE_IMAGES["clone_image"].replace("0", "1"),
+            forgejo=ForgejoSettings(
+                internal_url="http://forgejo:3000",
+                admin_token="admin",
+                oauth_client_id="client",
+                oauth_client_secret="secret",
+                platform_account="platform",
+            ),
+            s3=S3Settings(endpoint="http://garage:3900", access_key="key", secret_key="secret"),
+        )

@@ -26,12 +26,12 @@ from pydantic import SecretStr
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 
+from forge.adapters.ci.woodpecker.ci_state import read_state
+from forge.adapters.ci.woodpecker.http import WoodpeckerAuth
+from forge.adapters.fakes import FakeForge
 from forge.db.migrations import alembic_config, downgrade_to_base, upgrade_to_head
 from forge.db.tables import Grading, OrgAccount, metadata
 from forge.domain.ids import OrgId
-from forge.forges.fake import FakeForge
-from forge.forges.forgejo.ci_state import read_state
-from forge.forges.forgejo.http import WoodpeckerAuth
 from forge.runtime.setup import Setup
 from forge.services import org_accounts
 from forge.settings import TEST_KEY, decode_key
@@ -683,7 +683,7 @@ async def test_an_orgs_state_made_by_the_migration_is_refreshed_once_stale(
     _accounts_before_the_state(migrated_database_url, b"ci-token-acme")
     command.upgrade(config, "head")
     fake.add_user(9, "unicon-ci-acme")
-    fake.state.ci_users["unicon-ci-acme"] = 4
+    fake.ci.ci_users["unicon-ci-acme"] = 4
     clock.set(SIGNED_IN_AT + timedelta(days=21))
 
     async with setup.unit_of_work() as ctx:

@@ -14,13 +14,13 @@ from typing import Any
 
 import pytest
 
+from forge.adapters.fakes import FakeForge
+from forge.adapters.ids import parse_task, parse_workspace
 from forge.domain.clock import FakeClock
 from forge.domain.errors import Conflict, Unavailable
 from forge.domain.ids import TaskId
 from forge.domain.names import UserOwner
 from forge.domain.roles import Role, Scope
-from forge.forges.fake import FakeForge
-from forge.forges.ids import parse_task, parse_workspace
 from forge.runtime.setup import Setup
 from forge.services import contestants, places, uploads
 from forge.services.turns import Turns

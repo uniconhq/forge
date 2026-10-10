@@ -18,7 +18,7 @@ from pydantic import HttpUrl
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from forge import forges
+from forge import adapters
 from forge.db.engine import (
     PoolSize,
     TransactionFactory,
@@ -108,7 +108,7 @@ class Setup:
         setup = cls(
             settings=settings,
             forge=forge
-            or forges.build(
+            or adapters.build(
                 settings, sign_in_redirect_uri=_joined(settings.public_url, callback_path)
             ),
             engine=engine,

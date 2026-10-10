@@ -1,11 +1,10 @@
 """The forge port: the one interface between this package and the git host
 behind it, in the platform's own words. It is a set of areas, each a
-`Protocol` in its own module, composed into one `Forge`. `forges.forgejo` and
-`forges.fake` implement every area. The object store the platform keeps
-uploads and logs in travels with the forge as its `objects` area, since the
-deployment that runs the forge runs the store beside it, and the mail server
-the forge sends through travels with it as its `mail` area for the same
-reason.
+`Protocol` in its own module, composed into one `Forge`. The areas fall into
+four groups by the service behind them, each filled by an adapter of its
+own under `forge.adapters`: the git host's (`GitHost`), the CI's (`Ci`), the
+object store run logs are kept in (`objects`) and the mail server invite
+mail goes through (`mail`).
 
 Two rules hold the port together. Every reference the package stores is an
 opaque id the port hands out, and nothing reads inside one. Every failure is
@@ -33,9 +32,11 @@ from forge.port.workflows import WorkflowPort
 from forge.port.workspaces import WorkspacePort
 
 __all__ = [
+    "Ci",
     "ComputePort",
     "ContentPort",
     "Forge",
+    "GitHost",
     "GradingPort",
     "IdentityPort",
     "MailPort",
@@ -50,9 +51,65 @@ __all__ = [
 ]
 
 
+class GitHost(Protocol):
+    """The git host's areas: the people, the orgs and their roles, the
+    contests, tasks, workspaces and workflows and what is in them, and the
+    uploads into them.
+    """
+
+    @property
+    def identity(self) -> IdentityPort: ...
+
+    @property
+    def orgs(self) -> OrgPort: ...
+
+    @property
+    def content(self) -> ContentPort: ...
+
+    @property
+    def workspaces(self) -> WorkspacePort: ...
+
+    @property
+    def threads(self) -> ThreadPort: ...
+
+    @property
+    def workflows(self) -> WorkflowPort: ...
+
+    @property
+    def primitives(self) -> PrimitivePort: ...
+
+    @property
+    def uploads(self) -> UploadPort: ...
+
+    @property
+    def name(self) -> str:
+        """Which git host this is, for logs."""
+        ...
+
+    async def aclose(self) -> None:
+        """Release whatever the adapter holds open."""
+        ...
+
+
+class Ci(Protocol):
+    """The CI's areas: the grading runs and the machines that run them."""
+
+    @property
+    def grading(self) -> GradingPort: ...
+
+    @property
+    def computes(self) -> ComputePort: ...
+
+    async def aclose(self) -> None:
+        """Release whatever the adapter holds open."""
+        ...
+
+
 @runtime_checkable
 class Forge(Protocol):
-    """A git host and its CI as the platform sees them, one area each."""
+    """Every service outside the platform as the platform sees it, one area
+    each: the git host's, the CI's, the object store and the mail server.
+    """
 
     @property
     def identity(self) -> IdentityPort: ...
