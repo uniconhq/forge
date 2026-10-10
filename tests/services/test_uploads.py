@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
+from forge.adapters.ids import parse_task, parse_workspace
 from forge.db.tables import Upload as UploadRow
 from forge.domain import uploads as rules
 from forge.domain.content import Edit
@@ -49,7 +50,6 @@ from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import UploadStatus
 from forge.domain.workflows import Visibility
-from forge.forges.ids import parse_task, parse_workspace
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
 from forge.services import contestants, publications, submissions, submitters, uploads

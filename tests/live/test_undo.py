@@ -18,13 +18,13 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge.adapters.git.forgejo import ForgejoForge
 from forge.domain.definitions import starter_contest, starter_task
 from forge.domain.errors import Rejected
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
-from forge.forges.forgejo import ForgejoForge
 from forge.runtime.setup import Setup
 from forge.services import access, contests, orgs, sessions, tasks
 from tests.live.conftest import (

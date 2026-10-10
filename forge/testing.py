@@ -45,6 +45,7 @@ from typing import Any
 import psycopg
 import pytest
 
+from forge.adapters.fakes import FakeForge
 from forge.db.migrations import upgrade_to_head
 from forge.db.tables import Contestant, Name, metadata
 from forge.domain.clock import FakeClock
@@ -52,7 +53,6 @@ from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId
 from forge.domain.keys import key_from_name, random_key
 from forge.domain.workflows import Visibility
-from forge.forges.fake import FakeForge
 from forge.log import JsonFormatter
 from forge.runtime.context import Context
 from forge.runtime.held import hold, release

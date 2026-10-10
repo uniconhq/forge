@@ -15,12 +15,12 @@ from typing import Any
 import httpx
 import pytest
 
+from forge.adapters.git.forgejo import ForgejoForge
 from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
 from forge.domain.identity import AsUser
 from forge.domain.ids import OrgId
 from forge.domain.roles import Role, Scope
 from forge.domain.workflows import Visibility
-from forge.forges.forgejo import ForgejoForge
 from tests.live.conftest import LIVE, as_person, delete_org, delete_user, make_user
 
 pytestmark = LIVE
