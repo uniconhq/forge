@@ -1,7 +1,8 @@
-"""What the in-memory forge holds: users, orgs and their roles, repositories
-with their files at every version, their protected versions and who reaches
-them, threads, runs and agents, plus the record of every call made through
-the port and the knobs a test turns.
+"""What the in-memory git host holds: users, orgs and their roles,
+repositories with their files at every version, their protected versions and
+who reaches them, and threads, plus the knobs a test turns. The clock, the
+record of every call and the outage switch are the world's it shares with
+the other fakes (`adapters.fake_world`).
 """
 
 import hashlib
@@ -11,26 +12,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+from forge.adapters.fake_world import Call, FakeWorld
 from forge.adapters.ids import PROTECTED_PREFIXES
-from forge.domain.clock import Clock, SystemClock
+from forge.domain.clock import Clock
 from forge.domain.content import Change, ConflictToken, Files
-from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
-from forge.domain.grading import RunState
+from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import AsUser, Credential, Identity, Platform, User
-from forge.domain.ids import AgentId, RunId, ThreadId, VersionId
+from forge.domain.ids import ThreadId, VersionId
 from forge.domain.roles import RANK, Role, Scope
 from forge.domain.threads import Thread
 
 CREDENTIAL_TTL = timedelta(hours=1)
-
-
-@dataclass(frozen=True, slots=True)
-class Call:
-    """One call through the port: which operation, as whom, with what."""
-
-    operation: str
-    identity: Identity
-    arguments: dict[str, Any]
 
 
 @dataclass
@@ -71,20 +63,6 @@ class Repo:
 
 
 @dataclass
-class StartedRun:
-    """A run the fake CI was asked to start: the task it is of, the variables
-    it was started with, when, whether it was cancelled, and where the CI
-    has it, queued until a test says otherwise.
-    """
-
-    task: str
-    variables: dict[str, str]
-    at: datetime
-    cancelled: bool = False
-    ci_state: RunState = RunState.QUEUED
-
-
-@dataclass
 class Org:
     name: str
     description: str
@@ -99,43 +77,47 @@ class Org:
 class State:
     """The whole forge, shared by every area of the fake."""
 
-    def __init__(self, clock: Clock | None = None) -> None:
-        self.clock: Clock = clock or SystemClock()
+    def __init__(self, clock: Clock | None = None, *, world: FakeWorld | None = None) -> None:
+        self.world = world or FakeWorld(clock)
         self.users: dict[int, User] = {}
         self.orgs: dict[str, Org] = {}
         self.repos: dict[tuple[str, str], Repo] = {}
         self.next_repo_id = 0
         self.threads: dict[ThreadId, Thread] = {}
-        self.runs: dict[RunId, StartedRun] = {}
-        self.ci_key = secrets.token_bytes(32)
-        self.refuse_starts = 0
-        self.lose_start_answer = False
-        self.agents: dict[AgentId, tuple[str | None, str, str]] = {}
         self.published_at: dict[tuple[str, int], datetime] = {}
-        self.calls: list[Call] = []
         self.codes: dict[str, tuple[int, str, str]] = {}
         self.credentials: dict[str, int] = {}
         self.refresh_tokens: dict[str, int] = {}
         self.passwords: dict[int, str] = {}
         self.tokens: dict[str, int] = {}
-        self.ci_users: dict[str, int] = {}
-        self.activated: set[str] = set()
-        self.ci_tokens: dict[str, str] = {}
-        self.revoked_ci_tokens: set[str] = set()
         self.unverified: set[str] = set()
         self.refreshes = 0
         self.refuse_refresh = False
-        self.unavailable = False
         self.racing_submissions = 0
         self.lose_submission_answer = False
         self.signed_in_user_id = 0
 
+    @property
+    def clock(self) -> Clock:
+        return self.world.clock
+
+    @property
+    def calls(self) -> list[Call]:
+        return self.world.calls
+
+    @property
+    def unavailable(self) -> bool:
+        return self.world.unavailable
+
+    @unavailable.setter
+    def unavailable(self, value: bool) -> None:
+        self.world.unavailable = value
+
     def record(self, operation: str, identity: Identity, **arguments: Any) -> None:
-        self.calls.append(Call(operation, identity, arguments))
+        self.world.record(operation, identity, **arguments)
 
     def check_up(self) -> None:
-        if self.unavailable:
-            raise Unavailable("the fake forge is switched off")
+        self.world.check_up()
 
     def user(self, user_id: int) -> User:
         try:

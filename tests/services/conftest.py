@@ -88,9 +88,9 @@ def forge_state(fake: FakeForge) -> dict[str, Any]:
             "users": state.users,
             "places": {key: repo.files for key, repo in state.repos.items()},
             "tokens": state.tokens,
-            "ci_users": state.ci_users,
-            "ci_tokens": state.ci_tokens,
-            "activated": state.activated,
+            "ci_users": fake.ci.ci_users,
+            "ci_tokens": fake.ci.ci_tokens,
+            "activated": fake.ci.activated,
         }
     )
 

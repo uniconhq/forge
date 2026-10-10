@@ -8,8 +8,8 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
+from forge.adapters.ci.fake import token_in
 from forge.adapters.fakes import FakeForge
-from forge.adapters.git.fake.grading import token_in
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected
 from forge.domain.grading import GradingRun, RunSpec
@@ -348,13 +348,13 @@ async def test_a_service_account_is_made_placed_and_signed_in_at_the_ci(
     again = await fake.grading.set_up_org(
         OrgId("acme"), OrgAccountRef("unicon-ci-acme", account.id, "pw-2")
     )
-    assert fake.state.ci_users == {"unicon-ci-acme": 1}
-    assert fake.state.ci_tokens[token_in(state)] == "unicon-ci-acme"
+    assert fake.ci.ci_users == {"unicon-ci-acme": 1}
+    assert fake.ci.ci_tokens[token_in(state)] == "unicon-ci-acme"
     assert token_in(again) != token_in(state)
 
     await fake.grading.tear_down_org(OrgId("acme"), state)
-    assert fake.state.ci_users == {}
-    assert fake.state.ci_tokens == {}
+    assert fake.ci.ci_users == {}
+    assert fake.ci.ci_tokens == {}
 
 
 async def test_anyones_roles_are_read_as_the_platform(fake: FakeForge) -> None:

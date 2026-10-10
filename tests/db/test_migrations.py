@@ -683,7 +683,7 @@ async def test_an_orgs_state_made_by_the_migration_is_refreshed_once_stale(
     _accounts_before_the_state(migrated_database_url, b"ci-token-acme")
     command.upgrade(config, "head")
     fake.add_user(9, "unicon-ci-acme")
-    fake.state.ci_users["unicon-ci-acme"] = 4
+    fake.ci.ci_users["unicon-ci-acme"] = 4
     clock.set(SIGNED_IN_AT + timedelta(days=21))
 
     async with setup.unit_of_work() as ctx:

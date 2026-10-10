@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.adapters.git.fake.grading import token_in
+from forge.adapters.ci.fake import token_in
 from forge.domain.content import Edit
 from forge.domain.definitions import parse_contest, parse_task
 from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
@@ -230,7 +230,7 @@ async def test_a_failure_at_any_step_removes_what_the_earlier_ones_made_and_the_
     made = await tasks.create(setup, acme.ada, spring, "sum")
 
     assert made == Named(SUM, "sum")
-    assert SUM in acme.fake.state.activated
+    assert SUM in acme.fake.ci.activated
 
 
 async def test_a_commit_that_fails_after_every_step_removes_the_task_and_its_entry(
@@ -289,7 +289,7 @@ async def test_an_entry_an_organiser_changed_since_is_left_and_logged(
     (left,) = logged(caplog, "tasks.undo_left")
     assert (left["kind"], left["key"], left["error"]) == ("contest_entry", SPRING, "Conflict")
     assert ("acme", "spring.sum.task") not in acme.fake.state.repos
-    assert SUM not in acme.fake.state.activated
+    assert SUM not in acme.fake.ci.activated
 
 
 async def test_a_removal_that_fails_is_logged_and_the_rest_still_run(
@@ -332,7 +332,7 @@ async def test_a_task_made_in_full_removes_nothing(
         call for call in acme.fake.calls if call.operation in {"deactivate", "delete_place"}
     ] == []
     assert logged(caplog, "tasks.undone") == []
-    assert SUM in acme.fake.state.activated
+    assert SUM in acme.fake.ci.activated
 
 
 async def test_the_tasks_of_a_contest_are_listed_as_the_organiser(
@@ -361,7 +361,7 @@ async def test_a_task_whose_activation_the_ci_refuses_signs_the_org_account_in_a
 ) -> None:
     async with setup.unit_of_work() as ctx:
         lost = await org_accounts.identity(ctx, OrgId("acme"))
-    acme.fake.state.revoked_ci_tokens.add(token_in(lost.ci_state))
+    acme.fake.ci.revoked_ci_tokens.add(token_in(lost.ci_state))
 
     await tasks.create(setup, acme.ada, spring, "sum")
 

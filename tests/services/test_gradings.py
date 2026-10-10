@@ -35,7 +35,7 @@ from typing import Any
 import pytest
 from sqlalchemy import delete, select, update
 
-from forge.adapters.git.fake.grading import run_variables, token_in
+from forge.adapters.ci.fake import run_variables, token_in
 from forge.db.tables import Grading
 from forge.domain import exact_json
 from forge.domain.content import Edit
@@ -351,7 +351,7 @@ async def test_two_starts_at_once_leave_one_run_and_cancel_the_other(
     after = await _row(setup, row.id)
     assert after.status == GradingStatus.DISPATCHED
     assert len(acme.fake.calls_to("start_run")) == 2
-    assert [made for made, run in acme.fake.state.runs.items() if not run.cancelled] == [
+    assert [made for made, run in acme.fake.ci.runs.items() if not run.cancelled] == [
         RunId(str(after.run_id))
     ]
 
@@ -379,9 +379,9 @@ async def test_a_start_that_fails_is_a_system_error_saying_why_and_a_retry_start
 
     match trouble:
         case "refused":
-            acme.fake.state.refuse_starts = 1
+            acme.fake.ci.refuse_starts = 1
         case "answer_lost":
-            acme.fake.state.lose_start_answer = True
+            acme.fake.ci.lose_start_answer = True
         case _:
             monkeypatch.setattr(acme.fake.grading, "start_run", down)
     row = await _submit(setup, acme, entered)
@@ -933,7 +933,7 @@ async def test_staff_cancel_only_a_grading_in_system_error_and_say_why(
         NEVER_BEGAN,
         REASON,
     )
-    assert acme.fake.state.runs[run].cancelled is True
+    assert acme.fake.ci.runs[run].cancelled is True
     with pytest.raises(WrongStatus) as refused:
         await gradings.cancel(setup, manager, row.id, REASON)
     assert refused.value.extra == {"current": "cancelled"}
@@ -1142,7 +1142,7 @@ async def test_a_fallback_on_a_lost_grading_ends_it_saying_why_and_cancels_its_r
     await _report(setup, row, _finished(_result(envelope)))
     retried = await gradings.retry(setup, manager, row.id)
     run = RunId(str((await _row(setup, retried.id)).run_id))
-    acme.fake.state.runs[run].ci_state = RunState.LOST
+    acme.fake.ci.runs[run].ci_state = RunState.LOST
     clock.advance(LOST_CHECK_AFTER)
 
     fell = await gradings.fall_back(setup, manager, retried.id)
@@ -1150,7 +1150,7 @@ async def test_a_fallback_on_a_lost_grading_ends_it_saying_why_and_cancels_its_r
     assert (fell.status, fell.fallback) == (GradingStatus.SYSTEM_ERROR, Fallback.STAFF)
     _, lost = await _rows(setup)
     assert (lost.status, lost.error, lost.falls_back) == (GradingStatus.SYSTEM_ERROR, LOST, True)
-    assert acme.fake.state.runs[run].cancelled is True
+    assert acme.fake.ci.runs[run].cancelled is True
 
 
 async def test_a_contest_whose_settings_do_not_read_counts_a_broken_attempt_as_grading(
@@ -1320,7 +1320,7 @@ async def test_a_start_the_ci_refuses_signs_the_org_account_in_again_and_starts(
 ) -> None:
     async with setup.unit_of_work() as ctx:
         lost = await org_accounts.identity(ctx, OrgId("acme"))
-    acme.fake.state.revoked_ci_tokens.add(token_in(lost.ci_state))
+    acme.fake.ci.revoked_ci_tokens.add(token_in(lost.ci_state))
 
     row = await _submit(setup, acme, entered)
 
@@ -1355,7 +1355,7 @@ async def test_a_run_the_ci_lost_reads_as_a_system_error_saying_so_and_nothing_i
     row = await _submit(setup, acme, entered)
     run = RunId(str((await _row(setup, row.id)).run_id))
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
-    acme.fake.state.runs[run].ci_state = RunState.LOST
+    acme.fake.ci.runs[run].ci_state = RunState.LOST
     clock.advance(LOST_CHECK_AFTER)
 
     result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
@@ -1407,14 +1407,14 @@ async def test_a_retry_of_a_lost_grading_ends_it_saying_why_and_cancels_its_run(
     row = await _submit(setup, acme, entered)
     run = RunId(str((await _row(setup, row.id)).run_id))
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
-    acme.fake.state.runs[run].ci_state = RunState.LOST
+    acme.fake.ci.runs[run].ci_state = RunState.LOST
     clock.advance(LOST_CHECK_AFTER)
 
     retried = await gradings.retry(setup, manager, row.id)
 
     old, new = await _rows(setup)
     assert (old.status, old.error) == (GradingStatus.SYSTEM_ERROR, LOST)
-    assert acme.fake.state.runs[run].cancelled is True
+    assert acme.fake.ci.runs[run].cancelled is True
     assert (new.id, new.attempt, new.status) == (retried.id, 2, GradingStatus.DISPATCHED)
     assert new.run_id != run
 
@@ -1432,7 +1432,7 @@ async def test_a_retry_of_a_run_past_its_deadline_cancels_the_run_still_at_the_c
 
     old, _ = await _rows(setup)
     assert (old.status, old.error) == (GradingStatus.SYSTEM_ERROR, OVERDUE)
-    assert acme.fake.state.runs[run].cancelled is True
+    assert acme.fake.ci.runs[run].cancelled is True
 
 
 async def test_an_organiser_cancels_a_grading_that_reads_as_stuck(
@@ -1446,7 +1446,7 @@ async def test_an_organiser_cancels_a_grading_that_reads_as_stuck(
     cancelled = await gradings.cancel(setup, manager, row.id, REASON)
 
     assert cancelled.status == GradingStatus.CANCELLED
-    assert acme.fake.state.runs[run].cancelled is True
+    assert acme.fake.ci.runs[run].cancelled is True
 
 
 async def test_a_run_that_ended_before_its_harness_began_reads_as_lost_and_retries(
@@ -1455,7 +1455,7 @@ async def test_a_run_that_ended_before_its_harness_began_reads_as_lost_and_retri
     row = await _submit(setup, acme, entered)
     run = RunId(str((await _row(setup, row.id)).run_id))
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
-    acme.fake.state.runs[run].ci_state = RunState.FINISHED
+    acme.fake.ci.runs[run].ci_state = RunState.FINISHED
     clock.advance(LOST_CHECK_AFTER)
 
     (listed,) = await _listed(setup, manager, entered.task)

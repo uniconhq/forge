@@ -16,8 +16,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge.adapters.ci.fake import token_in
 from forge.adapters.fakes import FakeForge
-from forge.adapters.git.fake.grading import token_in
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -87,12 +87,12 @@ async def test_create_makes_the_org_before_it_answers(
     assert 7 in org.roles[(Scope("acme"), Role.ADMIN)]
     account = fake.state.user_named("unicon-ci-acme")
     assert account.id in org.account_members
-    assert fake.state.ci_users == {"unicon-ci-acme": 1}
+    assert fake.ci.ci_users == {"unicon-ci-acme": 1}
     async with setup.unit_of_work() as ctx:
         identity = await org_accounts.identity(ctx, ACME)
     assert identity.org == "acme"
     assert fake.state.tokens[identity.forge_token] == account.id
-    assert fake.state.ci_tokens[token_in(identity.ci_state)] == "unicon-ci-acme"
+    assert fake.ci.ci_tokens[token_in(identity.ci_state)] == "unicon-ci-acme"
 
 
 async def test_a_second_create_of_the_same_name_is_a_conflict(setup: Setup, ada: Session) -> None:
@@ -232,7 +232,7 @@ async def test_the_org_is_undone_in_the_reverse_of_the_order_it_was_made(
     assert fake.calls_to("create_user")
     assert [call.operation for call in fake.calls if call.operation in REMOVALS] == REMOVALS
     assert fake.calls_to("tear_down_org")[0].arguments == {"org": "acme"}
-    assert fake.state.ci_users == {}
+    assert fake.ci.ci_users == {}
     (deleted,) = fake.calls_to("delete_user")
     assert deleted.arguments["user_id"] not in fake.state.users
     assert fake.calls_to("delete_org")[0].arguments == {"name": "acme"}
@@ -287,7 +287,7 @@ async def test_a_removal_that_fails_is_logged_and_the_steps_own_error_is_raised(
     assert logged(caplog, "orgs.undone") == []
     assert "acme" in fake.state.orgs
     assert all(user.username != "unicon-ci-acme" for user in fake.state.users.values())
-    assert fake.state.ci_users == {}
+    assert fake.ci.ci_users == {}
     await _nothing_recorded(setup, "acme")
 
 
@@ -359,7 +359,7 @@ async def test_the_service_accounts_password_is_never_written_or_logged(
         assert token_in(identity.ci_state).encode() not in blob
     assert row["username"] == "unicon-ci-acme"
     assert row["forge_user_id"] == account.id
-    assert fake.state.ci_users == {"unicon-ci-acme": 1}
+    assert fake.ci.ci_users == {"unicon-ci-acme": 1}
 
 
 async def _organiser(

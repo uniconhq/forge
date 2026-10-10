@@ -6,14 +6,14 @@ user has no access to. `adapters.fakes.FakeForge` joins it with the other
 fakes into the `Forge` tests use.
 """
 
-from datetime import timedelta
 from typing import Any
 
+from forge.adapters.fake_world import Call, FakeWorld
+from forge.adapters.git.fake.ci_host import FakeCiHost
 from forge.adapters.git.fake.content import FakeContent
-from forge.adapters.git.fake.grading import FakeComputes, FakeGrading
 from forge.adapters.git.fake.identity import FakeIdentity
 from forge.adapters.git.fake.orgs import FakeOrgs
-from forge.adapters.git.fake.state import Call, State
+from forge.adapters.git.fake.state import State
 from forge.adapters.git.fake.threads import FakeThreads
 from forge.adapters.git.fake.uploads import FakeUploads
 from forge.adapters.git.fake.workflows import FakePrimitives, FakeWorkflows
@@ -31,22 +31,21 @@ class FakeGitHost:
         public_url: str = "http://forge.test",
         sign_in_redirect_uri: str = "http://app.test/api/v1/auth/callback",
         clock: Clock | None = None,
-        ci_login_lifetime: timedelta = timedelta(days=30),
-        ci_asks: bool = True,
+        world: FakeWorld | None = None,
     ) -> None:
-        self.state = State(clock)
+        self.state = State(clock, world=world)
         self.identity = FakeIdentity(
             self.state, public_url=public_url, redirect_uri=sign_in_redirect_uri
         )
         self.orgs = FakeOrgs(self.state)
         self.content = FakeContent(self.state)
-        self.grading = FakeGrading(self.state, login_lifetime=ci_login_lifetime, asks=ci_asks)
         self.uploads = FakeUploads()
         self.workspaces = FakeWorkspaces(self.state, self.uploads)
         self.threads = FakeThreads(self.state)
         self.workflows = FakeWorkflows(self.state)
         self.primitives = FakePrimitives(self.state)
-        self.computes = FakeComputes(self.state)
+        # What a CI needs from the git host, handed to the CI it is paired with.
+        self.ci_host = FakeCiHost(self.state, public_url=public_url)
 
     @property
     def name(self) -> str:
