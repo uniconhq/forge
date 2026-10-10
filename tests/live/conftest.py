@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from forge.adapters import JoinedForge
+from forge.adapters.ci.woodpecker import WoodpeckerCi, WoodpeckerConfig
 from forge.adapters.git.forgejo import ForgejoConfig, ForgejoForge
 from forge.adapters.mail.smtp import NoMail
 from forge.adapters.objects.s3 import NoStore
@@ -68,9 +69,14 @@ def forge_config(admin: httpx.Client) -> ForgejoConfig:
         oauth_client_secret="unused",
         sign_in_redirect_uri="http://unused/callback",
         sign_ups_open=True,
-        ci_url=CI_URL or "http://unused",
-        ci_public_url=CI_PUBLIC_URL or "http://unused",
-        ci_admin_token=CI_ADMIN_TOKEN or "unused",
+    )
+
+
+def woodpecker_config() -> WoodpeckerConfig:
+    return WoodpeckerConfig(
+        url=CI_URL or "http://unused",
+        public_url=CI_PUBLIC_URL or "http://unused",
+        admin_token=CI_ADMIN_TOKEN or "unused",
     )
 
 
@@ -120,7 +126,7 @@ def live_forge(config: ForgejoConfig, objects: ObjectStore | None = None) -> Joi
     git = ForgejoForge(config)
     return JoinedForge(
         git=git,
-        ci=git,
+        ci=WoodpeckerCi(woodpecker_config(), git.ci_host),
         objects=objects if objects is not None else NoStore(),
         mail=NoMail(),
     )
@@ -129,6 +135,16 @@ def live_forge(config: ForgejoConfig, objects: ObjectStore | None = None) -> Joi
 @pytest.fixture
 async def forge(admin: httpx.Client) -> AsyncIterator[ForgejoForge]:
     built = ForgejoForge(forge_config(admin))
+    try:
+        yield built
+    finally:
+        await built.aclose()
+
+
+@pytest.fixture
+async def woodpecker(forge: ForgejoForge) -> AsyncIterator[WoodpeckerCi]:
+    """The live CI, paired with the live forge."""
+    built = WoodpeckerCi(woodpecker_config(), forge.ci_host)
     try:
         yield built
     finally:

@@ -14,15 +14,10 @@ from typing import Any
 import httpx
 import pytest
 
-from forge.adapters.git.forgejo.ci_state import WoodpeckerState, written
-from forge.adapters.git.forgejo.http import (
-    CI_ADMIN,
-    CONCURRENT_CALLS,
-    ForgejoAuth,
-    Http,
-    WoodpeckerAuth,
-    new_client,
-)
+from forge.adapters.ci.woodpecker.ci_state import WoodpeckerState, written
+from forge.adapters.ci.woodpecker.http import CI_ADMIN, WoodpeckerAuth
+from forge.adapters.git.forgejo.http import ForgejoAuth, Http, new_client
+from forge.adapters.http import CONCURRENT_CALLS
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
 
@@ -156,8 +151,10 @@ async def test_each_identity_signs_its_own_way() -> None:
         "Bearer access-7",
         "token forge-token-acme",
     ]
+    # Forgejo's client takes the port's identities alone; one it does not
+    # know is refused all the same.
     with pytest.raises(Forbidden):
-        await http.call(CI_ADMIN, "GET", "/d")
+        await http.call(CI_ADMIN, "GET", "/d")  # type: ignore[arg-type]
 
 
 async def test_the_ci_signs_the_administrator_and_org_accounts_only() -> None:
@@ -165,7 +162,7 @@ async def test_the_ci_signs_the_administrator_and_org_accounts_only() -> None:
     assert await auth.header(CI_ADMIN) == "Bearer ci-admin"
     assert await auth.header(ACME) == "Bearer ci-token-acme"
     with pytest.raises(Forbidden):
-        await auth.header(PLATFORM)
+        await auth.header(PLATFORM)  # type: ignore[arg-type]
 
 
 def test_an_org_accounts_credentials_are_never_printed() -> None:

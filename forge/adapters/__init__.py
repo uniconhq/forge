@@ -1,12 +1,13 @@
 """The adapters behind the port, one group per service outside the platform:
-`git` for the git host, `objects` for the store run logs are kept in and
-`mail` for the mail server, with `fake` in each for tests, and `cached` in
-front of the git host's reads. Nothing in `domain`, `services` or `db`
-imports this package; `build` is how the runtime gets its `Forge`, one of
-each joined into one.
+`git` for the git host, `ci` for the CI, `objects` for the store run logs
+are kept in and `mail` for the mail server, with `fake` in each for tests,
+and `cached` in front of the git host's reads. Nothing in `domain`,
+`services` or `db` imports this package; `build` is how the runtime gets its
+`Forge`, one of each joined into one, and the only place that joins them.
 """
 
 from forge.adapters.cached import CachedForge
+from forge.adapters.ci.woodpecker import WoodpeckerCi, WoodpeckerConfig
 from forge.adapters.fakes import FakeForge
 from forge.adapters.git.forgejo import ForgejoConfig, ForgejoForge
 from forge.adapters.mail.smtp import MailConfig, NoMail, SmtpMail
@@ -39,14 +40,22 @@ class JoinedForge:
         self._ci = ci
 
     @property
+    def git(self) -> GitHost:
+        """The git host's adapter this was joined from."""
+        return self._git
+
+    @property
+    def ci(self) -> Ci:
+        """The CI's adapter this was joined from."""
+        return self._ci
+
+    @property
     def name(self) -> str:
         return self._git.name
 
     async def aclose(self) -> None:
         await self._git.aclose()
-        # One adapter may fill both groups, and is closed once.
-        if id(self._ci) != id(self._git):
-            await self._ci.aclose()
+        await self._ci.aclose()
 
 
 def build(settings: Settings, *, sign_in_redirect_uri: str) -> Forge:
@@ -72,7 +81,7 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
             sign_in_redirect_uri=sign_in_redirect_uri,
             ci_login_lifetime=settings.session_hard_ttl,
         )
-    forgejo, s3 = settings.forgejo, settings.s3
+    forgejo, woodpecker, s3 = settings.forgejo, settings.woodpecker, settings.s3
     if forgejo is None or s3 is None or settings.forge_public_url is None:
         raise Misconfigured("UNICON_FORGE=forgejo without its settings")
     git = ForgejoForge(
@@ -85,16 +94,26 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
             oauth_client_secret=forgejo.oauth_client_secret.get_secret_value(),
             sign_in_redirect_uri=sign_in_redirect_uri,
             sign_ups_open=forgejo.registration_open,
-            ci_url=str(forgejo.woodpecker_url),
-            ci_public_url=str(forgejo.woodpecker_public_url),
-            ci_admin_token=forgejo.woodpecker_token.get_secret_value(),
-            ci_login_lifetime=settings.session_hard_ttl,
-            ci=settings.ci,
         )
     )
+    match settings.ci:
+        case "woodpecker":
+            if woodpecker is None:
+                raise Misconfigured("UNICON_CI=woodpecker without its settings")
+            ci = WoodpeckerCi(
+                WoodpeckerConfig(
+                    url=str(woodpecker.url),
+                    public_url=str(woodpecker.public_url),
+                    admin_token=woodpecker.token.get_secret_value(),
+                    login_lifetime=settings.session_hard_ttl,
+                ),
+                git.ci_host,
+            )
+        case _:
+            raise Misconfigured(f"UNICON_CI={settings.ci} names no CI this platform grades with")
     return JoinedForge(
         git=git,
-        ci=git,
+        ci=ci,
         objects=S3Objects(
             StorageConfig(
                 endpoint=str(s3.endpoint),

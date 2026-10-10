@@ -2,7 +2,7 @@
 CI hands only that org's runs, or under the platform, which take any org's.
 """
 
-from forge.adapters.git.forgejo.http import CI_ADMIN, Http, json_of, segment
+from forge.adapters.ci.woodpecker.http import CI_ADMIN, Http, json_of, segment
 from forge.domain.grading import Enrolment
 from forge.domain.ids import AgentId, OrgId
 

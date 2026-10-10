@@ -4,15 +4,17 @@ when its sign-in at the CI is renewed, and which CI it grades with.
 """
 
 from datetime import timedelta
-from typing import Any
 
 import pytest
 
 from forge import adapters
+from forge.adapters.ci.woodpecker import WoodpeckerCi
 from forge.adapters.fakes import FakeForge
+from forge.adapters.git.forgejo import ForgejoForge
 from forge.adapters.mail.smtp import NoMail
 from forge.adapters.objects.s3 import S3Objects
-from forge.settings import ForgejoSettings, S3Settings, Settings
+from forge.domain.errors import Misconfigured
+from forge.settings import ForgejoSettings, S3Settings, Settings, WoodpeckerSettings
 
 SHORTER = timedelta(days=6)
 IDLE = timedelta(days=2)
@@ -29,18 +31,8 @@ def test_the_fakes_ci_login_lasts_the_sessions_hard_lifetime() -> None:
     assert forge.grading.login_lifetime == SHORTER
 
 
-def test_forgejo_is_given_the_sessions_hard_lifetime_and_the_ci(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    built: list[Any] = []
-
-    class Recorded(FakeForge):
-        def __init__(self, config: Any) -> None:
-            built.append(config)
-            super().__init__()
-
-    monkeypatch.setattr(adapters, "ForgejoForge", Recorded)
-    settings = Settings.for_tests(
+def _forgejo_settings() -> Settings:
+    return Settings.for_tests(
         forge="forgejo",
         forge_public_url="http://forge.test",
         session_hard_ttl=SHORTER,
@@ -53,9 +45,9 @@ def test_forgejo_is_given_the_sessions_hard_lifetime_and_the_ci(
             oauth_client_id="client",
             oauth_client_secret="secret",
             platform_account="platform",
-            woodpecker_url="http://woodpecker:8000",
-            woodpecker_public_url="http://ci.test",
-            woodpecker_token="ci-admin",
+        ),
+        woodpecker=WoodpeckerSettings(
+            url="http://woodpecker:8000", public_url="http://ci.test", token="ci-admin"
         ),
         s3=S3Settings(
             endpoint="http://garage:3900",
@@ -64,9 +56,29 @@ def test_forgejo_is_given_the_sessions_hard_lifetime_and_the_ci(
         ),
     )
 
-    forge = adapters.build(settings, sign_in_redirect_uri="http://app.test/cb")
 
-    [config] = built
-    assert (config.ci_login_lifetime, config.ci) == (SHORTER, "woodpecker")
-    assert isinstance(forge.objects, S3Objects)
-    assert isinstance(forge.mail, NoMail)
+async def test_forgejo_is_joined_with_the_ci_the_settings_pick_over_its_ci_host() -> None:
+    """Woodpecker is handed Forgejo's `CiHost` and the session's hard
+    lifetime, and the store and the mail server are built from their own
+    settings.
+    """
+    forge = adapters.build(_forgejo_settings(), sign_in_redirect_uri="http://app.test/cb")
+    try:
+        joined = forge._inner  # type: ignore[attr-defined]
+        assert isinstance(joined, adapters.JoinedForge)
+        assert isinstance(joined.git, ForgejoForge)
+        assert isinstance(joined.ci, WoodpeckerCi)
+        assert joined.ci.grading._host is joined.git.ci_host
+        assert joined.ci.grading._login_lifetime == SHORTER
+        assert forge.grading is joined.ci.grading
+        assert isinstance(forge.objects, S3Objects)
+        assert isinstance(forge.mail, NoMail)
+    finally:
+        await forge.aclose()
+
+
+def test_a_ci_the_platform_does_not_grade_with_is_misconfigured() -> None:
+    settings = _forgejo_settings().model_copy(update={"ci": "jenkins"})
+
+    with pytest.raises(Misconfigured, match="UNICON_CI=jenkins"):
+        adapters.build(settings, sign_in_redirect_uri="http://app.test/cb")

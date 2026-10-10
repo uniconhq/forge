@@ -3,15 +3,15 @@ live forge accepts, asserted without one.
 """
 
 import base64
-import dataclasses
 import json
 from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
 
+from forge.adapters.ci.woodpecker import WoodpeckerCi
+from forge.adapters.ci.woodpecker.ci_state import WoodpeckerState, read_state, written
 from forge.adapters.git.forgejo import ForgejoForge
-from forge.adapters.git.forgejo.ci_state import WoodpeckerState, read_state, written
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, Misconfigured, NotFound, Rejected
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential, OrgAccountRef
@@ -20,7 +20,7 @@ from forge.domain.names import OrgProfile, UserOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
-from tests.forges.forgejo.conftest import CONFIG, Recorder, ok
+from tests.forges.forgejo.conftest import Recorder, ok
 
 ACME = AsOrgAccount(
     "acme", forge_token="forge-acme", ci_state=written(WoodpeckerState(4, "ci-acme", None))
@@ -34,15 +34,15 @@ def _credential() -> Credential:
 
 
 async def test_an_org_agent_is_enrolled_under_its_org(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/orgs/lookup/acme", ok({"id": 42}))
     recorder.on("POST", "/api/orgs/42/agents", ok({"id": 9, "token": "t"}))
     recorder.on("POST", "/api/agents", ok({"id": 10, "token": "g"}))
 
-    org_agent = await forgejo.computes.enrol_agent(OrgId("acme"), "box")
-    global_agent = await forgejo.computes.enrol_agent(None, "pool")
-    await forgejo.computes.revoke_agent(OrgId("acme"), org_agent.agent)
+    org_agent = await woodpecker.computes.enrol_agent(OrgId("acme"), "box")
+    global_agent = await woodpecker.computes.enrol_agent(None, "pool")
+    await woodpecker.computes.revoke_agent(OrgId("acme"), org_agent.agent)
 
     assert (org_agent.agent, org_agent.token) == ("9", "t")
     assert global_agent.agent == "10"
@@ -1398,7 +1398,7 @@ async def test_an_account_is_created_given_a_password_and_a_token(
 
 
 async def test_an_org_is_set_up_with_its_user_found_or_made_then_signed_in(
-    forgejo: ForgejoForge, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+    woodpecker: WoodpeckerCi, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     recorder.on("GET", "/api/users/unicon-ci-acme", ok({}, 404), ok({"id": 4}))
     recorder.on("POST", "/api/users", ok({"id": 4}))
@@ -1408,11 +1408,11 @@ async def test_an_org_is_set_up_with_its_user_found_or_made_then_signed_in(
         signed_in.append((username, forge_password))
         return f"token-{len(signed_in)}"
 
-    monkeypatch.setattr(forgejo.grading._login, "mint_token", mint_token)
+    monkeypatch.setattr(woodpecker.grading._login, "mint_token", mint_token)
     account = OrgAccountRef("unicon-ci-acme", 9, "pw-1")
 
-    first = await forgejo.grading.set_up_org(OrgId("acme"), account)
-    again = await forgejo.grading.set_up_org(OrgId("acme"), account)
+    first = await woodpecker.grading.set_up_org(OrgId("acme"), account)
+    again = await woodpecker.grading.set_up_org(OrgId("acme"), account)
 
     assert recorder.sent("POST", "/api/users") == [{"login": "unicon-ci-acme"}]
     assert recorder.headers("POST", "/api/users") == ["Bearer ci-admin"]
@@ -1463,8 +1463,3 @@ async def test_a_version_is_read_at_its_tags_commit_whatever_its_name_spells(
 
     [read] = [seen for seen in recorder.seen if seen.url.path == f"{repo}/contents/workflow.yaml"]
     assert read.url.params["ref"] == tagged
-
-
-def test_a_ci_the_forgejo_forge_does_not_grade_with_is_misconfigured() -> None:
-    with pytest.raises(Misconfigured, match="UNICON_CI=jenkins"):
-        ForgejoForge(dataclasses.replace(CONFIG, ci="jenkins"))

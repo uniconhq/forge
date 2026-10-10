@@ -19,8 +19,8 @@ import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from forge.adapters.git.forgejo import ForgejoForge, grading
-from forge.adapters.git.forgejo.ci_state import WoodpeckerState, read_state, written
+from forge.adapters.ci.woodpecker import WoodpeckerCi, grading
+from forge.adapters.ci.woodpecker.ci_state import WoodpeckerState, read_state, written
 from forge.domain.errors import (
     CiRequestRefused,
     Forbidden,
@@ -128,7 +128,7 @@ def _ask_body(variables: dict[str, str] | None = None) -> bytes:
 
 
 async def test_a_task_is_activated_once_as_the_org_account(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/v1/repos/acme/spring.sum.task", ok({"id": 55}))
     recorder.on("POST", "/api/repos", ok({"id": 5}))
@@ -143,7 +143,7 @@ async def test_a_task_is_activated_once_as_the_org_account(
         ),
     )
 
-    await forgejo.grading.activate(ACME, TaskId("acme/spring/sum"))
+    await woodpecker.grading.activate(ACME, TaskId("acme/spring/sum"))
 
     assert recorder.headers("POST", "/api/repos") == ["Bearer ci-acme"]
     (activated,) = [seen for seen in recorder.seen if seen.url.path == "/api/repos"]
@@ -156,57 +156,57 @@ async def test_a_task_is_activated_once_as_the_org_account(
 
 
 async def test_a_task_is_deactivated_and_forgotten_as_the_org_account(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/repos/lookup/acme/spring.sum.task", ok({"id": 5}), ok({}, 404))
 
-    await forgejo.grading.deactivate(ACME, TaskId("acme/spring/sum"))
-    await forgejo.grading.deactivate(ACME, TaskId("acme/spring/sum"))
+    await woodpecker.grading.deactivate(ACME, TaskId("acme/spring/sum"))
+    await woodpecker.grading.deactivate(ACME, TaskId("acme/spring/sum"))
 
     assert recorder.calls().count("DELETE /api/repos/5") == 1
     (deleted,) = [request for request in recorder.seen if request.method == "DELETE"]
     assert deleted.url.params["remove"] == "true"
     assert deleted.headers["Authorization"] == "Bearer ci-acme"
     with pytest.raises(Forbidden):
-        await forgejo.grading.deactivate(ACME, TaskId("other/spring/sum"))
+        await woodpecker.grading.deactivate(ACME, TaskId("other/spring/sum"))
 
 
 async def test_the_ci_user_is_deleted_as_the_administrator(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     recorder.on("DELETE", "/api/users/unicon-ci-acme", httpx.Response(204), ok({}, 404))
     recorder.on("GET", "/api/users/unicon-ci-acme", ok({}, 404))
 
-    await forgejo.grading.tear_down_org(OrgId("acme"), CiState(""))
-    await forgejo.grading.tear_down_org(OrgId("acme"), ACME.ci_state)
+    await woodpecker.grading.tear_down_org(OrgId("acme"), CiState(""))
+    await woodpecker.grading.tear_down_org(OrgId("acme"), ACME.ci_state)
 
     assert recorder.headers("DELETE", "/api/users/unicon-ci-acme") == ["Bearer ci-admin"] * 2
 
 
 async def test_a_ci_user_the_ci_keeps_after_a_404_is_refused(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     recorder.on("DELETE", "/api/users/unicon-ci-acme", ok({}, 404))
     recorder.on("GET", "/api/users/unicon-ci-acme", ok({"id": 4}))
 
     with pytest.raises(Rejected):
-        await forgejo.grading.tear_down_org(OrgId("acme"), CiState(""))
+        await woodpecker.grading.tear_down_org(OrgId("acme"), CiState(""))
 
 
 def test_a_sign_in_older_than_two_thirds_of_the_login_lifetime_needs_refreshing(
-    forgejo: ForgejoForge,
+    woodpecker: WoodpeckerCi,
 ) -> None:
-    lifetime = forgejo.grading._login_lifetime
+    lifetime = woodpecker.grading._login_lifetime
     fresh = written(WoodpeckerState(4, "t", NOW - lifetime * 2 / 3))
     stale = written(WoodpeckerState(4, "t", NOW - lifetime * 2 / 3 - timedelta(seconds=1)))
 
-    assert forgejo.grading.needs_refresh(fresh, NOW) is False
-    assert forgejo.grading.needs_refresh(stale, NOW) is True
-    assert forgejo.grading.needs_refresh(written(WoodpeckerState(4, "t", None)), NOW) is True
+    assert woodpecker.grading.needs_refresh(fresh, NOW) is False
+    assert woodpecker.grading.needs_refresh(stale, NOW) is True
+    assert woodpecker.grading.needs_refresh(written(WoodpeckerState(4, "t", None)), NOW) is True
 
 
 async def test_a_refresh_signs_the_account_in_with_a_fresh_password_and_keeps_its_user(
-    forgejo: ForgejoForge, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+    woodpecker: WoodpeckerCi, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The account is found by the id it was made with, never by its name,
     which anyone could have taken.
@@ -219,9 +219,9 @@ async def test_a_refresh_signs_the_account_in_with_a_fresh_password_and_keeps_it
         signed_in.append((username, forge_password))
         return "fresh"
 
-    monkeypatch.setattr(forgejo.grading._login, "mint_token", mint_token)
+    monkeypatch.setattr(woodpecker.grading._login, "mint_token", mint_token)
 
-    refreshed = read_state(await forgejo.grading.refresh(OrgId("acme"), ACME.ci_state))
+    refreshed = read_state(await woodpecker.grading.refresh(OrgId("acme"), ACME.ci_state))
 
     [patched] = recorder.sent("PATCH", "/api/v1/admin/users/unicon-ci-acme")
     assert signed_in == [("unicon-ci-acme", patched["password"])]
@@ -233,30 +233,30 @@ async def test_a_refresh_signs_the_account_in_with_a_fresh_password_and_keeps_it
 
 
 async def test_a_refresh_sets_no_password_on_an_account_that_is_not_the_orgs(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/v1/users/search", ok({"data": [{"id": 9, "login": "someone-else"}]}))
 
     with pytest.raises(Rejected):
-        await forgejo.grading.refresh(OrgId("acme"), ACME.ci_state)
+        await woodpecker.grading.refresh(OrgId("acme"), ACME.ci_state)
     assert recorder.sent("PATCH", "/api/v1/admin/users/someone-else") == []
 
 
 async def test_a_refresh_of_a_state_that_names_no_account_is_refused(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     with pytest.raises(Rejected):
-        await forgejo.grading.refresh(OrgId("acme"), written(WoodpeckerState(4, "t", None)))
+        await woodpecker.grading.refresh(OrgId("acme"), written(WoodpeckerState(4, "t", None)))
     assert recorder.calls() == []
 
 
 async def test_a_run_is_started_on_main_as_the_org_account_with_its_variables(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/repos/lookup/acme/spring.sum.task", ok({"id": 5}))
     recorder.on("POST", "/api/repos/5/pipelines", ok({"number": 3, "status": "pending"}))
 
-    run = await forgejo.grading.start_run(ACME, RUN, SPEC)
+    run = await woodpecker.grading.start_run(ACME, RUN, SPEC)
 
     assert run == "5/3"
     assert recorder.headers("POST", "/api/repos/5/pipelines") == ["Bearer ci-acme"]
@@ -273,20 +273,20 @@ async def test_a_run_is_started_on_main_as_the_org_account_with_its_variables(
     ],
 )
 async def test_a_start_answered_without_a_run_is_rejected(
-    forgejo: ForgejoForge, recorder: Recorder, answer: httpx.Response
+    woodpecker: WoodpeckerCi, recorder: Recorder, answer: httpx.Response
 ) -> None:
     recorder.on("GET", "/api/repos/lookup/acme/spring.sum.task", ok({"id": 5}))
     recorder.on("POST", "/api/repos/5/pipelines", answer)
 
     with pytest.raises(Rejected):
-        await forgejo.grading.start_run(ACME, RUN, SPEC)
+        await woodpecker.grading.start_run(ACME, RUN, SPEC)
 
 
-async def test_a_start_for_another_org_is_forbidden(forgejo: ForgejoForge) -> None:
+async def test_a_start_for_another_org_is_forbidden(woodpecker: WoodpeckerCi) -> None:
     other = AsOrgAccount("other", forge_token="f", ci_state=written(WoodpeckerState(4, "c", None)))
 
     with pytest.raises(Forbidden):
-        await forgejo.grading.start_run(other, RUN, SPEC)
+        await woodpecker.grading.start_run(other, RUN, SPEC)
 
 
 def _lookup(seen: list[tuple[str | None, TaskId]] | None = None) -> RunLookup:
@@ -303,24 +303,24 @@ def _lookup(seen: list[tuple[str | None, TaskId]] | None = None) -> RunLookup:
 
 
 async def test_a_signed_request_is_answered_for_the_run_it_asks_about(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
 
     seen: list[tuple[str | None, TaskId]] = []
-    await forgejo.grading.answer(_signed(key, _ask_body()), _lookup(seen), now=NOW)
+    await woodpecker.grading.answer(_signed(key, _ask_body()), _lookup(seen), now=NOW)
 
     assert seen == [(str(GRADING), TaskId("acme/spring/sum"))]
     assert recorder.headers("GET", "/api/signature/public-key") == ["Bearer ci-admin"]
 
 
-async def test_the_key_is_read_once_and_kept(forgejo: ForgejoForge, recorder: Recorder) -> None:
+async def test_the_key_is_read_once_and_kept(woodpecker: WoodpeckerCi, recorder: Recorder) -> None:
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
 
     for _ in range(3):
-        await forgejo.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
+        await woodpecker.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
 
     assert recorder.calls().count("GET /api/signature/public-key") == 1
 
@@ -353,36 +353,36 @@ async def test_the_key_is_read_once_and_kept(forgejo: ForgejoForge, recorder: Re
     ],
 )
 async def test_a_request_that_does_not_verify_is_forbidden(
-    forgejo: ForgejoForge, recorder: Recorder, request_of: object
+    woodpecker: WoodpeckerCi, recorder: Recorder, request_of: object
 ) -> None:
     key, other = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
     made = request_of(key, other)  # type: ignore[operator]
 
     with pytest.raises(Forbidden):
-        await forgejo.grading.answer(
+        await woodpecker.grading.answer(
             InboundRequest(made.method, TARGET, made.headers, made.body), _lookup(), now=NOW
         )
 
 
 async def test_a_request_that_does_not_verify_has_the_key_read_again_once(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     old, new = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(old), _pem_answer(new))
-    await forgejo.grading.answer(_signed(old, _ask_body()), _lookup(), now=NOW)
-    forgejo.grading._key_read_at -= 120
+    await woodpecker.grading.answer(_signed(old, _ask_body()), _lookup(), now=NOW)
+    woodpecker.grading._key_read_at -= 120
 
-    await forgejo.grading.answer(_signed(new, _ask_body()), _lookup(), now=NOW)
+    await woodpecker.grading.answer(_signed(new, _ask_body()), _lookup(), now=NOW)
 
     assert recorder.calls().count("GET /api/signature/public-key") == 2
     with pytest.raises(Forbidden):
-        await forgejo.grading.answer(_signed(old, _ask_body()), _lookup(), now=NOW)
+        await woodpecker.grading.answer(_signed(old, _ask_body()), _lookup(), now=NOW)
     assert recorder.calls().count("GET /api/signature/public-key") == 2
 
 
 async def test_a_key_that_could_not_be_read_is_not_asked_for_again_within_a_minute(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     key = Ed25519PrivateKey.generate()
     unreadable = httpx.Response(200, content=b"not a key")
@@ -390,16 +390,16 @@ async def test_a_key_that_could_not_be_read_is_not_asked_for_again_within_a_minu
 
     for _ in range(3):
         with pytest.raises(Unavailable):
-            await forgejo.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
+            await woodpecker.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
     assert recorder.calls().count("GET /api/signature/public-key") == 1
-    forgejo.grading._key_read_at -= 120
-    await forgejo.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
+    woodpecker.grading._key_read_at -= 120
+    await woodpecker.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
 
     assert recorder.calls().count("GET /api/signature/public-key") == 2
 
 
 async def test_a_signed_request_about_no_task_is_rejected(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
@@ -408,16 +408,16 @@ async def test_a_signed_request_about_no_task_is_rejected(
     ).encode()
 
     with pytest.raises(Rejected):
-        await forgejo.grading.answer(_signed(key, body), _lookup(), now=NOW)
+        await woodpecker.grading.answer(_signed(key, body), _lookup(), now=NOW)
 
 
 async def test_the_answer_is_two_full_clone_steps_and_the_harness(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
-    answer = await forgejo.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
-    again = await forgejo.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
+    answer = await woodpecker.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
+    again = await woodpecker.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
 
     assert answer == again
     assert answer.content_type == "application/json"
@@ -478,7 +478,7 @@ async def test_the_answer_is_two_full_clone_steps_and_the_harness(
     ],
 )
 async def test_a_run_started_with_any_other_variable_is_answered_with_nothing(
-    forgejo: ForgejoForge, recorder: Recorder, variable: str
+    woodpecker: WoodpeckerCi, recorder: Recorder, variable: str
 ) -> None:
     """Rule 1, the CI's half: anyone who may start a manual pipeline on the
     task's repository may pass variables of their own, a harness image among
@@ -490,7 +490,7 @@ async def test_a_run_started_with_any_other_variable_is_answered_with_nothing(
     variables = {**VARIABLES, variable: VARIABLES.get(variable, "ghcr.io/someone/harness") + "x"}
 
     with pytest.raises(VariablesDiffer):
-        await forgejo.grading.answer(_signed(key, _ask_body(variables)), _lookup(), now=NOW)
+        await woodpecker.grading.answer(_signed(key, _ask_body(variables)), _lookup(), now=NOW)
 
 
 @pytest.mark.parametrize(
@@ -504,17 +504,17 @@ async def test_a_run_started_with_any_other_variable_is_answered_with_nothing(
     ],
 )
 async def test_a_run_started_with_a_variable_dropped_or_added_is_answered_with_nothing(
-    forgejo: ForgejoForge, recorder: Recorder, variables: dict[str, str]
+    woodpecker: WoodpeckerCi, recorder: Recorder, variables: dict[str, str]
 ) -> None:
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
 
     with pytest.raises(VariablesDiffer):
-        await forgejo.grading.answer(_signed(key, _ask_body(variables)), _lookup(), now=NOW)
+        await woodpecker.grading.answer(_signed(key, _ask_body(variables)), _lookup(), now=NOW)
 
 
 async def test_what_the_platform_refuses_is_refused_and_nothing_is_answered(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
@@ -523,18 +523,18 @@ async def test_what_the_platform_refuses_is_refused_and_nothing_is_answered(
         raise CiRequestRefused("not this one")
 
     with pytest.raises(CiRequestRefused):
-        await forgejo.grading.answer(_signed(key, _ask_body()), refused, now=NOW)
+        await woodpecker.grading.answer(_signed(key, _ask_body()), refused, now=NOW)
 
 
 async def test_a_request_that_does_not_verify_is_never_looked_up(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     key, other = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
     seen: list[tuple[str | None, TaskId]] = []
 
     with pytest.raises(Forbidden):
-        await forgejo.grading.answer(_signed(other, _ask_body()), _lookup(seen), now=NOW)
+        await woodpecker.grading.answer(_signed(other, _ask_body()), _lookup(seen), now=NOW)
     assert seen == []
 
 
@@ -547,9 +547,9 @@ def test_each_org_has_its_own_store_of_large_files() -> None:
 
 
 def test_the_envelope_places_name_the_task_the_publication_and_the_submission(
-    forgejo: ForgejoForge,
+    woodpecker: WoodpeckerCi,
 ) -> None:
-    places = forgejo.grading.run_places(RUN)
+    places = woodpecker.grading.run_places(RUN)
 
     assert places.task == {"org": "acme", "repo": "spring.sum.task"}
     assert places.publication == {"tag": "published/3", "commit": TASK_COMMIT}
@@ -579,18 +579,18 @@ def _queue(**lists: list[tuple[int, int]]) -> httpx.Response:
 
 
 async def test_a_run_in_the_queue_is_queued_or_taken_without_reading_its_pipeline(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/queue/info", _queue(pending=[(5, 3)], running=[(5, 4)]))
 
-    assert await forgejo.grading.run_state(RunId("5/3")) is RunState.QUEUED
-    assert await forgejo.grading.run_state(RunId("5/4")) is RunState.TAKEN
+    assert await woodpecker.grading.run_state(RunId("5/3")) is RunState.QUEUED
+    assert await woodpecker.grading.run_state(RunId("5/4")) is RunState.TAKEN
     assert recorder.calls() == ["GET /api/queue/info"]
     assert recorder.headers("GET", "/api/queue/info") == ["Bearer ci-admin"]
 
 
 async def test_a_run_in_no_queue_is_finished_or_lost_by_its_pipeline(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/queue/info", _queue())
     recorder.on(
@@ -606,21 +606,21 @@ async def test_a_run_in_no_queue_is_finished_or_lost_by_its_pipeline(
     recorder.on("GET", "/api/repos/5/pipelines/5", ok({"status": "killed", "workflows": []}))
     recorder.on("GET", "/api/repos/5/pipelines/6", httpx.Response(404))
 
-    assert await forgejo.grading.run_state(RunId("5/3")) is RunState.LOST
-    assert await forgejo.grading.run_state(RunId("5/4")) is RunState.FINISHED
-    assert await forgejo.grading.run_state(RunId("5/5")) is RunState.FINISHED
-    assert await forgejo.grading.run_state(RunId("5/6")) is RunState.LOST
+    assert await woodpecker.grading.run_state(RunId("5/3")) is RunState.LOST
+    assert await woodpecker.grading.run_state(RunId("5/4")) is RunState.FINISHED
+    assert await woodpecker.grading.run_state(RunId("5/5")) is RunState.FINISHED
+    assert await woodpecker.grading.run_state(RunId("5/6")) is RunState.LOST
 
 
 async def test_the_queue_is_read_at_most_once_in_ten_seconds(
-    forgejo: ForgejoForge, recorder: Recorder
+    woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
     recorder.on("GET", "/api/queue/info", _queue(pending=[(5, 3)]), _queue(running=[(5, 3)]))
 
-    first = await forgejo.grading.run_state(RunId("5/3"))
-    kept = await forgejo.grading.run_state(RunId("5/3"))
-    forgejo.grading._queue_read_at -= grading.QUEUE_KEPT_SECONDS
-    fresh = await forgejo.grading.run_state(RunId("5/3"))
+    first = await woodpecker.grading.run_state(RunId("5/3"))
+    kept = await woodpecker.grading.run_state(RunId("5/3"))
+    woodpecker.grading._queue_read_at -= grading.QUEUE_KEPT_SECONDS
+    fresh = await woodpecker.grading.run_state(RunId("5/3"))
 
     assert (first, kept, fresh) == (RunState.QUEUED, RunState.QUEUED, RunState.TAKEN)
     assert recorder.calls() == ["GET /api/queue/info", "GET /api/queue/info"]

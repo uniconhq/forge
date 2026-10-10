@@ -24,8 +24,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from sqlalchemy import select
 
-from forge.adapters.git.forgejo import ForgejoForge
-from forge.adapters.git.forgejo.grading import run_variables
+from forge.adapters.ci.woodpecker import WoodpeckerCi
+from forge.adapters.ci.woodpecker.grading import run_variables
 from forge.db.tables import Grading
 from forge.domain.errors import Forbidden
 from forge.domain.grading import GradingRun, GradingStatus, InboundRequest, RunSpec
@@ -97,7 +97,7 @@ async def _never_looked_up(grading: str | None, task: TaskId) -> tuple[GradingRu
 
 
 async def test_the_cis_key_is_read_and_a_request_it_did_not_sign_is_refused(
-    forge: ForgejoForge,
+    woodpecker: WoodpeckerCi,
 ) -> None:
     body = b'{"repo": {"owner": "acme", "name": "spring.sum.task"}, "pipeline": {}}'
     digest = "sha-256=:" + base64.b64encode(hashlib.sha256(body).digest()).decode() + ":"
@@ -122,9 +122,9 @@ async def test_the_cis_key_is_read_and_a_request_it_did_not_sign_is_refused(
     )
 
     with pytest.raises(Forbidden):
-        await forge.grading.answer(request, _never_looked_up, now=now)
+        await woodpecker.grading.answer(request, _never_looked_up, now=now)
 
-    assert isinstance(forge.grading._key, Ed25519PublicKey)
+    assert isinstance(woodpecker.grading._key, Ed25519PublicKey)
 
 
 async def test_a_grading_is_started_as_the_org_account_once_its_row_commits(

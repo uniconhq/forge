@@ -136,14 +136,14 @@ def test_a_key_of_the_wrong_length_is_refused() -> None:
 def test_the_ci_public_url_follows_the_ci_url_unless_given(
     environment: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    forgejo = load_settings().forgejo
-    assert forgejo is not None
-    assert str(forgejo.woodpecker_public_url) == "http://woodpecker-server:8000/"
+    woodpecker = load_settings().woodpecker
+    assert woodpecker is not None
+    assert str(woodpecker.public_url) == "http://woodpecker-server:8000/"
 
     monkeypatch.setenv("UNICON_WOODPECKER_PUBLIC_URL", "http://ci.example.test")
-    forgejo = load_settings().forgejo
-    assert forgejo is not None
-    assert str(forgejo.woodpecker_public_url) == "http://ci.example.test/"
+    woodpecker = load_settings().woodpecker
+    assert woodpecker is not None
+    assert str(woodpecker.public_url) == "http://ci.example.test/"
 
 
 def test_cookies_are_secure_by_default_exactly_when_the_public_url_is_https() -> None:

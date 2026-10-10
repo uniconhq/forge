@@ -1,5 +1,6 @@
-"""A Forgejo implementation over a recording transport, so a test asserts the
-requests each area makes: method, path and body.
+"""The Forgejo adapter, and the Woodpecker adapter paired with it, over one
+recording transport, so a test asserts the requests each area makes: method,
+path and body.
 """
 
 import json
@@ -9,8 +10,11 @@ from typing import Any
 import httpx
 import pytest
 
+from forge.adapters import http
+from forge.adapters.ci.woodpecker import WoodpeckerCi, WoodpeckerConfig
+from forge.adapters.ci.woodpecker.http import WoodpeckerAuth
 from forge.adapters.git.forgejo import ForgejoConfig, ForgejoForge
-from forge.adapters.git.forgejo.http import ForgejoAuth, Http, WoodpeckerAuth
+from forge.adapters.git.forgejo.http import ForgejoAuth
 
 CONFIG = ForgejoConfig(
     public_url="http://forge.test",
@@ -21,9 +25,10 @@ CONFIG = ForgejoConfig(
     oauth_client_secret="secret",
     sign_in_redirect_uri="http://app.test/api/v1/auth/callback",
     sign_ups_open=True,
-    ci_url="http://ci.internal",
-    ci_public_url="http://ci.test",
-    ci_admin_token="ci-admin",
+)
+
+WOODPECKER = WoodpeckerConfig(
+    url="http://ci.internal", public_url="http://ci.test", admin_token="ci-admin"
 )
 
 
@@ -72,17 +77,23 @@ def recorder() -> Recorder:
 @pytest.fixture
 def forgejo(recorder: Recorder) -> ForgejoForge:
     transport = httpx.MockTransport(recorder.handle)
-    forge_http = Http(
+    client = http.Http(
         httpx.AsyncClient(base_url=CONFIG.internal_url, transport=transport),
         ForgejoAuth(CONFIG.admin_token),
         backoff_seconds=0,
     )
-    ci_http = Http(
-        httpx.AsyncClient(base_url=CONFIG.ci_url, transport=transport),
-        WoodpeckerAuth(CONFIG.ci_admin_token),
+    return ForgejoForge(CONFIG, client=client)
+
+
+@pytest.fixture
+def woodpecker(recorder: Recorder, forgejo: ForgejoForge) -> WoodpeckerCi:
+    transport = httpx.MockTransport(recorder.handle)
+    client = http.Http(
+        httpx.AsyncClient(base_url=WOODPECKER.url, transport=transport),
+        WoodpeckerAuth(WOODPECKER.admin_token),
         backoff_seconds=0,
     )
-    return ForgejoForge(CONFIG, clients=(forge_http, ci_http))
+    return WoodpeckerCi(WOODPECKER, forgejo.ci_host, client=client)
 
 
 def ok(payload: Any, status: int = 200) -> httpx.Response:

@@ -77,10 +77,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
 from forge.adapters.ci.host import CiHost
-from forge.adapters.git.forgejo import signatures
-from forge.adapters.git.forgejo.ci_login import CiLogin
-from forge.adapters.git.forgejo.ci_state import WoodpeckerState, read_state, written
-from forge.adapters.git.forgejo.http import CI_ADMIN, Caller, Http, json_of, segment
+from forge.adapters.ci.woodpecker import signatures
+from forge.adapters.ci.woodpecker.ci_login import CiLogin
+from forge.adapters.ci.woodpecker.ci_state import WoodpeckerState, read_state, written
+from forge.adapters.ci.woodpecker.http import CI_ADMIN, Caller, Http, json_of, segment
 from forge.adapters.ids import (
     PUBLISHED_PREFIX,
     SUBMISSION_PREFIX,

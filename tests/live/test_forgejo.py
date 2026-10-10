@@ -19,8 +19,9 @@ from typing import Any
 import httpx
 import pytest
 
+from forge.adapters.ci.woodpecker import WoodpeckerCi
+from forge.adapters.ci.woodpecker.ci_state import read_state
 from forge.adapters.git.forgejo import ForgejoForge
-from forge.adapters.git.forgejo.ci_state import read_state
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, AsUser, OrgAccountRef
 from forge.domain.ids import OrgId, ThreadId
@@ -477,7 +478,7 @@ async def test_the_service_account_is_made_placed_and_given_a_token(
 
 @needs_ci
 async def test_an_org_is_set_up_at_the_ci_and_refreshed_with_a_working_token(
-    forge: ForgejoForge, org: str, account_name: str
+    forge: ForgejoForge, woodpecker: WoodpeckerCi, org: str, account_name: str
 ) -> None:
     assert CI_URL and CI_ADMIN_TOKEN
     account = await forge.identity.find_user_by_username(account_name)
@@ -486,8 +487,10 @@ async def test_an_org_is_set_up_at_the_ci_and_refreshed_with_a_working_token(
     ci_admin = {"Authorization": f"Bearer {CI_ADMIN_TOKEN}"}
 
     with pytest.raises(Forbidden):
-        await forge.grading.set_up_org(OrgId(org), OrgAccountRef(account_name, account.id, "wrong"))
-    state = await forge.grading.set_up_org(
+        await woodpecker.grading.set_up_org(
+            OrgId(org), OrgAccountRef(account_name, account.id, "wrong")
+        )
+    state = await woodpecker.grading.set_up_org(
         OrgId(org), OrgAccountRef(account_name, account.id, password)
     )
     listed = httpx.get(f"{CI_URL.rstrip('/')}/api/users/{account_name}", headers=ci_admin)
@@ -504,9 +507,9 @@ async def test_an_org_is_set_up_at_the_ci_and_refreshed_with_a_working_token(
     found = me(read_state(state).token)
     assert found.status_code == 200, found.text
     assert found.json()["login"] == account_name
-    assert forge.grading.needs_refresh(state, datetime.now(UTC)) is False
+    assert woodpecker.grading.needs_refresh(state, datetime.now(UTC)) is False
 
-    refreshed = await forge.grading.refresh(OrgId(org), state)
+    refreshed = await woodpecker.grading.refresh(OrgId(org), state)
     again = me(read_state(refreshed).token)
     assert again.status_code == 200, again.text
     assert read_state(refreshed).user_id == read_state(state).user_id

@@ -1,19 +1,15 @@
-"""The port over Forgejo and Woodpecker, assembled from one area object per
-port area over three shared collaborators: `Users`, `Repos` and `Teams`. May
-import `forge.port` and `forge.domain`, never `forge.services` or `forge.db`.
+"""The git host's areas over Forgejo, assembled from one area object per
+port area over three shared collaborators: `Users`, `Repos` and `Teams`, and
+what a CI needs from Forgejo (`ci_host`). May import `forge.port`,
+`forge.domain` and the shared `adapters` modules, never `adapters.ci`,
+`forge.services` or `forge.db`.
 """
 
 from dataclasses import dataclass
-from datetime import timedelta
-
-import httpx
 
 from forge.adapters.git.forgejo.ci_host import ForgejoCiHost
-from forge.adapters.git.forgejo.ci_login import CiLogin
-from forge.adapters.git.forgejo.computes import WoodpeckerComputes
 from forge.adapters.git.forgejo.content import ForgejoContent
-from forge.adapters.git.forgejo.grading import WoodpeckerGrading
-from forge.adapters.git.forgejo.http import ForgejoAuth, Http, WoodpeckerAuth, new_client
+from forge.adapters.git.forgejo.http import ForgejoAuth, Http, new_client
 from forge.adapters.git.forgejo.identity import ForgejoIdentity
 from forge.adapters.git.forgejo.oauth import OAuth
 from forge.adapters.git.forgejo.orgs import ForgejoOrgs
@@ -25,19 +21,12 @@ from forge.adapters.git.forgejo.uploads import ForgejoUploads
 from forge.adapters.git.forgejo.users import Users
 from forge.adapters.git.forgejo.workflows import ForgejoWorkflows
 from forge.adapters.git.forgejo.workspaces import ForgejoWorkspaces
-from forge.domain.errors import Misconfigured
 
 
 @dataclass(frozen=True, slots=True)
 class ForgejoConfig:
     """`platform_account` is the account `admin_token` belongs to, the one
-    account protected versions are reserved for. `ci_public_url` is the URL
-    the CI knows itself by, `WOODPECKER_HOST`: the CI writes its webhooks
-    under it, and that is how the implementation tells the CI's webhook from
-    any other. `ci` names the CI the grading and compute areas talk to,
-    which the `ci_*` settings reach. `ci_login_lifetime` is how long the org
-    account's login at the forge lasts, which is how long its sign-in at the
-    CI does: the session's hard lifetime.
+    account protected versions are reserved for.
     """
 
     public_url: str
@@ -48,31 +37,16 @@ class ForgejoConfig:
     oauth_client_secret: str
     sign_in_redirect_uri: str
     sign_ups_open: bool
-    ci_url: str
-    ci_public_url: str
-    ci_admin_token: str
-    ci_login_lifetime: timedelta = timedelta(days=30)
-    ci: str = "woodpecker"
 
 
 class ForgejoForge:
-    def __init__(
-        self,
-        config: ForgejoConfig,
-        *,
-        clients: tuple[Http, Http] | None = None,
-        browser_transport: httpx.AsyncBaseTransport | None = None,
-    ) -> None:
-        """Assemble the areas over the host and the CI. `clients` replaces the
-        two HTTP clients, which is how a test puts a recording transport under
-        the whole implementation; `browser_transport` does the same for the
-        client the CI sign-in dance browses with.
+    def __init__(self, config: ForgejoConfig, *, client: Http | None = None) -> None:
+        """Assemble the areas over Forgejo. `client` replaces the HTTP
+        client, which is how a test puts a recording transport under the
+        whole adapter.
         """
-        http, ci = clients or (
-            Http(new_client(config.internal_url), ForgejoAuth(config.admin_token)),
-            Http(new_client(config.ci_url), WoodpeckerAuth(config.ci_admin_token)),
-        )
-        self._clients = (http, ci)
+        http = client or Http(new_client(config.internal_url), ForgejoAuth(config.admin_token))
+        self._client = http
 
         users = Users(http)
         repos = Repos(http, platform_account=config.platform_account)
@@ -90,39 +64,19 @@ class ForgejoForge:
         )
         self.orgs = ForgejoOrgs(http, teams, users, platform_account=config.platform_account)
         self.content = ForgejoContent(repos, teams)
-        # What a CI needs from Forgejo, handed to the CI that grades.
-        self.ci_host = ForgejoCiHost(
-            http, users, repos, public_url=config.public_url, internal_url=config.internal_url
-        )
-        # The CI `config.ci` names gives both areas that talk to it, grading
-        # and the machines' enrolment; the one there is is Woodpecker.
-        match config.ci:
-            case "woodpecker":
-                self.grading = WoodpeckerGrading(
-                    ci,
-                    self.ci_host,
-                    ci_public_url=config.ci_public_url,
-                    login_lifetime=config.ci_login_lifetime,
-                    login=CiLogin(
-                        self.ci_host,
-                        ci_public_url=config.ci_public_url,
-                        ci_url=config.ci_url,
-                        transport=browser_transport,
-                    ),
-                )
-                self.computes = WoodpeckerComputes(ci)
-            case _:
-                raise Misconfigured(f"UNICON_CI={config.ci} names no CI this forge grades with")
         self.workspaces = ForgejoWorkspaces(repos, users, teams)
         self.threads = ForgejoThreads(http)
         self.uploads = ForgejoUploads(http)
         self.workflows = ForgejoWorkflows(repos, users)
         self.primitives = ForgejoPrimitives(repos)
+        # What a CI needs from Forgejo, handed to the CI it is paired with.
+        self.ci_host = ForgejoCiHost(
+            http, users, repos, public_url=config.public_url, internal_url=config.internal_url
+        )
 
     @property
     def name(self) -> str:
         return "forgejo"
 
     async def aclose(self) -> None:
-        for client in self._clients:
-            await client.aclose()
+        await self._client.aclose()
