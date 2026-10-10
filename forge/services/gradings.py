@@ -563,15 +563,20 @@ def finish(ctx: Context, row: Grading, status: GradingStatus, *, error: str | No
     changed(ctx, row)
 
 
-def changed(ctx: Context, row: Grading) -> None:
+def changed(ctx: Context, row: Grading, *, organisers_only: bool = False) -> None:
     """Nudge whoever may hear of the grading that it moved, once the unit of
     work commits: the contestant whose workspace it grades, and the
     organisers who observe its task. Every write of a grading's status or
     progress calls this, which is what moves a contestant's submissions
     while they watch; a grading is the platform's own and no push from the
-    forge will ever name one.
+    forge will ever name one. Progress goes to the organisers alone
+    (`organisers_only`): a per-test step reports it once a test, hidden ones
+    too, so a nudge to the row on each would count and time a hidden
+    group's tests (TASK-FORMAT.md section 3.5).
     """
-    owner = ctx.forge.workspaces.owner_of(WorkspaceId(row.workspace_id))
+    owner = (
+        None if organisers_only else ctx.forge.workspaces.owner_of(WorkspaceId(row.workspace_id))
+    )
     ctx.nudge(
         Nudge(
             NudgeKind.GRADING,
