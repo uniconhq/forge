@@ -17,12 +17,9 @@ the one entry; when it does not, nothing is written.
 
 import json
 import re
-from datetime import datetime
-
-import yaml
 
 from forge.domain.definitions import State, parse_contest, stamp
-from forge.domain.yaml_models import load_mapping, load_yaml
+from forge.domain.yaml_models import YAMLError, load_mapping, load_yaml
 
 _TASKS_KEY = re.compile(r"tasks:[ \t]*(?P<rest>.*)")
 _EMPTY_FLOW = re.compile(r"\[[ \t]*\](?P<after>[ \t]*(#.*)?)")
@@ -46,28 +43,17 @@ def with_entry(content: bytes, task: str) -> bytes | None:
     entry: dict[str, object] = {"id": task}
     lines = [f"- id: {_scalar(task)}"]
     if contest.state is State.PUBLISHED:
-        entry["release_at"] = entry["closes"] = contest.end
+        entry["release_at"] = entry["closes"] = stamp(contest.end)
         lines += [f"  release_at: {stamp(contest.end)}", f"  closes: {stamp(contest.end)}"]
     text = content.decode()
     newline = "\r\n" if "\r\n" in text else "\n"
     updated = _inserted(text, lines, newline)
     before = load_mapping("contest.yaml", text)
     expected = {**before, "tasks": [*(before.get("tasks") or []), entry]}
-    if _comparable(load_mapping("contest.yaml", updated)) != _comparable(expected):
+    if load_mapping("contest.yaml", updated) != expected:
         raise Unlisted("The edit would change more than the tasks list.")
     parse_contest(updated.encode())
     return updated.encode()
-
-
-def _comparable(value: object) -> object:
-    """`value` with every time in UTC, as YAML may read one in another zone."""
-    if isinstance(value, dict):
-        return {key: _comparable(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_comparable(item) for item in value]
-    if isinstance(value, datetime) and value.tzinfo is not None:
-        return value.timestamp()
-    return value
 
 
 def _scalar(value: str) -> str:
@@ -77,7 +63,7 @@ def _scalar(value: str) -> str:
     """
     try:
         plain = load_yaml(value) == value
-    except yaml.YAMLError:
+    except YAMLError:
         plain = False
     return value if plain else json.dumps(value)
 

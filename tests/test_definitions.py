@@ -8,10 +8,10 @@ save names the admin-only keys it changes.
 """
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
-import yaml
 
 from forge.domain.definitions import (
     CONTEST_ADMIN_KEYS,
@@ -37,7 +37,7 @@ from forge.domain.definitions import (
 )
 from forge.domain.errors import ServiceError
 from forge.domain.workflow_definition import WorkflowRef
-from forge.domain.yaml_models import InvalidDefinition, Problem, parse_size
+from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line, parse_size
 
 NOW = datetime(2026, 9, 29, 10, 30, tzinfo=UTC)
 
@@ -165,7 +165,7 @@ def test_the_format_documents_example_contest_parses() -> None:
     assert (standings.who, standings.rows) == (Who.CONTESTANTS, "all")
     assert (final.over, final.select, final.order) == (Over.AFTER_CLOSE, Select.MARKED, ("points",))
     shortest = contest.tasks[1]
-    assert shortest.late_per_day == 0.1
+    assert shortest.late_per_day == Decimal("0.1")
     assert contest.marks_of(shortest) == 2
     assert contest.marks_of(contest.tasks[0]) is None
     assert [contest.label_of(task.id) for task in contest.tasks] == ["A", "B"]
@@ -556,7 +556,7 @@ def test_the_format_documents_example_task_parses() -> None:
     assert (samples.weight, samples.shown) == (0, Show.ALWAYS)
     assert (small.pass_, small.shown) == (30, Show.VERDICT)
     assert (large.worst, large.shown) == (70, Show.AFTER_CLOSE)
-    assert (main.each, main.pass_, main.pass_at, main.weight) == (80, 20, 0.8, 100)
+    assert (main.each, main.pass_, main.pass_at, main.weight) == (80, 20, Decimal("0.8"), 100)
     assert main.test_weights == {"7": 3, "8": 3, "9": 5}
     assert task.gives_points
 
@@ -929,9 +929,10 @@ def test_the_task_admin_keys_are_the_name_and_the_submissions() -> None:
 
 
 def contest_yaml(**changes: Any) -> bytes:
-    document = yaml.safe_load(CONTEST_EXAMPLE)
+    document = load_yaml(CONTEST_EXAMPLE)
+    assert isinstance(document, dict)
     document.update(changes)
-    return yaml.safe_dump(document).encode()
+    return one_line(document).encode()
 
 
 @pytest.mark.parametrize(
@@ -962,6 +963,16 @@ def test_the_managers_contest_keys_change_nothing_admin_only() -> None:
 
 def test_the_same_settings_written_differently_change_nothing() -> None:
     assert admin_only_changes("contest", CONTEST_EXAMPLE, contest_yaml()) == []
+
+
+def test_a_time_written_another_way_is_the_same_time() -> None:
+    other_zone = CONTEST_EXAMPLE.replace(
+        b"opens: 2026-05-01T00:00:00Z", b'opens: "2026-05-01T08:00:00+08:00"'
+    )
+    later = CONTEST_EXAMPLE.replace(b"opens: 2026-05-01T00:00:00Z", b"opens: 2026-05-01T00:00:01Z")
+
+    assert admin_only_changes("contest", CONTEST_EXAMPLE, other_zone) == []
+    assert admin_only_changes("contest", CONTEST_EXAMPLE, later) == ["registration"]
 
 
 def test_a_new_file_names_every_admin_key_it_sets_and_an_unparsable_side_compares_as_empty() -> (

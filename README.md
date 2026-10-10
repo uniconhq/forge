@@ -168,8 +168,15 @@ The format is the proposal's `TASK-FORMAT.md`. `forge/domain/definitions.py`
 reads `contest.yaml` and `task.yaml` into models, `workflow_definition.py` a
 `workflow.yaml` and `primitives.py` a `primitive.yaml`, with the YAML loading
 and the error paths they share in `yaml_models.py` and the six value types in
-`types.py`. Each refuses a key the format does not know, refuses a key it no
-longer has at that key with the sentence that says what replaced it (a
+`types.py`. Every file is read as YAML 1.2's core schema, whatever `%YAML`
+line it carries (`ruamel.yaml` with the core schema's own patterns): only
+`true` and `false` are booleans, so a group named `no` is text, and
+`1_000`, `1:30` and a date are text too. Every number that is not whole is
+the exact `Decimal` it is written as, never a float, and `one_line` writes a
+value back so the same reader reads the same value. The platform's own tag
+notes, which only it writes and reads, and the pipeline file handed to
+Woodpecker are written and read with PyYAML as before. Each refuses a key
+the format does not know, refuses a key it no longer has at that key with the sentence that says what replaced it (a
 `Retired` rule), and reports every problem as `InvalidDefinition`, whose
 `errors` pair a YAML path such as `test_groups.main.pass_at` with a sentence a
 form shows beside that field. What a file says of itself is checked there: a
@@ -177,10 +184,13 @@ contest's times and each task entry's timeline in order (C1), each board's
 own rules (C3), a task's test groups, rule weights, test weights and `show`
 words (T1, T2, T6), a workflow's report (W1 to W5) and a primitive's `runs`
 marks (P1). `admin_only_changes` names the admin-only keys a save changes,
+a time compared as the moment it names,
 `starter_contest` and `starter_task` are the files a new contest or task is
 created with, and `starter_workflow` the `workflow.yaml` a new workflow is.
 `plans.py` is the compiler (below) and names what changed how a task grades
-between two publications. `submissions.py` lays out what a contestant gives
+between two publications, a plan compared by what it says, so a number
+spelled otherwise is no change. A plan is written and read with
+`exact_json`, so its numbers are the digits the files gave. `submissions.py` lays out what a contestant gives
 as the files and `submission.json` of one commit, and `uploads.py` holds the
 rules of an upload's slot and parts. `grading.py` holds what a grading run
 is, its two secrets, its clock and the machine a plan must fit,

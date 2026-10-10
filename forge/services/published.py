@@ -15,6 +15,7 @@ answer as one that is not there, so its errors reach nobody but the log.
 
 from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal
 
 from forge.domain.definitions import (
     CONTEST_FILE,
@@ -69,7 +70,7 @@ class PublishedTask:
         )
 
     @property
-    def worth(self) -> int | float | None:
+    def worth(self) -> int | Decimal | None:
         """The most points the task gives in the contest: its entry's `worth`,
         100 on a task that gives points when the entry says none, and none on
         a task that gives no points or that the contest does not list.

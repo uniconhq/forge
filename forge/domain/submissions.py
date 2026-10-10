@@ -34,6 +34,7 @@ import uuid
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 import yaml
@@ -70,8 +71,8 @@ class Field:
     options: tuple[str, ...] | None = None
     per_test: bool = False
     default: Any = None
-    min: int | float | None = None
-    max: int | float | None = None
+    min: int | Decimal | None = None
+    max: int | Decimal | None = None
     max_size: int = DEFAULT_MAX_SIZE
 
     @property
@@ -333,7 +334,7 @@ def value_problem(entry: Field, value: object) -> str | None:
         case Type.NUMBER:
             if not is_number(value):
                 return "Must be a number."
-            assert isinstance(value, int | float)
+            assert isinstance(value, int | Decimal | float)
             if entry.min is not None and value < entry.min:
                 return f"Must be at least {entry.min}."
             if entry.max is not None and value > entry.max:

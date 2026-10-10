@@ -1,22 +1,34 @@
 """How a definition file written in YAML becomes a model, and how what is wrong
-with it is reported. A file is read with a loader that refuses a key given
-twice, then validated by a pydantic model that refuses any key it does not
+with it is reported. A file is read as YAML 1.2 with its core schema, every
+file alike whatever `%YAML` line it starts with: only `true` and `false` are
+true and false, so a group named `no` or the country code `NO` is text, and
+`1_000`, `1:30` and a date are text too. Every number with a point or an
+exponent is read as the exact `Decimal` it is written as, never a float, so
+no digit of a bound is lost on its way to a score. The loader refuses a key
+given twice, and the document is then validated by a pydantic model that refuses any key it does not
 know, so a typo is an error rather than a setting silently left out. Every
 problem is reported as a path into the YAML and a sentence a person reads:
 `leaderboards[0].order[1].direction`, `Must be one of asc or desc.` A form
 shows the sentence beside the field the path names.
 """
 
+import io
 import math
 import re
-from collections.abc import Callable, Hashable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Annotated, Any, NoReturn, TypedDict
 
-import yaml
 from pydantic import BaseModel, ConfigDict, PlainValidator, ValidationError
 from pydantic_core import ErrorDetails, PydanticCustomError
+from ruamel.yaml import YAML
+from ruamel.yaml.constructor import ConstructorError, SafeConstructor
+from ruamel.yaml.error import YAMLError as YAMLError
+from ruamel.yaml.nodes import ScalarNode
+from ruamel.yaml.representer import SafeRepresenter
+from ruamel.yaml.resolver import BaseResolver
 
 from forge.domain.errors import InvalidName, ServiceError
 from forge.domain.names import validate_name
@@ -66,40 +78,128 @@ def path_text(path: Iterable[str | int]) -> str:
     return text
 
 
-class _UniqueKeyLoader(yaml.SafeLoader):
-    """The safe loader, refusing a mapping that gives one key twice."""
-
-
-def _construct_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode) -> dict[Hashable, Any]:
-    loader.flatten_mapping(node)
-    seen: set[Hashable] = set()
-    for key_node, _ in node.value:
-        key = loader.construct_object(key_node, deep=True)
-        if isinstance(key, Hashable) and key in seen:
-            raise yaml.constructor.ConstructorError(
-                None, None, f"the key {key!r} is given twice", key_node.start_mark
-            )
-        if isinstance(key, Hashable):
-            seen.add(key)
-    return loader.construct_mapping(node, deep=True)
-
-
-_UniqueKeyLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-    _construct_mapping,
+_TAG = "tag:yaml.org,2002:"
+_DIGITS = list("0123456789")
+_CORE: tuple[tuple[str, str, list[str]], ...] = (
+    ("null", r"^(?:~|null|Null|NULL|)$", ["~", "n", "N", ""]),
+    ("bool", r"^(?:true|True|TRUE|false|False|FALSE)$", list("tTfF")),
+    ("int", r"^(?:[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+)$", ["-", "+", *_DIGITS]),
+    (
+        "float",
+        r"^(?:[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?"
+        r"|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$",
+        ["-", "+", ".", *_DIGITS],
+    ),
 )
 
 
+class _CoreResolver(BaseResolver):
+    """YAML 1.2's core schema and nothing else, whatever version a file
+    names: no timestamps, no merge key, no `yes`, no `1_000`. Every
+    resolver is filed under the characters it can start with, since the
+    library adds the ones filed under none to a list it keeps.
+    """
+
+    yaml_implicit_resolvers: dict[Any, list[tuple[str, re.Pattern[str]]]] = {}  # noqa: RUF012
+
+    def __init__(self, version: Any = None, loader: Any = None) -> None:
+        super().__init__(loader)
+
+    @property
+    def processing_version(self) -> tuple[int, int]:
+        return (1, 2)
+
+
+for _name, _pattern, _first in _CORE:
+    for _char in _first:
+        _CoreResolver.yaml_implicit_resolvers.setdefault(_char, []).append(
+            (_TAG + _name, re.compile(_pattern))
+        )
+
+
+class _ExactConstructor(SafeConstructor):
+    """The safe constructor with every number that is not whole an exact
+    `Decimal`, every whole one read as 1.2 spells it, and a mapping that
+    gives one key twice refused.
+    """
+
+    def check_mapping_key(
+        self, node: Any, key_node: Any, mapping: Any, key: Any, value: Any
+    ) -> bool:
+        if key in mapping:
+            raise ConstructorError(
+                None, None, f"the key {key!r} is given twice", key_node.start_mark
+            )
+        return True
+
+    def construct_exact_float(self, node: ScalarNode) -> Decimal:
+        text = str(self.construct_scalar(node))
+        bare = text.lstrip("+-").lower()
+        if bare == ".inf":
+            return Decimal("-Infinity" if text.startswith("-") else "Infinity")
+        if bare == ".nan":
+            return Decimal("NaN")
+        return Decimal(text)
+
+    def construct_core_int(self, node: ScalarNode) -> int:
+        text = str(self.construct_scalar(node))
+        if text.startswith(("0o", "0x")):
+            return int(text[2:], 8 if text[1] == "o" else 16)
+        return int(text, 10)
+
+
+_ExactConstructor.add_constructor(_TAG + "float", _ExactConstructor.construct_exact_float)
+_ExactConstructor.add_constructor(_TAG + "int", _ExactConstructor.construct_core_int)
+
+
+def _reader() -> YAML:
+    reader = YAML(typ="safe", pure=True)
+    reader.Resolver = _CoreResolver
+    reader.Constructor = _ExactConstructor
+    return reader
+
+
 def load_yaml(text: bytes | str) -> object:
-    """The document in `text`. Raises `yaml.YAMLError` when it does not parse."""
-    return yaml.load(text, Loader=_UniqueKeyLoader)
+    """The document in `text`, read as YAML 1.2's core schema with every
+    number that is not whole a `Decimal`. Raises `YAMLError` when it does
+    not parse.
+    """
+    return _reader().load(text)
+
+
+class _ExactRepresenter(SafeRepresenter):
+    """The safe representer, writing a `Decimal` as the digits it holds."""
+
+    def represent_decimal(self, data: Decimal) -> ScalarNode:
+        node: ScalarNode = self.represent_scalar(_TAG + "float", str(data))
+        return node
+
+
+_ExactRepresenter.add_representer(Decimal, _ExactRepresenter.represent_decimal)
+
+
+def one_line(value: object, *, double_quoted: bool = False) -> str:
+    """`value` as YAML 1.2 on one line, read back by `load_yaml` as the same
+    value: text that would read as something else is quoted, a `Decimal` is
+    written as its digits, and a mapping keeps its order, in flow style.
+    """
+    writer = YAML(typ="safe", pure=True)
+    writer.Resolver = _CoreResolver
+    writer.Representer = _ExactRepresenter
+    writer.default_flow_style = True
+    writer.default_style = '"' if double_quoted else None  # type: ignore[assignment]
+    writer.width = 1 << 30
+    writer.sort_base_mapping_type_on_output = False  # type: ignore[assignment]
+    written = io.StringIO()
+    writer.dump(value, written)
+    return written.getvalue().removesuffix("\n").removesuffix("\n...").strip()
 
 
 def load_mapping(what: str, text: bytes | str) -> dict[str, Any]:
     """The document in `text`, which must be a mapping at the top."""
     try:
         document = load_yaml(text)
-    except yaml.YAMLError as error:
+    except YAMLError as error:
         raise InvalidDefinition(what, [Problem(path="", message=_yaml_message(error))]) from None
     if not isinstance(document, dict):
         message = "The file must be a mapping of keys to values, such as `name: ...`."
@@ -113,12 +213,12 @@ def mapping_or_empty(text: bytes | str | None) -> dict[str, Any]:
         return {}
     try:
         document = load_yaml(text)
-    except yaml.YAMLError:
+    except YAMLError:
         return {}
     return document if isinstance(document, dict) else {}
 
 
-def _yaml_message(error: yaml.YAMLError) -> str:
+def _yaml_message(error: YAMLError) -> str:
     mark = getattr(error, "problem_mark", None)
     problem = getattr(error, "problem", None) or "it is not valid YAML"
     if mark is None:
@@ -329,34 +429,87 @@ def _handle(value: object) -> str:
         ) from None
 
 
-def _number(value: object) -> int | float:
+def _number(value: object) -> int | Decimal:
     if not is_number(value):
         raise ValueError("Must be a number.")
-    assert isinstance(value, int | float)
-    return value
+    assert isinstance(value, int | Decimal | float)
+    return exact_number(value)
+
+
+def exact_number(value: int | Decimal | float) -> int | Decimal:
+    """A number as the platform holds one: an int, or the exact `Decimal`
+    of a decimal, a float being taken as the shortest decimal that reads
+    back as it.
+    """
+    return Decimal(repr(value)) if isinstance(value, float) else value
 
 
 def is_number(value: object) -> bool:
-    """Whether `value` is a number: an int or a float, not a true-or-false,
-    and not an infinity or NaN, which YAML and JSON can spell but no limit,
-    input or plan holds.
+    """Whether `value` is a number: an int, a `Decimal` or a float, not a
+    true-or-false, and not an infinity or NaN, which YAML and JSON can spell
+    but no limit, input or plan holds.
     """
-    return (
-        isinstance(value, int | float)
-        and not isinstance(value, bool)
-        and (isinstance(value, int) or math.isfinite(value))
-    )
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    if isinstance(value, Decimal):
+        return value.is_finite()
+    return isinstance(value, float) and math.isfinite(value)
 
 
 _TIME_EXAMPLE = "such as 2026-06-01T09:00:00Z"
 
 
+_DATE = re.compile(r"^(?P<year>\d{4})-(?P<month>\d\d?)-(?P<day>\d\d?)$")
+_TIME = re.compile(
+    r"^(?P<year>\d{4})-(?P<month>\d\d?)-(?P<day>\d\d?)(?:[Tt]|[ \t]+)"
+    r"(?P<hour>\d\d?):(?P<minute>\d\d):(?P<second>\d\d)(?:\.(?P<fraction>\d*))?"
+    r"(?:[ \t]*(?P<zone>[Zz]|(?P<sign>[-+])(?P<zone_hour>\d\d?)(?::?(?P<zone_minute>\d\d))?))?$"
+)
+
+
+def read_time(text: str) -> date | None:
+    """A date, or a date and time, written as YAML 1.1 reads one, which is
+    how a definition file has always written a time: `2026-06-01T09:00:00Z`,
+    with a space or a lower case `t`, one digit for a month, a day or an
+    hour, a fraction of a second and a zone such as `+08:00` or ` -5`, or
+    none. None for any other text, or one naming no real moment.
+    """
+    text = text.strip()
+    try:
+        if (found := _DATE.match(text)) is not None:
+            return date(int(found["year"]), int(found["month"]), int(found["day"]))
+        if (found := _TIME.match(text)) is None:
+            return None
+        zone = None
+        if found["zone"] is not None:
+            zone = UTC
+            if found["sign"] is not None:
+                offset = timedelta(
+                    hours=int(found["zone_hour"]), minutes=int(found["zone_minute"] or 0)
+                )
+                zone = timezone(-offset if found["sign"] == "-" else offset)
+        return datetime(
+            int(found["year"]),
+            int(found["month"]),
+            int(found["day"]),
+            int(found["hour"]),
+            int(found["minute"]),
+            int(found["second"]),
+            int((found["fraction"] or "0")[:6].ljust(6, "0")),
+            tzinfo=zone,
+        )
+    except ValueError:
+        return None
+
+
 def _aware_time(value: object) -> datetime:
     if isinstance(value, str):
-        try:
-            value = datetime.fromisoformat(value.strip())
-        except ValueError:
-            raise ValueError(f"Must be a date and time, {_TIME_EXAMPLE}.") from None
+        read = read_time(value)
+        if read is None:
+            raise ValueError(f"Must be a date and time, {_TIME_EXAMPLE}.")
+        value = read
     if not isinstance(value, datetime):
         if isinstance(value, date):
             raise ValueError(
@@ -384,8 +537,9 @@ Line = Annotated[str, PlainValidator(_line)]
 Handle = Annotated[str, PlainValidator(_handle)]
 """An id following the name rules in `forge.domain.names`."""
 
-Number = Annotated[int | float, PlainValidator(_number)]
-"""A whole or decimal number, and never true or false."""
+Number = Annotated[int | Decimal, PlainValidator(_number)]
+"""A whole number as an int or a decimal one as its exact `Decimal`, and
+never true or false."""
 
 AwareTime = Annotated[datetime, PlainValidator(_aware_time)]
 """A date and time with a timezone, written as YAML writes one or as ISO 8601 text."""

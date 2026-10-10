@@ -5,12 +5,12 @@ per-test steps, and a definition written back out that reads as it was.
 """
 
 import pytest
-import yaml
 
 from forge.domain.plans import check_workflow
 from forge.domain.primitives import parse_primitive
 from forge.domain.workflow_combine import combine_workflows
 from forge.domain.workflow_definition import parse_workflow
+from forge.domain.yaml_models import load_yaml
 from forge.testing import CLASSIC, PRIMITIVES
 
 DECLARATIONS = {
@@ -74,7 +74,7 @@ def test_a_value_yaml_reads_otherwise_is_written_back_as_it_reads(value: bytes) 
     assert parse_workflow(combined) == workflow
     # On one line, as a reader stricter than the forge's, the editor's, takes it.
     [line] = [line for line in combined.splitlines() if "args:" in line]
-    assert yaml.safe_load(line.strip()) == {"args": workflow.steps[1].with_["args"]}
+    assert load_yaml(line.strip()) == {"args": workflow.steps[1].with_["args"]}
 
 
 def test_two_workflows_share_what_they_declare_alike_and_rename_the_rest() -> None:

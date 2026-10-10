@@ -19,6 +19,7 @@ dependencies = [
     "regex>=2026.1",
     "boto3>=1.43.104",
     "jsonschema[format-nongpl]>=4.26.0",
+    "ruamel-yaml>=0.19.1",
 ]
 
 [project.scripts]

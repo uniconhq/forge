@@ -10,10 +10,13 @@ publication says what changed how the task grades.
 
 import json
 from collections.abc import Collection, Mapping
+from decimal import Decimal
+from fractions import Fraction
 from typing import Any
 
 import pytest
 
+from forge.domain import exact_json
 from forge.domain.contracts import violation
 from forge.domain.definitions import parse_task, starter_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine
@@ -38,6 +41,8 @@ from forge.domain.plans import (
     test_yaml_paths as yaml_paths,
 )
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
+from forge.domain.publications import read_note, write_note
+from forge.domain.scoring import fold, written
 from forge.domain.showing import NOTHING_SEALED, Sealed
 from forge.domain.workflow_definition import WorkflowDefinition, parse_workflow
 from forge.domain.yaml_models import InvalidDefinition, Problem
@@ -166,7 +171,7 @@ steps:
 """Classic with a contestant number, a task boolean and number, and a number
 and a text field per test, written into the run's arguments."""
 
-CHECKED = parse_workflow(
+CHECKED_TEXT = (
     CLASSIC_HEAD
     + """\
   time_limit: number
@@ -206,6 +211,7 @@ report:
 )
 """Classic scored by a checker reporting a bounded fraction, and numbers with
 every combination of direction and bound."""
+CHECKED = parse_workflow(CHECKED_TEXT)
 
 NOTEBOOK = parse_workflow(
     """\
@@ -1227,6 +1233,31 @@ def test_a_compiled_report_carries_each_numbers_bounds() -> None:
     ] == {"fraction?": "number", "steps": "number", "outcome": "outcome"}
 
 
+THIRTY_DIGITS = "-12345678901234.5678901234567891"
+"""A bound of 30 significant digits, more than a float holds."""
+
+
+def test_a_bound_of_thirty_significant_digits_survives_from_the_file_to_a_score() -> None:
+    workflow = parse_workflow(
+        CHECKED_TEXT.replace(
+            "fold: sum, better: higher}", f"fold: sum, better: higher, at_least: {THIRTY_DIGITS}}}"
+        )
+    )
+    built = compiled(CHECKED_TASK, classic_tests("main/1"), workflow)
+
+    written_plan = exact_json.loads(built.plan.to_bytes())
+    assert written_plan["report"]["reward"]["at_least"] == Decimal(THIRTY_DIGITS)
+    assert Plan.from_bytes(built.plan.to_bytes()).report["reward"].at_least == Decimal(
+        THIRTY_DIGITS
+    )
+    noted = read_note(write_note(False, (), measures=built.measures)).measures["reward"]
+    # A test without the value counts as the bound, to the last digit.
+    assert fold(noted, [None]) == Fraction(THIRTY_DIGITS)
+    assert written(fold(noted, [None, Fraction(1)]) or Fraction(0)) == (
+        "-12345678901233.5678901234567891"
+    )
+
+
 # Fit
 
 
@@ -1562,6 +1593,16 @@ def test_the_same_plan_and_data_change_nothing() -> None:
 
 def test_a_changed_plan_is_named() -> None:
     assert grading_changes(snapshot(), snapshot(b"other")) == ("plans/plan.json changed",)
+
+
+def test_a_plan_whose_numbers_are_only_spelled_otherwise_changes_nothing() -> None:
+    before = snapshot(b'{"limit": 2.5, "at_least": 1000.0}\n')
+    after = snapshot(b'{\n  "at_least": 1E+3,\n  "limit": 2.50\n}\n')
+
+    assert grading_changes(before, after) == ()
+    assert grading_changes(before, snapshot(b'{"limit": 2.6, "at_least": 1000.0}\n')) == (
+        "plans/plan.json changed",
+    )
 
 
 def test_a_data_file_added_removed_or_changed_is_named() -> None:

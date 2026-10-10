@@ -6,12 +6,11 @@ and the keys and words the format no longer has are refused at their paths.
 """
 
 import pytest
-import yaml
 
 from forge.domain.contracts import violation
 from forge.domain.primitives import parse_primitive
 from forge.domain.types import Type
-from forge.domain.yaml_models import InvalidDefinition, Problem
+from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml
 from forge.testing import PLACEHOLDER_DIGEST, PRIMITIVES
 from tests.conftest import sibling
 
@@ -61,7 +60,7 @@ def test_the_three_seeded_primitives_parse() -> None:
 
 @pytest.mark.parametrize("name", list(PRIMITIVES))
 def test_each_seeded_primitive_keeps_the_contract(name: str) -> None:
-    assert violation(yaml.safe_load(PRIMITIVES[name]), "primitive") is None
+    assert violation(load_yaml(PRIMITIVES[name]), "primitive") is None
 
 
 @pytest.mark.parametrize("name", list(PRIMITIVES))
