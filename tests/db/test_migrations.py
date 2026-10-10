@@ -9,6 +9,7 @@ extensions their tasks; and a submission staff cancelled before cancels
 carried a sentence is given a stock one.
 """
 
+import base64
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -664,3 +665,51 @@ async def test_an_orgs_ci_token_still_works_after_the_state_is_made(
     assert read_state(account.ci_state).token == "ci-token-acme"
     assert await WoodpeckerAuth("ci-admin").header(account) == "Bearer ci-token-acme"
     assert fake.calls_to("refresh") == []
+
+
+OTHER_KEY = base64.urlsafe_b64encode(b"\x01" * 32).decode().rstrip("=")
+
+
+def _revision(database_url: str) -> str | None:
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        found = MigrationContext.configure(connection).get_current_revision()
+    engine.dispose()
+    return found
+
+
+def test_a_wrong_key_moves_nothing_in_either_direction(
+    migrated_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0016")
+    _accounts_before_the_state(migrated_database_url, b"ci-token-acme")
+
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", OTHER_KEY)
+    with pytest.raises(RuntimeError, match="does not open"):
+        command.upgrade(config, "head")
+    assert _revision(migrated_database_url) == "0016"
+
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", TEST_KEY)
+    command.upgrade(config, "head")
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", OTHER_KEY)
+    with pytest.raises(RuntimeError, match="does not open"):
+        command.downgrade(config, "0016")
+    assert _revision(migrated_database_url) == "0017"
+
+
+def test_going_back_without_the_key_moves_nothing(
+    migrated_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0016")
+    _accounts_before_the_state(migrated_database_url, b"ci-token-acme")
+    monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", TEST_KEY)
+    command.upgrade(config, "head")
+
+    monkeypatch.delenv("UNICON_TOKEN_ENCRYPTION_KEY")
+    with pytest.raises(RuntimeError, match="UNICON_TOKEN_ENCRYPTION_KEY"):
+        command.downgrade(config, "0016")
+
+    assert _revision(migrated_database_url) == "0017"
+    assert _rows(migrated_database_url, "ci_state")["acme"]["ci_state"] != b""

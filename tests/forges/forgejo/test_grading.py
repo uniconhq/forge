@@ -19,7 +19,13 @@ import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from forge.domain.errors import CiRequestRefused, Forbidden, Rejected, Unavailable
+from forge.domain.errors import (
+    CiRequestRefused,
+    Forbidden,
+    Rejected,
+    Unavailable,
+    VariablesDiffer,
+)
 from forge.domain.grading import GradingRun, InboundRequest, RunLookup, RunSpec, RunState
 from forge.domain.identity import AsOrgAccount, CiState
 from forge.domain.ids import OrgId, PublicationId, RunId, SubmissionId, TaskId, VersionId
@@ -481,7 +487,27 @@ async def test_a_run_started_with_any_other_variable_is_answered_with_nothing(
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
     variables = {**VARIABLES, variable: VARIABLES.get(variable, "ghcr.io/someone/harness") + "x"}
 
-    with pytest.raises(Rejected):
+    with pytest.raises(VariablesDiffer):
+        await forgejo.grading.answer(_signed(key, _ask_body(variables)), _lookup(), now=NOW)
+
+
+@pytest.mark.parametrize(
+    "variables",
+    [
+        pytest.param(
+            {key: value for key, value in VARIABLES.items() if key != "UNICON_COMPUTE"},
+            id="one-dropped",
+        ),
+        pytest.param({**VARIABLES, "CI_DEBUG": "1"}, id="one-added"),
+    ],
+)
+async def test_a_run_started_with_a_variable_dropped_or_added_is_answered_with_nothing(
+    forgejo: ForgejoForge, recorder: Recorder, variables: dict[str, str]
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
+
+    with pytest.raises(VariablesDiffer):
         await forgejo.grading.answer(_signed(key, _ask_body(variables)), _lookup(), now=NOW)
 
 

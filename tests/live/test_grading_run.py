@@ -84,7 +84,7 @@ S3_ACCESS_KEY = os.environ.get("UNICON_LIVE_S3_ACCESS_KEY")
 S3_SECRET_KEY = os.environ.get("UNICON_LIVE_S3_SECRET_KEY")
 SOURCE = b"print(sum(map(int, input().split())))\n"
 STATUSES = {
-    "InboundRequestRefused": 403,
+    "CiRequestRefused": 403,
     "NotFound": 404,
     "GradingClosed": 410,
     "InvalidToken": 401,

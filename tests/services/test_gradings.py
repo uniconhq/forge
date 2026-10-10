@@ -23,8 +23,10 @@ gives a submission without gradings its rows.
 
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import Callable, Coroutine
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 from fractions import Fraction
@@ -81,7 +83,7 @@ from forge.forges.fake.grading import run_variables, token_in
 from forge.runtime.setup import Setup
 from forge.services import gradings, org_accounts, publications, reconcile, runs, submissions
 from forge.services.access import Organiser
-from forge.testing import FakeClock
+from forge.testing import FakeClock, logged
 from tests.services.conftest import (
     RUNNING,
     Acme,
@@ -258,7 +260,12 @@ async def test_a_run_is_started_with_what_its_plan_runs(
 
 @pytest.mark.parametrize(
     ("trouble", "reason"),
-    [(NotFound("no plans/plan.json"), gradings.NO_RUN), (Unavailable("down"), gradings.NO_ANSWER)],
+    [
+        (NotFound("no plans/plan.json"), gradings.NO_RUN),
+        (Forbidden("not the platform's to read"), gradings.NO_RUN),
+        ("not a plan", gradings.NO_RUN),
+        (Unavailable("down"), gradings.NO_ANSWER),
+    ],
 )
 async def test_a_run_whose_plan_cannot_be_read_is_not_started(
     setup: Setup,
@@ -266,7 +273,7 @@ async def test_a_run_whose_plan_cannot_be_read_is_not_started(
     entered: Entered,
     monkeypatch: pytest.MonkeyPatch,
     unstarted: Start,
-    trouble: Exception,
+    trouble: Exception | str,
     reason: str,
 ) -> None:
     """Ended as the CI's refusal ended it when the CI asked for the plan
@@ -276,9 +283,12 @@ async def test_a_run_whose_plan_cannot_be_read_is_not_started(
     read_file = acme.fake.content.read_file
 
     async def no_plan(as_: Any, place: Any, path: str, *, at: Any = None) -> Any:
-        if path == PLAN_PATH:
+        if path != PLAN_PATH:
+            return await read_file(as_, place, path, at=at)
+        if isinstance(trouble, Exception):
             raise trouble
-        return await read_file(as_, place, path, at=at)
+        found = await read_file(as_, place, path, at=at)
+        return replace(found, content=b'{"plan": "' + trouble.encode() + b'"}')
 
     row = await _submit(setup, acme, entered)
     monkeypatch.setattr(acme.fake.content, "read_file", no_plan)
@@ -468,6 +478,7 @@ async def test_the_extension_refuses_variables_that_differ_by_one_value(
     clock: FakeClock,
     unstarted: Start,
     variable: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Rule 1: what runs is decided by the platform, so a run started by hand
     with any variable of its own, a harness image among them, is answered
@@ -478,9 +489,31 @@ async def test_the_extension_refuses_variables_that_differ_by_one_value(
     variables[variable] = variables.get(variable, "ghcr.io/someone/harness:mine") + "x"
     request = acme.fake.grading.config_request(entered.task, variables, now=clock.now())
 
+    caplog.set_level(logging.INFO)
     with pytest.raises(CiRequestRefused):
         await runs.config(setup, request)
     assert (await _row(setup, row.id)).status == GradingStatus.QUEUED
+    [refused] = logged(caplog, "runs.config_refused")
+    assert (refused["reason"], refused["grading"]) == ("variables", str(row.id))
+
+
+async def test_a_request_that_does_not_verify_is_logged_as_unverified(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    clock: FakeClock,
+    unstarted: Start,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+    request = acme.fake.grading.config_request(entered.task, variables, now=clock.now(), key=b"x")
+
+    with pytest.raises(CiRequestRefused):
+        await runs.config(setup, request)
+    [refused] = logged(caplog, "runs.config_refused")
+    assert (refused["reason"], refused["grading"]) == ("unverified", None)
 
 
 async def test_the_extension_refuses_a_grading_asked_about_for_another_task(
