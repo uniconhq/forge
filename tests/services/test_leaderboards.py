@@ -10,6 +10,8 @@ contest's (C4), with the save's report of the boards it moves (T9); and a
 task's `marks` never lowered below what a row holds (C1).
 """
 
+import asyncio
+import contextlib
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -727,3 +729,30 @@ async def test_a_row_with_no_such_submission_is_no_such_submission(
     for owner, number in ((UserOwner(8), 3), (UserOwner(7), 1)):
         with pytest.raises(NotFound):
             await submissions.organised(setup, observer, ranked.task, owner, number)
+
+
+async def test_a_mark_in_flight_and_a_save_lowering_marks_never_leave_a_row_over_them(
+    setup: Setup, acme: Acme, ranked: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mark holds the contest's rules before it reads how many marks the
+    task takes, so a save lowering them waits and counts the new mark, or
+    the mark reads the lowered number (C1)."""
+    await write_contest(acme.fake, contest(BOARDS, "    marks: 3\n"))
+    await marks.mark(setup, ranked.session, ranked.task, 1)
+    change = marks._change
+    saving: list[asyncio.Task[Any]] = []
+
+    async def save_meanwhile(*args: Any, **kwargs: Any) -> Any:
+        lowered = contest(BOARDS, "    marks: 1\n")
+        saving.append(asyncio.create_task(_write(setup, acme, lowered)))
+        await asyncio.wait(saving, timeout=3)
+        return await change(*args, **kwargs)
+
+    monkeypatch.setattr(marks, "_change", save_meanwhile)
+    with contextlib.suppress(MarkLimit):
+        await marks.mark(setup, ranked.session, ranked.task, 2)
+    saved = await asyncio.gather(*saving, return_exceptions=True)
+
+    held = len((await marks.held(setup, ranked.session, ranked.task)).numbers)
+    allowed = 1 if not isinstance(saved[0], BaseException) else 3
+    assert held <= allowed, (held, saved)
