@@ -8,9 +8,12 @@ from collections.abc import Sequence
 from typing import Any
 
 from forge.adapters.git.forgejo.http import Http, json_of, list_of, segment
-from forge.domain.errors import NotFound
+from forge.domain.errors import Conflict, NotFound, Rejected
 from forge.domain.identity import PLATFORM, Identity, User
 from forge.port.identity import AccountVisibility
+
+EMAIL_IN_USE = "e-mail already in use"
+"""What Forgejo answers a new account whose email another holds."""
 
 
 class Users:
@@ -60,19 +63,26 @@ class Users:
         must_change_password: bool,
         visibility: AccountVisibility,
     ) -> User:
-        created = await self._http.call(
-            PLATFORM,
-            "POST",
-            "/api/v1/admin/users",
-            json={
-                "username": username,
-                "email": email,
-                "password": password,
-                "must_change_password": must_change_password,
-                "visibility": visibility,
-                "send_notify": False,
-            },
-        )
+        try:
+            created = await self._http.call(
+                PLATFORM,
+                "POST",
+                "/api/v1/admin/users",
+                json={
+                    "username": username,
+                    "email": email,
+                    "password": password,
+                    "must_change_password": must_change_password,
+                    "visibility": visibility,
+                    "send_notify": False,
+                },
+            )
+        except Rejected as exc:
+            # Forgejo answers a taken email 422 "e-mail already in use", where
+            # a taken name already reads as a conflict; the port says both are.
+            if EMAIL_IN_USE in exc.detail:
+                raise Conflict(exc.detail) from None
+            raise
         return user_from(json_of(created))
 
     async def set_password(self, user_id: int, password: str) -> None:

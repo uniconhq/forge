@@ -1513,3 +1513,41 @@ async def test_a_file_over_forgejos_inline_size_is_read_whole_from_its_blob(
     read = await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "data.txt")
 
     assert (read.content, read.token) == (whole, ConflictToken("blob-9"))
+
+
+async def test_an_account_whose_email_is_taken_is_a_conflict_as_a_taken_name_is(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on(
+        "POST",
+        "/api/v1/admin/users",
+        ok({"message": "e-mail already in use [email: a@unicon.invalid]"}, 422),
+        ok({"message": "user already exists [name: bob]"}, 422),
+    )
+
+    for username in ("ada", "bob"):
+        with pytest.raises(Conflict):
+            await forgejo.identity.create_user(
+                username, "a@unicon.invalid", "pw-1", must_change_password=True
+            )
+
+
+async def test_removing_a_file_with_no_token_is_a_conflict_while_it_is_there(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    """As the fake and the port say: no token means "not there", so a file
+    that is there has moved since, and one that is not cannot be removed."""
+    contents = "/api/v1/repos/acme/spring.contest/contents"
+    recorder.on("GET", f"{contents}/notes.md", ok({"type": "file", "sha": "b-1", "content": ""}))
+    recorder.on("GET", f"{contents}/gone.md", ok({"message": "not found"}, 404))
+    contest = ContestId("acme/spring")
+
+    with pytest.raises(Conflict):
+        await forgejo.content.save_files(
+            PLATFORM, contest, {"notes.md": None}, expected={}, message="Remove"
+        )
+    with pytest.raises(NotFound):
+        await forgejo.content.save_files(
+            PLATFORM, contest, {"gone.md": None}, expected={}, message="Remove"
+        )
+    assert recorder.sent("POST", f"{contents}") == []

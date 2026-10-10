@@ -231,7 +231,11 @@ class Repos:
             token = expected.get(path)
             if content is None:
                 if token is None:
-                    raise NotFound(f"{path} is removed only with the version it was read at")
+                    # No token says the file is not there: one that is has
+                    # moved since, as the port and the fake say.
+                    if await self._exists(as_, owner, name, path):
+                        raise Conflict(f"{path} has changed since it was read")
+                    raise NotFound(f"{path} is not there to remove")
                 operations.append({"operation": "delete", "path": path, "sha": str(token)})
             elif token is None:
                 operations.append(
