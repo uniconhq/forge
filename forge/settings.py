@@ -31,6 +31,7 @@ from forge.domain.primitives import IMAGE
 KEY_BYTES = 32
 
 ForgeKind = Literal["forgejo", "fake"]
+CiKind = Literal["woodpecker"]
 
 FORGE_PUBLIC_URL = "UNICON_FORGE_PUBLIC_URL"
 
@@ -201,7 +202,8 @@ class NestedVariables(PydanticBaseSettingsSource):
 
 class Settings(BaseSettings):
     """The package's configuration. `forge` picks the implementation behind
-    the port. `forgejo`, the settings of the Forgejo implementation, is
+    the port, and `ci` the CI it grades with, `woodpecker` the one there is.
+    `forgejo`, the settings of the Forgejo implementation, is
     required when it is chosen and none otherwise. `forge_public_url` is
     where browsers reach the forge, for either implementation. `internal_url`
     is where the forge reaches the platform inside the deployment, the public
@@ -255,6 +257,7 @@ class Settings(BaseSettings):
     places_ahead: bool = True
 
     forge: ForgeKind = "forgejo"
+    ci: CiKind = "woodpecker"
     forge_public_url: HttpUrl | None = None
     forge_cache: bool = False
     forgejo: ForgejoSettings | None = None
@@ -421,7 +424,10 @@ class Settings(BaseSettings):
 
 
 class DatabaseSettings(BaseSettings):
-    """The one setting a migration needs."""
+    """The setting every migration needs. Revision `0017` also reads
+    `UNICON_TOKEN_ENCRYPTION_KEY` from the environment, and only when it has
+    an org's CI credentials to move.
+    """
 
     model_config = SettingsConfigDict(env_prefix="UNICON_", extra="ignore")
 

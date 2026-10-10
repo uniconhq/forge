@@ -121,12 +121,6 @@ class FakeIdentity:
         self._state.passwords[user.id] = password
         return user
 
-    async def set_password(self, user_id: int, password: str) -> None:
-        self._state.record("set_password", PLATFORM, user_id=user_id)
-        self._state.check_up()
-        self._state.user(user_id)
-        self._state.passwords[user_id] = password
-
     async def mint_token(
         self, username: str, password: str, *, name: str, scopes: Sequence[str]
     ) -> str:

@@ -3,9 +3,8 @@ CI hands only that org's runs, or under the platform, which take any org's.
 """
 
 from forge.domain.grading import Enrolment
-from forge.domain.identity import CI_ADMIN
 from forge.domain.ids import AgentId, OrgId
-from forge.forges.forgejo.http import Http, json_of, segment
+from forge.forges.forgejo.http import CI_ADMIN, Http, json_of, segment
 
 
 class WoodpeckerComputes:

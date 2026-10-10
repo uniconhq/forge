@@ -14,9 +14,10 @@ from forge.settings import Settings
 
 
 def build(settings: Settings, *, sign_in_redirect_uri: str) -> Forge:
-    """The forge `UNICON_FORGE` picks, configured from the settings, behind
-    the cache `UNICON_FORGE_CACHE` turns on. `sign_in_redirect_uri` is where
-    the host sends a browser back to after sign-in.
+    """The forge `UNICON_FORGE` picks, grading with the CI `UNICON_CI`
+    picks, configured from the settings, behind the cache
+    `UNICON_FORGE_CACHE` turns on. `sign_in_redirect_uri` is where the host
+    sends a browser back to after sign-in.
     """
     return CachedForge(
         _implementation(settings, sign_in_redirect_uri), enabled=settings.forge_cache
@@ -26,9 +27,14 @@ def build(settings: Settings, *, sign_in_redirect_uri: str) -> Forge:
 def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
     if settings.forge == "fake":
         if settings.forge_public_url is None:
-            return FakeForge(sign_in_redirect_uri=sign_in_redirect_uri)
+            return FakeForge(
+                sign_in_redirect_uri=sign_in_redirect_uri,
+                ci_login_lifetime=settings.session_hard_ttl,
+            )
         return FakeForge(
-            public_url=str(settings.forge_public_url), sign_in_redirect_uri=sign_in_redirect_uri
+            public_url=str(settings.forge_public_url),
+            sign_in_redirect_uri=sign_in_redirect_uri,
+            ci_login_lifetime=settings.session_hard_ttl,
         )
     forgejo, s3 = settings.forgejo, settings.s3
     if forgejo is None or s3 is None or settings.forge_public_url is None:
@@ -55,6 +61,8 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
                 machine_url=str(settings.machine_url),
             ),
             mail=_mail(settings),
+            ci_login_lifetime=settings.session_hard_ttl,
+            ci=settings.ci,
         )
     )
 

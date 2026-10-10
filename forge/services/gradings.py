@@ -8,7 +8,8 @@ each a new row with a new id and so new secrets, and the old rows stay as
 they were, so what was graded when stays readable. Each row is inserted
 `queued` with the SHA-256 of its run's callback token, and its run is
 started as soon as the unit of work that made it commits (`start`), since
-the CI asks the platform about the grading while the start is under way. A
+a CI that asks may ask the platform about the grading while the start is
+under way. A
 start the CI refuses, or does not answer, ends the grading in
 `system_error` saying why: whoever reads it sees that at once and tries
 again, a contestant by submitting, an organiser with `retry`.
@@ -81,6 +82,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import ColumnElement, and_, func, not_, or_, select, tuple_
 
 from forge.db.tables import Grading, Team
@@ -109,6 +111,7 @@ from forge.domain.grading import (
     Fallback,
     GradingRun,
     GradingStatus,
+    RunSpec,
     RunState,
     callback_token,
     cancel_reason,
@@ -118,7 +121,7 @@ from forge.domain.grading import (
     token_hash,
     worth_asking,
 )
-from forge.domain.identity import AsOrgAccount
+from forge.domain.identity import PLATFORM, AsOrgAccount
 from forge.domain.ids import (
     ContestId,
     OrgId,
@@ -132,6 +135,7 @@ from forge.domain.ids import (
 )
 from forge.domain.live import Nudge, NudgeKind
 from forge.domain.names import TeamOwner, UserOwner, is_username
+from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.publications import Publication
 from forge.domain.roles import (
     Role,
@@ -169,8 +173,8 @@ NO_ANSWER = "The CI did not answer."
 PUBLICATION_GONE = "The publication it grades against is gone."
 
 CI_CONFIG_PATH = "/api/v1/ci/config"
-"""Where the CI asks what a run is, the configuration extension, under the
-platform's internal URL."""
+"""Where a CI that asks what a run is asks it, under the platform's internal
+URL."""
 ENVELOPE_PATH = "/api/v1/gradings/{grading}/envelope"
 """Where a run fetches its envelope, under the machine URL, with the envelope
 key as `?key=`."""
@@ -332,9 +336,9 @@ async def start(ctx: Context, grading: uuid.UUID) -> None:
     machine. A start that fails ends the grading in `system_error`, saying
     why in the platform's words; what the CI said goes to the log.
 
-    The call to the CI holds neither a connection nor a lock, since the CI
-    asks the platform about the grading while the start is under way, and a
-    rush of starts must leave it a connection to answer on. So what the
+    The call to the CI holds neither a connection nor a lock, since a CI
+    that asks may ask the platform about the grading while the start is
+    under way, and a rush of starts must leave it a connection to answer on. So what the
     start needs is read and that much committed, the run is started, and
     only then is the row taken and the run recorded, or the run cancelled
     when the grading moved on meanwhile. The work after a commit owns its
@@ -367,9 +371,21 @@ async def start(ctx: Context, grading: uuid.UUID) -> None:
     except PortError as exc:
         await _not_started(ctx, grading, exc, NO_ANSWER)
         return
+    try:
+        spec = spec_of(ctx, await plan_of(ctx, run))
+    except (NotFound, Forbidden, ValidationError) as exc:
+        # Refused as the CI refused a run whose plan its question could not
+        # be answered from, before the plan was read at the start.
+        await _not_started(ctx, grading, exc, NO_RUN)
+        return
+    except PortError as exc:
+        # Likewise a plan the forge could not hand over, which the CI
+        # answered with no run.
+        await _not_started(ctx, grading, exc, NO_RUN)
+        return
     await ctx.db.commit()
     try:
-        found = await _start_run(ctx, account, run)
+        found = await _start_run(ctx, account, run, spec)
     except (PortError, CannotDecrypt) as exc:
         reason = _start_failure(exc) if isinstance(exc, PortError) else ACCOUNT_NOT_READY
         await _not_started(ctx, grading, exc, reason)
@@ -399,17 +415,17 @@ async def _superseded(ctx: Context, row: Grading) -> bool:
     return later is not None
 
 
-async def _start_run(ctx: Context, account: AsOrgAccount, run: GradingRun) -> RunId:
+async def _start_run(ctx: Context, account: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
     """Start the run, and when the CI refuses the org's account, sign it in
     again and try once more, so a login the CI lost heals at the next start.
     Nothing is held while the CI is called.
     """
     try:
-        return await ctx.forge.grading.start_run(account, run)
+        return await ctx.forge.grading.start_run(account, run, spec)
     except Forbidden:
         account = await org_accounts.renew(ctx, account)
         await ctx.db.commit()
-        return await ctx.forge.grading.start_run(account, run)
+        return await ctx.forge.grading.start_run(account, run, spec)
 
 
 async def _not_started(ctx: Context, grading: uuid.UUID, exc: Exception, reason: str) -> None:
@@ -515,6 +531,24 @@ async def run_of(ctx: Context, row: Grading) -> GradingRun:
         envelope_url=envelope_url(ctx, row),
         compute=PLATFORM_POOL,
     )
+
+
+async def plan_of(ctx: Context, run: GradingRun) -> Plan:
+    """The plan of the publication `run` grades against, as it froze it.
+    `NotFound` or `Forbidden` when the file cannot be read, and pydantic's
+    `ValidationError` when it is not a plan.
+    """
+    found = await ctx.forge.content.read_file(
+        PLATFORM, run.task, PLAN_PATH, at=run.publication_version
+    )
+    return Plan.from_bytes(found.content)
+
+
+def spec_of(ctx: Context, plan: Plan) -> RunSpec:
+    """What a run of `plan` runs: the harness image it names and the
+    platform's clone image.
+    """
+    return RunSpec(harness_image=plan.harness_image, clone_image=ctx.settings.clone_image)
 
 
 def org_of(row: Grading) -> OrgId:
