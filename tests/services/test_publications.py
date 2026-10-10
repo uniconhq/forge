@@ -14,6 +14,7 @@ nor is left unsaid on a new group. A task left giving no points is refused
 while its contest's entry gives it a worth or a due.
 """
 
+import asyncio
 import json
 from collections.abc import Mapping
 from datetime import timedelta
@@ -40,7 +41,7 @@ from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
-from forge.services import publications, submissions, tasks
+from forge.services import gradings, publications, submissions, tasks
 from forge.services.access import Organiser
 from forge.services.publications import Draft, Published
 from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES, FakeClock
@@ -1192,3 +1193,73 @@ async def test_a_workflow_in_an_old_format_gives_the_form_its_reason(
     )
     with pytest.raises(Forbidden):
         await publications.workflow_form(setup, stranger, sum_task)
+
+
+async def test_a_submit_in_flight_while_a_grading_change_publishes_is_graded_against_it(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The save waits for a submit that holds the contest's rules, or the
+    submit reads the publication the save made: either way no submission
+    is left graded against a plan a published change replaced."""
+    record = submissions._record
+    saving: list[asyncio.Task[Published | Draft]] = []
+
+    async def record_then_save(*args: Any, **kwargs: Any) -> Any:
+        recorded = await record(*args, **kwargs)
+        change = _with(acme, b"time_limit: 2", b"time_limit: 1")
+        saving.append(asyncio.create_task(_save(setup, acme, entered.task, change, confirm=True)))
+        await asyncio.wait(saving, timeout=3)
+        return recorded
+
+    monkeypatch.setattr(submissions, "_record", record_then_save)
+    made = await upload(setup, acme.fake, entered.session, entered.task, b"print(3)\n")
+    await submissions.submit(
+        setup,
+        entered.session,
+        entered.task,
+        {
+            "submission": SubmittedInput(uploads=(made.id,)),
+            "language": SubmittedInput(value="python"),
+        },
+        idempotency_key="key-0001-aaaa",
+    )
+    published = await saving[0]
+
+    assert isinstance(published, Published) and published.grading_changed
+    attempts = await _attempts(setup)
+    assert attempts[-1][2] == str(published.publication), attempts
+
+
+async def test_a_rejudge_in_flight_and_a_saves_regrade_give_each_submission_its_own_attempt(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejudge holds the contest's rules alone, as a save does, so a save
+    that publishes a grading change regrades after it, from every attempt
+    the rejudge made, rather than from rows read before it committed."""
+    await _graded(setup, acme, entered)
+    regrade = gradings.regrade
+    calls = 0
+
+    async def slow_first(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        done = await regrade(*args, **kwargs)
+        if calls == 1:
+            await asyncio.sleep(1)
+        return done
+
+    monkeypatch.setattr(gradings, "regrade", slow_first)
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring", "sum"), Role.MANAGER)
+    rejudging = asyncio.create_task(gradings.rejudge(setup, manager, entered.task))
+    await asyncio.sleep(0.3)
+    change = _with(acme, b"time_limit: 2", b"time_limit: 1")
+
+    saved = await _save(setup, acme, entered.task, change, confirm=True)
+    await rejudging
+
+    assert isinstance(saved, Published) and saved.regraded == 1
+    assert [(number, attempt) for number, attempt, *_ in await _attempts(setup)] == [
+        (1, 1),
+        (1, 2),
+        (1, 3),
+    ]

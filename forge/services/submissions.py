@@ -240,6 +240,15 @@ async def submit(
         await submitters.refuse(ctx, entrant)
         await submitters.open_place(ctx, entrant)
         opened = True
+    # The contest's rules are held shared from here, as a mark holds them,
+    # and the task read again under them: a save of the task or of the
+    # contest's settings waits for this submit, or this submit reads what the
+    # save published, so a grading change's regrade never misses it and a
+    # close moved earlier is never passed (TASK-FORMAT.md section 2, step 12;
+    # C2).
+    await timelines.hold_rules(ctx, contest_id_of(task_scope(task)), shared=True)
+    entrant = await submitters.entrant(ctx, session, task)
+    workspace = entrant.workspace
     if workspace is not None:
         await _hold(ctx, workspace, task)
         await submitters.hold_standing(ctx, entrant)
