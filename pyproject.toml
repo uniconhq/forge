@@ -75,13 +75,13 @@ markers = ["live: needs a running forge, named by UNICON_LIVE_FORGE_URL"]
 root_package = "forge"
 
 [[tool.importlinter.contracts]]
-name = "domain, services and db never import a forge implementation"
+name = "domain, services and db never import an adapter"
 type = "forbidden"
 source_modules = ["forge.domain", "forge.services", "forge.db"]
 forbidden_modules = ["forge.adapters"]
 
 [[tool.importlinter.contracts]]
-name = "only runtime and testing build a forge implementation"
+name = "only runtime and testing build the adapters"
 type = "forbidden"
 source_modules = [
     "forge.api",
@@ -97,15 +97,37 @@ forbidden_modules = ["forge.adapters"]
 allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
-name = "the Forgejo implementation never imports services or db"
+name = "the git host's, the CI's, the store's and mail's adapters never import each other"
+type = "independence"
+modules = [
+    "forge.adapters.git",
+    "forge.adapters.ci",
+    "forge.adapters.objects",
+    "forge.adapters.mail",
+]
+
+[[tool.importlinter.contracts]]
+name = "the adapters never import services or db"
 type = "forbidden"
-source_modules = ["forge.adapters.git.forgejo"]
+source_modules = [
+    "forge.adapters.git",
+    "forge.adapters.ci",
+    "forge.adapters.objects",
+    "forge.adapters.mail",
+]
 forbidden_modules = ["forge.services", "forge.db"]
 
 [[tool.importlinter.contracts]]
-name = "the in-memory implementation never imports services, db or runtime"
+name = "the in-memory adapters never import services, db or runtime"
 type = "forbidden"
-source_modules = ["forge.adapters.git.fake"]
+source_modules = [
+    "forge.adapters.git.fake",
+    "forge.adapters.ci.fake",
+    "forge.adapters.objects.fake",
+    "forge.adapters.mail.fake",
+    "forge.adapters.fake_world",
+    "forge.adapters.fakes",
+]
 forbidden_modules = ["forge.services", "forge.db", "forge.runtime"]
 
 [[tool.importlinter.contracts]]

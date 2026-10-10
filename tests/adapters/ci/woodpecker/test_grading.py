@@ -29,9 +29,9 @@ from forge.domain.errors import (
     VariablesDiffer,
 )
 from forge.domain.grading import GradingRun, InboundRequest, RunLookup, RunSpec, RunState
-from forge.domain.identity import AsOrgAccount, CiState
+from forge.domain.identity import AsOrgAccount, CiState, OrgAccountRef
 from forge.domain.ids import OrgId, PublicationId, RunId, SubmissionId, TaskId, VersionId
-from tests.forges.forgejo.conftest import Recorder, ok
+from tests.adapters.conftest import Recorder, ok
 
 ACME = AsOrgAccount(
     "acme",
@@ -642,3 +642,27 @@ async def test_the_queue_is_read_at_most_once_in_ten_seconds(
 def test_a_state_this_implementation_did_not_write_is_rejected(state: str) -> None:
     with pytest.raises(Rejected, match="not Woodpecker's"):
         read_state(CiState(state))
+
+
+async def test_an_org_is_set_up_with_its_user_found_or_made_then_signed_in(
+    woodpecker: WoodpeckerCi, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder.on("GET", "/api/users/unicon-ci-acme", ok({}, 404), ok({"id": 4}))
+    recorder.on("POST", "/api/users", ok({"id": 4}))
+    signed_in: list[tuple[str, str]] = []
+
+    async def mint_token(username: str, forge_password: str) -> str:
+        signed_in.append((username, forge_password))
+        return f"token-{len(signed_in)}"
+
+    monkeypatch.setattr(woodpecker.grading._login, "mint_token", mint_token)
+    account = OrgAccountRef("unicon-ci-acme", 9, "pw-1")
+
+    first = await woodpecker.grading.set_up_org(OrgId("acme"), account)
+    again = await woodpecker.grading.set_up_org(OrgId("acme"), account)
+
+    assert recorder.sent("POST", "/api/users") == [{"login": "unicon-ci-acme"}]
+    assert recorder.headers("POST", "/api/users") == ["Bearer ci-admin"]
+    assert signed_in == [("unicon-ci-acme", "pw-1")] * 2
+    assert (read_state(first).user_id, read_state(first).token) == (4, "token-1")
+    assert (read_state(again).user_id, read_state(again).token) == (4, "token-2")
