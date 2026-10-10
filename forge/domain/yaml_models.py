@@ -141,6 +141,14 @@ class _ExactConstructor(SafeConstructor):
             return Decimal("NaN")
         return Decimal(text)
 
+    def construct_not_core(self, node: Any) -> Any:
+        raise ConstructorError(
+            None,
+            None,
+            f"the tag {node.tag} is not one of YAML 1.2's core schema",
+            node.start_mark,
+        )
+
     def construct_core_int(self, node: ScalarNode) -> int:
         text = str(self.construct_scalar(node))
         if text.startswith(("0o", "0x")):
@@ -150,6 +158,8 @@ class _ExactConstructor(SafeConstructor):
 
 _ExactConstructor.add_constructor(_TAG + "float", _ExactConstructor.construct_exact_float)
 _ExactConstructor.add_constructor(_TAG + "int", _ExactConstructor.construct_core_int)
+for _other in ("timestamp", "binary", "set", "omap", "pairs", "merge", "value"):
+    _ExactConstructor.add_constructor(_TAG + _other, _ExactConstructor.construct_not_core)
 
 
 def _reader() -> YAML:
@@ -171,7 +181,12 @@ class _ExactRepresenter(SafeRepresenter):
     """The safe representer, writing a `Decimal` as the digits it holds."""
 
     def represent_decimal(self, data: Decimal) -> ScalarNode:
-        node: ScalarNode = self.represent_scalar(_TAG + "float", str(data))
+        """Its digits, under the int tag when they are a whole number with
+        no point, so they are written bare rather than tagged.
+        """
+        text = str(data)
+        whole = re.fullmatch(r"-?[0-9]+", text) is not None
+        node: ScalarNode = self.represent_scalar(_TAG + ("int" if whole else "float"), text)
         return node
 
 
@@ -470,18 +485,19 @@ _TIME = re.compile(
 
 
 def read_time(text: str) -> date | None:
-    """A date, or a date and time, written as YAML 1.1 reads one, which is
-    how a definition file has always written a time: `2026-06-01T09:00:00Z`,
-    with a space or a lower case `t`, one digit for a month, a day or an
-    hour, a fraction of a second and a zone such as `+08:00` or ` -5`, or
-    none. None for any other text, or one naming no real moment.
+    """A date, or a date and time, in every spelling a definition file has
+    been read in: ISO 8601 as `datetime.fromisoformat` reads it, such as
+    `2026-06-01T09:00:00Z` or `2026-06-01T09:00+08:00`, and the spellings
+    YAML 1.1 read as a time besides, with a space or a lower case `t`, one
+    digit for a month, a day or an hour, and a zone such as ` -5`. None for
+    any other text, or one naming no real moment.
     """
     text = text.strip()
     try:
         if (found := _DATE.match(text)) is not None:
             return date(int(found["year"]), int(found["month"]), int(found["day"]))
         if (found := _TIME.match(text)) is None:
-            return None
+            return _iso_time(text)
         zone = None
         if found["zone"] is not None:
             zone = UTC
@@ -500,6 +516,18 @@ def read_time(text: str) -> date | None:
             int((found["fraction"] or "0")[:6].ljust(6, "0")),
             tzinfo=zone,
         )
+    except ValueError:
+        return None
+
+
+def _iso_time(text: str) -> datetime | None:
+    """`text` as ISO 8601 names a date and time, or None. A date alone is
+    left to `_DATE`, which reads it as a date.
+    """
+    if not text[:1].isdigit():
+        return None
+    try:
+        return datetime.fromisoformat(text)
     except ValueError:
         return None
 
