@@ -1453,3 +1453,25 @@ async def test_a_version_is_read_at_its_tags_commit_whatever_its_name_spells(
 
     [read] = [seen for seen in recorder.seen if seen.url.path == f"{repo}/contents/workflow.yaml"]
     assert read.url.params["ref"] == tagged
+
+
+@pytest.mark.parametrize("user_id", [0, -1])
+async def test_an_id_no_user_can_have_is_no_user_and_asks_nothing(
+    forgejo: ForgejoForge, recorder: Recorder, user_id: int
+) -> None:
+    """Forgejo's search filters by `uid` only when it is above 0, so 0
+    answers whoever comes first."""
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [USER]}))
+
+    with pytest.raises(NotFound):
+        await forgejo.identity.find_user(user_id)
+    assert [seen for seen in recorder.seen if seen.url.path == "/api/v1/users/search"] == []
+
+
+async def test_a_search_answering_another_user_is_no_user(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [USER]}))
+
+    with pytest.raises(NotFound):
+        await forgejo.identity.find_user(8)

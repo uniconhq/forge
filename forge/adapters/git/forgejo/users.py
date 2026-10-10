@@ -137,10 +137,16 @@ class Users:
         await self._http.call(PLATFORM, "DELETE", f"/api/v1/admin/users/{segment(login)}")
 
     async def _record(self, user_id: int) -> dict[str, Any]:
+        """The account with `user_id`. Forgejo's search filters by `uid` only
+        when it is above 0, and answers everyone otherwise, so an id below 1
+        is no user, and an answer naming another id is none either.
+        """
+        if user_id < 1:
+            raise NotFound(f"no user with id {user_id}")
         found = json_of(
             await self._http.call(PLATFORM, "GET", "/api/v1/users/search", params={"uid": user_id})
         )
-        people = found.get("data") or []
+        people = [person for person in found.get("data") or [] if person.get("id") == user_id]
         if not people:
             raise NotFound(f"no user with id {user_id}")
         person: dict[str, Any] = people[0]
