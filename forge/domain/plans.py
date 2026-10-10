@@ -60,7 +60,7 @@ from forge.domain.definitions import (
     TaskDefinition,
     form_problems,
 )
-from forge.domain.grading import BASE_WALL, STEP_OVERHEAD, WALL_CEILING, Machine
+from forge.domain.grading import WALL_CEILING, Machine, wall_seconds
 from forge.domain.primitives import BATCH_SCALED, IMAGE, LIMIT_NAMES, Port, PrimitiveDeclaration
 from forge.domain.scoring import Better, Measure, exact
 from forge.domain.showing import NOTHING_SEALED, Sealed
@@ -1365,8 +1365,7 @@ def _fit(compiler: _Compiler, plan: Plan) -> list[Problem]:
     number that pushed it over came from.
     """
     problems: list[Problem] = []
-    seconds = sum(step.limits.time_ms for step in plan.steps) / 1000
-    total = seconds + BASE_WALL.total_seconds() + STEP_OVERHEAD.total_seconds() * len(plan.steps)
+    total = wall_seconds(plan)
     ceiling = WALL_CEILING.total_seconds()
     if total > ceiling:
         said = f"the run {math.ceil(total / 60)} minutes; a run may take {int(ceiling // 60)}."
