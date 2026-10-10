@@ -21,7 +21,7 @@ import pytest
 import sqlalchemy.exc
 from sqlalchemy import text
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.domain.errors import SessionExpired
 from forge.domain.keys import key_from_name
 from forge.domain.roles import Role

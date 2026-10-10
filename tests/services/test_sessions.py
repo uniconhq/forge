@@ -11,7 +11,7 @@ from datetime import timedelta
 import psycopg
 import pytest
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.domain.errors import NotFound, SessionExpired, Unauthenticated, Unavailable
 from forge.domain.identity import Credential
 from forge.domain.sessions import Session

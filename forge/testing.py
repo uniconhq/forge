@@ -45,7 +45,7 @@ from typing import Any
 import psycopg
 import pytest
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.db.migrations import upgrade_to_head
 from forge.db.tables import Contestant, Name, metadata
 from forge.domain.clock import FakeClock

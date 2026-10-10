@@ -1,9 +1,9 @@
-"""The port in memory, for tests. It implements every area with no network,
-records every call with the identity it was made under, and refuses the three
-things a real forge refuses: a write whose conflict check is stale, a
-protected version created by anything but the platform, and a read the user
-has no access to. Its object store is in memory too, and refuses what a
-real store refuses.
+"""The git host in memory, for tests. It implements every area with no
+network, records every call with the identity it was made under, and refuses
+the three things a real forge refuses: a write whose conflict check is stale,
+a protected version created by anything but the platform, and a read the
+user has no access to. `adapters.fakes.FakeForge` joins it with the other
+fakes into the `Forge` tests use.
 """
 
 from datetime import timedelta
@@ -12,8 +12,6 @@ from typing import Any
 from forge.adapters.git.fake.content import FakeContent
 from forge.adapters.git.fake.grading import FakeComputes, FakeGrading
 from forge.adapters.git.fake.identity import FakeIdentity
-from forge.adapters.git.fake.mail import FakeMail
-from forge.adapters.git.fake.objects import FakeObjects
 from forge.adapters.git.fake.orgs import FakeOrgs
 from forge.adapters.git.fake.state import Call, State
 from forge.adapters.git.fake.threads import FakeThreads
@@ -23,10 +21,10 @@ from forge.adapters.git.fake.workspaces import FakeWorkspaces
 from forge.domain.clock import Clock
 from forge.domain.identity import Credential, User
 
-__all__ = ["Call", "FakeForge", "State"]
+__all__ = ["Call", "FakeGitHost", "State"]
 
 
-class FakeForge:
+class FakeGitHost:
     def __init__(
         self,
         *,
@@ -49,8 +47,6 @@ class FakeForge:
         self.workflows = FakeWorkflows(self.state)
         self.primitives = FakePrimitives(self.state)
         self.computes = FakeComputes(self.state)
-        self.objects = FakeObjects(self.state.clock)
-        self.mail = FakeMail()
 
     @property
     def name(self) -> str:

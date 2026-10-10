@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from forge.adapters.git.forgejo.mail import MailConfig, NoMail, SmtpMail
+from forge.adapters.mail.smtp import MailConfig, NoMail, SmtpMail
 from forge.domain.errors import Misconfigured, Rejected, Unavailable
 from forge.port.mail import Mail
 

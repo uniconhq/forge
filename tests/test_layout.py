@@ -5,7 +5,7 @@ satisfy the port.
 import importlib
 
 import forge
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.port import Forge
 
 LAYERS = [

@@ -9,7 +9,7 @@ has come to mean another workflow is refused at the save.
 import pytest
 from sqlalchemy import update
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.db.tables import Name
 from forge.domain.content import Edit
 from forge.domain.errors import Forbidden, NotFound

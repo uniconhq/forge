@@ -1,7 +1,6 @@
 """The port over Forgejo and Woodpecker, assembled from one area object per
-port area over three shared collaborators: `Users`, `Repos` and `Teams`, and
-the object store beside them over S3. May import `forge.port` and
-`forge.domain`, never `forge.services` or `forge.db`.
+port area over three shared collaborators: `Users`, `Repos` and `Teams`. May
+import `forge.port` and `forge.domain`, never `forge.services` or `forge.db`.
 """
 
 from dataclasses import dataclass
@@ -15,9 +14,7 @@ from forge.adapters.git.forgejo.content import ForgejoContent
 from forge.adapters.git.forgejo.grading import WoodpeckerGrading
 from forge.adapters.git.forgejo.http import ForgejoAuth, Http, WoodpeckerAuth, new_client
 from forge.adapters.git.forgejo.identity import ForgejoIdentity
-from forge.adapters.git.forgejo.mail import MailConfig, NoMail, SmtpMail
 from forge.adapters.git.forgejo.oauth import OAuth
-from forge.adapters.git.forgejo.objects import NoStore, S3Objects, StorageConfig
 from forge.adapters.git.forgejo.orgs import ForgejoOrgs
 from forge.adapters.git.forgejo.primitives import ForgejoPrimitives
 from forge.adapters.git.forgejo.repos import Repos
@@ -36,15 +33,10 @@ class ForgejoConfig:
     account protected versions are reserved for. `ci_public_url` is the URL
     the CI knows itself by, `WOODPECKER_HOST`: the CI writes its webhooks
     under it, and that is how the implementation tells the CI's webhook from
-    any other. `storage` is the object store beside the forge, which the
-    Forgejo implementation reaches over S3; without it every call to the
-    store is `Misconfigured`. `mail` is the server the forge sends its own
-    mail through, which the platform's mail goes through too; without it
-    nothing is sent. `ci` names the CI the grading and compute areas talk
-    to, which the `ci_*` settings reach. `ci_login_lifetime` is how long the
-    org account's
-    login at the forge lasts, which is how long its sign-in at the CI does:
-    the session's hard lifetime.
+    any other. `ci` names the CI the grading and compute areas talk to,
+    which the `ci_*` settings reach. `ci_login_lifetime` is how long the org
+    account's login at the forge lasts, which is how long its sign-in at the
+    CI does: the session's hard lifetime.
     """
 
     public_url: str
@@ -58,8 +50,6 @@ class ForgejoConfig:
     ci_url: str
     ci_public_url: str
     ci_admin_token: str
-    storage: StorageConfig | None = None
-    mail: MailConfig | None = None
     ci_login_lifetime: timedelta = timedelta(days=30)
     ci: str = "woodpecker"
 
@@ -126,12 +116,6 @@ class ForgejoForge:
         self.uploads = ForgejoUploads(http)
         self.workflows = ForgejoWorkflows(repos, users)
         self.primitives = ForgejoPrimitives(repos)
-        self.objects: S3Objects | NoStore = (
-            S3Objects(config.storage) if config.storage is not None else NoStore()
-        )
-        self.mail: SmtpMail | NoMail = (
-            SmtpMail(config.mail) if config.mail is not None else NoMail()
-        )
 
     @property
     def name(self) -> str:

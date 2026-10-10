@@ -14,7 +14,7 @@ import logging
 import pytest
 from sqlalchemy import select
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.db.tables import Contestant, OrgAccount
 from forge.domain.errors import ContestantConflict, Forbidden, NotFound, SoleAdmin
 from forge.domain.identity import PLATFORM

@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.adapters.git.fake.grading import token_in
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected

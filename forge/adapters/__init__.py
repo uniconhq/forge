@@ -1,16 +1,52 @@
-"""The implementations of the port: `forgejo` for the real host and `fake` for
-tests, and `cached` in front of either. Nothing in `domain`, `services` or
-`db` imports this package; `build` is how the runtime gets a forge.
+"""The adapters behind the port, one group per service outside the platform:
+`git` for the git host, `objects` for the store run logs are kept in and
+`mail` for the mail server, with `fake` in each for tests, and `cached` in
+front of the git host's reads. Nothing in `domain`, `services` or `db`
+imports this package; `build` is how the runtime gets its `Forge`, one of
+each joined into one.
 """
 
 from forge.adapters.cached import CachedForge
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.adapters.git.forgejo import ForgejoConfig, ForgejoForge
-from forge.adapters.git.forgejo.mail import MailConfig
-from forge.adapters.git.forgejo.objects import StorageConfig
+from forge.adapters.mail.smtp import MailConfig, NoMail, SmtpMail
+from forge.adapters.objects.s3 import S3Objects, StorageConfig
 from forge.domain.errors import Misconfigured
-from forge.port import Forge
+from forge.port import Ci, Forge, GitHost, MailPort, ObjectStore
 from forge.settings import Settings
+
+
+class JoinedForge:
+    """One `Forge` from its parts: the git host's areas from `git`, the CI's
+    from `ci`, and the object store and the mail server as they are. Its
+    name is the git host's, as the logs have always read.
+    """
+
+    def __init__(self, *, git: GitHost, ci: Ci, objects: ObjectStore, mail: MailPort) -> None:
+        self.identity = git.identity
+        self.orgs = git.orgs
+        self.content = git.content
+        self.workspaces = git.workspaces
+        self.threads = git.threads
+        self.workflows = git.workflows
+        self.primitives = git.primitives
+        self.uploads = git.uploads
+        self.grading = ci.grading
+        self.computes = ci.computes
+        self.objects = objects
+        self.mail = mail
+        self._git = git
+        self._ci = ci
+
+    @property
+    def name(self) -> str:
+        return self._git.name
+
+    async def aclose(self) -> None:
+        await self._git.aclose()
+        # One adapter may fill both groups, and is closed once.
+        if id(self._ci) != id(self._git):
+            await self._ci.aclose()
 
 
 def build(settings: Settings, *, sign_in_redirect_uri: str) -> Forge:
@@ -39,7 +75,7 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
     forgejo, s3 = settings.forgejo, settings.s3
     if forgejo is None or s3 is None or settings.forge_public_url is None:
         raise Misconfigured("UNICON_FORGE=forgejo without its settings")
-    return ForgejoForge(
+    git = ForgejoForge(
         ForgejoConfig(
             public_url=str(settings.forge_public_url),
             internal_url=str(forgejo.internal_url),
@@ -52,30 +88,38 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
             ci_url=str(forgejo.woodpecker_url),
             ci_public_url=str(forgejo.woodpecker_public_url),
             ci_admin_token=forgejo.woodpecker_token.get_secret_value(),
-            storage=StorageConfig(
+            ci_login_lifetime=settings.session_hard_ttl,
+            ci=settings.ci,
+        )
+    )
+    return JoinedForge(
+        git=git,
+        ci=git,
+        objects=S3Objects(
+            StorageConfig(
                 endpoint=str(s3.endpoint),
                 region=s3.region,
                 access_key=s3.access_key,
                 secret_key=s3.secret_key.get_secret_value(),
                 results_bucket=s3.results_bucket,
                 machine_url=str(settings.machine_url),
-            ),
-            mail=_mail(settings),
-            ci_login_lifetime=settings.session_hard_ttl,
-            ci=settings.ci,
-        )
+            )
+        ),
+        mail=_mail(settings),
     )
 
 
-def _mail(settings: Settings) -> MailConfig | None:
+def _mail(settings: Settings) -> SmtpMail | NoMail:
     mail = settings.mail
     if mail is None:
-        return None
-    return MailConfig(
-        host=mail.smtp_addr,
-        port=mail.smtp_port,
-        protocol=mail.protocol,
-        sender=mail.sender,
-        user=mail.user,
-        password=mail.password.get_secret_value() if mail.password is not None else None,
+        return NoMail()
+    return SmtpMail(
+        MailConfig(
+            host=mail.smtp_addr,
+            port=mail.smtp_port,
+            protocol=mail.protocol,
+            sender=mail.sender,
+            user=mail.user,
+            password=mail.password.get_secret_value() if mail.password is not None else None,
+        )
     )

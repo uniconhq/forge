@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.adapters.ids import parse_task, parse_workspace
 from forge.db.tables import Team as TeamRow
 from forge.domain.errors import (

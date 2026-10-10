@@ -12,7 +12,7 @@ from datetime import timedelta
 
 import pytest
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.adapters.git.fake.grading import token_in
 from forge.domain.errors import NotFound, Unavailable
 from forge.domain.identity import AsOrgAccount, CiState

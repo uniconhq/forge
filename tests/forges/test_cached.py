@@ -3,7 +3,7 @@ caches only the reads that grow with the forge while the flag is off.
 """
 
 from forge.adapters.cached import Cache, CachedForge
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.domain.identity import AsUser
 from forge.domain.ids import OrgId
 from forge.domain.roles import Role, Scope

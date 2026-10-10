@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.adapters.ids import parse_task, parse_workspace
 from forge.domain.clock import FakeClock
 from forge.domain.errors import Conflict, Unavailable

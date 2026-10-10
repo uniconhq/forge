@@ -9,7 +9,9 @@ from typing import Any
 import pytest
 
 from forge import adapters
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
+from forge.adapters.mail.smtp import NoMail
+from forge.adapters.objects.s3 import S3Objects
 from forge.settings import ForgejoSettings, S3Settings, Settings
 
 SHORTER = timedelta(days=6)
@@ -62,7 +64,9 @@ def test_forgejo_is_given_the_sessions_hard_lifetime_and_the_ci(
         ),
     )
 
-    adapters.build(settings, sign_in_redirect_uri="http://app.test/cb")
+    forge = adapters.build(settings, sign_in_redirect_uri="http://app.test/cb")
 
     [config] = built
     assert (config.ci_login_lifetime, config.ci) == (SHORTER, "woodpecker")
+    assert isinstance(forge.objects, S3Objects)
+    assert isinstance(forge.mail, NoMail)

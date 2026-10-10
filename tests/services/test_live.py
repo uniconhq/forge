@@ -20,7 +20,7 @@ from datetime import timedelta
 import psycopg
 import pytest
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.db.tables import Session as SessionRow
 from forge.domain.ids import OrgId
 from forge.domain.live import CHANNEL, Audience, Nudge, NudgeKind, read_payload

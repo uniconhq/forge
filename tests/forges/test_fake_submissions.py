@@ -11,7 +11,7 @@ from datetime import timedelta
 
 import pytest
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.domain.clock import FakeClock
 from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import PLATFORM, AsUser

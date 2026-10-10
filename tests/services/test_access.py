@@ -8,7 +8,7 @@ forge refuses ends the session.
 
 import pytest
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.domain.errors import Forbidden, SessionExpired
 from forge.domain.identity import User
 from forge.domain.ids import OrgId

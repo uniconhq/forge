@@ -10,7 +10,7 @@ import pytest
 
 from forge import port
 from forge.adapters.cached import CachedForge
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.domain import errors
 from forge.domain.errors import UniconError
 from forge.port import Forge

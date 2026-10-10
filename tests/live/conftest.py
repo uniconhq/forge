@@ -17,9 +17,13 @@ from typing import Any
 import httpx
 import pytest
 
+from forge.adapters import JoinedForge
 from forge.adapters.git.forgejo import ForgejoConfig, ForgejoForge
+from forge.adapters.mail.smtp import NoMail
+from forge.adapters.objects.s3 import NoStore
 from forge.domain.identity import AsUser, Credential
 from forge.domain.keys import key_from_name
+from forge.port import ObjectStore
 from forge.runtime.setup import Setup
 from forge.settings import Settings
 from forge.testing import APP_URL, CALLBACK_PATH
@@ -100,13 +104,26 @@ async def live_setup(migrated_database_url: str, admin: httpx.Client) -> AsyncIt
     built = Setup.build(
         settings,
         callback_path=CALLBACK_PATH,
-        forge=ForgejoForge(forge_config(admin)),
+        forge=live_forge(forge_config(admin)),
         keys=key_from_name,
     )
     try:
         yield built
     finally:
         await built.stop()
+
+
+def live_forge(config: ForgejoConfig, objects: ObjectStore | None = None) -> JoinedForge:
+    """The live forge and CI joined as the runtime joins them, with no
+    object store or mail server unless `objects` is one.
+    """
+    git = ForgejoForge(config)
+    return JoinedForge(
+        git=git,
+        ci=git,
+        objects=objects if objects is not None else NoStore(),
+        mail=NoMail(),
+    )
 
 
 @pytest.fixture

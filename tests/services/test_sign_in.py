@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.domain.errors import SessionExpired, SignInInvalid
 from forge.domain.sessions import Session
 from forge.runtime.context import Context

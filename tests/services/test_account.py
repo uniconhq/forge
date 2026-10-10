@@ -9,7 +9,7 @@ from datetime import timedelta
 
 import pytest
 
-from forge.adapters.git.fake import FakeForge
+from forge.adapters.fakes import FakeForge
 from forge.domain.errors import (
     FreshSignInRequired,
     InvalidName,
