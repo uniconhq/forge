@@ -99,29 +99,33 @@ class ForgejoForge:
         )
         self.orgs = ForgejoOrgs(http, teams, users, platform_account=config.platform_account)
         self.content = ForgejoContent(repos, teams)
-        if config.ci != "woodpecker":
-            raise Misconfigured(f"UNICON_CI={config.ci} names no CI this forge grades with")
-        self.grading = WoodpeckerGrading(
-            http,
-            ci,
-            repos,
-            users,
-            ci_public_url=config.ci_public_url,
-            login_lifetime=config.ci_login_lifetime,
-            login=CiLogin(
-                forge_public_url=config.public_url,
-                forge_url=config.internal_url,
-                ci_public_url=config.ci_public_url,
-                ci_url=config.ci_url,
-                transport=browser_transport,
-            ),
-        )
+        # The CI `config.ci` names gives both areas that talk to it, grading
+        # and the machines' enrolment; the one there is is Woodpecker.
+        match config.ci:
+            case "woodpecker":
+                self.grading = WoodpeckerGrading(
+                    http,
+                    ci,
+                    repos,
+                    users,
+                    ci_public_url=config.ci_public_url,
+                    login_lifetime=config.ci_login_lifetime,
+                    login=CiLogin(
+                        forge_public_url=config.public_url,
+                        forge_url=config.internal_url,
+                        ci_public_url=config.ci_public_url,
+                        ci_url=config.ci_url,
+                        transport=browser_transport,
+                    ),
+                )
+                self.computes = WoodpeckerComputes(ci)
+            case _:
+                raise Misconfigured(f"UNICON_CI={config.ci} names no CI this forge grades with")
         self.workspaces = ForgejoWorkspaces(repos, users, teams)
         self.threads = ForgejoThreads(http)
         self.uploads = ForgejoUploads(http)
         self.workflows = ForgejoWorkflows(repos, users)
         self.primitives = ForgejoPrimitives(repos)
-        self.computes = WoodpeckerComputes(ci)
         self.objects: S3Objects | NoStore = (
             S3Objects(config.storage) if config.storage is not None else NoStore()
         )

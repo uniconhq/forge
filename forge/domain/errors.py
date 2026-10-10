@@ -52,6 +52,14 @@ class Rejected(PortError):
     code = "rejected"
 
 
+class VariablesDiffer(Rejected):
+    """The CI asked about a run started with variables other than those the
+    platform starts it with, so it is answered with nothing.
+    """
+
+    code = "variables_differ"
+
+
 class Misconfigured(Rejected):
     """The host refused the platform itself rather than the user: a wrong
     client registration or redirect.

@@ -82,11 +82,10 @@ class GradingPort(Protocol):
         ...
 
     async def run_state(self, run: RunId) -> RunState:
-        """Where the CI has the run, as the CI's administrator, told by the
-        queue it is in rather than its status, which is the same for a run
-        waiting for a machine and a run the CI dropped. A run the CI does not
-        know is `lost`. The implementation may answer from a view of the
-        queue a few seconds old.
+        """Where the CI has the run: waiting for a machine, taken by one,
+        finished, or `lost`, a run the CI holds no more though it was never
+        finished, or does not know. The implementation may answer from a view
+        a few seconds old.
         """
         ...
 
@@ -97,9 +96,9 @@ class GradingPort(Protocol):
         answer to `request`, once it is found to be the CI's own and fresh at
         `now`, for the run `lookup` gives, and only when that run was started
         with exactly the variables the implementation starts it with. The
-        answer checks the task out at the version its publication froze with
-        its large files and the submission at its version, both with the
-        spec's clone image, and runs the spec's harness image as the
+        answer checks the task out at the version its publication froze and
+        the submission at its version, each with its large files, both with
+        the spec's clone image, and runs the spec's harness image as the
         runner's machine contract says, on a machine carrying the run's
         label; the same every time for the same run. `Forbidden` for a
         request the CI did not sign, one changed since or a stale one;

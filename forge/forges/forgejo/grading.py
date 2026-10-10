@@ -6,7 +6,8 @@ the answer to it, and the org account's own user and token at the CI, made
 and deleted by the administrator and signed in by the sign-in dance.
 
 What the org account holds at Woodpecker is its user id, the token its
-sign-in minted and when that was (`ci_state.py`). Woodpecker keeps the
+sign-in minted, when that was, and the account's id at the forge, by which
+a refresh finds it (`ci_state.py`). Woodpecker keeps the
 account's login at the forge fresh only while the account calls it, and
 that login lasts as long as the forge's refresh token, which deploy sets to
 the session's hard lifetime, `UNICON_SESSION_HARD_TTL`, 30 days unless the
@@ -75,7 +76,14 @@ import yaml
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
-from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
+from forge.domain.errors import (
+    Conflict,
+    Forbidden,
+    NotFound,
+    Rejected,
+    Unavailable,
+    VariablesDiffer,
+)
 from forge.domain.grading import (
     GradingRun,
     InboundAnswer,
@@ -363,7 +371,9 @@ class WoodpeckerGrading:
         ask = await self._ask(request, now)
         run, spec = await lookup(ask.grading, ask.task)
         if dict(ask.variables) != run_variables(run):
-            raise Rejected("the run was not started with the variables its grading starts it with")
+            raise VariablesDiffer(
+                "the run was not started with the variables its grading starts it with"
+            )
         return self._answer(run, ask, spec)
 
     async def _ask(self, request: InboundRequest, now: datetime) -> _Ask:

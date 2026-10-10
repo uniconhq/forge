@@ -72,6 +72,7 @@ from forge.domain.errors import (
     PortError,
     Rejected,
     Unavailable,
+    VariablesDiffer,
 )
 from forge.domain.grading import (
     GradingRun,
@@ -132,7 +133,12 @@ async def config(ctx: Context, request: InboundRequest) -> InboundAnswer:
         log.info("runs.config_unasked")
         raise NotFound("This CI does not ask what a run is.") from None
     except (Forbidden, Rejected) as exc:
-        reason = "unverified" if isinstance(exc, Forbidden) else "rejected"
+        if isinstance(exc, VariablesDiffer):
+            reason = "variables"
+        elif looked_up:
+            reason = "answer"
+        else:
+            reason = "unverified"
         grading = str(looked_up[0].grading) if looked_up else None
         log.warning("runs.config_refused", reason=reason, grading=grading, detail=exc.detail)
         raise CiRequestRefused(REFUSED) from None

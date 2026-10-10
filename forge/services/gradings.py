@@ -172,8 +172,8 @@ NO_ANSWER = "The CI did not answer."
 PUBLICATION_GONE = "The publication it grades against is gone."
 
 CI_CONFIG_PATH = "/api/v1/ci/config"
-"""Where the CI asks what a run is, the configuration extension, under the
-platform's internal URL."""
+"""Where a CI that asks what a run is asks it, under the platform's internal
+URL."""
 ENVELOPE_PATH = "/api/v1/gradings/{grading}/envelope"
 """Where a run fetches its envelope, under the machine URL, with the envelope
 key as `?key=`."""

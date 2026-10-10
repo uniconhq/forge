@@ -20,8 +20,9 @@ pushed to is, and never asks what one is: its `answer` is `NotFound`, so
 the services are tested both with and without the question.
 
 What an org account holds at the fake CI is written the way Woodpecker's
-is, its user id, its token and when it signed in, so a row the migration
-moved reads here too; `token_in` reads the token out of one for a test.
+is, its user id, its token, when it signed in and the account's id at the
+forge, so a row the migration moved reads here too; `token_in` reads the
+token out of one for a test.
 """
 
 import hashlib
@@ -32,7 +33,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
+from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable, VariablesDiffer
 from forge.domain.grading import (
     Enrolment,
     GradingRun,
@@ -218,7 +219,9 @@ class FakeGrading:
         ask = self._ask(request, now)
         run, spec = await lookup(ask.grading, ask.task)
         if dict(ask.variables) != run_variables(run):
-            raise Rejected("the run was not started with the variables its grading starts it with")
+            raise VariablesDiffer(
+                "the run was not started with the variables its grading starts it with"
+            )
         return self._answer(run, ask, spec)
 
     def _ask(self, request: InboundRequest, now: datetime) -> _Ask:
