@@ -247,7 +247,8 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
             == pointer
         )
 
-        repo = f"/api/v1/repos/{org}/autumn.sum.u{contestant['id']}.sub"
+        owner = EntrantOwner(uuid.UUID(int=int(contestant["id"]))).segment
+        repo = f"/api/v1/repos/{org}/autumn.sum.{owner}.sub"
         tags = {tag["name"]: tag["commit"]["sha"] for tag in admin.get(f"{repo}/tags").json()}
         commits = admin.get(f"{repo}/commits", params={"sha": "main"}).json()
         by_sha = {commit["sha"]: commit for commit in commits}
