@@ -342,11 +342,6 @@ async def invite(
     row = await _held_own(ctx, contest, session.user_id)
     registration.refuse_undecidable(Status(row.status), registration.REGISTERED, "joined")
     rules.refuse_locked(settings, ctx.now, submitted=await submitted(ctx, row))
-    await invites.refuse_twice(ctx, contest_scope(contest), Grant.MEMBER, target, row.id)
-    rules.refuse_full(
-        len(await member_ids(ctx, row.id)) + await _waiting(ctx, row.id),
-        settings.entrants.most,
-    )
     if target.user is not None:
         if target.user.id in await member_ids(ctx, row.id):
             raise InEntrant(f"{target.user.username} is in this entrant already.")
@@ -354,6 +349,11 @@ async def invite(
             raise IsStaff(
                 f"{target.user.username} holds a role at this contest, so cannot enter it."
             )
+    await invites.refuse_twice(ctx, contest_scope(contest), Grant.MEMBER, target, row.id)
+    rules.refuse_full(
+        len(await member_ids(ctx, row.id)) + await _waiting(ctx, row.id),
+        settings.entrants.most,
+    )
     made = await invites.make(
         ctx,
         contest_scope(contest),

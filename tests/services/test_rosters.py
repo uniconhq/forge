@@ -294,8 +294,13 @@ async def test_who_may_be_invited_in_and_by_whom(
     with pytest.raises(NotFound):
         await invites_of(setup, carol, "dan")
     await invites_of(setup, bob, "carol")
+    # The person's own refusals come before the entrant's room.
     with pytest.raises(AlreadyInvited):
         await invites_of(setup, bob, "carol")
+    with pytest.raises(IsStaff):
+        await invites_of(setup, bob, "ada")
+    with pytest.raises(EntrantFull):
+        await invites_of(setup, bob, "dan")
     with pytest.raises(EntrantNameTaken):
         await entrants.register(setup, carol, SPRING, name=" adders ")
     assert dan is not None
