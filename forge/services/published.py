@@ -39,7 +39,7 @@ from forge.domain.definitions import (
 )
 from forge.domain.errors import InvalidPath, NotFound, PortError, PublicFileTooLarge, Rejected
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import ContestId, TaskId
+from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.publications import Publication
 from forge.domain.showing import generation_of
@@ -214,9 +214,9 @@ async def statement(ctx: Context, published: PublishedTask) -> str:
 
 @dataclass(frozen=True, slots=True)
 class PublicFile:
-    """A file under a task's `public/`, as its latest publication holds it:
-    its path in the task and its bytes, an upload's own bytes rather than
-    its pointer.
+    """A file under a task's `public/`, as its latest publication, or for an
+    organiser its head, holds it: its path in the task and its bytes, an
+    upload's own bytes rather than its pointer.
     """
 
     path: str
@@ -246,17 +246,50 @@ async def public_file(ctx: Context, published: PublishedTask, path: str) -> Publ
     """
     version = published.publication.version
     await ctx.let_go()
-    try:
+
+    async def listed() -> frozenset[str]:
         files = await ctx.forge.content.list_files(PLATFORM, published.id, at=version)
-        if path not in files.tokens:
-            raise NotFound(NO_SUCH_FILE)
+        return frozenset(found for found in files.tokens if found.startswith(PUBLIC_FOLDER))
+
+    # What a publication holds never changes, so its listing is read once.
+    key = f"published.public.{published.id}.{version}"
+    try:
+        held = await ctx.memo.remembered(key, FORM_KEPT, listed)
+    except NotFound:
+        raise NotFound(NO_SUCH_FILE) from None
+    if path not in held:
+        raise NotFound(NO_SUCH_FILE)
+    return await _public_bytes(ctx, published.id, path, version)
+
+
+async def head_public_file(ctx: Context, task: TaskId, path: str) -> PublicFile:
+    """The file at `path`, under `public/`, as the task's head holds it, the
+    draft a statement being written draws its pictures from, whether or not
+    it was ever published, for whoever organises the task. The caller has
+    checked both. `NotFound` for a task or a file not there.
+    """
+    await ctx.let_go()
+    try:
+        files = await ctx.forge.content.list_files(PLATFORM, task)
+    except NotFound:
+        raise NotFound(NO_SUCH_TASK) from None
+    if path not in files.tokens:
+        raise NotFound(NO_SUCH_FILE)
+    return await _public_bytes(ctx, task, path, files.version)
+
+
+async def _public_bytes(ctx: Context, task: TaskId, path: str, version: VersionId) -> PublicFile:
+    """The file's bytes at the version, an upload's own, refused past
+    `PUBLIC_MOST`.
+    """
+    try:
         content = await ctx.forge.content.read_media(
-            PLATFORM, published.id, path, at=version, max_size=PUBLIC_MOST
+            PLATFORM, task, path, at=version, max_size=PUBLIC_MOST
         )
     except NotFound:
         raise NotFound(NO_SUCH_FILE) from None
     except Rejected:
-        log.info("published.public_file_too_large", task=published.id, path=path)
+        log.info("published.public_file_too_large", task=task, path=path)
         raise PublicFileTooLarge(
             f"The file is larger than the {PUBLIC_MOST // (1024 * 1024)} MB Unicon shows on a "
             "page.",

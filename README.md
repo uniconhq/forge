@@ -1180,7 +1180,11 @@ exactly the checks its statement is read with, and the second also for
 whoever holds a role reaching the task, released or not, since they read
 every file of it as organisers anyway and a statement being written shows
 its images. A file is read as the task's latest publication holds it, never
-a draft saved after it, and an upload by the bytes its pointer names,
+a draft saved after it, except for whoever holds a role reaching the task,
+who reads it as the task's head holds it, the draft the statement's preview
+draws, published or not. Which files a publication holds never changes, so
+its listing is kept in the process's memo, one listing per publication
+whoever reads. An upload is read by the bytes its pointer names,
 through the content port's `read_media` (Forgejo's media endpoint, the read
 a submission's file already goes through). A path outside `public/`, with
 an empty, `.` or `..` segment, or not there is `NotFound`, and a file over

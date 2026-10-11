@@ -236,20 +236,18 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
 
 @action
 async def public_file(ctx: Context, session: Session, task: TaskId, path: str) -> PublicFile:
-    """A file under the task's `public/`, by its path in the task, as its
+    """A file under the task's `public/`, by its path in the task: as its
     latest publication holds it, for a signed-in person who reads the task's
-    page (`task`), or who holds a role reaching the task, whether or not it
-    is released. `NotFound` for a task neither, a path outside `public/` or
-    not there; `PublicFileTooLarge` for one larger than a page is served.
+    page (`task`); as its head holds it, the draft the statement's preview
+    draws, published or not, for one who holds a role reaching the task,
+    whether or not it is released. `NotFound` for a task neither, a path
+    outside `public/` or not there; `PublicFileTooLarge` for one larger than
+    a page is served.
     """
     path = published.public_path(path)
-    found: PublishedTask | None
     if await _organises(ctx, session, task):
-        found = await published.task(ctx, task)
-        if found is None:
-            raise NotFound(published.NO_SUCH_TASK)
-    else:
-        _, _, found = await _visible(ctx, session, task)
+        return await published.head_public_file(ctx, task, path)
+    _, _, found = await _visible(ctx, session, task)
     return await published.public_file(ctx, found, path)
 
 

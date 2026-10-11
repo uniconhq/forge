@@ -3,7 +3,9 @@ whoever may read its statement: a visitor, for a released task of a contest
 for everyone; a signed-in person, for a task whose page they read; and
 whoever holds a role reaching the task, whether or not it is released. Each
 is read as the task's latest publication holds it, never a draft saved
-after it, an upload by its bytes; a path outside `public/`, or not there, is
+after it, except by whoever holds a role reaching the task, who reads it as
+the task's head holds it, the draft the statement's preview draws; an upload
+by its bytes; a path outside `public/`, or not there, is
 no such file, and a file larger than a page is served is refused with a
 refusal of its own.
 """
@@ -151,17 +153,27 @@ async def test_a_role_at_another_task_reads_nothing_unreleased(
         )
 
 
-async def test_an_organiser_of_a_task_never_published_finds_nothing(
+async def test_an_organiser_reads_a_task_never_published_as_its_head_holds_it(
     setup: Setup, acme: Acme, public: TaskId
 ) -> None:
     unsaved = await make_task(setup, acme, "unsaved")
+    draft = await publications.save(
+        setup, acme.ada, unsaved, {"public/figure.png": Edit(FIGURE)}, keep_as_draft=True
+    )
+    assert isinstance(draft, publications.Draft), draft
     ada = await signed_in(setup, acme.fake, 7)
+    bob = await signed_in(setup, acme.fake, 8)
 
+    found = await contest_home.public_file(setup, ada, unsaved, "public/figure.png")
+
+    assert found.content == FIGURE
+    with pytest.raises(NotFound, match="no such file"):
+        await contest_home.public_file(setup, ada, unsaved, "public/missing.png")
     with pytest.raises(NotFound, match="no such task"):
-        await contest_home.public_file(setup, ada, unsaved, "public/figure.png")
+        await contest_home.public_file(setup, bob, unsaved, "public/figure.png")
 
 
-async def test_a_file_is_read_as_the_latest_publication_holds_it_and_never_a_draft(
+async def test_a_file_is_read_as_the_latest_publication_holds_it_and_as_the_head_for_organisers(
     setup: Setup, acme: Acme, public: TaskId
 ) -> None:
     head = await acme.fake.content.list_files(PLATFORM, public)
@@ -177,13 +189,32 @@ async def test_a_file_is_read_as_the_latest_publication_holds_it_and_never_a_dra
     )
     assert isinstance(draft, publications.Draft), draft
     ada = await signed_in(setup, acme.fake, 7)
+    bob = await signed_in(setup, acme.fake, 8)
 
     assert (await landing.public_file(setup, public, "public/figure.png")).content == FIGURE
-    assert (await contest_home.public_file(setup, ada, public, "public/figure.png")).content == (
+    assert (await contest_home.public_file(setup, bob, public, "public/figure.png")).content == (
         FIGURE
     )
     with pytest.raises(NotFound, match="no such file"):
         await landing.public_file(setup, public, "public/new.png")
+    # The statement being written draws its pictures as the draft holds them.
+    assert (await contest_home.public_file(setup, ada, public, "public/figure.png")).content == (
+        b"a new figure"
+    )
+    assert (await contest_home.public_file(setup, ada, public, "public/new.png")).content == b"new"
+
+
+async def test_what_a_publication_holds_is_listed_once_for_every_reader(
+    setup: Setup, acme: Acme, public: TaskId
+) -> None:
+    bob = await signed_in(setup, acme.fake, 8)
+    acme.fake.reset_calls()
+
+    await landing.public_file(setup, public, "public/figure.png")
+    await landing.public_file(setup, public, "public/a/notes.txt")
+    await contest_home.public_file(setup, bob, public, "public/figure.png")
+
+    assert len(acme.fake.calls_to("list_files")) == 1
 
 
 @pytest.mark.parametrize(
