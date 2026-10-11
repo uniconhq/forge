@@ -20,7 +20,7 @@ class WoodpeckerComputes:
         return Enrolment(agent=AgentId(str(created["id"])), token=str(created["token"]))
 
     async def revoke_agent(self, org: OrgId | None, agent: AgentId) -> None:
-        await self._ci.call(CI_ADMIN, "DELETE", f"{await self._agents_path(org)}/{agent}")
+        await self._ci.call(CI_ADMIN, "DELETE", f"{await self._agents_path(org)}/{segment(agent)}")
 
     async def _agents_path(self, org: OrgId | None) -> str:
         if org is None:
