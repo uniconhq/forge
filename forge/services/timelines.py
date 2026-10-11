@@ -23,10 +23,14 @@ gradings, one per submission, at the moment it was taken:
   contest's `end`, does not move earlier than a submission already made,
   nor later once the task has revealed under the settings saved before. A
   contest that was never published released nothing, and moves freely.
-- An open contest, `published` under the settings saved before, goes back
-  to `draft` only before its start (#438): from the start on, contestants
-  have work in it that a draft would hide, so the only way out is
-  `archived`.
+- An open contest, `published` or `archived` under the settings saved
+  before, goes back to `draft` only before its start (#438): from the start
+  on, contestants have work in it that a draft would hide, so the only way
+  out is `archived`. The settings saved before are the latest that read,
+  when the ones replaced do not (`files._last_read`).
+- From the start on, `entrants` no longer asks more of a team than it did,
+  nor allows fewer, nor moves between everyone entering alone and in teams:
+  a team's roster is locked by then, so it could not mend what that breaks.
 
 Changing an extension is checked the same way (`refuse_extension`): it may
 not let a row submit to a task whose reveal has passed, nor, shortened or
@@ -225,6 +229,7 @@ async def check_contest(
         return problems
     if _drafted_after_start(before, after, ctx.now):
         problems.append(Problem(path="state", message=STARTED_STAYS_OPEN))
+    problems += _sizes_moved(before, after, ctx.now)
     made = await submissions(ctx, contest, tasks)
     extensions = await every_extension(ctx, contest)
     for entry in before.tasks:
@@ -256,6 +261,46 @@ def _drafted_after_start(
     it, so going through `archived` hides their work all the same.
     """
     return before.state is not State.DRAFT and before.start <= now and after.state is State.DRAFT
+
+
+def _sizes_moved(
+    before: ContestDefinition, after: ContestDefinition, now: datetime
+) -> list[Problem]:
+    """Once a contest that was open has started, a change of `entrants`
+    that would shut a team out mid-contest, whose roster is locked so it
+    cannot mend it: more members needed, fewer allowed, or a move between
+    everyone entering alone and entering in teams.
+    """
+    if before.state is State.DRAFT or before.start > now:
+        return []
+    old, new = before.entrants, after.entrants
+    problems: list[Problem] = []
+    if (old.most == 1) != (new.most == 1):
+        problems.append(
+            Problem(
+                path="entrants.most",
+                message="The contest has started, so it can no longer change between everyone "
+                "entering alone and entering in teams.",
+            )
+        )
+    elif new.most < old.most:
+        problems.append(
+            Problem(
+                path="entrants.most",
+                message=f"The contest has started, so a team can no longer be made smaller than "
+                f"{old.most} people: teams that have more would be shut out.",
+            )
+        )
+    if new.fewest > old.fewest:
+        problems.append(
+            Problem(
+                path="entrants.fewest",
+                message=f"The contest has started, so a team can no longer need more than "
+                f"{old.fewest} {'person' if old.fewest == 1 else 'people'}: teams that have "
+                "fewer could not submit, and can no longer add anyone.",
+            )
+        )
+    return problems
 
 
 def _dropped(

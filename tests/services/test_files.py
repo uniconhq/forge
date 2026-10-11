@@ -553,6 +553,23 @@ async def test_a_started_contest_never_goes_to_draft_through_archived(
     assert refused == [("state", timelines.STARTED_STAYS_OPEN)]
 
 
+async def test_a_started_contest_keeps_every_team_it_has_within_its_sizes(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    open_ = _running(SUM_ENTRY)
+    await write_contest(acme.fake, open_.decode())
+
+    alone_to_teams = await _refused(setup, acme, open_ + b"entrants: {most: 3}\n")
+    await write_contest(acme.fake, open_.decode() + "entrants: {most: 3}\n")
+    more_needed = await _refused(setup, acme, open_ + b"entrants: {most: 3, fewest: 2}\n")
+    fewer_allowed = await _refused(setup, acme, open_ + b"entrants: {most: 2}\n")
+
+    assert [path for path, _ in alone_to_teams] == ["entrants.most"]
+    assert [path for path, _ in more_needed] == ["entrants.fewest"]
+    assert [path for path, _ in fewer_allowed] == ["entrants.most"]
+    assert await _write_contest(setup, acme, open_ + b"entrants: {most: 4}\n")
+
+
 async def test_a_save_over_settings_that_do_not_read_is_checked_against_the_last_that_did(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
