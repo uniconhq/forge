@@ -54,6 +54,7 @@ from forge.runtime.context import Context
 from forge.services import names, published
 
 RULES_LOCK = 0x52554C45
+TASK_LOCK = 0x5441534B
 
 
 async def hold_rules(ctx: Context, contest: ContestId, *, shared: bool = False) -> None:
@@ -67,6 +68,22 @@ async def hold_rules(ctx: Context, contest: ContestId, *, shared: bool = False) 
     await ctx.db.execute(
         text(f"SELECT {lock}(:space, hashtext(:contest))"),
         {"space": RULES_LOCK, "contest": contest},
+    )
+
+
+async def hold_task(ctx: Context, task: TaskId, *, shared: bool = False) -> None:
+    """Hold one task's grading against its publication until the unit of
+    work ends: alone, for a save of the task and for a rejudge or a retry, each
+    of which may number new attempts; shared, for a submit, which inserts one.
+    So a save's regrade, a rejudge and a retry each start from every attempt
+    the others and every submit made, and a submit lands on the publication a
+    save leaves (TASK-FORMAT.md section 2, step 12). Only the task's own
+    submits wait for these, never another task's.
+    """
+    lock = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
+    await ctx.db.execute(
+        text(f"SELECT {lock}(:space, hashtext(:task))"),
+        {"space": TASK_LOCK, "task": task},
     )
 
 

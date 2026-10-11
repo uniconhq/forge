@@ -13,14 +13,13 @@ import pytest
 
 from forge.domain.definitions import Group, Show
 from forge.domain.grading import GradingStatus
-from forge.domain.scoring import Better, Measure, Points, score
+from forge.domain.scoring import Better, Measure, Points, group_of, score
 from forge.domain.showing import (
     NOTHING_SEALED,
     Graded,
     GroupShown,
     Sealed,
     SubmissionState,
-    group_of,
     shown,
     told,
     under,

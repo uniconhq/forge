@@ -12,7 +12,14 @@ import pytest
 from forge.adapters.ci.woodpecker.ci_state import WoodpeckerState, written
 from forge.adapters.git.forgejo import ForgejoForge
 from forge.domain.content import ConflictToken
-from forge.domain.errors import Conflict, Forbidden, Misconfigured, NotFound, Rejected
+from forge.domain.errors import (
+    Conflict,
+    Forbidden,
+    Misconfigured,
+    NotFound,
+    Rejected,
+    Unavailable,
+)
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId, WorkflowId, WorkspaceId
 from forge.domain.names import OrgProfile, UserOwner
@@ -253,7 +260,7 @@ async def test_a_file_is_read_with_a_token_and_written_back_with_it(
         "PUT",
         "/api/v1/repos/acme/spring.contest/contents/contest.yaml",
         ok({"commit": {"sha": "commit-2"}}),
-        ok({"message": "sha does not match"}, 422),
+        ok({"message": "sha does not match"}, 409),
     )
     ada = AsUser(7, _credential())
 
@@ -271,7 +278,8 @@ async def test_a_file_is_read_with_a_token_and_written_back_with_it(
     assert recorder.headers("PUT", "/api/v1/repos/acme/spring.contest/contents/contest.yaml") == [
         "Bearer access"
     ]
-    with pytest.raises(Rejected):
+    # Forgejo answers a write over a moved file 409, as the live test sees.
+    with pytest.raises(Conflict):
         await forgejo.content.write_file(
             ada, ContestId("acme/spring"), "contest.yaml", b"y", message="Edit", expected=read.token
         )
@@ -687,7 +695,7 @@ async def test_a_submission_number_another_took_first_is_taken_by_the_next(
     assert written["new_branch"] == "main"
 
 
-async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_through_media(
+async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_at_its_commit(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     repo = "/api/v1/repos/acme/spring.sum.u8.sub"
@@ -718,7 +726,7 @@ async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_thr
     door = await forgejo.workspaces.download(
         AsUser(8, _credential()), listed[1].id, "files/submission/my main.py"
     )
-    assert door.path == (f"{repo}/media/files/submission/my%20main.py?ref=submission%2F2")
+    assert door.path == (f"{repo}/media/files/submission/my%20main.py?ref=c-2")
     assert door.authorization == "Bearer access"
     with pytest.raises(Rejected, match="larger than 0 bytes"):
         await forgejo.workspaces.read_submission_file(
@@ -731,13 +739,13 @@ async def test_the_submissions_are_listed_with_their_keys_and_a_file_is_read_thr
     ]
     assert content == b"x"
     read = next(request for request in recorder.seen if "/media/" in request.url.path)
-    assert read.url.params["ref"] == "submission/2"
+    assert read.url.params["ref"] == "c-2"
     blob = await forgejo.workspaces.read_submission_blob(
         AsUser(8, _credential()), listed[1].id, "files/submission/main.py", max_size=1
     )
     assert blob == b"p"
     raw = next(request for request in recorder.seen if "/raw/" in request.url.path)
-    assert raw.url.params["ref"] == "submission/2"
+    assert raw.url.params["ref"] == "c-2"
     assert read.headers["Authorization"] == "Bearer access"
 
 
@@ -1453,3 +1461,128 @@ async def test_a_version_is_read_at_its_tags_commit_whatever_its_name_spells(
 
     [read] = [seen for seen in recorder.seen if seen.url.path == f"{repo}/contents/workflow.yaml"]
     assert read.url.params["ref"] == tagged
+
+
+@pytest.mark.parametrize("user_id", [0, -1])
+async def test_an_id_no_user_can_have_is_no_user_and_asks_nothing(
+    forgejo: ForgejoForge, recorder: Recorder, user_id: int
+) -> None:
+    """Forgejo's search filters by `uid` only when it is above 0, so 0
+    answers whoever comes first."""
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [USER]}))
+
+    with pytest.raises(NotFound):
+        await forgejo.identity.find_user(user_id)
+    assert [seen for seen in recorder.seen if seen.url.path == "/api/v1/users/search"] == []
+
+
+async def test_a_search_answering_another_user_is_no_user(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [USER]}))
+
+    with pytest.raises(NotFound):
+        await forgejo.identity.find_user(8)
+
+
+async def test_reading_a_folder_as_a_file_or_a_file_as_a_folder_is_not_found(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    """Forgejo's contents answer a list for a folder and one entry for a
+    file, so either asked as the other is not there, as the fake says."""
+    contents = "/api/v1/repos/acme/spring.contest/contents"
+    recorder.on("GET", f"{contents}/public", ok([{"type": "file", "path": "public/a", "size": 1}]))
+    recorder.on("GET", f"{contents}/contest.yaml", ok({"type": "file", "path": "contest.yaml"}))
+
+    with pytest.raises(NotFound):
+        await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "public")
+    with pytest.raises(NotFound):
+        await forgejo.content.list_tree(PLATFORM, ContestId("acme/spring"), "contest.yaml")
+
+
+async def test_a_file_over_forgejos_inline_size_is_read_whole_through_the_raw_endpoint(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    """Forgejo's contents leave `content` empty past its largest inline blob
+    (10 MiB by default), and so does its blobs endpoint, each with the right
+    `size`; an empty read saved back would empty the file. The raw endpoint
+    reads it whole, at the commit the contents name."""
+    whole = b"x" * 20
+    repo = "/api/v1/repos/acme/spring.contest"
+    recorder.on(
+        "GET",
+        f"{repo}/contents/data.txt",
+        ok(
+            {
+                "type": "file",
+                "sha": "blob-9",
+                "content": "",
+                "size": len(whole),
+                "last_commit_sha": "c-9",
+            }
+        ),
+    )
+    recorder.on(
+        "GET", f"{repo}/git/blobs/blob-9", ok({"sha": "blob-9", "content": "", "size": len(whole)})
+    )
+    recorder.on("GET", f"{repo}/raw/data.txt", httpx.Response(200, content=whole))
+
+    read = await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "data.txt")
+
+    assert (read.content, read.token) == (whole, ConflictToken("blob-9"))
+    raw = next(request for request in recorder.seen if "/raw/" in request.url.path)
+    assert raw.url.params["ref"] == "c-9"
+
+
+async def test_a_short_read_of_a_file_is_an_error_never_its_content(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    """A file whose bytes do not come back whole is not read as fewer bytes."""
+    repo = "/api/v1/repos/acme/spring.contest"
+    recorder.on(
+        "GET",
+        f"{repo}/contents/data.txt",
+        ok({"type": "file", "sha": "blob-9", "content": "", "size": 20, "last_commit_sha": "c-9"}),
+    )
+    recorder.on("GET", f"{repo}/raw/data.txt", httpx.Response(200, content=b"x" * 7))
+
+    with pytest.raises(Unavailable):
+        await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "data.txt")
+
+
+async def test_an_account_whose_email_is_taken_is_a_conflict_as_a_taken_name_is(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on(
+        "POST",
+        "/api/v1/admin/users",
+        ok({"message": "e-mail already in use [email: a@unicon.invalid]"}, 422),
+        ok({"message": "user already exists [name: bob]"}, 422),
+    )
+
+    for username in ("ada", "bob"):
+        with pytest.raises(Conflict):
+            await forgejo.identity.create_user(
+                username, "a@unicon.invalid", "pw-1", must_change_password=True
+            )
+
+
+async def test_removing_a_file_with_no_token_is_a_conflict_while_it_is_there(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    """As the fake and the port say: no token means "not there", so a file
+    that is there has moved since, and one that is not cannot be removed."""
+    contents = "/api/v1/repos/acme/spring.contest/contents"
+    recorder.on("GET", f"{contents}/notes.md", ok({"type": "file", "sha": "b-1", "content": ""}))
+    recorder.on("GET", f"{contents}/gone.md", ok({"message": "not found"}, 404))
+    contest = ContestId("acme/spring")
+
+    with pytest.raises(Conflict):
+        await forgejo.content.save_files(
+            PLATFORM, contest, {"notes.md": None}, expected={}, message="Remove"
+        )
+    with pytest.raises(NotFound):
+        await forgejo.content.save_files(
+            PLATFORM, contest, {"gone.md": None}, expected={}, message="Remove"
+        )
+    assert recorder.sent("POST", f"{contents}") == []

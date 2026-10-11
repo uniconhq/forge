@@ -1098,6 +1098,53 @@ def test_classic_is_not_sealed_since_each_run_reads_only_its_own_tests_input() -
     assert result.sealed == ()
 
 
+ACME["acme/write@v1"] = declared(
+    "write",
+    LIMITS
+    + """inputs:
+  code: text
+outputs:
+  program: file
+  outcome: outcome
+""",
+)
+PRIMITIVES_READ["acme/write@v1"] = ACME["acme/write@v1"]
+
+
+def _written_program(code: str) -> WorkflowDefinition:
+    """The contestant's text made into a program, which runs over the
+    task's data: `code` is how the text reaches the program's maker."""
+    return parse_workflow(
+        f"""inputs:
+  code: {{type: text, contestant: true}}
+  data: folder
+test:
+  answer: file
+steps:
+  - id: write
+    use: acme/write@v1
+    with:
+      code: {code}
+  - id: predict
+    use: acme/notebook@v1
+    with:
+      notebook: ${{{{ steps.write.program }}}}
+      data: ${{{{ inputs.data }}}}
+"""
+    )
+
+
+@pytest.mark.parametrize("code", ['"${{ inputs.code }}"', '"// ${{ inputs.code }}"'])
+def test_a_contestant_value_written_into_text_seals_what_runs_it_as_the_value_whole_does(
+    code: str,
+) -> None:
+    whole = compiled(NOTEBOOK_TASK, NOTEBOOK_PATHS, _written_program("${{ inputs.code }}"))
+    written = compiled(NOTEBOOK_TASK, NOTEBOOK_PATHS, _written_program(code))
+
+    assert whole.sealed == ("predict",)
+    assert written.sealed == whole.sealed
+
+
 UNSEALED = parse_workflow(
     """inputs:
   answers: {type: file, contestant: true}

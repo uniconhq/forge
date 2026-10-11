@@ -310,6 +310,12 @@ def _files(
     names = [upload.filename for upload in chosen]
     if len(set(names)) != len(names):
         return "Two files have the same path."
+    folders = {
+        "/".join(name.split("/")[:end]) for name in names for end in range(1, name.count("/") + 1)
+    }
+    both = sorted(folders & set(names))
+    if both:
+        return f"{both[0]} is a file and a folder at once."
     for name in names:
         problem = path_problem(entry, name, tests)
         if problem is not None:

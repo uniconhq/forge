@@ -32,8 +32,9 @@ class WorkspacePort(Protocol):
         self, contest: ContestId, owner: WorkspaceOwner, member_ids: Sequence[int]
     ) -> WorkspaceId:
         """Make the owner's workspace in the contest with its desk, which the
-        contest's organisers read, and give the members write access to the
-        desk, as the platform. What is there already is kept and only what
+        contest's organisers read, and give the members read access to the
+        desk, as the platform: everything they write there goes through the
+        platform. What is there already is kept and only what
         is missing is made, so this can be run again.
         """
         ...

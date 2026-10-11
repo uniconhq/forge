@@ -51,7 +51,7 @@ when a service changes.
 | A searchable mark on a workflow, with stars, and who reads a workflow changed by the platform's account for a person the host says may write it | Topics `unicon-workflow` and `unicon-primitive`, set by the platform; stars; visibility and read collaborators set by the platform after the person's own read of the repository shows `push` | Project topics; stars; visibility and Reporter members set by the admin |
 | A copy of a workflow from a version, without a fork relationship | A new repository created from the source tree at that version | A new project created from the source tree at that version |
 | Event push to the platform | One org-level webhook, signed, allowed only to the backend's hostname | Group webhooks are a paid feature, emulated with a per-project webhook created with each project |
-| Accounts that can be deactivated reversibly and deleted with what they own | Admin API: `active` flag; delete with purge | Admin API: block and unblock; delete with hard delete |
+| Accounts that can be deactivated reversibly and deleted with what they own | Admin API: `active` flag; their repositories deleted, then the account without purge, so their questions and answers stay under the ghost user | Admin API: block and unblock; delete with hard delete |
 
 ## What a CI must provide
 
