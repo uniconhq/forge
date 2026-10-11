@@ -822,7 +822,12 @@ moved earlier than a submission it would make late, a close moved earlier
 than a submission already made, or later once the task has revealed. A task
 has opened when the settings saved before released it, the contest
 published and past its start and the task's `release_at` passed, so a
-contest that was never published moves freely. A task reveals once it has
+contest that was never published moves freely. A contest that has started,
+saved before as `published` or `archived`, never goes back to `draft`
+(#438), and its `entrants` no longer asks more of a team, allows fewer, or
+moves between everyone entering alone and in teams. When the settings saved
+before do not read, these are checked against the latest earlier version
+that does. A task reveals once it has
 closed for every row, with the longest extension in force on it: an
 approved entrant's. A save of the contest's settings, like a save of one of its tasks,
 holds the contest's rules alone until it commits and a mark change holds
@@ -1032,8 +1037,10 @@ A person registers a new entrant, and is its first member, with
 `entrants.register(session, contest, name=, code=)`. The contest has to be
 one they see: published, and `everyone` or `signed-in`, or `hidden` for
 someone who has accepted an organiser's invite to it. Then, stopping at the
-first refusal, each with a code of its own: the window is open and the
-contest has not ended (`registration_closed`); they hold no role at the
+first refusal, each with a code of its own: the window is open, the
+contest has not ended, and, where entrants need more than one person, the
+roster lock has not passed for a new entrant, which could never grow
+(`registration_closed`); they hold no role at the
 contest, its tasks or its org (`is_staff`), read under the org's lock on
 role changes, the one `roles.grant` takes, so a grant and a registration
 never pass each other; they are in no entrant of the contest, whatever
@@ -1068,17 +1075,23 @@ sign themselves up. The way, its name and kind and what let them through
 are kept on their member row.
 
 A member asks someone in with `invite(session, contest, username=|email=)`,
-an invite with `grants = member` mailed as an organiser's is and counted in
-the org's daily limit, refused once the roster has locked
+an invite with `grants = member` mailed as an organiser's is, by a member
+of a pending or approved entrant, refused once the roster has locked
 (`roster_locked`), when the members and the invites waiting reach
-`entrants.most` (`entrant_full`), or when entrants are one person each
-(`entrants_alone`); any member withdraws one (`withdraw_invite`). The person
+`entrants.most` (`entrant_full`), when entrants are one person each
+(`entrants_alone`), or once the entrant's members have sent ten in a day,
+withdrawn ones included, a limit of its own apart from the org's
+(`invite_limit`); any member withdraws one (`withdraw_invite`). The person
 joins by accepting it (`invites.accept`, below), qualifying by a way as
-themselves, a code included. An organiser's invite to a contest registers
-whoever accepts it by the invite way (refused, closing nothing, as
-`invite_required` once the contest has none), and one naming an entrant
-puts them in it. Joining is refused once the roster has locked or the
-window is closed, unless an organiser sent the invite; for someone holding
+themselves, a code included. Accepting any invite to a place is refused,
+closing nothing, unless the contest is open and has not ended or been
+archived (`registration_closed`). An organiser's invite to a contest
+registers whoever accepts it by the invite way (refused, closing nothing,
+as `invite_required` once the contest has none), and one naming an entrant
+puts them in it as an organiser's change, way kind `organiser`, so it
+never sends an approved entrant back to pending. Joining is refused once
+the roster has locked or the window is closed, unless an organiser sent
+the invite; for someone holding
 a role; when the entrant is full; and for someone in an entrant they may no
 longer leave (`in_entrant`): a person moves only from one whose roster is
 open, that has no submissions and was not turned away. `leave` takes the
@@ -1089,7 +1102,8 @@ once the contest has ended; from then on only organisers change it.
 
 An entrant is complete with `entrants.fewest` members, and approved
 straight away once it is complete and every member came in by a way that
-approves straight away, checked whenever someone joins; one who joins an
+approves straight away, checked whenever someone joins it or leaves it
+pending; one who joins an
 approved entrant by a way an organiser approves sends it back to pending,
 which happens only before the roster locks, so nothing submitted is held
 back. A submit is refused for an entrant not approved (`not_approved`) or,
@@ -1107,27 +1121,33 @@ names, every task when it names none (`invalid_extension` below nothing,
 past a year, naming a task the contest does not list, letting it submit to
 a task whose reveal has passed, or leaving a submission after the due or
 the close it was made before). A decision from any other status is
-`wrong_status`, naming the status. The manager also renames an entrant
-(`organise_rename`), takes a member out (`remove_member`), moves one to
-another entrant within its size (`move_member`, refused as
-`entrant_has_submissions` for the last member of an entrant that has
-submitted, whose results would have nobody), and deletes an entrant that
-has submitted nothing (`delete`). `list` gives every entrant to anyone
+`wrong_status`, naming the status. A rejection takes the members' access
+to the workspace away, and reopening gives it back. The manager also
+renames an entrant (`organise_rename`), takes a member out
+(`remove_member`), moves one to another pending or approved entrant within
+its size (`move_member`, refused as `entrant_has_submissions` for the last
+member of an entrant that has submitted, whose results would have nobody,
+and as `is_staff` for someone holding a role there by now), and deletes an
+entrant that has submitted nothing (`delete`, `entrant_changed` when
+someone joined it meanwhile). `list` gives every entrant to anyone
 observing the contest, the earliest registered first, with its members,
 the way each came in by, the invites waiting, its decision, extension, and
 whether it has submitted, is complete and is locked; `mine` gives a person
 their registration panel: their entrant, their invites into the contest's
 entrants, whether they may register and why not, and whether to ask for a
 code, only when a code would let them in. An entrant left with nobody and
-no submissions is deleted, its member rows kept `left`; a member whose
-account is deleted keeps their row, shown as `Deleted user`.
+no submissions is deleted, its member rows kept `left`. Deleting an account
+takes the person out of every entrant whose roster is still open, as
+leaving would, and withdraws the invites into them they sent; where the
+roster has locked they keep their row, shown as `Deleted user`.
 
 Who reaches an entrant's workspace (`EntrantOwner`, named
 `entrant.<id>`) changes in the request that changes the membership, at the
 forge first: a joiner is given access to every part already made
 (`share_workspace`, which also takes off anyone else), and someone who
 leaves, is taken out or is moved loses it; a call that fails fails the
-request, and asking again finishes it. A part made later is made with the
+request, the access given or taken before it is put back to the members
+that stand, and asking again finishes it. A part made later is made with the
 members then, and checked against them afterwards (`entrants.settle`),
 since it is made holding no lock; every repository of a workspace also
 sheds anyone not a member now whenever it is opened. With
@@ -1206,8 +1226,8 @@ is looked up at once, someone who holds the role already, is in an entrant
 of the contest or the one named, or could not take it (a role in a contest
 they are in an entrant of, a place in one where they hold a role), is
 refused (`invalid_invite`), the same pending invite twice is
-`already_invited`, and an org makes at most 1000 invites a day
-(`invite_limit`). An address is one plain address and nothing else, so one
+`already_invited`, and an org's organisers make at most 1000 invites a
+day (`invite_limit`), members' invites into their entrants counted apart. An address is one plain address and nothing else, so one
 invite mails one person. Making and changing invites take the org's lock
 on role changes, the one `roles.grant` takes. `at` lists a scope's invites
 to its observers, newest first, at most 500; `send_again` mails a pending
