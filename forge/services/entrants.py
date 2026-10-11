@@ -10,7 +10,9 @@ has ended or is archived, since an entrant stands as it is from then on:
 
 1. `register` makes a new entrant with the signed-in person as its first
    member. In this order, each with its own code: the contest is one they
-   see, or no such contest; the window is open (`registration_closed`);
+   see, or no such contest; the window is open, and, where entrants need
+   more than one person, the roster lock has not passed for a new entrant
+   (`registration_closed`), since one that could never grow is no use;
    they hold no role at the contest, its tasks or its org (`is_staff`),
    read under the org's lock on role changes, so a grant and a registration
    of one person never pass each other; they are in no entrant of the
@@ -298,6 +300,7 @@ async def register(
     ):
         raise NotFound(published.NO_SUCH_CONTEST)
     _refuse_window(settings, ctx.now)
+    _refuse_fixed(settings, ctx.now)
     user = await ctx.forge.identity.find_user(session.user_id)
     emails = await _emails(ctx, user.id, settings)
     await roles.one_change_at_a_time(ctx, contest_scope(contest).org)
@@ -786,7 +789,11 @@ async def panel(
     row = person.entrant
     shown = await _view(ctx, row, settings) if row is not None else None
     invitations = await _invitations(ctx, contest, session.user_id)
-    window = registration.window_open(rules_now, ctx.now) and ctx.now < settings.end
+    window = (
+        registration.window_open(rules_now, ctx.now)
+        and ctx.now < settings.end
+        and not _teams_fixed(settings, ctx.now)
+    )
     asks = False
     refused: Refusal | None = None
     if row is not None:
@@ -797,6 +804,7 @@ async def panel(
         asks = registration.asks_code(rules_now, emails=emails, invited=invited)
         try:
             _refuse_window(settings, ctx.now)
+            _refuse_fixed(settings, ctx.now)
             if person.organises:
                 raise IsStaff("You have a role at this contest, so you cannot also enter it.")
             if not asks:
@@ -1089,6 +1097,23 @@ def _refuse_shut(settings: ContestDefinition, now: datetime) -> None:
         raise RegistrationClosed(
             "This contest is not open yet, so nobody can enter it. Try again once the organisers "
             "open it."
+        )
+
+
+def _teams_fixed(settings: ContestDefinition, now: datetime) -> bool:
+    """Whether a new entrant would start with its roster locked in a
+    contest whose entrants need more than one person: it could never grow
+    to `entrants.fewest`, so it may not register.
+    """
+    return settings.entrants.fewest > 1 and rules.locked(settings, now, submitted=False)
+
+
+def _refuse_fixed(settings: ContestDefinition, now: datetime) -> None:
+    """`RegistrationClosed` once `_teams_fixed`."""
+    if _teams_fixed(settings, now):
+        raise RegistrationClosed(
+            "Teams were fixed when the contest started, so no new team can register now. Ask "
+            "the organisers to add you to one."
         )
 
 

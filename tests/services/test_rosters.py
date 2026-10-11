@@ -764,3 +764,24 @@ async def test_an_organisers_invite_is_accepted_only_while_the_contest_is_open(
     assert placed.entered is not None and placed.entered.how == "made"
     joined = await invites.accept(setup, crowd["carol"], into.id)
     assert joined.entered is not None and joined.entered.entrant.id == adders.id
+
+
+async def test_no_new_team_registers_once_teams_are_fixed_and_one_alone_still_may(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, contest(most=3, fewest=2))
+    clock.set(START + timedelta(minutes=5))
+
+    panel = await entrants.mine(setup, crowd["bob"], SPRING)
+    assert panel.can_register is False
+    assert panel.refused is not None and panel.refused.code == "registration_closed"
+    with pytest.raises(RegistrationClosed, match="Teams were fixed when the contest started"):
+        await entrants.register(setup, crowd["bob"], SPRING, name="Late")
+
+    # Teams fix at the first submission: a new one has none, so it is open.
+    await write_contest(acme.fake, contest(most=3, fewest=2, locks="first_submission"))
+    late = await entrants.register(setup, crowd["bob"], SPRING, name="Late")
+    assert late.locked is False
+    await write_contest(acme.fake, contest(most=3, fewest=1))
+    alone = await entrants.register(setup, crowd["carol"], SPRING, name="Alone")
+    assert alone.status is Status.APPROVED
