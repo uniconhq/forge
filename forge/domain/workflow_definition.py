@@ -29,11 +29,14 @@ from forge.domain.names import validate_name
 from forge.domain.types import VALUE_TYPES, Type, declared, retired_type, retired_type_message
 from forge.domain.yaml_models import (
     ANY,
+    Line,
     Model,
     Number,
     Problems,
     Retired,
+    already_listed,
     load_mapping,
+    name_rule,
     validate,
 )
 
@@ -74,8 +77,8 @@ class WorkflowRef:
 def _validate_version(version: str) -> str:
     if not VERSION.match(version) or len(version) > VERSION_MAX:
         raise InvalidName(
-            f"{version!r} is not a version: letters, digits, dots, hyphens and underscores, "
-            f"at most {VERSION_MAX} characters"
+            f"{version!r} cannot be used as a version. A version is at most {VERSION_MAX} "
+            "letters, digits, dots, hyphens and underscores."
         )
     return version
 
@@ -86,8 +89,8 @@ def validate_version(version: str) -> str:
     """
     if not NEW_VERSION.match(version) or len(version) > VERSION_MAX:
         raise InvalidName(
-            f"{version!r} cannot name a version: a version is v and a whole number from 1, "
-            "with no leading zero, such as v1, v2 or v10"
+            f"{version!r} cannot be used as a version. Name a version v and a whole number "
+            "from 1, with no leading zero, such as v1, v2 or v10."
         )
     return version
 
@@ -103,7 +106,7 @@ def version_number(version: str) -> int | None:
 def _owner_and_name(text: str) -> tuple[str, str]:
     owner, slash, name = text.partition("/")
     if not slash:
-        raise InvalidName(f"{text!r} must be an owner and a name, such as unicon/classic")
+        raise InvalidName(f"{text!r} must give an owner and a name, such as unicon/classic.")
     return validate_name(owner), validate_name(name)
 
 
@@ -113,7 +116,7 @@ def parse_workflow_ref(text: str) -> WorkflowRef:
     """
     head, at, version = text.partition("@")
     if not at or not version:
-        raise InvalidName(f"{text!r} must end in @ and a version, {_REF_EXAMPLE}")
+        raise InvalidName(f"{text!r} must end in @ and a version, {_REF_EXAMPLE}.")
     owner, name = _owner_and_name(head)
     return WorkflowRef(owner, name, _validate_version(version))
 
@@ -122,11 +125,11 @@ def _ref(value: object) -> WorkflowRef:
     if isinstance(value, WorkflowRef):
         return value
     if not isinstance(value, str):
-        raise ValueError(f"Must be a reference, {_REF_EXAMPLE}.")
+        raise ValueError(f"Give an owner, a name and a version, {_REF_EXAMPLE}.")
     try:
         return parse_workflow_ref(value.strip())
     except InvalidName as error:
-        raise ValueError(f"{error.detail}.") from None
+        raise ValueError(error.detail) from None
 
 
 Ref = Annotated[WorkflowRef, PlainValidator(_ref)]
@@ -141,7 +144,7 @@ def _value_type(value: object) -> Type:
     except ValueError:
         found = None
     if found is None or found not in VALUE_TYPES:
-        raise ValueError(f"Must be one of {', '.join(VALUE_TYPES)}.")
+        raise ValueError(f"This must be one of {', '.join(VALUE_TYPES)}.")
     return found
 
 
@@ -150,13 +153,13 @@ ValueType = Annotated[Type, PlainValidator(_value_type)]
 
 def _options(value: object) -> tuple[str, ...]:
     if not isinstance(value, list | tuple) or not value:
-        raise ValueError("Must be a list of at least one option.")
+        raise ValueError("Give at least one option.")
     found: list[str] = []
     for option in value:
         if not isinstance(option, str) or not option.strip() or "\n" in option:
-            raise ValueError("Each option is one line of text.")
+            raise ValueError("Each option must be one line of text.")
         if option in found:
-            raise ValueError(f"{option!r} is given more than once.")
+            raise ValueError(already_listed(option))
         found.append(option)
     return tuple(found)
 
@@ -167,17 +170,16 @@ Options = Annotated[tuple[str, ...], PlainValidator(_options)]
 
 def _handle(value: object) -> str:
     if not isinstance(value, str) or not HANDLE.match(value):
-        raise ValueError(
-            f"{value!r} must be lower case letters, digits, hyphens and underscores, "
-            "starting with a letter or a digit, at most 40 characters."
-        )
+        raise ValueError(name_rule(value, 40))
     return value
 
 
 class WorkflowInput(Model):
     """One input: its type; `contestant` when the submission fills it;
     `options` on an enum; `per_test` on a contestant file given once per
-    test; `optional` on an input a task may leave out.
+    test; `optional` on an input a task may leave out; and, for the task's
+    form only, `title`, `help` and `unit`, which name it to the organiser
+    ("Time limit", "seconds") and change no plan.
     """
 
     type: ValueType
@@ -185,19 +187,24 @@ class WorkflowInput(Model):
     options: Options | None = None
     per_test: Flag = False
     optional: Flag = False
+    title: Line | None = None
+    help: Line | None = None
+    unit: Line | None = None
 
     @model_validator(mode="after")
     def _check(self) -> WorkflowInput:
         problems = Problems()
         if self.type is Type.ENUM and self.options is None:
-            problems.add(("options",), "An enum lists its options.")
+            problems.add(("options",), _LIST_OPTIONS)
         if self.type is not Type.ENUM and self.options is not None:
-            problems.add(("options",), "Applies only to an enum.")
+            problems.add(("options",), _ONLY_ENUM)
         if self.per_test and not (self.contestant and self.type is Type.FILE):
-            problems.add(("per_test",), "Applies only to a contestant's file input.")
+            problems.add(("per_test",), "This applies only to a file the entrant gives.")
         if self.optional and self.contestant:
             problems.add(
-                ("optional",), "A contestant's input is never optional; the task gives defaults."
+                ("optional",),
+                "An input the entrant gives cannot be optional. The task can give it a "
+                "default instead.",
             )
         problems.raise_any()
         return self
@@ -216,11 +223,11 @@ class TestField(Model):
     def _check(self) -> TestField:
         problems = Problems()
         if self.type is Type.ENUM and self.options is None:
-            problems.add(("options",), "An enum lists its options.")
+            problems.add(("options",), _LIST_OPTIONS)
         if self.type is not Type.ENUM and self.options is not None:
-            problems.add(("options",), "Applies only to an enum.")
+            problems.add(("options",), _ONLY_ENUM)
         if self.public and self.type not in (Type.FILE, Type.FOLDER):
-            problems.add(("public",), "Applies only to a file or a folder field.")
+            problems.add(("public",), "Only a file or a folder can be public.")
         problems.raise_any()
         return self
 
@@ -266,8 +273,8 @@ def _report_entry(value: object) -> str | Meaning:
         return Meaning.model_validate(value)
     if not isinstance(value, str):
         raise ValueError(
-            "Must be ${{ steps.<id>.<output> }}, or a mapping of from, fold, better, at_least "
-            "and at_most."
+            "Give the step output this reports, as ${{ steps.<id>.<output> }}, or that "
+            "output with what it means: from, fold, better, at_least and at_most."
         )
     return value
 
@@ -296,14 +303,13 @@ class WorkflowDefinition(Model):
                 problems.add(("test", key), _NOT_A_HANDLE)
             elif key == "test":
                 problems.add(
-                    ("test", key), "No field is named test, since test.yaml would match it."
+                    ("test", key), "A test field cannot be called test. Choose another name."
                 )
         problems.duplicates([step.id for step in self.steps], ("steps",))
         if len({str(step.use) for step in self.steps}) > MAX_USES:
             problems.add(
                 ("steps",),
-                f"A workflow uses at most {MAX_USES} primitive versions, so a check reads few "
-                "enough of them.",
+                f"A workflow can use at most {MAX_USES} different primitive versions. Use fewer.",
             )
         seen_per_test = False
         for index, step in enumerate(self.steps):
@@ -312,8 +318,8 @@ class WorkflowDefinition(Model):
             elif seen_per_test:
                 problems.add(
                     ("steps", index, "per_test"),
-                    "A step that runs once comes before every step that runs per test: it "
-                    "can read nothing of them, so move it up.",
+                    "A step that runs once must come before every step that runs for each "
+                    "test, since it cannot read anything they give. Move it up.",
                 )
         for name, entry in self.report.items():
             for path, message in self._report_problems(name, entry):
@@ -327,14 +333,18 @@ class WorkflowDefinition(Model):
         found: list[tuple[tuple[str, ...], str]] = []
         if not REPORT_NAME.match(name):
             found.append(
-                ((), "A reported name is lower case letters, digits and _, starting with a letter.")
+                (
+                    (),
+                    "A reported value's name may use only lower case letters, digits and "
+                    "underscores (_), starting with a letter.",
+                )
             )
         if name in RESERVED_NAMES:
             found.append(
                 (
                     (),
-                    f"{name} is the platform's own name for what a board ranks; report it as "
-                    f"another.",
+                    f"{name} is a name Unicon uses itself, for what a leaderboard ranks. "
+                    "Report this value under another name.",
                 )
             )
         if isinstance(entry, Meaning):
@@ -347,7 +357,7 @@ class WorkflowDefinition(Model):
                 and entry.at_most is not None
                 and entry.at_least > entry.at_most
             ):
-                found.append((("at_most",), "Must be at least at_least."))
+                found.append((("at_most",), "The upper bound must be at least the lower bound."))
         return found
 
     def _better_problem(self, better: str) -> str | None:
@@ -356,26 +366,31 @@ class WorkflowDefinition(Model):
         except BadReference as bad:
             return str(bad)
         if found is None or found.kind != "inputs":
-            return "Must be higher, lower, or ${{ inputs.<id> }} naming a task's enum input."
+            return (
+                "Choose higher or lower, or name an enum input the task gives, as "
+                "${{ inputs.<id> }}."
+            )
         declared_input = self.inputs.get(found.name)
         if declared_input is None:
-            return f"{found.name} is not an input of the workflow."
+            return f"The workflow has no input called {found.name}."
         if declared_input.contestant or declared_input.type is not Type.ENUM:
-            return f"{found.name} must be an enum input the task gives, not the contestant."
+            return f"{found.name} must be an enum input that the task gives, not the entrant."
         if declared_input.optional:
             return (
-                f"{found.name} is optional, so it is given whole to optional ports, never "
-                "read for which way is better."
+                f"{found.name} is optional, so it cannot say which way is better. Choose an "
+                "input that is not optional."
             )
         if not set(declared_input.options or ()) <= {"higher", "lower"}:
-            return f"The options of {found.name} must be higher and lower."
+            return f"The options of {found.name} must be higher and lower, and nothing else."
         return None
 
 
 _NOT_A_HANDLE = (
-    "Must be lower case letters, digits, hyphens and underscores, starting with a letter "
-    "or a digit, at most 40 characters."
+    "Use at most 40 lower case letters, digits, hyphens (-) and underscores (_), starting "
+    "with a letter or a digit."
 )
+_LIST_OPTIONS = "List the options to choose from."
+_ONLY_ENUM = "Only an enum has options. Remove them."
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,8 +429,8 @@ def parse_reference(expression: str) -> Reference:
         case ["steps", step, output] if step and output:
             return Reference("steps", step, output)
     raise BadReference(
-        f"${{{{ {expression} }}}} is not a reference a workflow makes: inputs.<id>, "
-        "test.<field> or steps.<id>.<output>."
+        f"Unicon cannot read ${{{{ {expression} }}}}. Write "
+        "${{ inputs.<id> }}, ${{ test.<field> }} or ${{ steps.<id>.<output> }}."
     )
 
 
@@ -433,7 +448,10 @@ def references(text: str) -> list[tuple[re.Match[str], Reference]]:
     """
     found = [(match, parse_reference(match.group(1))) for match in _ANY.finditer(text)]
     if text.count("${{") != len(found):
-        raise BadReference("A ${{ is not closed with }}, or holds a brace of its own.")
+        raise BadReference(
+            "A ${{ is not closed with }}, or has a brace inside it. Close each one, and "
+            "remove any brace inside."
+        )
     return found
 
 
@@ -442,23 +460,26 @@ def _list_of_inputs(value: object) -> bool:
 
 
 RETIRED = (
-    Retired(("name",), "A workflow has no name line: its repo is its name. Remove it."),
-    Retired(("version",), "A workflow has no version line: its tag is its version. Remove it."),
-    Retired(("copied_from",), "A workflow says nothing of where it was copied from. Remove it."),
+    Retired(("name",), "A workflow's name is the name it was made under. Remove this."),
+    Retired(("version",), "A workflow's version is set when the version is made. Remove this."),
+    Retired(("copied_from",), "A workflow does not record where it was copied from. Remove this."),
     Retired(
         ("outputs",),
-        "`outputs` is now `report`: a mapping of name to ${{ steps.<id>.<output> }}, or to "
-        "{from, fold, better, at_least, at_most}.",
+        "This is now called report: each value the workflow reports, named, with the step "
+        "output it reads, such as ${{ steps.<id>.<output> }}. Move these there.",
     ),
     Retired(
         ("inputs",),
-        "`inputs` is now a mapping of id to declaration, such as `submission: {type: file, "
+        "Inputs are now listed by name, each with its type, such as `submission: {type: file, "
         "contestant: true}`.",
         _list_of_inputs,
     ),
     Retired(("inputs", ANY), retired_type_message, retired_type),
     Retired(("test", ANY), retired_type_message, retired_type),
-    Retired(("steps", ANY, "foreach"), "`foreach` is now `per_test: true`, over the task's tests."),
+    Retired(
+        ("steps", ANY, "foreach"),
+        "This is now set by running the step for each test. Turn that on, and remove this.",
+    ),
 )
 
 
@@ -480,10 +501,27 @@ def starter_workflow(owner: str, name: str) -> dict[str, bytes]:
 # limits, and compare each run's output with that test's answer. The
 # format is TASK-FORMAT.md section 1.3.
 inputs:
-  submission: {{type: file, contestant: true}}
-  language: {{type: enum, options: [c, cpp, java, python], contestant: true}}
-  time_limit: number
-  memory_limit: number
+  submission:
+    type: file
+    contestant: true
+    title: Solution
+    help: The source file the contestant submits.
+  language:
+    type: enum
+    options: [c, cpp, java, python]
+    contestant: true
+    title: Language
+    help: The languages a contestant may write their solution in.
+  time_limit:
+    type: number
+    title: Time limit
+    unit: seconds
+    help: The CPU time the program may use on each test.
+  memory_limit:
+    type: number
+    title: Memory limit
+    unit: MB
+    help: The memory the program may use on each test.
 
 test:
   input: file

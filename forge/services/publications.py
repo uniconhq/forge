@@ -2,13 +2,17 @@
 button: every save of a task, from a form or from the file editor, runs these
 steps in order, and refuses before anything is written.
 
-1. A save that writes inside `plans/`, where only the compiler writes, is
-   refused with `ReservedPath`. A manager's save that changes an admin-only
-   key of `task.yaml` or touches `statement.md` is refused with `AdminOnly`,
-   naming each.
+1. A save that writes or removes inside `plans/`, where only the compiler
+   writes, is refused with `ReservedPath`. A removal carries the token the
+   file was read with, and one that does not is refused with
+   `InvalidInputs`, naming it; a removal whose token has moved is
+   `Conflict`, as an edit's is. A manager's save that changes an admin-only
+   key of `task.yaml`, removes it, or touches `statement.md` is refused with
+   `AdminOnly`, naming each.
 2. The state being saved, the files at the head with the save's files over
-   them, is checked (TASK-FORMAT.md section 2): `task.yaml` validates; the
-   workflow it names is read at its version as the organiser saving, with
+   them and its removals taken out, is checked (TASK-FORMAT.md section 2):
+   `task.yaml` validates; the workflow it names is read at its version as
+   the organiser saving, with
    every primitive its steps use, and checks as a version
    (`plans.check_workflow`), a workflow in an old format refused at the
    `workflow` line so its owner tags a new version; the task's tests are
@@ -58,7 +62,7 @@ steps in order, and refuses before anything is written.
    submission to the task: a new attempt of each one's latest attempt
    against it, as a rejudge makes (`gradings.regrade`).
 7. A task's first publication starts making its place to submit for every
-   approved contestant, once the save has committed and without the save
+   approved entrant, once the save has committed and without the save
    waiting for it (`places`).
 """
 
@@ -85,7 +89,6 @@ from forge.domain.content import (
 from forge.domain.definitions import (
     ADMIN_ONLY_FILES,
     CONTEST_FILE,
-    DEFAULT_WORTH,
     TASK_FILE,
     ContestDefinition,
     Group,
@@ -94,8 +97,10 @@ from forge.domain.definitions import (
     Show,
     TaskDefinition,
     admin_only_changes,
+    admin_only_refusal,
     parse_contest,
     parse_task,
+    worth_of,
 )
 from forge.domain.errors import (
     AdminOnly,
@@ -126,7 +131,7 @@ from forge.domain.plans import (
 )
 from forge.domain.primitives import PrimitiveDeclaration
 from forge.domain.publications import Publication, write_note
-from forge.domain.release import has_started, reveal_of
+from forge.domain.release import has_started, in_words, reveal_of
 from forge.domain.roles import (
     Role,
     contest_id_of,
@@ -170,9 +175,14 @@ log = get_logger(__name__)
 SAVE_MESSAGE = "Save"
 CHANGED_CONTENT = "new:"
 LANDED_UNDER = (
-    "Another save landed while this one was written, so the task as it now stands "
-    "was not checked; save again to publish it."
+    "Someone else saved this task while yours was being saved, so the task as it now stands "
+    "was not checked. Save again to publish it."
 )
+SHOWN_WORDS = {
+    Show.ALWAYS: "as soon as a grading ends",
+    Show.VERDICT: "as an outcome before the reveal",
+    Show.AFTER_CLOSE: "at the reveal",
+}
 GROUPS_KEPT = timedelta(hours=1)
 """How long this process keeps how a publication shows each test group: a
 publication never changes, so the time only bounds what is held."""
@@ -233,16 +243,17 @@ async def save(
     keep_as_draft: bool = False,
     message: str | None = None,
 ) -> Published | Draft:
-    """Save the task's files, each path with its new content and the token
-    it was read with, and publish the result when it is valid. Needs the
-    manager role at the task. `keep_as_draft` writes the files and publishes
-    nothing, on any save; otherwise `confirm` publishes a change to how the
-    task grades while its contest runs. A token that has moved is
-    `Conflict`, with nothing written.
+    """Save the task's files, each path with its new content, or none to
+    remove it, and the token it was read with, and publish the result when
+    it is valid. Needs the manager role at the task. `keep_as_draft` writes
+    the files and publishes nothing, on any save; otherwise `confirm`
+    publishes a change to how the task grades while its contest runs. A
+    token that has moved is `Conflict`, with nothing written.
     """
     scope = task_scope(task)
     require(organiser, scope, Role.MANAGER)
     _refuse_reserved(changes)
+    _refuse_untokened_removals(changes)
     as_ = organiser.identity
     written = await _resolve(ctx, organiser, task, changes)
     head = await ctx.forge.content.list_files(as_, task)
@@ -269,8 +280,8 @@ async def save(
         return _draft(organiser, task, version, (), changed)
     if changed and not confirm and await _contest_running(ctx, task):
         raise ConfirmationRequired(
-            "The contest is running and this save changes how the task grades. Send it "
-            "again confirmed to publish it, or keep it as a draft.",
+            "The contest is running, and this save changes how the task grades. Confirm to "
+            "publish it, or keep it as a draft.",
             changes=[*changed],
             regrades=await gradings.to_regrade(ctx, task),
         )
@@ -323,12 +334,20 @@ async def check(
     """
     text = await _content(ctx, as_, task, TASK_FILE, head, written)
     if text is None:
-        return Checked(None, None, (Problem(path="", message="The task has no task.yaml."),))
+        return Checked(
+            None,
+            None,
+            (
+                Problem(
+                    path="", message="The task's settings are missing. Add them and save again."
+                ),
+            ),
+        )
     try:
         definition = parse_task(text)
     except InvalidDefinition as invalid:
         return Checked(None, None, tuple(invalid.errors))
-    present = {*head.tokens, *written}
+    present = _present(head, written)
     workflow, pins, problems = await _workflow(ctx, as_, definition.workflow)
     problems.extend(await _moved_workflows(ctx, task, definition, pins))
     if workflow is None or problems:
@@ -336,9 +355,12 @@ async def check(
     primitives, unresolved = await _primitives(ctx, as_, definition, workflow)
     if unresolved:
         return Checked(definition, None, unresolved, pins)
-    at = f"In {definition.workflow}, "
     version = [
-        Problem(path="workflow", message=f"{at}{problem['path']}: {problem['message']}")
+        Problem(
+            path="workflow",
+            message=f"The workflow {definition.workflow} has a problem ({problem['path']}): "
+            f"{problem['message']} Choose another version of it, or ask its owner to fix it.",
+        )
         for problem in check_workflow(workflow, primitives)
     ]
     if version:
@@ -393,9 +415,10 @@ async def _report(
     latest: Publication | None,
     changed: bool,
 ) -> builtins.list[str]:
-    """T9: each group's most points, the task's reveal, which boards the
-    save moves and whose scope a `show` change moves, and each board
-    ranking `points` that counts nothing from the task.
+    """T9: each group's most points, the task's reveal in words when it
+    hides anything (a group not shown at once, or a sealed step), which
+    boards the save moves and whose scope a `show` change moves, and each
+    board ranking `points` that counts nothing from the task.
     """
     contest = await _contest(ctx, task)
     name = (await names.names_of(ctx, [task])).get(task)
@@ -403,32 +426,40 @@ async def _report(
         return []
     entry = contest.entry(name)
     found: builtins.list[str] = []
-    if entry is not None and definition.gives_points:
-        worth = exact(entry.worth if entry.worth is not None else DEFAULT_WORTH) or ZERO
-        most = group_max(definition.test_groups, worth)
+    worth = worth_of(entry, definition) if entry is not None else None
+    if worth is not None:
+        most = group_max(definition.test_groups, exact(worth) or ZERO)
         found.append(
-            "Each group's most points: "
+            "The most points each test group gives: "
             + ", ".join(f"{group} {written(points)}" for group, points in most.items())
             + "."
         )
-    if entry is not None:
+    hides = bool(compiled.sealed) or any(
+        group.shown is not Show.ALWAYS for group in definition.test_groups.values()
+    )
+    if entry is not None and hides:
         extensions = await timelines.every_extension(ctx, contest_id_of(task_scope(task)))
-        found.append(f"{name} reveals at {reveal_of(contest, entry, extensions).isoformat()}.")
+        found.append(
+            f"{name} shows its hidden results on {in_words(reveal_of(contest, entry, extensions))}."
+        )
     before = await _definition_of(ctx, task, latest) if latest is not None else None
     for board in contest.leaderboards:
         if board.tasks is not None and not board.covers(name):
             continue
         if before is None:
-            found.append(f"{name} joins {board.name}.")
+            found.append(f"{name} now counts on the leaderboard {board.name}.")
             continue
         if (
             changed
             or before.test_groups != definition.test_groups
             or before.credit != definition.credit
         ):
-            found.append(f"This save moves {board.name}.")
+            found.append(f"This save changes the leaderboard {board.name}.")
         if board.over is not Over.ALL and _scope_moved(board, before, definition):
-            found.append(f"A show change moves what {board.name} counts of {name}.")
+            found.append(
+                f"A change to when entrants see results changes what the leaderboard "
+                f"{board.name} counts of {name}."
+            )
     found += boards.task_notes(contest, name, covered(compiled.measures, definition.test_groups))
     return found
 
@@ -488,8 +519,8 @@ async def _shown_before(
             problems.append(
                 Problem(
                     path=at,
-                    message=f"{name} is new and states no show: say always to show it at "
-                    "once, or verdict or after_close.",
+                    message=f"{name} is a new test group, and the task has graded "
+                    "submissions, so choose when entrants see its results.",
                 )
             )
             continue
@@ -498,7 +529,8 @@ async def _shown_before(
             problems.append(
                 Problem(
                     path=f"{at}.show",
-                    message=f"{name} was shown {then}: what was shown cannot be hidden again.",
+                    message=f"Entrants have seen the results of {name} {SHOWN_WORDS[then]}, "
+                    "and what they have seen cannot be hidden again.",
                 )
             )
     return problems
@@ -547,19 +579,19 @@ async def _contest_points(
     if contest is None or name is None:
         return []
     problems: builtins.list[Problem] = []
-    for index, entry in enumerate(contest.tasks):
+    for entry in contest.tasks:
         if entry.id != name:
             continue
         said = []
         if entry.worth is not None:
-            said.append(f"tasks[{index}].worth gives {name} worth {spelled(entry.worth)}")
+            said.append(f"gives it a worth of {spelled(entry.worth)}")
         if entry.due is not None:
-            said.append(f"tasks[{index}].due gives {name} a due")
+            said.append("gives it a due time")
         problems.extend(
             Problem(
                 path="test_groups",
-                message=f"No group has a rule weight, so {name} gives no points, and "
-                f"contest.yaml {line}; remove it first.",
+                message=f"No test group gives points, so {name} gives no points, but the "
+                f"contest {line}. Remove that from the contest first.",
             )
             for line in said
         )
@@ -591,7 +623,7 @@ async def _refuse_admin_only(
     if keys:
         log.info("publications.refused", task=task, keys=keys, user_id=organiser.user.id)
         scope = await names.labelled(ctx, task_scope(task))
-        raise AdminOnly(f"Only an admin of {scope.name} may change {', '.join(keys)}.", keys=keys)
+        raise AdminOnly(admin_only_refusal(scope.name, keys), keys=keys)
 
 
 def _refuse_reserved(written: Mapping[str, Edit]) -> None:
@@ -600,9 +632,36 @@ def _refuse_reserved(written: Mapping[str, Edit]) -> None:
     reserved = sorted(path for path in written if is_reserved(path))
     if reserved:
         raise ReservedPath(
-            "Only the compiler writes inside plans/; save the task's other files.",
+            "Unicon writes the files in plans/ itself, so a save cannot change them. Save the "
+            "task's other files.",
             paths=reserved,
         )
+
+
+def _refuse_untokened_removals(changes: Mapping[str, Edit]) -> None:
+    """A removal names the file as it was read, so one with no token, which
+    would remove whatever is there now, is refused naming each.
+    """
+    untokened = sorted(
+        path for path, edit in changes.items() if edit.content is None and edit.token is None
+    )
+    if untokened:
+        raise InvalidInputs(
+            "To remove a file, the save must say which version of it was read. Reload the "
+            "files and try again.",
+            errors=[
+                {"input": path, "message": "Reload the files, then remove this one again."}
+                for path in untokened
+            ],
+        )
+
+
+def _present(head: FileSet, written: Mapping[str, WrittenEdit]) -> set[str]:
+    """Every file of the state a save leaves: the head's and the save's,
+    without the ones it removes.
+    """
+    removed = {path for path, edit in written.items() if edit.content is None}
+    return {*head.tokens, *written} - removed
 
 
 async def _content(
@@ -614,7 +673,8 @@ async def _content(
     written: Mapping[str, WrittenEdit],
 ) -> bytes | None:
     """A file's content in the state: the save's when it writes the file,
-    otherwise the head's, or none when neither has it.
+    otherwise the head's, or none when neither has it or the save removes
+    it.
     """
     if path in written:
         return written[path].content
@@ -638,16 +698,16 @@ async def _workflow(
         pins = {f"{ref.owner}/{ref.name}": await ctx.forge.workflows.workflow_key(workflow)}
     except NotFound, Forbidden:
         message = (
-            f"The workflow {ref} cannot be read: it is not there at that version, "
-            "or it is not shared with you."
+            f"Unicon cannot open the workflow {ref}: there is no such version, or it is not "
+            "shared with you. Check its name and version, or ask its owner to share it."
         )
         return None, {}, [Problem(path="workflow", message=message)]
     try:
         return parse_workflow(file.content), pins, []
     except InvalidDefinition as invalid:
         message = (
-            f"The workflow {ref} is not in the current format, so its owner tags a new "
-            f"version: {invalid.detail}"
+            f"The workflow {ref} is written in an older form that Unicon no longer reads, so "
+            f"its owner needs to make a new version of it. {invalid.detail}"
         )
         return None, pins, [Problem(path="workflow", message=message)]
 
@@ -664,9 +724,9 @@ async def _moved_workflows(
     name = f"{ref.owner}/{ref.name}"
     if name in pinned and name in pins and pins[name] != pinned[name]:
         message = (
-            f"{name} now names a different workflow than the one this task was "
-            "published with, as happens when its owner is renamed and someone else "
-            "takes the name. Name the workflow you mean by its owner's name now."
+            f"{name} is now a different workflow from the one this task was published "
+            "with, as happens when its owner is renamed and someone else takes the name. "
+            "Give the workflow you mean under its owner's current name."
         )
         return [Problem(path="workflow", message=message)]
     return []
@@ -686,12 +746,12 @@ async def _primitives(
     found: dict[str, PrimitiveDeclaration] = {}
     problems: builtins.list[Problem] = []
     tried: set[str] = set()
-    for index, step in enumerate(workflow.steps):
+    for step in workflow.steps:
         use = str(step.use)
         if use in tried:
             continue
         tried.add(use)
-        where = f"In {definition.workflow}, steps[{index}].use: "
+        where = f"In the workflow {definition.workflow}, the step {step.id} cannot run: "
         declaration, problem = await primitives.declaration(ctx, as_, step.use)
         if problem is not None:
             problems.append(Problem(path="workflow", message=where + problem))
@@ -741,7 +801,8 @@ async def _saved_snapshot(
     """What the saved state's grading would depend on. A data file the save
     does not write compares by its token at the head; one it writes compares
     by the token it had at the publication when its content is the same, and
-    otherwise by a digest of its content that no token equals.
+    otherwise by a digest of its content that no token equals; one it
+    removes is not there, so the comparison names it removed.
     """
     assert checked.compiled is not None
     plan = checked.compiled.plan
@@ -751,7 +812,7 @@ async def _saved_snapshot(
             if path not in written:
                 data[path] = str(token)
         for path, edit in written.items():
-            if has_path((path,), named):
+            if edit.content is not None and has_path((path,), named):
                 data[path] = await _digest(ctx, as_, task, path, edit.content, published)
     return Snapshot(plans={PLAN_PATH: plan.to_bytes()}, data=data)
 
@@ -874,9 +935,10 @@ async def _number_of(ctx: Context, task: TaskId, publication: PublicationId) -> 
 class DeclaredInput:
     """One input a workflow declares, as the task form shows it: its id, its
     type, whether the contestant gives it, its options on an enum, whether
-    it is given once per test, and whether a task may leave it out. A
-    workflow gives no defaults: a contestant input's `default` is the
-    task's, in `task.yaml`.
+    it is given once per test, whether a task may leave it out, and the
+    title, line of help and unit the workflow gives the organiser for it,
+    each none when it gives none. A workflow gives no defaults: a
+    contestant input's `default` is the task's, in `task.yaml`.
     """
 
     id: str
@@ -885,6 +947,9 @@ class DeclaredInput:
     options: tuple[str, ...] | None
     per_test: bool
     optional: bool
+    title: str | None = None
+    help: str | None = None
+    unit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -937,15 +1002,15 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
     try:
         found = await ctx.forge.content.read_file(organiser.identity, task, TASK_FILE)
     except NotFound:
-        return WorkflowForm(None, problem="The task has no task.yaml.")
+        return WorkflowForm(
+            None, problem="The task's settings are missing. Add them and save again."
+        )
     try:
         named = load_mapping(TASK_FILE, found.content).get("workflow")
     except InvalidDefinition as invalid:
-        return WorkflowForm(
-            None, problem=f"task.yaml does not read: {invalid.errors[0]['message']}"
-        )
+        return WorkflowForm(None, problem=invalid.errors[0]["message"])
     if not isinstance(named, str):
-        return WorkflowForm(None, problem="task.yaml names no workflow.")
+        return WorkflowForm(None, problem="The task does not name a workflow yet. Choose one.")
     try:
         ref = parse_workflow_ref(named.strip())
     except InvalidName as invalid:
@@ -967,6 +1032,9 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
                 options=declared.options,
                 per_test=declared.per_test,
                 optional=declared.optional,
+                title=declared.title,
+                help=declared.help,
+                unit=declared.unit,
             )
             for name, declared in workflow.inputs.items()
         ),
@@ -1009,7 +1077,8 @@ async def _resolve(
     becomes the pointer to it, and the upload is marked as taken by this
     save, while typed content that would read as a pointer is refused,
     unless it is exactly a pointer to an object the task already holds, as
-    a rollback or a file saved back unchanged writes.
+    a rollback or a file saved back unchanged writes. A removal passes as
+    it is.
 
     A pointer names bytes by their hash alone, and a grading machine serves
     one from the org's shared store without asking the forge, so the only
@@ -1024,21 +1093,25 @@ async def _resolve(
     rows = await uploads.for_save(ctx, organiser.identity.user_id, task, set(named.values()))
     resolved: dict[str, WrittenEdit] = {}
     for path, edit in changes.items():
+        if edit.content is None:
+            resolved[path] = WrittenEdit(None, edit.token)
+            continue
         if isinstance(edit.content, Uploaded):
             row = rows.get(edit.content.upload)
             if row is None or row.status not in (UploadStatus.WAITING, UploadStatus.VERIFIED):
                 raise InvalidInputs(
-                    "That upload is not one of yours for this task to write.",
-                    errors=[{"input": path, "message": "No such upload."}],
+                    "That upload is not one of yours for this task.",
+                    errors=[{"input": path, "message": "There is no such upload."}],
                 )
             if row.repo_path != path:
                 raise InvalidInputs(
-                    f"That upload was asked for {row.repo_path}, not {path}.",
-                    errors=[{"input": path, "message": "The upload is for another path."}],
+                    f"That upload was made for {row.repo_path}, not {path}. Upload the file "
+                    "again here.",
+                    errors=[{"input": path, "message": "This upload was made for another file."}],
                 )
             if not await uploads.holds(ctx, TaskPlace(task), organiser.identity, row):
                 raise UploadNotReady(
-                    "The file has not arrived yet; it cannot be saved until it has.",
+                    "The file has not finished uploading. Save again once it has.",
                     uploads=[str(row.id)],
                 )
             row.status = UploadStatus.CONSUMED

@@ -1,76 +1,76 @@
 """Who is uploading or submitting to a task, and whether they may now. Every
 upload slot and every submit starts here: the session is checked again, the
 contest must be one the person sees and the task one released in it, read as
-its latest publication froze it, and the person's own registration is read
+its latest publication froze it, and the entrant the person is in is read
 beside it. `refuse` then applies the rules a submit is checked against
 before anything is written, in this order, stopping at the first:
 
-1. the task is open by the server's clock plus the row's extension on it
+1. the task is open by the server's clock plus the entrant's extension on it
    (`task_closed`, or `archived` for a contest that is);
-2. they are an approved contestant (`not_approved`).
+2. the person is in an approved entrant (`not_approved`);
+3. the entrant still has as many members as the contest asks, since a
+   member may have left it (`entrant_incomplete`).
 
 A task that is not released, or a contest the person may not see, is no
 such task, the same answer as one that is not there. An archived contest is
-seen by nobody but its organisers, and still by everyone who entered it, who
-read their own submissions there and are told it is archived when they
-submit.
+seen by nobody but its organisers, and still by everyone in an entrant of
+it, who read their own submissions there and are told it is archived when
+they submit.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
-from sqlalchemy import select
-
-from forge.db.tables import Contestant, Team
+from forge.db.tables import Entrant as EntrantRow
+from forge.domain import entrants as entrant_rules
 from forge.domain import release as rules
 from forge.domain.definitions import ContestDefinition, State
 from forge.domain.errors import (
     Archived,
+    EntrantChanged,
     NotApproved,
     NotFound,
     PortError,
     TaskClosed,
-    TeamChanged,
     Unavailable,
 )
-from forge.domain.ids import TaskId, WorkspaceId
-from forge.domain.names import TeamOwner
+from forge.domain.ids import ContestId, TaskId, WorkspaceId
+from forge.domain.names import EntrantOwner
 from forge.domain.registration import Status
 from forge.domain.release import Closed, Extension
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import places, published, release, sessions, teams, timelines
+from forge.services import entrants, places, published, release, sessions, timelines
 from forge.services.published import PublishedTask
 from forge.services.turns import Turns
 
 log = get_logger(__name__)
 
-NOT_APPROVED = "Only an approved contestant of the contest submits to its tasks."
+NOT_APPROVED = "Only approved entrants of this contest can submit to its tasks."
 
 
 @dataclass(frozen=True, slots=True)
-class Entrant:
+class Person:
     """A signed-in person at a released task: their session, checked again,
-    the contest's settings, the task as its latest publication froze it,
-    their registration for the contest, if any, and the workspace it gives
-    them, whose parts are made when they are first needed.
+    the contest's settings, the task as its latest publication froze it, the
+    entrant they are in, if any, the workspace it owns, whose parts are made
+    when they are first needed, every member of it, and when the person
+    joined it, by the database's clock.
     """
 
     session: Session
     task: TaskId
     settings: ContestDefinition
     published: PublishedTask
-    row: Contestant | None
+    entrant: EntrantRow | None
     workspace: WorkspaceId | None
     members: tuple[int, ...] = ()
-    """Whoever works in the workspace: the team's members, or the person."""
     since: datetime | None = None
-    """When the person began working in it, in or out of a team."""
 
 
-async def entrant(ctx: Context, session: Session, task: TaskId) -> Entrant:
+async def person(ctx: Context, session: Session, task: TaskId) -> Person:
     """The person behind `session` at `task`. `Unauthenticated` or
     `SessionExpired` for a session that has ended, and `NotFound` for a task
     that is not released to them or in a contest they may not see.
@@ -81,92 +81,97 @@ async def entrant(ctx: Context, session: Session, task: TaskId) -> Entrant:
         settings = await published.contest(ctx, contest)
     except NotFound as exc:
         raise NotFound(published.NO_SUCH_TASK) from exc
-    person = await release.reader(ctx, fresh, contest)
-    entered = settings.state is State.ARCHIVED and person.row is not None
-    if not release.sees(settings, person) and not entered:
+    reader = await release.reader(ctx, fresh, contest)
+    entered = settings.state is State.ARCHIVED and reader.entrant is not None
+    if not release.sees(settings, reader) and not entered:
         raise NotFound(published.NO_SUCH_TASK)
     found = await published.task(ctx, task, settings)
     if found is None or not rules.released(settings, found.name, ctx.now):
         raise NotFound(published.NO_SUCH_TASK)
-    if person.row is None:
-        return Entrant(fresh, task, settings, found, None, None)
-    standing = await teams.standing(ctx, contest, fresh.user_id)
+    standing = await entrants.standing(ctx, contest, fresh.user_id)
+    if standing is None:
+        return Person(fresh, task, settings, found, None, None)
     workspace = ctx.forge.workspaces.workspace_of(contest, standing.owner)
-    return Entrant(
-        fresh, task, settings, found, person.row, workspace, standing.members, standing.since
+    return Person(
+        fresh,
+        task,
+        settings,
+        found,
+        standing.entrant,
+        workspace,
+        standing.members,
+        standing.since,
     )
 
 
-async def refuse(ctx: Context, entrant: Entrant) -> tuple[Contestant, WorkspaceId]:
-    """The approved contestant's row and workspace, once the task is open to
-    them; each rule's own refusal otherwise.
+async def refuse(ctx: Context, person: Person) -> tuple[EntrantRow, WorkspaceId]:
+    """The approved entrant and its workspace, once the task is open to it;
+    each rule's own refusal otherwise.
     """
-    openness = rules.openness(
-        entrant.settings, entrant.published.name, ctx.now, await extension(ctx, entrant)
-    )
+    openness = rules.openness(person.settings, person.published.name, ctx.now, extension(person))
     match openness.reason:
         case Closed.NOT_RELEASED:
             raise NotFound(published.NO_SUCH_TASK)
         case Closed.ARCHIVED:
-            raise Archived("The contest is archived and takes no submissions.")
+            raise Archived("This contest is archived, so it takes no more submissions.")
         case Closed.CLOSED:
-            raise TaskClosed("The task has closed for you.", reason=Closed.CLOSED.value)
-    row = entrant.row
+            raise TaskClosed(
+                "This task has closed for you, so it takes no more submissions from you.",
+                reason=Closed.CLOSED.value,
+            )
+    row = person.entrant
     if row is None or row.status != Status.APPROVED:
         raise NotApproved(NOT_APPROVED)
-    assert entrant.workspace is not None
-    return row, entrant.workspace
+    entrant_rules.refuse_incomplete(person.settings, len(person.members))
+    assert person.workspace is not None
+    return row, person.workspace
 
 
-async def extension(ctx: Context, entrant: Entrant) -> Extension:
-    """The extension of the row the person submits as: the workspace's
-    owner's, the team's or their own, and none for one who is no contestant.
+def extension(person: Person) -> Extension:
+    """The extension of the entrant the person submits as, and none for one
+    in no entrant.
     """
-    if entrant.workspace is None:
+    if person.entrant is None:
         return Extension()
-    owner = ctx.forge.workspaces.owner_of(entrant.workspace)
-    return await timelines.of_owner(ctx, contest_id_of(task_scope(entrant.task)), owner)
+    return timelines.of_entrant(person.entrant)
 
 
-async def hold_standing(ctx: Context, entrant: Entrant) -> None:
-    """Hold the person's registration, and their team's row when they are
-    in one, until the unit of work ends, so no change of team and no change
-    of the team's extension passes this submit, and refuse with `Conflict`
-    when the workspace they work in changed since the entrant was read: a
-    person joining a team, leaving one or being moved, and a team's
-    extension shortened, waits for the submit, and a submit that started
-    before a change of team is asked again.
+async def hold_standing(ctx: Context, person: Person) -> Person:
+    """Hold the person's entrant for reading until the unit of work ends, so
+    no change of who is in it, and no change of its extension, passes this
+    submit, and refuse with `EntrantChanged` when the person is no longer in
+    it: a person joining, leaving or being moved waits for the submit, and a
+    submit that started before such a change is asked again. The person
+    comes back with the entrant's row and members read again under the
+    hold, which `refuse` then checks: a change that committed before the
+    hold, after the first read, is seen.
     """
-    if entrant.row is None:
-        return
-    await ctx.db.execute(
-        select(Contestant.id).where(Contestant.id == entrant.row.id).with_for_update(read=True)
-    )
-    contest = contest_id_of(task_scope(entrant.task))
-    standing = await teams.standing(ctx, contest, entrant.session.user_id)
-    if isinstance(standing.owner, TeamOwner):
-        await ctx.db.execute(
-            select(Team.id).where(Team.id == standing.owner.team_id).with_for_update(read=True)
-        )
-    if ctx.forge.workspaces.workspace_of(contest, standing.owner) != entrant.workspace:
-        raise TeamChanged("Your team changed while you submitted; submit again.")
+    if person.entrant is None:
+        return person
+    row = await entrants.hold_for_reading(ctx, person.entrant.id)
+    contest = contest_id_of(task_scope(person.task))
+    member = await entrants.membership(ctx, contest, person.session.user_id)
+    if row is None or member is None or member.entrant_id != row.id:
+        raise EntrantChanged("Your team changed while you were submitting. Submit again.")
+    members = tuple(await entrants.member_ids(ctx, row.id))
+    return replace(person, entrant=row, members=members)
 
 
 PLACES_AT_ONCE = 4
 _room = Turns(PLACES_AT_ONCE)
 
 
-async def open_place(ctx: Context, entrant: Entrant) -> None:
-    """Make the contestant's place to submit the task, as the platform, and
-    make sure they are still approved once it is made (`places.make`).
+async def open_place(ctx: Context, person: Person) -> None:
+    """Make the entrant's place to submit the task, as the platform, and
+    make sure it is still approved once it is made (`places.make`).
 
     The place is made first, holding nothing: making it takes the forge
     seconds in a rush, and a row held that long keeps a connection from
     everyone else, so a burst of first uploads once ran the pool dry. A
-    removal can land while it is made, so the person's row is then held and
-    read again, and one no longer approved has the access just given taken
-    away again before they are refused. Whichever ends first, the access is
-    gone once both have: a removal that held the row first is seen here and
+    removal can land while it is made, so the entrant's row is then held and
+    read again, and one removed has the access just given taken away again
+    before the person is refused. Whichever ends first, the access is gone
+    once both have: a removal that held the row first is seen here and
     undone again, and one that comes after takes away a place that is
     already there.
 
@@ -183,30 +188,34 @@ async def open_place(ctx: Context, entrant: Entrant) -> None:
     seconds. One still waiting when the proxy gives up is made all the same,
     so asking again is answered at once.
     """
-    user_id = entrant.session.user_id
-    row = entrant.row
+    user_id = person.session.user_id
+    row = person.entrant
     if row is None or row.status != Status.APPROVED:
         raise NotApproved(NOT_APPROVED)
     try:
-        approved = await places.make(ctx, row, entrant.task, _room())
+        approved = await places.make(
+            ctx, ContestId(row.contest_id), row.id, person.task, _room(), for_user=user_id
+        )
     except PortError as exc:
         log.warning(
             "submitters.place_failed",
-            task=entrant.task,
+            task=person.task,
             error=type(exc).__name__,
             detail=exc.detail,
         )
-        raise Unavailable("The forge did not answer; try again in a moment.") from None
+        raise Unavailable("The server did not answer. Try again in a moment.") from None
     if not approved:
         raise NotApproved(NOT_APPROVED)
-    log.info("submitters.place_opened", task=entrant.task, user_id=user_id)
+    log.info("submitters.place_opened", task=person.task, user_id=user_id)
 
 
 async def place_of(ctx: Context, task: TaskId, user_id: int) -> WorkspaceId:
-    """The id of the workspace the person works in for the task's contest,
-    their team's while they are in one. No call to the forge is made; the id
-    comes from the contest and the person or the team.
+    """The id of the workspace of the entrant the person is in for the task's
+    contest. No call to the forge is made; the id comes from the contest and
+    the entrant. `NotFound` for someone in no entrant.
     """
     contest = contest_id_of(task_scope(task))
-    standing = await teams.standing(ctx, contest, user_id)
-    return ctx.forge.workspaces.workspace_of(contest, standing.owner)
+    found = await entrants.membership(ctx, contest, user_id)
+    if found is None:
+        raise NotFound(published.NO_SUCH_TASK)
+    return ctx.forge.workspaces.workspace_of(contest, EntrantOwner(found.entrant_id))

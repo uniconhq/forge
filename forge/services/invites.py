@@ -1,20 +1,26 @@
 """Invites: an organiser asking one person, by username or by email address,
-to take a contestant's place in a contest or an organiser's role at an org,
-a contest or a task (`forge.domain.invites` holds the rules). An invite is a
-row in `invites`, the package's own table, because it may name an address
-with no account behind it, which the forge has nothing to hold.
+to take part in a contest, on their own or straight into one of its
+entrants, or to take an organiser's role at an org, a contest or a task; and
+a member of an entrant asking someone into it (`entrants.invite`).
+`forge.domain.invites` holds the rules. An invite is a row in `invites`,
+the package's own table, because it may name an address with no account
+behind it, which the forge has nothing to hold.
 
 Making one needs what granting it would: the manager role at the scope, and
-admin to invite an admin; a contestant's place is offered at a contest, by
-its managers. A username is looked up at the forge then and there, so the
-invite is that person's from the start; an address is matched later. The
-same pending invite twice is refused (`already_invited`), since the first
-can be sent again, and an org makes at most `ORG_DAILY_MAX` invites in a
-day (`invite_limit`), so an org nobody vetted cannot turn the platform's
-mail server on strangers. Making, sending again, withdrawing, accepting
-and declining take the org's lock on role changes, the one `roles` takes,
-so two organisers cannot both make the same invite and an acceptance never
-passes a grant or a removal.
+admin to invite an admin; a place in a contest is offered at a contest, by
+its managers, only while the contest has an `invite` way someone could come
+in by (`no_invite_way`), and into an entrant only while its members and the
+invites waiting to join it leave room (`entrant_full`). A username is looked
+up at the forge then and there, so the invite is that person's from the
+start; an address is matched later. The same pending invite twice is
+refused (`already_invited`), since the first can be sent again, and an org's
+organisers make at most `ORG_DAILY_MAX` invites in a day (`invite_limit`), so
+an org nobody vetted cannot turn the platform's mail server on strangers; an
+entrant's members, at most `entrants.MEMBER_DAILY_MAX` of their own, so no
+contestant can spend the org's. Making, sending again, withdrawing,
+accepting and declining take the org's lock on role changes, the one
+`roles` takes, so two organisers cannot both make the same invite and an
+acceptance never passes a grant or a removal.
 
 The invite's mail goes out once the request that made it has committed, and
 the request answers without waiting for it (`Context.in_background`): a mail
@@ -37,14 +43,16 @@ rather than at sign-in covers an address confirmed after the first sign-in
 and costs every sign-in nothing. Opening a link that is not theirs is no
 such invite. An address counts only as far as the forge confirms it is
 theirs, so with Forgejo an email invite needs `REGISTER_EMAIL_CONFIRM` on
-wherever people sign themselves up, as an email pattern does. Accepting
+wherever people sign themselves up, as a sign-up's domains do. Accepting
 grants what the invite carries, as long as whoever sent it may still grant
-it: an organiser role, which never lowers a role the person holds, or a
-contestant's place, which is eligibility to register for an invite-only or
-hidden contest while they have no registration there (`contestants`), and
-which organisers can withdraw again until they register. Declining grants
-nothing. Both close the invite, and a lapsed invite can do neither; the
-person's list leaves lapsed ones out.
+it: an organiser role, which never lowers a role the person holds; or a
+place in a contest, which registers the person or puts them in the entrant
+the invite names, as `entrants.take_place` says, and answers with the
+entrant they are in. An organiser's place, once accepted, also lets its
+person in by the contest's invite way when they register again, and shows
+them a hidden contest while they are in no entrant there; organisers can
+withdraw it again. Declining grants nothing. Both close the invite, and a
+lapsed invite can do neither; the person's list leaves lapsed ones out.
 """
 
 import builtins
@@ -54,30 +62,34 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import func, or_, select, update
 
-from forge.db.tables import Contestant
+from forge.db.tables import Entrant as EntrantRow
 from forge.db.tables import Invite as InviteRow
+from forge.domain import entrants as entrant_rules
 from forge.domain import invites as rules
+from forge.domain.entrants import EntrantRef
 from forge.domain.errors import (
     AlreadyInvited,
     ContestantConflict,
     Forbidden,
     InvalidInvite,
     InviteLimit,
+    NoInviteWay,
     NotFound,
     PortError,
     Unavailable,
 )
 from forge.domain.identity import User
+from forge.domain.ids import ContestId
 from forge.domain.invites import Grant, InviteStatus, MailStatus
 from forge.domain.names import ScopeNames
-from forge.domain.registration import REGISTERED
+from forge.domain.registration import REGISTERED, Status
 from forge.domain.roles import Role, Scope, ScopeKind, contest_id_of, holds
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.port.mail import Mail
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import names, roles
+from forge.services import entrants, names, published, roles
 from forge.services.access import Organiser, require
 from forge.services.turns import Turns
 
@@ -99,15 +111,20 @@ _mailing = Turns(MAILS_AT_ONCE)
 @dataclass(frozen=True, slots=True)
 class Invite:
     """An invite as organisers and the person it is for see it: where it is
-    to, by its keys and its names, what it grants, who it names, who sent
-    it, where it stands, when it lapses, and what became of its mail.
-    `expired` is a pending invite past its expiry.
+    to, by its keys and its names, and the title of the contest it is at or
+    under, none at an org or when the contest's settings do not read; what
+    it grants, the entrant it asks
+    someone into, if any, by its id and the name it is shown under, who it
+    names, who sent it, where it stands, when it lapses, and what became of
+    its mail. `expired` is a pending invite past its expiry.
     """
 
     id: uuid.UUID
     scope: Scope
     where: ScopeNames
+    contest_title: str | None
     grants: Grant
+    entrant: EntrantRef | None
     username: str | None
     email: str | None
     invited_by: User | None
@@ -120,6 +137,26 @@ class Invite:
     mailed_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class Accepted:
+    """What accepting an invite did: the invite as it stands now, and, for a
+    place in a contest, the entrant the person is in now.
+    """
+
+    invite: Invite
+    entered: entrants.Entered | None
+
+
+@dataclass(frozen=True, slots=True)
+class Target:
+    """Whom an invite names: the person a username names, looked up at the
+    forge, or an address, matched later.
+    """
+
+    user: User | None
+    address: str | None
+
+
 @action
 async def create(
     ctx: Context,
@@ -130,35 +167,78 @@ async def create(
     username: str | None = None,
     email: str | None = None,
     lifetime: timedelta | None = None,
+    entrant: uuid.UUID | None = None,
 ) -> Invite:
     """Invite the person a username or an email address names to what
-    `grants` gives at the scope, and mail them once it commits. Needs the
+    `grants` gives at the scope, straight into `entrant` for a place in a
+    contest when it names one, and mail them once it commits. Needs the
     manager role at the scope, and admin to invite an admin.
     """
     _require_to_grant(organiser, scope, grants)
-    named, address = rules.checked_target(username, email)
+    if grants is Grant.MEMBER:
+        raise InvalidInvite("Only a member of a team can invite someone into it.")
+    if entrant is not None and grants is not Grant.CONTESTANT:
+        raise InvalidInvite("An invite into a team can only offer a place in the contest.")
+    rules.checked_target(username, email)
     standing = rules.checked_lifetime(lifetime)
     await roles.one_change_at_a_time(ctx, scope.org)
     await roles.require_scope(ctx, scope)
+    if grants is Grant.CONTESTANT:
+        await _refuse_no_invite_way(ctx, contest_id_of(scope))
+    named = await target(ctx, username, email)
+    if named.user is not None:
+        await _refuse_held(ctx, named.user, scope, grants, entrant)
+    if entrant is not None:
+        await _refuse_full_entrant(ctx, contest_id_of(scope), entrant)
+    return await make(
+        ctx, scope, grants, named, invited_by=organiser.user.id, entrant=entrant, lifetime=standing
+    )
+
+
+async def target(ctx: Context, username: str | None, email: str | None) -> Target:
+    """Whom an invite names: exactly one of a username, looked up at the
+    forge now, and an address. An org's service account is never invited.
+    """
+    named, address = rules.checked_target(username, email)
     user = await roles.person_named(ctx, named) if named is not None else None
     if user is not None:
         await roles.refuse_service_account(ctx, user.id)
-        await _refuse_held(ctx, user, scope, grants)
-    await _refuse_twice(ctx, scope, grants, user, address)
-    await _refuse_too_many(ctx, scope.org)
+    return Target(user, address)
+
+
+async def make(
+    ctx: Context,
+    scope: Scope,
+    grants: Grant,
+    named: Target,
+    *,
+    invited_by: int,
+    entrant: uuid.UUID | None = None,
+    lifetime: timedelta | None = None,
+) -> Invite:
+    """A new pending invite to what `grants` gives at the scope, into
+    `entrant` when it names one, mailed once the unit of work commits, once
+    the same invite is not waiting already and, for an organiser's, the org
+    has invites left today. The caller has checked who may make it, and a
+    member's invite against its entrant's own limit (`entrants.invite`).
+    """
+    await refuse_twice(ctx, scope, grants, named, entrant)
+    if grants is not Grant.MEMBER:
+        await _refuse_too_many(ctx, scope.org)
     token = rules.new_token()
     row = InviteRow(
         scope=scope.path,
         grants=grants.value,
-        username=user.username if user is not None else None,
-        email=address,
-        user_id=user.id if user is not None else None,
-        invited_by_user_id=organiser.user.id,
+        username=named.user.username if named.user is not None else None,
+        email=named.address,
+        user_id=named.user.id if named.user is not None else None,
+        invited_by_user_id=invited_by,
         token_hash=rules.token_hash(token),
         status=InviteStatus.PENDING,
         created_at=ctx.now,
-        expires_at=ctx.now + standing,
+        expires_at=ctx.now + (lifetime or rules.LIFETIME),
         mail_status=MailStatus.WAITING if ctx.forge.mail.configured else MailStatus.OFF,
+        entrant_id=entrant,
     )
     ctx.db.add(row)
     await ctx.db.flush()
@@ -169,10 +249,11 @@ async def create(
         invite=str(row.id),
         scope=scope.path,
         grants=grants.value,
-        by_user_id=organiser.user.id,
+        entrant=str(entrant) if entrant is not None else None,
+        by_user_id=invited_by,
         to_user_id=row.user_id,
     )
-    return await _view(ctx, row)
+    return await view(ctx, row)
 
 
 @action
@@ -204,12 +285,13 @@ async def send_again(ctx: Context, organiser: Organiser, scope: Scope, invite: u
         rules.refuse_closed(InviteStatus(row.status), row.expires_at, ctx.now, "sent again")
     if not ctx.forge.mail.configured:
         raise InvalidInvite(
-            "This deployment sends no mail; the person finds the invite in Unicon once signed in."
+            "This Unicon sends no email. The person will find the invite in Unicon once they "
+            "sign in."
         )
     if row.mailed_at is not None and ctx.now < row.mailed_at + SEND_AGAIN_AFTER:
         retry_at = row.mailed_at + SEND_AGAIN_AFTER
         raise InviteLimit(
-            f"This invite was mailed minutes ago; send it again after {retry_at:%H:%M} UTC.",
+            f"This invite was emailed a few minutes ago. Send it again after {retry_at:%H:%M} UTC.",
             retry_at=retry_at.isoformat(),
         )
     token = rules.new_token()
@@ -221,14 +303,14 @@ async def send_again(ctx: Context, organiser: Organiser, scope: Scope, invite: u
     await ctx.db.flush()
     _mail_later(ctx, row, token)
     log.info("invites.sent_again", invite=str(row.id), by_user_id=organiser.user.id)
-    return await _view(ctx, row)
+    return await view(ctx, row)
 
 
 @action
 async def withdraw(ctx: Context, organiser: Organiser, scope: Scope, invite: uuid.UUID) -> Invite:
     """Take back a pending invite, lapsed or not, or an accepted invite to a
-    contestant's place, which is eligibility until its person registers.
-    Needs what making it needed.
+    place in a contest, which lets its person in by the contest's invite way
+    when they register again. Needs what making it needed.
     """
     row = await _organisers(ctx, organiser, scope, invite)
     accepted_place = row.status == InviteStatus.ACCEPTED and row.grants == Grant.CONTESTANT
@@ -238,7 +320,7 @@ async def withdraw(ctx: Context, organiser: Organiser, scope: Scope, invite: uui
     row.decided_at = ctx.now
     await ctx.db.flush()
     log.info("invites.withdrawn", invite=str(row.id), by_user_id=organiser.user.id)
-    return await _view(ctx, row)
+    return await view(ctx, row)
 
 
 @action
@@ -277,35 +359,41 @@ async def by_token(ctx: Context, session: Session, token: str) -> Invite:
         raise NotFound(NO_SUCH_INVITE)
     if row.user_id is None and row.status == InviteStatus.PENDING:
         if not await _attach(ctx, session.user_id):
-            raise Unavailable("The forge did not answer; try the link again in a moment.")
+            raise Unavailable("The server did not answer. Try the link again in a moment.")
         await ctx.db.refresh(row)
     if row.user_id != session.user_id:
         raise NotFound(NO_SUCH_INVITE)
-    return await _view(ctx, row)
+    return await view(ctx, row)
 
 
 @action
-async def accept(ctx: Context, session: Session, invite: uuid.UUID) -> Invite:
+async def accept(
+    ctx: Context, session: Session, invite: uuid.UUID, *, code: str | None = None
+) -> Accepted:
     """Accept one of the signed-in person's own invites and take what it
-    grants. `NotFound` for one that is not theirs.
+    grants, with the contest's `code` when joining an entrant asks for one.
+    `NotFound` for one that is not theirs.
     """
     row = await _persons(ctx, session, invite, "accepted")
     grants = Grant(row.grants)
     role = grants.role
+    entered: entrants.Entered | None = None
     if role is not None:
         user = User(id=session.user_id, username=session.username)
         await roles.grant_invited(
-            ctx, row.invited_by_user_id, _scope(row.scope), user, role, invite=str(row.id)
+            ctx, row.invited_by_user_id, scope_of(row.scope), user, role, invite=str(row.id)
         )
     else:
-        await roles.refuse_unless_may_grant(
-            ctx, row.invited_by_user_id, _scope(row.scope), Role.MANAGER
-        )
+        if grants is Grant.CONTESTANT:
+            await roles.refuse_unless_may_grant(
+                ctx, row.invited_by_user_id, scope_of(row.scope), Role.MANAGER
+            )
+        entered = await entrants.take_place(ctx, session, row, code=code)
     row.status = InviteStatus.ACCEPTED
     row.decided_at = ctx.now
     await ctx.db.flush()
     log.info("invites.accepted", invite=str(row.id), user_id=session.user_id)
-    return await _view(ctx, row)
+    return Accepted(await view(ctx, row), entered)
 
 
 @action
@@ -318,13 +406,13 @@ async def decline(ctx: Context, session: Session, invite: uuid.UUID) -> Invite:
     row.decided_at = ctx.now
     await ctx.db.flush()
     log.info("invites.declined", invite=str(row.id), user_id=session.user_id)
-    return await _view(ctx, row)
+    return await view(ctx, row)
 
 
 async def accepted_place(ctx: Context, contest: str, user_id: int) -> bool:
-    """Whether the person has accepted an invite to a contestant's place in
-    the contest, which is the eligibility an invite-only contest asks for,
-    and what shows them a hidden one while they have no registration there.
+    """Whether the person has accepted an organiser's invite to a place in
+    the contest, which lets them in by its invite way, and shows them a
+    hidden contest while they are in no entrant there.
     """
     found = await ctx.db.scalar(
         select(InviteRow.id)
@@ -340,7 +428,9 @@ async def accepted_place(ctx: Context, contest: str, user_id: int) -> bool:
 
 
 async def accepted_places(ctx: Context, user_id: int) -> frozenset[str]:
-    """Every contest the person has accepted an invite to take part in."""
+    """Every contest the person has accepted an organiser's invite to take
+    part in.
+    """
     found = await ctx.db.execute(
         select(InviteRow.scope).where(
             InviteRow.user_id == user_id,
@@ -353,52 +443,99 @@ async def accepted_places(ctx: Context, user_id: int) -> frozenset[str]:
 
 def _require_to_grant(organiser: Organiser, scope: Scope, grants: Grant) -> None:
     """What making or changing an invite needs: manager at the scope, admin
-    for an admin, and a contestant's place only at a contest.
+    for an admin, and a place in a contest, or a member's in an entrant,
+    only at a contest.
     """
     require(organiser, scope, Role.MANAGER)
     if grants is Grant.ADMIN and not holds(organiser.grants, scope, Role.ADMIN):
-        raise Forbidden(f"Only an admin of {scope.name} may invite an admin there.")
-    if grants is Grant.CONTESTANT and scope.kind is not ScopeKind.CONTEST:
-        raise InvalidInvite("A contestant's place is offered at a contest.")
+        raise Forbidden(f"Only an admin of {scope.name} can invite another admin there.")
+    if grants.role is None and scope.kind is not ScopeKind.CONTEST:
+        raise InvalidInvite("An invite to enter a contest is made from that contest.")
 
 
-async def _refuse_held(ctx: Context, user: User, scope: Scope, grants: Grant) -> None:
+async def _refuse_no_invite_way(ctx: Context, contest: ContestId) -> None:
+    """`NoInviteWay` for a contest nobody invited could come in by."""
+    settings = await published.contest(ctx, contest)
+    if settings.registration.invite_way is None:
+        raise NoInviteWay(
+            "This contest has no way in by invite, so nobody invited could enter it. Add a way "
+            "in by invite first."
+        )
+
+
+async def _refuse_held(
+    ctx: Context, user: User, scope: Scope, grants: Grant, entrant: uuid.UUID | None
+) -> None:
     """Refuse inviting someone to what they hold already, or to what they
     could not take: the role there or above, or a role in a contest they are
-    registered for; a registration for the contest, or a role at it.
+    in an entrant of; for a place in a contest, being in an entrant of it
+    pending or approved, or in the entrant named, or a role at it.
     """
     role = grants.role
     if role is not None:
         if holds(await ctx.forge.orgs.roles_of_user(user.id), scope, role):
-            raise InvalidInvite(f"{user.username} holds that role at {scope.name} already.")
+            raise InvalidInvite(f"{user.username} already has that role at {scope.name}.")
         try:
             await roles.refuse_if_contestant(ctx, user, scope)
         except ContestantConflict as exc:
             raise InvalidInvite(exc.detail) from None
         return
     contest = contest_id_of(scope)
-    registered = await ctx.db.scalar(
-        select(Contestant.id).where(
-            Contestant.contest_id == contest,
-            Contestant.user_id == user.id,
-            Contestant.status.in_(REGISTERED),
+    found = await entrants.of_person(ctx, contest, user.id)
+    if found is not None and entrant is not None and found.id == entrant:
+        raise InvalidInvite(f"{user.username} is in that team already.")
+    if found is not None and entrant is None and Status(found.status) in REGISTERED:
+        raise InvalidInvite(f"{user.username} has already entered this contest.")
+    if await roles.holds_role_in_contest(ctx, user.id, contest):
+        raise InvalidInvite(f"{user.username} has a role at this contest, so they cannot enter it.")
+
+
+async def _refuse_full_entrant(ctx: Context, contest: ContestId, entrant: uuid.UUID) -> None:
+    """`NotFound` for an entrant that is not the contest's, and
+    `EntrantFull` when its members and the invites waiting to join it leave
+    no room, counted with its row held.
+    """
+    settings = await published.contest(ctx, contest)
+    row = (
+        await ctx.db.execute(
+            select(EntrantRow)
+            .where(EntrantRow.id == entrant, EntrantRow.contest_id == contest)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise NotFound(entrants.NO_SUCH_ENTRANT)
+    waiting = await ctx.db.scalar(
+        select(func.count())
+        .select_from(InviteRow)
+        .where(
+            InviteRow.entrant_id == entrant,
+            InviteRow.status == InviteStatus.PENDING,
+            InviteRow.expires_at > ctx.now,
         )
     )
-    if registered is not None:
-        raise InvalidInvite(f"{user.username} is registered for this contest already.")
-    if await roles.holds_role_in_contest(ctx, user.id, contest):
-        raise InvalidInvite(f"{user.username} holds a role at this contest, so cannot enter it.")
+    entrant_rules.refuse_full(
+        len(await entrants.member_ids(ctx, entrant)) + (waiting or 0), settings.entrants.most
+    )
 
 
-async def _refuse_twice(
-    ctx: Context, scope: Scope, grants: Grant, user: User | None, address: str | None
+async def refuse_twice(
+    ctx: Context, scope: Scope, grants: Grant, named: Target, entrant: uuid.UUID | None
 ) -> None:
-    target = InviteRow.user_id == user.id if user is not None else InviteRow.email == address
+    """`AlreadyInvited` when the same person holds the same invite, waiting
+    and not lapsed, which can be sent again instead.
+    """
+    target = (
+        InviteRow.user_id == named.user.id
+        if named.user is not None
+        else InviteRow.email == named.address
+    )
     found = await ctx.db.scalar(
         select(InviteRow.id)
         .where(
             InviteRow.scope == scope.path,
             InviteRow.grants == grants,
+            InviteRow.entrant_id.is_not_distinct_from(entrant),
             InviteRow.status == InviteStatus.PENDING,
             InviteRow.expires_at > ctx.now,
             target,
@@ -407,13 +544,14 @@ async def _refuse_twice(
     )
     if found is not None:
         raise AlreadyInvited(
-            "That person holds this invite already; send it again instead.", invite=str(found)
+            "That person already has this invite. Send it again instead.", invite=str(found)
         )
 
 
 async def _refuse_too_many(ctx: Context, org: str) -> None:
-    """`InviteLimit` once the org has made `ORG_DAILY_MAX` invites in the last
-    day, at all its scopes together.
+    """`InviteLimit` once the org's organisers have made `ORG_DAILY_MAX`
+    invites in the last day, at all its scopes together; members' invites
+    into their entrants count under their own limit.
     """
     since = ctx.now - timedelta(days=1)
     made = await ctx.db.scalar(
@@ -421,13 +559,15 @@ async def _refuse_too_many(ctx: Context, org: str) -> None:
         .select_from(InviteRow)
         .where(
             or_(InviteRow.scope == org, InviteRow.scope.startswith(f"{org}/", autoescape=True)),
+            InviteRow.grants != Grant.MEMBER,
             InviteRow.created_at > since,
         )
     )
     if (made or 0) >= ORG_DAILY_MAX:
         retry_at = ctx.now + timedelta(hours=1)
         raise InviteLimit(
-            f"This org has made {ORG_DAILY_MAX} invites in the last day; make more later.",
+            f"This org has made {ORG_DAILY_MAX} invites in the last day, the most it can. Make "
+            "more later.",
             retry_at=retry_at.isoformat(),
         )
 
@@ -460,7 +600,7 @@ async def _persons(ctx: Context, session: Session, invite: uuid.UUID, doing: str
     """
     found = await ctx.db.scalar(select(InviteRow.scope).where(InviteRow.id == invite))
     if found is not None:
-        await roles.one_change_at_a_time(ctx, _scope(found).org)
+        await roles.one_change_at_a_time(ctx, scope_of(found).org)
     row = (
         await ctx.db.execute(
             select(InviteRow)
@@ -544,14 +684,16 @@ async def _send(ctx: Context, invite: uuid.UUID, hashed: bytes, token: str) -> N
             or row.mail_status != MailStatus.WAITING
         ):
             return
+        entrant = await ctx.db.get(EntrantRow, row.entrant_id) if row.entrant_id else None
         draft = _Draft(
             invite=row.id,
-            scope=_scope(row.scope),
+            scope=scope_of(row.scope),
             grants=Grant(row.grants),
             email=row.email,
             user_id=row.user_id,
             invited_by=row.invited_by_user_id,
             expires_at=row.expires_at,
+            entrant=entrant,
         )
         await ctx.db.commit()
         status = MailStatus.FAILED
@@ -583,6 +725,7 @@ class _Draft:
     user_id: int | None
     invited_by: int
     expires_at: datetime
+    entrant: EntrantRow | None
 
 
 async def _mail(ctx: Context, draft: _Draft, token: str) -> Mail | None:
@@ -597,10 +740,11 @@ async def _mail(ctx: Context, draft: _Draft, token: str) -> Mail | None:
             log.info("invites.no_address", invite=str(draft.invite))
             return None
         address = emails[0]
-    where = (await names.scope_names(ctx, draft.scope)).path
+    where = await _where_in_words(ctx, draft.scope)
     inviter = await _user(ctx, draft.invited_by)
     by = inviter.username if inviter is not None else "An organiser"
-    what = _offer(draft.grants, where)
+    into = (await entrants.ref(ctx, draft.entrant)).name if draft.entrant is not None else None
+    what = _offer(draft.grants, where, into)
     link = f"{str(ctx.settings.public_url).rstrip('/')}/invites#{token}"
     text = (
         f"{by} has invited you to {what} on Unicon.\n\n"
@@ -612,14 +756,44 @@ async def _mail(ctx: Context, draft: _Draft, token: str) -> Mail | None:
     return Mail(to=address, subject=f"You are invited to {what}", text=text)
 
 
-def _offer(grants: Grant, where: str) -> str:
+def _offer(grants: Grant, where: str, into: str | None) -> str:
+    if into is not None:
+        return f"join {into} in {where}"
     if grants is Grant.CONTESTANT:
         return f"take part in {where}"
     article = "an" if grants is Grant.ADMIN or grants is Grant.OBSERVER else "a"
     return f"be {article} {grants.value} of {where}"
 
 
-def _scope(path: str) -> Scope:
+def _contest_of(scope: Scope) -> ContestId | None:
+    """The contest a scope is at or under, none for an org."""
+    return contest_id_of(scope) if scope.contest is not None else None
+
+
+async def _contest_title(ctx: Context, contest: ContestId) -> str | None:
+    """The contest's title from its settings, or none when they do not read
+    or the forge did not answer: a title shown is never worth a refusal.
+    """
+    try:
+        return (await published.contest(ctx, contest)).name
+    except PortError:
+        return None
+
+
+async def _where_in_words(ctx: Context, scope: Scope) -> str:
+    """Where an invite is to as its mail names it: the contest by its title,
+    a task by its name in it, and an org by its name.
+    """
+    names_of = await names.scope_names(ctx, scope)
+    contest = _contest_of(scope)
+    title = await _contest_title(ctx, contest) if contest is not None else None
+    if title is None:
+        return names_of.path
+    return f"{names_of.task} in {title}" if names_of.task is not None else title
+
+
+def scope_of(path: str) -> Scope:
+    """The scope an invite's `scope` names."""
     return Scope(*path.split("/"))
 
 
@@ -633,13 +807,26 @@ async def _user(ctx: Context, user_id: int) -> User | None:
         return None
 
 
-async def _view(ctx: Context, row: InviteRow) -> Invite:
+async def view(ctx: Context, row: InviteRow) -> Invite:
+    """The invite as organisers and its person read it."""
     return (await _views(ctx, [row]))[0]
 
 
 async def _views(ctx: Context, rows: builtins.list[InviteRow]) -> tuple[Invite, ...]:
-    scopes = {row.scope: _scope(row.scope) for row in rows}
+    scopes = {row.scope: scope_of(row.scope) for row in rows}
     named = await names.scopes_named(ctx, scopes.values())
+    wanted = sorted({row.entrant_id for row in rows if row.entrant_id is not None})
+    into = (
+        (await ctx.db.scalars(select(EntrantRow).where(EntrantRow.id.in_(wanted)))).all()
+        if wanted
+        else []
+    )
+    shown = await entrants.display_names(ctx, into)
+    titles: dict[ContestId, str | None] = {}
+    for scope in scopes.values():
+        contest = _contest_of(scope)
+        if contest is not None and contest not in titles:
+            titles[contest] = await _contest_title(ctx, contest)
     inviters: dict[int, User | None] = {}
     for row in rows:
         if row.invited_by_user_id not in inviters:
@@ -649,7 +836,13 @@ async def _views(ctx: Context, rows: builtins.list[InviteRow]) -> tuple[Invite, 
             id=row.id,
             scope=scopes[row.scope],
             where=named.get(scopes[row.scope]) or ScopeNames(org=scopes[row.scope].org),
+            contest_title=titles.get(_contest_of(scopes[row.scope]) or ContestId("")),
             grants=Grant(row.grants),
+            entrant=(
+                EntrantRef(row.entrant_id, shown[row.entrant_id])
+                if row.entrant_id is not None and row.entrant_id in shown
+                else None
+            ),
             username=row.username,
             email=row.email,
             invited_by=inviters[row.invited_by_user_id],

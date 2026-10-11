@@ -48,7 +48,7 @@ from forge.domain.errors import (
 from forge.domain.grading import callback_token, token_hash
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId
-from forge.domain.names import UserOwner
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.scoring import Points
 from forge.domain.showing import GroupShown, SubmissionState
@@ -57,7 +57,7 @@ from forge.domain.uploads import pointer_text
 from forge.domain.workflows import Visibility
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
-from forge.services import contestants, identity, publications, submissions, uploads
+from forge.services import entrants, identity, publications, submissions, uploads
 from forge.testing import CLASSIC, FakeClock
 from tests.services.conftest import (
     RUNNING,
@@ -65,6 +65,7 @@ from tests.services.conftest import (
     Acme,
     Entered,
     organiser,
+    segment,
     signed_in,
     upload,
     write_contest,
@@ -74,9 +75,7 @@ KEY = "key-0001-aaaa"
 SOURCE = b"print(sum(map(int, input().split())))\n"
 END = datetime(2026, 9, 26, 15, 0, tzinfo=UTC)
 
-FOLDERS = CLASSIC.replace(
-    b"submission: {type: file, contestant: true}", b"submission: {type: folder, contestant: true}"
-)
+FOLDERS = CLASSIC.replace(b"  submission:\n    type: file\n", b"  submission:\n    type: folder\n")
 """classic, with the contestant's sources a folder."""
 
 ANSWERS = b"""\
@@ -146,8 +145,8 @@ async def _workflow(acme: Acme, name: str, source: bytes) -> None:
     await acme.fake.workflows.create_workflow_version(PLATFORM, made, "v1")
 
 
-async def _snapshot(acme: Acme, number: int) -> dict[str, bytes]:
-    repo = acme.fake.state.repos[("acme", "spring.sum.u8.sub")]
+async def _snapshot(acme: Acme, entered: Entered, number: int) -> dict[str, bytes]:
+    repo = acme.fake.state.repos[("acme", f"spring.sum.{segment(entered.entrant)}.sub")]
     return dict(repo.snapshots[repo.versions[f"submission/{number}"]])
 
 
@@ -172,7 +171,7 @@ async def test_a_submit_commits_as_the_contestant_names_it_and_queues_one_gradin
     assert submission.late_days == 0
     assert submission.grading is not None
     assert (submission.grading.attempt, submission.grading.status) == (1, SubmissionState.QUEUED)
-    repo = acme.fake.state.repos[("acme", "spring.sum.u8.sub")]
+    repo = acme.fake.state.repos[("acme", f"spring.sum.{segment(entered.entrant)}.sub")]
     head = repo.history[-1]
     assert head.author_id == 8
     assert repo.versions == {"submission/1": head.version}
@@ -192,8 +191,8 @@ async def test_a_submit_commits_as_the_contestant_names_it_and_queues_one_gradin
     [publication] = await acme.fake.workspaces.list_publications(entered.task)
     assert (row.task_id, row.workspace_id, row.submission_id) == (
         entered.task,
-        "acme/spring/@u8",
-        "acme/spring/@u8/sum#1",
+        f"acme/spring/@{segment(entered.entrant)}",
+        f"acme/spring/@{segment(entered.entrant)}/sum#1",
     )
     assert (row.submission_number, row.submission_version, row.publication_id) == (
         1,
@@ -212,7 +211,10 @@ async def test_a_submit_commits_as_the_contestant_names_it_and_queues_one_gradin
     assert row.callback_token_hash == token_hash(token)
     async with setup.unit_of_work() as ctx:
         used = (await ctx.db.execute(select(UploadRow))).scalar_one()
-    assert (used.status, used.consumed_by) == ("consumed", "acme/spring/@u8/sum#1")
+    assert (used.status, used.consumed_by) == (
+        "consumed",
+        f"acme/spring/@{segment(entered.entrant)}/sum#1",
+    )
 
 
 async def test_the_place_to_submit_is_made_once_at_the_first_slot(
@@ -221,7 +223,7 @@ async def test_the_place_to_submit_is_made_once_at_the_first_slot(
     # An object belongs to a repository, so the place is made before any
     # bytes are sent rather than at the submit; the files of one submission
     # cost one call between them, not one each.
-    assert ("acme", "spring.sum.u8.sub") not in acme.fake.state.repos
+    assert ("acme", f"spring.sum.{segment(entered.entrant)}.sub") not in acme.fake.state.repos
 
     await _submit(setup, acme, entered)
     clock.advance(timedelta(seconds=31))
@@ -231,7 +233,7 @@ async def test_the_place_to_submit_is_made_once_at_the_first_slot(
     # nothing after it asks again.
     (opened,) = acme.fake.calls_to("open_submission_place")
     assert opened.arguments["member_ids"] == [8]
-    repo = acme.fake.state.repos[("acme", "spring.sum.u8.sub")]
+    repo = acme.fake.state.repos[("acme", f"spring.sum.{segment(entered.entrant)}.sub")]
     assert sorted(repo.versions) == ["submission/1", "submission/2"]
 
 
@@ -247,7 +249,7 @@ async def test_a_second_submission_holds_only_its_own_files(
     )
 
     assert second.number == 2
-    assert sorted(await _snapshot(acme, 2)) == ["files/submission/b.py", "submission.json"]
+    assert sorted(await _snapshot(acme, entered, 2)) == ["files/submission/b.py", "submission.json"]
     assert [row.submission_number for row in await _gradings(setup)] == [1, 2]
 
 
@@ -260,9 +262,9 @@ async def test_a_number_another_took_first_is_retried_and_the_row_points_at_the_
 
     assert submission.number == 2
     [row] = await _gradings(setup)
-    repo = acme.fake.state.repos[("acme", "spring.sum.u8.sub")]
+    repo = acme.fake.state.repos[("acme", f"spring.sum.{segment(entered.entrant)}.sub")]
     assert (row.submission_id, row.submission_version) == (
-        "acme/spring/@u8/sum#2",
+        f"acme/spring/@{segment(entered.entrant)}/sum#2",
         repo.versions["submission/2"],
     )
 
@@ -284,7 +286,10 @@ async def test_the_same_key_twice_returns_the_first_submission_and_makes_nothing
     assert again.grading.id == first.grading.id
     assert len(acme.fake.calls_to("record_submission")) == 1
     assert len(await _gradings(setup)) == 1
-    assert len(acme.fake.state.repos[("acme", "spring.sum.u8.sub")].versions) == 1
+    assert (
+        len(acme.fake.state.repos[("acme", f"spring.sum.{segment(entered.entrant)}.sub")].versions)
+        == 1
+    )
 
 
 async def test_a_retry_after_the_answer_was_lost_finds_the_submission_and_adds_its_row(
@@ -306,7 +311,7 @@ async def test_a_retry_after_the_answer_was_lost_finds_the_submission_and_adds_i
     assert len(acme.fake.calls_to("record_submission")) == 1
     [row] = await _gradings(setup)
     assert (row.submission_id, row.idempotency_key, row.status) == (
-        "acme/spring/@u8/sum#1",
+        f"acme/spring/@{segment(entered.entrant)}/sum#1",
         KEY,
         "dispatched",
     )
@@ -345,9 +350,23 @@ async def test_a_recovered_submission_consumes_the_uploads_its_own_files_point_a
 
     assert again.number == 1
     assert await _statuses(setup) == {
-        str(used.id): ("consumed", "acme/spring/@u8/sum#1"),
+        str(used.id): ("consumed", f"acme/spring/@{segment(entered.entrant)}/sum#1"),
         str(other.id): ("verified", None),
     }
+
+
+async def test_a_submission_its_own_submitter_sends_again_is_recorded_as_theirs(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    used = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
+    await _lost(setup, acme, entered, used.id)
+
+    await submissions.submit(
+        setup, entered.session, entered.task, code(used.id), idempotency_key=KEY
+    )
+
+    [row] = await _gradings(setup)
+    assert row.submitted_by == entered.session.user_id
 
 
 async def test_of_two_uploads_of_one_file_a_recovered_submission_consumes_the_oldest(
@@ -361,7 +380,7 @@ async def test_of_two_uploads_of_one_file_a_recovered_submission_consumes_the_ol
     await submissions.submit(setup, entered.session, entered.task, code(), idempotency_key=KEY)
 
     assert await _statuses(setup) == {
-        str(first.id): ("consumed", "acme/spring/@u8/sum#1"),
+        str(first.id): ("consumed", f"acme/spring/@{segment(entered.entrant)}/sum#1"),
         str(second.id): ("verified", None),
     }
     clock.advance(timedelta(seconds=31))
@@ -400,8 +419,8 @@ async def test_a_later_submit_cannot_name_an_upload_an_unrecorded_submission_use
         (2, "key-0003-cccc"),
     ]
     assert await _statuses(setup) == {
-        str(used.id): ("consumed", "acme/spring/@u8/sum#1"),
-        str(other.id): ("consumed", "acme/spring/@u8/sum#2"),
+        str(used.id): ("consumed", f"acme/spring/@{segment(entered.entrant)}/sum#1"),
+        str(other.id): ("consumed", f"acme/spring/@{segment(entered.entrant)}/sum#2"),
     }
     mine = await submissions.mine(setup, entered.session, entered.task)
     assert [made.number for made in mine] == [2, 1]
@@ -456,7 +475,9 @@ async def test_a_closed_or_archived_task_is_refused_first(
     # has revealed, no extension is.
     await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=1), tasks=["sum"])
+    await entrants.extend(
+        setup, manager, SPRING, entered.entrant, timedelta(hours=1), tasks=["sum"]
+    )
     clock.advance(timedelta(hours=3, minutes=30))
     await identity.current(entered.session.id, setup=setup)
     passed = await submissions.submit(
@@ -477,7 +498,7 @@ async def test_a_closed_or_archived_task_is_refused_first(
 async def test_someone_not_approved_is_refused(setup: Setup, acme: Acme, entered: Entered) -> None:
     acme.fake.add_user(30, "cyd")
     cyd = await signed_in(setup, acme.fake, 30)
-    await contestants.register(setup, cyd, SPRING)
+    await entrants.register(setup, cyd, SPRING)
     with pytest.raises(NotApproved):
         await submissions.submit(setup, cyd, entered.task, code(), idempotency_key=KEY)
     assert acme.fake.calls_to("record_submission") == []
@@ -516,9 +537,9 @@ async def test_uploads_must_be_the_contestants_own_and_ready(
 ) -> None:
     acme.fake.add_user(30, "cyd")
     cyd = await signed_in(setup, acme.fake, 30)
-    await contestants.register(setup, cyd, SPRING)
+    theirs_entrant = await entrants.register(setup, cyd, SPRING)
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await contestants.approve(setup, manager, SPRING, 30)
+    await entrants.approve(setup, manager, SPRING, theirs_entrant.id)
     theirs = await upload(setup, acme.fake, cyd, entered.task, SOURCE)
 
     with pytest.raises(UploadNotYours) as foreign:
@@ -644,7 +665,7 @@ async def test_a_folder_input_takes_a_tree_of_files_within_its_size_together(
         setup, session, task, code(nested.id, main.id), idempotency_key=KEY
     )
 
-    snapshot = await _snapshot(acme, made.number)
+    snapshot = await _snapshot(acme, entered, made.number)
     assert sorted(snapshot) == [
         "files/submission/lib/add.py",
         "files/submission/main.py",
@@ -676,7 +697,8 @@ async def test_a_folder_input_takes_a_tree_of_files_within_its_size_together(
     assert refused.value.extra["errors"] == [
         {
             "input": "submission",
-            "message": "The files of this input total more than the 1024 bytes allowed.",
+            "message": "The files of this input come to more than the 1024 bytes allowed. "
+            "Make them smaller.",
         }
     ]
     with pytest.raises(InvalidInputs) as empty:
@@ -726,7 +748,7 @@ async def test_a_per_test_input_takes_one_file_named_for_each_test(
         idempotency_key=KEY,
     )
 
-    snapshot = await _snapshot(acme, made.number)
+    snapshot = await _snapshot(acme, entered, made.number)
     assert sorted(snapshot) == [
         "files/answers/main/1",
         "files/answers/main/2.txt",
@@ -754,7 +776,10 @@ async def test_a_per_test_input_takes_one_file_named_for_each_test(
             idempotency_key="key-0002-bbbb",
         )
     assert twice.value.extra["errors"] == [
-        {"input": "answers", "message": "Two files answer the same test."}
+        {
+            "input": "answers",
+            "message": "Two files are for the same test. Give one file for each test.",
+        }
     ]
     one = await submissions.submit(
         setup,
@@ -763,7 +788,10 @@ async def test_a_per_test_input_takes_one_file_named_for_each_test(
         {"answers": SubmittedInput(uploads=(alone.id,))},
         idempotency_key="key-0003-cccc",
     )
-    assert sorted(await _snapshot(acme, one.number)) == ["files/answers/main/1", "submission.json"]
+    assert sorted(await _snapshot(acme, entered, one.number)) == [
+        "files/answers/main/1",
+        "submission.json",
+    ]
 
 
 async def test_an_upload_the_forge_no_longer_holds_is_refused_before_the_commit(
@@ -773,7 +801,9 @@ async def test_an_upload_the_forge_no_longer_holds_is_refused_before_the_commit(
     # that has gone must refuse rather than commit a pointer to nothing, so
     # it asks the forge once more at the last moment.
     made = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
-    workspace = acme.fake.workspaces.workspace_of(ContestId("acme/spring"), UserOwner(8))
+    workspace = acme.fake.workspaces.workspace_of(
+        ContestId("acme/spring"), EntrantOwner(entered.entrant)
+    )
     place = SubmissionPlace(workspace, entered.task)
     acme.fake.uploads.forget(place, hashlib.sha256(SOURCE).hexdigest(), len(SOURCE))
 
@@ -795,7 +825,7 @@ async def test_the_commit_holds_a_pointer_and_never_the_bytes(
         setup, entered.session, entered.task, code(made.id), idempotency_key=KEY
     )
 
-    written = await _snapshot(acme, 1)
+    written = await _snapshot(acme, entered, 1)
     path = next(name for name in written if name.startswith("files/"))
     assert written[path] == _pointer(SOURCE)
     assert SOURCE not in written[path]
@@ -807,7 +837,9 @@ async def test_a_failing_forge_or_store_is_told_in_fixed_words_and_nothing_is_wr
     made = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
 
     async def refused(*args: Any, **kwargs: Any) -> Any:
-        raise Rejected("/api/v1/repos/acme/spring.sum.u8.sub/contents answered 422")
+        raise Rejected(
+            f"/api/v1/repos/acme/spring.sum.{segment(entered.entrant)}.sub/contents answered 422"
+        )
 
     async def down(*args: Any, **kwargs: Any) -> Any:
         raise Unavailable("the store answered 503")
@@ -933,8 +965,8 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
     # The groups whose verdict is shown passed; large's verdict waits.
     assert before.grading.outcome == "accepted"
     assert before.grading.values == {"log": "compiled"}
-    # Worth 100 over rule weights 100, 30 and 70: main 50, small 15 and
-    # large's 35 decided at the reveal.
+    # No worth in the contest, so the task is worth its groups' total, 200:
+    # main 100, small 30 and large's 70 decided at the reveal.
     assert before.grading.groups == (
         GroupShown(
             group="main",
@@ -949,8 +981,8 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
                 },
             ),
             shown_at=None,
-            points=Fraction(50),
-            max=Fraction(50),
+            points=Fraction(100),
+            max=Fraction(100),
         ),
         GroupShown(
             group="small",
@@ -958,8 +990,8 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
             outcome="accepted",
             tests=None,
             shown_at=END,
-            points=Fraction(15),
-            max=Fraction(15),
+            points=Fraction(30),
+            max=Fraction(30),
         ),
         GroupShown(
             group="large",
@@ -967,11 +999,11 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
             outcome=None,
             tests=None,
             shown_at=END,
-            max=Fraction(35),
+            max=Fraction(70),
         ),
     )
     assert before.grading.points == Points(
-        shown=Fraction(65), pending=Fraction(35), pending_until=END
+        shown=Fraction(130), pending=Fraction(70), pending_until=END
     )
 
     clock.set(END)
@@ -988,7 +1020,7 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
     assert after.grading.groups[2].tests == (_credited(0),)
     assert after.grading.groups[1].tests == (_credited(2),)
     assert after.grading.points == Points(
-        shown=Fraction(65), pending=Fraction(0), pending_until=None
+        shown=Fraction(130), pending=Fraction(0), pending_until=None
     )
     assert after.grading.groups[2].points == 0
 
@@ -1057,7 +1089,9 @@ async def test_an_extension_holds_the_reveal_back_for_everyone(
     await _submit(setup, acme, entered)
     await _graded(setup, RESULT)
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=1), tasks=["sum"])
+    await entrants.extend(
+        setup, manager, SPRING, entered.entrant, timedelta(hours=1), tasks=["sum"]
+    )
 
     clock.set(END)
     await identity.current(entered.session.id, setup=setup)
@@ -1070,7 +1104,7 @@ async def test_an_extension_holds_the_reveal_back_for_everyone(
         outcome=None,
         tests=None,
         shown_at=END + timedelta(hours=1),
-        max=Fraction(35),
+        max=Fraction(70),
     )
 
 
@@ -1131,7 +1165,9 @@ async def test_a_submission_after_the_rows_due_is_late_by_its_started_days(
     assert first.late_days == 1  # an hour after the due is a started day
 
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=2), tasks=["sum"])
+    await entrants.extend(
+        setup, manager, SPRING, entered.entrant, timedelta(hours=2), tasks=["sum"]
+    )
     clock.advance(timedelta(minutes=30))
     second = await _submit(setup, acme, entered, key="key-0002-bbbb", content=b"print(2)\n")
     clock.advance(timedelta(hours=1))
@@ -1148,11 +1184,15 @@ async def test_a_place_to_submit_a_try_left_half_made_is_finished_by_the_next_su
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     acme.fake.state.create_repo(
-        PLATFORM, "acme", "spring.sum.u8.sub", {}, scope=Scope("acme", "spring")
+        PLATFORM,
+        "acme",
+        f"spring.sum.{segment(entered.entrant)}.sub",
+        {},
+        scope=Scope("acme", "spring"),
     )
 
     submission = await _submit(setup, acme, entered)
 
     assert submission.number == 1
-    repo = acme.fake.state.repos[("acme", "spring.sum.u8.sub")]
+    repo = acme.fake.state.repos[("acme", f"spring.sum.{segment(entered.entrant)}.sub")]
     assert repo.writers == {8}

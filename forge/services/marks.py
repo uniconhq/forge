@@ -1,7 +1,7 @@
 """The submissions a row marks for the `marked` boards (TASK-FORMAT.md
 section 1.1, Marks): up to the task's `marks` of the row's own submissions,
-graded or not, one set shared by every board and, for a team, by every
-member. Marks change until the row's close on the task, its extension
+graded or not, one set shared by every board and by every member of the
+entrant. Marks change until the row's close on the task, its extension
 included, and are frozen after it. Marking grades nothing; a board reads a
 mark only on a candidate.
 
@@ -10,7 +10,8 @@ advisory lock held until the unit of work ends, so a row never holds more
 than it may, and with the contest's rules held shared (`timelines.hold_rules`),
 so a save lowering a task's marks counts every mark already made. A mark
 already held is marked again without a change, and a mark not held unmarked
-the same way. Only an approved contestant is told whether a task takes marks.
+the same way. Only a member of an approved entrant is told whether a task
+takes marks.
 """
 
 from collections.abc import Collection
@@ -31,7 +32,7 @@ from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import submitters, timelines
-from forge.services.submitters import Entrant
+from forge.services.submitters import Person
 
 log = get_logger(__name__)
 
@@ -39,7 +40,9 @@ MARKS_LOCK = 0x4D41524B
 """The first key of every lock on a row's marks on a task, the second being
 the workspace and task hashed by Postgres."""
 NO_SUCH_SUBMISSION = "There is no such submission."
-NOT_MARKED = "The task takes no marks: no board with select: marked covers it."
+NOT_MARKED = (
+    "This task does not take marks: no leaderboard that counts marked submissions covers it."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,13 +61,13 @@ class Marks:
 
 @action
 async def held(ctx: Context, session: Session, task: TaskId) -> Marks:
-    """The marks the signed-in person's row holds on the task. `MarksOff`
-    for a task no marked board covers, and `NotApproved` for a person who is
-    no approved contestant.
+    """The marks the signed-in person's entrant holds on the task.
+    `MarksOff` for a task no marked board covers, and `NotApproved` for a
+    person in no approved entrant.
     """
-    entrant = await submitters.entrant(ctx, session, task)
-    workspace, most, closes_at = await _place(ctx, entrant)
-    return await _marks(ctx, entrant, workspace, most, closes_at)
+    person = await submitters.person(ctx, session, task)
+    workspace, most, closes_at = await _place(ctx, person)
+    return await _marks(ctx, person, workspace, most, closes_at)
 
 
 @action
@@ -75,17 +78,17 @@ async def mark(ctx: Context, session: Session, task: TaskId, number: int) -> Mar
     it may.
     """
     await _hold_rules(ctx, task)
-    entrant = await submitters.entrant(ctx, session, task)
-    workspace, most, closes_at = await _place(ctx, entrant)
-    await _change(ctx, entrant, workspace, closes_at)
+    person = await submitters.person(ctx, session, task)
+    workspace, most, closes_at = await _place(ctx, person)
+    await _change(ctx, person, workspace, closes_at)
     if not await _submitted(ctx, workspace, task, number):
         raise NotFound(NO_SUCH_SUBMISSION)
     marked = await numbers_of(ctx, workspace, task)
     if number not in marked:
         if len(marked) >= most:
             raise MarkLimit(
-                f"Your row holds {most} {'mark' if most == 1 else 'marks'} on this task, "
-                "the most it may; unmark one first.",
+                f"You have marked {most} {'submission' if most == 1 else 'submissions'} on this "
+                "task, the most you can. Unmark one first.",
                 limit=most,
             )
         ctx.db.add(
@@ -93,12 +96,12 @@ async def mark(ctx: Context, session: Session, task: TaskId, number: int) -> Mar
                 workspace_id=workspace,
                 task_id=task,
                 submission_number=number,
-                marked_by=entrant.session.user_id,
+                marked_by=person.session.user_id,
             )
         )
         await ctx.db.flush()
         log.info("marks.marked", task=task, workspace=workspace, number=number)
-    return await _marks(ctx, entrant, workspace, most, closes_at)
+    return await _marks(ctx, person, workspace, most, closes_at)
 
 
 @action
@@ -107,9 +110,9 @@ async def unmark(ctx: Context, session: Session, task: TaskId, number: int) -> M
     `MarksFrozen` once the row's close has passed.
     """
     await _hold_rules(ctx, task)
-    entrant = await submitters.entrant(ctx, session, task)
-    workspace, most, closes_at = await _place(ctx, entrant)
-    await _change(ctx, entrant, workspace, closes_at)
+    person = await submitters.person(ctx, session, task)
+    workspace, most, closes_at = await _place(ctx, person)
+    await _change(ctx, person, workspace, closes_at)
     await ctx.db.execute(
         delete(Mark).where(
             Mark.workspace_id == workspace,
@@ -118,7 +121,7 @@ async def unmark(ctx: Context, session: Session, task: TaskId, number: int) -> M
         )
     )
     log.info("marks.unmarked", task=task, workspace=workspace, number=number)
-    return await _marks(ctx, entrant, workspace, most, closes_at)
+    return await _marks(ctx, person, workspace, most, closes_at)
 
 
 async def numbers_of(ctx: Context, workspace: WorkspaceId, task: TaskId) -> set[int]:
@@ -166,20 +169,20 @@ async def most_held(ctx: Context, task: TaskId) -> tuple[int, int]:
     return held[0], held.count(held[0])
 
 
-async def _place(ctx: Context, entrant: Entrant) -> tuple[WorkspaceId, int, datetime]:
+async def _place(ctx: Context, person: Person) -> tuple[WorkspaceId, int, datetime]:
     """The row's workspace, how many marks the task takes, and the row's
     close on it.
     """
-    row = entrant.row
-    if row is None or row.status != Status.APPROVED or entrant.workspace is None:
-        raise NotApproved("Only an approved contestant marks submissions.")
-    settings: ContestDefinition = entrant.settings
-    entry = settings.entry(entrant.published.name)
+    row = person.entrant
+    if row is None or row.status != Status.APPROVED or person.workspace is None:
+        raise NotApproved("Only approved entrants can mark submissions.")
+    settings: ContestDefinition = person.settings
+    entry = settings.entry(person.published.name)
     most = settings.marks_of(entry) if entry is not None else None
     if entry is None or most is None:
         raise MarksOff(NOT_MARKED)
-    extension = await submitters.extension(ctx, entrant)
-    return entrant.workspace, most, close_of(settings, entry, extension)
+    extension = submitters.extension(person)
+    return person.workspace, most, close_of(settings, entry, extension)
 
 
 async def _hold_rules(ctx: Context, task: TaskId) -> None:
@@ -191,19 +194,19 @@ async def _hold_rules(ctx: Context, task: TaskId) -> None:
 
 
 async def _change(
-    ctx: Context, entrant: Entrant, workspace: WorkspaceId, closes_at: datetime
+    ctx: Context, person: Person, workspace: WorkspaceId, closes_at: datetime
 ) -> None:
     """Refuse a change after the row's close, and hold the row's marks on
-    the task, and the person's team, until the unit of work ends; the
+    the task, and the person's entrant, until the unit of work ends; the
     contest's rules are held already (`_hold_rules`).
     """
     if ctx.now >= closes_at:
-        raise MarksFrozen("Your close on this task has passed, so your marks are frozen.")
+        raise MarksFrozen("This task has closed for you, so your marks can no longer change.")
     await ctx.db.execute(
         text("SELECT pg_advisory_xact_lock(:space, hashtext(:target))"),
-        {"space": MARKS_LOCK, "target": f"{workspace}|{entrant.task}"},
+        {"space": MARKS_LOCK, "target": f"{workspace}|{person.task}"},
     )
-    await submitters.hold_standing(ctx, entrant)
+    await submitters.hold_standing(ctx, person)
 
 
 async def _submitted(ctx: Context, workspace: WorkspaceId, task: TaskId, number: int) -> bool:
@@ -220,7 +223,7 @@ async def _submitted(ctx: Context, workspace: WorkspaceId, task: TaskId, number:
 
 
 async def _marks(
-    ctx: Context, entrant: Entrant, workspace: WorkspaceId, most: int, closes_at: datetime
+    ctx: Context, person: Person, workspace: WorkspaceId, most: int, closes_at: datetime
 ) -> Marks:
-    numbers = await numbers_of(ctx, workspace, entrant.task)
-    return Marks(entrant.task, tuple(sorted(numbers)), most, closes_at, ctx.now >= closes_at)
+    numbers = await numbers_of(ctx, workspace, person.task)
+    return Marks(person.task, tuple(sorted(numbers)), most, closes_at, ctx.now >= closes_at)

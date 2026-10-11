@@ -14,18 +14,19 @@ in a fixed word that says what it is:
     <owner>/<name>.workflow
     unicon/<name>.primitive
 
-The owner of a workspace is `u<user-id>` for a contestant, or
-`team.<team-id>` for a team, and is read
-back as everything between the second dot and the final word. Never a
-username: a person can change theirs and someone else can then take it, and
-the workspace would follow the name.
+The owner of a workspace is an entrant, `entrant.<id>`, its id as 32 hex
+digits, and is read back as everything between the second dot and the final
+word. Never a username: a person can change theirs and someone else can
+then take it, and the workspace would follow the name. The longest name
+this makes, a place to submit in a contest and at a task filed under keys
+of 26 characters each, is 98 characters, within the 100 Forgejo allows a
+repository; the id with its hyphens would not fit.
 A workspace is per contest, so its desk carries the contest too: the same
 person in two contests of one org has two desks, and closing one contest's
 workspace leaves the other's alone.
 """
 
 import json
-import uuid
 from dataclasses import dataclass
 
 from forge.domain.errors import NotFound
@@ -39,7 +40,7 @@ from forge.domain.ids import (
     WorkflowId,
     WorkspaceId,
 )
-from forge.domain.names import TEAM_PREFIX, USER_PREFIX, TeamOwner, UserOwner, WorkspaceOwner
+from forge.domain.names import WorkspaceOwner, entrant_owner
 from forge.domain.threads import ThreadChange, ThreadKind
 
 PLATFORM_ORG = "unicon"
@@ -156,19 +157,13 @@ def parse_workspace(value: WorkspaceId) -> WorkspaceRef:
 
 
 def owner_from_segment(segment: str) -> WorkspaceOwner:
-    """The owner a workspace segment names: a team by its id after the team
-    prefix, and a contestant by
-    their user id after the user prefix. Anything else names no workspace.
+    """The owner a workspace segment names: an entrant by its id after the
+    entrant prefix. Anything else names no workspace.
     """
-    if segment.startswith(TEAM_PREFIX):
-        try:
-            return TeamOwner(uuid.UUID(segment.removeprefix(TEAM_PREFIX)))
-        except ValueError:
-            raise MalformedId(f"{segment} is not a team") from None
-    user = segment.removeprefix(USER_PREFIX)
-    if segment.startswith(USER_PREFIX) and user.isdigit():
-        return UserOwner(int(user))
-    raise MalformedId(f"{segment} is not a workspace owner")
+    found = entrant_owner(segment)
+    if found is None:
+        raise MalformedId(f"{segment} is not a workspace owner")
+    return found
 
 
 def is_workspace(value: str) -> bool:

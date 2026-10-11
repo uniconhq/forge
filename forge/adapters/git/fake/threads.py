@@ -106,6 +106,11 @@ class FakeThreads:
         found = self._written(as_, thread)
         self._state.threads[thread] = replace(found, closed=True)
 
+    async def reopen_thread(self, as_: Identity, thread: ThreadId) -> None:
+        self._state.record("reopen_thread", as_, thread=thread)
+        found = self._written(as_, thread)
+        self._state.threads[thread] = replace(found, closed=False)
+
     async def comment(self, as_: Identity, thread: ThreadId, body: str) -> None:
         self._state.record("comment", as_, thread=thread)
         self._state.check_up()

@@ -35,6 +35,7 @@ from forge.domain.definitions import (
     key_name,
 )
 from forge.domain.scoring import ZERO, Better, Measure, rule_weight, written
+from forge.domain.workflow_definition import Fold
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,7 +122,7 @@ def counts_nothing(board: Leaderboard, tasks: Mapping[str, Covered]) -> list[str
 
 
 def counts_nothing_message(board: Leaderboard, task: str) -> str:
-    return f"{board.name} counts nothing from {task}."
+    return f"The leaderboard {board.name} counts nothing from {task}."
 
 
 def _value(
@@ -145,8 +146,8 @@ def _value(
                     task,
                     index,
                     "workflow",
-                    f"{board.name} ranks {name}, which {task} does not report per test "
-                    "with a fold.",
+                    f"The leaderboard {board.name} ranks by {name}, but {task}'s workflow does "
+                    f"not report {name} for each test, combined across its tests.",
                 )
             )
             continue
@@ -156,8 +157,9 @@ def _value(
                     task,
                     index,
                     "workflow",
-                    f"{board.name} ranks {name}, which {task} gives no better, and a value "
-                    "without one is never ranked.",
+                    f"The leaderboard {board.name} ranks by {name}, but {task}'s workflow does "
+                    f"not say whether a higher or a lower {name} is better, so it cannot be "
+                    "ranked.",
                 )
             )
             continue
@@ -195,33 +197,38 @@ def _differs(
     if theirs.better != measure.better:
         assert measure.better is not None and theirs.better is not None
         return (
-            f"{board.name} ranks {name}, which is {measure.better} is better in {task} and "
-            f"{theirs.better} is better in {other}."
+            f"The leaderboard {board.name} ranks by {name}, but a {measure.better} {name} is "
+            f"better in {task} and a {theirs.better} one in {other}."
         )
     assert measure.fold is not None and theirs.fold is not None
     return (
-        f"{board.name} ranks {name}, which folds by {measure.fold} in {task} and by "
-        f"{theirs.fold} in {other}."
+        f"The leaderboard {board.name} ranks by {name}, but {task} takes "
+        f"{_FOLDS[measure.fold]} of {name} over its tests and {other} takes "
+        f"{_FOLDS[theirs.fold]}."
     )
+
+
+_FOLDS = {Fold.SUM: "the sum", Fold.MEAN: "the mean", Fold.MAX: "the highest"}
 
 
 def _sum_problem(board: Leaderboard, name: str, measure: Measure) -> str | None:
     """C4's rule for a value first over more than one task."""
     if measure.better is Better.LOWER:
         return (
-            f"{board.name} ranks {name}, which is lower is better, over more than one task: "
-            "rank it on a board of one task."
+            f"The leaderboard {board.name} ranks first by {name}, for which lower is better, "
+            f"over more than one task. Rank by {name} on a leaderboard of one task."
         )
     if measure.at_least is None:
         return (
-            f"{name} has no lower bound, so on {board.name} a row that skips a task would "
-            "beat one that scored below 0 on it: rank it on a board of one task."
+            f"{name} has no lowest value, so on the leaderboard {board.name} an entrant who "
+            "skips a task would beat one who scored below 0 on it. Rank by "
+            f"{name} on a leaderboard of one task."
         )
     if measure.at_least < ZERO:
         return (
-            f"{name} can be as low as {written(measure.at_least)}, so on {board.name} a row "
-            "that skips a task would beat one that scored below 0 on it: rank it on a board "
-            "of one task."
+            f"{name} can be as low as {written(measure.at_least)}, so on the leaderboard "
+            f"{board.name} an entrant who skips a task would beat one who scored below 0 on it. "
+            f"Rank by {name} on a leaderboard of one task."
         )
     return None
 
@@ -249,22 +256,31 @@ def _fallback_carries(of: Covered, first: str) -> bool:
 
 def _scope_message(board: Leaderboard, task: str, first: str) -> str:
     wanted = {
-        Over.LIVE: "a group shown always, since a verdict group's tests show only at the reveal",
-        Over.AFTER_CLOSE: "a group shown after_close",
-        Over.ALL: "a group",
+        Over.LIVE: "a test group whose results entrants see as soon as a grading ends, since "
+        "a group shown as an outcome shows its tests only at the reveal",
+        Over.AFTER_CLOSE: "a test group whose results entrants see at the reveal",
+        Over.ALL: "a test group",
     }[board.over]
-    return f"{board.name} ranks {first} over {board.over}, so {task} needs {wanted}."
+    counting = {
+        Over.LIVE: "the results shown during the contest",
+        Over.AFTER_CLOSE: "the results shown when each task closes",
+        Over.ALL: "every result",
+    }[board.over]
+    return (
+        f"The leaderboard {board.name} ranks by {first}, counting {counting}, so {task} needs "
+        f"{wanted}."
+    )
 
 
 def _fallback_message(board: Leaderboard, task: str, first: str) -> str:
     wanted = (
-        "a group with a rule weight not shown after_close"
+        "a test group that gives points and shows its results before the reveal"
         if first == POINTS
-        else "a group shown always"
+        else "a test group whose results entrants see as soon as a grading ends"
     )
     return (
-        f"{board.name} counts, for a row that marked nothing, what it saw before the "
-        f"reveal, so {task} needs {wanted}."
+        f"For an entrant who marked nothing, the leaderboard {board.name} counts what they saw "
+        f"before the reveal, so {task} needs {wanted}."
     )
 
 

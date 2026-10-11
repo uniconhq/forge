@@ -1,8 +1,8 @@
 """Workspaces, submissions and publications. A workspace is where one
-contestant works for one contest: a desk their questions live in and a place
-to submit each task to, made one part at a time so a part that fails is made
-again alone. A workspace owned by a group, which feature 14 adds, has the
-same shape under a group owner. A submission and a
+entrant works for one contest: a desk its questions live in and a place to
+submit each task to, made one part at a time so a part that fails is made
+again alone, and reached by whoever is a member of the entrant. A
+submission and a
 publication are protected versions that only the platform may create. A
 publication names a version a save already wrote and carries a note, the
 short document `forge.domain.publications` writes and reads.
@@ -70,8 +70,9 @@ class WorkspacePort(Protocol):
         every part of it already made: read on the desk and write on each
         place to submit, each part finished first as making it would, and
         anyone else given access there before taken off. A part made later is
-        made with whoever is a member then. It can be run again. A member
-        whose account is gone is passed over.
+        made with whoever is a member then, and anyone else on a part made
+        again is taken off first. It can be run again. A member whose account
+        is gone is passed over.
         """
         ...
 

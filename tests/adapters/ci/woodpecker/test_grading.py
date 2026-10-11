@@ -31,7 +31,11 @@ from forge.domain.errors import (
 from forge.domain.grading import GradingRun, InboundRequest, RunLookup, RunSpec, RunState
 from forge.domain.identity import AsOrgAccount, CiState, OrgAccountRef
 from forge.domain.ids import OrgId, PublicationId, RunId, SubmissionId, TaskId, VersionId
+from forge.domain.names import EntrantOwner
 from tests.adapters.conftest import Recorder, ok
+
+U8 = EntrantOwner(uuid.UUID(int=8)).segment
+"""The workspace segment of the entrant these tests name."""
 
 ACME = AsOrgAccount(
     "acme",
@@ -52,7 +56,7 @@ RUN = GradingRun(
     task=TaskId("acme/spring/sum"),
     publication=PublicationId("acme/spring/sum#3"),
     publication_version=VersionId(TASK_COMMIT),
-    submission=SubmissionId("acme/spring/@u8/sum#2"),
+    submission=SubmissionId(f"acme/spring/@{U8}/sum#2"),
     submission_version=VersionId(SUBMISSION_COMMIT),
     envelope_url=f"http://proxy/api/v1/gradings/{GRADING}/envelope?key=k",
     compute="pool:platform",
@@ -62,7 +66,7 @@ VARIABLES = {
     "UNICON_GRADING_ID": str(GRADING),
     "UNICON_ENVELOPE_URL": RUN.envelope_url,
     "UNICON_PUBLICATION_COMMIT": TASK_COMMIT,
-    "UNICON_SUBMISSION_REPO": "acme/spring.sum.u8.sub",
+    "UNICON_SUBMISSION_REPO": f"acme/spring.sum.{U8}.sub",
     "UNICON_SUBMISSION_COMMIT": SUBMISSION_COMMIT,
     "UNICON_COMPUTE": "pool:platform",
 }
@@ -469,7 +473,7 @@ async def test_the_answer_is_two_full_clone_steps_and_the_harness(
                 "name": "submission",
                 "image": CLONE,
                 "settings": {
-                    "remote": "http://forgejo:3000/acme/spring.sum.u8.sub.git",
+                    "remote": f"http://forgejo:3000/acme/spring.sum.{U8}.sub.git",
                     "sha": SUBMISSION_COMMIT,
                     "ref": "refs/tags/submission/2",
                     "path": "/woodpecker/submission",
@@ -580,7 +584,7 @@ def test_the_envelope_places_name_the_task_the_publication_and_the_submission(
     assert places.publication == {"tag": "published/3", "commit": TASK_COMMIT}
     assert places.submission == {
         "org": "acme",
-        "repo": "spring.sum.u8.sub",
+        "repo": f"spring.sum.{U8}.sub",
         "tag": "submission/2",
         "commit": SUBMISSION_COMMIT,
     }

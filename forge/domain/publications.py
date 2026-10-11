@@ -16,7 +16,7 @@ board is checked without reading the workflow again.
 
     grading_changed: true
     changes:
-    - plans/plan.json changed
+    - The way the task grades changed.
     workflows:
       acme/sorting: "412"
     sealed_steps: [validate]

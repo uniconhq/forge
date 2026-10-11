@@ -1,7 +1,7 @@
-"""Clarifications, over a real Postgres and the fake. An approved contestant
-asks from their own workspace, which their first question makes, and reads
-it back; the organisers see it in the inbox and another contestant never
-does. A reply leaves it open; marking it answered closes it and takes it
+"""Clarifications, over a real Postgres and the fake. A member of an
+approved entrant asks from its workspace, which its first question makes,
+and reads it back; the organisers see it in the inbox and another entrant
+never does. A reply leaves it open; marking it answered closes it and takes it
 out of the inbox, with or without a reply, and doing so twice changes
 nothing; unmarking opens it again. A contestant's follow-up on an answered
 question opens it again and brings it back to the inbox. The inbox is the
@@ -16,13 +16,21 @@ import pytest
 
 from forge.domain.errors import Forbidden, NotApproved, NotFound
 from forge.domain.identity import PLATFORM, AsUser
-from forge.domain.names import UserOwner
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.domain.threads import ThreadKind
 from forge.runtime.setup import Setup
-from forge.services import announcements, clarifications, contestants
-from tests.services.conftest import SPRING, Acme, Entered, make_task, organiser, signed_in
+from forge.services import announcements, clarifications, entrants
+from tests.services.conftest import (
+    SPRING,
+    Acme,
+    Entered,
+    make_task,
+    organiser,
+    segment,
+    signed_in,
+)
 
 
 async def _ask(setup: Setup, entered: Entered, title: str = "Input size?") -> int:
@@ -48,7 +56,7 @@ async def test_a_contestant_asks_from_their_own_workspace_and_reads_it_back(
     )
     assert (mine.contest.path, mine.asker, mine.answered, mine.closed) == (
         "acme/spring",
-        "8",
+        segment(entered.entrant),
         False,
         False,
     )
@@ -64,9 +72,9 @@ async def test_another_contestant_never_sees_a_question(
     number = await _ask(setup, entered)
     acme.fake.add_user(50, "carol")
     carol = await signed_in(setup, acme.fake, 50)
-    await contestants.register(setup, carol, SPRING)
+    theirs = await entrants.register(setup, carol, SPRING)
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await contestants.approve(setup, manager, SPRING, 50)
+    await entrants.approve(setup, manager, SPRING, theirs.id)
 
     assert await clarifications.mine(setup, carol, SPRING) == ()
     with pytest.raises(NotFound):
@@ -81,21 +89,25 @@ async def test_a_reply_leaves_it_open_and_marking_closes_it_once(
     number = await _ask(setup, entered)
     ada = await signed_in(setup, acme.fake, 7)
 
-    replied = await clarifications.reply(setup, acme.ada, SPRING, "8", number, body="Up to 10^5.")
+    replied = await clarifications.reply(
+        setup, acme.ada, SPRING, segment(entered.entrant), number, body="Up to 10^5."
+    )
     assert (replied.answered, replied.closed) == (False, False)
     assert [(message.from_asker, message.body) for message in replied.messages] == [
         (False, "Up to 10^5.")
     ]
     assert len(await clarifications.inbox(setup, ada, "acme")) == 1
 
-    marked = await clarifications.mark(setup, acme.ada, SPRING, "8", number)
-    again = await clarifications.mark(setup, acme.ada, SPRING, "8", number)
+    marked = await clarifications.mark(setup, acme.ada, SPRING, segment(entered.entrant), number)
+    again = await clarifications.mark(setup, acme.ada, SPRING, segment(entered.entrant), number)
     assert (marked.answered, marked.closed) == (True, True)
     assert again == marked
     assert len(acme.fake.calls_to("mark_answered")) == 1
     assert await clarifications.inbox(setup, ada, "acme") == ()
 
-    unmarked = await clarifications.unmark(setup, acme.ada, SPRING, "8", number)
+    unmarked = await clarifications.unmark(
+        setup, acme.ada, SPRING, segment(entered.entrant), number
+    )
     assert (unmarked.answered, unmarked.closed) == (False, False)
     assert len(await clarifications.inbox(setup, ada, "acme")) == 1
 
@@ -109,8 +121,8 @@ async def test_marking_needs_no_reply_and_a_manager(
     observer = await organiser(setup, acme.fake, 50, Scope("acme", "spring"), Role.OBSERVER)
 
     with pytest.raises(Forbidden):
-        await clarifications.mark(setup, observer, SPRING, "8", number)
-    marked = await clarifications.mark(setup, acme.ada, SPRING, "8", number)
+        await clarifications.mark(setup, observer, SPRING, segment(entered.entrant), number)
+    marked = await clarifications.mark(setup, acme.ada, SPRING, segment(entered.entrant), number)
 
     assert (marked.answered, marked.messages) == (True, ())
     assert len(await clarifications.of_contest(setup, observer, SPRING)) == 1
@@ -120,8 +132,10 @@ async def test_a_follow_up_on_an_answered_question_opens_it_again(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     number = await _ask(setup, entered)
-    await clarifications.reply(setup, acme.ada, SPRING, "8", number, body="Yes.")
-    await clarifications.mark(setup, acme.ada, SPRING, "8", number)
+    await clarifications.reply(
+        setup, acme.ada, SPRING, segment(entered.entrant), number, body="Yes."
+    )
+    await clarifications.mark(setup, acme.ada, SPRING, segment(entered.entrant), number)
 
     followed = await clarifications.follow_up(setup, entered.session, SPRING, number, body="And m?")
 
@@ -140,12 +154,18 @@ async def test_an_answer_made_public_points_at_the_question_which_stays_private(
     number = await _ask(setup, entered)
 
     public = await clarifications.answer_publicly(
-        setup, acme.ada, SPRING, "8", number, title="On n", body="n is at most 10^5."
+        setup,
+        acme.ada,
+        SPRING,
+        segment(entered.entrant),
+        number,
+        title="On n",
+        body="n is at most 10^5.",
     )
 
     assert (public.where.path, public.answers_question) == ("acme/spring/sum", True)
     assert public.answers is not None and (public.answers.asker, public.answers.number) == (
-        "8",
+        segment(entered.entrant),
         number,
     )
     [read] = await announcements.task(setup, entered.session, entered.task)
@@ -183,7 +203,7 @@ async def test_the_asker_only_reads_their_desk_so_the_label_is_not_theirs_to_cha
 ) -> None:
     number = await _ask(setup, entered)
     [asked] = acme.fake.calls_to("post_thread")
-    workspace = acme.fake.workspaces.workspace_of(SPRING, UserOwner(8))
+    workspace = acme.fake.workspaces.workspace_of(SPRING, EntrantOwner(entered.entrant))
     thread = acme.fake.threads.thread_of(workspace, number)
 
     with pytest.raises(Forbidden):
@@ -194,7 +214,7 @@ async def test_a_task_the_asker_writes_into_their_question_at_the_forge_is_not_t
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     number = await _ask(setup, entered)
-    workspace = acme.fake.workspaces.workspace_of(SPRING, UserOwner(8))
+    workspace = acme.fake.workspaces.workspace_of(SPRING, EntrantOwner(entered.entrant))
     thread = acme.fake.threads.thread_of(workspace, number)
     acme.fake.state.threads[thread] = replace(
         acme.fake.state.threads[thread],
@@ -203,7 +223,13 @@ async def test_a_task_the_asker_writes_into_their_question_at_the_forge_is_not_t
 
     [question] = await clarifications.inbox(setup, await signed_in(setup, acme.fake, 7), "acme")
     public = await clarifications.answer_publicly(
-        setup, acme.ada, SPRING, "8", number, title="Sizes", body="n is at most 10."
+        setup,
+        acme.ada,
+        SPRING,
+        segment(entered.entrant),
+        number,
+        title="Sizes",
+        body="n is at most 10.",
     )
 
     assert question.task is None

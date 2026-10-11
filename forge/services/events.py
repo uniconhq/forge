@@ -10,7 +10,8 @@ and what the host reads the signature and the event's kind from.
 The host answers the push as soon as `check` passes, so the forge never
 waits on the work behind it, and then hands the same body to `publish`,
 which reads what changed through the port and nudges the streams that may
-hear it (`live`): a clarification its asker and the organisers who observe
+hear it (`live`): a clarification the members of the entrant that asked it
+and the organisers who observe
 its contest; an announcement of a contest that contest's contestants and
 organisers; and one of a task the task's organisers, and its contestants
 only once the task is released, so nobody learns of a task they cannot see.
@@ -25,7 +26,6 @@ from forge.domain import release as rules
 from forge.domain.errors import Forbidden, NotFound, PortError
 from forge.domain.ids import OrgId
 from forge.domain.live import Nudge, NudgeKind
-from forge.domain.names import TeamOwner, UserOwner
 from forge.domain.roles import contest_scope, task_scope
 from forge.domain.threads import ThreadChange, ThreadKind
 from forge.log import get_logger
@@ -83,8 +83,7 @@ async def _nudge(ctx: Context, change: ThreadChange) -> Nudge | None:
         return Nudge(
             NudgeKind.CLARIFICATION,
             change.thread,
-            user=asker.user_id if isinstance(asker, UserOwner) else None,
-            team=str(asker.team_id) if isinstance(asker, TeamOwner) else None,
+            entrant=str(asker.entrant_id) if asker is not None else None,
             scope=contest_scope(change.contest),
         )
     if change.task is None:

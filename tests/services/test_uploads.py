@@ -45,16 +45,16 @@ from forge.domain.errors import (
 )
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId
-from forge.domain.names import UserOwner
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import UploadStatus
 from forge.domain.workflows import Visibility
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
-from forge.services import contestants, publications, submissions, submitters, uploads
+from forge.services import entrants, publications, submissions, submitters, uploads
 from forge.testing import FakeClock
-from tests.services.conftest import SPRING, Acme, Entered, organiser, signed_in, upload
+from tests.services.conftest import SPRING, Acme, Entered, organiser, segment, signed_in, upload
 
 SOURCE = b"print(1)\n"
 INPUT_LIMIT = 10 * 1024 * 1024
@@ -70,7 +70,9 @@ async def _rows(setup: Setup) -> list[UploadRow]:
 
 
 def _place(acme: Acme, entered: Entered) -> SubmissionPlace:
-    workspace = acme.fake.workspaces.workspace_of(ContestId("acme/spring"), UserOwner(8))
+    workspace = acme.fake.workspaces.workspace_of(
+        ContestId("acme/spring"), EntrantOwner(entered.entrant)
+    )
     return SubmissionPlace(workspace, entered.task)
 
 
@@ -552,7 +554,7 @@ async def test_a_submit_keeps_the_row_and_a_slot_clears_its_owners_lapsed_ones(
         idempotency_key="key-for-sweep",
     )
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await contestants.extend(setup, manager, SPRING, 8, timedelta(days=3))
+    await entrants.extend(setup, manager, SPRING, entered.entrant, timedelta(days=3))
 
     clock.advance(timedelta(days=1))
     await upload(setup, acme.fake, session, task, b"print(3)\n", filename="c.py")
@@ -566,7 +568,7 @@ async def test_a_submit_keeps_the_row_and_a_slot_clears_its_owners_lapsed_ones(
     assert set(rows) >= {used.id, fresh.id}
     assert (rows[used.id].status, rows[used.id].consumed_by) == (
         "consumed",
-        "acme/spring/@u8/sum#1",
+        f"acme/spring/@{segment(entered.entrant)}/sum#1",
     )
     # The bytes of a submitted file belong to the commit, so the platform
     # asks the forge for nothing to be removed; the forge collects what no
@@ -628,7 +630,7 @@ async def test_the_door_refuses_an_upload_whose_lifetime_is_over(
         sha256=_digest(SOURCE),
     )
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await contestants.extend(setup, manager, SPRING, 8, timedelta(days=5))
+    await entrants.extend(setup, manager, SPRING, entered.entrant, timedelta(days=5))
 
     clock.advance(timedelta(days=2, seconds=1))
 
@@ -668,7 +670,7 @@ async def test_a_removal_while_the_place_is_made_takes_the_access_back(
 
     async def made_then_removed(*args: Any, **kwargs: Any) -> None:
         await real(*args, **kwargs)
-        await contestants.remove(setup, manager, SPRING, 8)
+        await entrants.remove(setup, manager, SPRING, entered.entrant)
 
     monkeypatch.setattr(acme.fake.workspaces, "open_submission_place", made_then_removed)
 

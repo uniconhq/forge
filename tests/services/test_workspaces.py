@@ -1,18 +1,21 @@
-"""A contestant's workspace at the forge, made when it is first needed.
+"""An entrant's workspace at the forge, made when it is first needed.
 Approval makes nothing at the forge; publishing a task makes nothing for
-anyone; a contestant's first submit to a task makes their place to submit
-it, which they write. A removed contestant keeps what was made without
+anyone; an entrant's first submit to a task makes its place to submit it,
+which its members write. A removed entrant keeps what was made without
 access, and one removed before submitting has nothing made.
 """
+
+import uuid
 
 import pytest
 
 from forge.domain.errors import NotApproved
 from forge.domain.ids import TaskId
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import contestants, submissions
+from forge.services import entrants, submissions
 from forge.services.access import Organiser
 from tests.services.conftest import (
     RUNNING,
@@ -47,9 +50,19 @@ async def two_tasks(setup: Setup, acme: Acme, sum_task: TaskId, manager: Organis
     return [sum_task, diff]
 
 
-async def _approve(setup: Setup, acme: Acme, manager: Organiser, user_id: int) -> None:
-    await contestants.register(setup, await signed_in(setup, acme.fake, user_id), SPRING)
-    await contestants.approve(setup, manager, SPRING, user_id)
+async def _approve(setup: Setup, acme: Acme, manager: Organiser, user_id: int) -> uuid.UUID:
+    session = await signed_in(setup, acme.fake, user_id)
+    entrant = await entrants.register(setup, session, SPRING)
+    await entrants.approve(setup, manager, SPRING, entrant.id)
+    return entrant.id
+
+
+def _place(entrant: uuid.UUID, task: str) -> str:
+    return f"spring.{task}.{EntrantOwner(entrant).segment}.sub"
+
+
+def _made_for(acme: Acme, entrant: uuid.UUID) -> list[str]:
+    return [repo for (_, repo) in acme.fake.state.repos if EntrantOwner(entrant).segment in repo]
 
 
 async def _submit(setup: Setup, acme: Acme, user_id: int, task: TaskId) -> None:
@@ -74,11 +87,11 @@ def _writers(acme: Acme, repo: str) -> set[int]:
 async def test_approval_and_publication_make_nothing_at_the_forge(
     setup: Setup, acme: Acme, manager: Organiser, two_tasks: list[TaskId]
 ) -> None:
-    await _approve(setup, acme, manager, 8)
+    bob = await _approve(setup, acme, manager, 8)
     late = await make_task(setup, acme, "late")
     await publish(setup, acme, late)
 
-    assert not [repo for (_, repo) in acme.fake.state.repos if ".u8." in repo]
+    assert _made_for(acme, bob) == []
     assert acme.fake.calls_to("open_workspace") == []
     assert acme.fake.calls_to("open_submission_place") == []
 
@@ -87,37 +100,37 @@ async def test_a_first_submit_makes_the_place_to_submit_that_task_alone(
     setup: Setup, acme: Acme, manager: Organiser, two_tasks: list[TaskId]
 ) -> None:
     sum_task, _ = two_tasks
-    await _approve(setup, acme, manager, 8)
+    bob = await _approve(setup, acme, manager, 8)
 
     await _submit(setup, acme, 8, sum_task)
 
-    assert _writers(acme, "spring.sum.u8.sub") == {8}
-    assert ("acme", "spring.diff.u8.sub") not in acme.fake.state.repos
+    assert _writers(acme, _place(bob, "sum")) == {8}
+    assert ("acme", _place(bob, "diff")) not in acme.fake.state.repos
 
 
-async def test_a_removed_contestant_keeps_what_was_made_without_access(
+async def test_a_removed_entrant_keeps_what_was_made_without_access(
     setup: Setup, acme: Acme, manager: Organiser, two_tasks: list[TaskId]
 ) -> None:
     sum_task, diff = two_tasks
-    await _approve(setup, acme, manager, 8)
+    bob = await _approve(setup, acme, manager, 8)
     await _submit(setup, acme, 8, sum_task)
 
-    await contestants.remove(setup, manager, SPRING, 8)
+    await entrants.remove(setup, manager, SPRING, bob)
 
-    assert 8 not in _writers(acme, "spring.sum.u8.sub")
-    assert acme.fake.state.repos[("acme", "spring.sum.u8.sub")].versions
+    assert 8 not in _writers(acme, _place(bob, "sum"))
+    assert acme.fake.state.repos[("acme", _place(bob, "sum"))].versions
     session = await signed_in(setup, acme.fake, 8)
     with pytest.raises(NotApproved):
         await submissions.submit(setup, session, diff, {}, idempotency_key="key-0002-bbbb")
-    assert ("acme", "spring.diff.u8.sub") not in acme.fake.state.repos
+    assert ("acme", _place(bob, "diff")) not in acme.fake.state.repos
 
 
-async def test_a_contestant_removed_before_submitting_has_nothing_to_close(
+async def test_an_entrant_removed_before_submitting_has_nothing_to_close(
     setup: Setup, acme: Acme, manager: Organiser, two_tasks: list[TaskId]
 ) -> None:
-    await _approve(setup, acme, manager, 8)
+    bob = await _approve(setup, acme, manager, 8)
 
-    removed = await contestants.remove(setup, manager, SPRING, 8)
+    removed = await entrants.remove(setup, manager, SPRING, bob)
 
     assert removed.status.value == "removed"
-    assert not [repo for (_, repo) in acme.fake.state.repos if ".u8." in repo]
+    assert _made_for(acme, bob) == []

@@ -139,6 +139,22 @@ def test_the_classic_workflow_parses() -> None:
     assert check_workflow(workflow, SEEDED) == []
 
 
+def test_an_input_names_itself_to_the_organisers_form_and_no_plan_reads_it() -> None:
+    workflow = parse_workflow(CLASSIC)
+    time_limit = workflow.inputs["time_limit"]
+    document = classic()
+    for declared in document["inputs"].values():
+        for key in ("title", "help", "unit"):
+            declared.pop(key, None)
+    plain = parse_workflow(one_line(document))
+
+    assert (time_limit.title, time_limit.unit) == ("Time limit", "seconds")
+    assert time_limit.help == "The CPU time the program may use on each test."
+    assert workflow.inputs["submission"].unit is None
+    assert check_workflow(plain, SEEDED) == check_workflow(workflow, SEEDED) == []
+    assert plain.steps == workflow.steps and plain.report == workflow.report
+
+
 def test_the_seeded_classic_workflow_is_the_one_tested_here() -> None:
     seeded = sibling("deploy", "workflows", "classic", "v2", "workflow.yaml")
     assert parse_workflow(seeded.read_bytes()) == parse_workflow(CLASSIC)
@@ -152,7 +168,7 @@ def test_a_new_workflow_starts_as_classic() -> None:
 
 def test_a_declaration_may_be_just_its_types_name() -> None:
     document = classic()
-    document["inputs"]["time_limit"] = {"type": "number"}
+    document["test"]["input"] = {"type": "file"}
 
     assert parse_workflow(one_line(document)) == parse_workflow(CLASSIC)
 
@@ -160,11 +176,16 @@ def test_a_declaration_may_be_just_its_types_name() -> None:
 @pytest.mark.parametrize(
     ("key", "value", "path", "sentence"),
     [
-        ("name", "unicon/classic", "name", "its repo is its name"),
-        ("version", "v2", "version", "its tag is its version"),
+        ("name", "unicon/classic", "name", "the name it was made under"),
+        ("version", "v2", "version", "set when the version is made"),
         ("copied_from", "unicon/classic@v1", "copied_from", "copied from"),
-        ("outputs", {"metrics": {}}, "outputs", "`outputs` is now `report`"),
-        ("inputs", [{"id": "submission", "type": "file"}], "inputs", "mapping of id to"),
+        ("outputs", {"metrics": {}}, "outputs", "This is now called report"),
+        (
+            "inputs",
+            [{"id": "submission", "type": "file"}],
+            "inputs",
+            "listed by name, each with its type",
+        ),
     ],
 )
 def test_a_retired_workflow_key_is_refused_at_its_path_with_what_replaced_it(
@@ -182,10 +203,10 @@ def test_a_retired_workflow_key_is_refused_at_its_path_with_what_replaced_it(
 @pytest.mark.parametrize(
     ("place", "declaration", "sentence"),
     [
-        ("inputs", "code", "`code` is gone"),
-        ("inputs", {"type": "file[]", "contestant": True}, "`file[]` is now `folder`."),
-        ("inputs", "dataset", "`dataset` is now `file` or `folder`."),
-        ("test", "jupyter", "`jupyter` is now `file`."),
+        ("inputs", "code", "give a program as a file input"),
+        ("inputs", {"type": "file[]", "contestant": True}, "This type is now called folder."),
+        ("inputs", "dataset", "This type is no longer used: use file or folder instead."),
+        ("test", "jupyter", "This type is no longer used: use file instead."),
     ],
 )
 def test_a_retired_type_is_refused_at_the_declaration(
@@ -209,7 +230,8 @@ def test_foreach_is_refused_naming_per_test() -> None:
     assert problems == [
         {
             "path": "steps[1].foreach",
-            "message": "`foreach` is now `per_test: true`, over the task's tests.",
+            "message": "This is now set by running the step for each test. Turn that on, and "
+            "remove this.",
         }
     ]
 
@@ -237,6 +259,9 @@ def test_foreach_is_refused_naming_per_test() -> None:
             "inputs.x.optional",
         ),
         ({"inputs": {"x": {"type": "text", "label": "X"}}}, "inputs.x.label"),
+        ({"inputs": {"x": {"type": "number", "title": ""}}}, "inputs.x.title"),
+        ({"inputs": {"x": {"type": "number", "help": "Two\nlines."}}}, "inputs.x.help"),
+        ({"inputs": {"x": {"type": "number", "unit": 3}}}, "inputs.x.unit"),
         ({"test": {"input": {"type": "number", "public": True}}}, "test.input.public"),
         ({"report": {"Time": "${{ steps.run.time_ms }}"}}, "report.Time"),
         ({"report": {"x": 3}}, "report.x"),
@@ -253,14 +278,14 @@ def test_a_missing_key_is_refused_at_its_path() -> None:
     document = classic()
     del document["steps"]
 
-    assert refused(document) == [{"path": "steps", "message": "This key is required."}]
+    assert refused(document) == [{"path": "steps", "message": "This is required."}]
 
 
 def test_a_key_given_twice_is_refused() -> None:
     with pytest.raises(InvalidDefinition) as raised:
         parse_workflow(CLASSIC + b"test:\n  input: file\n")
 
-    assert "the key 'test' is given twice" in raised.value.errors[0]["message"]
+    assert "the setting 'test' is given twice" in raised.value.errors[0]["message"]
 
 
 @pytest.mark.parametrize(
@@ -286,7 +311,7 @@ def test_a_field_named_test_is_refused() -> None:
     document["test"]["test"] = "number"
 
     assert refused(document) == [
-        {"path": "test.test", "message": "No field is named test, since test.yaml would match it."}
+        {"path": "test.test", "message": "A test field cannot be called test. Choose another name."}
     ]
 
 
@@ -299,7 +324,7 @@ def test_a_once_step_after_a_per_test_step_is_refused_at_the_version() -> None:
     problems = refused(document)
 
     assert paths(problems) == ["steps[3].per_test"]
-    assert "comes before every step that runs per test" in problems[0]["message"]
+    assert "must come before every step that runs for each test" in problems[0]["message"]
 
 
 # W1 to W5
@@ -311,35 +336,39 @@ def test_a_once_step_after_a_per_test_step_is_refused_at_the_version() -> None:
         (
             {"from": "${{ steps.run.time_ms }}", "colour": "red"},
             "report.x.colour",
-            "not part of the format",
+            "does not know this setting",
         ),
-        ({"fold": "max"}, "report.x.from", "This key is required."),
+        ({"fold": "max"}, "report.x.from", "This is required."),
         ({"from": "${{ steps.run.time_ms }}", "fold": "min"}, "report.x.fold", "sum, mean or max"),
-        ({"from": "${{ steps.run.time_ms }}", "better": "up"}, "report.x.better", "higher, lower"),
+        (
+            {"from": "${{ steps.run.time_ms }}", "better": "up"},
+            "report.x.better",
+            "Choose higher or lower",
+        ),
         (
             {"from": "${{ steps.run.time_ms }}", "better": "${{ inputs.language }}"},
             "report.x.better",
-            "language must be an enum input the task gives, not the contestant.",
+            "language must be an enum input that the task gives, not the entrant.",
         ),
         (
             {"from": "${{ steps.run.time_ms }}", "better": "${{ inputs.time_limit }}"},
             "report.x.better",
-            "time_limit must be an enum input the task gives",
+            "time_limit must be an enum input that the task gives",
         ),
         (
             {"from": "${{ steps.run.time_ms }}", "better": "${{ inputs.ghost }}"},
             "report.x.better",
-            "ghost is not an input of the workflow.",
+            "The workflow has no input called ghost.",
         ),
         (
             {"from": "${{ steps.run.time_ms }}", "at_least": 2, "at_most": 1},
             "report.x.at_most",
-            "Must be at least at_least.",
+            "The upper bound must be at least the lower bound.",
         ),
         (
             {"from": "${{ steps.run.time_ms }}", "at_least": "none"},
             "report.x.at_least",
-            "Must be a number.",
+            "This must be a number.",
         ),
     ],
     ids=[
@@ -374,8 +403,8 @@ def test_a_better_that_is_no_reference_is_refused_at_its_key_beside_every_other_
     problems = refused(document)
 
     assert paths(problems) == ["report.x.better", "report.points"]
-    assert problems[0]["message"].startswith("${{ foo }} is not a reference a workflow makes")
-    assert "points is the platform's own name" in problems[1]["message"]
+    assert problems[0]["message"].startswith("Unicon cannot read ${{ foo }}.")
+    assert "points is a name Unicon uses itself" in problems[1]["message"]
 
 
 def test_better_may_be_a_task_enum_of_higher_and_lower() -> None:
@@ -386,7 +415,10 @@ def test_better_may_be_a_task_enum_of_higher_and_lower() -> None:
 
     document["inputs"]["better"] = {"type": "enum", "options": ["higher", "sideways"]}
     assert refused(document) == [
-        {"path": "report.x.better", "message": "The options of better must be higher and lower."}
+        {
+            "path": "report.x.better",
+            "message": "The options of better must be higher and lower, and nothing else.",
+        }
     ]
 
 
@@ -398,7 +430,7 @@ def test_the_platforms_own_names_are_refused_as_reported_names(name: str) -> Non
     problems = refused(document)
 
     assert paths(problems) == [f"report.{name}"]
-    assert "the platform's own name" in problems[0]["message"]
+    assert "a name Unicon uses itself" in problems[0]["message"]
 
 
 # References
@@ -448,7 +480,8 @@ def test_a_use_that_is_not_a_primitive_is_refused() -> None:
 
     assert checked(document)[0] == {
         "path": "steps[2].use",
-        "message": "unicon/classic@v2 is not a primitive.",
+        "message": "unicon/classic@v2 is not a primitive Unicon knows. Check its owner, name "
+        "and version.",
     }
 
 
@@ -457,7 +490,10 @@ def test_a_port_the_primitive_does_not_have_is_refused() -> None:
     document["steps"][2]["with"]["colour"] = "red"
 
     assert checked(document) == [
-        {"path": "steps[2].with.colour", "message": "unicon/diff-check@v2 has no input colour."}
+        {
+            "path": "steps[2].with.colour",
+            "message": "unicon/diff-check@v2 has no input called colour. Remove it.",
+        }
     ]
 
 
@@ -468,7 +504,7 @@ def test_a_required_port_left_out_is_refused_and_an_optional_one_is_not() -> Non
     assert checked(document) == [
         {
             "path": "steps[2].with.expected",
-            "message": "unicon/diff-check@v2 needs the input expected.",
+            "message": "unicon/diff-check@v2 needs a value for its input expected.",
         }
     ]
     assert "args" not in classic()["steps"][1]["with"]
@@ -477,11 +513,11 @@ def test_a_required_port_left_out_is_refused_and_an_optional_one_is_not() -> Non
 @pytest.mark.parametrize(
     ("port", "value", "message"),
     [
-        ("times", "3", "Takes number, not text."),
-        ("times", "${{ inputs.language }}", "Takes number, not enum."),
-        ("times", True, "Takes number, not boolean."),
-        ("message", "${{ inputs.submission }}", "Takes text, not file."),
-        ("mode", "${{ inputs.time_limit }}", "Takes one of fast, slow."),
+        ("times", "3", "This takes a number, not text."),
+        ("times", "${{ inputs.language }}", "This takes a number, not an enum."),
+        ("times", True, "This takes a number, not true or false."),
+        ("message", "${{ inputs.submission }}", "This takes text, not a file."),
+        ("mode", "${{ inputs.time_limit }}", "This takes one of fast, slow."),
     ],
 )
 def test_a_value_of_another_type_than_its_port_is_refused(
@@ -514,7 +550,7 @@ def test_a_file_widens_to_a_folder_and_a_folder_never_narrows_to_a_file() -> Non
     document["steps"][1]["with"]["input"] = "${{ inputs.sources }}"
 
     assert checked(document) == [
-        {"path": "steps[1].with.input", "message": "Takes file, not folder."}
+        {"path": "steps[1].with.input", "message": "This takes a file, not a folder."}
     ]
 
 
@@ -525,7 +561,7 @@ def test_an_enum_input_is_checked_against_the_ports_options() -> None:
     assert checked(document) == [
         {
             "path": "steps[0].with.language",
-            "message": "Takes one of c, cpp, java, python, not rust.",
+            "message": "This takes one of c, cpp, java, python, not rust.",
         }
     ]
     narrower = classic()
@@ -541,7 +577,7 @@ def test_a_literal_string_into_an_enum_port_is_one_of_its_options() -> None:
     document = classic()
     document["steps"][0]["with"]["language"] = "rust"
     assert checked(document) == [
-        {"path": "steps[0].with.language", "message": "Takes one of c, cpp, java, python."}
+        {"path": "steps[0].with.language", "message": "This takes one of c, cpp, java, python."}
     ]
 
 
@@ -561,7 +597,7 @@ def test_an_optional_output_feeds_only_an_optional_port() -> None:
     assert checked(document) == [
         {
             "path": "steps[2].with.message",
-            "message": "The output may be absent, so it feeds only an optional port.",
+            "message": "That output may be missing, so it can be given only to an optional port.",
         }
     ]
 
@@ -576,7 +612,7 @@ def test_an_optional_input_feeds_only_an_optional_port_and_is_never_written_into
     assert checked(into_required) == [
         {
             "path": "steps[1].with.message",
-            "message": "The input is optional, so it feeds only an optional port.",
+            "message": "That input is optional, so it can be given only to an optional port.",
         }
     ]
 
@@ -585,8 +621,8 @@ def test_an_optional_input_feeds_only_an_optional_port_and_is_never_written_into
     assert checked(written) == [
         {
             "path": "steps[1].with.note",
-            "message": "${{ inputs.key }} is optional, so it is given whole to optional ports, "
-            "never written into text.",
+            "message": "${{ inputs.key }} is optional, so it can be given only whole, to an "
+            "optional port, not written into text.",
         }
     ]
 
@@ -599,7 +635,7 @@ def test_a_contestant_input_never_raises_a_limit() -> None:
     assert checked(document) == [
         {
             "path": "steps[1].with.time_limit",
-            "message": "This port raises a limit, so the task must give it, not the contestant.",
+            "message": "This value raises a limit, so the task must give it, not the entrant.",
         }
     ]
 
@@ -611,7 +647,7 @@ def test_a_step_output_never_raises_a_limit() -> None:
     assert checked(document) == [
         {
             "path": "steps[2].with.time_limit",
-            "message": "This port raises a limit, so it must be known at the save.",
+            "message": "This value raises a limit, so it must be known when the task is saved.",
         }
     ]
 
@@ -631,7 +667,7 @@ def test_a_test_field_is_read_only_in_a_per_test_step() -> None:
     assert checked(document) == [
         {
             "path": "steps[1].with.note",
-            "message": "test.<field> is there only in a step that runs per test.",
+            "message": "Only a step that runs for each test can read a test's fields.",
         }
     ]
 
@@ -647,7 +683,7 @@ def test_a_test_field_written_into_text_is_a_scalar() -> None:
         {
             "path": "steps[1].with.args",
             "message": "${{ test.input }} is a file, and only text, a number, true or false or "
-            "an enum is written into text.",
+            "an enum can be written into text.",
         }
     ]
 
@@ -660,7 +696,8 @@ def test_a_per_test_input_is_read_only_in_a_per_test_step() -> None:
     assert checked(document) == [
         {
             "path": "steps[0].with.source",
-            "message": "answers is given once per test, so only a per-test step reads it.",
+            "message": "answers is given once for each test, so only a step that runs for "
+            "each test can read it.",
         }
     ]
     per_test = classic()
@@ -686,7 +723,7 @@ def test_a_once_step_reading_a_per_test_step_is_refused() -> None:
     assert check_workflow(unordered, PRIMITIVES_WITH_ECHO) == [
         {
             "path": "steps[3].with.note",
-            "message": "The step run runs per test, and a step that runs once cannot read it.",
+            "message": "The step run runs for each test, so a step that runs once cannot read it.",
         }
     ]
 
@@ -694,15 +731,15 @@ def test_a_once_step_reading_a_per_test_step_is_refused() -> None:
 @pytest.mark.parametrize(
     ("value", "message"),
     [
-        ("${{ steps.later.output }}", "later is not a step before this one."),
-        ("${{ steps.compile.nothing }}", "The step compile has no output nothing."),
-        ("${{ steps.compile.outcome }}", "A step's outcome is read by the harness"),
-        ("${{ inputs.ghost }}", "ghost is not an input of the workflow."),
-        ("${{ test.ghost }}", "ghost is not a field of the workflow's tests."),
-        ("${{ secrets.key }}", "is not a reference a workflow makes"),
-        ("log: ${{ steps.compile.compile_log }}", "A step's output is given whole"),
-        (["a"], "not a list, a mapping or nothing"),
-        (None, "not a list, a mapping or nothing"),
+        ("${{ steps.later.output }}", "There is no step called later before this one."),
+        ("${{ steps.compile.nothing }}", "The step compile has no output called nothing."),
+        ("${{ steps.compile.outcome }}", "A step's outcome is read by Unicon itself"),
+        ("${{ inputs.ghost }}", "The workflow has no input called ghost."),
+        ("${{ test.ghost }}", "ghost is not one of the workflow's test fields."),
+        ("${{ secrets.key }}", "Unicon cannot read ${{ secrets.key }}"),
+        ("log: ${{ steps.compile.compile_log }}", "A step's output can be given only whole"),
+        (["a"], "not a list, a set of settings or nothing"),
+        (None, "not a list, a set of settings or nothing"),
     ],
 )
 def test_a_reference_that_points_at_nothing_it_may_read_is_refused(
@@ -720,28 +757,36 @@ def test_a_reference_that_points_at_nothing_it_may_read_is_refused(
 @pytest.mark.parametrize(
     ("entry", "message"),
     [
-        ("${{ steps.run.output }}", "steps.run.output is file; a report holds text or numbers."),
+        (
+            "${{ steps.run.output }}",
+            "steps.run.output is a file, and only text or a number can be reported.",
+        ),
         (
             "${{ steps.run.outcome }}",
-            "steps.run.outcome is outcome; a report holds text or numbers.",
+            "steps.run.outcome is an outcome, and only text or a number can be reported.",
         ),
-        ("${{ steps.ghost.size }}", "steps.ghost.size is not an output of a step."),
-        ("${{ inputs.time_limit }}", "Must be ${{ steps.<id>.<output> }}."),
+        ("${{ steps.ghost.size }}", "steps.ghost.size is not the output of any step."),
+        (
+            "${{ inputs.time_limit }}",
+            "Give the step output this reports, as ${{ steps.<id>.<output> }}.",
+        ),
         (
             {"from": "${{ steps.compile.compile_log }}", "fold": "max"},
-            "fold, better, at_least and at_most say what a number means; this is text.",
+            "fold, better, at_least and at_most apply only to a number, and this is text.",
         ),
         (
             {"from": "${{ steps.compile.compile_log }}", "at_most": 1},
-            "fold, better, at_least and at_most say what a number means; this is text.",
+            "fold, better, at_least and at_most apply only to a number, and this is text.",
         ),
         (
             {"from": "${{ steps.echo.size }}", "fold": "sum"},
-            "fold and better are for a number reported per test; this step runs once.",
+            "fold and better apply only to a number reported for each test, and this step runs "
+            "once.",
         ),
         (
             {"from": "${{ steps.echo.size }}", "better": "higher"},
-            "fold and better are for a number reported per test; this step runs once.",
+            "fold and better apply only to a number reported for each test, and this step runs "
+            "once.",
         ),
     ],
 )
@@ -770,9 +815,8 @@ def test_an_optional_input_never_says_which_way_is_better() -> None:
     text = (
         CLASSIC.decode()
         .replace(
-            "  memory_limit: number\n",
-            "  memory_limit: number\n"
-            "  dir: {type: enum, options: [higher, lower], optional: true}\n",
+            "\ntest:\n",
+            "\n  dir: {type: enum, options: [higher, lower], optional: true}\ntest:\n",
         )
         .replace(
             "better: lower, at_least: 0}\n  log:",
@@ -786,8 +830,8 @@ def test_an_optional_input_never_says_which_way_is_better() -> None:
     assert refused.value.errors == [
         {
             "path": "report.memory_kb.better",
-            "message": "dir is optional, so it is given whole to optional ports, never read "
-            "for which way is better.",
+            "message": "dir is optional, so it cannot say which way is better. Choose an input "
+            "that is not optional.",
         }
     ]
 

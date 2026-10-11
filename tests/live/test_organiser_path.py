@@ -24,7 +24,7 @@ import pytest
 
 from forge.domain.errors import NotFound
 from forge.domain.ids import ContestId, OrgId, TaskId
-from forge.domain.names import Named, UserOwner
+from forge.domain.names import EntrantOwner, Named
 from forge.domain.registration import Status
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
@@ -32,8 +32,8 @@ from forge.runtime.setup import Setup
 from forge.services import (
     access,
     contest_home,
-    contestants,
     contests,
+    entrants,
     files,
     landing,
     orgs,
@@ -192,20 +192,20 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
         live_setup, organiser, contest, "contest.yaml", _running("Spring"), settings.token
     )
     entrant = await _signed_in(live_setup, admin, contestant)
-    registered = await contestants.register(live_setup, entrant, contest)
+    registered = await entrants.register(live_setup, entrant, contest)
     assert registered.status is Status.PENDING
-    approved = await contestants.approve(live_setup, organiser, contest, int(contestant["id"]))
+    approved = await entrants.approve(live_setup, organiser, contest, registered.id)
     assert approved.status is Status.APPROVED
 
-    login, owner = str(contestant["login"]), f"u{contestant['id']}"
+    login, owner = str(contestant["login"]), EntrantOwner(registered.id).segment
     place = f"spring.sum.{owner}.sub"
     assert admin.get(f"/api/v1/repos/{org}/{place}").status_code == 404
-    workspace = live_setup.forge.workspaces.workspace_of(contest, UserOwner(int(contestant["id"])))
+    workspace = live_setup.forge.workspaces.workspace_of(contest, EntrantOwner(registered.id))
     await live_setup.forge.workspaces.open_submission_place(
         workspace, task, [int(contestant["id"])]
     )
     assert _permission(admin, org, place, login) == "write"
-    mine = await contestants.mine(live_setup, entrant, contest)
+    mine = (await entrants.mine(live_setup, entrant, contest)).entrant
     assert mine is not None and mine.status is Status.APPROVED
     home = await contest_home.home(live_setup, entrant, contest)
     assert [entry.task for entry in home.tasks] == [task]
@@ -215,6 +215,6 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     assert page.submissions.max == 50
     assert [field.id for field in page.inputs] == ["submission", "language"]
 
-    removed = await contestants.remove(live_setup, organiser, contest, int(contestant["id"]))
+    removed = await entrants.remove(live_setup, organiser, contest, registered.id)
     assert removed.status is Status.REMOVED
     assert _permission(admin, org, place, login) == "none"

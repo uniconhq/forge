@@ -8,7 +8,7 @@ no digit of a bound is lost on its way to a score. The loader refuses a key
 given twice, and the document is then validated by a pydantic model that refuses any key it does not
 know, so a typo is an error rather than a setting silently left out. Every
 problem is reported as a path into the YAML and a sentence a person reads:
-`leaderboards[0].order[1].direction`, `Must be one of asc or desc.` A form
+`leaderboards[0].order[1].direction`, `This must be one of asc or desc.` A form
 shows the sentence beside the field the path names.
 """
 
@@ -53,18 +53,38 @@ class InvalidDefinition(ServiceError):
 
     def __init__(self, what: str, errors: Sequence[Problem]) -> None:
         listed = list(errors)
-        first = listed[0] if listed else Problem(path="", message="It is not valid.")
-        where = f" at {first['path']}" if first["path"] else ""
+        first = listed[0] if listed else Problem(path="", message="Check them and save again.")
+        named = settings_words(what)
+        where = f", at {first['path']}," if first["path"] else ""
         if len(listed) > 1:
-            detail = f"{what} has {len(listed)} problems; the first is{where}: {first['message']}"
+            detail = (
+                f"There are {len(listed)} problems with {named}. The first{where} is: "
+                f"{first['message']}"
+            )
         else:
-            detail = f"{what} is not valid{where}: {first['message']}"
+            detail = f"There is a problem with {named}{where.rstrip(',')}: {first['message']}"
         super().__init__(detail, errors=listed)
 
     @property
     def errors(self) -> list[Problem]:
         errors: list[Problem] = self.extra["errors"]
         return errors
+
+
+_SETTINGS_WORDS = {
+    "contest.yaml": "the contest's settings",
+    "task.yaml": "the task's settings",
+    "workflow.yaml": "the workflow",
+    "primitive.yaml": "the primitive's settings",
+    "test.yaml": "the test's values",
+}
+
+
+def settings_words(what: str) -> str:
+    """What a definition file is to a person, named by what it holds rather
+    than by its file name: `task.yaml` is "the task's settings".
+    """
+    return _SETTINGS_WORDS.get(what, what)
 
 
 def path_text(path: Iterable[str | int]) -> str:
@@ -128,7 +148,7 @@ class _ExactConstructor(SafeConstructor):
     ) -> bool:
         if key in mapping:
             raise ConstructorError(
-                None, None, f"the key {key!r} is given twice", key_node.start_mark
+                None, None, f"the setting {key!r} is given twice", key_node.start_mark
             )
         return True
 
@@ -145,7 +165,7 @@ class _ExactConstructor(SafeConstructor):
         raise ConstructorError(
             None,
             None,
-            f"the tag {node.tag} is not one of YAML 1.2's core schema",
+            f"the tag {node.tag} is not one Unicon reads",
             node.start_mark,
         )
 
@@ -217,9 +237,14 @@ def load_mapping(what: str, text: bytes | str) -> dict[str, Any]:
     try:
         document = load_yaml(text)
     except YAMLError as error:
-        raise InvalidDefinition(what, [Problem(path="", message=_yaml_message(error))]) from None
+        raise InvalidDefinition(
+            what, [Problem(path="", message=_yaml_message(what, error))]
+        ) from None
     if not isinstance(document, dict):
-        message = "The file must be a mapping of keys to values, such as `name: ...`."
+        message = (
+            f"Unicon could not read {settings_words(what)}: write them as named settings, "
+            "one to a line, such as `name: ...`."
+        )
         raise InvalidDefinition(what, [Problem(path="", message=message)])
     return document
 
@@ -235,12 +260,15 @@ def mapping_or_empty(text: bytes | str | None) -> dict[str, Any]:
     return document if isinstance(document, dict) else {}
 
 
-def _yaml_message(error: YAMLError) -> str:
+def _yaml_message(what: str, error: YAMLError) -> str:
     mark = getattr(error, "problem_mark", None)
-    problem = getattr(error, "problem", None) or "it is not valid YAML"
+    problem = getattr(error, "problem", None) or "the text is not written the way settings are"
+    named = settings_words(what)
     if mark is None:
-        return f"The file does not parse as YAML: {problem}."
-    return f"The file does not parse as YAML at line {mark.line + 1}: {problem}."
+        return f"Unicon could not read {named}: {problem}."
+    return (
+        f"Unicon could not read {named}, because of a mistake on line {mark.line + 1}: {problem}."
+    )
 
 
 class Model(BaseModel):
@@ -363,36 +391,32 @@ def _message(detail: ErrorDetails) -> str:
     ctx: dict[str, Any] = dict(detail.get("ctx") or {})
     match kind:
         case "missing":
-            return "This key is required."
+            return "This is required."
         case "extra_forbidden":
-            return "This key is not part of the format; check its spelling."
+            return "Unicon does not know this setting. Check its spelling, or remove it."
         case "string_type":
-            return "Must be text."
+            return "This must be text."
         case "int_type" | "int_from_float" | "int_parsing":
-            return "Must be a whole number."
+            return "This must be a whole number."
         case "bool_type" | "bool_parsing":
-            return "Must be true or false."
+            return "This must be true or false."
         case "list_type" | "tuple_type":
-            return "Must be a list."
+            return "This must be a list."
         case "model_type" | "model_attributes_type" | "dict_type":
-            return "Must be a mapping of keys to values."
+            return "This must be a set of named settings, not a single value."
         case "enum" | "literal_error":
-            return f"Must be one of {_listed(str(ctx.get('expected', '')))}."
+            return f"This must be one of {_listed(str(ctx.get('expected', '')))}."
         case "greater_than_equal":
-            return f"Must be at least {ctx.get('ge')}."
+            return f"This must be at least {ctx.get('ge')}."
         case "greater_than":
-            return f"Must be more than {ctx.get('gt')}."
+            return f"This must be more than {ctx.get('gt')}."
         case "less_than_equal":
-            return f"Must be at most {ctx.get('le')}."
+            return f"This must be at most {ctx.get('le')}."
         case "string_too_short":
-            return "Must not be empty."
+            return "This cannot be empty."
         case "too_short":
             count = ctx.get("min_length")
-            return (
-                "Must have at least one entry."
-                if count == 1
-                else f"Must have at least {count} entries."
-            )
+            return "Give at least one." if count == 1 else f"Give at least {count}."
         case "value_error":
             return str(ctx.get("error", detail["msg"]))
     return detail["msg"]
@@ -423,15 +447,28 @@ class Problems:
         seen: set[str] = set()
         for index, value in enumerate(ids):
             if value in seen:
-                self.add((*at, index, key), f"{value!r} is given more than once.")
+                self.add((*at, index, key), already_listed(value))
             seen.add(value)
+
+
+def already_listed(value: object) -> str:
+    """The problem at an entry whose name or value an earlier entry gave."""
+    return f"{value!r} is already listed above. Remove this one, or change it."
+
+
+def name_rule(value: object, longest: int) -> str:
+    """The problem with a name that breaks the name rule."""
+    return (
+        f"{value!r} cannot be used as a name. Use at most {longest} lower case letters, "
+        "digits, hyphens (-) and underscores (_), starting with a letter or a digit."
+    )
 
 
 def _text(value: object) -> str:
     if not isinstance(value, str):
-        raise ValueError("Must be text.")
+        raise ValueError("This must be text.")
     if not value.strip():
-        raise ValueError("Must not be empty.")
+        raise ValueError("This cannot be empty.")
     return value
 
 
@@ -440,15 +477,12 @@ def _handle(value: object) -> str:
     try:
         return validate_name(text)
     except InvalidName:
-        raise ValueError(
-            f"{text!r} must be lower case letters, digits, hyphens and underscores, "
-            "starting with a letter or a digit, at most 40 characters."
-        ) from None
+        raise ValueError(name_rule(text, 40)) from None
 
 
 def _number(value: object) -> int | Decimal:
     if not is_number(value):
-        raise ValueError("Must be a number.")
+        raise ValueError("This must be a number.")
     assert isinstance(value, int | Decimal | float)
     return exact_number(value)
 
@@ -538,23 +572,21 @@ def _aware_time(value: object) -> datetime:
     if isinstance(value, str):
         read = read_time(value)
         if read is None:
-            raise ValueError(f"Must be a date and time, {_TIME_EXAMPLE}.")
+            raise ValueError(f"Give a date and a time, {_TIME_EXAMPLE}.")
         value = read
     if not isinstance(value, datetime):
         if isinstance(value, date):
-            raise ValueError(
-                f"Must carry a time and a timezone as well as a date, {_TIME_EXAMPLE}."
-            )
-        raise ValueError(f"Must be a date and time, {_TIME_EXAMPLE}.")
+            raise ValueError(f"Give a time and a time zone as well as the date, {_TIME_EXAMPLE}.")
+        raise ValueError(f"Give a date and a time, {_TIME_EXAMPLE}.")
     if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError(f"Must carry a timezone, {_TIME_EXAMPLE}.")
+        raise ValueError(f"Give the time zone with the time, {_TIME_EXAMPLE}.")
     return value
 
 
 def _line(value: object) -> str:
     text = _text(value)
     if "\n" in text or "\r" in text:
-        raise ValueError("Must be one line.")
+        raise ValueError("This must fit on one line.")
     return text
 
 
@@ -582,10 +614,10 @@ def parse_size(value: object) -> int:
     """A size such as `10MB` in bytes. A kilobyte is 1024 bytes."""
     match = _SIZE.match(value) if isinstance(value, str) else None
     if match is None:
-        raise ValueError("Must be a size such as 512KB, 10MB or 1GB.")
+        raise ValueError("Give a size such as 512KB, 10MB or 1GB.")
     size = int(match.group(1)) * _SIZE_UNITS[match.group(2).lower()]
     if size < 1:
-        raise ValueError("Must be more than nothing.")
+        raise ValueError("The size must be more than 0.")
     return size
 
 

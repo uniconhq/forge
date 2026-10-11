@@ -3,8 +3,8 @@ it may hear.
 
 `stream` is what the host serves as one Server-Sent Events connection per
 open tab. It checks the session, reads who the session speaks for
-(`audience`: the person, every role they hold, the teams they are in and the contests where they
-are an approved contestant), subscribes to this process's broker and hands
+(`audience`: the person, every role they hold, the entrants they are in and
+the contests where those are approved), subscribes to this process's broker and hands
 on each nudge that audience hears, or `None` every `HEARTBEAT` so the host
 can write a keepalive and find out whether the browser is still there. Its
 first item is a `None` as soon as it has subscribed, so a host that waits
@@ -28,20 +28,15 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import select
-
-from forge.db.tables import Contestant
 from forge.domain.errors import Forbidden, SessionExpired, Unauthenticated, Unavailable
 from forge.domain.identity import AsUser
-from forge.domain.ids import ContestId
 from forge.domain.live import Audience, Nudge
-from forge.domain.registration import Status
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import ActionSetup, Context
 from forge.runtime.held import setup_or_held
-from forge.services import identity, sessions, teams
+from forge.services import entrants, identity, sessions
 
 log = get_logger(__name__)
 
@@ -52,29 +47,20 @@ AUDIENCE_KEPT = 300.0
 
 @action
 async def audience(ctx: Context, session: Session, previous: Audience | None = None) -> Audience:
-    """Who the session speaks for: the contests where they are an approved
-    contestant, read here, and the roles they hold, read at the forge with
-    their own credential once the connection is let go of. A forge that does
-    not answer, or a credential that has expired while only the stream was
-    open, leaves the roles `previous` held, or none.
+    """Who the session speaks for: the entrants they are in and the
+    contests where those are approved, read here, and the roles they hold,
+    read at the forge with their own credential once the connection is let
+    go of. A forge that does not answer, or a credential that has expired
+    while only the stream was open, leaves the roles `previous` held, or
+    none.
     """
-    contests = frozenset(
-        ContestId(found)
-        for found in (
-            await ctx.db.scalars(
-                select(Contestant.contest_id).where(
-                    Contestant.user_id == session.user_id,
-                    Contestant.status == Status.APPROVED,
-                )
-            )
-        )
-    )
-    in_teams = await teams.team_ids(ctx, session.user_id)
+    contests = await entrants.approved_contests(ctx, session.user_id)
+    mine = await entrants.entrant_ids(ctx, session.user_id)
     grants = previous.grants if previous is not None else ()
     try:
         credential = await sessions.credential_for(ctx, session.id)
     except Unavailable:
-        return Audience(user_id=session.user_id, grants=grants, contests=contests, teams=in_teams)
+        return Audience(user_id=session.user_id, grants=grants, contests=contests, entrants=mine)
     await ctx.let_go()
     try:
         grants = tuple(await ctx.forge.orgs.roles_of(AsUser(session.user_id, credential)))
@@ -82,10 +68,8 @@ async def audience(ctx: Context, session: Session, previous: Audience | None = N
         pass
     except Forbidden:
         sessions.revoke_at_end(ctx, session.id)
-        raise SessionExpired("Sign in again.") from None
-    return Audience(
-        user_id=session.user_id, grants=tuple(grants), contests=contests, teams=in_teams
-    )
+        raise SessionExpired("Your session has ended. Sign in again.") from None
+    return Audience(user_id=session.user_id, grants=tuple(grants), contests=contests, entrants=mine)
 
 
 async def stream(

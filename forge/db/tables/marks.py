@@ -1,5 +1,5 @@
 """The submissions a row has marked for the `marked` boards, one set per row
-and task, shared by every board and, for a team, by every member. A mark
+and task, shared by every board and by every member of the entrant. A mark
 names a submission by its number in the row's workspace, graded or not, so
 it is kept whatever becomes of the submission's grading; only a board reads
 whether it is a candidate.
@@ -22,7 +22,7 @@ class Mark(Base, Timestamped):
     task_id: Mapped[str]
     submission_number: Mapped[int]
     marked_by: Mapped[int] = mapped_column(BigInteger)
-    """Who marked it, a member of the row."""
+    """Who marked it, a member of the entrant."""
 
     __table_args__ = (
         Index(

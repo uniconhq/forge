@@ -124,9 +124,9 @@ async def test_a_name_a_person_or_an_org_has_at_the_forge_is_refused_at_once(
 ) -> None:
     fake.add_user(30, "Taken")
 
-    with pytest.raises(Conflict, match="taken at the forge"):
+    with pytest.raises(Conflict, match="already used by an account or an org"):
         await orgs.create(setup, ada, OrgId("taken"), description="Taken")
-    with pytest.raises(Conflict, match="taken at the forge"):
+    with pytest.raises(Conflict, match="already used by an account or an org"):
         await orgs.create_by_operator(
             setup, OrgId("taken"), description="Taken", admin_username="ada"
         )
@@ -161,7 +161,7 @@ async def test_with_creation_closed_only_the_operator_makes_an_org(
             ctx, user=fake.users[7], credential=fake.mint(7), ip=None, user_agent=None
         )
 
-    with pytest.raises(Forbidden, match="closed on this deployment"):
+    with pytest.raises(Forbidden, match="does not let people make orgs"):
         await orgs.create(closed_setup, session, ACME, description="Acme")
     assert fake.calls == []
 
@@ -176,7 +176,7 @@ async def test_with_creation_closed_only_the_operator_makes_an_org(
 
 
 async def test_the_operator_must_name_a_user_the_forge_knows(setup: Setup) -> None:
-    with pytest.raises(NotFound, match="no user named 'nobody'"):
+    with pytest.raises(NotFound, match="no user called 'nobody'"):
         await orgs.create_by_operator(setup, ACME, description="Acme", admin_username="nobody")
     await _nothing_recorded(setup, "acme")
 

@@ -92,8 +92,8 @@ class Column:
 
 @dataclass(frozen=True, slots=True)
 class Row:
-    """A contestant or a team, by whose workspace it is, its name, and its
-    submissions to each covered task, by task name.
+    """An entrant, by whose workspace it is, the name it is shown under, and
+    its submissions to each covered task, by task name.
     """
 
     owner: WorkspaceOwner

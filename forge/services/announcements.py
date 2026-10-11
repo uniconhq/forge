@@ -2,10 +2,11 @@
 held at the forge as a thread labelled `announcement` on the contest's or
 the task's own repository.
 
-An organiser managing the place posts, edits and closes one, each at the
-forge as themselves, with their own credential, so the record says who
-wrote it. There is no delete anywhere: a message people have read and acted
-on is closed, and stays readable. An organiser observing the place reads
+An organiser managing the place posts, edits, closes and reopens one, each
+at the forge as themselves, with their own credential, so the record says
+who wrote it. There is no delete anywhere: a message people have read and
+acted on is closed, and stays readable; one closed by mistake is reopened,
+and its readers see it again. An organiser observing the place reads
 every one of its announcements, closed ones included (`manage`).
 
 A signed-in person reads the open announcements of a contest they see,
@@ -45,14 +46,13 @@ TITLE_MOST = 200
 BODY_MOST = 20_000
 NO_SUCH_ANNOUNCEMENT = "There is no such announcement."
 MARK = re.compile(r"<!--\s*unicon:.*?-->", re.DOTALL)
-ANSWERS = re.compile(r"\n*<!-- unicon:answers (u\d+|team\.[0-9a-f-]{36})#(\d+) -->\s*$")
+ANSWERS = re.compile(r"\n*<!-- unicon:answers (entrant\.[0-9a-f]{32})#(\d+) -->\s*$")
 
 
 @dataclass(frozen=True, slots=True)
 class AnsweredQuestion:
     """The clarification an announcement answers: whose desk it is in, the
-    asker's user id or `team.<id>` for a team's, and the question's number
-    there.
+    asking entrant's `entrant.<id>`, and the question's number there.
     """
 
     asker: str
@@ -92,7 +92,7 @@ async def post(
     require(organiser, scope, Role.MANAGER)
     title, body = checked(title, body)
     if answers is not None:
-        body += f"\n\n<!-- unicon:answers {_marked(answers.asker)}#{answers.number} -->"
+        body += f"\n\n<!-- unicon:answers {answers.asker}#{answers.number} -->"
     where = await names.scope_names(ctx, scope)
     await ctx.let_go()
     thread = await ctx.forge.threads.post_thread(
@@ -130,6 +130,20 @@ async def close(ctx: Context, organiser: Organiser, scope: Scope, number: int) -
     if not found.closed:
         await ctx.forge.threads.close_thread(organiser.identity, found.id)
         log.info("announcements.closed", place=scope.path, number=number, by=organiser.user.id)
+    return await _shown(ctx, organiser, scope, number)
+
+
+@action
+async def reopen(ctx: Context, organiser: Organiser, scope: Scope, number: int) -> Announcement:
+    """Open a closed announcement again, as the organiser, so its readers see
+    it once more. Reopening an open one changes nothing. Needs the manager
+    role at its place.
+    """
+    require(organiser, scope, Role.MANAGER)
+    found = await _found(ctx, organiser, scope, number)
+    if found.closed:
+        await ctx.forge.threads.reopen_thread(organiser.identity, found.id)
+        log.info("announcements.reopened", place=scope.path, number=number, by=organiser.user.id)
     return await _shown(ctx, organiser, scope, number)
 
 
@@ -192,13 +206,17 @@ def checked(title: str, body: str) -> tuple[str, str]:
     """
     title, body = _unmarked(title), _unmarked(body)
     if not title:
-        raise InvalidMessage("A title is needed.", field="title")
+        raise InvalidMessage("Give a title.", field="title")
     if len(title) > TITLE_MOST:
-        raise InvalidMessage(f"A title is at most {TITLE_MOST} characters.", field="title")
+        raise InvalidMessage(
+            f"A title can be at most {TITLE_MOST} characters. Shorten it.", field="title"
+        )
     if not body:
-        raise InvalidMessage("Some text is needed.", field="body")
+        raise InvalidMessage("Write some text.", field="body")
     if len(body) > BODY_MOST:
-        raise InvalidMessage(f"The text is at most {BODY_MOST} characters.", field="body")
+        raise InvalidMessage(
+            f"The text can be at most {BODY_MOST} characters. Shorten it.", field="body"
+        )
     return title, body
 
 
@@ -219,7 +237,7 @@ def place_of(scope: Scope) -> ThreadPlace:
         return ContestId(scope.path)
     if scope.kind is ScopeKind.TASK:
         return TaskId(scope.path)
-    raise NotFound("An org has no announcements of its own.")
+    raise NotFound("An org has no announcements of its own. Post one in a contest or a task.")
 
 
 def announcement(thread: Thread, where: ScopeNames, *, organiser: bool) -> Announcement:
@@ -235,7 +253,7 @@ def announcement(thread: Thread, where: ScopeNames, *, organiser: bool) -> Annou
         posted_at=thread.created_at,
         closed=thread.closed,
         answers_question=answers is not None,
-        answers=AnsweredQuestion(answers.group(1).removeprefix("u"), int(answers.group(2)))
+        answers=AnsweredQuestion(answers.group(1), int(answers.group(2)))
         if answers is not None and organiser
         else None,
     )
@@ -269,10 +287,3 @@ async def _found(ctx: Context, organiser: Organiser, scope: Scope, number: int) 
 async def _shown(ctx: Context, organiser: Organiser, scope: Scope, number: int) -> Announcement:
     found = await _found(ctx, organiser, scope, number)
     return announcement(found, await names.scope_names(ctx, scope), organiser=True)
-
-
-def _marked(asker: str) -> str:
-    """How a question's desk is written into the marker: `u<id>` for a
-    person's, as it always was, and `team.<id>` for a team's.
-    """
-    return asker if asker.startswith("team.") else f"u{asker}"

@@ -247,7 +247,8 @@ async def save(
         )
     except Conflict:
         raise Conflict(
-            f"{WORKFLOW_FILE} of {writer.label}/{name} has changed since you read it."
+            f"The workflow {writer.label}/{name} has changed since you opened it. Reload it, "
+            "then make your changes again."
         ) from None
     log.info("workflows.saved", workflow=workflow, user_id=session.user_id)
     return Draft(text, file.token)
@@ -278,8 +279,8 @@ async def create_version(
     )
     if token is not None and file.token != token:
         raise Conflict(
-            f"{WORKFLOW_FILE} of {writer.label}/{name} has been saved since you saved it; "
-            "read it again before making a version of it."
+            f"The workflow {writer.label}/{name} has been saved again since your save. Reload "
+            "it before making a version of it."
         )
     definition = parse_workflow(file.content)
     problems = await _problems(ctx, writer.identity, definition)
@@ -290,7 +291,9 @@ async def create_version(
             writer.identity, workflow, version, at=head
         )
     except Conflict:
-        raise Conflict(f"{writer.label}/{name} has a version {version} already.") from None
+        raise Conflict(
+            f"{writer.label}/{name} already has a version {version}. Choose another version."
+        ) from None
     log.info("workflows.versioned", workflow=workflow, version=version, user_id=session.user_id)
     return version
 
@@ -342,8 +345,8 @@ async def share(ctx: Context, session: Session, owner: str, name: str, username:
     described = await ctx.forge.workflows.describe_workflow(writer.identity, workflow)
     if described.visibility is Visibility.PUBLIC:
         raise Conflict(
-            f"{writer.label}/{name} is public, so everyone reads it; make it shared to name "
-            "who reads it."
+            f"{writer.label}/{name} is public, so everyone can read it. Make it shared to "
+            "choose who can."
         )
     user = await _user(ctx, username)
     await ctx.forge.workflows.share_workflow(writer.identity, workflow, user.id)
@@ -377,7 +380,9 @@ async def copy(ctx: Context, session: Session, source: str, owner: str, name: st
             writer.identity, origin, ref.version, writer.at_forge, name
         )
     except Conflict:
-        raise Conflict(f"There is a workflow {writer.label}/{name} already.") from None
+        raise Conflict(
+            f"There is already a workflow called {writer.label}/{name}. Choose another name."
+        ) from None
     except NotFound, Forbidden:
         raise _not_readable(f"{ref.owner}", f"{ref.name}@{ref.version}") from None
     except PortError as exc:
@@ -399,7 +404,7 @@ async def combine(
     caller may not read; otherwise refused as `create` refuses.
     """
     if len(sources) < 2:
-        raise Rejected("Combine takes two workflows or more; to start from one, copy it.")
+        raise Rejected("Combining needs two workflows or more. To start from one, copy it instead.")
     refs = [parse_workflow_ref(source) for source in sources]
     writer = await _writer(ctx, session, owner)
     validate_name(name)
@@ -410,7 +415,8 @@ async def combine(
             definitions.append(parse_workflow(text))
         except InvalidDefinition as invalid:
             raise Rejected(
-                f"{ref} is not in the current format, so it cannot be combined: {invalid.detail}"
+                f"{ref} is written in an older form that Unicon no longer reads, so it cannot be "
+                f"combined. {invalid.detail}"
             ) from None
     files = {WORKFLOW_FILE: combine_workflows(definitions).encode()}
     workflow = await _make(ctx, writer, name, files)
@@ -483,7 +489,9 @@ async def _make(ctx: Context, writer: _Writer, name: str, files: dict[str, bytes
             writer.identity, writer.at_forge, name, files, Visibility.PRIVATE
         )
     except Conflict:
-        raise Conflict(f"There is a workflow {writer.label}/{name} already.") from None
+        raise Conflict(
+            f"There is already a workflow called {writer.label}/{name}. Choose another name."
+        ) from None
     except PortError as exc:
         raise making.failure(
             exc, "workflows.step_failed", owner=writer.at_forge, name=name
@@ -501,7 +509,7 @@ async def _read_at(ctx: Context, as_: Identity, ref: WorkflowRef) -> str:
 
 
 def _not_readable(owner: str, name: str) -> NotFound:
-    return NotFound(f"There is no workflow {owner}/{name} you may read.")
+    return NotFound(f"There is no workflow {owner}/{name} that you can read.")
 
 
 async def _place(ctx: Context, owner: str, name: str) -> WorkflowId:
@@ -513,7 +521,7 @@ async def _place(ctx: Context, owner: str, name: str) -> WorkflowId:
 def _sized(text: str) -> bytes:
     content = text.encode()
     if len(content) > MAX_DEFINITION:
-        raise Rejected(f"{WORKFLOW_FILE} holds at most {MAX_DEFINITION // 1024} KB.")
+        raise Rejected(f"A workflow can be at most {MAX_DEFINITION // 1024} KB. Make it smaller.")
     return content
 
 
@@ -521,7 +529,7 @@ async def _user(ctx: Context, username: str) -> User:
     try:
         return await ctx.forge.identity.find_user_by_username(username)
     except NotFound:
-        raise NotFound(f"There is no user {username}.") from None
+        raise NotFound(f"There is no user called {username}.") from None
 
 
 async def _as_user(ctx: Context, session: Session) -> AsUser:
@@ -539,7 +547,10 @@ async def _writer(ctx: Context, session: Session, owner: str) -> _Writer:
     username = await _username_now(ctx, session)
     if owner.lower() != username.lower():
         log.info("access.refused", user_id=session.user_id, owner=owner, role=Role.MANAGER.value)
-        raise Forbidden(f"This needs the {Role.MANAGER.value} role at {owner}.")
+        raise Forbidden(
+            f"This needs the {Role.MANAGER.value} role at {owner}. Ask an admin of {owner} if "
+            "you need it."
+        )
     return _Writer(_own_label(username), await _as_user(ctx, session), username)
 
 
@@ -571,6 +582,7 @@ def _own_label(username: str) -> str:
         return validate_name(label)
     except InvalidName:
         raise InvalidName(
-            f"Your username {username!r} cannot name a workflow: an owner is lower case "
-            "letters, digits, hyphens and underscores. Make it under an org instead."
+            f"Your username {username!r} cannot be used to name a workflow, since it has "
+            "characters other than lower case letters, digits, hyphens and underscores. Make "
+            "the workflow under an org instead."
         ) from None

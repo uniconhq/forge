@@ -69,6 +69,10 @@ class ThreadPort(Protocol):
         """Close the thread, which stays readable."""
         ...
 
+    async def reopen_thread(self, as_: Identity, thread: ThreadId) -> None:
+        """Open a closed thread again, changing nothing else."""
+        ...
+
     async def comment(self, as_: Identity, thread: ThreadId, body: str) -> None:
         """Add a comment, changing nothing else."""
         ...

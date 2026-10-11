@@ -1,6 +1,7 @@
 """What a visitor with no session reads: the contests whose `visibility` is
-`everyone` and that are published, and the statements of their released tasks,
-and nothing else. A visitor has no credential, so everything is read as the
+`everyone` and that are published, and the statements of their released
+tasks with the files under each one's `public/` (`public_file`), and nothing
+else. A visitor has no credential, so everything is read as the
 platform, and the package applies the contest's visibility and the release
 rules before it hands anything on. A contest that is not for everyone, and a task
 that is not visible, are no such contest or task, the same answer as one
@@ -24,6 +25,7 @@ from forge.domain.roles import contest_id_of, contest_scope, task_scope
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import names, published
+from forge.services.published import PublicFile, PublishedTask
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,14 +95,34 @@ async def statement(ctx: Context, task: TaskId) -> PublicStatement:
     """The statement of a released task of a public contest. `NotFound` for any
     other task.
     """
-    settings = await _public_settings(ctx, contest_id_of(task_scope(task)), published.NO_SUCH_TASK)
-    found = await published.task(ctx, task, settings)
-    if found is None or not rules.visible(settings, found.name, ctx.now):
-        raise NotFound(published.NO_SUCH_TASK)
+    found = await _released(ctx, task)
     return PublicStatement(
         PublicTask(found.id, found.name, found.label or found.name, found.definition.name),
         await published.statement(ctx, found),
     )
+
+
+@action
+async def public_file(ctx: Context, task: TaskId, path: str) -> PublicFile:
+    """A file under `public/` of a released task of a public contest, by its
+    path in the task, as the task's latest publication holds it: whoever may
+    read its statement may read these. `NotFound` for any other task, and
+    for a path outside `public/` or not there; `PublicFileTooLarge` for one
+    larger than a page is served.
+    """
+    path = published.public_path(path)
+    return await published.public_file(ctx, await _released(ctx, task), path)
+
+
+async def _released(ctx: Context, task: TaskId) -> PublishedTask:
+    """The task at its latest publication, once it is released in a public
+    contest. `NotFound` otherwise.
+    """
+    settings = await _public_settings(ctx, contest_id_of(task_scope(task)), published.NO_SUCH_TASK)
+    found = await published.task(ctx, task, settings)
+    if found is None or not rules.visible(settings, found.name, ctx.now):
+        raise NotFound(published.NO_SUCH_TASK)
+    return found
 
 
 def _public(settings: ContestDefinition) -> bool:

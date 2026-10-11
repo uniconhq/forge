@@ -64,7 +64,7 @@ async def test_a_save_with_a_stale_token_is_a_conflict(setup: Setup, acme: Acme)
     assert page.draft is not None
     await workflows.save(setup, bob, "bob", "tuned", page.draft.text + "\n", page.draft.token)
 
-    with pytest.raises(Conflict, match="has changed since you read it"):
+    with pytest.raises(Conflict, match="has changed since you opened it"):
         await workflows.save(setup, bob, "bob", "tuned", page.draft.text, page.draft.token)
 
 
@@ -82,7 +82,7 @@ async def test_a_draft_with_problems_saves_and_its_version_is_refused_at_each_pa
     assert refused.value.errors == [
         {
             "path": "steps[1].with.binary",
-            "message": "compiler is not a step before this one.",
+            "message": "There is no step called compiler before this one.",
         }
     ]
     assert acme.fake.state.repos[("bob", "tuned.workflow")].versions == {}
@@ -115,8 +115,8 @@ async def test_a_version_name_that_breaks_the_rules_is_refused(
         await workflows.create_version(setup, bob, "bob", "tuned", version)
 
     assert str(refused.value) == (
-        f"{version!r} cannot name a version: a version is v and a whole number from 1, "
-        "with no leading zero, such as v1, v2 or v10"
+        f"{version!r} cannot be used as a version. Name a version v and a whole number from "
+        "1, with no leading zero, such as v1, v2 or v10."
     )
     assert acme.fake.state.repos[("bob", "tuned.workflow")].versions == {}
 
@@ -132,7 +132,7 @@ async def test_a_version_name_taken_is_a_conflict(setup: Setup, acme: Acme) -> N
     bob = await _own(setup, acme)
     await workflows.create_version(setup, bob, "bob", "tuned", "v1")
 
-    with pytest.raises(Conflict, match="has a version v1 already"):
+    with pytest.raises(Conflict, match="already has a version v1"):
         await workflows.create_version(setup, bob, "bob", "tuned", "v1")
 
 
@@ -144,7 +144,7 @@ async def test_someone_else_may_not_save_or_version_a_workflow(setup: Setup, acm
         await workflows.save(setup, ada, "bob", "tuned", "x", None)
     with pytest.raises(Forbidden):
         await workflows.create_version(setup, ada, "bob", "tuned", "v1")
-    with pytest.raises(NotFound, match="There is no workflow bob/tuned you may read"):
+    with pytest.raises(NotFound, match="There is no workflow bob/tuned that you can read"):
         await workflows.view(setup, ada, "bob", "tuned")
 
 
@@ -170,7 +170,10 @@ async def test_a_bad_step_reference_is_named_at_its_path(setup: Setup, acme: Acm
     found = await workflows.check(setup, bob, BROKEN_REFERENCE)
 
     assert found == (
-        {"path": "steps[1].with.binary", "message": "compiler is not a step before this one."},
+        {
+            "path": "steps[1].with.binary",
+            "message": "There is no step called compiler before this one.",
+        },
     )
     assert acme.fake.calls_to("write_workflow_file") == []
 
@@ -184,8 +187,7 @@ async def test_a_step_that_uses_a_workflow_is_not_a_primitive(setup: Setup, acme
     assert found == (
         {
             "path": "steps[2].use",
-            "message": "unicon/classic@v2 is not a primitive: a step uses a primitive, never a "
-            "workflow.",
+            "message": "unicon/classic@v2 is a workflow, and a step can only use a primitive.",
         },
     )
 
@@ -289,7 +291,7 @@ async def test_a_public_workflow_takes_no_named_reader(setup: Setup, acme: Acme)
 async def test_sharing_with_someone_who_is_not_there_is_not_found(setup: Setup, acme: Acme) -> None:
     bob = await _own(setup, acme)
 
-    with pytest.raises(NotFound, match="There is no user nobody"):
+    with pytest.raises(NotFound, match="There is no user called nobody"):
         await workflows.share(setup, bob, "bob", "tuned", "nobody")
 
 
@@ -365,7 +367,7 @@ async def test_a_copy_of_a_workflow_one_may_not_read_is_not_found(setup: Setup, 
     await workflows.create_version(setup, bob, "bob", "tuned", "v1")
     ada = await signed_in(setup, acme.fake, 7)
 
-    with pytest.raises(NotFound, match="There is no workflow bob/tuned@v1 you may read"):
+    with pytest.raises(NotFound, match="There is no workflow bob/tuned@v1 that you can read"):
         await workflows.copy(setup, ada, "bob/tuned@v1", "ada", "taken")
     assert ("ada", "taken.workflow") not in acme.fake.state.repos
 
@@ -495,7 +497,7 @@ async def test_a_version_is_of_the_save_the_person_made_or_not_made(
     )
     await workflows.save(setup, bob, "bob", "tuned", page.draft.text + "\n\n", mine.token)
 
-    with pytest.raises(Conflict, match="has been saved since you saved it"):
+    with pytest.raises(Conflict, match="has been saved again since your save"):
         await workflows.create_version(setup, bob, "bob", "tuned", "v1", mine.token)
     assert acme.fake.state.repos[("bob", "tuned.workflow")].versions == {}
 
@@ -530,7 +532,7 @@ async def test_a_primitive_version_with_no_declaration_is_listed_with_why(
     empty = next(found for found in listed if found.ref == "unicon/compile@v3")
     assert (empty.declaration, empty.problem) == (
         None,
-        "unicon/compile@v3 has no declaration to read.",
+        "Unicon cannot read the settings of unicon/compile@v3.",
     )
     assert any(found.ref == "unicon/compile@v2" and found.declaration for found in listed)
 

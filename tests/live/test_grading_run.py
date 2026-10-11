@@ -45,7 +45,7 @@ from forge.domain.errors import UniconError
 from forge.domain.grading import GradingStatus, InboundRequest
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.keys import key_from_name
-from forge.domain.names import UserOwner
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.runtime.setup import Setup
 from forge.services import (
@@ -286,7 +286,7 @@ async def test_a_run_goes_from_its_queued_row_to_its_result(
 
     forge = setup.forge
     workspace = await forge.workspaces.open_workspace(
-        contest, UserOwner(int(contestant["id"])), [contestant["id"]]
+        contest, EntrantOwner(uuid.uuid4()), [contestant["id"]]
     )
     await forge.workspaces.open_submission_place(workspace, task, [contestant["id"]])
     document = {
@@ -324,6 +324,7 @@ async def test_a_run_goes_from_its_queued_row_to_its_result(
             publication=current.publication,
             key="live-key-0001",
             at=ctx.now,
+            submitted_by=int(contestant["id"]),
         )
         grading = row.id
     assert publication.id == current.publication.id

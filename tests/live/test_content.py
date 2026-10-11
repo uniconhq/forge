@@ -21,7 +21,7 @@ import pytest
 
 from forge.adapters.git.forgejo import ForgejoForge
 from forge.domain.definitions import starter_contest, starter_task
-from forge.domain.errors import Conflict
+from forge.domain.errors import Conflict, Rejected
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.publications import write_note
@@ -267,6 +267,10 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
     saved = await forge.content.list_files(as_manager, task)
     assert saved.version == version
     assert "tests/main/1/answer" not in saved.tokens
+    read = forge.content.read_media
+    assert await read(as_manager, task, "tests/main/2/input", at=version, max_size=4) == b"1 2\n"
+    with pytest.raises(Rejected):
+        await read(as_manager, task, "tests/main/2/input", at=version, max_size=3)
 
     with pytest.raises(Conflict):
         await forge.content.save_files(

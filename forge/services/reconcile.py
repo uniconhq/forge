@@ -7,13 +7,14 @@ know a task made since, and nothing else would activate it again.
 
 For each contest of every org the platform made and each task with a
 publication, it first activates the task at the CI as the org's account,
-which changes nothing for a task the CI knows. Then, for each person who
-registered for the contest and each team of it, it lists their submissions
-of the task and inserts, for any that has no grading at all, one queued
-grading against the task's current publication, attempt 1, with the
-idempotency key its protected version's note carries; its run starts once
-it commits. A submit of the same submission sent again meanwhile cannot
-make a second row: the key is unique for a workspace and task. A task the
+which changes nothing for a task the CI knows. Then, for each entrant of
+the contest, whatever became of it, it lists its submissions of the task
+and inserts, for any that has no grading at all, one queued grading against
+the task's current publication, attempt 1, with the idempotency key its
+protected version's note carries and nobody named as its submitter, which
+the forge's list does not say; its run starts once it commits. A submit
+of the same submission sent again meanwhile cannot make a second row: the
+key is unique for a workspace and task. A task the
 CI cannot activate is logged and its gradings are still inserted, since a
 grading whose run cannot start ends as a system error staff can retry.
 """
@@ -23,14 +24,13 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from forge.db.tables import Contestant, Grading
+from forge.db.tables import Grading
 from forge.domain.errors import Forbidden, NotFound, PortError
-from forge.domain.ids import ContestId, OrgId, WorkspaceId
-from forge.domain.names import UserOwner
+from forge.domain.ids import OrgId, WorkspaceId
 from forge.domain.roles import task_scope
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import gradings, org_accounts, published, teams
+from forge.services import entrants, gradings, org_accounts, published
 from forge.services.published import PublishedTask
 
 log = get_logger(__name__)
@@ -62,7 +62,7 @@ async def reconcile(ctx: Context) -> Reconciled:
         except PortError as exc:
             log.warning("reconcile.contest_unreadable", contest=contest, error=type(exc).__name__)
             continue
-        workspaces = await _workspaces(ctx, contest)
+        workspaces = await entrants.workspaces_of(ctx, contest)
         for task in tasks:
             activated += await _activate(ctx, task)
             found, made = await _task(ctx, task, workspaces)
@@ -96,22 +96,6 @@ async def _activate(ctx: Context, task: PublishedTask) -> int:
     if new:
         log.info("reconcile.activated", task=task.id)
     return int(new)
-
-
-async def _workspaces(ctx: Context, contest: ContestId) -> list[WorkspaceId]:
-    """The workspace of everyone who registered for the contest, whatever
-    became of their registration, since a removed contestant's submissions
-    are kept, and of every team of it.
-    """
-    users = await ctx.db.execute(
-        select(Contestant.user_id)
-        .where(Contestant.contest_id == contest)
-        .order_by(Contestant.user_id)
-    )
-    people = [
-        ctx.forge.workspaces.workspace_of(contest, UserOwner(user)) for user in users.scalars()
-    ]
-    return [*people, *await teams.workspaces_of(ctx, contest)]
 
 
 async def _task(
@@ -152,6 +136,7 @@ async def _task(
                         publication=task.publication,
                         key=made.key,
                         at=made.at,
+                        submitted_by=None,
                     )
                     await ctx.db.flush()
             except IntegrityError:
