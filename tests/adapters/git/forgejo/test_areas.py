@@ -27,7 +27,7 @@ from forge.domain.names import EntrantOwner, OrgProfile
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
-from tests.adapters.conftest import Recorder, ok
+from tests.adapters.conftest import CONFIG, Recorder, ok
 
 U7 = EntrantOwner(uuid.UUID(int=7)).segment
 U8 = EntrantOwner(uuid.UUID(int=8)).segment
@@ -184,6 +184,30 @@ async def test_a_former_member_on_a_workspace_repo_is_taken_off_before_the_membe
     given = f"PUT /api/v1/repos/acme/spring.{U8}.desk/collaborators/bob"
     assert calls.index(taken_off) < calls.index(given)
     assert not [call for call in calls if call.endswith("/collaborators/Bob")]
+
+
+async def test_every_page_of_a_workspace_repos_collaborators_is_read_for_former_members(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    recorder.on(
+        "GET",
+        f"/api/v1/repos/acme/spring.{U8}.desk/collaborators/bob/permission",
+        ok({"permission": "read"}),
+    )
+    recorder.on("GET", f"/api/v1/repos/acme/spring.{U8}.desk", ok({"id": 3}))
+    recorder.on(
+        "GET",
+        f"/api/v1/repos/acme/spring.{U8}.desk/collaborators",
+        ok([{**USER, "id": 8, "login": "bob"}] * 50),
+        ok([{**USER, "id": 7, "login": "ada"}]),
+    )
+
+    await forgejo.workspaces.open_workspace(
+        ContestId("acme/spring"), EntrantOwner(uuid.UUID(int=8)), [8]
+    )
+
+    assert f"DELETE /api/v1/repos/acme/spring.{U8}.desk/collaborators/ada" in recorder.calls()
 
 
 async def test_a_place_its_members_can_write_already_is_finished_and_left_alone(
@@ -357,6 +381,31 @@ async def test_one_files_history_is_listed_by_its_path_on_the_default_branch(
     )
     (asked,) = [seen for seen in recorder.seen if seen.url.path.endswith("/commits")]
     assert (asked.url.params["path"], asked.url.params["sha"]) == ("public/hint.txt", "main")
+
+
+async def test_a_change_the_platform_made_names_no_author(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.sum.task/commits",
+        ok(
+            [
+                {
+                    "sha": "commit-1",
+                    "author": {"id": 2, "login": CONFIG.platform_account},
+                    "commit": {
+                        "message": "Make the task\n",
+                        "committer": {"date": "2026-10-10T11:41:57Z"},
+                    },
+                }
+            ]
+        ),
+    )
+
+    (change,) = await forgejo.content.history(AsUser(7, _credential()), TaskId("acme/spring/sum"))
+
+    assert (change.author_id, change.author) == (None, None)
 
 
 async def test_creating_a_file_that_exists_is_a_conflict(

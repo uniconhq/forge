@@ -3,7 +3,7 @@ all, worked out from `contest.yaml`, a row's extension and the clock. A
 task's timeline is its entry in the contest's `tasks`.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -17,6 +17,7 @@ from forge.domain.release import (
     contest_visible_to,
     due_of,
     has_started,
+    in_words,
     is_running,
     late_days,
     openness,
@@ -207,3 +208,15 @@ def test_a_contest_has_started_once_published_and_past_its_start() -> None:
     assert not has_started(contest(), START - SECOND)
     assert not has_started(contest("draft"), DURING)
     assert not has_started(contest("archived"), DURING)
+
+
+def test_a_moment_is_said_in_words_in_the_offset_it_was_written_with() -> None:
+    eight = timezone(timedelta(hours=8))
+
+    assert in_words(datetime(2026, 9, 26, 15, tzinfo=UTC)) == "26 September 2026 at 15:00 UTC"
+    assert in_words(datetime(2026, 10, 12, 3, 4, tzinfo=eight)) == (
+        "12 October 2026 at 03:04 UTC+08:00"
+    )
+    assert in_words(
+        datetime(2026, 1, 2, 9, 5, tzinfo=timezone(-timedelta(hours=3, minutes=30)))
+    ) == ("2 January 2026 at 09:05 UTC-03:30")

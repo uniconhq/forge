@@ -5,7 +5,10 @@ every session and marks the account inactive at the host, reversibly. Delete
 runs in a fixed order and stops at the first refusal: a scope that would be
 left without an admin, or a shared workflow other people may be using. It
 holds the role lock of every org the person has a role in while it checks
-and removes those roles, the way a change of roles does. Deactivate and
+and removes those roles, the way a change of roles does. It takes the person
+out of every entrant whose roster is still open, as leaving would, and
+withdraws the invites into them they sent (`entrants.forget_person`).
+Deactivate and
 delete need a session younger than the fresh sign-in window.
 """
 
@@ -23,7 +26,7 @@ from forge.log import get_logger
 from forge.port import Forge
 from forge.runtime.actions import action
 from forge.runtime.context import AfterRollback, Context
-from forge.services import invites, names, roles, sessions
+from forge.services import entrants, invites, names, roles, sessions
 from forge.services.passwords import new_password
 
 log = get_logger(__name__)
@@ -68,6 +71,7 @@ async def delete(ctx: Context, session: Session) -> None:
     await _refuse_if_sharing_workflows(ctx.forge, session.user_id)
     await sessions.revoke_all(ctx, session.user_id)
     await invites.forget_person(ctx, session.user_id)
+    await entrants.forget_person(ctx, session.user_id)
     for grant in grants:
         await ctx.forge.orgs.revoke_role(session.user_id, grant.scope, grant.role)
         # The forge refuses to delete someone who still holds a role, so the

@@ -5,10 +5,15 @@ it (P1); `secret` is an input's word; every primitive declares its outcome;
 and the keys and words the format no longer has are refused at their paths.
 """
 
+from collections.abc import Mapping
+
 import pytest
 
 from forge.domain.contracts import violation
-from forge.domain.primitives import parse_primitive
+from forge.domain.definitions import parse_task
+from forge.domain.grading import PLATFORM_MACHINE
+from forge.domain.plans import compile_plan
+from forge.domain.primitives import Port, PrimitiveDeclaration, parse_primitive
 from forge.domain.types import Type
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml
 from forge.testing import PLACEHOLDER_DIGEST, PRIMITIVES
@@ -85,6 +90,44 @@ def test_a_primitive_and_its_ports_say_what_they_are_for_and_no_plan_reads_it() 
         None,
         None,
     )
+    # A plan compiled from the declarations without their words is the
+    # same to the byte.
+    from tests.test_plans import CLASSIC_TASK, CLASSIC_WORKFLOW, HARNESS, cases_of, classic_tests
+
+    def wordless(found: PrimitiveDeclaration) -> PrimitiveDeclaration:
+        def ports(given: Mapping[str, Port]) -> dict[str, Port]:
+            return {
+                name: port.model_copy(update={"description": None}) for name, port in given.items()
+            }
+
+        return found.model_copy(
+            update={
+                "title": None,
+                "description": None,
+                "inputs": ports(found.inputs),
+                "outputs": ports(found.outputs),
+            }
+        )
+
+    worded = {f"unicon/{name}@v2": parse_primitive(text) for name, text in PRIMITIVES.items()}
+    assert any(found.title is not None for found in worded.values())
+    paths = classic_tests("main/1")
+    tests = cases_of(CLASSIC_WORKFLOW, paths, {})
+
+    def plan(primitives: Mapping[str, PrimitiveDeclaration]) -> bytes:
+        made = compile_plan(
+            parse_task(CLASSIC_TASK),
+            CLASSIC_WORKFLOW,
+            primitives,
+            paths,
+            tests,
+            secrets=frozenset(),
+            machine=PLATFORM_MACHINE,
+            harness_image=HARNESS,
+        )
+        return made.plan.to_bytes()
+
+    assert plan(worded) == plan({ref: wordless(found) for ref, found in worded.items()})
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,7 @@ the request that changes it, one count of submissions, one extension, and
 one desk of questions.
 """
 
+import asyncio
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -27,6 +28,7 @@ from forge.adapters.ids import parse_task, parse_workspace
 from forge.db.tables import Entrant
 from forge.domain.errors import (
     AlreadyInvited,
+    EntrantChanged,
     EntrantFull,
     EntrantHasSubmissions,
     EntrantIncomplete,
@@ -43,6 +45,8 @@ from forge.domain.errors import (
     RegistrationClosed,
     RosterLocked,
     TaskClosed,
+    Unavailable,
+    WrongStatus,
 )
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.invites import Grant, InviteStatus
@@ -53,6 +57,7 @@ from forge.domain.sessions import Session
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
 from forge.services import (
+    account,
     clarifications,
     entrants,
     identity,
@@ -572,7 +577,8 @@ async def test_an_organiser_extends_an_entrant_on_the_named_tasks_alone(
     with pytest.raises(InvalidExtension, match="third's hidden results were shown"):
         await entrants.extend(setup, manager, SPRING, takers.id, timedelta(hours=1))
     made = (
-        "sum's submission 1, made at 2026-09-26T16:30:00+00:00, would then be after the task closed"
+        "sum's submission 1, made on 26 September 2026 at 16:30 UTC, would then be after the "
+        "task closed"
     )
     with pytest.raises(InvalidExtension, match=re.escape(made)):
         await entrants.extend(
@@ -707,7 +713,8 @@ async def test_an_organisers_invite_into_an_entrant_is_an_organisers_change_and_
     setup: Setup, acme: Acme, crowd: dict[str, Session], clock: FakeClock, manager: Organiser
 ) -> None:
     await write_contest(
-        acme.fake, contest(most=3, ways="[{invite: {approval: manual}}, {signup: {approval: auto}}]")
+        acme.fake,
+        contest(most=3, ways="[{invite: {approval: manual}}, {signup: {approval: auto}}]"),
     )
     adders = await entrants.register(setup, crowd["bob"], SPRING, name="Adders")
     assert adders.status is Status.APPROVED
@@ -755,7 +762,9 @@ async def test_an_organisers_invite_is_accepted_only_while_the_contest_is_open(
         assert await _invite_status(setup, manager, invite.id) is InviteStatus.PENDING
     clock.set(START + timedelta(hours=1))
     for state in ("archived", "draft"):
-        await write_contest(acme.fake, contest(most=3).replace("state: published", f"state: {state}"))
+        await write_contest(
+            acme.fake, contest(most=3).replace("state: published", f"state: {state}")
+        )
         for person, invite in ((crowd["dan"], alone), (crowd["carol"], into)):
             with pytest.raises(RegistrationClosed):
                 await invites.accept(setup, person, invite.id)
@@ -812,7 +821,9 @@ async def test_a_submit_reads_its_entrant_again_once_it_holds_it(
     monkeypatch.setattr(entrants, "hold_for_reading", taken_away_first)
 
     with pytest.raises(TaskClosed):
-        await submissions.submit(setup, bob, sum_task, code(made.id), idempotency_key="key-0001-race")
+        await submissions.submit(
+            setup, bob, sum_task, code(made.id), idempotency_key="key-0001-race"
+        )
 
 
 async def test_a_team_sends_ten_invites_a_day_of_its_own_and_never_the_orgs(
@@ -838,3 +849,223 @@ async def test_a_team_sends_ten_invites_a_day_of_its_own_and_never_the_orgs(
     await invites.create(setup, manager, Scope("acme", "spring"), Grant.CONTESTANT, username="dan")
     clock.advance(timedelta(days=1, seconds=1))
     await entrants.invite(setup, bob, SPRING, email="one-more@example.test")
+
+
+async def test_the_last_one_out_and_an_accept_of_the_entrants_invite_take_turns(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bob, carol = crowd["bob"], crowd["carol"]
+    await entrants.register(setup, bob, SPRING, name="Adders")
+    asked = await invites_of(setup, bob, "carol")
+    closing = entrants._close
+    accepting: list[asyncio.Future[Any]] = []
+
+    async def slow_close(ctx: Any, workspace: Any, user_ids: Any) -> None:
+        # bob's leave is under way; carol accepts the entrant's invite now.
+        accepting.append(asyncio.ensure_future(invites.accept(setup, carol, asked.id)))
+        await asyncio.sleep(1.0)
+        await closing(ctx, workspace, user_ids)
+
+    monkeypatch.setattr(entrants, "_close", slow_close)
+
+    await entrants.leave(setup, bob, SPRING)
+    (accepted,) = await asyncio.gather(*accepting, return_exceptions=True)
+
+    assert isinstance(accepted, WrongStatus), accepted
+    assert await _mine(setup, carol) is None
+
+
+async def test_an_entrant_is_approved_on_its_own_once_the_member_holding_it_back_is_gone(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], manager: Organiser
+) -> None:
+    acme.fake.add_user(22, "eve", email="eve@u.nus.edu")
+    await write_contest(
+        acme.fake,
+        contest(
+            most=3,
+            ways=(
+                "[{signup: {name: Students, domains: [u.nus.edu], approval: auto}}, "
+                "{signup: {name: Guests}}]"
+            ),
+        ),
+    )
+    eve, dan, carol = await signed_in(setup, acme.fake, 22), crowd["dan"], crowd["carol"]
+    adders = await entrants.register(setup, eve, SPRING, name="Adders")
+    await _join(setup, eve, dan, "dan")
+    await _join(setup, eve, carol, "carol")
+
+    await entrants.leave(setup, dan, SPRING)
+    still = await _mine(setup, eve)
+    assert still is not None and still.status is Status.PENDING
+
+    removed = await entrants.remove_member(setup, manager, SPRING, adders.id, 20)
+    assert removed is not None and removed.status is Status.APPROVED
+
+
+async def test_a_move_the_forge_fails_halfway_leaves_access_as_the_membership_stands(
+    setup: Setup,
+    acme: Acme,
+    sum_task: TaskId,
+    crowd: dict[str, Session],
+    clock: FakeClock,
+    manager: Organiser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bob, carol, dan = crowd["bob"], crowd["carol"], crowd["dan"]
+    adders = await entrants.register(setup, bob, SPRING, name="Adders")
+    await _join(setup, bob, carol, "carol")
+    takers = await entrants.register(setup, dan, SPRING, name="Takers")
+    clock.set(START + timedelta(minutes=30))
+    await upload(setup, acme.fake, carol, sum_task, b"print(1)\n")
+    await upload(setup, acme.fake, dan, sum_task, b"print(2)\n")
+    workspaces = acme.fake.workspaces
+    sharing = workspaces.share_workspace
+
+    async def down_for_takers(workspace: Any, member_ids: Any) -> None:
+        if str(takers.id.hex) in workspace:
+            raise Unavailable("the forge did not answer")
+        await sharing(workspace, member_ids)
+
+    monkeypatch.setattr(workspaces, "share_workspace", down_for_takers)
+
+    with pytest.raises(Unavailable):
+        await entrants.move_member(setup, manager, SPRING, adders.id, 20, takers.id)
+
+    assert _repo(acme.fake, adders.id, sum_task).writers == {8, 20}
+    assert _repo(acme.fake, takers.id, sum_task).writers == {21}
+    stayed = await _mine(setup, carol)
+    assert stayed is not None and stayed.id == adders.id
+
+    # The other way round: the source's access fails to go.
+    monkeypatch.setattr(workspaces, "share_workspace", sharing)
+    closing = workspaces.close_workspace
+
+    async def down_for_adders(workspace: Any, member_ids: Any) -> None:
+        if str(adders.id.hex) in workspace:
+            raise Unavailable("the forge did not answer")
+        await closing(workspace, member_ids)
+
+    monkeypatch.setattr(workspaces, "close_workspace", down_for_adders)
+
+    with pytest.raises(Unavailable):
+        await entrants.move_member(setup, manager, SPRING, adders.id, 20, takers.id)
+
+    assert _repo(acme.fake, adders.id, sum_task).writers == {8, 20}
+    assert _repo(acme.fake, takers.id, sum_task).writers == {21}
+
+
+async def test_a_rejected_entrant_loses_its_access_and_has_it_again_once_reopened(
+    setup: Setup,
+    acme: Acme,
+    sum_task: TaskId,
+    crowd: dict[str, Session],
+    clock: FakeClock,
+    manager: Organiser,
+) -> None:
+    acme.fake.add_user(22, "eve", email="eve@u.nus.edu")
+    await write_contest(
+        acme.fake,
+        contest(
+            locks="first_submission",
+            ways=(
+                "[{signup: {name: Students, domains: [u.nus.edu], approval: auto}}, "
+                "{signup: {name: Guests}}]"
+            ),
+        ),
+    )
+    eve = await signed_in(setup, acme.fake, 22)
+    adders = await entrants.register(setup, eve, SPRING, name="Adders")
+    clock.set(START + timedelta(minutes=30))
+    await upload(setup, acme.fake, eve, sum_task, b"print(1)\n")
+    await _join(setup, eve, crowd["dan"], "dan")
+
+    rejected = await entrants.reject(setup, manager, SPRING, adders.id, "Guests must be named.")
+
+    assert rejected.status is Status.REJECTED
+    assert _repo(acme.fake, adders.id, sum_task).writers == set()
+    await entrants.reopen(setup, manager, SPRING, adders.id)
+    assert _repo(acme.fake, adders.id, sum_task).writers == {21, 22}
+
+
+async def test_an_organiser_moves_people_only_into_an_entrant_that_stands_and_never_staff(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], manager: Organiser
+) -> None:
+    await write_contest(
+        acme.fake, TIMED.replace("{signup: {approval: auto}}", "{signup: {approval: manual}}")
+    )
+    adders = await entrants.register(setup, crowd["bob"], SPRING, name="Adders")
+    lone = await entrants.register(setup, crowd["carol"], SPRING, name="Lone")
+    takers = await entrants.register(setup, crowd["dan"], SPRING, name="Takers")
+    await entrants.reject(setup, manager, SPRING, takers.id, "Not this time.")
+
+    with pytest.raises(WrongStatus):
+        await entrants.move_member(setup, manager, SPRING, adders.id, 8, takers.id)
+    await entrants.reject(setup, manager, SPRING, lone.id, "Not this time.")
+    await acme.fake.orgs.grant_role(20, Scope("acme", "spring"), Role.OBSERVER)
+    with pytest.raises(IsStaff):
+        await entrants.move_member(setup, manager, SPRING, lone.id, 20, adders.id)
+
+
+async def test_deleting_an_entrant_someone_joined_meanwhile_is_asked_again(
+    setup: Setup,
+    acme: Acme,
+    crowd: dict[str, Session],
+    manager: Organiser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bob, carol = crowd["bob"], crowd["carol"]
+    adders = await entrants.register(setup, bob, SPRING, name="Adders")
+    asked = await invites_of(setup, bob, "carol")
+    holding = entrants._hold_people
+    joined: list[bool] = []
+
+    async def carol_joins_first(ctx: Any, contest: Any, user_ids: Any) -> None:
+        if not joined:
+            joined.append(True)
+            await invites.accept(setup, carol, asked.id)
+        await holding(ctx, contest, user_ids)
+
+    monkeypatch.setattr(entrants, "_hold_people", carol_joins_first)
+
+    with pytest.raises(EntrantChanged):
+        await entrants.delete(setup, manager, SPRING, adders.id)
+    kept = await _mine(setup, carol)
+    assert kept is not None and kept.id == adders.id
+
+
+async def test_a_deleted_account_leaves_every_team_still_open_and_stays_in_one_fixed(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, contest(most=3))
+    bob, carol, dan = crowd["bob"], crowd["carol"], crowd["dan"]
+    await entrants.register(setup, bob, SPRING, name="Adders")
+    await _join(setup, bob, carol, "carol")
+    await entrants.invite(setup, carol, SPRING, email="friend@example.test")
+    takers = await entrants.register(setup, dan, SPRING, name="Takers")
+
+    await account.delete(setup, carol)
+
+    adders = await _mine(setup, bob)
+    assert adders is not None and [m.user_id for m in adders.members] == [8]
+    assert adders.invites == ()
+    clock.set(START + timedelta(hours=1))
+    await account.delete(setup, await signed_in(setup, acme.fake, 21))
+    async with setup.unit_of_work() as ctx:
+        assert await entrants.member_ids(ctx, takers.id) == [21]
+
+
+async def test_the_panel_says_the_addresses_could_not_be_checked_when_the_forge_did_not_answer(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await write_contest(acme.fake, contest(ways="[{signup: {domains: [u.nus.edu]}}]"))
+
+    async def unanswered(user_id: int) -> tuple[str, ...]:
+        raise Unavailable("the forge did not answer")
+
+    monkeypatch.setattr(acme.fake.identity, "verified_emails", unanswered)
+
+    panel = await entrants.mine(setup, crowd["bob"], SPRING)
+
+    assert panel.can_register is False
+    assert panel.refused is not None and panel.refused.code == "forge_unavailable"
+    assert "addresses" in panel.refused.detail and "Try again" in panel.refused.detail

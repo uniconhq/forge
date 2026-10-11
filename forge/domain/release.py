@@ -115,6 +115,19 @@ def late_days(due: datetime | None, at: datetime) -> int:
     return math.ceil((at - due) / DAY)
 
 
+def in_words(moment: datetime) -> str:
+    """A moment as a sentence says it, in the offset it was written with:
+    `26 September 2026 at 15:00 UTC`, or `... at 03:04 UTC+08:00`.
+    """
+    offset = moment.utcoffset() or timedelta(0)
+    zone = "UTC"
+    if offset:
+        minutes = int(abs(offset).total_seconds()) // 60
+        sign = "-" if offset < timedelta(0) else "+"
+        zone += f"{sign}{minutes // 60:02d}:{minutes % 60:02d}"
+    return f"{moment.day} {moment:%B %Y} at {moment:%H:%M} {zone}"
+
+
 def reveal_of(
     contest: ContestDefinition, entry: ContestTask, extensions: Iterable[Extension]
 ) -> datetime:

@@ -4,7 +4,7 @@ made as the platform, holding no connection while the forge makes it, which
 takes it a quarter of a second or more, and the entrant's row is then held
 and read again: the place is held against the members as they stand then,
 so someone who joined meanwhile is added and someone who left loses the
-access just given (`entrants.settle`), and an entrant removed or deleted
+access just given (`entrants.settle`), and an entrant removed, rejected or deleted
 meanwhile has the access just given taken back from everyone.
 
 With `places_ahead` on, places are made before anyone needs them: approving
@@ -76,7 +76,7 @@ async def make(
     """Make the entrant's place to submit `task` with every member on it,
     the forge's part inside `turn`, then hold the entrant and settle its
     members. False for an entrant with nobody in it, or that is no longer
-    approved by then, one removed or gone having the access just given taken
+    approved by then, one removed, rejected or gone having the access just given taken
     back. `EntrantChanged` when `for_user`, who asked for it, left the
     entrant while it was made. `PortError` when the forge fails, with the
     entrant not held.
@@ -90,7 +90,7 @@ async def make(
         await ctx.forge.workspaces.open_submission_place(workspace, task, list(members))
     current = await entrants.settle(ctx, entrant, workspace, members)
     status = await ctx.db.scalar(select(EntrantRow.status).where(EntrantRow.id == entrant))
-    if status is None or status == Status.REMOVED:
+    if status is None or status in (Status.REMOVED, Status.REJECTED):
         await ctx.forge.workspaces.close_workspace(workspace, sorted({*members, *current}))
         log.info("places.taken_back", task=task, entrant=str(entrant))
         return False

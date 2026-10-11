@@ -397,7 +397,7 @@ class Repos:
         commits = await self._http.get_all(
             as_, f"/api/v1/repos/{segment(owner)}/{segment(name)}/commits", **params
         )
-        return tuple(_change(commit) for commit in commits)
+        return tuple(_change(commit, self._platform_account) for commit in commits)
 
     async def files_at(self, as_: Identity, owner: str, name: str, at: str) -> Files:
         """Every file at a version."""
@@ -524,10 +524,12 @@ class Repos:
         return str(record.get("permission"))
 
     async def collaborators(self, owner: str, name: str) -> list[dict[str, Any]]:
-        return list_of(
-            await self._http.call(
-                PLATFORM, "GET", f"/api/v1/repos/{segment(owner)}/{segment(name)}/collaborators"
-            )
+        """Every collaborator on the repository, page by page: the forge
+        answers one page of its default size otherwise, and someone past it
+        would keep an access they no longer have a right to.
+        """
+        return await self._http.get_all(
+            PLATFORM, f"/api/v1/repos/{segment(owner)}/{segment(name)}/collaborators"
         )
 
     async def set_private(self, owner: str, name: str, private: bool) -> None:
@@ -702,8 +704,14 @@ def _encoded(content: bytes) -> str:
     return base64.b64encode(content).decode()
 
 
-def _change(commit: dict[str, Any]) -> Change:
+def _change(commit: dict[str, Any], platform_account: str) -> Change:
+    """One commit as a change of a place's history. One the platform's own
+    account made, such as a new task's first files, names no author, as the
+    fake's changes made as the platform do: the account is no person.
+    """
     author = commit.get("author") or {}
+    if str(author.get("login", "")).lower() == platform_account.lower():
+        author = {}
     inner = commit.get("commit") or {}
     at = inner.get("committer", {}).get("date") or inner.get("author", {}).get("date")
     return Change(

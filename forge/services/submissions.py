@@ -444,7 +444,8 @@ async def _again(
     existing = await _read(ctx, Reading.of(person, workspace), found.number)
     if existing:
         return existing[0]
-    grading = await _recover(ctx, person, workspace, found)
+    # The key is the submitter's own, so the submission found by it is theirs.
+    grading = await _recover(ctx, person, workspace, found, by=person.session.user_id)
     return await _submission(ctx, Reading.of(person, workspace), found.number, found.at, [grading])
 
 
@@ -472,14 +473,20 @@ async def _finish_unrecorded(
 
 
 async def _recover(
-    ctx: Context, person: Person, workspace: WorkspaceId, found: Submitted
+    ctx: Context,
+    person: Person,
+    workspace: WorkspaceId,
+    found: Submitted,
+    *,
+    by: int | None = None,
 ) -> Grading:
     """The grading row of a submission the forge holds and the database does
-    not, inserted with the key its note carries and none for whoever made
-    it, which the forge's answer did not say, and the uploads it used marked
-    consumed.
+    not, inserted with the key its note carries and `by` as whoever made it:
+    the submitter sending it again with their own key, or none when it was
+    found otherwise, since the forge's answer does not say; and the uploads
+    it used marked consumed.
     """
-    grading = _insert(ctx, person, workspace, found, found.key, at=found.at, by=None)
+    grading = _insert(ctx, person, workspace, found, found.key, at=found.at, by=by)
     await _consume_used(ctx, person, found)
     await ctx.db.flush()
     log.info("submissions.recovered", task=person.task, number=found.number)

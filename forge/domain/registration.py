@@ -62,6 +62,7 @@ from forge.domain.errors import (
     WrongInviteCode,
     WrongStatus,
 )
+from forge.domain.release import in_words
 
 REASON_MAX = 1000
 LONGEST_EXTENSION = timedelta(days=365)
@@ -123,10 +124,10 @@ def refuse_closed(rules: Registration, now: datetime) -> None:
     """`RegistrationClosed` unless the window is open now."""
     if rules.opens is not None and now < rules.opens:
         raise RegistrationClosed(
-            f"Registration opens at {rules.opens.isoformat()}. Come back then to register."
+            f"Registration opens on {in_words(rules.opens)}. Come back then to register."
         )
     if rules.closes is not None and now >= rules.closes:
-        raise RegistrationClosed(f"Registration closed at {rules.closes.isoformat()}.")
+        raise RegistrationClosed(f"Registration closed on {in_words(rules.closes)}.")
 
 
 def asks_address(rules: Registration) -> bool:

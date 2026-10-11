@@ -23,10 +23,14 @@ gradings, one per submission, at the moment it was taken:
   contest's `end`, does not move earlier than a submission already made,
   nor later once the task has revealed under the settings saved before. A
   contest that was never published released nothing, and moves freely.
-- An open contest, `published` under the settings saved before, goes back
-  to `draft` only before its start (#438): from the start on, contestants
-  have work in it that a draft would hide, so the only way out is
-  `archived`.
+- An open contest, `published` or `archived` under the settings saved
+  before, goes back to `draft` only before its start (#438): from the start
+  on, contestants have work in it that a draft would hide, so the only way
+  out is `archived`. The settings saved before are the latest that read,
+  when the ones replaced do not (`files._last_read`).
+- From the start on, `entrants` no longer asks more of a team than it did,
+  nor allows fewer, nor moves between everyone entering alone and in teams:
+  a team's roster is locked by then, so it could not mend what that breaks.
 
 Changing an extension is checked the same way (`refuse_extension`): it may
 not let a row submit to a task whose reveal has passed, nor, shortened or
@@ -47,7 +51,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
-from forge.domain.release import Extension, close_of, due_of, released, reveal_of
+from forge.domain.release import Extension, close_of, due_of, in_words, released, reveal_of
 from forge.domain.yaml_models import Problem
 from forge.runtime.context import Context
 from forge.services import names, published
@@ -167,7 +171,7 @@ class Made:
     at: datetime
 
     def said(self) -> str:
-        return f"submission {self.number}, made at {self.at.isoformat()},"
+        return f"submission {self.number}, made on {in_words(self.at)},"
 
 
 async def submissions(
@@ -225,6 +229,7 @@ async def check_contest(
         return problems
     if _drafted_after_start(before, after, ctx.now):
         problems.append(Problem(path="state", message=STARTED_STAYS_OPEN))
+    problems += _sizes_moved(before, after, ctx.now)
     made = await submissions(ctx, contest, tasks)
     extensions = await every_extension(ctx, contest)
     for entry in before.tasks:
@@ -251,10 +256,51 @@ STARTED_STAYS_OPEN = (
 def _drafted_after_start(
     before: ContestDefinition, after: ContestDefinition, now: datetime
 ) -> bool:
-    """Whether a save takes a contest that was open, and has started, back
-    to draft.
+    """Whether a save takes a contest that was open, or archived since, and
+    has started, back to draft: entrants of an archived contest still read
+    it, so going through `archived` hides their work all the same.
     """
-    return before.state is State.PUBLISHED and before.start <= now and after.state is State.DRAFT
+    return before.state is not State.DRAFT and before.start <= now and after.state is State.DRAFT
+
+
+def _sizes_moved(
+    before: ContestDefinition, after: ContestDefinition, now: datetime
+) -> list[Problem]:
+    """Once a contest that was open has started, a change of `entrants`
+    that would shut a team out mid-contest, whose roster is locked so it
+    cannot mend it: more members needed, fewer allowed, or a move between
+    everyone entering alone and entering in teams.
+    """
+    if before.state is State.DRAFT or before.start > now:
+        return []
+    old, new = before.entrants, after.entrants
+    problems: list[Problem] = []
+    if (old.most == 1) != (new.most == 1):
+        problems.append(
+            Problem(
+                path="entrants.most",
+                message="The contest has started, so it can no longer change between everyone "
+                "entering alone and entering in teams.",
+            )
+        )
+    elif new.most < old.most:
+        problems.append(
+            Problem(
+                path="entrants.most",
+                message=f"The contest has started, so a team can no longer be made smaller than "
+                f"{old.most} people: teams that have more would be shut out.",
+            )
+        )
+    if new.fewest > old.fewest:
+        problems.append(
+            Problem(
+                path="entrants.fewest",
+                message=f"The contest has started, so a team can no longer need more than "
+                f"{old.fewest} {'person' if old.fewest == 1 else 'people'}: teams that have "
+                "fewer could not submit, and can no longer add anyone.",
+            )
+        )
+    return problems
 
 
 def _dropped(
@@ -266,7 +312,7 @@ def _dropped(
     if released(before, entry.id, now):
         opened = before.release_of(entry)
         return (
-            f"{entry.id} was released at {opened.isoformat()}, so entrants have seen it, and it "
+            f"{entry.id} was released on {in_words(opened)}, so entrants have seen it, and it "
             "cannot be taken out of the contest."
         )
     if made:
@@ -335,7 +381,7 @@ def _moved(
         found.append(
             (
                 release_key,
-                f"{task} was released at {old_release.isoformat()}, so entrants have seen it, "
+                f"{task} was released on {in_words(old_release)}, so entrants have seen it, "
                 "and a later release time would hide it again.",
             )
         )
@@ -370,7 +416,7 @@ def _moved(
         found.append(
             (
                 closes_key,
-                f"{task}'s hidden results were shown at {revealed.isoformat()}, so a later "
+                f"{task}'s hidden results were shown on {in_words(revealed)}, so a later "
                 "closing time would let entrants submit knowing them.",
             )
         )
@@ -398,7 +444,7 @@ async def refuse_extension(
             revealed = reveal_of(settings, entry, extensions)
             if revealed <= ctx.now and close_of(settings, entry, after) > ctx.now:
                 raise InvalidExtension(
-                    f"{entry.id}'s hidden results were shown at {revealed.isoformat()}, so "
+                    f"{entry.id}'s hidden results were shown on {in_words(revealed)}, so "
                     "extra time on it would let this entrant submit knowing them."
                 )
         for number, at in own.get(entry.id, []):

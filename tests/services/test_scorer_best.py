@@ -8,6 +8,7 @@ from fractions import Fraction
 from types import SimpleNamespace
 from typing import Any
 
+from forge.domain.definitions import Group
 from forge.domain.scoring import Better, Measure
 from forge.domain.showing import NOTHING_SEALED, Graded
 from forge.services.scores import Scorer
@@ -43,3 +44,29 @@ async def test_each_value_of_one_generation_has_its_own_best() -> None:
 
     assert time == {"main/1": Fraction(30)}
     assert memory == {"main/1": Fraction(7)}
+
+
+async def test_a_grading_scored_with_its_own_groups_is_worth_their_total_by_default() -> None:
+    # The task now has a third group, worth 50 more; a grading of the
+    # generation before it is scored with its own two groups, worth 100.
+    current: Any = SimpleNamespace(worth=150, entry=SimpleNamespace(worth=None))
+    scorer = Scorer(ctx=None, current=current, contest=None)  # type: ignore[arg-type]
+    groups = {
+        "small": Group.model_validate({"pass": 30}),
+        "large": Group.model_validate({"pass": 70}),
+    }
+    own = Graded(("small/1", "large/1"), groups, NOTHING_SEALED)
+    result = {
+        "stopped": None,
+        "tests": [
+            {"test": "small/1", "outcome": "accepted", "values": {}},
+            {"test": "large/1", "outcome": "accepted", "values": {}},
+        ],
+    }
+
+    scored = await scorer.scored(SimpleNamespace(result=result), own, Fraction(1))  # type: ignore[arg-type]
+
+    assert [(group.group, group.points) for group in scored.groups] == [
+        ("small", Fraction(30)),
+        ("large", Fraction(70)),
+    ]

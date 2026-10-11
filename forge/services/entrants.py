@@ -63,15 +63,17 @@ Who may reach an entrant's workspace changes in the request that changes
 the membership, before the membership is written: someone who joins is given
 access to every part already made, and someone who leaves, is taken out or
 is moved loses it. A call to the forge that fails fails the request, and
-asking again finishes it, since giving or taking access twice changes
-nothing. A part made later is made with whoever is a member then (`settle`),
-so a place to submit is finished only once every member can write it. An
-entrant left with nobody and no submissions is deleted, its member rows kept
-`left`.
+whatever access it gave or took before then is put back to the members as
+they stand (`_shared_again`), so a move whose second call fails leaves the
+person reaching the entrant they are still in; asking again finishes it,
+since giving or taking access twice changes nothing. A part made later is
+made with whoever is a member then (`settle`), so a place to submit is
+finished only once every member can write it. An entrant left with nobody
+and no submissions is deleted, its member rows kept `left`.
 
 An entrant is approved straight away once it is complete and every member
 came in by a way that approves straight away, checked whenever someone
-joins; one who joins an approved entrant by a way an organiser approves
+joins it or leaves it pending; one who joins an approved entrant by a way an organiser approves
 sends it back to `pending`, which can happen only before the roster locks,
 so nothing it submitted is held back.
 
@@ -88,9 +90,11 @@ leaving behind an entrant whose results would have nobody
 
 A change takes, in this order, the org's lock on role changes when it reads
 roles, the invite it acts on, an advisory lock on each person it moves in
-the order of their ids, the contest's places, then the entrant rows it
-touches in the order of their ids, so two changes of one person or one
-entrant happen one after another and a removal never passes a join; a
+the order of their ids, the invites still waiting into an entrant it may
+leave empty, which ending it withdraws, the contest's places, then the
+entrant rows it touches in the order of their ids, so two changes of one
+person or one entrant happen one after another, a removal never passes a
+join, and no change holds an entrant while it waits for an invite; a
 submit holds its entrant's row for reading, so no change of who is in it
 passes the submit.
 """
@@ -128,6 +132,7 @@ from forge.domain.errors import (
     PortError,
     RegistrationClosed,
     RegistrationRefused,
+    Unavailable,
 )
 from forge.domain.identity import User
 from forge.domain.ids import ContestId, WorkspaceId, new_id
@@ -138,7 +143,7 @@ from forge.domain.roles import Role, contest_id_of, contest_scope
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.actions import action
-from forge.runtime.context import Context
+from forge.runtime.context import AfterRollback, Context
 from forge.services import invites, places, published, release, roles, timelines
 from forge.services.access import Organiser, require
 
@@ -153,6 +158,10 @@ the contest and the user id hashed by Postgres."""
 NO_SUCH_ENTRANT = "There is no such entrant in this contest."
 NOT_IN_ONE = "You have not entered this contest."
 ENDED = "Entrants cannot change once the contest has ended. Ask the organisers."
+ADDRESSES_UNREAD = (
+    "Unicon could not check your email addresses just now, so it cannot tell whether you may "
+    "register. Try again in a moment."
+)
 MEMBER_DAILY_MAX = 10
 """The most invites an entrant's members send in a day, together: a team
 finds its few people, and no contestant mails strangers through the
@@ -355,6 +364,7 @@ async def invite(
             "Everyone enters this contest alone, so there is no team to invite anyone into."
         )
     target = await invites.target(ctx, username, email)
+    await roles.one_change_at_a_time(ctx, contest_scope(contest).org)
     row = await _held_own(ctx, contest, session.user_id)
     registration.refuse_undecidable(Status(row.status), registration.REGISTERED, "joined")
     rules.refuse_locked(settings, ctx.now, submitted=await submitted(ctx, row))
@@ -426,10 +436,11 @@ async def leave(ctx: Context, session: Session, contest: ContestId) -> None:
     member = await membership(ctx, contest, session.user_id)
     if member is None:
         raise NotFound(NOT_IN_ONE)
+    await _hold_invites_into(ctx, [member.entrant_id])
     (row,) = await _hold_entrants(ctx, contest, [member.entrant_id])
     registration.refuse_undecidable(Status(row.status), registration.REGISTERED, "left")
     rules.refuse_locked(settings, ctx.now, submitted=await submitted(ctx, row))
-    await _take_out(ctx, row, member)
+    await _take_out(ctx, row, member, settings)
     log.info("entrants.left", entrant=str(row.id), user_id=session.user_id)
 
 
@@ -484,13 +495,15 @@ async def approve(
 async def reject(
     ctx: Context, organiser: Organiser, contest: ContestId, entrant: uuid.UUID, reason: str
 ) -> Entrant:
-    """Reject a pending entrant with a reason its members read. Needs the
-    manager role at the contest.
+    """Reject a pending entrant with a reason its members read; they can no
+    longer write its workspace, which one approved before may have. Needs
+    the manager role at the contest.
     """
     settings, row = await _decided(ctx, organiser, contest, entrant, (Status.PENDING,), "rejected")
     checked = registration.checked_reason(reason)
     _decide(ctx, row, Status.REJECTED, decided_by=organiser.user.id, reason=checked)
     await ctx.db.flush()
+    await _close(ctx, workspace_of(ctx, row), await member_ids(ctx, row.id))
     log.info("entrants.rejected", entrant=str(entrant), by=organiser.user.id)
     return await _view(ctx, row, settings)
 
@@ -503,7 +516,8 @@ async def reopen(
     decision, with the reason gone. It takes a place again, so it is refused
     like a new registration when a member holds a role at the contest by now
     (`is_staff`) or every place is taken (`contest_full`), checked under the
-    same locks. Needs the manager role at the contest.
+    same locks. Its members reach its workspace again, as before the
+    rejection took that away. Needs the manager role at the contest.
     """
     require(organiser, contest_scope(contest), Role.MANAGER)
     await roles.one_change_at_a_time(ctx, contest_scope(contest).org)
@@ -521,6 +535,9 @@ async def reopen(
     row.decided_by_user_id = None
     row.reason = None
     await ctx.db.flush()
+    await ctx.forge.workspaces.share_workspace(
+        workspace_of(ctx, row), await member_ids(ctx, row.id)
+    )
     log.info("entrants.reopened", entrant=str(entrant), by=organiser.user.id)
     return await _view(ctx, row, settings)
 
@@ -607,11 +624,12 @@ async def remove_member(
     """
     settings = await _managed(ctx, organiser, contest)
     await _hold_people(ctx, contest, [user_id])
+    await _hold_invites_into(ctx, [entrant])
     (row,) = await _hold_entrants(ctx, contest, [entrant])
     member = await membership(ctx, contest, user_id)
     if member is None or member.entrant_id != row.id:
         raise NotFound("That person is not in this entrant.")
-    kept = await _take_out(ctx, row, member)
+    kept = await _take_out(ctx, row, member, settings)
     log.info("entrants.member_removed", entrant=str(entrant), user_id=user_id, by=organiser.user.id)
     return await _view(ctx, row, settings) if kept else None
 
@@ -628,11 +646,15 @@ async def move_member(
     """Move someone from an entrant to another of the contest, within its
     `entrants.most` (`entrant_full`), and answer with the one they are in
     now. Refused with `entrant_has_submissions` when they are the last member
-    of an entrant that has submitted, whose results would have nobody. Needs
-    the manager role at the contest.
+    of an entrant that has submitted, whose results would have nobody; with
+    `wrong_status` into an entrant neither pending nor approved; and with
+    `is_staff` for someone who holds a role at the contest by now. Needs the
+    manager role at the contest.
     """
     settings = await _managed(ctx, organiser, contest)
+    await roles.one_change_at_a_time(ctx, contest_scope(contest).org)
     await _hold_people(ctx, contest, [user_id])
+    await _hold_invites_into(ctx, [entrant])
     held = {row.id: row for row in await _hold_entrants(ctx, contest, [entrant, to])}
     source, target = held[entrant], held[to]
     member = await membership(ctx, contest, user_id)
@@ -640,6 +662,9 @@ async def move_member(
         raise NotFound("That person is not in this entrant.")
     if source.id == target.id:
         return await _view(ctx, target, settings)
+    registration.refuse_undecidable(Status(target.status), registration.REGISTERED, "joined")
+    if await roles.holds_role_in_contest(ctx, user_id, contest):
+        raise IsStaff("That person has a role at this contest, so they cannot be in an entrant.")
     others = [other for other in await member_ids(ctx, source.id) if other != user_id]
     if not others and await submitted(ctx, source):
         raise EntrantHasSubmissions(
@@ -647,7 +672,7 @@ async def move_member(
             "need someone in it. Move someone else in first."
         )
     rules.refuse_full(len(await member_ids(ctx, target.id)), settings.entrants.most)
-    await _take_out(ctx, source, member)
+    await _take_out(ctx, source, member, settings)
     await _join(ctx, target, settings, user_id, ORGANISER)
     log.info(
         "entrants.member_moved",
@@ -668,8 +693,14 @@ async def delete(
     the manager role at the contest.
     """
     await _managed(ctx, organiser, contest)
-    await _hold_people(ctx, contest, await member_ids(ctx, entrant))
+    people = await member_ids(ctx, entrant)
+    await _hold_people(ctx, contest, people)
+    await _hold_invites_into(ctx, [entrant])
     (row,) = await _hold_entrants(ctx, contest, [entrant])
+    if not set(await member_ids(ctx, row.id)) <= set(people):
+        # Someone joined between the first read and the hold, without their
+        # own lock held here.
+        raise EntrantChanged("This entrant changed in the meantime. Try again.")
     if await submitted(ctx, row):
         raise EntrantHasSubmissions(
             "This entrant has submitted, so it cannot be deleted: it is kept with its results."
@@ -707,6 +738,8 @@ async def take_place(
     if current is not None and current.entrant_id == invite.entrant_id:
         raise InEntrant("You are in this team already.")
     wanted = [invite.entrant_id, *([current.entrant_id] if current is not None else [])]
+    if current is not None:
+        await _hold_invites_into(ctx, [current.entrant_id])
     held = {row.id: row for row in await _hold_entrants(ctx, contest, wanted)}
     target = held[invite.entrant_id]
     registration.refuse_undecidable(Status(target.status), registration.REGISTERED, "joined")
@@ -723,7 +756,7 @@ async def take_place(
     if current is not None:
         source = held[current.entrant_id]
         await _refuse_moving(ctx, settings, source)
-        await _take_out(ctx, source, current)
+        await _take_out(ctx, source, current, settings)
     await _join(ctx, target, settings, user.id, qualified)
     log.info("entrants.joined", entrant=str(target.id), user_id=user.id, invite=str(invite.id))
     return Entered(await ref(ctx, target), Status(target.status), "joined")
@@ -780,6 +813,46 @@ async def _refuse_moving(ctx: Context, settings: ContestDefinition, source: Entr
         )
 
 
+async def forget_person(ctx: Context, user_id: int) -> None:
+    """For someone whose account is going: withdraw the invites into their
+    entrants they sent that still wait, and take them out of every entrant
+    whose roster is still open, as leaving would, so they hold no seat and
+    count toward no team's size. Where the roster has locked they stay, shown
+    as `DELETED_USER`: the team was fixed with them in it, and only the
+    organisers change it from then on.
+    """
+    await ctx.db.execute(
+        update(InviteRow)
+        .where(
+            InviteRow.invited_by_user_id == user_id,
+            InviteRow.grants == Grant.MEMBER,
+            InviteRow.status == InviteStatus.PENDING,
+        )
+        .values(status=InviteStatus.WITHDRAWN, decided_at=ctx.now)
+    )
+    held = (
+        await ctx.db.scalars(
+            select(EntrantMember).where(
+                EntrantMember.user_id == user_id, EntrantMember.status == MemberStatus.MEMBER
+            )
+        )
+    ).all()
+    for found in held:
+        contest = ContestId(found.contest_id)
+        try:
+            settings = await published.contest(ctx, contest)
+        except NotFound:
+            continue
+        await _hold_people(ctx, contest, [user_id])
+        await _hold_invites_into(ctx, [found.entrant_id])
+        (row,) = await _hold_entrants(ctx, contest, [found.entrant_id])
+        member = await membership(ctx, contest, user_id)
+        if member is None or rules.locked(settings, ctx.now, submitted=await submitted(ctx, row)):
+            continue
+        await _take_out(ctx, row, member, settings)
+        log.info("entrants.account_left", entrant=str(row.id), user_id=user_id)
+
+
 # Reading, for the services that work in an entrant's workspace.
 
 
@@ -809,15 +882,20 @@ async def panel(
     else:
         invited = person.invited
         emails = await _emails_or_none(ctx, session.user_id, settings)
-        asks = registration.asks_code(rules_now, emails=emails, invited=invited)
+        asks = emails is not None and registration.asks_code(
+            rules_now, emails=emails, invited=invited
+        )
         try:
             _refuse_window(settings, ctx.now)
             _refuse_fixed(settings, ctx.now)
             if person.organises:
                 raise IsStaff("You have a role at this contest, so you cannot also enter it.")
-            if not asks:
+            if emails is None:
+                refused = Refusal(Unavailable.code, ADDRESSES_UNREAD)
+            elif not asks:
                 registration.qualify(rules_now, emails=emails, code=None, invited=invited)
-            await _refuse_full(ctx, contest, settings)
+            if refused is None:
+                await _refuse_full(ctx, contest, settings)
         except RegistrationRefused as refusal:
             refused = Refusal(refusal.code, refusal.detail)
     return Mine(
@@ -1157,14 +1235,14 @@ async def _emails(ctx: Context, user_id: int, settings: ContestDefinition) -> tu
 
 async def _emails_or_none(
     ctx: Context, user_id: int, settings: ContestDefinition
-) -> tuple[str, ...]:
+) -> tuple[str, ...] | None:
     """`_emails`, or none when the forge does not answer, for a panel that
-    says what it can rather than failing.
+    says so rather than failing, and never blames the person's addresses.
     """
     try:
         return await _emails(ctx, user_id, settings)
     except PortError:
-        return ()
+        return None
 
 
 async def _hold_people(ctx: Context, contest: ContestId, user_ids: Sequence[int]) -> None:
@@ -1186,6 +1264,24 @@ async def _hold_places(ctx: Context, contest: ContestId) -> None:
     await ctx.db.execute(
         text("SELECT pg_advisory_xact_lock(:space, hashtext(:contest))"),
         {"space": PLACES_LOCK, "contest": contest},
+    )
+
+
+async def _hold_invites_into(ctx: Context, entrants: Sequence[uuid.UUID]) -> None:
+    """Hold every invite still waiting into the entrants, in the order of
+    their ids, until the unit of work ends: a change that may leave an
+    entrant empty, which withdraws them (`_end`), takes them before the
+    entrant, as accepting or withdrawing one does, so the two never wait on
+    each other.
+    """
+    await ctx.db.execute(
+        select(InviteRow.id)
+        .where(
+            InviteRow.entrant_id.in_(sorted(set(entrants))),
+            InviteRow.status == InviteStatus.PENDING,
+        )
+        .order_by(InviteRow.id)
+        .with_for_update()
     )
 
 
@@ -1394,7 +1490,9 @@ async def _join(
     """
     current = await member_ids(ctx, row.id)
     rules.refuse_full(len(current), settings.entrants.most)
-    await ctx.forge.workspaces.share_workspace(workspace_of(ctx, row), [*current, user_id])
+    workspace = workspace_of(ctx, row)
+    await ctx.forge.workspaces.share_workspace(workspace, [*current, user_id])
+    ctx.after_rollback(_shared_again(ctx, workspace, current))
     _add_member(ctx, row, user_id, qualified)
     await _flush_once(ctx)
     await _after_join(ctx, row, settings, qualified.approval)
@@ -1410,13 +1508,7 @@ async def _after_join(
     """
     status = Status(row.status)
     if status is Status.PENDING:
-        approvals = await ctx.db.scalars(
-            select(EntrantMember.approval).where(
-                EntrantMember.entrant_id == row.id, EntrantMember.status == MemberStatus.MEMBER
-            )
-        )
-        if rules.approved_on_its_own(settings, [Approval(found) for found in approvals]):
-            await _approve(ctx, row, decided_by=None)
+        await _approve_if_due(ctx, row, settings)
     elif status is Status.APPROVED and joined is Approval.MANUAL:
         row.status = Status.PENDING
         row.decided_at = None
@@ -1424,6 +1516,20 @@ async def _after_join(
         row.reason = None
         await ctx.db.flush()
         log.info("entrants.pending_again", entrant=str(row.id))
+
+
+async def _approve_if_due(ctx: Context, row: EntrantRow, settings: ContestDefinition) -> None:
+    """Approve a pending entrant that is complete and whose every member
+    came in by a way that approves straight away, whether someone just
+    joined it or the member who held it back just left.
+    """
+    approvals = await ctx.db.scalars(
+        select(EntrantMember.approval).where(
+            EntrantMember.entrant_id == row.id, EntrantMember.status == MemberStatus.MEMBER
+        )
+    )
+    if rules.approved_on_its_own(settings, [Approval(found) for found in approvals]):
+        await _approve(ctx, row, decided_by=None)
 
 
 async def _approve(ctx: Context, row: EntrantRow, *, decided_by: int | None) -> None:
@@ -1442,12 +1548,18 @@ def _decide(
     row.reason = reason
 
 
-async def _take_out(ctx: Context, row: EntrantRow, member: EntrantMember) -> bool:
+async def _take_out(
+    ctx: Context, row: EntrantRow, member: EntrantMember, settings: ContestDefinition
+) -> bool:
     """End a membership: the person's access to the entrant's workspace taken
     away first, then the row `left`, and an entrant left with nobody and no
-    submissions deleted. Whether the entrant is still there.
+    submissions deleted; a pending one that the rest now approve on their
+    own is approved. Whether the entrant is still there.
     """
-    await _close(ctx, workspace_of(ctx, row), [member.user_id])
+    workspace = workspace_of(ctx, row)
+    members = await member_ids(ctx, row.id)
+    await _close(ctx, workspace, [member.user_id])
+    ctx.after_rollback(_shared_again(ctx, workspace, members))
     member.status = MemberStatus.LEFT
     member.left_at = ctx.now
     await ctx.db.flush()
@@ -1455,6 +1567,8 @@ async def _take_out(ctx: Context, row: EntrantRow, member: EntrantMember) -> boo
         await _end(ctx, row)
         log.info("entrants.emptied", entrant=str(row.id))
         return False
+    if Status(row.status) is Status.PENDING:
+        await _approve_if_due(ctx, row, settings)
     return True
 
 
@@ -1475,6 +1589,20 @@ async def _end(ctx: Context, row: EntrantRow) -> None:
     )
     await ctx.db.delete(row)
     await ctx.db.flush()
+
+
+def _shared_again(ctx: Context, workspace: WorkspaceId, user_ids: Sequence[int]) -> AfterRollback:
+    """Work that puts the workspace back to exactly `user_ids`, the members
+    it had before this change, for a change that gave or took access at the
+    forge and then failed, so access follows the membership that stands.
+    """
+    members = builtins.list(user_ids)
+
+    async def share_again() -> None:
+        await ctx.forge.workspaces.share_workspace(workspace, members)
+        log.info("entrants.access_restored", workspace=workspace, user_ids=members)
+
+    return share_again
 
 
 async def _close(ctx: Context, workspace: WorkspaceId, user_ids: Sequence[int]) -> None:
