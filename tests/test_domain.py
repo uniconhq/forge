@@ -125,6 +125,7 @@ def test_a_sign_in_lands_only_on_a_path_inside_the_platform() -> None:
         "//evil.test",
         "/\\evil",
         "/a\nb",
+        "/\t/evil.test",
         "/" + "a" * 3000,
     ):
         assert safe_next(outside) == "/"
