@@ -186,6 +186,30 @@ async def test_a_former_member_on_a_workspace_repo_is_taken_off_before_the_membe
     assert not [call for call in calls if call.endswith("/collaborators/Bob")]
 
 
+async def test_every_page_of_a_workspace_repos_collaborators_is_read_for_former_members(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    recorder.on(
+        "GET",
+        f"/api/v1/repos/acme/spring.{U8}.desk/collaborators/bob/permission",
+        ok({"permission": "read"}),
+    )
+    recorder.on("GET", f"/api/v1/repos/acme/spring.{U8}.desk", ok({"id": 3}))
+    recorder.on(
+        "GET",
+        f"/api/v1/repos/acme/spring.{U8}.desk/collaborators",
+        ok([{**USER, "id": 8, "login": "bob"}] * 50),
+        ok([{**USER, "id": 7, "login": "ada"}]),
+    )
+
+    await forgejo.workspaces.open_workspace(
+        ContestId("acme/spring"), EntrantOwner(uuid.UUID(int=8)), [8]
+    )
+
+    assert f"DELETE /api/v1/repos/acme/spring.{U8}.desk/collaborators/ada" in recorder.calls()
+
+
 async def test_a_place_its_members_can_write_already_is_finished_and_left_alone(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:

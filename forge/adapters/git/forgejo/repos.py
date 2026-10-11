@@ -524,10 +524,12 @@ class Repos:
         return str(record.get("permission"))
 
     async def collaborators(self, owner: str, name: str) -> list[dict[str, Any]]:
-        return list_of(
-            await self._http.call(
-                PLATFORM, "GET", f"/api/v1/repos/{segment(owner)}/{segment(name)}/collaborators"
-            )
+        """Every collaborator on the repository, page by page: the forge
+        answers one page of its default size otherwise, and someone past it
+        would keep an access they no longer have a right to.
+        """
+        return await self._http.get_all(
+            PLATFORM, f"/api/v1/repos/{segment(owner)}/{segment(name)}/collaborators"
         )
 
     async def set_private(self, owner: str, name: str, private: bool) -> None:
