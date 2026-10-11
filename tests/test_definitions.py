@@ -18,13 +18,20 @@ from forge.domain.definitions import (
     DEFAULT_RATE,
     DEFAULT_SUBMISSIONS,
     TASK_ADMIN_KEYS,
+    Approval,
     ContestVisibility,
+    Entrants,
+    InviteWay,
+    Locks,
     Over,
     Penalty,
+    Registration,
     Relative,
     Select,
     Show,
+    SignupWay,
     State,
+    Way,
     Who,
     admin_only_changes,
     form_problems,
@@ -50,13 +57,18 @@ end: 2026-06-01T14:00:00Z
 state: published
 visibility: everyone
 registration:
-  invite_only: false
   opens: 2026-05-01T00:00:00Z
   closes: 2026-06-01T09:00:00Z
-  approval: manual
-  email_pattern: ".*@u\\\\.nus\\\\.edu"
   capacity: 500
-team_size: 3
+  ways:
+    - invite: {approval: auto}
+    - signup: {name: NUS students, domains: [u.nus.edu], approval: auto}
+    - signup: {name: Guests, code: guest-2026, approval: manual}
+    - signup: {email_pattern: ".*@u\\\\.nus\\\\.edu"}
+entrants:
+  most: 3
+  fewest: 1
+  locks: start
 leaderboards:
   - name: Standings
     tasks: [sum-of-two, shortest]
@@ -154,13 +166,22 @@ def task_text(groups: str, *, credit: str | None = None, extra: str = "") -> str
 def test_the_format_documents_example_contest_parses() -> None:
     contest = parse_contest(CONTEST_EXAMPLE)
 
-    assert (contest.state, contest.visibility, contest.team_size) == (
+    assert (contest.state, contest.visibility, contest.entrants.most) == (
         State.PUBLISHED,
         ContestVisibility.EVERYONE,
         3,
     )
-    assert contest.registration.email_pattern == r".*@u\.nus\.edu"
+    invite, students, guests, pattern = contest.registration.ways
+    assert invite == Way(invite=InviteWay(approval=Approval.AUTO))
+    assert students.signup == SignupWay(
+        name="NUS students", domains=("u.nus.edu",), approval=Approval.AUTO
+    )
+    assert (guests.name, guests.approval) == ("Guests", Approval.MANUAL)
+    assert pattern.signup is not None
+    assert pattern.signup.email_pattern == r".*@u\.nus\.edu"
+    assert contest.registration.invite_way == 0
     assert contest.registration.capacity == 500
+    assert contest.entrants == Entrants(most=3, fewest=1, locks=Locks.START)
     standings, final = contest.leaderboards
     assert standings.order == ("points", Penalty(by="penalty", per_attempt=20))
     assert (standings.who, standings.rows) == (Who.CONTESTANTS, "all")
@@ -175,9 +196,10 @@ def test_the_format_documents_example_contest_parses() -> None:
 def test_a_contest_leaves_the_optional_blocks_to_their_defaults() -> None:
     contest = parse_contest(HEAD + "leaderboards: [{name: Standings}]\ntasks: [{id: a}]\n")
 
-    assert contest.description is None and contest.team_size is None
-    assert contest.registration.invite_only is False
-    assert contest.registration.approval == "manual"
+    assert contest.description is None
+    assert contest.entrants == Entrants(most=1, fewest=1, locks=Locks.START)
+    assert contest.registration.ways == (Way(signup=SignupWay(approval=Approval.MANUAL)),)
+    assert contest.registration.invite_way is None
     assert contest.registration.capacity is None
     board = contest.leaderboards[0]
     assert (board.tasks, board.over, board.select, board.order, board.who, board.rows) == (
@@ -221,13 +243,18 @@ def test_a_label_is_the_entrys_place_as_a_letter() -> None:
     ("extra", "path", "sentence"),
     [
         ("submissions_closed: false\n", "submissions_closed", "closes on its entry"),
-        ("teams: {enabled: true, max_size: 3}\n", "teams", "team_size"),
-        ("registration: {mode: open}\n", "registration.mode", "invite_only"),
+        ("teams: {enabled: true, max_size: 3}\n", "teams", "entrants: {most"),
+        ("team_size: 3\n", "team_size", "entrants.most"),
+        ("registration: {mode: open}\n", "registration.mode", "registration.ways"),
         (
             "registration: {eligibility: {email_pattern: x}}\n",
             "registration.eligibility",
-            "directly under registration",
+            "registration.ways",
         ),
+        ("registration: {invite_only: true}\n", "registration.invite_only", "registration.ways"),
+        ("registration: {approval: auto}\n", "registration.approval", "registration.ways"),
+        ("registration: {email_pattern: x}\n", "registration.email_pattern", "now ways"),
+        ("registration: {code: sesame}\n", "registration.code", "now ways"),
         ("tasks: [{id: a, label: A}]\n", "tasks[0].label", "its place in tasks"),
         ("tasks: [{id: a, points: 100}]\n", "tasks[0].points", "points is now worth"),
         ("leaderboards: [{name: B, stage: default}]\n", "leaderboards[0].stage", "over"),
@@ -245,7 +272,7 @@ def test_a_label_is_the_entrys_place_as_a_letter() -> None:
         (
             "leaderboards: [{name: B, team_only: true}]\n",
             "leaderboards[0].team_only",
-            "team_size is set",
+            "the contest's entrants",
         ),
         ("leaderboards: [{name: B, select: latest}]\n", "leaderboards[0].select", "best_per_group"),
         ("leaderboards: [{name: B, select: selected}]\n", "leaderboards[0].select", "marked"),
@@ -386,10 +413,55 @@ def test_rows_is_all_own_or_a_count_of_at_least_one(rows: str) -> None:
         ("tasks: [{id: abcdefghijklmnopqrstuvwxy}]\n", "tasks[0].id"),
         ("tasks: [{id: a, worth: -1}]\n", "tasks[0].worth"),
         ("tasks: [{id: a, worth: true}]\n", "tasks[0].worth"),
-        ("team_size: 1\n", "team_size"),
+        ("entrants: {most: 0}\n", "entrants.most"),
+        ("entrants: {fewest: 0}\n", "entrants.fewest"),
+        ("entrants: {most: 2, fewest: 3}\n", "entrants.fewest"),
+        ("entrants: {locks: never}\n", "entrants.locks"),
+        ("entrants: {most: '3'}\n", "entrants.most"),
         ("registration: {capacity: 0}\n", "registration.capacity"),
-        ("registration: {email_pattern: '(unclosed'}\n", "registration.email_pattern"),
-        ("registration: {approval: sometimes}\n", "registration.approval"),
+        (
+            "registration: {ways: [{signup: {email_pattern: '(unclosed'}}]}\n",
+            "registration.ways[0].signup.email_pattern",
+        ),
+        (
+            "registration: {ways: [{signup: {approval: sometimes}}]}\n",
+            "registration.ways[0].signup.approval",
+        ),
+        (
+            "registration: {ways: [{invite: {approval: never}}]}\n",
+            "registration.ways[0].invite.approval",
+        ),
+        ("registration: {ways: [{invite: {code: x}}]}\n", "registration.ways[0].invite.code"),
+        (
+            "registration: {ways: [{signup: {domains: []}}]}\n",
+            "registration.ways[0].signup.domains",
+        ),
+        (
+            "registration: {ways: [{signup: {domains: [U.NUS.EDU]}}]}\n",
+            "registration.ways[0].signup.domains[0]",
+        ),
+        (
+            "registration: {ways: [{signup: {domains: [localhost]}}]}\n",
+            "registration.ways[0].signup.domains[0]",
+        ),
+        (
+            "registration: {ways: [{signup: {domains: [-u.nus.edu]}}]}\n",
+            "registration.ways[0].signup.domains[0]",
+        ),
+        (
+            "registration: {ways: [{signup: {domains: [u.nus.edu, u.nus.edu]}}]}\n",
+            "registration.ways[0].signup.domains[1]",
+        ),
+        ("registration: {ways: [{signup: {name: ''}}]}\n", "registration.ways[0].signup.name"),
+        ("registration: {ways: [{}]}\n", "registration.ways[0]"),
+        ("registration: {ways: [{invite: {}, signup: {}}]}\n", "registration.ways[0]"),
+        ("registration: {ways: [invite]}\n", "registration.ways[0]"),
+        ("registration: {ways: [{door: {}}]}\n", "registration.ways[0].door"),
+        ("registration: {ways: [{invite: {}}, {invite: {}}]}\n", "registration.ways[1].invite"),
+        (
+            "registration: {ways: [{signup: {name: A}}, {signup: {name: A, code: x}}]}\n",
+            "registration.ways[1].signup.name",
+        ),
         (
             "registration: {opens: 2026-05-02T00:00:00Z, closes: 2026-05-01T00:00:00Z}\n",
             "registration.closes",
@@ -883,9 +955,9 @@ def test_the_starter_contest_is_the_formats_and_starts_on_the_hour_a_week_on() -
     assert (contest.state, contest.visibility) == (State.DRAFT, ContestVisibility.SIGNED_IN)
     assert contest.start == datetime(2026, 10, 6, 11, tzinfo=UTC)
     assert contest.end - contest.start == timedelta(hours=5)
-    assert contest.description is None and contest.team_size is None
-    assert contest.registration.invite_only is False
-    assert contest.registration.approval == "manual"
+    assert contest.description is None and contest.entrants == Entrants()
+    assert contest.registration == Registration()
+    assert contest.registration.ways[0].approval is Approval.MANUAL
     assert [(board.name, board.who) for board in contest.leaderboards] == [
         ("Standings", Who.CONTESTANTS)
     ]
@@ -954,7 +1026,7 @@ def contest_yaml(**changes: Any) -> bytes:
         ("description", "Another paragraph"),
         ("state", "archived"),
         ("visibility", "hidden"),
-        ("registration", {"approval": "auto"}),
+        ("registration", {"ways": [{"invite": {}}]}),
     ],
 )
 def test_changing_an_admin_only_contest_key_is_named(key: str, value: Any) -> None:
@@ -965,7 +1037,7 @@ def test_the_managers_contest_keys_change_nothing_admin_only() -> None:
     changed = contest_yaml(
         start="2026-06-01T08:00:00Z",
         end="2026-06-01T15:00:00Z",
-        team_size=4,
+        entrants={"most": 4, "locks": "first_submission"},
         leaderboards=[],
         tasks=[{"id": "sum-of-two"}],
     )
@@ -992,3 +1064,11 @@ def test_a_new_file_names_every_admin_key_it_sets_and_an_unparsable_side_compare
 ):
     assert admin_only_changes("contest", None, CONTEST_EXAMPLE) == list(CONTEST_ADMIN_KEYS)
     assert admin_only_changes("task", b"name: [\n", b"name: T\n") == ["name"]
+
+
+def test_a_way_written_bare_takes_its_defaults_and_none_at_all_lets_nobody_in() -> None:
+    contest = parse_contest(HEAD + "registration:\n  ways:\n    - invite:\n    - signup:\n")
+    nobody = parse_contest(HEAD + "registration: {ways: []}\n")
+
+    assert [way.approval for way in contest.registration.ways] == [Approval.AUTO, Approval.MANUAL]
+    assert nobody.registration.ways == ()

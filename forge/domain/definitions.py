@@ -48,6 +48,7 @@ from forge.domain.yaml_models import (
     Problems,
     Retired,
     Size,
+    fail,
     is_number,
     load_mapping,
     mapping_or_empty,
@@ -68,10 +69,13 @@ __all__ = [
     "ContestDefinition",
     "ContestTask",
     "ContestVisibility",
+    "Entrants",
     "Form",
     "Group",
     "InvalidDefinition",
+    "InviteWay",
     "Leaderboard",
+    "Locks",
     "OnSystemError",
     "Over",
     "Penalty",
@@ -80,9 +84,11 @@ __all__ = [
     "Relative",
     "Select",
     "Show",
+    "SignupWay",
     "State",
     "Submissions",
     "TaskDefinition",
+    "Way",
     "Who",
     "admin_only_changes",
     "parse_contest",
@@ -197,19 +203,165 @@ Seconds = Annotated[int, Field(strict=True, ge=1)]
 VALUE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
-class Registration(Model):
-    """Who may enter and how. By default anyone may register at any time,
-    each registration waits for an organiser's approval, and there is no
-    cap on the number of contestants.
+DOMAIN = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
+"""A domain a sign-up takes addresses at: labels of lower-case letters,
+digits and hyphens, two or more, joined by dots, no label starting or ending
+with a hyphen."""
+
+
+def _domain(value: object) -> str:
+    if not isinstance(value, str) or not DOMAIN.fullmatch(value):
+        raise ValueError(
+            "Must be a domain such as u.nus.edu: lower case letters, digits, hyphens and "
+            "dots, with at least one dot, and no dot or hyphen at either end."
+        )
+    return value
+
+
+Domain = Annotated[str, PlainValidator(_domain)]
+
+
+class Locks(StrEnum):
+    """When an entrant's roster locks: at the contest's start, or at the
+    entrant's first submission.
     """
 
-    invite_only: Flag = False
+    START = "start"
+    FIRST_SUBMISSION = "first_submission"
+
+
+class InviteWay(Model):
+    """`invite`: the people an organiser invited to the contest, who type
+    nothing. Approved straight away unless `approval` says an organiser
+    approves them, since an organiser who invited someone chose them.
+    """
+
+    approval: Approval = Approval.AUTO
+
+
+class SignupWay(Model):
+    """`signup`: people who register themselves, under every condition it
+    gives: the `code`, and one confirmed address that is at one of the
+    `domains` and matches `email_pattern`. One with no condition admits
+    anyone with an account. `name` is shown to organisers beside each person
+    who came in by it. An organiser approves each one unless `approval` says
+    otherwise.
+    """
+
+    name: Line | None = None
+    code: Line | None = None
+    domains: Annotated[tuple[Domain, ...], Field(min_length=1)] | None = None
+    email_pattern: Annotated[str, PlainValidator(_pattern)] | None = None
+    approval: Approval = Approval.MANUAL
+
+    @model_validator(mode="after")
+    def _check(self) -> SignupWay:
+        problems = Problems()
+        domains = list(self.domains or ())
+        for index, domain in enumerate(domains):
+            if domain in domains[:index]:
+                problems.add(("domains", index), f"{domain!r} is given more than once.")
+        problems.raise_any()
+        return self
+
+    @property
+    def asks_address(self) -> bool:
+        """Whether it takes only some addresses."""
+        return self.domains is not None or self.email_pattern is not None
+
+
+class Way(Model):
+    """One way into the contest: exactly one of `invite` and `signup`."""
+
+    invite: InviteWay | None = None
+    signup: SignupWay | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _bare(cls, value: object) -> object:
+        """A way written with nothing under its key, `- invite:`, is that
+        way with every default.
+        """
+        if isinstance(value, dict):
+            return {key: {} if found is None else found for key, found in value.items()}
+        return value
+
+    @model_validator(mode="after")
+    def _one(self) -> Way:
+        if (self.invite is None) == (self.signup is None):
+            fail([((), "A way is one of invite: {...} or signup: {...}.")])
+        return self
+
+    @property
+    def approval(self) -> Approval:
+        if self.invite is not None:
+            return self.invite.approval
+        assert self.signup is not None
+        return self.signup.approval
+
+    @property
+    def name(self) -> str | None:
+        return self.signup.name if self.signup is not None else None
+
+
+DEFAULT_WAYS = (Way(signup=SignupWay()),)
+"""The ways of a contest that lists none: anyone with an account signs up,
+and an organiser approves each one."""
+
+
+class Registration(Model):
+    """Who may enter and how: when the window is open, from `opens` until
+    `closes`, always without them; at most `capacity` entrants pending or
+    approved, no cap without it; and the `ways` someone qualifies by, any one
+    enough, by default one sign-up that admits anyone with an account and
+    waits for an organiser's approval. With no ways at all nobody may
+    register.
+    """
+
     opens: AwareTime | None = None
     closes: AwareTime | None = None
-    approval: Approval = Approval.MANUAL
-    email_pattern: Annotated[str, PlainValidator(_pattern)] | None = None
-    code: Line | None = None
     capacity: Count | None = None
+    ways: tuple[Way, ...] = DEFAULT_WAYS
+
+    @model_validator(mode="after")
+    def _check(self) -> Registration:
+        problems = Problems()
+        invites = [index for index, way in enumerate(self.ways) if way.invite is not None]
+        for index in invites[1:]:
+            problems.add(("ways", index, "invite"), "A contest has at most one invite way.")
+        seen: set[str] = set()
+        for index, way in enumerate(self.ways):
+            if way.name is None:
+                continue
+            if way.name in seen:
+                problems.add(
+                    ("ways", index, "signup", "name"), f"{way.name!r} is given more than once."
+                )
+            seen.add(way.name)
+        problems.raise_any()
+        return self
+
+    @property
+    def invite_way(self) -> int | None:
+        """The index of the contest's invite way, or none."""
+        return next((index for index, way in enumerate(self.ways) if way.invite is not None), None)
+
+
+class Entrants(Model):
+    """Who an entrant is: from `fewest` to `most` people, one and one by
+    default, so everyone enters alone; and when its roster `locks`, at the
+    contest's start by default.
+    """
+
+    most: Count = 1
+    fewest: Count = 1
+    locks: Locks = Locks.START
+
+    @model_validator(mode="after")
+    def _check(self) -> Entrants:
+        if self.fewest > self.most:
+            fail([(("fewest",), f"Must be at most {self.most}, the most people in an entrant.")])
+        return self
 
 
 class Penalty(Model):
@@ -316,9 +468,10 @@ DEFAULT_LATE_PER_DAY = 1
 
 
 class ContestDefinition(Model):
-    """A `contest.yaml`. `registration` defaults to open with manual
-    approval, `team_size` to no teams, `on_system_error` to still grading,
-    and `leaderboards` and `tasks` to none.
+    """A `contest.yaml`. `registration` defaults to open, anyone signing up
+    and an organiser approving each, `entrants` to one person each,
+    `on_system_error` to still grading, and `leaderboards` and `tasks` to
+    none.
     """
 
     name: Line
@@ -328,7 +481,7 @@ class ContestDefinition(Model):
     state: State
     visibility: ContestVisibility
     registration: Registration = Registration()
-    team_size: Annotated[int, Field(strict=True, ge=2)] | None = None
+    entrants: Entrants = Entrants()
     on_system_error: OnSystemError = OnSystemError.GRADING
     leaderboards: tuple[Leaderboard, ...] = ()
     tasks: tuple[ContestTask, ...] = ()
@@ -687,17 +840,21 @@ def _old_order(value: object) -> bool:
     return isinstance(value, dict) and bool({"metric", "key", "direction"} & set(value))
 
 
+WAYS_REPLACED = (
+    "invite_only, approval, email_pattern and code are now ways: write registration.ways."
+)
+
 CONTEST_RETIRED = (
     Retired(
         ("submissions_closed",),
         "A task takes submissions until the closes on its entry in tasks; give each task "
         "closes, or move end. Remove submissions_closed.",
     ),
-    Retired(("teams",), "Write team_size: <n> to turn teams on; without it there are none."),
-    Retired(("registration", "mode"), "Write invite_only: true for an invite-only contest."),
-    Retired(
-        ("registration", "eligibility"),
-        "Write email_pattern and code directly under registration.",
+    Retired(("teams",), "Write entrants: {most: <n>} for entrants of up to n people."),
+    Retired(("team_size",), "team_size is now entrants.most."),
+    *(
+        Retired(("registration", key), WAYS_REPLACED)
+        for key in ("invite_only", "approval", "email_pattern", "code", "mode", "eligibility")
     ),
     Retired(("visibility",), "public is now everyone.", _is_public),
     Retired(
@@ -714,7 +871,7 @@ CONTEST_RETIRED = (
     Retired(("leaderboards", ANY, "freeze_at"), "A board does not freeze; remove freeze_at."),
     Retired(
         ("leaderboards", ANY, "team_only"),
-        "A board's rows are teams whenever team_size is set; remove team_only.",
+        "A board's rows are the contest's entrants; remove team_only.",
     ),
     Retired(
         ("leaderboards", ANY, "select"),

@@ -135,8 +135,9 @@ class SoleAdmin(ServiceError):
 
 
 class ContestantConflict(ServiceError):
-    """The user is a contestant in the contests in `contests`, pending or
-    approved, and nobody is an organiser and a contestant of one contest.
+    """The user is a member of an entrant in the contests in `contests`,
+    pending or approved, and nobody is an organiser and a contestant of one
+    contest.
     """
 
     code = "contestant_conflict"
@@ -207,7 +208,7 @@ class IsStaff(RegistrationRefused):
 
 
 class AlreadyRegistered(RegistrationRefused):
-    """The user already has a registration for the contest, whatever became of
+    """The user is in an entrant of the contest already, whatever became of
     it.
     """
 
@@ -215,27 +216,33 @@ class AlreadyRegistered(RegistrationRefused):
 
 
 class InviteRequired(RegistrationRefused):
-    """The contest is invite-only and the user has no accepted invite to it."""
+    """No way of the contest's lets the user in, and the only ones that would
+    are for people an organiser invited.
+    """
 
     code = "invite_required"
 
 
 class WrongInviteCode(RegistrationRefused):
-    """The contest asks for a code and the one given, if any, is not it."""
+    """A sign-up of the contest's would let the user in with its code, and the
+    one given, if any, is not it.
+    """
 
     code = "wrong_invite_code"
 
 
 class DomainNotAllowed(RegistrationRefused):
-    """The user's email address, or its absence, does not match the contest's
-    pattern.
+    """No confirmed email address of the user's, or none at all, is one the
+    contest's sign-ups take.
     """
 
     code = "domain_not_allowed"
 
 
 class ContestFull(RegistrationRefused):
-    """Every place the contest's capacity allows is taken."""
+    """Every place the contest's capacity allows is taken: as many entrants
+    as it holds are pending or approved.
+    """
 
     code = "contest_full"
 
@@ -295,7 +302,7 @@ class Archived(SubmitRefused):
 
 
 class NotApproved(SubmitRefused):
-    """The person is not an approved contestant of the task's contest."""
+    """The person is in no approved entrant of the task's contest."""
 
     code = "not_approved"
 
@@ -447,62 +454,91 @@ class InviteExpired(ServiceError):
     code = "invite_expired"
 
 
-class TeamsOff(ServiceError):
-    """The contest's settings do not turn teams on."""
-
-    code = "teams_off"
-
-
-class InvalidTeamName(ServiceError):
-    """A team's name that is empty, too long, or not printable."""
-
-    code = "invalid_team_name"
-
-
-class TeamNameTaken(ServiceError):
-    """Another team of the contest has that name, ignoring case."""
-
-    code = "team_name_taken"
-
-
-class TeamFull(ServiceError):
-    """The team holds as many as the contest's settings allow. `limit` is that
-    many.
+class EntrantsAlone(ServiceError):
+    """The contest's entrants are one person each (`entrants.most` is 1), so
+    an entrant has no name and nobody invites anyone into one.
     """
 
-    code = "team_full"
+    code = "entrants_alone"
 
 
-class InTeam(ServiceError):
-    """The person is a member of a team in the contest already, or has asked
-    or been asked to join this one.
+class InvalidEntrantName(ServiceError):
+    """An entrant's name that is empty, too long, or not printable."""
+
+    code = "invalid_entrant_name"
+
+
+class EntrantNameRequired(ServiceError):
+    """The contest's entrants may be more than one person, so a new one needs
+    a name.
     """
 
-    code = "in_team"
+    code = "entrant_name_required"
 
 
-class SubmittedAlone(ServiceError):
-    """The person has submitted to the contest on their own, so their results
-    are theirs and cannot become a team's.
+class EntrantNameTaken(ServiceError):
+    """Another entrant of the contest has that name, ignoring case."""
+
+    code = "entrant_name_taken"
+
+
+class EntrantFull(ServiceError):
+    """The entrant's members and the people invited into it already reach
+    what the contest's settings allow. `limit` is that many.
     """
 
-    code = "submitted_alone"
+    code = "entrant_full"
 
 
-class TeamHasSubmissions(ServiceError):
-    """A team that has submitted is kept with its results, so it is not
-    deleted.
+class InEntrant(ServiceError):
+    """The person is in an entrant of the contest already and cannot leave it
+    for another: its roster has locked, it has submitted, or it was turned
+    away; or they are a member of the entrant named already.
     """
 
-    code = "team_has_submissions"
+    code = "in_entrant"
 
 
-class TeamChanged(ServiceError):
-    """The person's team changed while what they asked for was being done,
+class RosterLocked(ServiceError):
+    """The entrant's roster has locked, at the contest's start or at the
+    entrant's first submission as the contest says, or the contest has
+    ended: from then on only organisers change who is in it.
+    """
+
+    code = "roster_locked"
+
+
+class EntrantIncomplete(ServiceError):
+    """The entrant has fewer members than the contest's `entrants.fewest`, so
+    it is neither approved nor takes submissions. `fewest` is how many it
+    needs and `members` how many it has.
+    """
+
+    code = "entrant_incomplete"
+
+
+class NoInviteWay(ServiceError):
+    """An organiser's invite to a contest whose `registration.ways` has no
+    `invite` way, which nobody could come in by.
+    """
+
+    code = "no_invite_way"
+
+
+class EntrantHasSubmissions(ServiceError):
+    """An entrant that has submitted is kept with its results, so it is not
+    deleted, and the last member of one does not move out of it.
+    """
+
+    code = "entrant_has_submissions"
+
+
+class EntrantChanged(ServiceError):
+    """The person's entrant changed while what they asked for was being done,
     so it is asked again.
     """
 
-    code = "team_changed"
+    code = "entrant_changed"
 
 
 class MarksOff(ServiceError):
