@@ -178,11 +178,14 @@ def refuse_pointer(path: str, content: bytes) -> None:
     """
     if path == ATTRIBUTES_FILE or path.endswith(f"/{ATTRIBUTES_FILE}"):
         problem = (
-            "A place the platform writes cannot carry its own file rules; "
-            "upload a file and it is kept as one."
+            f"A file called {ATTRIBUTES_FILE} cannot be saved here, since it would change how "
+            "the files beside it are kept. Remove it."
         )
     elif is_pointer(content):
-        problem = "A file written here cannot be a large-file pointer; upload it instead."
+        problem = (
+            "This text is a pointer to a large file, which cannot be saved as text. Upload the "
+            "file itself instead."
+        )
     else:
         return
     raise InvalidInputs(problem, errors=[{"input": path, "message": problem}])
@@ -191,9 +194,9 @@ def refuse_pointer(path: str, content: bytes) -> None:
 def digest_problem(digest: str) -> str | None:
     """What is wrong with `digest` as a file's SHA-256, if anything."""
     if not isinstance(digest, str) or len(digest) != DIGEST_LENGTH:
-        return f"A digest is {DIGEST_LENGTH} characters of lowercase hex."
+        return f"A file's SHA-256 must be {DIGEST_LENGTH} characters of lower case hex."
     if any(character not in DIGEST_CHARACTERS for character in digest):
-        return "A digest is lowercase hex, 0 to 9 and a to f."
+        return "A file's SHA-256 must use only 0 to 9 and a to f."
     return None
 
 
@@ -205,17 +208,20 @@ and as its short name `git~1`, as git does (`core.protectNTFS`, on by default)."
 def filename_problem(name: str) -> str | None:
     """What is wrong with `name` as the name of an uploaded file, if anything."""
     if not name or len(name) > FILENAME_MAX:
-        return f"A file name is 1 to {FILENAME_MAX} characters."
+        return f"A file name must be 1 to {FILENAME_MAX} characters long."
     if name in (".", "..") or "/" in name:
-        return "A file name is one name, with no folder in it."
+        return "A file name cannot include a folder."
     if any(character in UNSAFE_CHARACTERS or ord(character) < 32 for character in name):
-        return 'A file name has none of \\ ? # % : * " < > | and no control characters.'
+        return 'A file name cannot hold any of \\ ? # % : * " < > | or control characters.'
     if name != name.strip():
-        return "A file name does not start or end with a space."
+        return "A file name cannot start or end with a space."
     if name.lower().rstrip(".") == GIT_FOLDER or name.lower() == "git~1":
-        return f"A file name cannot be {GIT_FOLDER}: git keeps its own data there."
+        return f"A file cannot be called {GIT_FOLDER}, since git keeps its own data there."
     if name == ATTRIBUTES_FILE:
-        return f"A file cannot be named {ATTRIBUTES_FILE}: it would decide how its folder is read."
+        return (
+            f"A file cannot be called {ATTRIBUTES_FILE}, since it would change how the files "
+            "beside it are kept."
+        )
     return None
 
 

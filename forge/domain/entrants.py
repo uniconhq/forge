@@ -55,11 +55,15 @@ def checked_name(name: str) -> str:
     """
     trimmed = name.strip()
     if not trimmed:
-        raise InvalidEntrantName("An entrant needs a name.")
+        raise InvalidEntrantName("Give the team a name.")
     if len(trimmed) > NAME_MAX:
-        raise InvalidEntrantName(f"An entrant's name is at most {NAME_MAX} characters.")
+        raise InvalidEntrantName(
+            f"A team's name can be at most {NAME_MAX} characters. Choose a shorter one."
+        )
     if not trimmed.isprintable():
-        raise InvalidEntrantName("An entrant's name holds only printable characters.")
+        raise InvalidEntrantName(
+            "A team's name can hold only characters that can be printed. Remove the others."
+        )
     return trimmed
 
 
@@ -70,7 +74,8 @@ def refuse_full(taken: int, most: int) -> None:
     """
     if taken >= most:
         raise EntrantFull(
-            f"An entrant in this contest holds at most {most}, invites waiting included.",
+            f"A team in this contest can have at most {most} people, counting the invites "
+            "still waiting, and this one is full.",
             limit=most,
         )
 
@@ -91,7 +96,7 @@ def refuse_locked(settings: ContestDefinition, now: datetime, *, submitted: bool
     """`RosterLocked` once the entrant's roster has locked."""
     if locked(settings, now, submitted=submitted):
         raise RosterLocked(
-            "Who is in this entrant is fixed now; only the contest's organisers change it."
+            "Who is in this team is fixed now. Only the contest's organisers can change it."
         )
 
 
@@ -109,8 +114,9 @@ def refuse_incomplete(settings: ContestDefinition, members: int) -> None:
     fewest = settings.entrants.fewest
     if members < fewest:
         raise EntrantIncomplete(
-            f"An entrant in this contest needs at least {fewest} "
-            f"{'member' if fewest == 1 else 'members'}, and this one has {members}.",
+            f"A team in this contest needs at least {fewest} "
+            f"{'member' if fewest == 1 else 'members'}, and this one has {members}. Invite "
+            "more people before it can take part.",
             fewest=fewest,
             members=members,
         )

@@ -122,7 +122,9 @@ def window_open(rules: Registration, now: datetime) -> bool:
 def refuse_closed(rules: Registration, now: datetime) -> None:
     """`RegistrationClosed` unless the window is open now."""
     if rules.opens is not None and now < rules.opens:
-        raise RegistrationClosed(f"Registration opens at {rules.opens.isoformat()}.")
+        raise RegistrationClosed(
+            f"Registration opens at {rules.opens.isoformat()}. Come back then to register."
+        )
     if rules.closes is not None and now >= rules.closes:
         raise RegistrationClosed(f"Registration closed at {rules.closes.isoformat()}.")
 
@@ -146,7 +148,7 @@ def qualify(
     away; `InviteRequired` when only an invite would do.
     """
     if not rules.ways:
-        raise RegistrationClosed("Nobody can register for this contest.")
+        raise RegistrationClosed("This contest does not take registrations.")
     admitted = [found for found in _admitting(rules, emails, code, invited) if found is not None]
     if admitted:
         auto = [found for found in admitted if found.approval is Approval.AUTO]
@@ -154,11 +156,18 @@ def qualify(
     signups = [way.signup for way in rules.ways if way.signup is not None]
     if any(signup.code is not None and _takes_address(signup, emails) for signup in signups):
         if code is None or not code.strip():
-            raise WrongInviteCode("This contest asks for a code.")
-        raise WrongInviteCode("That is not the code this contest asks for.")
+            raise WrongInviteCode(
+                "This contest asks for a code. Enter the code the organisers gave you."
+            )
+        raise WrongInviteCode("That code is not right. Check it with the organisers.")
     if signups:
-        raise DomainNotAllowed("This contest takes only some email addresses, and not yours.")
-    raise InviteRequired("This contest takes only the people it invites.")
+        raise DomainNotAllowed(
+            "This contest takes only some email addresses, and none of yours is one of them. "
+            "Ask the organisers which addresses it takes."
+        )
+    raise InviteRequired(
+        "This contest takes only the people its organisers invite. Ask them for an invite."
+    )
 
 
 def asks_code(rules: Registration, *, emails: Sequence[str], invited: bool) -> bool:
@@ -260,7 +269,7 @@ def refuse_undecidable(status: Status, allowed: tuple[Status, ...], doing: str) 
     from.
     """
     if status not in allowed:
-        raise WrongStatus(f"An entrant that is {status} cannot be {doing}.", current=status)
+        raise WrongStatus(f"This entrant is {status}, so it cannot be {doing}.", current=status)
 
 
 def checked_reason(reason: str) -> str:
@@ -269,9 +278,9 @@ def checked_reason(reason: str) -> str:
     """
     trimmed = reason.strip()
     if not trimmed:
-        raise InvalidReason("Say why, so the entrant can read it.")
+        raise InvalidReason("Give a reason, so the entrant knows why.")
     if len(trimmed) > REASON_MAX:
-        raise InvalidReason(f"A reason is at most {REASON_MAX} characters.")
+        raise InvalidReason(f"A reason can be at most {REASON_MAX} characters. Shorten it.")
     return trimmed
 
 
@@ -283,10 +292,10 @@ def checked_tasks(tasks: Sequence[str] | None, known: Sequence[str]) -> tuple[st
     if tasks is None:
         return None
     if not tasks:
-        raise InvalidExtension("Name the tasks the extension is for, or none for every task.")
+        raise InvalidExtension("Choose the tasks the extra time is for, or none for every task.")
     for task in tasks:
         if task not in known:
-            raise InvalidExtension(f"{task} is not a task of the contest.")
+            raise InvalidExtension(f"{task} is not one of the contest's tasks.")
     return tuple(dict.fromkeys(tasks))
 
 
@@ -295,7 +304,7 @@ def checked_extension(extension: timedelta) -> timedelta:
     above a year.
     """
     if extension < timedelta(0):
-        raise InvalidExtension("An extension cannot take time away.")
+        raise InvalidExtension("Extra time cannot be negative.")
     if extension > LONGEST_EXTENSION:
-        raise InvalidExtension("An extension is at most a year.")
+        raise InvalidExtension("Extra time can be at most a year.")
     return timedelta(seconds=int(extension.total_seconds()))

@@ -162,10 +162,12 @@ def path_problem(entry: Field, name: str, tests: Collection[str]) -> str | None:
     if entry.per_test:
         matched = TEST_FILE.match(name)
         if matched is None or f"{matched['group']}/{matched['test']}" not in tests:
-            return "A file of this input is named for a test, <group>/<test>, such as main/1.txt."
+            return (
+                "Name each file of this input after a test, as <group>/<test>, such as main/1.txt."
+            )
         return None
     if entry.type is Type.FILE and len(parts) > 1:
-        return "A file name is one name, with no folder in it."
+        return "A file name cannot include a folder."
     return None
 
 
@@ -238,7 +240,10 @@ def lay_out(
         problems.extend(_contract_problems(document))
     if problems:
         first = problems[0]
-        raise InvalidInputs(f"{first['input']}: {first['message']}", errors=problems)
+        raise InvalidInputs(
+            f"There is a problem with the input {first['input']}: {first['message']}",
+            errors=problems,
+        )
     text = exact_json.dumps(document, sort_keys=True, indent=2) + "\n"
     return Layout(files=files, document=text.encode(), inputs=inputs)
 
@@ -253,7 +258,13 @@ def _contract_problems(document: Mapping[str, Any]) -> list[dict[str, str]]:
         return []
     location = broken.removeprefix("at ").split(":", 1)[0].split("/")
     about = location[1] if location[0] == "inputs" and len(location) > 1 else ""
-    return [{"input": about, "message": f"The submission breaks the runner's contract {broken}."}]
+    return [
+        {
+            "input": about,
+            "message": f"Unicon cannot grade this submission as it is ({broken}). Check it "
+            "with the organisers.",
+        }
+    ]
 
 
 def _one(
@@ -303,23 +314,23 @@ def _files(
     if entry.type is Type.FILE and not entry.per_test and len(given.uploads) != 1:
         return "This input takes exactly one file."
     if len(set(given.uploads)) != len(given.uploads):
-        return "An upload is given more than once."
+        return "The same file is given more than once. Give it once."
     chosen = [uploads[upload] for upload in given.uploads]
     if any(upload.input != entry.id for upload in chosen):
-        return "An upload was asked for another input."
+        return "A file here was uploaded for another input. Upload it again for this one."
     names = [upload.filename for upload in chosen]
     if len(set(names)) != len(names):
-        return "Two files have the same path."
+        return "Two files have the same name. Rename one of them."
     folders = {
         "/".join(name.split("/")[:end]) for name in names for end in range(1, name.count("/") + 1)
     }
     both = sorted(folders & set(names))
     if both:
-        return f"{both[0]} is a file and a folder at once."
+        return f"{both[0]} is both a file and a folder. Rename one of them."
     for name in names:
         problem = path_problem(entry, name, tests)
         if problem is not None:
-            return f"{name}: {problem}"
+            return f"There is a problem with the file {name}: {problem}"
     if entry.per_test:
         answered = [
             f"{matched['group']}/{matched['test']}"
@@ -327,10 +338,13 @@ def _files(
             if (matched := TEST_FILE.match(name)) is not None
         ]
         if len(set(answered)) != len(answered):
-            return "Two files answer the same test."
+            return "Two files are for the same test. Give one file for each test."
     total = sum(upload.size for upload in chosen)
     if total > entry.max_size:
-        return f"The files of this input total more than the {entry.max_size} bytes allowed."
+        return (
+            f"The files of this input come to more than the {entry.max_size} bytes allowed. "
+            "Make them smaller."
+        )
     paths = []
     for upload in sorted(chosen, key=lambda upload: upload.filename):
         path = f"{FILES_FOLDER}/{entry.id}/{upload.filename}"
@@ -346,20 +360,20 @@ def value_problem(entry: Field, value: object) -> str | None:
     match entry.type:
         case Type.TEXT:
             if not isinstance(value, str):
-                return "Must be text."
+                return "This must be text."
             if len(value.encode()) > TEXT_MAX:
-                return f"Must be at most {TEXT_MAX} bytes."
+                return f"This must be at most {TEXT_MAX} bytes."
         case Type.NUMBER:
             if not isinstance(value, str) or PLAIN_DECIMAL.match(value) is None:
-                return "Must be a number written as plain decimal digits, such as 2.5."
+                return "Give a number in plain digits, such as 2.5."
             number = Decimal(value)
             if entry.min is not None and number < entry.min:
-                return f"Must be at least {entry.min}."
+                return f"This must be at least {entry.min}."
             if entry.max is not None and number > entry.max:
-                return f"Must be at most {entry.max}."
+                return f"This must be at most {entry.max}."
         case Type.BOOLEAN:
             if not isinstance(value, bool):
-                return "Must be true or false."
+                return "This must be true or false."
         case Type.ENUM:
             if value not in (entry.options or ()):
                 return f"Choose one of {', '.join(entry.options or ())}."

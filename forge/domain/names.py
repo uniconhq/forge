@@ -24,9 +24,14 @@ SERVICE_ACCOUNT_PREFIX = "unicon-ci-"
 
 def validate_name(value: str, *, max_length: int = OTHER_MAX) -> str:
     if not NAME.match(value):
-        raise InvalidName(f"{value!r} must be lower case letters, digits, hyphens and underscores")
+        raise InvalidName(
+            f"{value!r} cannot be used as a name. Use only lower case letters, digits, hyphens (-) "
+            "and underscores (_), starting with a letter or a digit."
+        )
     if len(value) > max_length:
-        raise InvalidName(f"{value!r} is longer than {max_length} characters")
+        raise InvalidName(
+            f"{value!r} is longer than {max_length} characters. Choose a shorter name."
+        )
     return value
 
 

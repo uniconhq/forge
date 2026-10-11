@@ -97,7 +97,7 @@ def checked_email(value: str) -> str:
     """
     address = value.strip().lower()
     if len(address) > EMAIL_MAX or not ADDRESS.fullmatch(address):
-        raise InvalidInvite("That is not an email address.")
+        raise InvalidInvite("That is not an email address. Check it and try again.")
     return address
 
 
@@ -105,7 +105,7 @@ def checked_target(username: str | None, email: str | None) -> tuple[str | None,
     """The username or the address an invite names, exactly one of them."""
     named = username.strip() if username is not None else None
     if (named is None) == (email is None) or named == "":
-        raise InvalidInvite("An invite names either a username or an email address.")
+        raise InvalidInvite("Give either a username or an email address, not both.")
     return named, checked_email(email) if email is not None else None
 
 
@@ -115,7 +115,10 @@ def checked_lifetime(lifetime: timedelta | None) -> timedelta:
     if lifetime is None:
         return LIFETIME
     if lifetime < SHORTEST_LIFETIME or lifetime > LONGEST_LIFETIME:
-        raise InvalidInvite(f"An invite stands from an hour to {LONGEST_LIFETIME.days} days.")
+        raise InvalidInvite(
+            f"An invite can last from an hour to {LONGEST_LIFETIME.days} days. Choose a time "
+            "in between."
+        )
     return lifetime
 
 
@@ -123,6 +126,6 @@ def refuse_closed(status: InviteStatus, expires_at: datetime, now: datetime, doi
     """`WrongStatus` for an invite that is no longer pending, naming where it
     stands, and `InviteExpired` for one past its expiry."""
     if status is not InviteStatus.PENDING:
-        raise WrongStatus(f"An invite that is {status} cannot be {doing}.", current=status)
+        raise WrongStatus(f"This invite is {status}, so it cannot be {doing}.", current=status)
     if now >= expires_at:
-        raise InviteExpired("This invite has lapsed; ask the organisers for a new one.")
+        raise InviteExpired("This invite has expired. Ask whoever sent it for a new one.")

@@ -42,7 +42,11 @@ def check_path(path: str) -> str:
         or any(segment in ("", ".", "..") for segment in segments)
         or any(character in UNSAFE_CHARACTERS or ord(character) < 32 for character in path)
     ):
-        raise InvalidPath(f"{path!r} is not a path inside the place.", path=path)
+        raise InvalidPath(
+            f"{path!r} cannot be used as a file's path. Give a path inside the task or "
+            "contest, with no empty, . or .. parts.",
+            path=path,
+        )
     return path
 
 

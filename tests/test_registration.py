@@ -98,7 +98,7 @@ def test_the_default_way_lets_anyone_sign_up_for_an_organiser_to_approve() -> No
 
 
 def test_a_contest_with_no_way_takes_nobody() -> None:
-    with pytest.raises(RegistrationClosed, match="Nobody can register"):
+    with pytest.raises(RegistrationClosed, match="does not take registrations"):
         qualify(Registration(ways=()), emails=(), code=None, invited=True)
 
 
@@ -233,7 +233,7 @@ def test_the_refusal_says_what_would_help() -> None:
         qualify(coded, emails=("eve@x.test",), code="sesame", invited=False)
     with pytest.raises(DomainNotAllowed):
         qualify(students, emails=("eve@x.test",), code=None, invited=False)
-    with pytest.raises(InviteRequired, match="only the people it invites"):
+    with pytest.raises(InviteRequired, match="only the people its organisers invite"):
         qualify(ways(InviteWay()), emails=("eve@x.test",), code="sesame", invited=False)
 
 
@@ -255,7 +255,7 @@ def test_a_decision_is_refused_from_a_status_it_is_not_allowed_from() -> None:
         refuse_undecidable(Status.REJECTED, (Status.PENDING,), "approved")
 
     assert refused.value.extra == {"current": Status.REJECTED}
-    assert "rejected cannot be approved" in refused.value.detail
+    assert "is rejected, so it cannot be approved" in refused.value.detail
 
 
 @pytest.mark.parametrize("reason", ["", "   ", "x" * (REASON_MAX + 1)])
@@ -300,4 +300,4 @@ def test_an_extension_names_the_tasks_it_is_for_or_none_for_every_task() -> None
         checked_tasks([], known)
     with pytest.raises(InvalidExtension) as refused:
         checked_tasks(["a", "z"], known)
-    assert "z is not a task of the contest." in refused.value.detail
+    assert "z is not one of the contest's tasks." in refused.value.detail

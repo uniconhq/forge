@@ -260,7 +260,7 @@ def test_a_number_one_past_a_bound_of_thirty_digits_is_refused() -> None:
         lay_out((ratio,), TESTS, {"ratio": SubmittedInput(value=past)}, {})
 
     assert refused.value.extra["errors"] == [
-        {"input": "ratio", "message": f"Must be at most {THIRTY}."}
+        {"input": "ratio", "message": f"This must be at most {THIRTY}."}
     ]
 
 
@@ -293,41 +293,41 @@ MORE = {
     [
         ({"language": SubmittedInput(value="rust")}, "language", "Choose one of python, cpp."),
         ({"language": SubmittedInput(value="java")}, "language", "Choose one of python, cpp."),
-        ({"alpha": SubmittedInput(value="2")}, "alpha", "Must be at most 1."),
-        ({"alpha": SubmittedInput(value="-0.5")}, "alpha", "Must be at least 0."),
+        ({"alpha": SubmittedInput(value="2")}, "alpha", "This must be at most 1."),
+        ({"alpha": SubmittedInput(value="-0.5")}, "alpha", "This must be at least 0."),
         (
             {"alpha": SubmittedInput(value=True)},
             "alpha",
-            "Must be a number written as plain decimal digits, such as 2.5.",
+            "Give a number in plain digits, such as 2.5.",
         ),
         (
             {"alpha": SubmittedInput(value="NaN")},
             "alpha",
-            "Must be a number written as plain decimal digits, such as 2.5.",
+            "Give a number in plain digits, such as 2.5.",
         ),
         (
             {"alpha": SubmittedInput(value="1e3")},
             "alpha",
-            "Must be a number written as plain decimal digits, such as 2.5.",
+            "Give a number in plain digits, such as 2.5.",
         ),
         (
             {"alpha": SubmittedInput(value="0x10")},
             "alpha",
-            "Must be a number written as plain decimal digits, such as 2.5.",
+            "Give a number in plain digits, such as 2.5.",
         ),
         (
             {"alpha": SubmittedInput(value="")},
             "alpha",
-            "Must be a number written as plain decimal digits, such as 2.5.",
+            "Give a number in plain digits, such as 2.5.",
         ),
         (
             {"alpha": SubmittedInput(value=" 0.5")},
             "alpha",
-            "Must be a number written as plain decimal digits, such as 2.5.",
+            "Give a number in plain digits, such as 2.5.",
         ),
-        ({"fast": SubmittedInput(value="yes")}, "fast", "Must be true or false."),
+        ({"fast": SubmittedInput(value="yes")}, "fast", "This must be true or false."),
         ({"note": SubmittedInput()}, "note", "This input is required."),
-        ({"note": SubmittedInput(value=True)}, "note", "Must be text."),
+        ({"note": SubmittedInput(value=True)}, "note", "This must be text."),
         ({"note": SubmittedInput(uploads=(W1,))}, "note", "Give this input a value, not files."),
         ({"submission": SubmittedInput(value="print(1)")}, "submission", "needs a file"),
         (
@@ -341,35 +341,36 @@ MORE = {
         (
             {"weights": SubmittedInput(uploads=(W2, TWIN))},
             "weights",
-            "Two files have the same path.",
+            "Two files have the same name. Rename one of them.",
         ),
         ({"weights": SubmittedInput(uploads=(W1, W1))}, "weights", "given more than once"),
         (
             {"weights": SubmittedInput(uploads=(W1, W2, TWIN))},
             "weights",
-            "Two files have the same path.",
+            "Two files have the same name. Rename one of them.",
         ),
         (
             {"answers": SubmittedInput(uploads=(NOT_A_TEST,))},
             "answers",
-            "main/3.txt: A file of this input is named for a test, <group>/<test>, such as "
-            "main/1.txt.",
+            "There is a problem with the file main/3.txt: Name each file of this input after "
+            "a test, as <group>/<test>, such as main/1.txt.",
         ),
         (
             {"answers": SubmittedInput(uploads=(A1, SECOND_1))},
             "answers",
-            "Two files answer the same test.",
+            "Two files are for the same test. Give one file for each test.",
         ),
         ({"ghost": SubmittedInput(value="1")}, "ghost", "The task has no such input."),
         (
             {"weights": SubmittedInput(uploads=(W2, INSIDE))},
             "weights",
-            "a.bin is a file and a folder at once.",
+            "a.bin is both a file and a folder. Rename one of them.",
         ),
         (
             {"weights": SubmittedInput(uploads=(GIT,))},
             "weights",
-            ".git/config: A file name cannot be .git: git keeps its own data there.",
+            "There is a problem with the file .git/config: A file cannot be called .git, since "
+            "git keeps its own data there.",
         ),
     ],
     ids=[
@@ -419,7 +420,7 @@ def test_a_submission_that_would_break_the_contract_is_refused_at_its_input() ->
 
     (error,) = refused.value.extra["errors"]
     assert error["input"] == ""
-    assert error["message"].startswith("The submission breaks the runner's contract at inputs:")
+    assert error["message"].startswith("Unicon cannot grade this submission as it is (at inputs:")
 
 
 PER_TEST_NAMES = [
@@ -471,7 +472,7 @@ def test_a_per_test_file_with_an_empty_ending_is_refused() -> None:
     errors = refusal({"answers": SubmittedInput(uploads=(dotted,))}, uploads)
 
     assert [error["input"] for error in errors] == ["answers"]
-    assert errors[0]["message"].startswith("main/1.: ")
+    assert errors[0]["message"].startswith("There is a problem with the file main/1.: ")
 
 
 def test_a_folders_files_together_are_within_its_size() -> None:
@@ -483,7 +484,8 @@ def test_a_folders_files_together_are_within_its_size() -> None:
     assert errors == [
         {
             "input": "weights",
-            "message": "The files of this input total more than the 1024 bytes allowed.",
+            "message": "The files of this input come to more than the 1024 bytes allowed. "
+            "Make them smaller.",
         }
     ]
 
