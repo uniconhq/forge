@@ -1,6 +1,6 @@
-"""Announcements, over a real Postgres and the fake. A manager posts, edits
-and closes one on a contest or a task, each at the forge as themselves, and
-nothing deletes one; an observer reads every one, closed ones included, and
+"""Announcements, over a real Postgres and the fake. A manager posts, edits,
+closes and reopens one on a contest or a task, each at the forge as
+themselves, and nothing deletes one; an observer reads every one, closed ones included, and
 posts none. A contestant reads the open ones of their contest and of each
 task released to them, and nothing of a closed one or of a task that is not
 released. A title or text that is empty or too long is refused naming it,
@@ -70,6 +70,55 @@ async def test_a_contestant_reads_the_open_announcements_of_the_contest_and_its_
     ]
     with pytest.raises(NotFound):
         await announcements.task(setup, entered.session, hidden)
+
+
+@pytest.mark.parametrize("place", ["contest", "task"])
+async def test_a_manager_reopens_a_closed_one_as_themselves_and_readers_see_it_again(
+    setup: Setup, acme: Acme, entered: Entered, place: str
+) -> None:
+    scope = contest_scope(SPRING) if place == "contest" else task_scope(entered.task)
+    posted = await announcements.post(setup, acme.ada, scope, title="Room", body="Room 3")
+    await announcements.close(setup, acme.ada, scope, posted.number)
+    assert await announcements.contest(setup, entered.session, SPRING) == ()
+
+    reopened = await announcements.reopen(setup, acme.ada, scope, posted.number)
+    again = await announcements.reopen(setup, acme.ada, scope, posted.number)
+
+    assert (reopened.title, reopened.closed) == ("Room", False)
+    assert again == reopened
+    [made] = acme.fake.calls_to("reopen_thread")
+    assert isinstance(made.identity, AsUser) and made.identity.user_id == 7
+    seen = await announcements.contest(setup, entered.session, SPRING)
+    assert [(found.title, found.closed) for found in seen] == [("Room", False)]
+
+
+async def test_reopening_an_open_one_changes_nothing(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    posted = await announcements.post(setup, acme.ada, contest_scope(SPRING), title="T", body="b")
+
+    reopened = await announcements.reopen(setup, acme.ada, contest_scope(SPRING), posted.number)
+
+    assert reopened == posted
+    assert acme.fake.calls_to("reopen_thread") == []
+
+
+async def test_only_a_manager_reopens_and_only_an_announcement(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    acme.fake.add_user(50, "olive")
+    await acme.fake.orgs.grant_role(50, Scope("acme", "spring"), Role.OBSERVER)
+    observer = await organiser(setup, acme.fake, 50, Scope("acme", "spring"), Role.OBSERVER)
+    posted = await announcements.post(setup, acme.ada, contest_scope(SPRING), title="T", body="b")
+    await announcements.close(setup, acme.ada, contest_scope(SPRING), posted.number)
+
+    with pytest.raises(Forbidden):
+        await announcements.reopen(setup, observer, contest_scope(SPRING), posted.number)
+    with pytest.raises(NotFound, match="no such announcement"):
+        await announcements.reopen(setup, acme.ada, contest_scope(SPRING), posted.number + 1)
+    assert acme.fake.calls_to("reopen_thread") == []
+    [kept] = await announcements.manage(setup, acme.ada, contest_scope(SPRING))
+    assert kept.closed is True
 
 
 async def test_an_observer_reads_every_announcement_and_posts_none(

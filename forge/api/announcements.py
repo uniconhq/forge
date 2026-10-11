@@ -1,6 +1,6 @@
 """Announcements: an organiser's message to a contest or a task, posted,
-edited and closed as the organiser and never deleted, and the open ones a
-signed-in person reads.
+edited, closed and reopened as the organiser and never deleted, and the open
+ones a signed-in person reads.
 """
 
 from forge.services.announcements import (
@@ -11,6 +11,7 @@ from forge.services.announcements import (
     edit,
     manage,
     post,
+    reopen,
     task,
 )
 
@@ -22,5 +23,6 @@ __all__ = [
     "edit",
     "manage",
     "post",
+    "reopen",
     "task",
 ]

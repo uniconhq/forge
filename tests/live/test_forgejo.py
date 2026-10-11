@@ -306,6 +306,10 @@ async def test_threads_are_posted_edited_answered_and_closed(forge: ForgejoForge
     assert (read.answered, read.closed) == (False, False)
     await forge.threads.close_thread(PLATFORM, thread.id)
     assert (await forge.threads.read_thread(PLATFORM, thread.id)).closed is True
+    await forge.threads.reopen_thread(PLATFORM, thread.id)
+    await forge.threads.reopen_thread(PLATFORM, thread.id)
+    reopened = await forge.threads.read_thread(PLATFORM, thread.id)
+    assert (reopened.closed, reopened.title) == (False, "Welcome all")
 
 
 async def test_the_org_search_finds_the_open_questions_and_a_follow_up_reopens_one(

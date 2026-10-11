@@ -78,6 +78,7 @@ async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
         ),
         lambda fake: fake.workflows.star_workflow(PLATFORM, WorkflowId("ada")),
         lambda fake: fake.threads.close_thread(PLATFORM, ThreadId("acme/spring.contest")),
+        lambda fake: fake.threads.reopen_thread(PLATFORM, ThreadId("acme/spring.contest")),
     ],
 )
 async def test_a_malformed_id_names_nothing(

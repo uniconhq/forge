@@ -2,10 +2,11 @@
 held at the forge as a thread labelled `announcement` on the contest's or
 the task's own repository.
 
-An organiser managing the place posts, edits and closes one, each at the
-forge as themselves, with their own credential, so the record says who
-wrote it. There is no delete anywhere: a message people have read and acted
-on is closed, and stays readable. An organiser observing the place reads
+An organiser managing the place posts, edits, closes and reopens one, each
+at the forge as themselves, with their own credential, so the record says
+who wrote it. There is no delete anywhere: a message people have read and
+acted on is closed, and stays readable; one closed by mistake is reopened,
+and its readers see it again. An organiser observing the place reads
 every one of its announcements, closed ones included (`manage`).
 
 A signed-in person reads the open announcements of a contest they see,
@@ -129,6 +130,20 @@ async def close(ctx: Context, organiser: Organiser, scope: Scope, number: int) -
     if not found.closed:
         await ctx.forge.threads.close_thread(organiser.identity, found.id)
         log.info("announcements.closed", place=scope.path, number=number, by=organiser.user.id)
+    return await _shown(ctx, organiser, scope, number)
+
+
+@action
+async def reopen(ctx: Context, organiser: Organiser, scope: Scope, number: int) -> Announcement:
+    """Open a closed announcement again, as the organiser, so its readers see
+    it once more. Reopening an open one changes nothing. Needs the manager
+    role at its place.
+    """
+    require(organiser, scope, Role.MANAGER)
+    found = await _found(ctx, organiser, scope, number)
+    if found.closed:
+        await ctx.forge.threads.reopen_thread(organiser.identity, found.id)
+        log.info("announcements.reopened", place=scope.path, number=number, by=organiser.user.id)
     return await _shown(ctx, organiser, scope, number)
 
 

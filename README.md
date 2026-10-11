@@ -116,7 +116,7 @@ forge/api/
   events.py     check and publish, EVENTS_PATH, where the door is, and
                 SIGNATURE_HEADERS and KIND_HEADERS, the headers the signature
                 and the event's kind come in
-  announcements.py  post, edit, close, manage, contest, task, and the
+  announcements.py  post, edit, close, reopen, manage, contest, task, and the
                 Announcement and AnsweredQuestion they return
   clarifications.py  ask, mine, follow_up, inbox, of_contest, reply, mark,
                 unmark, answer_publicly, and the Clarification and Message
@@ -558,7 +558,7 @@ hosting process calls are actions, marked `@action` from
 | `contest_home` | `contests`, `home`, `task` |
 | `landing` | `contests`, `contest`, `statement` |
 | `events` | `check`, `publish` |
-| `announcements` | `post`, `edit`, `close`, `manage`, `contest`, `task` |
+| `announcements` | `post`, `edit`, `close`, `reopen`, `manage`, `contest`, `task` |
 | `clarifications` | `ask`, `mine`, `follow_up`, `inbox`, `of_contest`, `reply`, `mark`, `unmark`, `answer_publicly` |
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
@@ -1234,11 +1234,12 @@ nothing about either is kept in the database: the thread is the record.
 
 An **announcement** is an organiser's message to a contest or one of its
 tasks, a thread labelled `announcement` on the contest's or the task's own
-repository. A manager there posts, edits and closes one, each as
+repository. A manager there posts, edits, closes and reopens one, each as
 themselves with their own credential, so the forge's record says who wrote
-it (`announcements.post`, `edit`, `close`); an observer reads every one,
-closed ones included (`manage`). There is no delete: a message people have
-read is closed and stays readable. A signed-in person reads the open
+it (`announcements.post`, `edit`, `close`, `reopen`); an observer reads every
+one, closed ones included (`manage`). There is no delete: a message people
+have read is closed and stays readable, and one closed by mistake is
+reopened, its issue opened again at the forge. A signed-in person reads the open
 announcements of a contest they see and of each task released to them
 (`contest`), and of one released task (`task`), read live as the platform,
 since a contestant reaches no repository at the forge; a task not released
