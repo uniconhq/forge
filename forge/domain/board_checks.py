@@ -263,7 +263,7 @@ def _scope_message(board: Leaderboard, task: str, first: str) -> str:
     }[board.over]
     counting = {
         Over.LIVE: "the results shown during the contest",
-        Over.AFTER_CLOSE: "the results shown after the contest ends",
+        Over.AFTER_CLOSE: "the results shown when each task closes",
         Over.ALL: "every result",
     }[board.over]
     return (

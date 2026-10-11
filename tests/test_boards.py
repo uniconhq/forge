@@ -503,6 +503,17 @@ def test_a_lower_is_better_value_first_over_several_tasks_is_refused() -> None:
     assert breaches(public, {"house-prices": tasks["house-prices"]}, many=False) == []
 
 
+def test_a_board_counting_what_is_shown_at_the_reveal_says_so_of_each_task() -> None:
+    final = board(name="Final", over="after_close", order=["time_ms"])
+
+    found = breaches(final, {"hw1": covered(TIME, {"main": group(pass_=1)})}, many=False)
+
+    assert [b.message for b in found] == [
+        "The leaderboard Final ranks by time_ms, counting the results shown when each task "
+        "closes, so hw1 needs a test group whose results entrants see at the reveal."
+    ]
+
+
 def test_a_value_ranked_is_reported_with_a_fold_and_the_same_direction_everywhere() -> None:
     on = board(order=["points", "time_ms"])
     groups = {"main": group(pass_=1)}
