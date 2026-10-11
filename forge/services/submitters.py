@@ -18,7 +18,7 @@ it, who read their own submissions there and are told it is archived when
 they submit.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from forge.db.tables import Entrant as EntrantRow
@@ -136,20 +136,25 @@ def extension(person: Person) -> Extension:
     return timelines.of_entrant(person.entrant)
 
 
-async def hold_standing(ctx: Context, person: Person) -> None:
+async def hold_standing(ctx: Context, person: Person) -> Person:
     """Hold the person's entrant for reading until the unit of work ends, so
     no change of who is in it, and no change of its extension, passes this
     submit, and refuse with `EntrantChanged` when the person is no longer in
     it: a person joining, leaving or being moved waits for the submit, and a
-    submit that started before such a change is asked again.
+    submit that started before such a change is asked again. The person
+    comes back with the entrant's row and members read again under the
+    hold, which `refuse` then checks: a change that committed before the
+    hold, after the first read, is seen.
     """
     if person.entrant is None:
-        return
-    await entrants.hold_for_reading(ctx, person.entrant.id)
+        return person
+    row = await entrants.hold_for_reading(ctx, person.entrant.id)
     contest = contest_id_of(task_scope(person.task))
     member = await entrants.membership(ctx, contest, person.session.user_id)
-    if member is None or member.entrant_id != person.entrant.id:
+    if row is None or member is None or member.entrant_id != row.id:
         raise EntrantChanged("Your team changed while you were submitting. Submit again.")
+    members = tuple(await entrants.member_ids(ctx, row.id))
+    return replace(person, entrant=row, members=members)
 
 
 PLACES_AT_ONCE = 4

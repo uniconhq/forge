@@ -785,3 +785,30 @@ async def test_no_new_team_registers_once_teams_are_fixed_and_one_alone_still_ma
     await write_contest(acme.fake, contest(most=3, fewest=1))
     alone = await entrants.register(setup, crowd["carol"], SPRING, name="Alone")
     assert alone.status is Status.APPROVED
+
+
+async def test_a_submit_reads_its_entrant_again_once_it_holds_it(
+    setup: Setup,
+    acme: Acme,
+    sum_task: TaskId,
+    crowd: dict[str, Session],
+    clock: FakeClock,
+    manager: Organiser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bob = crowd["bob"]
+    adders = await entrants.register(setup, bob, SPRING, name="Adders")
+    await entrants.extend(setup, manager, SPRING, adders.id, timedelta(hours=2))
+    clock.set(START + timedelta(hours=5, minutes=30))
+    made = await upload(setup, acme.fake, bob, sum_task, b"print(1)\n")
+    holding = entrants.hold_for_reading
+
+    async def taken_away_first(ctx: Any, entrant: uuid.UUID) -> Any:
+        # The organiser's change commits while the submit waits for the row.
+        await entrants.extend(setup, manager, SPRING, adders.id, timedelta(0))
+        return await holding(ctx, entrant)
+
+    monkeypatch.setattr(entrants, "hold_for_reading", taken_away_first)
+
+    with pytest.raises(TaskClosed):
+        await submissions.submit(setup, bob, sum_task, code(made.id), idempotency_key="key-0001-race")

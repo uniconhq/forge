@@ -973,13 +973,20 @@ async def settle(
     return current
 
 
-async def hold_for_reading(ctx: Context, entrant: uuid.UUID) -> None:
+async def hold_for_reading(ctx: Context, entrant: uuid.UUID) -> EntrantRow | None:
     """Hold the entrant's row for reading until the unit of work ends, so no
-    change of who is in it, or of its extension, passes the caller.
+    change of who is in it, or of its extension, passes the caller, and
+    answer with it as it stands once held, none once it is gone: what was
+    read of it before the hold may have changed while the caller waited.
     """
-    await ctx.db.execute(
-        select(EntrantRow.id).where(EntrantRow.id == entrant).with_for_update(read=True)
-    )
+    return (
+        await ctx.db.execute(
+            select(EntrantRow)
+            .where(EntrantRow.id == entrant)
+            .with_for_update(read=True)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
 
 
 async def ref(ctx: Context, row: EntrantRow) -> EntrantRef:
