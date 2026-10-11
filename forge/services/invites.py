@@ -111,7 +111,9 @@ _mailing = Turns(MAILS_AT_ONCE)
 @dataclass(frozen=True, slots=True)
 class Invite:
     """An invite as organisers and the person it is for see it: where it is
-    to, by its keys and its names, what it grants, the entrant it asks
+    to, by its keys and its names, and the title of the contest it is at or
+    under, none at an org or when the contest's settings do not read; what
+    it grants, the entrant it asks
     someone into, if any, by its id and the name it is shown under, who it
     names, who sent it, where it stands, when it lapses, and what became of
     its mail. `expired` is a pending invite past its expiry.
@@ -120,6 +122,7 @@ class Invite:
     id: uuid.UUID
     scope: Scope
     where: ScopeNames
+    contest_title: str | None
     grants: Grant
     entrant: EntrantRef | None
     username: str | None
@@ -737,7 +740,7 @@ async def _mail(ctx: Context, draft: _Draft, token: str) -> Mail | None:
             log.info("invites.no_address", invite=str(draft.invite))
             return None
         address = emails[0]
-    where = (await names.scope_names(ctx, draft.scope)).path
+    where = await _where_in_words(ctx, draft.scope)
     inviter = await _user(ctx, draft.invited_by)
     by = inviter.username if inviter is not None else "An organiser"
     into = (await entrants.ref(ctx, draft.entrant)).name if draft.entrant is not None else None
@@ -760,6 +763,33 @@ def _offer(grants: Grant, where: str, into: str | None) -> str:
         return f"take part in {where}"
     article = "an" if grants is Grant.ADMIN or grants is Grant.OBSERVER else "a"
     return f"be {article} {grants.value} of {where}"
+
+
+def _contest_of(scope: Scope) -> ContestId | None:
+    """The contest a scope is at or under, none for an org."""
+    return contest_id_of(scope) if scope.contest is not None else None
+
+
+async def _contest_title(ctx: Context, contest: ContestId) -> str | None:
+    """The contest's title from its settings, or none when they do not read
+    or the forge did not answer: a title shown is never worth a refusal.
+    """
+    try:
+        return (await published.contest(ctx, contest)).name
+    except PortError:
+        return None
+
+
+async def _where_in_words(ctx: Context, scope: Scope) -> str:
+    """Where an invite is to as its mail names it: the contest by its title,
+    a task by its name in it, and an org by its name.
+    """
+    names_of = await names.scope_names(ctx, scope)
+    contest = _contest_of(scope)
+    title = await _contest_title(ctx, contest) if contest is not None else None
+    if title is None:
+        return names_of.path
+    return f"{names_of.task} in {title}" if names_of.task is not None else title
 
 
 def scope_of(path: str) -> Scope:
@@ -792,6 +822,11 @@ async def _views(ctx: Context, rows: builtins.list[InviteRow]) -> tuple[Invite, 
         else []
     )
     shown = await entrants.display_names(ctx, into)
+    titles: dict[ContestId, str | None] = {}
+    for scope in scopes.values():
+        contest = _contest_of(scope)
+        if contest is not None and contest not in titles:
+            titles[contest] = await _contest_title(ctx, contest)
     inviters: dict[int, User | None] = {}
     for row in rows:
         if row.invited_by_user_id not in inviters:
@@ -801,6 +836,7 @@ async def _views(ctx: Context, rows: builtins.list[InviteRow]) -> tuple[Invite, 
             id=row.id,
             scope=scopes[row.scope],
             where=named.get(scopes[row.scope]) or ScopeNames(org=scopes[row.scope].org),
+            contest_title=titles.get(_contest_of(scopes[row.scope]) or ContestId("")),
             grants=Grant(row.grants),
             entrant=(
                 EntrantRef(row.entrant_id, shown[row.entrant_id])

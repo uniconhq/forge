@@ -88,11 +88,11 @@ async def test_an_invite_by_username_is_mailed_after_the_request_and_accepting_g
         InviteStatus.PENDING,
         MailStatus.WAITING,
     )
-    assert made.where.path == "acme/spring"
+    assert (made.where.path, made.contest_title) == ("acme/spring", "Spring 2026")
     await setup.settle()
     [mail] = acme.fake.mail.sent
     assert mail.to == "carol@example.test"
-    assert "ada has invited you to be a manager of acme/spring" in mail.text
+    assert "ada has invited you to be a manager of Spring 2026" in mail.text
     assert f"{APP_URL}/invites#" in mail.text
     [listed] = await invites.at(setup, manager, CONTEST)
     assert (listed.id, listed.mail_status) == (made.id, MailStatus.SENT)
@@ -590,4 +590,4 @@ async def test_a_members_invite_is_mailed_as_an_invite_to_join_the_entrant(
         Grant.MEMBER,
         "Adders",
     )
-    assert "bob has invited you to join Adders in acme/spring" in acme.fake.mail.sent[-1].text
+    assert "bob has invited you to join Adders in Spring 2026" in acme.fake.mail.sent[-1].text
