@@ -7,13 +7,14 @@ for the person; a home and a task's page are read live. Each lets go of its
 connection to the database before it reads the forge.
 
 A person sees a published contest that is for `everyone` or the
-`signed-in`, and a `hidden` one once they are its approved contestant, or
-have accepted an invite to it and not registered; organisers see their own
-contests whatever their state. The home carries the contest's dates, the
-person's own registration, what the register form needs to know, the
-server's clock so a countdown agrees with it, and the tasks released to
-them, the ones visible now, each with its label, its worth and when it
-falls due and closes for the person's row, their extension on it included.
+`signed-in`, and a `hidden` one once they are in an approved entrant of it,
+or have accepted an organiser's invite to it and are in no entrant there;
+organisers see their own contests whatever their state. The home carries the
+contest's dates, the person's registration panel (`entrants.panel`): their
+entrant and whether and how they may register; the server's clock so a
+countdown agrees with it, and the tasks released to them, the ones visible
+now, each with its label, its worth and when it falls due and closes for
+their entrant, its extension on it included.
 A task's page gives its statement, its submission caps and the form of the
 inputs a contestant gives, and nothing else of what the task holds, only
 once the task is visible. A task that is not, or a contest the person may
@@ -25,14 +26,10 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
-
-from forge.db.tables import Contestant
-from forge.domain import registration
+from forge.db.tables import Entrant
 from forge.domain import release as rules
 from forge.domain.definitions import ContestDefinition, ContestVisibility, State, Submissions
 from forge.domain.errors import NotFound
-from forge.domain.identity import User
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.names import ScopeNames
 from forge.domain.registration import Status
@@ -42,8 +39,8 @@ from forge.domain.sessions import Session
 from forge.domain.submissions import Field
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import contestants, invites, names, published, release
-from forge.services.contestants import Registration
+from forge.services import entrants, invites, names, published, release
+from forge.services.entrants import Mine
 from forge.services.published import PublishedTask
 from forge.services.release import TaskRelease
 
@@ -51,8 +48,8 @@ from forge.services.release import TaskRelease
 @dataclass(frozen=True, slots=True)
 class ContestSummary:
     """A contest in the list: where it is, by the names of its org and
-    itself, what it is called, when it runs, and the person's own
-    registration status, if they have one.
+    itself, what it is called, when it runs, and the status of the person's
+    entrant, if they are in one.
     """
 
     contest: ContestId
@@ -85,10 +82,10 @@ class TaskEntry:
 @dataclass(frozen=True, slots=True)
 class ContestHome:
     """A contest's home for one person. `organises` says they hold a role at
-    the contest, which keeps them from entering it; `registration_open` says
-    whether the window is open now, and `invite_only` and `asks_code` what
-    the register form needs; `now` is the server's clock when this was read.
-    `where` is the contest by the names of its org and itself.
+    the contest, which keeps them from entering it; `registration` is their
+    registration panel: their entrant, if any, and whether and how they may
+    register; `now` is the server's clock when this was read. `where` is the
+    contest by the names of its org and itself.
     """
 
     contest: ContestId
@@ -98,11 +95,8 @@ class ContestHome:
     start: datetime
     end: datetime
     state: State
-    registration: Registration | None
+    registration: Mine
     organises: bool
-    registration_open: bool
-    invite_only: bool
-    asks_code: bool
     now: datetime
     tasks: tuple[TaskEntry, ...]
 
@@ -134,26 +128,21 @@ class TaskPage:
 @action
 async def contests(ctx: Context, session: Session) -> tuple[ContestSummary, ...]:
     """Every contest the signed-in person sees, newest start first, each with
-    their own registration status. Organisers find their own contests from
+    the status of their entrant. Organisers find their own contests from
     their orgs, so this lists what a contestant sees.
     """
-    rows = {
-        row.contest_id: row
-        for row in (
-            await ctx.db.execute(select(Contestant).where(Contestant.user_id == session.user_id))
-        ).scalars()
-    }
+    statuses = await entrants.statuses(ctx, session.user_id)
     invited = await invites.accepted_places(ctx, session.user_id)
     await ctx.let_go()
     found = []
     every = await published.every_contest_kept(ctx)
     where = await names.places_named(ctx, [contest for contest, _ in every])
     for contest, settings in every:
-        row = rows.get(contest)
+        status = statuses.get(contest)
         if contest in where and rules.contest_visible_to(
             settings,
             has_session=True,
-            is_contestant=_approved(row) or (row is None and contest in invited),
+            is_contestant=status is Status.APPROVED or (status is None and contest in invited),
             is_organiser=False,
         ):
             found.append(
@@ -164,7 +153,7 @@ async def contests(ctx: Context, session: Session) -> tuple[ContestSummary, ...]
                     start=settings.start,
                     end=settings.end,
                     visibility=settings.visibility,
-                    status=Status(row.status) if row is not None else None,
+                    status=status,
                 )
             )
     return tuple(found)
@@ -176,7 +165,7 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
     they may not see.
     """
     settings, person = await release.seen(ctx, session, contest)
-    extension = await release.row_extension(ctx, contest, session.user_id, person)
+    extension = release.row_extension(person)
     await ctx.let_go()
     now = ctx.now
     tasks = tuple(
@@ -193,7 +182,7 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
         for task in await published.tasks(ctx, contest, settings)
         if rules.visible(settings, task.name, now)
     )
-    entry = settings.registration
+    panel = await entrants.panel(ctx, session, contest, settings, person)
     return ContestHome(
         contest=contest,
         where=await names.scope_names(ctx, contest_scope(contest)),
@@ -202,15 +191,8 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
         start=settings.start,
         end=settings.end,
         state=settings.state,
-        registration=(
-            contestants.registration_of(person.row, _session_user(session))
-            if person.row is not None
-            else None
-        ),
+        registration=panel,
         organises=person.organises,
-        registration_open=registration.window_open(entry, now),
-        invite_only=entry.invite_only,
-        asks_code=entry.code is not None,
         now=now,
         tasks=tasks,
     )
@@ -228,7 +210,7 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
     except NotFound as exc:
         raise NotFound(published.NO_SUCH_TASK) from exc
     found = await published.task(ctx, task, settings)
-    extension = await release.row_extension(ctx, contest, session.user_id, person)
+    extension = release.row_extension(person)
     await ctx.let_go()
     now = ctx.now
     if found is None or not rules.visible(settings, found.name, now):
@@ -248,7 +230,7 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
         closes=_closes(settings, found, extension),
         marks=(
             settings.marks_of(found.entry)
-            if found.entry is not None and _approved(person.row)
+            if found.entry is not None and _approved(person.entrant)
             else None
         ),
     )
@@ -270,18 +252,14 @@ def _closes(
     return close_of(settings, found.entry, extension)
 
 
-def _session_user(session: Session) -> User:
-    return User(id=session.user_id, username=session.username)
-
-
-def _approved(row: Contestant | None) -> bool:
+def _approved(row: Entrant | None) -> bool:
     return row is not None and row.status == Status.APPROVED
 
 
 def _to(person: release.Reader, found: TaskRelease) -> TaskRelease:
     """Where a task stands for `person`: not open, as `not_approved`, where
-    it is open but they hold no approved row to submit from.
+    it is open but they are in no approved entrant to submit from.
     """
-    if found.open and not _approved(person.row):
+    if found.open and not _approved(person.entrant):
         return replace(found, open=False, closed=Closed.NOT_APPROVED)
     return found

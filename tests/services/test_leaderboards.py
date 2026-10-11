@@ -34,7 +34,7 @@ from forge.domain.errors import (
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM, User
 from forge.domain.ids import TaskId
-from forge.domain.names import UserOwner
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.sessions import Session
 from forge.domain.showing import SubmissionState
@@ -44,7 +44,7 @@ from forge.runtime.setup import Setup
 from forge.services import (
     boards,
     contest_home,
-    contestants,
+    entrants,
     files,
     gradings,
     identity,
@@ -144,11 +144,15 @@ async def _three_groups(setup: Setup, acme: Acme, task: TaskId) -> Published:
 
 
 async def _submit(setup: Setup, acme: Acme, entered: Entered, key: str) -> int:
-    made = await upload(setup, acme.fake, entered.session, entered.task, key.encode())
+    return await _submit_as(setup, acme, entered.session, entered.task, key)
+
+
+async def _submit_as(setup: Setup, acme: Acme, session: Session, task: TaskId, key: str) -> int:
+    made = await upload(setup, acme.fake, session, task, key.encode())
     submission = await submissions.submit(
         setup,
-        entered.session,
-        entered.task,
+        session,
+        task,
         {
             "submission": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
@@ -200,7 +204,7 @@ async def test_a_contestant_reads_their_own_row_with_its_counts_and_the_hidden_b
     standings, final = await boards.seen(setup, ranked.session, SPRING)
 
     (bob,) = standings.rows
-    assert bob.owner == UserOwner(8)
+    assert bob.owner == EntrantOwner(ranked.entrant)
     assert (bob.cells["sum"].grading, bob.cells["sum"].submissions) == (0, (1,))
     assert final.nothing_shown
     assert final.shown_at == END
@@ -241,9 +245,9 @@ async def test_an_organiser_reads_now_every_row_and_final_as_every_task_revealed
 async def _contestant(setup: Setup, acme: Acme, user_id: int, name: str) -> Session:
     acme.fake.add_user(user_id, name)
     session = await signed_in(setup, acme.fake, user_id)
-    await contestants.register(setup, session, SPRING)
+    entrant = await entrants.register(setup, session, SPRING)
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await contestants.approve(setup, manager, SPRING, user_id)
+    await entrants.approve(setup, manager, SPRING, entrant.id)
     return session
 
 
@@ -252,11 +256,12 @@ async def test_an_organiser_picks_a_row_of_the_contest_and_reads_the_boards_it_s
 ) -> None:
     await write_contest(acme.fake, contest(BOARDS + "  - {name: Staff, who: organisers}\n"))
     observer = await organiser(setup, acme.fake, 7, Scope("acme", "spring"))
-    await _contestant(setup, acme, 30, "cyd")
+    theirs = (await entrants.mine(setup, await _contestant(setup, acme, 30, "cyd"), SPRING)).entrant
+    assert theirs is not None
 
     with pytest.raises(NotFound):
-        await boards.organised(setup, observer, SPRING, row=UserOwner(31))
-    picked = await boards.organised(setup, observer, SPRING, row=UserOwner(30))
+        await boards.organised(setup, observer, SPRING, row=EntrantOwner(uuid.uuid4()))
+    picked = await boards.organised(setup, observer, SPRING, row=EntrantOwner(theirs.id))
 
     assert [each.now.board.name for each in picked] == ["Standings", "Final"]
     bob = next(row for row in picked[0].now.rows if row.name == "bob")
@@ -374,7 +379,7 @@ async def test_relative_credit_is_against_the_best_of_the_rows_candidates_only(
     cyd = await _contestant(setup, acme, 30, "cyd")
     await _submit(setup, acme, entered, "key-0001-bob")
     await _grade_waiting(setup, _main(time_ms=10))
-    await _submit(setup, acme, Entered(cyd, entered.task), "key-0001-cyd")
+    await _submit_as(setup, acme, cyd, entered.task, "key-0001-cyd")
     await _grade_waiting(setup, _main(time_ms=20))
 
     def points(standings: Any) -> dict[str, Fraction | None]:
@@ -418,7 +423,7 @@ async def test_relative_credit_counts_a_fallen_back_result_while_the_fallback_ho
     cyd = await _contestant(setup, acme, 30, "cyd")
     await _submit(setup, acme, entered, "key-0001-bob")
     await _grade_waiting(setup, _main(time_ms=10))
-    await _submit(setup, acme, Entered(cyd, entered.task), "key-0001-cyd")
+    await _submit_as(setup, acme, cyd, entered.task, "key-0001-cyd")
     await _grade_waiting(setup, _main(time_ms=20))
     manager = await _manager(setup, acme)
     broken = await _broken_retry(setup, manager, "key-0001-bob")
@@ -670,7 +675,9 @@ async def test_an_organiser_reads_a_hidden_groups_points_and_tests_before_the_re
 ) -> None:
     observer = _observer_of(acme, Scope("acme", "spring", "sum"))
 
-    seen = await submissions.organised(setup, observer, ranked.task, UserOwner(8), 1)
+    seen = await submissions.organised(
+        setup, observer, ranked.task, EntrantOwner(ranked.entrant), 1
+    )
     own = await submissions.one(setup, ranked.session, ranked.task, 1)
 
     assert seen.grading is not None and own.grading is not None
@@ -701,7 +708,11 @@ async def test_a_contestants_own_read_is_unchanged_by_an_organisers(
     before = await submissions.one(setup, ranked.session, ranked.task, 1)
 
     await submissions.organised(
-        setup, _observer_of(acme, Scope("acme", "spring")), ranked.task, UserOwner(8), 1
+        setup,
+        _observer_of(acme, Scope("acme", "spring")),
+        ranked.task,
+        EntrantOwner(ranked.entrant),
+        1,
     )
     after = await submissions.one(setup, ranked.session, ranked.task, 1)
 
@@ -719,7 +730,7 @@ async def test_an_organiser_without_the_observer_role_at_the_task_is_refused(
     elsewhere = _observer_of(acme, Scope("acme", "spring", "product"))
 
     with pytest.raises(Forbidden):
-        await submissions.organised(setup, elsewhere, ranked.task, UserOwner(8), 1)
+        await submissions.organised(setup, elsewhere, ranked.task, EntrantOwner(ranked.entrant), 1)
     with pytest.raises(Forbidden):
         await gradings.list(setup, elsewhere, ranked.task)
 
@@ -729,7 +740,7 @@ async def test_a_row_with_no_such_submission_is_no_such_submission(
 ) -> None:
     observer = _observer_of(acme, Scope("acme", "spring"))
 
-    for owner, number in ((UserOwner(8), 3), (UserOwner(7), 1)):
+    for owner, number in ((EntrantOwner(ranked.entrant), 3), (EntrantOwner(uuid.uuid4()), 1)):
         with pytest.raises(NotFound):
             await submissions.organised(setup, observer, ranked.task, owner, number)
 

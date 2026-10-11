@@ -46,11 +46,9 @@ async def test_a_manager_makes_the_contest_with_a_valid_starter(setup: Setup, ac
         datetime(2026, 10, 3, 12, 0, tzinfo=UTC),
         datetime(2026, 10, 3, 17, 0, tzinfo=UTC),
     )
-    assert (settings.registration.invite_only, settings.registration.approval.value) == (
-        False,
-        "manual",
-    )
-    assert (settings.description, settings.team_size, settings.tasks) == (None, None, ())
+    assert [way.approval.value for way in settings.registration.ways] == ["manual"]
+    assert settings.registration.ways[0].signup is not None
+    assert (settings.description, settings.entrants.most, settings.tasks) == (None, 1, ())
     (board,) = settings.leaderboards
     assert (board.name, board.who.value) == ("Standings", "contestants")
     assert b"\ntasks:" not in starter.content

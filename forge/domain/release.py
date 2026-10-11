@@ -1,8 +1,7 @@
 """Whether a row sees a task and may submit to it, and when its submissions
 are late, worked out from `contest.yaml` and the clock on every read
 (TASK-FORMAT.md section 1.1). Nobody releases a task and nothing fires when
-the moment comes. A row is a contestant, or a team when the contest has
-teams.
+the moment comes. A row is an entrant.
 
 A task's timeline is its entry in the contest's `tasks`. It is released once
 its contest has been published and has started and the entry's

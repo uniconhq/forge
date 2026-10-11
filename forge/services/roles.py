@@ -18,10 +18,10 @@ so a refusal leaves nothing half made:
   scopes, so a contest's only admin may step down while an org admin stands.
   The same holds for a person changing their own role.
 - Nobody is an organiser and a contestant of one contest. A role at a
-  contest or one of its tasks is refused to someone registered in it, and a
-  role at an org to someone registered in any of its contests, with
-  `ContestantConflict`. `holds_role_in_contest` is the other direction, for
-  registration to ask.
+  contest or one of its tasks is refused to a member of an entrant of it
+  that is pending or approved, and a role at an org to one in any of its
+  contests, with `ContestantConflict`. `holds_role_in_contest` is the other
+  direction, for registering and joining an entrant to ask.
 - An org's service account is not a person. It is never listed, and it is
   neither granted a role nor removed from one. It is known by its id in
   `org_accounts`, never by its name.
@@ -44,7 +44,8 @@ from dataclasses import dataclass
 
 from sqlalchemy import select, text
 
-from forge.db.tables import Contestant
+from forge.db.tables import Entrant, EntrantMember
+from forge.domain.entrants import MemberStatus
 from forge.domain.errors import ContestantConflict, Forbidden, NotFound, SoleAdmin
 from forge.domain.identity import User
 from forge.domain.ids import ContestId
@@ -300,15 +301,21 @@ async def _refuse_if_last_admin(ctx: Context, user_id: int, scope: Scope) -> Non
 
 
 async def refuse_if_contestant(ctx: Context, user: User, scope: Scope) -> None:
-    statement = select(Contestant.contest_id).where(
-        Contestant.user_id == user.id, Contestant.status.in_(REGISTERED)
+    statement = (
+        select(Entrant.contest_id)
+        .join(EntrantMember, EntrantMember.entrant_id == Entrant.id)
+        .where(
+            EntrantMember.user_id == user.id,
+            EntrantMember.status == MemberStatus.MEMBER,
+            Entrant.status.in_(REGISTERED),
+        )
     )
     if scope.kind is ScopeKind.ORG:
         statement = statement.where(
-            Contestant.contest_id.startswith(contest_id_prefix(scope.org), autoescape=True)
+            Entrant.contest_id.startswith(contest_id_prefix(scope.org), autoescape=True)
         )
     else:
-        statement = statement.where(Contestant.contest_id == contest_id_of(scope))
+        statement = statement.where(Entrant.contest_id == contest_id_of(scope))
     contests = sorted((await ctx.db.execute(statement)).scalars())
     if contests:
         where = await names.places_named(ctx, contests)

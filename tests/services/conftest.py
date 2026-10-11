@@ -5,7 +5,7 @@ contest and a task made the way an organiser makes them, a checked
 `Organiser` for anyone, and what the fake holds, to compare before and after
 a create that failed. For the contestant's side: a session for anyone,
 the contest's settings written as a test needs them, a task made and one
-published by a save of its starter, a contestant entered in a running
+published by a save of its starter, a contestant entered alone in a running
 contest, and a file uploaded as a browser uploads one. A test that moves
 the clock on by more than a credential lives and then calls an action as
 someone passes the guard first, `identity.current`, as every request does.
@@ -13,6 +13,7 @@ someone passes the guard first, `identity.current`, as every request does.
 
 import copy
 import hashlib
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,13 +23,14 @@ from forge.adapters.fakes import FakeForge
 from forge.domain.content import Edit
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, OrgId, TaskId
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope, task_id_of
 from forge.domain.sessions import Session
 from forge.runtime.setup import Setup
 from forge.services import (
     access,
-    contestants,
     contests,
+    entrants,
     identity,
     orgs,
     publications,
@@ -167,12 +169,14 @@ async def sum_task(setup: Setup, acme: Acme, spring: ContestId) -> TaskId:
 
 @dataclass(frozen=True, slots=True)
 class Entered:
-    """bob (8), approved in acme/spring, running and for everyone, with the task
-    sum published. His place to submit it is made at his first submit.
+    """bob (8), alone in an approved entrant of acme/spring, running and for
+    everyone, with the task sum published. Its place to submit it is made at
+    his first submit.
     """
 
     session: Session
     task: TaskId
+    entrant: uuid.UUID
 
 
 @pytest.fixture
@@ -180,11 +184,11 @@ async def entered(setup: Setup, acme: Acme, sum_task: TaskId) -> Entered:
     await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     await publish(setup, acme, sum_task)
     bob = await signed_in(setup, acme.fake, 8)
-    await contestants.register(setup, bob, SPRING)
+    entrant = await entrants.register(setup, bob, SPRING)
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await contestants.approve(setup, manager, SPRING, 8)
+    await entrants.approve(setup, manager, SPRING, entrant.id)
     acme.fake.reset_calls()
-    return Entered(bob, sum_task)
+    return Entered(bob, sum_task, entrant.id)
 
 
 async def upload(
@@ -215,3 +219,10 @@ async def upload(
         door = await uploads.door(setup, session, slot.id, length=len(content))
         fake.uploads.send(door.path, door.authorization, content)
     return await uploads.complete(setup, session, task, slot.id)
+
+
+def segment(entrant: uuid.UUID) -> str:
+    """How an entrant's workspace is named at the forge, between a contest
+    and the word that ends a repository's name.
+    """
+    return EntrantOwner(entrant).segment

@@ -1,21 +1,21 @@
-"""Clarifications: a contestant's question and the organisers' answer,
-private to the asker and the organisers, held at the forge as a thread
-labelled `clarification` on the desk of the workspace the contestant works
-in, their own or their team's, which is what keeps everyone else out of it;
-a team's members all read and follow up its questions, and a question is
-named by its desk: the asker's user id, or `team.<id>` for a team's. Nothing about one is stored in
-the database: the thread is the record.
+"""Clarifications: an entrant's question and the organisers' answer,
+private to the entrant and the organisers, held at the forge as a thread
+labelled `clarification` on the desk of the entrant's workspace, which is
+what keeps everyone else out of it. Every member of the entrant reads and
+follows up its questions, and a question is named by its desk, the
+entrant's: `entrant.<id>`, its id as 32 hex digits. Nothing about one is
+stored in the database: the thread is the record.
 
-- `ask`: an approved contestant asks, as themselves; their desk is made by
-  their first question, as the platform, with them, or every member of their
-  team, a reader on it, which at
-  the forge lets them post and comment and close their own question but not
-  touch an organiser's reply or a label. The platform labels the question.
+- `ask`: a member of an approved entrant asks, as themselves; the desk is
+  made by the entrant's first question, as the platform, with every member
+  a reader on it, which at the forge lets them post and comment and close
+  their own question but not touch an organiser's reply or a label. The
+  platform labels the question.
   A question may name a task released to them, kept as a marker in its body
   that is checked against the contest whenever it is read, since the asker
   can edit their own question at the forge.
-- `mine`: the questions on the contestant's desk, their team's included,
-  with every message under them.
+- `mine`: the questions on the desk of the person's entrant, with every
+  message under them.
 - `follow_up`: the contestant comments again, as themselves; on an answered
   question the platform then takes the mark off and opens it, so the
   follow-up lands back with the organisers instead of starting a thread with
@@ -39,24 +39,20 @@ is made as the organiser, so the record says who answered.
 """
 
 import re
-import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
-
-from forge.db.tables import Contestant
 from forge.domain import release as rules
 from forge.domain.errors import (
+    EntrantChanged,
     Forbidden,
     NotApproved,
     NotFound,
     SessionExpired,
-    TeamChanged,
 )
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId, TaskId, ThreadId, WorkspaceId
-from forge.domain.names import ScopeNames, TeamOwner, UserOwner, WorkspaceOwner
+from forge.domain.names import ScopeNames, WorkspaceOwner, entrant_owner
 from forge.domain.registration import Status
 from forge.domain.roles import Role, contest_scope, holds, task_scope
 from forge.domain.sessions import Session
@@ -64,13 +60,14 @@ from forge.domain.threads import Thread, ThreadKind
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import announcements, names, published, release, sessions, teams
+from forge.services import announcements, entrants, names, published, release, sessions
 from forge.services.access import Organiser, require
 from forge.services.announcements import Announcement, AnsweredQuestion
 
 log = get_logger(__name__)
 
 NO_SUCH_QUESTION = "There is no such question."
+NOT_APPROVED = "Only an approved entrant of the contest asks it questions."
 ABOUT = re.compile(r"\n*<!-- unicon:task (\S+) -->\s*$")
 
 
@@ -87,10 +84,10 @@ class Message:
 
 @dataclass(frozen=True, slots=True)
 class Clarification:
-    """One question: its contest by name, whose desk it is in, the asker's
-    user id or `team.<id>` for a team's, its number there, the task it
-    names, what it asks, when, whether it is answered and whether it is
-    open, and every message under it, oldest first.
+    """One question: its contest by name, whose desk it is in, the asking
+    entrant's `entrant.<id>`, its number there, the task it names, what it
+    asks, when, whether it is answered and whether it is open, and every
+    message under it, oldest first.
     """
 
     contest: ScopeNames
@@ -116,12 +113,12 @@ async def ask(
     task: str | None = None,
 ) -> Clarification:
     """Ask a question in the contest, as the contestant. `NotApproved` for
-    anyone who is not its approved contestant, and `NotFound` for a contest
+    anyone not in an approved entrant of it, and `NotFound` for a contest
     they may not see or a task that is not released to them.
     """
     settings, person = await release.seen(ctx, session, contest)
-    if person.row is None or person.row.status != Status.APPROVED:
-        raise NotApproved("Only an approved contestant of the contest asks it questions.")
+    if person.entrant is None or person.entrant.status != Status.APPROVED:
+        raise NotApproved(NOT_APPROVED)
     title, body = announcements.checked(title, body)
     about: TaskId | None = None
     if task is not None:
@@ -132,13 +129,14 @@ async def ask(
         body += f"\n\n<!-- unicon:task {about} -->"
     where = await names.scope_names(ctx, contest_scope(contest))
     as_ = AsUser(session.user_id, await sessions.credential_for(ctx, session.id))
-    standing = await teams.standing(ctx, contest, session.user_id)
+    standing = await entrants.standing(ctx, contest, session.user_id)
+    if standing is None:
+        raise NotApproved(NOT_APPROVED)
     await ctx.let_go()
     workspace = await ctx.forge.workspaces.open_workspace(contest, standing.owner, standing.members)
-    if isinstance(standing.owner, TeamOwner):
-        current = await teams.settle(ctx, standing.owner.team_id, workspace, standing.members)
-        if session.user_id not in current:
-            raise TeamChanged("Your team changed while your question was asked; ask again.")
+    current = await entrants.settle(ctx, standing.entrant.id, workspace, standing.members)
+    if session.user_id not in current:
+        raise EntrantChanged("Your entrant changed while your question was asked; ask again.")
     thread = await ctx.forge.threads.post_thread(
         as_, workspace, ThreadKind.CLARIFICATION, title=title, body=body
     )
@@ -148,15 +146,14 @@ async def ask(
 
 @action
 async def mine(ctx: Context, session: Session, contest: ContestId) -> tuple[Clarification, ...]:
-    """The person's own questions in the contest, oldest first; none for
-    someone who never registered for it or never asked.
+    """The questions of the person's entrant in the contest, oldest first;
+    none for someone in no entrant of it, or whose entrant never asked.
     """
-    row = await _row(ctx, contest, session.user_id)
-    if row is None:
+    standing = await entrants.standing(ctx, contest, session.user_id)
+    if standing is None:
         return ()
     where = await names.scope_names(ctx, contest_scope(contest))
     as_ = AsUser(session.user_id, await sessions.credential_for(ctx, session.id))
-    standing = await teams.standing(ctx, contest, session.user_id)
     await ctx.let_go()
     workspace = ctx.forge.workspaces.workspace_of(contest, standing.owner)
     try:
@@ -170,16 +167,16 @@ async def mine(ctx: Context, session: Session, contest: ContestId) -> tuple[Clar
 async def follow_up(
     ctx: Context, session: Session, contest: ContestId, number: int, *, body: str
 ) -> Clarification:
-    """Comment on one's own question, as the contestant, opening it again
-    when it was answered. `NotApproved` for anyone who is not the contest's
-    approved contestant, and `NotFound` for a question that is not theirs.
+    """Comment on one of the entrant's own questions, as the contestant,
+    opening it again when it was answered. `NotApproved` for anyone not in
+    an approved entrant of the contest, and `NotFound` for a question that
+    is not their entrant's.
     """
-    row = await _row(ctx, contest, session.user_id)
-    if row is None or row.status != Status.APPROVED:
-        raise NotApproved("Only an approved contestant of the contest asks it questions.")
+    standing = await entrants.standing(ctx, contest, session.user_id)
+    if standing is None or standing.entrant.status != Status.APPROVED:
+        raise NotApproved(NOT_APPROVED)
     _, body = announcements.checked("-", body)
     as_ = AsUser(session.user_id, await sessions.credential_for(ctx, session.id))
-    standing = await teams.standing(ctx, contest, session.user_id)
     await ctx.let_go()
     workspace = ctx.forge.workspaces.workspace_of(contest, standing.owner)
     thread = await _found(ctx, as_, ctx.forge.threads.thread_of(workspace, number))
@@ -322,16 +319,6 @@ async def answer_publicly(
     )
 
 
-async def _row(ctx: Context, contest: ContestId, user_id: int) -> Contestant | None:
-    return (
-        await ctx.db.execute(
-            select(Contestant).where(
-                Contestant.contest_id == contest, Contestant.user_id == user_id
-            )
-        )
-    ).scalar_one_or_none()
-
-
 async def _managed(
     ctx: Context, organiser: Organiser, contest: ContestId, asker: str, number: int
 ) -> Thread:
@@ -345,21 +332,17 @@ async def _managed(
 
 
 def _owner(asker: str) -> WorkspaceOwner:
-    """The desk a question's key names: a person's by their user id, or a
-    team's by `team.<id>`. `NotFound` for anything else.
+    """The desk a question's key names: an entrant's by `entrant.<id>`.
+    `NotFound` for anything else.
     """
-    if asker.isascii() and asker.isdigit():
-        return UserOwner(int(asker))
-    if asker.startswith("team."):
-        try:
-            return TeamOwner(uuid.UUID(asker.removeprefix("team.")))
-        except ValueError:
-            pass
-    raise NotFound(NO_SUCH_QUESTION)
+    found = entrant_owner(asker)
+    if found is None:
+        raise NotFound(NO_SUCH_QUESTION)
+    return found
 
 
 def _asker(owner: WorkspaceOwner) -> str:
-    return str(owner.user_id) if isinstance(owner, UserOwner) else f"team.{owner.team_id}"
+    return owner.segment
 
 
 async def _found(ctx: Context, as_: AsUser, thread: ThreadId) -> Thread:
@@ -446,11 +429,7 @@ async def _shown(
     for _, _, owner, _ in about:
         key = _asker(owner)
         if key not in askers:
-            askers[key] = (
-                frozenset({owner.user_id})
-                if isinstance(owner, UserOwner)
-                else await teams.everyone_in(ctx, owner.team_id)
-            )
+            askers[key] = await entrants.everyone_in(ctx, owner.entrant_id)
     shown = []
     for thread, contest, owner, task in about:
         asker = _asker(owner)

@@ -1,14 +1,14 @@
 """What a signed-in person reads of a contest. The home of a contest they see
-carries its dates, their registration and the server's clock, and lists
-only the tasks released to them, in the contest's order, each with the
+carries its dates, their registration panel and the server's clock, and
+lists only the tasks released to them, in the contest's order, each with the
 label its place gives it, its worth, and its due and close for the person's
-row, their extension on it included. A task's page gives the statement its
+entrant, its extension on it included. A task's page gives the statement its
 latest publication froze, its submission caps and the form of the inputs a
 contestant gives, read from the plan, and nothing for a task that is not
-visible. A hidden contest is seen by its approved contestants and
-organisers alone, and anyone else is told there is no such contest, as for
-one that is not there. The list holds every contest the person sees, with
-their own status. Everything is read as the platform.
+visible. A hidden contest is seen by the members of its approved entrants
+and its organisers alone, and anyone else is told there is no such contest,
+as for one that is not there. The list holds every contest the person sees,
+with the status of their entrant. Everything is read as the platform.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -25,9 +25,9 @@ from forge.domain.release import Closed
 from forge.domain.roles import Role, Scope
 from forge.domain.types import Type
 from forge.runtime.setup import Setup
-from forge.services import contest_home, contestants, contests, publications
+from forge.services import contest_home, contests, entrants, publications
 from forge.services.publications import Published
-from forge.testing import FakeClock, register_contestant
+from forge.testing import FakeClock, register_entrant
 from tests.services.conftest import (
     ACME,
     RUNNING,
@@ -98,7 +98,8 @@ async def test_the_home_lists_only_the_released_tasks_in_the_contests_order(
     )
     assert home.name == "Spring 2026"
     assert (home.start, home.end) == (at(10), at(15))
-    assert (home.registration, home.registration_open) == (None, True)
+    assert (home.registration.entrant, home.registration.registration_open) == (None, True)
+    assert (home.registration.can_register, home.registration.asks_code) == (True, False)
     assert home.now == at(12)
     assert {call.identity for call in acme.fake.calls} == {PLATFORM}
 
@@ -122,10 +123,11 @@ async def test_a_contestants_due_close_and_openness_carry_their_extension_on_eac
     setup: Setup, acme: Acme, published: list[TaskId], clock: FakeClock
 ) -> None:
     bob = await signed_in(setup, acme.fake, 8)
-    await contestants.register(setup, bob, SPRING)
+    entrant = (await entrants.register(setup, bob, SPRING)).id
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await contestants.approve(setup, manager, SPRING, 8)
-    await contestants.extend(setup, manager, SPRING, 8, timedelta(minutes=30), tasks=["sum"])
+    await entrants.approve(setup, manager, SPRING, entrant)
+    half = timedelta(minutes=30)
+    await entrants.extend(setup, manager, SPRING, entrant, half, tasks=["sum"])
     clock.set(at(14, 10))
 
     home = await contest_home.home(setup, bob, SPRING)
@@ -136,9 +138,12 @@ async def test_a_contestants_due_close_and_openness_carry_their_extension_on_eac
         ("sum", at(13, 30), at(14, 30)),
         ("later", None, at(15)),
     ]
-    assert home.registration is not None and home.registration.status is Status.APPROVED
+    mine = home.registration.entrant
+    assert mine is not None and mine.status is Status.APPROVED
+    assert home.registration.refused is not None
+    assert home.registration.refused.code == "already_registered"
     assert (page.due, page.closes, page.release.open) == (at(13, 30), at(14, 30), True)
-    await register_contestant(setup, SPRING, 20)
+    await register_entrant(setup, SPRING, 20)
     acme.fake.add_user(20, "cyd")
     cyd = await signed_in(setup, acme.fake, 20)
     theirs = await contest_home.task(setup, cyd, TaskId("acme/spring/sum"))
@@ -217,8 +222,8 @@ async def test_a_hidden_contest_is_seen_by_its_contestants_and_organisers_alone(
 ) -> None:
     await write_contest(acme.fake, ORDERED.format(visibility="hidden"))
     acme.fake.add_user(20, "cyd")
-    await register_contestant(setup, SPRING, 8)
-    await register_contestant(setup, SPRING, 20, status="pending")
+    await register_entrant(setup, SPRING, 8)
+    await register_entrant(setup, SPRING, 20, status="pending")
     bob, cyd = await signed_in(setup, acme.fake, 8), await signed_in(setup, acme.fake, 20)
     ada = await signed_in(setup, acme.fake, 7)
 
@@ -246,7 +251,7 @@ async def test_the_list_holds_every_contest_the_person_sees_with_their_status(
     await write_contest(acme.fake, RUNNING.format(visibility="signed-in"), ContestId("acme/autumn"))
     await write_contest(acme.fake, RUNNING.format(visibility="hidden"), ContestId("acme/winter"))
     bob = await signed_in(setup, acme.fake, 8)
-    await contestants.register(setup, bob, SPRING)
+    await entrants.register(setup, bob, SPRING)
 
     listed = await contest_home.contests(setup, bob)
 
@@ -254,6 +259,6 @@ async def test_the_list_holds_every_contest_the_person_sees_with_their_status(
         ("acme/autumn", None),
         ("acme/spring", Status.PENDING),
     ]
-    await register_contestant(setup, ContestId("acme/winter"), 8)
+    await register_entrant(setup, ContestId("acme/winter"), 8)
     again = await contest_home.contests(setup, bob)
     assert "acme/winter" in {entry.contest for entry in again}

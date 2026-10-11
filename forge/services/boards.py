@@ -5,7 +5,8 @@ them (TASK-FORMAT.md sections 1.1 and 3.6).
 
 - **Who reads.** A board's `who` names the least audience that sees it:
   `everyone`, anyone the contest's visibility admits, a visitor with no
-  session included; `contestants`, approved contestants and organisers;
+  session included; `contestants`, the members of approved entrants and
+  organisers;
   `organisers`, observers of the contest and above. A person holding a role
   only at one of the contest's tasks reads as a contestant would without a
   row, since they observe no board.
@@ -19,11 +20,11 @@ them (TASK-FORMAT.md sections 1.1 and 3.6).
   Beside them, what the boards ask of the covered tasks that does not hold
   (C4), and each board ranking `points` that counts nothing from a task.
 - **An archived contest** is read by those who could read it published,
-  and by its approved contestants.
+  and by the members of its approved entrants.
 
-A row is an approved contestant in no team, or a team with an approved
-member: the rows a contest's reveal waits for (`timelines.rows`). Each row
-is named by its username or its team's name.
+A row is an approved entrant: the rows a contest's reveal waits for
+(`timelines.rows`). Each row is named as its entrant is shown: its own
+name, or its member's username when it has none.
 """
 
 import uuid
@@ -33,7 +34,7 @@ from datetime import datetime
 
 from sqlalchemy import select
 
-from forge.db.tables import Grading, Team
+from forge.db.tables import Entrant, Grading
 from forge.domain import release as rules
 from forge.domain.board_checks import (
     Breach,
@@ -58,10 +59,10 @@ from forge.domain.boards import (
 )
 from forge.domain.definitions import ContestDefinition, Leaderboard, Select
 from forge.domain.definitions import State as ContestState
-from forge.domain.errors import NotFound, PortError
+from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, PublicationId, TaskId, WorkspaceId
-from forge.domain.names import TeamOwner, UserOwner, WorkspaceOwner
+from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
 from forge.domain.release import Extension, reveal_of
 from forge.domain.roles import Role, contest_scope, holds
@@ -72,13 +73,13 @@ from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
+    entrants,
     gradings,
     marks,
     names,
     published,
     release,
     scores,
-    teams,
     timelines,
 )
 from forge.services.access import Organiser, require
@@ -86,7 +87,7 @@ from forge.services.published import PublishedTask
 
 log = get_logger(__name__)
 
-NO_SUCH_ROW = "No such contestant or team in this contest."
+NO_SUCH_ROW = "No such entrant on this contest's boards."
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,7 +290,7 @@ async def _reader(
         return settings, Audience.EVERYONE, None
     settings = await published.contest(ctx, contest)
     person = await release.reader(ctx, session, contest)
-    approved = person.row is not None and person.row.status == Status.APPROVED
+    approved = person.entrant is not None and person.entrant.status == Status.APPROVED
     entered = settings.state is ContestState.ARCHIVED and approved
     if not release.sees(settings, person) and not entered:
         raise NotFound(published.NO_SUCH_CONTEST)
@@ -301,8 +302,8 @@ async def _reader(
         if holds(grants, contest_scope(contest), Role.OBSERVER):
             return settings, Audience.ORGANISERS, None
     if approved:
-        standing = await teams.standing(ctx, contest, session.user_id)
-        return settings, Audience.CONTESTANTS, standing.owner
+        assert person.entrant is not None
+        return settings, Audience.CONTESTANTS, EntrantOwner(person.entrant.id)
     if person.organises:
         return settings, Audience.CONTESTANTS, None
     return settings, Audience.EVERYONE, None
@@ -395,24 +396,13 @@ def _column(
 
 
 async def _names(ctx: Context, owners: Sequence[WorkspaceOwner]) -> dict[WorkspaceOwner, str]:
-    """Each row's name: a team's own, a contestant's username; a username
-    the forge does not give is left empty.
+    """Each row's name, as its entrant is shown; a username the forge does
+    not give is left empty.
     """
-    team_ids = sorted({owner.team_id for owner in owners if isinstance(owner, TeamOwner)})
-    found: dict[WorkspaceOwner, str] = {}
-    if team_ids:
-        for team_id, name in await ctx.db.execute(
-            select(Team.id, Team.name).where(Team.id.in_(team_ids))
-        ):
-            found[TeamOwner(team_id)] = name
-    await ctx.let_go()
-    for owner in owners:
-        if isinstance(owner, UserOwner):
-            try:
-                found[owner] = (await ctx.forge.identity.find_user(owner.user_id)).username
-            except PortError:
-                found[owner] = ""
-    return found
+    ids = sorted({owner.entrant_id for owner in owners})
+    rows = (await ctx.db.scalars(select(Entrant).where(Entrant.id.in_(ids)))).all() if ids else []
+    shown = await entrants.display_names(ctx, rows)
+    return {EntrantOwner(entrant): name for entrant, name in shown.items()}
 
 
 async def _entries(

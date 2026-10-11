@@ -45,14 +45,13 @@ TITLE_MOST = 200
 BODY_MOST = 20_000
 NO_SUCH_ANNOUNCEMENT = "There is no such announcement."
 MARK = re.compile(r"<!--\s*unicon:.*?-->", re.DOTALL)
-ANSWERS = re.compile(r"\n*<!-- unicon:answers (u\d+|team\.[0-9a-f-]{36})#(\d+) -->\s*$")
+ANSWERS = re.compile(r"\n*<!-- unicon:answers (entrant\.[0-9a-f]{32})#(\d+) -->\s*$")
 
 
 @dataclass(frozen=True, slots=True)
 class AnsweredQuestion:
     """The clarification an announcement answers: whose desk it is in, the
-    asker's user id or `team.<id>` for a team's, and the question's number
-    there.
+    asking entrant's `entrant.<id>`, and the question's number there.
     """
 
     asker: str
@@ -92,7 +91,7 @@ async def post(
     require(organiser, scope, Role.MANAGER)
     title, body = checked(title, body)
     if answers is not None:
-        body += f"\n\n<!-- unicon:answers {_marked(answers.asker)}#{answers.number} -->"
+        body += f"\n\n<!-- unicon:answers {answers.asker}#{answers.number} -->"
     where = await names.scope_names(ctx, scope)
     await ctx.let_go()
     thread = await ctx.forge.threads.post_thread(
@@ -235,7 +234,7 @@ def announcement(thread: Thread, where: ScopeNames, *, organiser: bool) -> Annou
         posted_at=thread.created_at,
         closed=thread.closed,
         answers_question=answers is not None,
-        answers=AnsweredQuestion(answers.group(1).removeprefix("u"), int(answers.group(2)))
+        answers=AnsweredQuestion(answers.group(1), int(answers.group(2)))
         if answers is not None and organiser
         else None,
     )
@@ -269,10 +268,3 @@ async def _found(ctx: Context, organiser: Organiser, scope: Scope, number: int) 
 async def _shown(ctx: Context, organiser: Organiser, scope: Scope, number: int) -> Announcement:
     found = await _found(ctx, organiser, scope, number)
     return announcement(found, await names.scope_names(ctx, scope), organiser=True)
-
-
-def _marked(asker: str) -> str:
-    """How a question's desk is written into the marker: `u<id>` for a
-    person's, as it always was, and `team.<id>` for a team's.
-    """
-    return asker if asker.startswith("team.") else f"u{asker}"

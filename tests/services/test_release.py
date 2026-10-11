@@ -1,10 +1,10 @@
 """Whether the signed-in person sees a task and may submit to it, read from
 the task's entry in `contest.yaml`, the latest publication, the clock and the
-extension of the person's row. A task with no publication is not released,
+extension of the person's entrant. A task with no publication is not released,
 nor one the contest does not list, nor one before its contest's start or its
 entry's `release_at`; a released task stays visible after it closes until
 the contest is archived; and it is open until the entry's close plus the
-row's extension on that task, refused after with `task_closed` and the
+entrant's extension on that task, refused after with `task_closed` and the
 reason `closed`. The contest's own visibility comes first: someone it is
 hidden from is told there is no such task.
 """
@@ -14,7 +14,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import update
 
-from forge.db.tables import Contestant
+from forge.db.tables import Entrant
 from forge.domain.errors import NotFound, TaskClosed
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
@@ -23,9 +23,9 @@ from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import contestants, release, submissions
+from forge.services import entrants, release, submissions
 from forge.services.release import TaskRelease
-from forge.testing import FakeClock, register_contestant
+from forge.testing import FakeClock, register_entrant
 from tests.services.conftest import SPRING, Acme, organiser, publish, signed_in, upload
 
 CONTEST = """\
@@ -153,7 +153,7 @@ async def test_after_the_close_the_task_stays_visible_and_is_open_only_within_an
     clock.advance(timedelta(hours=3, minutes=30))
 
     closed = await release.of_task(setup, bob, sum_task)
-    await register_contestant(setup, SPRING, 8, time_extension=timedelta(hours=1))
+    await register_entrant(setup, SPRING, 8, time_extension=timedelta(hours=1))
     extended = await release.of_task(setup, bob, sum_task)
 
     assert closed == TaskRelease(released=True, visible=True, open=False, closed=Closed.CLOSED)
@@ -187,13 +187,16 @@ async def test_an_extension_on_a_task_opens_that_task_alone_past_its_close(
     )
     await publish(setup, acme, sum_task)
     acme.fake.add_user(20, "cyd")
+    made_for = {}
     for user_id in (8, 20):
-        await contestants.register(setup, await signed_in(setup, acme.fake, user_id), SPRING)
+        session = await signed_in(setup, acme.fake, user_id)
+        made_for[user_id] = (await entrants.register(setup, session, SPRING)).id
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
     for user_id in (8, 20):
-        await contestants.approve(setup, manager, SPRING, user_id)
-    await contestants.extend(setup, manager, SPRING, 8, timedelta(hours=1), tasks=["sum"])
-    await contestants.extend(setup, manager, SPRING, 20, timedelta(hours=1), tasks=["other"])
+        await entrants.approve(setup, manager, SPRING, made_for[user_id])
+    hour = timedelta(hours=1)
+    await entrants.extend(setup, manager, SPRING, made_for[8], hour, tasks=["sum"])
+    await entrants.extend(setup, manager, SPRING, made_for[20], hour, tasks=["other"])
     cyd = await signed_in(setup, acme.fake, 20)
     clock.advance(timedelta(hours=1, minutes=30))
 
@@ -237,7 +240,7 @@ async def test_a_draft_contest_is_no_such_task_to_anyone_but_its_organisers(
 ) -> None:
     await _contest(acme, state="draft")
     await publish(setup, acme, sum_task)
-    await register_contestant(setup, SPRING, 8)
+    await register_entrant(setup, SPRING, 8)
 
     with pytest.raises(NotFound):
         await release.of_task(setup, bob, sum_task)
@@ -252,12 +255,10 @@ async def test_a_hidden_contest_shows_its_tasks_to_its_contestants_alone(
 
     with pytest.raises(NotFound):
         await release.of_task(setup, bob, sum_task)
-    await register_contestant(setup, SPRING, 8, status="pending")
+    entrant = await register_entrant(setup, SPRING, 8, status="pending")
     with pytest.raises(NotFound):
         await release.of_task(setup, bob, sum_task)
 
     async with setup.unit_of_work() as ctx:
-        await ctx.db.execute(
-            update(Contestant).where(Contestant.user_id == 8).values(status="approved")
-        )
+        await ctx.db.execute(update(Entrant).where(Entrant.id == entrant).values(status="approved"))
     assert await release.of_task(setup, bob, sum_task) == OPEN

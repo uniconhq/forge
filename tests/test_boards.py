@@ -2,6 +2,7 @@
 with the numbers of TASK-FORMAT.md section 3.7's worked examples.
 """
 
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -29,7 +30,7 @@ from forge.domain.boards import (
     sees,
 )
 from forge.domain.definitions import Group, Leaderboard, Show
-from forge.domain.names import UserOwner
+from forge.domain.names import EntrantOwner
 from forge.domain.scoring import Better, Measure, Scored, score
 from forge.domain.workflow_definition import Fold
 
@@ -100,9 +101,16 @@ def candidate(number: int, when: datetime, scored: Scored, *, marked: bool = Fal
     return Entry(number, when, State.CANDIDATE, scored, marked)
 
 
+def owner(user: int) -> EntrantOwner:
+    """The entrant a test names by the number of its one member."""
+    return EntrantOwner(uuid.UUID(int=user))
+
+
 def row(user: int, name: str, **entries: Sequence[Entry]) -> Row:
     return Row(
-        UserOwner(user), name, {task.replace("_", "-"): tuple(e) for task, e in entries.items()}
+        owner(user),
+        name,
+        {task.replace("_", "-"): tuple(e) for task, e in entries.items()},
     )
 
 
@@ -200,7 +208,7 @@ def test_a_submission_still_grading_shows_only_in_its_own_rows_count() -> None:
     x = row(1, "x", a=[candidate(1, minute(25), solved), Entry(2, minute(30), State.GRADING)])
     y = row(2, "y", a=[Entry(3, minute(31), State.GRADING)])
     found = standings(board(**ICPC_BOARD), [column("a", ICPC, worth=1)], [x, y])
-    mine = for_viewer(found, "all", UserOwner(1))
+    mine = for_viewer(found, "all", owner(1))
     assert [(r.name, r.cells["a"].grading) for r in mine.rows] == [("x", 1), ("y", None)]
     assert mine.rows[1].cells["a"].submissions is None
     organiser = for_viewer(found, "all", None, every_row=True)
@@ -371,7 +379,7 @@ def test_a_course_board_counts_the_public_30_and_shows_only_ones_own_row() -> No
     grades = board(name="Grades", who="contestants", rows="own")
     found = standings(grades, [column("hw1", groups)], [mei, zoe])
     assert [r.keys for r in found.rows] == [(30,), (24,)]
-    mine = for_viewer(found, grades.rows, UserOwner(1))
+    mine = for_viewer(found, grades.rows, owner(1))
     assert [(r.name, r.keys) for r in mine.rows] == [("mei", (Fraction(30),))]
     assert not sees(grades, Audience.EVERYONE)
     assert sees(grades, Audience.CONTESTANTS)
@@ -435,10 +443,19 @@ def test_rows_equal_on_every_key_share_a_rank_listed_by_name() -> None:
 
 def test_rows_n_keeps_every_row_tied_with_the_nth_and_the_viewers_own_below() -> None:
     found = tied()
-    assert [r.name for r in for_viewer(found, 2, UserOwner(1)).rows] == ["ana", "bo", "cy"]
-    assert [r.name for r in for_viewer(found, 2, UserOwner(5)).rows] == ["ana", "bo", "cy", "ed"]
+    assert [r.name for r in for_viewer(found, 2, owner(1)).rows] == [
+        "ana",
+        "bo",
+        "cy",
+    ]
+    assert [r.name for r in for_viewer(found, 2, owner(5)).rows] == [
+        "ana",
+        "bo",
+        "cy",
+        "ed",
+    ]
     assert [r.name for r in for_viewer(found, 9, None).rows] == ["ana", "bo", "cy", "di", "ed"]
-    assert [r.name for r in for_viewer(found, "own", UserOwner(4)).rows] == ["di"]
+    assert [r.name for r in for_viewer(found, "own", owner(4)).rows] == ["di"]
     assert for_viewer(found, "own", None).rows == ()
 
 

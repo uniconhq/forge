@@ -21,9 +21,9 @@ package, so this module also re-exports what a dependant's test needs to
 arrange the fake: `FakeForge`, `Settings` for a settings override, and the
 domain types a test builds, `OrgId`, `AsUser` and `Visibility`, and `Setup`
 to type the setup a fixture hands over. `logged` reads back the records a
-test caused, in the shape they are written. `register_contestant` writes
-the row that makes someone a contestant, for a test of what registration
-decides; `name_places` gives the org,
+test caused, in the shape they are written. `register_entrant` writes the
+rows that put people in an entrant of a contest, for a test of what
+registration decides; `name_places` gives the org,
 contest and task ids a test made straight at the fake the names a route
 finds them by, each its own last part; and `seed_classic` puts the
 built-in workflow `unicon/classic@v2` at the fake the way deploy's bootstrap
@@ -47,7 +47,7 @@ import pytest
 
 from forge.adapters.fakes import FakeForge
 from forge.db.migrations import upgrade_to_head
-from forge.db.tables import Contestant, Name, metadata
+from forge.db.tables import Entrant, EntrantMember, Name, metadata
 from forge.domain.clock import FakeClock
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId
@@ -76,7 +76,7 @@ __all__ = [
     "Visibility",
     "logged",
     "name_places",
-    "register_contestant",
+    "register_entrant",
     "seed_classic",
     "seed_primitives",
 ]
@@ -302,27 +302,43 @@ def logged(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]
     ]
 
 
-async def register_contestant(
+async def register_entrant(
     setup: Setup,
     contest: ContestId,
-    user_id: int,
-    *,
+    *user_ids: int,
+    name: str | None = None,
     status: str = "approved",
     time_extension: timedelta = timedelta(0),
-) -> None:
-    """Make the user a contestant of the contest, with `status` and their own
-    time extension, committed at once.
+) -> uuid.UUID:
+    """Put the users in one new entrant of the contest, named `name`, with
+    `status` and its time extension, committed at once, each come in by a
+    sign-up that approves straight away; its id.
     """
     async with setup.unit_of_work() as ctx:
-        ctx.db.add(
-            Contestant(
-                contest_id=contest,
-                user_id=user_id,
-                status=status,
-                registered_at=ctx.now,
-                time_extension_seconds=int(time_extension.total_seconds()),
-            )
+        entrant = Entrant(
+            id=uuid.uuid4(),
+            contest_id=contest,
+            name=name,
+            status=status,
+            registered_at=ctx.now,
+            registered_by_user_id=user_ids[0] if user_ids else None,
+            time_extension_seconds=int(time_extension.total_seconds()),
         )
+        ctx.db.add(entrant)
+        for user_id in user_ids:
+            ctx.db.add(
+                EntrantMember(
+                    entrant_id=entrant.id,
+                    contest_id=contest,
+                    user_id=user_id,
+                    status="member",
+                    joined_at=ctx.now,
+                    way=0,
+                    way_kind="signup",
+                    approval="auto",
+                )
+            )
+        return entrant.id
 
 
 async def name_places(setup: Setup, *ids: str) -> None:

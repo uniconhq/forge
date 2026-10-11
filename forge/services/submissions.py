@@ -1,13 +1,14 @@
-"""A contestant's uploads becoming a submission, and the submissions they read
-back. `submit` runs in this order and stops at the first refusal, each with a
-code of its own, before anything is written:
+"""A contestant's uploads becoming a submission of their entrant's, and the
+submissions they read back. `submit` runs in this order and stops at the
+first refusal, each with a code of its own, before anything is written:
 
-1. The task is open by the server's clock plus the contestant's own
-   extension, and they are approved (`submitters.refuse`).
-2. They have submissions left (`submission_limit`), counted from the
+1. The task is open by the server's clock plus the entrant's extension, the
+   entrant is approved and has as many members as the contest asks
+   (`submitters.refuse`).
+2. The entrant has submissions left (`submission_limit`), counted from the
    submissions at the forge, leaving out one staff cancelled
    (`gradings.staff_cancelled`) that no fallback keeps a result for, and the
-   task's rate holds (`rate_limited`), counted from the grading rows of their
+   task's rate holds (`rate_limited`), counted from the grading rows of its
    submissions within its window.
 3. Every upload named is theirs, for this task (`upload_not_yours`), and a
    checked file no submission has used (`upload_not_ready`).
@@ -16,14 +17,15 @@ code of its own, before anything is written:
    the task's form details, the files under each input together within its
    `max_size` (`invalid_inputs`, `forge.domain.submissions`).
 
-Then, while a contestant has no submission of the task, their place to
+Then, while the entrant has no submission of the task, its place to
 submit it is made, as the platform, or finished when a try stopped halfway;
 every part of making it is safe to run again. The files go into it as one commit, as the
 contestant, under `files/<input>/<name>` beside
 `submission.json`; the commit is named `submission/<n>` as the platform,
 with the next number on a collision; one `queued` grading row is inserted,
 against the task's current publication, attempt 1, with the hash of its
-callback token, whose run starts once the submit commits; and the uploads
+callback token and the member who submitted, whose run starts once the
+submit commits; and the uploads
 are marked consumed, their objects removed once it commits.
 
 Submits of one workspace to one task happen one after another, under a
@@ -141,7 +143,7 @@ from forge.runtime.context import Context
 from forge.services import gradings, published, scores, sessions, submitters, timelines, uploads
 from forge.services.access import Organiser, require
 from forge.services.published import PublishedTask
-from forge.services.submitters import Entrant
+from forge.services.submitters import Person
 
 log = get_logger(__name__)
 
@@ -227,8 +229,8 @@ async def submit(
         raise InvalidIdempotencyKey(
             "A submit carries an idempotency key of 8 to 128 letters, digits, - and _."
         )
-    entrant = await submitters.entrant(ctx, session, task)
-    workspace = entrant.workspace
+    person = await submitters.person(ctx, session, task)
+    workspace = person.workspace
     opened = False
     if (
         workspace is not None
@@ -239,42 +241,42 @@ async def submit(
         # no slot made its place; it is made here, by the rules a submit is
         # checked against first, and before the hold below, since making it
         # takes the forge seconds and the hold keeps the connection.
-        await submitters.refuse(ctx, entrant)
-        await submitters.open_place(ctx, entrant)
+        await submitters.refuse(ctx, person)
+        await submitters.open_place(ctx, person)
         opened = True
     # The task is held shared from here and read again under it: a save of
     # the task waits for this submit, or this submit reads what the save
     # published, so a grading change's regrade never misses it
     # (TASK-FORMAT.md section 2, step 12). Another task's save never waits.
     await timelines.hold_task(ctx, task, shared=True)
-    entrant = await submitters.entrant(ctx, session, task)
-    workspace = entrant.workspace
+    person = await submitters.person(ctx, session, task)
+    workspace = person.workspace
     if workspace is not None:
         await _hold(ctx, workspace, task)
-        await submitters.hold_standing(ctx, entrant)
-        again = await _again(ctx, entrant, workspace, idempotency_key)
+        await submitters.hold_standing(ctx, person)
+        again = await _again(ctx, person, workspace, idempotency_key)
         if again is not None:
             return again
     # The submission's time is when it was checked open, not when the forge
     # has recorded it, which may be seconds later and past the close.
     at = ctx.now
-    _, workspace = await submitters.refuse(ctx, entrant)
+    _, workspace = await submitters.refuse(ctx, person)
     made = await _listed(ctx, workspace, task) or ()
-    await _finish_unrecorded(ctx, entrant, workspace, made)
-    caps = entrant.published.definition.submissions
-    cancelled = await _cancelled(ctx, workspace, task, entrant.settings.on_system_error)
+    await _finish_unrecorded(ctx, person, workspace, made)
+    caps = person.published.definition.submissions
+    cancelled = await _cancelled(ctx, workspace, task, person.settings.on_system_error)
     if len([found for found in made if found.id not in cancelled]) >= caps.max:
         raise SubmissionLimit(
             f"You have made all {caps.max} submissions this task allows.", limit=caps.max
         )
-    await _refuse_rate(ctx, entrant, workspace)
-    chosen = await _chosen(ctx, entrant, inputs)
+    await _refuse_rate(ctx, person, workspace)
+    chosen = await _chosen(ctx, person, inputs)
     if not made and not chosen and not opened:
         # Naming an upload means a slot made the place already, and a first
         # submission of typed values made it before the hold; one whose
         # gradings are all gone still has its place made here.
-        await submitters.open_place(ctx, entrant)
-    form = await published.form(ctx, entrant.published)
+        await submitters.open_place(ctx, person)
+    form = await published.form(ctx, person.published)
     layout = rules.lay_out(
         form.fields,
         form.tests,
@@ -282,11 +284,13 @@ async def submit(
         {upload.id: _uploaded(upload) for upload in chosen.values()},
     )
     files = {SUBMISSION_FILE: layout.document}
-    user = AsUser(entrant.session.user_id, await sessions.credential_for(ctx, entrant.session.id))
+    user = AsUser(person.session.user_id, await sessions.credential_for(ctx, person.session.id))
     for path, upload in layout.files.items():
-        files[path] = await _pointer(ctx, entrant, user, chosen[upload])
+        files[path] = await _pointer(ctx, person, user, chosen[upload])
     recorded = await _record(ctx, user, workspace, task, files, idempotency_key)
-    grading = _insert(ctx, entrant, workspace, recorded, idempotency_key, at=at)
+    grading = _insert(
+        ctx, person, workspace, recorded, idempotency_key, at=at, by=person.session.user_id
+    )
     for used in chosen.values():
         used.status = UploadStatus.CONSUMED
         used.consumed_by = recorded.id
@@ -295,19 +299,19 @@ async def submit(
         "submissions.submitted",
         task=task,
         number=recorded.number,
-        user_id=entrant.session.user_id,
+        user_id=person.session.user_id,
     )
-    return await _submission(ctx, Reading.of(entrant, workspace), recorded.number, at, [grading])
+    return await _submission(ctx, Reading.of(person, workspace), recorded.number, at, [grading])
 
 
 @action
 async def mine(ctx: Context, session: Session, task: TaskId) -> tuple[Submission, ...]:
     """The signed-in person's own submissions of the task, newest first."""
-    entrant = await submitters.entrant(ctx, session, task)
-    workspace = entrant.workspace
+    person = await submitters.person(ctx, session, task)
+    workspace = person.workspace
     if workspace is None:
         return ()
-    return tuple(await _read(ctx, Reading.of(entrant, workspace)))
+    return tuple(await _read(ctx, Reading.of(person, workspace)))
 
 
 @action
@@ -315,11 +319,9 @@ async def one(ctx: Context, session: Session, task: TaskId, number: int) -> Subm
     """One of the signed-in person's own submissions of the task, by its
     number. `NotFound` for one that is not theirs.
     """
-    entrant = await submitters.entrant(ctx, session, task)
-    workspace = entrant.workspace
-    found = (
-        await _read(ctx, Reading.of(entrant, workspace), number) if workspace is not None else []
-    )
+    person = await submitters.person(ctx, session, task)
+    workspace = person.workspace
+    found = await _read(ctx, Reading.of(person, workspace), number) if workspace is not None else []
     if not found:
         raise NotFound(NO_SUCH_SUBMISSION)
     return found[0]
@@ -410,7 +412,7 @@ async def _hold(ctx: Context, workspace: WorkspaceId, task: TaskId) -> None:
 
 
 async def _again(
-    ctx: Context, entrant: Entrant, workspace: WorkspaceId, key: str
+    ctx: Context, person: Person, workspace: WorkspaceId, key: str
 ) -> Submission | None:
     """The submission a submit with this key made already, or none. Its rows
     are found by the key; failing that, the submission is found at the forge
@@ -421,7 +423,7 @@ async def _again(
             await ctx.db.execute(
                 select(Grading).where(
                     Grading.workspace_id == workspace,
-                    Grading.task_id == entrant.task,
+                    Grading.task_id == person.task,
                     Grading.idempotency_key == key,
                 )
             )
@@ -431,23 +433,23 @@ async def _again(
     )
     if rows:
         number = rows[0].submission_number
-        log.info("submissions.repeated", task=entrant.task, number=number)
-        return (await _read(ctx, Reading.of(entrant, workspace), number))[0]
+        log.info("submissions.repeated", task=person.task, number=number)
+        return (await _read(ctx, Reading.of(person, workspace), number))[0]
     found = next(
-        (made for made in await _listed(ctx, workspace, entrant.task) or () if made.key == key),
+        (made for made in await _listed(ctx, workspace, person.task) or () if made.key == key),
         None,
     )
     if found is None:
         return None
-    existing = await _read(ctx, Reading.of(entrant, workspace), found.number)
+    existing = await _read(ctx, Reading.of(person, workspace), found.number)
     if existing:
         return existing[0]
-    grading = await _recover(ctx, entrant, workspace, found)
-    return await _submission(ctx, Reading.of(entrant, workspace), found.number, found.at, [grading])
+    grading = await _recover(ctx, person, workspace, found)
+    return await _submission(ctx, Reading.of(person, workspace), found.number, found.at, [grading])
 
 
 async def _finish_unrecorded(
-    ctx: Context, entrant: Entrant, workspace: WorkspaceId, made: Sequence[Submitted]
+    ctx: Context, person: Person, workspace: WorkspaceId, made: Sequence[Submitted]
 ) -> None:
     """Give every submission at the forge that has no grading row its rows,
     and mark consumed the uploads it used, before the limits are counted and
@@ -459,38 +461,39 @@ async def _finish_unrecorded(
         (
             await ctx.db.execute(
                 select(Grading.submission_id)
-                .where(Grading.workspace_id == workspace, Grading.task_id == entrant.task)
+                .where(Grading.workspace_id == workspace, Grading.task_id == person.task)
                 .distinct()
             )
         ).scalars()
     )
     for found in made:
         if found.id not in graded:
-            await _recover(ctx, entrant, workspace, found)
+            await _recover(ctx, person, workspace, found)
 
 
 async def _recover(
-    ctx: Context, entrant: Entrant, workspace: WorkspaceId, found: Submitted
+    ctx: Context, person: Person, workspace: WorkspaceId, found: Submitted
 ) -> Grading:
     """The grading row of a submission the forge holds and the database does
-    not, inserted with the key its note carries, and the uploads it used
-    marked consumed.
+    not, inserted with the key its note carries and none for whoever made
+    it, which the forge's answer did not say, and the uploads it used marked
+    consumed.
     """
-    grading = _insert(ctx, entrant, workspace, found, found.key, at=found.at)
-    await _consume_used(ctx, entrant, found)
+    grading = _insert(ctx, person, workspace, found, found.key, at=found.at, by=None)
+    await _consume_used(ctx, person, found)
     await ctx.db.flush()
-    log.info("submissions.recovered", task=entrant.task, number=found.number)
+    log.info("submissions.recovered", task=person.task, number=found.number)
     return grading
 
 
-async def _consume_used(ctx: Context, entrant: Entrant, found: Submitted) -> None:
+async def _consume_used(ctx: Context, person: Person, found: Submitted) -> None:
     """Mark consumed, by `found`, the uploads its files point at: for each
     pointer, the oldest checked upload for the task with its digest of
-    whoever works in the workspace, the person or their team's members. A
+    whoever works in the workspace, the entrant's members. A
     submission whose `submission.json` does not read marks nothing, and its
     uploads lapse as any unused one does.
     """
-    user = AsUser(entrant.session.user_id, await sessions.credential_for(ctx, entrant.session.id))
+    user = AsUser(person.session.user_id, await sessions.credential_for(ctx, person.session.id))
     try:
         document = _document(await _file(ctx, user, found.id, SUBMISSION_FILE))
     except NotFound, ValueError:
@@ -515,8 +518,8 @@ async def _consume_used(ctx: Context, entrant: Entrant, found: Submitted) -> Non
         await ctx.db.execute(
             select(UploadRow)
             .where(
-                UploadRow.owner_user_id.in_(entrant.members or (entrant.session.user_id,)),
-                UploadRow.task_id == entrant.task,
+                UploadRow.owner_user_id.in_(person.members or (person.session.user_id,)),
+                UploadRow.task_id == person.task,
                 UploadRow.purpose == UploadPurpose.SUBMISSION,
                 UploadRow.status == UploadStatus.VERIFIED,
                 UploadRow.digest.in_(set(digests)),
@@ -550,8 +553,8 @@ async def _listed(
         raise _forge_failure(exc, "submissions.list_failed", task=task) from None
 
 
-async def _refuse_rate(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -> None:
-    rate = entrant.published.definition.submissions.rate
+async def _refuse_rate(ctx: Context, person: Person, workspace: WorkspaceId) -> None:
+    rate = person.published.definition.submissions.rate
     since = ctx.now - rate.window
     times = (
         (
@@ -559,7 +562,7 @@ async def _refuse_rate(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -
                 select(func.min(Grading.submitted_at))
                 .where(
                     Grading.workspace_id == workspace,
-                    Grading.task_id == entrant.task,
+                    Grading.task_id == person.task,
                     Grading.submitted_at > since,
                 )
                 .group_by(Grading.submission_id)
@@ -578,14 +581,14 @@ async def _refuse_rate(ctx: Context, entrant: Entrant, workspace: WorkspaceId) -
 
 
 async def _chosen(
-    ctx: Context, entrant: Entrant, inputs: Mapping[str, SubmittedInput]
+    ctx: Context, person: Person, inputs: Mapping[str, SubmittedInput]
 ) -> dict[uuid.UUID, UploadRow]:
     """Every upload the submit names, held until the unit of work ends, once
     each is the person's own for this task, checked, unused and in time, and
     each file within its input's `max_size`.
     """
     named = [upload for given in inputs.values() for upload in given.uploads]
-    rows = await uploads.owned(ctx, entrant.session.user_id, entrant.task, set(named))
+    rows = await uploads.owned(ctx, person.session.user_id, person.task, set(named))
     foreign = sorted({str(upload) for upload in named if upload not in rows})
     if foreign:
         raise UploadNotYours("An upload named is not one of yours for this task.", uploads=foreign)
@@ -599,7 +602,7 @@ async def _chosen(
             "An upload named is not a complete, checked file that is not submitted yet.",
             uploads=unready,
         )
-    form = await published.form(ctx, entrant.published)
+    form = await published.form(ctx, person.published)
     declared = {entry.id: entry for entry in form.fields}
     for row in sorted(rows.values(), key=lambda row: str(row.id)):
         entry = declared.get(row.input_id or "")
@@ -622,13 +625,13 @@ def _uploaded(row: UploadRow) -> UploadedFile:
     )
 
 
-async def _pointer(ctx: Context, entrant: Entrant, as_: AsUser, row: UploadRow) -> bytes:
+async def _pointer(ctx: Context, person: Person, as_: AsUser, row: UploadRow) -> bytes:
     """What the commit holds in place of the file: the pointer to the object
     the forge keeps. The forge is asked once more, here, that the place still
     holds it, so a submission never commits a pointer to bytes that are not
     there.
     """
-    place = SubmissionPlace(entrant.workspace, entrant.task) if entrant.workspace else None
+    place = SubmissionPlace(person.workspace, person.task) if person.workspace else None
     if place is None or not await uploads.holds(ctx, place, as_, row):
         log.warning("submissions.upload_gone", upload=str(row.id))
         raise UploadNotReady(
@@ -678,24 +681,27 @@ def _forge_failure(exc: PortError, event: str, **fields: str) -> PortError:
 
 def _insert(
     ctx: Context,
-    entrant: Entrant,
+    person: Person,
     workspace: WorkspaceId,
     recorded: Submitted,
     key: str | None,
     *,
     at: datetime,
+    by: int | None,
 ) -> Grading:
     """The submission's queued grading row, against the task's current
-    publication, with the hash of its own callback token.
+    publication, with the hash of its own callback token and the member
+    who submitted it, `by`.
     """
     return gradings.queue_submission(
         ctx,
-        task=entrant.task,
+        task=person.task,
         workspace=workspace,
         submission=recorded,
-        publication=entrant.published.publication,
+        publication=person.published.publication,
         key=key,
         at=at,
+        submitted_by=by,
     )
 
 
@@ -703,8 +709,8 @@ def _insert(
 async def organised(
     ctx: Context, organiser: Organiser, task: TaskId, owner: WorkspaceOwner, number: int
 ) -> Submission:
-    """The submission numbered `number` of the row `owner`, a contestant or a
-    team, as organisers read it: as its row reads it, with everything its
+    """The submission numbered `number` of the entrant `owner`, as organisers
+    read it: as its row reads it, with everything its
     row is not shown yet filled in, each group's `shown_at` saying when the
     row is shown it, and the grading's own status. Needs the observer role
     at the task, as its gradings do. `NotFound` for a task with no
@@ -740,8 +746,8 @@ class Reading:
     workspace: WorkspaceId
 
     @classmethod
-    def of(cls, entrant: Entrant, workspace: WorkspaceId) -> Reading:
-        return cls(entrant.task, entrant.settings, entrant.published, workspace)
+    def of(cls, person: Person, workspace: WorkspaceId) -> Reading:
+        return cls(person.task, person.settings, person.published, workspace)
 
 
 async def _read(
@@ -891,8 +897,8 @@ async def _own(
     """One of the signed-in person's own submissions, and the identity its
     files are read as. `NotFound` for one that is not theirs.
     """
-    entrant = await submitters.entrant(ctx, session, task)
-    workspace = entrant.workspace
+    person = await submitters.person(ctx, session, task)
+    workspace = person.workspace
     found = (
         (
             await ctx.db.execute(
@@ -910,7 +916,7 @@ async def _own(
     )
     if found is None:
         raise NotFound(NO_SUCH_SUBMISSION)
-    user = AsUser(entrant.session.user_id, await sessions.credential_for(ctx, entrant.session.id))
+    user = AsUser(person.session.user_id, await sessions.credential_for(ctx, person.session.id))
     return SubmissionId(found), user
 
 

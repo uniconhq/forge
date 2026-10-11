@@ -58,7 +58,7 @@ steps in order, and refuses before anything is written.
    submission to the task: a new attempt of each one's latest attempt
    against it, as a rejudge makes (`gradings.regrade`).
 7. A task's first publication starts making its place to submit for every
-   approved contestant, once the save has committed and without the save
+   approved entrant, once the save has committed and without the save
    waiting for it (`places`).
 """
 

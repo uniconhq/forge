@@ -145,7 +145,7 @@ async def test_a_manager_writes_a_manager_key_and_a_stale_token_is_a_conflict(
         (b"state: draft", b"state: published", ["state"]),
         (
             b"visibility: signed-in",
-            b"visibility: signed-in\nregistration: {invite_only: true}",
+            b"visibility: signed-in\nregistration: {ways: [{invite: {}}]}",
             ["registration"],
         ),
         (b"visibility: signed-in", b"visibility: everyone", ["visibility"]),
@@ -192,7 +192,7 @@ async def test_a_rollback_writes_the_old_content_as_a_new_change(
 ) -> None:
     first = await files.read(setup, acme.ada, spring, "contest.yaml")
     (created,) = await files.history(setup, acme.ada, spring, "contest.yaml")
-    edited = first.content + b"team_size: 5\n"
+    edited = first.content + b"entrants: {most: 5}\n"
     await files.write(setup, acme.ada, spring, "contest.yaml", edited, first.token)
     current = await files.read(setup, acme.ada, spring, "contest.yaml")
 
