@@ -490,13 +490,15 @@ async def approve(
 async def reject(
     ctx: Context, organiser: Organiser, contest: ContestId, entrant: uuid.UUID, reason: str
 ) -> Entrant:
-    """Reject a pending entrant with a reason its members read. Needs the
-    manager role at the contest.
+    """Reject a pending entrant with a reason its members read; they can no
+    longer write its workspace, which one approved before may have. Needs
+    the manager role at the contest.
     """
     settings, row = await _decided(ctx, organiser, contest, entrant, (Status.PENDING,), "rejected")
     checked = registration.checked_reason(reason)
     _decide(ctx, row, Status.REJECTED, decided_by=organiser.user.id, reason=checked)
     await ctx.db.flush()
+    await _close(ctx, workspace_of(ctx, row), await member_ids(ctx, row.id))
     log.info("entrants.rejected", entrant=str(entrant), by=organiser.user.id)
     return await _view(ctx, row, settings)
 
@@ -509,7 +511,8 @@ async def reopen(
     decision, with the reason gone. It takes a place again, so it is refused
     like a new registration when a member holds a role at the contest by now
     (`is_staff`) or every place is taken (`contest_full`), checked under the
-    same locks. Needs the manager role at the contest.
+    same locks. Its members reach its workspace again, as before the
+    rejection took that away. Needs the manager role at the contest.
     """
     require(organiser, contest_scope(contest), Role.MANAGER)
     await roles.one_change_at_a_time(ctx, contest_scope(contest).org)
@@ -527,6 +530,9 @@ async def reopen(
     row.decided_by_user_id = None
     row.reason = None
     await ctx.db.flush()
+    await ctx.forge.workspaces.share_workspace(
+        workspace_of(ctx, row), await member_ids(ctx, row.id)
+    )
     log.info("entrants.reopened", entrant=str(entrant), by=organiser.user.id)
     return await _view(ctx, row, settings)
 

@@ -949,3 +949,36 @@ async def test_a_move_the_forge_fails_halfway_leaves_access_as_the_membership_st
 
     assert _repo(acme.fake, adders.id, sum_task).writers == {8, 20}
     assert _repo(acme.fake, takers.id, sum_task).writers == {21}
+
+
+async def test_a_rejected_entrant_loses_its_access_and_has_it_again_once_reopened(
+    setup: Setup,
+    acme: Acme,
+    sum_task: TaskId,
+    crowd: dict[str, Session],
+    clock: FakeClock,
+    manager: Organiser,
+) -> None:
+    acme.fake.add_user(22, "eve", email="eve@u.nus.edu")
+    await write_contest(
+        acme.fake,
+        contest(
+            locks="first_submission",
+            ways=(
+                "[{signup: {name: Students, domains: [u.nus.edu], approval: auto}}, "
+                "{signup: {name: Guests}}]"
+            ),
+        ),
+    )
+    eve = await signed_in(setup, acme.fake, 22)
+    adders = await entrants.register(setup, eve, SPRING, name="Adders")
+    clock.set(START + timedelta(minutes=30))
+    await upload(setup, acme.fake, eve, sum_task, b"print(1)\n")
+    await _join(setup, eve, crowd["dan"], "dan")
+
+    rejected = await entrants.reject(setup, manager, SPRING, adders.id, "Guests must be named.")
+
+    assert rejected.status is Status.REJECTED
+    assert _repo(acme.fake, adders.id, sum_task).writers == set()
+    await entrants.reopen(setup, manager, SPRING, adders.id)
+    assert _repo(acme.fake, adders.id, sum_task).writers == {21, 22}
