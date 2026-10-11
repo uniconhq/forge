@@ -242,54 +242,62 @@ def test_a_label_is_the_entrys_place_as_a_letter() -> None:
 @pytest.mark.parametrize(
     ("extra", "path", "sentence"),
     [
-        ("submissions_closed: false\n", "submissions_closed", "closes on its entry"),
-        ("teams: {enabled: true, max_size: 3}\n", "teams", "entrants: {most"),
-        ("team_size: 3\n", "team_size", "entrants.most"),
-        ("registration: {mode: open}\n", "registration.mode", "registration.ways"),
+        ("submissions_closed: false\n", "submissions_closed", "its own closing time"),
+        ("teams: {enabled: true, max_size: 3}\n", "teams", "the most people in a team"),
+        ("team_size: 3\n", "team_size", "the most people in a team"),
+        ("registration: {mode: open}\n", "registration.mode", "ways in"),
         (
             "registration: {eligibility: {email_pattern: x}}\n",
             "registration.eligibility",
-            "registration.ways",
+            "ways in",
         ),
-        ("registration: {invite_only: true}\n", "registration.invite_only", "registration.ways"),
-        ("registration: {approval: auto}\n", "registration.approval", "registration.ways"),
-        ("registration: {email_pattern: x}\n", "registration.email_pattern", "now ways"),
-        ("registration: {code: sesame}\n", "registration.code", "now ways"),
-        ("tasks: [{id: a, label: A}]\n", "tasks[0].label", "its place in tasks"),
-        ("tasks: [{id: a, points: 100}]\n", "tasks[0].points", "points is now worth"),
-        ("leaderboards: [{name: B, stage: default}]\n", "leaderboards[0].stage", "over"),
-        ("leaderboards: [{name: B, combine: sum}]\n", "leaderboards[0].combine", "sums its tasks"),
+        ("registration: {invite_only: true}\n", "registration.invite_only", "ways in"),
+        ("registration: {approval: auto}\n", "registration.approval", "ways in"),
+        ("registration: {email_pattern: x}\n", "registration.email_pattern", "Add a way in"),
+        ("registration: {code: sesame}\n", "registration.code", "Add a way in"),
+        ("tasks: [{id: a, label: A}]\n", "tasks[0].label", "its place in the contest's list"),
+        ("tasks: [{id: a, points: 100}]\n", "tasks[0].points", "This is now called worth"),
+        (
+            "leaderboards: [{name: B, stage: default}]\n",
+            "leaderboards[0].stage",
+            "counts test groups",
+        ),
+        (
+            "leaderboards: [{name: B, combine: sum}]\n",
+            "leaderboards[0].combine",
+            "adds up its tasks",
+        ),
         (
             "leaderboards: [{name: B, visibility: public}]\n",
             "leaderboards[0].visibility",
-            "visibility is now who",
+            "who the leaderboard is shown to",
         ),
         (
             "leaderboards: [{name: B, freeze_at: 2026-06-01T13:00:00Z}]\n",
             "leaderboards[0].freeze_at",
-            "does not freeze",
+            "no longer freeze",
         ),
         (
             "leaderboards: [{name: B, team_only: true}]\n",
             "leaderboards[0].team_only",
             "the contest's entrants",
         ),
-        ("leaderboards: [{name: B, select: latest}]\n", "leaderboards[0].select", "best_per_group"),
-        ("leaderboards: [{name: B, select: selected}]\n", "leaderboards[0].select", "marked"),
+        ("leaderboards: [{name: B, select: latest}]\n", "leaderboards[0].select", "on each group"),
+        ("leaderboards: [{name: B, select: selected}]\n", "leaderboards[0].select", "marks"),
         (
             "leaderboards: [{name: B, select: first_accepted}]\n",
             "leaderboards[0].select",
-            "best, best_per_group or marked",
+            "the best submission, the best submission on each group, or the best of the",
         ),
         (
             "leaderboards: [{name: B, order: [{metric: points, direction: desc}]}]\n",
             "leaderboards[0].order[0]",
-            "its workflow's",
+            "set by its workflow",
         ),
         (
             "leaderboards: [{name: B, order: [points, {key: penalty, per_rejected: 20}]}]\n",
             "leaderboards[0].order[1]",
-            "per_attempt",
+            "penalty minutes",
         ),
     ],
 )
@@ -305,7 +313,9 @@ def test_a_retired_contest_key_is_refused_at_its_path_with_what_replaced_it(
 def test_public_visibility_is_refused_naming_everyone() -> None:
     problems = contest_problems(HEAD.replace("everyone", "public"))
 
-    assert problems == [{"path": "visibility", "message": "public is now everyone."}]
+    assert problems == [
+        {"path": "visibility", "message": 'This is now called "everyone". Choose that instead.'}
+    ]
 
 
 def test_every_retired_key_in_one_file_is_named_together() -> None:
@@ -326,21 +336,25 @@ def test_every_retired_key_in_one_file_is_named_together() -> None:
 @pytest.mark.parametrize(
     ("order", "path", "sentence"),
     [
-        ("[penalty]", "leaderboards[0].order[0]", "penalty is never the first key"),
-        ("[{by: penalty}, points]", "leaderboards[0].order[0]", "penalty is never the first key"),
-        ("[points, points]", "leaderboards[0].order[1]", "points is ranked on twice."),
+        ("[penalty]", "leaderboards[0].order[0]", "Penalty minutes cannot come first"),
+        (
+            "[{by: penalty}, points]",
+            "leaderboards[0].order[0]",
+            "Penalty minutes cannot come first",
+        ),
+        ("[points, points]", "leaderboards[0].order[1]", "already ranks by points above."),
         (
             "[points, penalty, {by: penalty, per_attempt: 5}]",
             "leaderboards[0].order[2]",
-            "penalty is ranked on twice.",
+            "already ranks by penalty above.",
         ),
-        ("[time_ms, time_ms]", "leaderboards[0].order[1]", "time_ms is ranked on twice."),
-        ("[]", "leaderboards[0].order", "at least one entry"),
-        ("[Points]", "leaderboards[0].order[0]", "a value name"),
+        ("[time_ms, time_ms]", "leaderboards[0].order[1]", "already ranks by time_ms above."),
+        ("[]", "leaderboards[0].order", "Give at least one."),
+        ("[Points]", "leaderboards[0].order[0]", "by a value the tasks report"),
         (
             "[{by: penalty, per_attempt: -1}]",
             "leaderboards[0].order[0].per_attempt",
-            "Must be at least 0.",
+            "This must be at least 0.",
         ),
     ],
 )
@@ -371,10 +385,14 @@ def test_best_per_group_ranks_points_first_and_no_value() -> None:
         HEAD + "leaderboards: [{name: B, select: best_per_group, order: [points, time_ms]}]\n"
     )
 
-    assert "best_per_group ranks points first." in [problem["message"] for problem in value_first]
+    assert (
+        "Counting the best submission on each group ranks by points first. Put points first, "
+        "or count another submission."
+    ) in [problem["message"] for problem in value_first]
     assert at(with_value, "leaderboards[0].select") == (
-        "best_per_group sums groups across submissions, so it cannot rank time_ms, which "
-        "belongs to one submission."
+        "The best submission on each group adds up groups from different submissions, so it "
+        "cannot rank by time_ms, which belongs to one submission. Count another submission, or "
+        "stop ranking by time_ms."
     )
     parse_contest(
         HEAD + "leaderboards: [{name: B, select: best_per_group, order: [points, penalty]}]\n"
@@ -385,7 +403,8 @@ def test_own_rows_are_refused_on_a_board_everyone_sees() -> None:
     problems = contest_problems(HEAD + "leaderboards: [{name: B, rows: own, who: everyone}]\n")
 
     assert at(problems, "leaderboards[0].rows") == (
-        "own is not for everyone: a guest has no row of their own."
+        "A leaderboard shown to everyone cannot show each entrant only their own row, since a "
+        "guest has none. Show every row or the top rows."
     )
     assert parse_contest(HEAD + "leaderboards: [{name: B, rows: own, who: contestants}]\n")
     assert parse_contest(HEAD + "leaderboards: [{name: B, rows: 10, who: everyone}]\n")
@@ -476,9 +495,9 @@ def test_a_malformed_contest_is_refused_at_the_path_that_is_wrong(extra: str, pa
 def test_a_contest_ends_after_it_starts_and_its_times_carry_a_timezone() -> None:
     assert paths(contest_problems(HEAD.replace("14:00:00Z", "09:00:00Z"))) == ["end"]
     bare = contest_problems(HEAD.replace("2026-06-01T09:00:00Z", "2026-06-01"))
-    assert at(bare, "start").startswith("Must carry a time and a timezone")
+    assert at(bare, "start").startswith("Give a time and a time zone as well as the date")
     naive = contest_problems(HEAD.replace("2026-06-01T09:00:00Z", "'2026-06-01T09:00:00'"))
-    assert at(naive, "start").startswith("Must carry a timezone")
+    assert at(naive, "start").startswith("Give the time zone with the time")
 
 
 def test_the_contest_admin_keys_leave_start_and_end_to_the_managers() -> None:
@@ -524,37 +543,37 @@ def test_equal_times_are_in_order_and_a_task_may_never_take_a_submission() -> No
         (
             "{id: a, release_at: 2026-06-01T08:59:59Z}",
             "tasks[0].release_at",
-            "release_at is before the contest's start.",
+            "The release time is before the contest's start.",
         ),
         (
             "{id: a, release_at: 2026-06-01T11:00:00Z, due: 2026-06-01T10:00:00Z}",
             "tasks[0].due",
-            "due is before release_at",
+            "The due time is before the release time.",
         ),
         (
             "{id: a, due: 2026-06-01T13:00:00Z, closes: 2026-06-01T12:00:00Z}",
             "tasks[0].closes",
-            "closes is before due",
+            "The closing time is before the due time.",
         ),
         (
             "{id: a, due: 2026-06-01T14:30:00Z}",
             "tasks[0].due",
-            "due is after the contest's end.",
+            "The due time is after the contest's end.",
         ),
         (
             "{id: a, closes: 2026-06-01T14:00:01Z}",
             "tasks[0].closes",
-            "closes is after the contest's end.",
+            "The closing time is after the contest's end.",
         ),
         (
             "{id: a, release_at: 2026-06-01T14:30:00Z}",
             "tasks[0].release_at",
-            "release_at is after the contest's end.",
+            "The release time is after the contest's end.",
         ),
         (
             "{id: a, due: 2026-06-01T08:00:00Z}",
             "tasks[0].due",
-            "due is before the contest's start.",
+            "The due time is before the contest's start.",
         ),
     ],
 )
@@ -569,13 +588,16 @@ def test_a_release_after_a_close_is_refused_naming_the_close() -> None:
         "{id: a, release_at: 2026-06-01T12:00:00Z, closes: 2026-06-01T11:00:00Z}"
     )
 
-    assert "closes is before release_at" in at(problems, "tasks[0].closes")
+    assert "The closing time is before the release time." in at(problems, "tasks[0].closes")
 
 
 def test_a_late_fraction_needs_a_due() -> None:
     problems = entry_problems("{id: a, late_per_day: 0.5}")
 
-    assert at(problems, "tasks[0].late_per_day") == "Applies only with a due."
+    assert at(problems, "tasks[0].late_per_day") == (
+        "This applies only to a task with a due time. Give the task a due time, or leave this "
+        "empty."
+    )
 
 
 @pytest.mark.parametrize("fraction", ["0", "-0.1", "1.5"])
@@ -583,7 +605,8 @@ def test_a_late_fraction_is_more_than_0_and_at_most_1(fraction: str) -> None:
     problems = entry_problems(f"{{id: a, due: 2026-06-01T12:00:00Z, late_per_day: {fraction}}}")
 
     assert at(problems, "tasks[0].late_per_day") == (
-        "Must be more than 0 and at most 1, a fraction taken per day."
+        "This must be more than 0 and at most 1: the share of the points taken off for each "
+        "late day."
     )
 
 
@@ -597,14 +620,15 @@ def test_marks_need_a_marked_board_covering_the_task() -> None:
 
     for problems in (nothing_marked, other_task):
         assert at(problems, "tasks[0].marks") == (
-            "Applies only when a board with select: marked covers the task."
+            "This applies only when a leaderboard covering this task counts the submissions an "
+            "entrant marks."
         )
     covering = parse_contest(HEAD + "tasks: [{id: a}]\nleaderboards: [{name: F, select: marked}]\n")
     assert covering.marks_of(covering.tasks[0]) == 1
 
 
 @pytest.mark.parametrize(
-    ("marks", "sentence"), [("0", "Must be at least 1."), ("11", "Must be at most 10.")]
+    ("marks", "sentence"), [("0", "This must be at least 1."), ("11", "This must be at most 10.")]
 )
 def test_marks_are_1_to_10(marks: str, sentence: str) -> None:
     problems = entry_problems(
@@ -662,14 +686,14 @@ def test_submissions_take_a_count_and_a_rate_of_their_own() -> None:
 @pytest.mark.parametrize(
     ("extra", "path", "sentence"),
     [
-        ("release_at: 2026-06-01T10:00:00Z\n", "release_at", "contest.yaml's tasks"),
-        ("hidden: true\n", "hidden", "show: after_close"),
-        ("limits: {submissions: 50}\n", "limits", "limits is now submissions"),
+        ("release_at: 2026-06-01T10:00:00Z\n", "release_at", "on the task's timeline"),
+        ("hidden: true\n", "hidden", "When entrants see results"),
+        ("limits: {submissions: 50}\n", "limits", "the most submissions"),
         ("subtasks: [{id: s1}]\n", "subtasks", "test groups"),
-        ("stages: [{id: final}]\n", "stages", "A task has one plan"),
-        ("inputs: {contestant: []}\n", "inputs.contestant", "one mapping keyed"),
-        ("inputs: {setter: []}\n", "inputs.setter", "one mapping keyed"),
-        ("submissions: {rate: 1 per 30s}\n", "submissions.rate", "{count: 1, per: 30}"),
+        ("stages: [{id: final}]\n", "stages", "set on each leaderboard"),
+        ("inputs: {contestant: []}\n", "inputs.contestant", "List each input"),
+        ("inputs: {setter: []}\n", "inputs.setter", "List each input"),
+        ("submissions: {rate: 1 per 30s}\n", "submissions.rate", "1 every 30 seconds"),
     ],
 )
 def test_a_retired_task_key_is_refused_at_its_path_with_what_replaced_it(
@@ -724,17 +748,20 @@ def test_a_malformed_task_is_refused_at_the_path_that_is_wrong(text: str, path: 
 def test_a_typo_says_so_and_a_key_given_twice_is_refused() -> None:
     problems = task_problems(task_text("{main: {each: 1}}", extra="submision: {max: 3}\n"))
     assert problems == [
-        {"path": "submision", "message": "This key is not part of the format; check its spelling."}
+        {
+            "path": "submision",
+            "message": "Unicon does not know this setting. Check its spelling, or remove it.",
+        }
     ]
 
     twice = task_problems(task_text("{main: {each: 1}}") + "name: U\n")
     assert paths(twice) == [""]
-    assert "the key 'name' is given twice" in twice[0]["message"]
+    assert "the setting 'name' is given twice" in twice[0]["message"]
 
 
 @pytest.mark.parametrize(
     ("text", "fragment"),
-    [(b"- a\n- b\n", "must be a mapping"), (b"name: [\n", "does not parse as YAML")],
+    [(b"- a\n- b\n", "write them as named settings"), (b"name: [\n", "a mistake on line")],
 )
 def test_a_file_that_is_not_a_mapping_is_one_problem_at_the_top(text: bytes, fragment: str) -> None:
     with pytest.raises(InvalidDefinition) as refused:
@@ -760,14 +787,19 @@ def test_every_problem_in_one_task_is_reported_together() -> None:
 def test_pass_at_applies_only_beside_pass() -> None:
     problems = task_problems(task_text("{main: {each: 1, pass_at: 0.5}}"))
 
-    assert at(problems, "test_groups.main.pass_at") == "Applies only beside pass."
+    assert at(problems, "test_groups.main.pass_at") == (
+        'This applies only when the group gives points under "every test must pass". Give those '
+        "points, or leave this empty."
+    )
 
 
 @pytest.mark.parametrize("share", ["0", "-0.5", "1.01"])
 def test_pass_at_is_more_than_0_and_at_most_1(share: str) -> None:
     problems = task_problems(task_text(f"{{main: {{pass: 1, pass_at: {share}}}}}"))
 
-    assert at(problems, "test_groups.main.pass_at") == "Must be more than 0 and at most 1."
+    assert at(problems, "test_groups.main.pass_at") == (
+        "This must be more than 0 and at most 1, such as 0.5 for half the tests."
+    )
 
 
 def test_pass_at_of_exactly_1_is_the_default_written_out() -> None:
@@ -780,7 +812,8 @@ def test_worst_needs_a_credit() -> None:
     problems = task_problems(task_text("{main: {worst: 1}}"))
 
     assert at(problems, "test_groups.main.worst") == (
-        "With pass/fail tests `worst` is `pass`: write `pass`."
+        "Each test here either passes or fails, so the lowest test score is the same as "
+        '"every test must pass". Give these points there instead.'
     )
     assert parse_task(task_text("{main: {worst: 1}}", credit="fraction"))
 
@@ -798,8 +831,8 @@ def test_test_weights_are_refused_where_nothing_reads_them(group: str) -> None:
     problems = task_problems(task_text(f"{{main: {group}}}", credit="fraction"))
 
     assert at(problems, "test_groups.main.test_weights") == (
-        "test_weights on main change nothing: only each, or pass with a pass_at below 1, "
-        "reads them."
+        "The test weights on main change nothing. They count only towards points for each test "
+        "passed, or when the share of tests that must pass is below 1."
     )
 
 
@@ -818,8 +851,8 @@ def test_a_test_weight_is_more_than_0(weight: str) -> None:
     problems = task_problems(task_text(f"{{main: {{each: 1, test_weights: {{'20': {weight}}}}}}}"))
 
     assert at(problems, "test_groups.main.test_weights.20") == (
-        f"main/20 weighs {weight}: put a test that counts for nothing in a group with no rule "
-        "weight."
+        f"main/20 has a weight of {weight}, and a weight must be more than 0. Put a test that "
+        "should count for nothing in a test group that gives no points."
     )
 
 
@@ -827,7 +860,7 @@ def test_a_test_weights_key_is_a_test_name() -> None:
     problems = task_problems(task_text("{main: {each: 1, test_weights: {'a.b': 1}}}"))
 
     assert at(problems, "test_groups.main.test_weights.a.b") == (
-        "A test's name is letters, digits, _ and -."
+        "A test's name may use only letters, digits, hyphens (-) and underscores (_)."
     )
 
 
@@ -835,7 +868,11 @@ def test_credit_on_a_task_with_no_rule_weight_is_refused() -> None:
     problems = task_problems(task_text("{samples: {}, main: {each: 0}}", credit="fraction"))
 
     assert problems == [
-        {"path": "credit", "message": "No group has a rule weight, so credit scores nothing."}
+        {
+            "path": "credit",
+            "message": "No test group gives points, so what an accepted test earns changes "
+            "nothing. Give a test group points, or let an accepted test earn 1.",
+        }
     ]
     assert not parse_task(task_text("{samples: {}}")).gives_points
 
@@ -858,32 +895,39 @@ def test_credit_is_a_value_name_or_relative_to_one() -> None:
     )
 
 
+EACH_TELLS = (
+    "main shows entrants only its outcome until the reveal, but points for each test passed "
+    'would tell them how many of its tests passed. Give its points under "every test must pass" '
+    'instead, or change "When entrants see results".'
+)
+
+
 @pytest.mark.parametrize(
     ("group", "credit", "sentence"),
     [
         (
             "{each: 1, show: verdict}",
             None,
-            "main is shown as a verdict, but its each points would tell how many of its tests "
-            "passed; use pass, or show it always or after_close.",
+            EACH_TELLS,
         ),
         (
             "{pass: 1, each: 1, show: verdict}",
             None,
-            "main is shown as a verdict, but its each points would tell how many of its tests "
-            "passed; use pass, or show it always or after_close.",
+            EACH_TELLS,
         ),
         (
             "{worst: 1, show: verdict}",
             "fraction",
-            "main is shown as a verdict, but its worst points would tell its worst test's "
-            "credit; use pass, or show it always or after_close.",
+            "main shows entrants only its outcome until the reveal, but points for the lowest "
+            "test score would tell them how its worst test did. Give its points under "
+            '"every test must pass" instead, or change "When entrants see results".',
         ),
         (
             "{pass: 1, show: verdict}",
             "{relative: time_ms}",
-            "A verdict group's outcome and points would move when other rows improve on its "
-            "hidden tests; show it always or after_close.",
+            "This test group shows entrants only its outcome until the reveal, but its points "
+            "would change as other entrants do better on its hidden tests. Show its results to "
+            "entrants at once or only at the reveal.",
         ),
     ],
 )
@@ -918,29 +962,29 @@ def test_form_details_fit_the_inputs_type_and_the_workflows_options() -> None:
 
     assert form_problems({"options": ["cpp"], "default": "cpp"}, "enum", options) == []
     assert form_problems({"options": ["rust"]}, "enum", options) == [
-        (("options",), "rust is not an option of the workflow's: c, cpp, python.")
+        (("options",), "rust is not one of the workflow's options, which are c, cpp, python.")
     ]
     assert form_problems({"options": ["cpp"], "default": "c"}, "enum", options) == [
-        (("default",), "Must be one of cpp.")
+        (("default",), "The default must be one of cpp.")
     ]
     assert form_problems({"min": 2, "max": 1}, "number", None) == [
-        (("max",), "Must be at least min.")
+        (("max",), "The maximum must be at least the minimum.")
     ]
     assert form_problems({"min": 0, "max": 1, "default": 2}, "number", None) == [
-        (("default",), "Must be at most max.")
+        (("default",), "The default must be at most the maximum.")
     ]
     assert form_problems({"default": "yes"}, "boolean", None) == [
-        (("default",), "Must be true or false.")
+        (("default",), "The default must be true or false.")
     ]
     assert form_problems({"max_size": "3GB"}, "file", None) == [
-        (("max_size",), "Must be at most 2GB, the largest the platform takes.")
+        (("max_size",), "This must be at most 2GB, the largest file Unicon takes.")
     ]
     assert form_problems({"max_size": "2GB", "label": "Data"}, "folder", None) == []
     assert form_problems({"max_size": "1MB"}, "text", None) == [
-        (("max_size",), "A text input does not take max_size.")
+        (("max_size",), "A text input does not take a largest size. Remove it.")
     ]
     assert form_problems({"colour": "red"}, "text", None) == [
-        (("colour",), "This key is not part of the format; check its spelling.")
+        (("colour",), "Unicon does not know this setting. Check its spelling, or remove it.")
     ]
     assert parse_size("2GB") == 2 * 1024**3
 

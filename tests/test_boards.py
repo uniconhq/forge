@@ -407,7 +407,7 @@ def test_a_practice_task_giving_no_points_never_counts_and_costs_no_penalty() ->
     }
     assert counts_nothing(on, tasks) == ["cartpole-practice"]
     assert counts_nothing_message(on, "cartpole-practice") == (
-        "Standings counts nothing from cartpole-practice."
+        "The leaderboard Standings counts nothing from cartpole-practice."
     )
 
 
@@ -487,8 +487,8 @@ def test_raw_reward_is_ranked_on_one_task_and_refused_across_several() -> None:
         ("walker", 0, "workflow"),
     ]
     assert found[0].message == (
-        "reward has no lower bound, so on Reward a row that skips a task would beat one that "
-        "scored below 0 on it: rank it on a board of one task."
+        "reward has no lowest value, so on the leaderboard Reward an entrant who skips a task "
+        "would beat one who scored below 0 on it. Rank by reward on a leaderboard of one task."
     )
 
 
@@ -497,8 +497,8 @@ def test_a_lower_is_better_value_first_over_several_tasks_is_refused() -> None:
     tasks = {"house-prices": covered(METRIC, KAGGLE), "rents": covered(METRIC, KAGGLE)}
     found = breaches(public, tasks, many=True, only="rents")
     assert [b.message for b in found] == [
-        "Public ranks metric, which is lower is better, over more than one task: rank it on "
-        "a board of one task."
+        "The leaderboard Public ranks first by metric, for which lower is better, over more than "
+        "one task. Rank by metric on a leaderboard of one task."
     ]
     assert breaches(public, {"house-prices": tasks["house-prices"]}, many=False) == []
 
@@ -515,14 +515,20 @@ def test_a_value_ranked_is_reported_with_a_fold_and_the_same_direction_everywher
         (
             "b",
             1,
-            "Standings ranks time_ms, which is higher is better in b and lower is better in a.",
+            "The leaderboard Standings ranks by time_ms, but a higher time_ms is better in b and "
+            "a lower one in a.",
         ),
-        ("c", 1, "Standings ranks time_ms, which c does not report per test with a fold."),
+        (
+            "c",
+            1,
+            "The leaderboard Standings ranks by time_ms, but c's workflow does not report time_ms "
+            "for each test, combined across its tests.",
+        ),
         (
             "d",
             1,
-            "Standings ranks time_ms, which d gives no better, and a value without one is "
-            "never ranked.",
+            "The leaderboard Standings ranks by time_ms, but d's workflow does not say whether a "
+            "higher or a lower time_ms is better, so it cannot be ranked.",
         ),
     ]
 
@@ -534,8 +540,9 @@ def test_a_value_first_needs_a_group_whose_tests_its_scope_reads() -> None:
     assert [(b.mended_in, b.message) for b in found] == [
         (
             "test_groups",
-            "Public ranks score over live, so opt needs a group shown always, since a verdict "
-            "group's tests show only at the reveal.",
+            "The leaderboard Public ranks by score, counting the results shown during the "
+            "contest, so opt needs a test group whose results entrants see as soon as a grading "
+            "ends, since a group shown as an outcome shows its tests only at the reveal.",
         )
     ]
 
@@ -545,8 +552,9 @@ def test_a_marked_board_needs_its_fallback_to_carry_its_first_key() -> None:
     hidden = covered({}, {"samples": group(), "main": group(each=100, show=Show.AFTER_CLOSE)})
     found = breaches(marked, {"t": hidden}, many=False)
     assert [b.message for b in found] == [
-        "Final counts, for a row that marked nothing, what it saw before the reveal, so t "
-        "needs a group with a rule weight not shown after_close."
+        "For an entrant who marked nothing, the leaderboard Final counts what they saw before "
+        "the reveal, so t needs a test group that gives points and shows its results before the "
+        "reveal."
     ]
     fine = covered({}, {"public": group(each=30), "hidden": group(each=70, show=Show.AFTER_CLOSE)})
     assert breaches(marked, {"t": fine}, many=False) == []

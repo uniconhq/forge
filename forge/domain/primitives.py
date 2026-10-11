@@ -55,7 +55,9 @@ Flag = Annotated[bool, Field(strict=True)]
 
 def _image(value: object) -> str:
     if not isinstance(value, str) or not IMAGE.match(value):
-        raise ValueError("Must be an image by digest, such as ghcr.io/uniconhq/x@sha256:<64 hex>.")
+        raise ValueError(
+            "Give the image by its digest, such as ghcr.io/uniconhq/x@sha256:<64 hex digits>."
+        )
     return value
 
 
@@ -83,9 +85,9 @@ class Port(Model):
     def _check(self) -> Port:
         problems = Problems()
         if self.type is Type.ENUM and self.options is None:
-            problems.add(("options",), "An enum lists its options.")
+            problems.add(("options",), "List the options to choose from.")
         if self.type is not Type.ENUM and self.options is not None:
-            problems.add(("options",), "Applies only to an enum.")
+            problems.add(("options",), "Only an enum has options. Remove them.")
         problems.raise_any()
         return self
 
@@ -118,9 +120,9 @@ class LimitFrom(Model):
     def _check(self) -> LimitFrom:
         problems = Problems()
         if self.scale <= 0:
-            problems.add(("scale",), "Must be more than 0.")
+            problems.add(("scale",), "This must be more than 0.")
         if self.add < 0:
-            problems.add(("add",), "Must be at least 0.")
+            problems.add(("add",), "This must be at least 0.")
         problems.raise_any()
         return self
 
@@ -153,39 +155,51 @@ class PrimitiveDeclaration(Model):
                 if not PORT_NAME.match(name):
                     problems.add(
                         (side, name),
-                        "A port's name is lower case letters, digits and _, starting with a "
-                        "letter.",
+                        "A port's name may use only lower case letters, digits and "
+                        "underscores (_), starting with a letter.",
                     )
         for name, port in self.inputs.items():
             if port.type not in VALUE_TYPES:
-                problems.add(("inputs", name, "type"), "An input takes one of the six value types.")
+                problems.add(
+                    ("inputs", name, "type"),
+                    "An input must be text, a number, true or false, an enum, a file or a folder.",
+                )
             if port.type in FILES and port.runs is None:
                 problems.add(
                     ("inputs", name),
-                    f"{name} is a {port.type} port: say whether the primitive runs it, "
-                    "runs: true or runs: false.",
+                    f"{name} is a {port.type} port. Say whether the primitive runs it as a "
+                    "program, with runs: true or runs: false.",
                 )
             if port.type not in FILES and port.runs is not None:
-                problems.add(("inputs", name, "runs"), "Applies only to a file or folder port.")
+                problems.add(
+                    ("inputs", name, "runs"), "This applies only to a file or folder port."
+                )
         for name, port in self.outputs.items():
             if port.runs is not None:
-                problems.add(("outputs", name, "runs"), "Applies only to an input.")
+                problems.add(("outputs", name, "runs"), "This applies only to an input.")
             if port.secret:
-                problems.add(("outputs", name, "secret"), "Applies only to an input.")
+                problems.add(("outputs", name, "secret"), "This applies only to an input.")
         outcome = self.outputs.get("outcome")
         if outcome is None or outcome.type is not Type.OUTCOME:
-            problems.add(("outputs",), "Every primitive declares the output outcome: outcome.")
+            problems.add(
+                ("outputs",), "Every primitive must have an output called outcome, of type outcome."
+            )
         for name, port in self.outputs.items():
             if port.type is Type.OUTCOME and name != "outcome":
-                problems.add(("outputs", name), "Only the output named outcome is an outcome.")
+                problems.add(
+                    ("outputs", name), "Only the output called outcome can be of type outcome."
+                )
         if outcome is not None and outcome.optional:
-            problems.add(("outputs", "outcome", "optional"), "A step always says its outcome.")
+            problems.add(
+                ("outputs", "outcome", "optional"),
+                "The outcome cannot be optional: every step gives one.",
+            )
         for limit, source in self.limits_from.items():
             given = self.inputs.get(source.input)
             if given is None or given.type is not Type.NUMBER:
                 problems.add(
                     ("limits_from", limit, "input"),
-                    f"{source.input!r} is not a number input of the primitive.",
+                    f"The primitive has no number input called {source.input!r}.",
                 )
         problems.raise_any()
         return self
@@ -201,13 +215,13 @@ def _old_type(value: object) -> bool:
 
 
 RETIRED = (
-    Retired(("name",), "A primitive has no name line: its repo is its name. Remove it."),
-    Retired(("version",), "A primitive has no version line: its tag is its version. Remove it."),
-    Retired(("schema_version",), "A primitive has no schema_version. Remove it."),
-    Retired(("inputs", ANY), "`values` is now `options`.", _values_key),
-    Retired(("outputs", ANY), "`values` is now `options`.", _values_key),
-    Retired(("inputs", ANY), "`file[]` is now `folder`.", _old_type),
-    Retired(("outputs", ANY), "`file[]` is now `folder`.", _old_type),
+    Retired(("name",), "A primitive's name is the name it was made under. Remove this."),
+    Retired(("version",), "A primitive's version is set when the version is made. Remove this."),
+    Retired(("schema_version",), "This setting is no longer used. Remove this."),
+    Retired(("inputs", ANY), "values is now called options.", _values_key),
+    Retired(("outputs", ANY), "values is now called options.", _values_key),
+    Retired(("inputs", ANY), "The type file[] is now called folder.", _old_type),
+    Retired(("outputs", ANY), "The type file[] is now called folder.", _old_type),
 )
 
 

@@ -48,10 +48,12 @@ from forge.domain.yaml_models import (
     Problems,
     Retired,
     Size,
+    already_listed,
     fail,
     is_number,
     load_mapping,
     mapping_or_empty,
+    name_rule,
     parse_size,
     problems_of,
     read_time,
@@ -91,6 +93,7 @@ __all__ = [
     "Way",
     "Who",
     "admin_only_changes",
+    "admin_only_refusal",
     "parse_contest",
     "parse_task",
     "starter_contest",
@@ -177,24 +180,21 @@ class Show(StrEnum):
 
 def _pattern(value: object) -> str:
     if not isinstance(value, str) or not value.strip() or "\n" in value:
-        raise ValueError("Must be one line: a regular expression.")
+        raise ValueError("Give a pattern on one line, written as a regular expression.")
     try:
         regex.compile(value)
     except regex.error as error:
-        raise ValueError(f"Is not a regular expression: {error}.") from None
+        raise ValueError(f"This is not a regular expression Unicon can read: {error}.") from None
     return value
 
 
 def _task_handle(value: object) -> str:
     if not isinstance(value, str):
-        raise ValueError("Must be text.")
+        raise ValueError("This must be text.")
     try:
         return validate_contest_or_task_name(value)
     except InvalidName:
-        raise ValueError(
-            f"{value!r} must be lower case letters, digits, hyphens and underscores, "
-            "starting with a letter or a digit, at most 24 characters."
-        ) from None
+        raise ValueError(name_rule(value, 24)) from None
 
 
 TaskHandle = Annotated[str, PlainValidator(_task_handle)]
@@ -212,7 +212,7 @@ with a hyphen."""
 def _domain(value: object) -> str:
     if not isinstance(value, str) or not DOMAIN.fullmatch(value):
         raise ValueError(
-            "Must be a domain such as u.nus.edu: lower case letters, digits, hyphens and "
+            "Give a domain such as u.nus.edu: lower case letters, digits, hyphens and "
             "dots, with at least one dot, and no dot or hyphen at either end."
         )
     return value
@@ -260,7 +260,7 @@ class SignupWay(Model):
         domains = list(self.domains or ())
         for index, domain in enumerate(domains):
             if domain in domains[:index]:
-                problems.add(("domains", index), f"{domain!r} is given more than once.")
+                problems.add(("domains", index), already_listed(domain))
         problems.raise_any()
         return self
 
@@ -289,7 +289,7 @@ class Way(Model):
     @model_validator(mode="after")
     def _one(self) -> Way:
         if (self.invite is None) == (self.signup is None):
-            fail([((), "A way is one of invite: {...} or signup: {...}.")])
+            fail([((), "A way in is either an invite or a sign-up. Choose one of the two.")])
         return self
 
     @property
@@ -328,14 +328,18 @@ class Registration(Model):
         problems = Problems()
         invites = [index for index, way in enumerate(self.ways) if way.invite is not None]
         for index in invites[1:]:
-            problems.add(("ways", index, "invite"), "A contest has at most one invite way.")
+            problems.add(
+                ("ways", index, "invite"),
+                "A contest has only one way in by invite. Remove this one.",
+            )
         seen: set[str] = set()
         for index, way in enumerate(self.ways):
             if way.name is None:
                 continue
             if way.name in seen:
                 problems.add(
-                    ("ways", index, "signup", "name"), f"{way.name!r} is given more than once."
+                    ("ways", index, "signup", "name"),
+                    f"Another sign-up is already called {way.name!r}. Give this one another name.",
                 )
             seen.add(way.name)
         problems.raise_any()
@@ -360,7 +364,14 @@ class Entrants(Model):
     @model_validator(mode="after")
     def _check(self) -> Entrants:
         if self.fewest > self.most:
-            fail([(("fewest",), f"Must be at most {self.most}, the most people in an entrant.")])
+            fail(
+                [
+                    (
+                        ("fewest",),
+                        f"This must be at most {self.most}, the most people in a team.",
+                    )
+                ]
+            )
         return self
 
 
@@ -378,8 +389,8 @@ def _order_key(value: object) -> str | Penalty:
         return Penalty.model_validate(value)
     if not isinstance(value, str) or not VALUE_NAME.match(value):
         raise ValueError(
-            "Must be points, penalty, a value name the tasks report, or "
-            "{by: penalty, per_attempt: <minutes>}."
+            "Rank by points, by penalty minutes, or by a value the tasks report, "
+            "named as they report it."
         )
     return value
 
@@ -392,7 +403,9 @@ def _rows(value: object) -> Literal["all", "own"] | int:
         return "all" if value == "all" else "own"
     if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
         return value
-    raise ValueError("Must be all, own, or a whole number of at least 1, the top rows shown.")
+    raise ValueError(
+        "Choose every row, only each entrant's own row, or a number of top rows of at least 1."
+    )
 
 
 def key_name(key: str | Penalty) -> str:
@@ -420,25 +433,37 @@ class Leaderboard(Model):
         names = [key_name(key) for key in self.order]
         for index, name in enumerate(names):
             if name in names[:index]:
-                problems.add(("order", index), f"{name} is ranked on twice.")
+                problems.add(
+                    ("order", index),
+                    f"This leaderboard already ranks by {name} above. Remove this one.",
+                )
         if names[0] == "penalty":
             problems.add(
                 ("order", 0),
-                "penalty is never the first key: it breaks ties among rows equal on the "
-                "keys before it.",
+                "Penalty minutes cannot come first: they only break ties between entrants "
+                "equal on what comes before them. Rank by something else first.",
             )
         if self.select is Select.BEST_PER_GROUP:
             if names[0] != "points":
-                problems.add(("select",), "best_per_group ranks points first.")
+                problems.add(
+                    ("select",),
+                    "Counting the best submission on each group ranks by points first. "
+                    "Put points first, or count another submission.",
+                )
             values = [name for name in names if name not in ("points", "penalty")]
             if values:
                 problems.add(
                     ("select",),
-                    f"best_per_group sums groups across submissions, so it cannot rank "
-                    f"{values[0]}, which belongs to one submission.",
+                    f"The best submission on each group adds up groups from different "
+                    f"submissions, so it cannot rank by {values[0]}, which belongs to one "
+                    f"submission. Count another submission, or stop ranking by {values[0]}.",
                 )
         if self.rows == "own" and self.who is Who.EVERYONE:
-            problems.add(("rows",), "own is not for everyone: a guest has no row of their own.")
+            problems.add(
+                ("rows",),
+                "A leaderboard shown to everyone cannot show each entrant only their own row, "
+                "since a guest has none. Show every row or the top rows.",
+            )
         problems.raise_any()
         return self
 
@@ -461,6 +486,15 @@ class ContestTask(Model):
     closes: AwareTime | None = None
     marks: Annotated[int, Field(strict=True, ge=1, le=10)] | None = None
 
+
+_TIMES = {
+    "start": "The contest's start",
+    "release_at": "The release time",
+    "due": "The due time",
+    "closes": "The closing time",
+    "end": "The contest's end",
+}
+"""A task's times as a person names them, each starting a sentence."""
 
 DEFAULT_LATE_PER_DAY = 1
 """The fraction a started late day takes off a task whose entry gives a
@@ -490,10 +524,10 @@ class ContestDefinition(Model):
     def _check(self) -> ContestDefinition:
         problems = Problems()
         if self.end <= self.start:
-            problems.add(("end",), "Must be after start.")
+            problems.add(("end",), "The end must be after the start.")
         opens, closes = self.registration.opens, self.registration.closes
         if opens is not None and closes is not None and closes <= opens:
-            problems.add(("registration", "closes"), "Must be after registration.opens.")
+            problems.add(("registration", "closes"), "Registration must close after it opens.")
         problems.duplicates([task.id for task in self.tasks], ("tasks",))
         problems.duplicates([board.name for board in self.leaderboards], ("leaderboards",), "name")
         known = {task.id for task in self.tasks}
@@ -502,7 +536,8 @@ class ContestDefinition(Model):
                 if task not in known:
                     problems.add(
                         ("leaderboards", index, "tasks", position),
-                        f"{task!r} is not in the contest's tasks.",
+                        f"{task!r} is not one of the contest's tasks. Add it to the contest, "
+                        "or remove it here.",
                     )
         for index, entry in enumerate(self.tasks):
             for path, message in self._entry_problems(entry):
@@ -530,32 +565,47 @@ class ContestDefinition(Model):
             if later >= earlier:
                 continue
             if key == "end":
-                found.append(((before,), f"{before} is after the contest's end."))
+                found.append(
+                    ((before,), f"{_TIMES[before]} is after the contest's end. Make it earlier.")
+                )
             elif before == "start":
-                found.append(((key,), f"{key} is before the contest's start."))
+                found.append(
+                    ((key,), f"{_TIMES[key]} is before the contest's start. Make it later.")
+                )
             else:
                 found.append(
                     (
                         (key,),
-                        f"{key} is before {before}: a task's times run start <= "
-                        "release_at <= due <= closes <= end.",
+                        f"{_TIMES[key]} is before {_TIMES[before].lower()}. A task is released, "
+                        "falls due and closes in that order, within the contest.",
                     )
                 )
         if entry.late_per_day is not None:
             if entry.due is None:
-                found.append((("late_per_day",), "Applies only with a due."))
+                found.append(
+                    (
+                        ("late_per_day",),
+                        "This applies only to a task with a due time. Give the task a due "
+                        "time, or leave this empty.",
+                    )
+                )
             if not 0 < entry.late_per_day <= 1:
                 found.append(
                     (
                         ("late_per_day",),
-                        "Must be more than 0 and at most 1, a fraction taken per day.",
+                        "This must be more than 0 and at most 1: the share of the points "
+                        "taken off for each late day.",
                     )
                 )
         if entry.marks is not None and not any(
             board.select is Select.MARKED and board.covers(entry.id) for board in self.leaderboards
         ):
             found.append(
-                (("marks",), "Applies only when a board with select: marked covers the task.")
+                (
+                    ("marks",),
+                    "This applies only when a leaderboard covering this task counts the "
+                    "submissions an entrant marks.",
+                )
             )
         return found
 
@@ -679,7 +729,7 @@ class Group(Model):
 
 def _value_name(value: object) -> str:
     if not isinstance(value, str) or not VALUE_NAME.match(value):
-        raise ValueError("Must be the name of a value the workflow reports.")
+        raise ValueError("Give the name of a value the workflow reports.")
     return value
 
 
@@ -731,7 +781,11 @@ class TaskDefinition(Model):
             for path, message in self._group_problems(name, group):
                 problems.add(("test_groups", name, *path), message)
         if self.credit is not None and not self.gives_points:
-            problems.add(("credit",), "No group has a rule weight, so credit scores nothing.")
+            problems.add(
+                ("credit",),
+                "No test group gives points, so what an accepted test earns changes nothing. "
+                "Give a test group points, or let an accepted test earn 1.",
+            )
         problems.raise_any()
         return self
 
@@ -739,26 +793,54 @@ class TaskDefinition(Model):
         """T1, T2 as far as the file says, and T6."""
         found: list[tuple[tuple[str, ...], str]] = []
         if not NAME.match(name):
-            found.append(((), "A group's name is letters, digits, _ and -."))
+            found.append(
+                (
+                    (),
+                    "A test group's name may use only letters, digits, hyphens (-) and "
+                    "underscores (_).",
+                )
+            )
         if group.pass_at is not None:
             if group.pass_ is None:
-                found.append((("pass_at",), "Applies only beside pass."))
+                found.append(
+                    (
+                        ("pass_at",),
+                        'This applies only when the group gives points under "every test must '
+                        'pass". Give those points, or leave this empty.',
+                    )
+                )
             if not 0 < group.pass_at <= 1:
-                found.append((("pass_at",), "Must be more than 0 and at most 1."))
+                found.append(
+                    (
+                        ("pass_at",),
+                        "This must be more than 0 and at most 1, such as 0.5 for half the tests.",
+                    )
+                )
         if group.worst is not None and self.credit is None:
-            found.append((("worst",), "With pass/fail tests `worst` is `pass`: write `pass`."))
+            found.append(
+                (
+                    ("worst",),
+                    "Each test here either passes or fails, so the lowest test score is the "
+                    'same as "every test must pass". Give these points there instead.',
+                )
+            )
         if group.test_weights is not None:
             for test, weight in group.test_weights.items():
                 if not NAME.match(test):
                     found.append(
-                        (("test_weights", test), "A test's name is letters, digits, _ and -.")
+                        (
+                            ("test_weights", test),
+                            "A test's name may use only letters, digits, hyphens (-) and "
+                            "underscores (_).",
+                        )
                     )
                 elif weight <= 0:
                     found.append(
                         (
                             ("test_weights", test),
-                            f"{name}/{test} weighs {weight}: put a test that counts for nothing "
-                            "in a group with no rule weight.",
+                            f"{name}/{test} has a weight of {weight}, and a weight must be "
+                            "more than 0. Put a test that should count for nothing in a test "
+                            "group that gives no points.",
                         )
                     )
             reads = group.each is not None or (
@@ -768,8 +850,9 @@ class TaskDefinition(Model):
                 found.append(
                     (
                         ("test_weights",),
-                        f"test_weights on {name} change nothing: only each, or pass with a "
-                        "pass_at below 1, reads them.",
+                        f"The test weights on {name} change nothing. They count only "
+                        "towards points for each test passed, or when the share of tests "
+                        "that must pass is below 1.",
                     )
                 )
         if group.show is Show.VERDICT:
@@ -782,18 +865,23 @@ class TaskDefinition(Model):
         """T6: a verdict shows only all-or-nothing points."""
         if group.each is not None:
             return (
-                f"{name} is shown as a verdict, but its each points would tell how many of "
-                "its tests passed; use pass, or show it always or after_close."
+                f"{name} shows entrants only its outcome until the reveal, but points for "
+                "each test passed would tell them how many of its tests passed. Give its "
+                'points under "every test must pass" instead, or change "When entrants see '
+                'results".'
             )
         if group.worst is not None:
             return (
-                f"{name} is shown as a verdict, but its worst points would tell its worst "
-                "test's credit; use pass, or show it always or after_close."
+                f"{name} shows entrants only its outcome until the reveal, but points for "
+                "the lowest test score would tell them how its worst test did. Give its "
+                'points under "every test must pass" instead, or change "When entrants see '
+                'results".'
             )
         if isinstance(self.credit, Relative):
             return (
-                "A verdict group's outcome and points would move when other rows improve on "
-                "its hidden tests; show it always or after_close."
+                "This test group shows entrants only its outcome until the reveal, but its "
+                "points would change as other entrants do better on its hidden tests. Show "
+                "its results to entrants at once or only at the reveal."
             )
         return None
 
@@ -841,47 +929,68 @@ def _old_order(value: object) -> bool:
 
 
 WAYS_REPLACED = (
-    "invite_only, approval, email_pattern and code are now ways: write registration.ways."
+    "This setting is no longer used: who may register, and how, is now set by the contest's "
+    "ways in. Add a way in instead, and remove this."
 )
 
 CONTEST_RETIRED = (
     Retired(
         ("submissions_closed",),
-        "A task takes submissions until the closes on its entry in tasks; give each task "
-        "closes, or move end. Remove submissions_closed.",
+        "This setting is no longer used: each task takes submissions until its own closing "
+        "time. Give each task a closing time, or move the contest's end, and remove this.",
     ),
-    Retired(("teams",), "Write entrants: {most: <n>} for entrants of up to n people."),
-    Retired(("team_size",), "team_size is now entrants.most."),
+    Retired(
+        ("teams",),
+        "This setting is no longer used. Set the most people in a team instead, and remove this.",
+    ),
+    Retired(
+        ("team_size",),
+        "This is now the most people in a team. Set that instead, and remove this.",
+    ),
     *(
         Retired(("registration", key), WAYS_REPLACED)
         for key in ("invite_only", "approval", "email_pattern", "code", "mode", "eligibility")
     ),
-    Retired(("visibility",), "public is now everyone.", _is_public),
+    Retired(("visibility",), 'This is now called "everyone". Choose that instead.', _is_public),
     Retired(
         ("tasks", ANY, "label"),
-        "A task's label is its place in tasks, A, B, ...; remove label.",
+        "A task's label is now its place in the contest's list of tasks, A, B and so on. "
+        "Remove this.",
     ),
-    Retired(("tasks", ANY, "points"), "points is now worth."),
-    Retired(("leaderboards", ANY, "stage"), "A board counts test groups; over says which."),
-    Retired(("leaderboards", ANY, "combine"), "A board sums its tasks; remove combine."),
+    Retired(
+        ("tasks", ANY, "points"),
+        "This is now called worth. Give the task's worth instead, and remove this.",
+    ),
+    Retired(
+        ("leaderboards", ANY, "stage"),
+        "This setting is no longer used: a leaderboard counts test groups, chosen by which "
+        "results it counts. Remove this.",
+    ),
+    Retired(
+        ("leaderboards", ANY, "combine"),
+        "This setting is no longer used: a leaderboard adds up its tasks. Remove this.",
+    ),
     Retired(
         ("leaderboards", ANY, "visibility"),
-        "visibility is now who: organisers, contestants or everyone.",
+        "This is now who the leaderboard is shown to: organisers, entrants or everyone. "
+        "Set that instead, and remove this.",
     ),
-    Retired(("leaderboards", ANY, "freeze_at"), "A board does not freeze; remove freeze_at."),
+    Retired(("leaderboards", ANY, "freeze_at"), "Leaderboards no longer freeze. Remove this."),
     Retired(
         ("leaderboards", ANY, "team_only"),
-        "A board's rows are the contest's entrants; remove team_only.",
+        "This setting is no longer used: a leaderboard always ranks the contest's entrants. "
+        "Remove this.",
     ),
     Retired(
         ("leaderboards", ANY, "select"),
-        "select is best, best_per_group or marked.",
+        "Choose which submission counts: the best submission, the best submission on each "
+        "group, or the best of the submissions an entrant marks.",
         _old_select,
     ),
     Retired(
         ("leaderboards", ANY, "order", ANY),
-        "An order key is points, a value name, penalty or {by: penalty, per_attempt: "
-        "<minutes>}; a value's direction is its workflow's.",
+        "Rank by points, by penalty minutes, or by a value the tasks report. Which way a "
+        "value ranks is set by its workflow, not here.",
         _old_order,
     ),
 )
@@ -889,40 +998,42 @@ CONTEST_RETIRED = (
 TASK_RETIRED = (
     Retired(
         ("release_at",),
-        "A task's times are on its entry in contest.yaml's tasks; write release_at there.",
+        "A task's release time is now set in the contest, on the task's timeline. Set it "
+        "there, and remove this.",
     ),
     Retired(
         ("hidden",),
-        "A task shows from the release_at on its entry in contest.yaml; to hide results, "
-        "give a test group show: after_close.",
+        "A task is now shown from its release time in the contest. To hide results until "
+        'the reveal, set a test group\'s "When entrants see results". Remove this.',
     ),
     Retired(
         ("limits",),
-        "limits is now submissions: {max, rate: {count, per}}; each file input sets its own "
-        "max_size.",
+        "This setting is no longer used. Set the most submissions and how often entrants may "
+        "submit instead, and the largest size on each file input. Remove this.",
     ),
     Retired(
         ("subtasks",),
-        "Subtasks are test groups: folders under tests/ listed in test_groups.",
+        "Subtasks are now test groups. Add a test group for each, and remove this.",
     ),
     Retired(
         ("stages",),
-        "A task has one plan: hidden results are a test group's show, and which submission "
-        "counts is a board's select.",
+        "This setting is no longer used. To hide results, set a test group's \"When entrants "
+        'see results"; which submission counts is set on each leaderboard. Remove this.',
     ),
     Retired(
         ("inputs", "contestant"),
-        "inputs is one mapping keyed by the workflow's input ids: form details for the "
-        "contestant's inputs, values for the rest.",
+        "Inputs are no longer split into the entrant's and the task's. List each input of the "
+        "workflow once, and remove this.",
     ),
     Retired(
         ("inputs", "setter"),
-        "inputs is one mapping keyed by the workflow's input ids: form details for the "
-        "contestant's inputs, values for the rest.",
+        "Inputs are no longer split into the entrant's and the task's. List each input of the "
+        "workflow once, and remove this.",
     ),
     Retired(
         ("submissions", "rate"),
-        "rate is {count, per}, such as {count: 1, per: 30}.",
+        "Give how often entrants may submit as a count and a number of seconds, such as 1 "
+        "every 30 seconds.",
         _is_text,
     ),
 )
@@ -947,6 +1058,25 @@ def parse_task(text: bytes | str) -> TaskDefinition:
 CONTEST_ADMIN_KEYS = ("name", "description", "state", "visibility", "registration")
 TASK_ADMIN_KEYS = ("name", "submissions")
 ADMIN_ONLY_FILES = (STATEMENT_FILE,)
+_ADMIN_ONLY_WORDS = {
+    "name": "the name",
+    "description": "the description",
+    "state": "whether the contest is open",
+    "visibility": "who can see the contest",
+    "registration": "registration",
+    "submissions": "the submission limits",
+    STATEMENT_FILE: "the statement",
+}
+
+
+def admin_only_refusal(scope: str, keys: list[str]) -> str:
+    """The sentence refusing a manager's change to admin-only `keys` at the
+    scope named `scope`, each key named by what it is.
+    """
+    named = [_ADMIN_ONLY_WORDS.get(key, key) for key in keys]
+    listed = named[0] if len(named) == 1 else f"{', '.join(named[:-1])} and {named[-1]}"
+    return f"Only an admin of {scope} can change {listed}. Ask one of them to make this change."
+
 
 _MISSING = object()
 
@@ -1084,18 +1214,20 @@ def details_problems(
         "folder": {"label", "max_size"},
     }[kind]
     for key in sorted(details.model_fields_set - allowed):
-        found.append(((key,), f"A {kind} input does not take {key}."))
+        found.append(
+            ((key,), f"A {_KIND_WORDS[kind]} input does not take {_FORM_WORDS[key]}. Remove it.")
+        )
     if details.min is not None and details.max is not None and details.max < details.min:
-        found.append((("max",), "Must be at least min."))
+        found.append((("max",), "The maximum must be at least the minimum."))
     if details.max_size is not None and details.max_size > FILE_CEILING:
-        found.append((("max_size",), "Must be at most 2GB, the largest the platform takes."))
+        found.append((("max_size",), "This must be at most 2GB, the largest file Unicon takes."))
     if details.options is not None and workflow_options is not None:
         extra = [option for option in details.options if option not in workflow_options]
         if extra:
             found.append(
                 (
                     ("options",),
-                    f"{extra[0]} is not an option of the workflow's: "
+                    f"{extra[0]} is not one of the workflow's options, which are "
                     f"{', '.join(workflow_options)}.",
                 )
             )
@@ -1106,24 +1238,42 @@ def details_problems(
     return found
 
 
+_KIND_WORDS = {
+    "text": "text",
+    "number": "number",
+    "boolean": "true-or-false",
+    "enum": "choice",
+    "file": "file",
+    "folder": "folder",
+}
+_FORM_WORDS = {
+    "label": "a label",
+    "default": "a default",
+    "min": "a minimum",
+    "max": "a maximum",
+    "options": "options",
+    "max_size": "a largest size",
+}
+
+
 def _default_problem(
     details: Form, kind: str, workflow_options: tuple[str, ...] | None
 ) -> str | None:
     value = details.default
     match kind:
         case "text":
-            return None if isinstance(value, str) else "Must be text."
+            return None if isinstance(value, str) else "The default must be text."
         case "boolean":
-            return None if isinstance(value, bool) else "Must be true or false."
+            return None if isinstance(value, bool) else "The default must be true or false."
         case "number":
             if not is_number(value):
-                return "Must be a number."
+                return "The default must be a number."
             if details.min is not None and value < details.min:
-                return "Must be at least min."
+                return "The default must be at least the minimum."
             if details.max is not None and value > details.max:
-                return "Must be at most max."
+                return "The default must be at most the maximum."
             return None
         case "enum":
             offered = details.options or workflow_options or ()
-            return None if value in offered else f"Must be one of {', '.join(offered)}."
+            return None if value in offered else f"The default must be one of {', '.join(offered)}."
     return None
