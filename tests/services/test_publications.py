@@ -24,6 +24,7 @@ import pytest
 from sqlalchemy import select, update
 
 from forge.db.tables import Grading
+from forge.domain.clock import SystemClock
 from forge.domain.content import Edit
 from forge.domain.contracts import violation
 from forge.domain.errors import (
@@ -37,11 +38,11 @@ from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.plans import Plan
-from forge.domain.roles import Role, RoleGrant, Scope
+from forge.domain.roles import Role, RoleGrant, Scope, contest_id_of, task_scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
-from forge.services import gradings, publications, submissions, tasks
+from forge.services import gradings, publications, submissions, tasks, timelines
 from forge.services.access import Organiser
 from forge.services.publications import Draft, Published
 from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES, FakeClock
@@ -1198,9 +1199,9 @@ async def test_a_workflow_in_an_old_format_gives_the_form_its_reason(
 async def test_a_submit_in_flight_while_a_grading_change_publishes_is_graded_against_it(
     setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The save waits for a submit that holds the contest's rules, or the
-    submit reads the publication the save made: either way no submission
-    is left graded against a plan a published change replaced."""
+    """The save waits for a submit that holds the task, or the submit reads
+    the publication the save made: either way no submission is left graded
+    against a plan a published change replaced."""
     record = submissions._record
     saving: list[asyncio.Task[Published | Draft]] = []
 
@@ -1230,12 +1231,84 @@ async def test_a_submit_in_flight_while_a_grading_change_publishes_is_graded_aga
     assert attempts[-1][2] == str(published.publication), attempts
 
 
+async def test_a_save_of_another_task_never_holds_up_a_submit(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    """A save holds the contest's rules and its own task for as long as the
+    forge takes; a submit to another task of the contest waits for neither."""
+    other = TaskId(f"{entered.task.rsplit('/', 1)[0]}/other")
+    holding = asyncio.Event()
+    done = asyncio.Event()
+
+    async def save_held_open() -> None:
+        async with setup.unit_of_work() as ctx:
+            await timelines.hold_rules(ctx, contest_id_of(task_scope(entered.task)))
+            await timelines.hold_task(ctx, other)
+            holding.set()
+            await done.wait()
+
+    saving = asyncio.create_task(save_held_open())
+    await holding.wait()
+    try:
+        made = await upload(setup, acme.fake, entered.session, entered.task, b"print(3)\n")
+        submitted = await asyncio.wait_for(
+            submissions.submit(
+                setup,
+                entered.session,
+                entered.task,
+                {
+                    "submission": SubmittedInput(uploads=(made.id,)),
+                    "language": SubmittedInput(value="python"),
+                },
+                idempotency_key="key-0001-aaaa",
+            ),
+            timeout=10,
+        )
+    finally:
+        done.set()
+        await saving
+
+    assert submitted.number == 1
+
+
+async def test_a_submission_is_stamped_when_it_was_checked_open_not_when_the_forge_recorded_it(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The forge may take seconds to record a submission, past the close;
+    the submission is at the moment it was checked open."""
+    checked = SystemClock().now()
+    later = checked + timedelta(hours=1)
+    recorded: list[bool] = []
+    record = submissions._record
+
+    async def slow_record(*args: Any, **kwargs: Any) -> Any:
+        done = await record(*args, **kwargs)
+        recorded.append(True)
+        return done
+
+    monkeypatch.setattr(submissions, "_record", slow_record)
+    monkeypatch.setattr(SystemClock, "now", lambda self: later if recorded else checked)
+    made = await upload(setup, acme.fake, entered.session, entered.task, b"print(3)\n")
+    submitted = await submissions.submit(
+        setup,
+        entered.session,
+        entered.task,
+        {
+            "submission": SubmittedInput(uploads=(made.id,)),
+            "language": SubmittedInput(value="python"),
+        },
+        idempotency_key="key-0001-aaaa",
+    )
+
+    assert submitted.submitted_at == checked
+
+
 async def test_a_rejudge_in_flight_and_a_saves_regrade_give_each_submission_its_own_attempt(
     setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A rejudge holds the contest's rules alone, as a save does, so a save
-    that publishes a grading change regrades after it, from every attempt
-    the rejudge made, rather than from rows read before it committed."""
+    """A rejudge holds the task alone, as a save does, so a save that
+    publishes a grading change regrades after it, from every attempt the
+    rejudge made, rather than from rows read before it committed."""
     await _graded(setup, acme, entered)
     regrade = gradings.regrade
     calls = 0

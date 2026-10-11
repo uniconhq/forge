@@ -810,11 +810,11 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     is. `WrongStatus` for one that is not finished and for a submission
     staff cancelled, which that ends, and `Conflict` for one with a later
     attempt, which is the one to retry, or while another attempt of it is
-    graded. The contest's rules are held alone, as by a save and a rejudge,
-    so no regrade numbers an attempt from rows read before this one landed.
+    graded. The task is held alone, as by a save and a rejudge, so no
+    regrade numbers an attempt from rows read before this one landed.
     """
     found = await _managed(ctx, organiser, grading, lock=False)
-    await timelines.hold_rules(ctx, contest_id_of(task_scope(TaskId(found.task_id))))
+    await timelines.hold_task(ctx, TaskId(found.task_id))
     gone = await lost(ctx, [found])
     attempts = await _attempts(ctx, [found.submission_id])
     row = next(attempt for attempt in attempts if attempt.id == grading)
@@ -947,11 +947,11 @@ def _cancel_after_commit(ctx: Context, run: RunId) -> None:
 async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
     """A new attempt of every submission's latest attempt, against the
     task's current publication. `NotFound` for a task with no publication.
-    The contest's rules are held alone, as a save holds them, so a save's
-    regrade and this one each start from every attempt the other made.
+    The task is held alone, as a save holds it, so a save's regrade and
+    this one each start from every attempt the other made.
     """
     require(organiser, task_scope(task), Role.MANAGER)
-    await timelines.hold_rules(ctx, contest_id_of(task_scope(task)))
+    await timelines.hold_task(ctx, task)
     current = await published.task(ctx, task)
     if current is None:
         raise NotFound("The task has no publication to grade against.")
@@ -1425,8 +1425,8 @@ async def regrade(ctx: Context, task: TaskId, publication: PublicationId) -> Rej
     the CI once this has committed. A submission staff cancelled, its latest
     attempt `cancelled` with a sentence, is left as it is.
     """
-    # Which runs the CI has lost is asked before any row is held, since
-    # asking takes the CI's time.
+    # Which runs the CI has lost is asked before any row is locked, since
+    # asking takes the CI's time; the task itself is held by the caller.
     gone = await lost(
         ctx,
         (await ctx.db.execute(select(Grading).where(Grading.task_id == task))).scalars().all(),

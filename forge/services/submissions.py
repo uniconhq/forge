@@ -242,13 +242,11 @@ async def submit(
         await submitters.refuse(ctx, entrant)
         await submitters.open_place(ctx, entrant)
         opened = True
-    # The contest's rules are held shared from here, as a mark holds them,
-    # and the task read again under them: a save of the task or of the
-    # contest's settings waits for this submit, or this submit reads what the
-    # save published, so a grading change's regrade never misses it and a
-    # close moved earlier is never passed (TASK-FORMAT.md section 2, step 12;
-    # C2).
-    await timelines.hold_rules(ctx, contest_id_of(task_scope(task)), shared=True)
+    # The task is held shared from here and read again under it: a save of
+    # the task waits for this submit, or this submit reads what the save
+    # published, so a grading change's regrade never misses it
+    # (TASK-FORMAT.md section 2, step 12). Another task's save never waits.
+    await timelines.hold_task(ctx, task, shared=True)
     entrant = await submitters.entrant(ctx, session, task)
     workspace = entrant.workspace
     if workspace is not None:
@@ -257,6 +255,9 @@ async def submit(
         again = await _again(ctx, entrant, workspace, idempotency_key)
         if again is not None:
             return again
+    # The submission's time is when it was checked open, not when the forge
+    # has recorded it, which may be seconds later and past the close.
+    at = ctx.now
     _, workspace = await submitters.refuse(ctx, entrant)
     made = await _listed(ctx, workspace, task) or ()
     await _finish_unrecorded(ctx, entrant, workspace, made)
@@ -285,7 +286,7 @@ async def submit(
     for path, upload in layout.files.items():
         files[path] = await _pointer(ctx, entrant, user, chosen[upload])
     recorded = await _record(ctx, user, workspace, task, files, idempotency_key)
-    grading = _insert(ctx, entrant, workspace, recorded, idempotency_key, at=ctx.now)
+    grading = _insert(ctx, entrant, workspace, recorded, idempotency_key, at=at)
     for used in chosen.values():
         used.status = UploadStatus.CONSUMED
         used.consumed_by = recorded.id
