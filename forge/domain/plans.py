@@ -923,6 +923,10 @@ class _Compiler:
         or that the sealed step it reads ran it over."""
         self.reads_sealed: dict[str, str] = {}
         """Each step sealed by reading a sealed step's output, with that step."""
+        self.after_sealed: dict[str, str] = {}
+        """Each step sealed by coming after a sealed step, with the first
+        sealed step: whether it runs at all depends on whether that one
+        stopped the run (#432)."""
         self.raised: list[_Raised] = []
         """Every limit raised above its primitive's, run by run."""
         self.served = self._served()
@@ -1058,6 +1062,7 @@ class _Compiler:
             declaration = self.primitives[str(step.use)]
             made = self._step(index, step.id, step.use, step.per_test, step.with_, declaration)
             steps.extend(made)
+        self._seal_what_follows()
         report = self._report()
         contestant = {
             name: ContestantInput(
@@ -1077,6 +1082,21 @@ class _Compiler:
             steps=tuple(steps),
             report=report,
         )
+
+    def _seal_what_follows(self) -> None:
+        """Seal every step after the first sealed step in the workflow's
+        order (#432): it runs only when that step did not stop the run, so
+        its values being there, or its own stop, would tell the contestant
+        whether it stopped.
+        """
+        order = [step.id for step in self.workflow.steps]
+        first = next((at for at, step in enumerate(order) if step in self.sealed), None)
+        if first is None:
+            return
+        for step in order[first + 1 :]:
+            if step not in self.sealed:
+                self.sealed[step] = self.sealed[order[first]]
+                self.after_sealed[step] = order[first]
 
     def _step(
         self,
@@ -1648,7 +1668,11 @@ def _sealed(task: TaskDefinition, compiler: _Compiler) -> list[Problem]:
 
 def _sealed_notes(compiler: _Compiler) -> list[str]:
     return [
-        f"Step {step} is sealed: it reads what the sealed step "
+        f"Step {step} is sealed: it runs after the sealed step "
+        f"{compiler.after_sealed[step]}, so whether it ran, and what it reports, is shown "
+        "at the reveal."
+        if step in compiler.after_sealed
+        else f"Step {step} is sealed: it reads what the sealed step "
         f"{compiler.reads_sealed[step]} wrote, so what it reports is shown at the reveal."
         if step in compiler.reads_sealed
         else f"Step {step} is sealed: it runs the contestant's code over {data}, which the "
