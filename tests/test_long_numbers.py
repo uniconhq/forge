@@ -23,7 +23,7 @@ def test_a_result_holding_a_whole_number_of_any_length_reads_and_writes_back() -
 
 def test_a_number_of_any_length_is_written_as_its_digits() -> None:
     assert written(Fraction(10**5000 + 1, 2 * 10**5000)) == "0.5" + "0" * 4999 + "5"
-    assert written(Fraction(10**5000 + 1, 2)) == "5" + "0" * 4999 + "0.5"
+    assert written(Fraction(10**5000 + 1, 2)) == "5" + "0" * 4999 + ".5"
 
 
 def test_a_whole_number_of_any_length_in_a_file_is_read() -> None:

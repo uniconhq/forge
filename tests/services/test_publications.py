@@ -24,7 +24,6 @@ import pytest
 from sqlalchemy import select, update
 
 from forge.db.tables import Grading
-from forge.domain.clock import SystemClock
 from forge.domain.content import Edit
 from forge.domain.contracts import violation
 from forge.domain.errors import (
@@ -1276,18 +1275,17 @@ async def test_a_submission_is_stamped_when_it_was_checked_open_not_when_the_for
 ) -> None:
     """The forge may take seconds to record a submission, past the close;
     the submission is at the moment it was checked open."""
-    checked = SystemClock().now()
-    later = checked + timedelta(hours=1)
-    recorded: list[bool] = []
+    clock = setup.clock
+    assert isinstance(clock, FakeClock)
+    checked = clock.now()
     record = submissions._record
 
     async def slow_record(*args: Any, **kwargs: Any) -> Any:
         done = await record(*args, **kwargs)
-        recorded.append(True)
+        clock.advance(timedelta(hours=1))
         return done
 
     monkeypatch.setattr(submissions, "_record", slow_record)
-    monkeypatch.setattr(SystemClock, "now", lambda self: later if recorded else checked)
     made = await upload(setup, acme.fake, entered.session, entered.task, b"print(3)\n")
     submitted = await submissions.submit(
         setup,

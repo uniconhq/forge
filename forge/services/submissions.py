@@ -298,7 +298,7 @@ async def submit(
         user_id=entrant.session.user_id,
     )
     return await _submission(
-        ctx, Reading.of(entrant, workspace), recorded.number, ctx.now, [grading]
+        ctx, Reading.of(entrant, workspace), recorded.number, at, [grading]
     )
 
 
