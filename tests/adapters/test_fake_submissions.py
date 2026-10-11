@@ -7,6 +7,7 @@ a run log's URL stops working when it expires.
 """
 
 import hashlib
+import uuid
 from datetime import timedelta
 
 import pytest
@@ -16,16 +17,19 @@ from forge.domain.clock import FakeClock
 from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import OrgId, PrimitiveId, SubmissionId, TaskId, WorkspaceId
-from forge.domain.names import UserOwner
+from forge.domain.names import EntrantOwner
 from forge.port.uploads import SubmissionPlace, TaskPlace
 from forge.testing import PRIMITIVES, seed_primitives
+
+U8 = EntrantOwner(uuid.UUID(int=8)).segment
+"""The workspace segments of the entrants these tests name by number."""
 
 
 async def _place(fake: FakeForge) -> tuple[WorkspaceId, TaskId, AsUser]:
     await fake.orgs.create_org(OrgId("acme"), description="Acme")
     contest = await fake.content.create_contest(OrgId("acme"), "spring", {"contest.yaml": b"c"})
     task = await fake.content.create_task(contest, "sum", {"task.yaml": b"t"})
-    workspace = await fake.workspaces.open_workspace(contest, UserOwner(8), [8])
+    workspace = await fake.workspaces.open_workspace(contest, EntrantOwner(uuid.UUID(int=8)), [8])
     await fake.workspaces.open_submission_place(workspace, task, [8])
     return workspace, task, AsUser(8, fake.mint(8))
 
@@ -43,7 +47,7 @@ async def test_a_submission_holds_exactly_its_files_and_carries_its_key(fake: Fa
     assert [
         (made.number, made.key) for made in await fake.workspaces.list_submissions(workspace, task)
     ] == [(1, "first-key"), (2, "second-key")]
-    repo = fake.state.repos[("acme", "spring.sum.u8.sub")]
+    repo = fake.state.repos[("acme", f"spring.sum.{U8}.sub")]
     assert sorted(repo.snapshots[second.version]) == ["files/a/y.py", "submission.json"]
     assert repo.versions["submission/1"] == first.version
     assert repo.history[-1].author_id == 8

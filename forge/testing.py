@@ -21,9 +21,9 @@ package, so this module also re-exports what a dependant's test needs to
 arrange the fake: `FakeForge`, `Settings` for a settings override, and the
 domain types a test builds, `OrgId`, `AsUser` and `Visibility`, and `Setup`
 to type the setup a fixture hands over. `logged` reads back the records a
-test caused, in the shape they are written. `register_contestant` writes
-the row that makes someone a contestant, for a test of what registration
-decides; `name_places` gives the org,
+test caused, in the shape they are written. `register_entrant` writes the
+rows that put people in an entrant of a contest, for a test of what
+registration decides; `name_places` gives the org,
 contest and task ids a test made straight at the fake the names a route
 finds them by, each its own last part; and `seed_classic` puts the
 built-in workflow `unicon/classic@v2` at the fake the way deploy's bootstrap
@@ -47,7 +47,7 @@ import pytest
 
 from forge.adapters.fakes import FakeForge
 from forge.db.migrations import upgrade_to_head
-from forge.db.tables import Contestant, Name, metadata
+from forge.db.tables import Entrant, EntrantMember, Name, metadata
 from forge.domain.clock import FakeClock
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId
@@ -76,7 +76,7 @@ __all__ = [
     "Visibility",
     "logged",
     "name_places",
-    "register_contestant",
+    "register_entrant",
     "seed_classic",
     "seed_primitives",
 ]
@@ -97,10 +97,27 @@ CLASSIC = b"""\
 # unicon/classic.workflow at the forge, at the tag v2. The format is
 # TASK-FORMAT.md section 1.3.
 inputs:
-  submission: {type: file, contestant: true}
-  language: {type: enum, options: [c, cpp, java, python], contestant: true}
-  time_limit: number
-  memory_limit: number
+  submission:
+    type: file
+    contestant: true
+    title: Solution
+    help: The source file the contestant submits.
+  language:
+    type: enum
+    options: [c, cpp, java, python]
+    contestant: true
+    title: Language
+    help: The languages a contestant may write their solution in.
+  time_limit:
+    type: number
+    title: Time limit
+    unit: seconds
+    help: The CPU time the program may use on each test.
+  memory_limit:
+    type: number
+    title: Memory limit
+    unit: MB
+    help: The memory the program may use on each test.
 test:
   input: file
   answer: file
@@ -146,22 +163,41 @@ PRIMITIVES: dict[str, bytes] = {
     "compile": _declared(
         "compile",
         """\
+title: Compile
+description: Compiles the contestant's source files into one program.
 batch: false
 network: false
 limits: {time_ms: 60000, cpu_ms: 60000, memory_mb: 1024, pids: 128, output_mb: 64, gpus: 0}
 inputs:
-  source: {type: folder, runs: true}
-  language: {type: enum, options: [c, cpp, java, python]}
-  entry: {type: text, optional: true}
+  source:
+    type: folder
+    runs: true
+    description: The source files to compile, with their layout.
+  language:
+    type: enum
+    options: [c, cpp, java, python]
+    description: The language the source files are written in.
+  entry:
+    type: text
+    optional: true
+    description: The file the program starts from, such as src/Main.java.
 outputs:
-  binary: {type: file}
-  compile_log: {type: text}
-  outcome: {type: outcome}
+  binary:
+    type: file
+    description: The compiled program, ready to run.
+  compile_log:
+    type: text
+    description: Everything the compiler printed.
+  outcome:
+    type: outcome
+    description: Accepted when the source compiled, compile error when it did not.
 """,
     ),
     "sandbox-run": _declared(
         "sandbox-run",
         """\
+title: Run program
+description: Runs a program on each test's input and records its output, time and memory.
 batch: true
 network: false
 limits: {time_ms: 2000, cpu_ms: 2000, memory_mb: 256, pids: 128, output_mb: 64, gpus: 0}
@@ -170,29 +206,60 @@ limits_from:
   cpu_ms: {input: time_limit, scale: 2000, add: 3000}
   memory_mb: {input: memory_limit, add: 256}
 inputs:
-  binary: {type: file, runs: true}
-  input: {type: file, runs: false}
-  args: {type: text, optional: true}
-  time_limit: {type: number}
-  memory_limit: {type: number}
+  binary:
+    type: file
+    runs: true
+    description: The program to run.
+  input:
+    type: file
+    runs: false
+    description: What the program reads on standard input.
+  args:
+    type: text
+    optional: true
+    description: Arguments added to the program's command line, split on spaces.
+  time_limit:
+    type: number
+    description: Seconds of CPU time the program may use on each test.
+  memory_limit:
+    type: number
+    description: Megabytes of memory the program may use on each test.
 outputs:
-  output: {type: file}
-  time_ms: {type: number}
-  memory_kb: {type: number}
-  outcome: {type: outcome}
+  output:
+    type: file
+    description: What the program printed on standard output.
+  time_ms:
+    type: number
+    description: The CPU time the program used, in milliseconds.
+  memory_kb:
+    type: number
+    description: The most memory the program used, in kilobytes.
+  outcome:
+    type: outcome
+    description: Accepted, or the limit the program went over, or a runtime error.
 """,
     ),
     "diff-check": _declared(
         "diff-check",
         """\
+title: Compare with the answer
+description: Compares a program's output with the answer, ignoring trailing whitespace.
 batch: true
 network: false
 limits: {time_ms: 2000, cpu_ms: 2000, memory_mb: 256, pids: 32, output_mb: 1, gpus: 0}
 inputs:
-  actual: {type: file, runs: false}
-  expected: {type: file, runs: false}
+  actual:
+    type: file
+    runs: false
+    description: What the program printed.
+  expected:
+    type: file
+    runs: false
+    description: The expected answer, from the task.
 outputs:
-  outcome: {type: outcome}
+  outcome:
+    type: outcome
+    description: Accepted when the two match, wrong answer when they do not.
 """,
     ),
 }
@@ -235,27 +302,43 @@ def logged(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]
     ]
 
 
-async def register_contestant(
+async def register_entrant(
     setup: Setup,
     contest: ContestId,
-    user_id: int,
-    *,
+    *user_ids: int,
+    name: str | None = None,
     status: str = "approved",
     time_extension: timedelta = timedelta(0),
-) -> None:
-    """Make the user a contestant of the contest, with `status` and their own
-    time extension, committed at once.
+) -> uuid.UUID:
+    """Put the users in one new entrant of the contest, named `name`, with
+    `status` and its time extension, committed at once, each come in by a
+    sign-up that approves straight away; its id.
     """
     async with setup.unit_of_work() as ctx:
-        ctx.db.add(
-            Contestant(
-                contest_id=contest,
-                user_id=user_id,
-                status=status,
-                registered_at=ctx.now,
-                time_extension_seconds=int(time_extension.total_seconds()),
-            )
+        entrant = Entrant(
+            id=uuid.uuid4(),
+            contest_id=contest,
+            name=name,
+            status=status,
+            registered_at=ctx.now,
+            registered_by_user_id=user_ids[0] if user_ids else None,
+            time_extension_seconds=int(time_extension.total_seconds()),
         )
+        ctx.db.add(entrant)
+        for user_id in user_ids:
+            ctx.db.add(
+                EntrantMember(
+                    entrant_id=entrant.id,
+                    contest_id=contest,
+                    user_id=user_id,
+                    status="member",
+                    joined_at=ctx.now,
+                    way=0,
+                    way_kind="signup",
+                    approval="auto",
+                )
+            )
+        return entrant.id
 
 
 async def name_places(setup: Setup, *ids: str) -> None:

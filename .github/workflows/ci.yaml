@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: uniconhq/runner
-          ref: v0.7.0
+          ref: v0.8.0
           path: runner
       - uses: actions/checkout@v7
         with:
@@ -60,17 +60,17 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: uniconhq/primitive-compile
-          ref: v2.0.0
+          ref: v2.1.0
           path: primitive-compile
       - uses: actions/checkout@v7
         with:
           repository: uniconhq/primitive-sandbox-run
-          ref: v2.0.0
+          ref: v2.1.0
           path: primitive-sandbox-run
       - uses: actions/checkout@v7
         with:
           repository: uniconhq/primitive-diff-check
-          ref: v2.0.0
+          ref: v2.1.0
           path: primitive-diff-check
 
       - uses: astral-sh/setup-uv@v10.1.0

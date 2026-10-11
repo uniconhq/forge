@@ -1,25 +1,29 @@
 """An organiser invites someone by username or by email address, to a role at a
-scope or a contestant's place in a contest. The invite's mail goes out once
-the request has committed and never holds it up; a mail that fails leaves
-the invite made, and sending it again makes a new token. The person acts on
-their own invites only: an address is matched against the ones the forge
-has confirmed for them, and accepting grants the role, or the eligibility
-an invite-only or hidden contest asks for. A lapsed invite does nothing.
+scope or a place in a contest. The invite's mail goes out once the request
+has committed and never holds it up; a mail that fails leaves the invite
+made, and sending it again makes a new token. The person acts on their own
+invites only: an address is matched against the ones the forge has
+confirmed for them, and accepting grants the role, or registers them by the
+contest's invite way, which an accepted place also lets them in by later,
+and shows them a hidden contest while they are in no entrant there. A
+lapsed invite does nothing.
 """
 
 from datetime import timedelta
 
 import pytest
 
-from forge.db.tables import Contestant
+from forge.db.tables import EntrantMember
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     AlreadyInvited,
+    AlreadyRegistered,
     Forbidden,
     InvalidInvite,
     InviteExpired,
     InviteLimit,
     InviteRequired,
+    NoInviteWay,
     NotFound,
     Unavailable,
     WrongStatus,
@@ -29,21 +33,28 @@ from forge.domain.invites import Grant, InviteStatus, MailStatus
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.sessions import Session
 from forge.runtime.setup import Setup
-from forge.services import contestants, invites, names, release
+from forge.services import entrants, invites, names, release
 from forge.services.access import Organiser
 from forge.testing import APP_URL, FakeClock
 from tests.services.conftest import RUNNING, Acme, organiser, signed_in, write_contest
 
 CONTEST = Scope("acme", "spring")
+CONTEST_ID = ContestId("acme/spring")
 
 INVITE_ONLY = """name: Spring 2026
-start: 2026-09-26T10:00:00Z
-end: 2026-09-26T15:00:00Z
+start: 2026-09-27T10:00:00Z
+end: 2026-09-27T15:00:00Z
 state: published
 visibility: {visibility}
 registration:
-  invite_only: true
+  ways: [{{invite: {{approval: {approval}}}}}]
+entrants: {{most: {most}}}
 """
+
+
+def invite_only(visibility: str, approval: str = "manual", most: int = 1) -> str:
+    """acme/spring, starting tomorrow, taking the people it invites alone."""
+    return INVITE_ONLY.format(visibility=visibility, approval=approval, most=most)
 
 
 @pytest.fixture
@@ -92,17 +103,17 @@ async def test_an_invite_by_username_is_mailed_after_the_request_and_accepting_g
     assert (await invites.by_token(setup, carol, _token(acme))).id == made.id
     accepted = await invites.accept(setup, carol, made.id)
 
-    assert accepted.status is InviteStatus.ACCEPTED
+    assert (accepted.invite.status, accepted.entered) == (InviteStatus.ACCEPTED, None)
     grants = await acme.fake.orgs.roles_of_user(20)
     assert RoleGrant(CONTEST, Role.MANAGER) in grants
     assert await invites.mine(setup, carol) == ()
 
 
-async def test_an_invite_by_email_waits_for_the_account_and_lets_it_register_invite_only(
+async def test_an_invite_by_email_waits_for_the_account_and_accepting_it_registers(
     setup: Setup, people: Acme, clock: FakeClock
 ) -> None:
     acme = people
-    await write_contest(acme.fake, INVITE_ONLY.format(visibility="everyone"))
+    await write_contest(acme.fake, invite_only("everyone"))
     manager = await _manager(setup, acme)
     made = await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, email="  Dan@Uni.Test ")
     assert made.email == "dan@uni.test"
@@ -112,41 +123,48 @@ async def test_an_invite_by_email_waits_for_the_account_and_lets_it_register_inv
     # Someone else is refused, as before invites existed.
     bob = await signed_in(setup, acme.fake, 8)
     with pytest.raises(InviteRequired):
-        await contestants.register(setup, bob, ContestId("acme/spring"))
+        await entrants.register(setup, bob, ContestId("acme/spring"))
 
     # dan makes an account with the address, confirms it and signs in.
     acme.fake.add_user(21, "dan", email="DAN@uni.test")
     dan = await signed_in(setup, acme.fake, 21)
     [waiting] = await invites.mine(setup, dan)
     assert waiting.id == made.id
-    await invites.accept(setup, dan, made.id)
 
-    registered = await contestants.register(setup, dan, ContestId("acme/spring"))
+    accepted = await invites.accept(setup, dan, made.id)
 
-    assert registered.status.value == "pending"
+    assert accepted.entered is not None
+    assert (accepted.entered.how, accepted.entered.status.value) == ("made", "pending")
+    assert accepted.entered.entrant.name == "dan"
     row = await _row(setup, 21)
-    assert row.eligibility == {"invited": True}
+    assert (row.way, row.way_kind, row.eligibility) == (0, "invite", {"invited": True})
+    with pytest.raises(AlreadyRegistered):
+        await entrants.register(setup, dan, ContestId("acme/spring"))
 
 
 async def test_a_hidden_contest_shows_itself_to_whoever_accepted_an_invite_to_it(
     setup: Setup, people: Acme
 ) -> None:
     acme = people
-    await write_contest(acme.fake, INVITE_ONLY.format(visibility="hidden"))
+    await write_contest(acme.fake, invite_only("hidden", "auto"))
     manager = await _manager(setup, acme)
     made = await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="carol")
     carol = await signed_in(setup, acme.fake, 20)
     bob = await signed_in(setup, acme.fake, 8)
     with pytest.raises(NotFound):
-        await contestants.register(setup, carol, ContestId("acme/spring"))
+        await entrants.register(setup, carol, ContestId("acme/spring"))
 
-    await invites.accept(setup, carol, made.id)
+    accepted = await invites.accept(setup, carol, made.id)
 
+    assert accepted.entered is not None and accepted.entered.status.value == "approved"
+    _, person = await _seen(setup, carol)
+    assert person.entrant is not None and not person.invited
+    await entrants.leave(setup, carol, ContestId("acme/spring"))
     _, person = await _seen(setup, carol)
     assert person.invited
-    await contestants.register(setup, carol, ContestId("acme/spring"))
+    await entrants.register(setup, carol, ContestId("acme/spring"))
     with pytest.raises(NotFound):
-        await contestants.register(setup, bob, ContestId("acme/spring"))
+        await entrants.register(setup, bob, ContestId("acme/spring"))
 
 
 async def test_an_address_the_forge_has_not_confirmed_never_matches(
@@ -339,9 +357,9 @@ async def test_a_withdrawn_invite_cannot_be_accepted(setup: Setup, people: Acme)
         await invites.withdraw(setup, manager, Scope("acme"), made.id)
 
 
-async def _row(setup: Setup, user_id: int) -> Contestant:
+async def _row(setup: Setup, user_id: int) -> EntrantMember:
     async with setup.unit_of_work() as ctx:
-        row = await contestants.row_of(ctx, ContestId("acme/spring"), user_id)
+        row = await entrants.membership(ctx, ContestId("acme/spring"), user_id)
         assert row is not None
         return row
 
@@ -355,13 +373,15 @@ async def test_a_registration_decides_once_there_is_one_and_an_accepted_place_ca
     setup: Setup, people: Acme
 ) -> None:
     acme = people
-    await write_contest(acme.fake, INVITE_ONLY.format(visibility="hidden"))
+    await write_contest(acme.fake, invite_only("hidden"))
     manager = await _manager(setup, acme)
     carol = await signed_in(setup, acme.fake, 20)
     made = await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="carol")
-    await invites.accept(setup, carol, made.id)
-    await contestants.register(setup, carol, ContestId("acme/spring"))
-    await contestants.reject(setup, manager, ContestId("acme/spring"), 20, "No.")
+    accepted = await invites.accept(setup, carol, made.id)
+    assert accepted.entered is not None
+    await entrants.reject(
+        setup, manager, ContestId("acme/spring"), accepted.entered.entrant.id, "No."
+    )
 
     # Rejected, she no longer sees the hidden contest, invite or not.
     with pytest.raises(NotFound):
@@ -371,10 +391,11 @@ async def test_a_registration_decides_once_there_is_one_and_an_accepted_place_ca
     dan = await signed_in(setup, acme.fake, 21)
     offered = await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="dan")
     await invites.accept(setup, dan, offered.id)
+    await entrants.leave(setup, dan, ContestId("acme/spring"))
     withdrawn = await invites.withdraw(setup, manager, CONTEST, offered.id)
     assert withdrawn.status is InviteStatus.WITHDRAWN
     with pytest.raises(NotFound):
-        await contestants.register(setup, dan, ContestId("acme/spring"))
+        await entrants.register(setup, dan, ContestId("acme/spring"))
 
 
 @pytest.mark.parametrize(
@@ -445,21 +466,26 @@ async def test_a_place_and_a_role_are_refused_to_whoever_could_not_take_them(
     setup: Setup, people: Acme
 ) -> None:
     acme = people
-    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone") + WAYS)
     manager = await _manager(setup, acme)
     carol = await signed_in(setup, acme.fake, 20)
-    await contestants.register(setup, carol, ContestId("acme/spring"))
+    await entrants.register(setup, carol, ContestId("acme/spring"))
 
     with pytest.raises(InvalidInvite):
         await invites.create(setup, manager, Scope("acme"), Grant.OBSERVER, username="carol")
     with pytest.raises(InvalidInvite):
         await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="ada")
+    with pytest.raises(InvalidInvite):
+        await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="carol")
+    with pytest.raises(InvalidInvite):
+        await invites.create(setup, manager, CONTEST, Grant.MEMBER, username="bob")
 
 
 async def test_a_place_is_taken_only_while_its_sender_may_still_offer_it(
     setup: Setup, people: Acme
 ) -> None:
     acme = people
+    await write_contest(acme.fake, invite_only("everyone"))
     await acme.fake.orgs.grant_role(20, CONTEST, Role.MANAGER)
     carol = await organiser(setup, acme.fake, 20, CONTEST, Role.MANAGER)
     made = await invites.create(setup, carol, CONTEST, Grant.CONTESTANT, username="bob")
@@ -482,3 +508,86 @@ async def test_a_link_opened_while_the_forge_is_down_says_so(setup: Setup, peopl
             await invites.by_token(setup, carol, _token(acme))
     finally:
         acme.fake.state.unavailable = False
+
+
+WAYS = "registration:\n  ways: [{invite: {}}, {signup: {}}]\n"
+
+
+async def test_a_place_is_offered_only_while_the_contest_takes_people_by_invite(
+    setup: Setup, people: Acme
+) -> None:
+    acme = people
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
+    manager = await _manager(setup, acme)
+
+    with pytest.raises(NoInviteWay) as refused:
+        await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="carol")
+    assert refused.value.code == "no_invite_way"
+
+    await write_contest(acme.fake, invite_only("everyone"))
+    made = await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="carol")
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
+    carol = await signed_in(setup, acme.fake, 20)
+
+    # Accepting is refused and closes nothing.
+    with pytest.raises(InviteRequired):
+        await invites.accept(setup, carol, made.id)
+    [still] = await invites.mine(setup, carol)
+    assert still.id == made.id
+
+
+async def test_accepting_a_place_names_the_entrant_after_its_person_and_finds_one_already_in(
+    setup: Setup, people: Acme
+) -> None:
+    acme = people
+    both = invite_only("everyone", "auto", most=3).replace(
+        "[{invite: {approval: auto}}]", "[{invite: {approval: auto}}, {signup: {}}]"
+    )
+    await write_contest(acme.fake, both)
+    manager = await _manager(setup, acme)
+    carol = await signed_in(setup, acme.fake, 20)
+    acme.fake.add_user(21, "dan", email="dan@uni.test")
+    dan = await signed_in(setup, acme.fake, 21)
+    bob = await signed_in(setup, acme.fake, 8)
+    await entrants.register(setup, bob, CONTEST_ID, name="Carol")
+    first = await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="carol")
+    second = await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="dan")
+
+    made = await invites.accept(setup, carol, first.id)
+    assert made.entered is not None
+    assert (made.entered.how, made.entered.entrant.name) == ("made", "carol (2)")
+    into = made.entered.entrant.id
+    moved_in = await invites.create(
+        setup, manager, CONTEST, Grant.CONTESTANT, username="dan", entrant=into
+    )
+    joined = await invites.accept(setup, dan, moved_in.id)
+    assert joined.entered is not None and joined.entered.how == "joined"
+    found = await invites.accept(setup, dan, second.id)
+
+    assert found.entered is not None
+    assert (found.entered.how, found.entered.entrant.id) == ("already", made.entered.entrant.id)
+    assert found.invite.status is InviteStatus.ACCEPTED
+
+
+async def test_a_members_invite_is_mailed_as_an_invite_to_join_the_entrant(
+    setup: Setup, people: Acme
+) -> None:
+    acme = people
+    await write_contest(acme.fake, invite_only("everyone", "auto", most=2))
+    manager = await _manager(setup, acme)
+    bob = await signed_in(setup, acme.fake, 8)
+    offered = await invites.create(setup, manager, CONTEST, Grant.CONTESTANT, username="bob")
+    accepted = await invites.accept(setup, bob, offered.id)
+    assert accepted.entered is not None
+    await entrants.organise_rename(
+        setup, manager, CONTEST_ID, accepted.entered.entrant.id, "Adders"
+    )
+
+    asked = await entrants.invite(setup, bob, CONTEST_ID, email="carol@example.test")
+    await setup.settle()
+
+    assert (asked.grants, asked.entrant is not None and asked.entrant.name) == (
+        Grant.MEMBER,
+        "Adders",
+    )
+    assert "bob has invited you to join Adders in acme/spring" in acme.fake.mail.sent[-1].text

@@ -18,15 +18,20 @@ NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 CONTEST_OR_TASK_MAX = 24
 OTHER_MAX = 40
 
-TEAM_PREFIX = "team."
+ENTRANT_PREFIX = "entrant."
 SERVICE_ACCOUNT_PREFIX = "unicon-ci-"
 
 
 def validate_name(value: str, *, max_length: int = OTHER_MAX) -> str:
     if not NAME.match(value):
-        raise InvalidName(f"{value!r} must be lower case letters, digits, hyphens and underscores")
+        raise InvalidName(
+            f"{value!r} cannot be used as a name. Use only lower case letters, digits, hyphens (-) "
+            "and underscores (_), starting with a letter or a digit."
+        )
     if len(value) > max_length:
-        raise InvalidName(f"{value!r} is longer than {max_length} characters")
+        raise InvalidName(
+            f"{value!r} is longer than {max_length} characters. Choose a shorter name."
+        )
     return value
 
 
@@ -67,38 +72,38 @@ def is_service_account(username: str) -> bool:
     return username.lower().startswith(SERVICE_ACCOUNT_PREFIX)
 
 
-USER_PREFIX = "u"
-
-
 @dataclass(frozen=True, slots=True)
-class UserOwner:
-    """A workspace owned by one contestant, named by their user id: `u<id>`.
-    Not by their username, which they can change at the forge and which
-    another person can take once it is free, and who would then be handed
-    this workspace.
+class EntrantOwner:
+    """A workspace owned by an entrant, named by the entrant's id, which its
+    members reach while they are in it (`services/entrants.py`): `entrant.`
+    and the id's 32 hex digits, without the hyphens, so the longest name a
+    workspace's repository takes stays within the forge's limit. Never by a
+    person's username, which they can change at the forge and someone else
+    can then take, nor by a name an entrant can change.
     """
 
-    user_id: int
+    entrant_id: uuid.UUID
 
     @property
     def segment(self) -> str:
-        return f"{USER_PREFIX}{self.user_id}"
+        return f"{ENTRANT_PREFIX}{self.entrant_id.hex}"
 
 
-@dataclass(frozen=True, slots=True)
-class TeamOwner:
-    """A workspace owned by a team, named by the team's id, which its members
-    reach while they are in it (`services/teams.py`).
+WorkspaceOwner = EntrantOwner
+"""Whoever owns a workspace: always an entrant."""
+
+ENTRANT_ID = re.compile(r"[0-9a-f]{32}")
+"""An entrant's id as a segment writes it: its 32 hex digits."""
+
+
+def entrant_owner(segment: str) -> EntrantOwner | None:
+    """The entrant a segment, `entrant.<id>`, names, or none for anything
+    else.
     """
-
-    team_id: uuid.UUID
-
-    @property
-    def segment(self) -> str:
-        return f"{TEAM_PREFIX}{self.team_id}"
-
-
-WorkspaceOwner = UserOwner | TeamOwner
+    digits = segment.removeprefix(ENTRANT_PREFIX)
+    if segment.startswith(ENTRANT_PREFIX) and ENTRANT_ID.fullmatch(digits):
+        return EntrantOwner(uuid.UUID(hex=digits))
+    return None
 
 
 @dataclass(frozen=True, slots=True)

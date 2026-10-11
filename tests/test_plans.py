@@ -418,20 +418,24 @@ def test_an_entry_for_no_field_is_refused_naming_the_test() -> None:
     assert read_problems(classic_tests("main/1") | {"tests/main/1/extra"}) == [
         {
             "path": "tests/main/1/extra",
-            "message": "The test main/1 has an entry for no field: extra.",
+            "message": "The test main/1 has extra, which is none of the workflow's test fields. "
+            "Rename it after one, or remove it.",
         }
     ]
 
 
 def test_a_missing_field_is_refused_naming_the_test_and_the_field() -> None:
     assert read_problems({"tests/main/1/input"}) == [
-        {"path": "tests/main/1/", "message": "The test main/1 has no answer."}
+        {"path": "tests/main/1/", "message": "The test main/1 has no answer. Add it."}
     ]
 
 
 def test_a_field_given_twice_is_refused() -> None:
     assert read_problems(classic_tests("main/1") | {"tests/main/1/input.txt"}) == [
-        {"path": "tests/main/1/", "message": "The test main/1 gives input twice: input, input.txt."}
+        {
+            "path": "tests/main/1/",
+            "message": "The test main/1 has input more than once: input, input.txt. Keep one.",
+        }
     ]
 
 
@@ -439,12 +443,16 @@ def test_a_file_outside_a_test_folder_is_refused() -> None:
     problems = read_problems(classic_tests("main/1") | {"tests/README.md", "tests/main/notes.txt"})
 
     assert [problem["path"] for problem in problems] == ["tests/README.md", "tests/main/notes.txt"]
-    assert all("holds only folders" in problem["message"] for problem in problems)
+    assert all("can hold only folders" in problem["message"] for problem in problems)
 
 
 def test_a_test_whose_name_is_not_a_name_is_refused() -> None:
     assert read_problems(classic_tests("main/a.b")) == [
-        {"path": "tests/main/a.b/", "message": "'a.b' is not a name: letters, digits, _ and -."}
+        {
+            "path": "tests/main/a.b/",
+            "message": "'a.b' cannot be used as a name. Use only letters, digits, hyphens (-) "
+            "and underscores (_).",
+        }
     ]
 
 
@@ -472,10 +480,10 @@ def test_a_folder_field_is_a_folder_named_the_field() -> None:
 
 def test_a_file_where_a_folder_field_is_wanted_is_refused_and_the_other_way() -> None:
     assert read_problems({"tests/main/1/env", "tests/main/1/answer"}, FOLDERS) == [
-        {"path": "tests/main/1/env", "message": "env is a folder field."}
+        {"path": "tests/main/1/env", "message": "env must be a folder."}
     ]
     assert read_problems({"tests/main/1/env/a", "tests/main/1/answer/b"}, FOLDERS) == [
-        {"path": "tests/main/1/answer/", "message": "answer is a file field."}
+        {"path": "tests/main/1/answer/", "message": "answer must be a file."}
     ]
 
 
@@ -511,14 +519,17 @@ def test_a_test_yaml_gives_every_scalar_field_its_value() -> None:
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        (b"seconds: 2.5\nname: one\nfast: true\n", "kind is not given."),
-        (GOOD_YAML + b"colour: red\n", "colour is not a field of the workflow's tests."),
-        (GOOD_YAML.replace(b"2.5", b"fast"), "seconds: Must be a number."),
-        (GOOD_YAML.replace(b"2.5", b".nan"), "seconds: Must be a number."),
-        (GOOD_YAML.replace(b"name: one", b"name: 1"), "name: Must be text."),
-        (GOOD_YAML.replace(b"fast: true", b"fast: 1"), "fast: Must be true or false."),
-        (GOOD_YAML.replace(b"small", b"huge"), "kind: Must be one of small, large."),
-        (b"[1, 2]\n", "must be a mapping"),
+        (b"seconds: 2.5\nname: one\nfast: true\n", "This test needs a value for kind."),
+        (
+            GOOD_YAML + b"colour: red\n",
+            "colour is not one of the workflow's test fields. Remove it.",
+        ),
+        (GOOD_YAML.replace(b"2.5", b"fast"), "The value for seconds must be a number."),
+        (GOOD_YAML.replace(b"2.5", b".nan"), "The value for seconds must be a number."),
+        (GOOD_YAML.replace(b"name: one", b"name: 1"), "The value for name must be text."),
+        (GOOD_YAML.replace(b"fast: true", b"fast: 1"), "The value for fast must be true or false."),
+        (GOOD_YAML.replace(b"small", b"huge"), "The value for kind must be one of small, large."),
+        (b"[1, 2]\n", "write them as named settings"),
         (GOOD_YAML + b"seconds: 3\n", "given twice"),
     ],
 )
@@ -533,7 +544,7 @@ def test_a_test_without_its_test_yaml_is_refused() -> None:
     assert read_problems({"tests/main/1/answer"}, SCALARS) == [
         {
             "path": "tests/main/1/",
-            "message": "The test needs a test.yaml giving seconds, name, fast, kind.",
+            "message": "This test needs values for seconds, name, fast, kind. Add them.",
         }
     ]
 
@@ -544,8 +555,8 @@ def test_a_test_yaml_is_refused_when_the_workflow_has_no_scalar_field() -> None:
     assert read_problems(paths, yamls={"tests/main/1/test.yaml": b"x: 1\n"}) == [
         {
             "path": "tests/main/1/test.yaml",
-            "message": "The workflow's tests have no text, number, true-or-false or enum field, "
-            "so a test has no test.yaml.",
+            "message": "The workflow's tests have no values besides their files, so this test "
+            "has nothing to give here. Remove it.",
         }
     ]
 
@@ -558,7 +569,8 @@ def test_a_scalar_field_given_as_a_file_is_an_entry_for_no_field() -> None:
     assert problems == [
         {
             "path": "tests/main/1/seconds",
-            "message": "The test main/1 has an entry for no field: seconds.",
+            "message": "The test main/1 has seconds, which is none of the workflow's test "
+            "fields. Rename it after one, or remove it.",
         }
     ]
 
@@ -573,14 +585,14 @@ def test_every_group_folder_is_a_group_and_every_group_a_folder() -> None:
     assert groups_of("  main: {each: 1}\n", classic_tests("main/1", "extra/1")) == [
         {
             "path": "tests/extra/",
-            "message": "extra is a folder of tests/ but not a group in test_groups: list it, or "
-            "move its tests.",
+            "message": "extra holds tests but is not one of the task's test groups. Add a test "
+            "group called extra, or move its tests.",
         }
     ]
     assert groups_of("  main: {each: 1}\n  large: {each: 1}\n", classic_tests("main/1")) == [
         {
             "path": "test_groups.large",
-            "message": "There is no folder tests/large/ with a test in it.",
+            "message": "The test group large has no tests. Add a test to it.",
         }
     ]
 
@@ -591,7 +603,7 @@ def test_a_task_without_tests_is_refused_at_its_groups() -> None:
     assert group_problems(task, [], {"task.yaml"}) == [
         {
             "path": "test_groups",
-            "message": "The task has no tests/ folder: add tests/<group>/<test>/.",
+            "message": "The task has no tests yet. Add a test to each test group.",
         }
     ]
 
@@ -601,7 +613,11 @@ def test_every_test_weight_names_a_test_of_its_group() -> None:
     paths = classic_tests("main/1", "main/2", "samples/9")
 
     assert groups_of(groups, paths) == [
-        {"path": "test_groups.main.test_weights.9", "message": "main/9 is not a test of main."}
+        {
+            "path": "test_groups.main.test_weights.9",
+            "message": "main/9 is not a test in the test group main. Add the test, or remove "
+            "its weight.",
+        }
     ]
 
 
@@ -846,42 +862,42 @@ CLASSIC_INPUTS = "  submission: {label: Your solution}\n  language: {options: [p
         (
             CLASSIC_INPUTS + "  time_limit: 2\n  memory_limit: 256\n  colour: red\n",
             "inputs.colour",
-            "The workflow unicon/classic@v2 has no input colour.",
+            "The workflow unicon/classic@v2 has no input called colour. Remove it.",
         ),
         (
             CLASSIC_INPUTS + "  time_limit: two\n  memory_limit: 256\n",
             "inputs.time_limit",
-            "Must be a number.",
+            "This must be a number.",
         ),
         (
             CLASSIC_INPUTS + "  time_limit: true\n  memory_limit: 256\n",
             "inputs.time_limit",
-            "Must be a number.",
+            "This must be a number.",
         ),
         (
             "  submission: main.py\n  time_limit: 2\n  memory_limit: 256\n",
             "inputs.submission",
-            "The contestant gives this one",
+            "Entrants give this input themselves",
         ),
         (
             "  language: {options: [rust]}\n  time_limit: 2\n  memory_limit: 256\n",
             "inputs.language.options",
-            "rust is not an option of the workflow's: c, cpp, java, python.",
+            "rust is not one of the workflow's options, which are c, cpp, java, python.",
         ),
         (
             "  language: {options: [python], default: c}\n  time_limit: 2\n  memory_limit: 256\n",
             "inputs.language.default",
-            "Must be one of python.",
+            "The default must be one of python.",
         ),
         (
             "  submission: {max_size: 3GB}\n  time_limit: 2\n  memory_limit: 256\n",
             "inputs.submission.max_size",
-            "Must be at most 2GB",
+            "This must be at most 2GB",
         ),
         (
             "  submission: {min: 1}\n  time_limit: 2\n  memory_limit: 256\n",
             "inputs.submission.min",
-            "A file input does not take min.",
+            "A file input does not take a minimum. Remove it.",
         ),
     ],
 )
@@ -920,7 +936,7 @@ def test_an_enum_value_is_one_of_the_workflows_options() -> None:
         CHECKED_TASK.replace("better: higher", "better: sideways"), classic_tests("main/1"), CHECKED
     )
 
-    assert problems == [{"path": "inputs.better", "message": "Must be one of higher, lower."}]
+    assert problems == [{"path": "inputs.better", "message": "This must be one of higher, lower."}]
 
 
 NOTEBOOK_TASK = """\
@@ -937,10 +953,10 @@ NOTEBOOK_PATHS = {"data/mnist-test/images.bin", "tests/main/1/answer", "tests/ma
 @pytest.mark.parametrize(
     ("data", "message"),
     [
-        ("data/empty/", "There is no file under data/empty/ in the task."),
-        ("data/mnist-test", "Names a folder, so it ends with /, such as data/."),
-        ("../data/", "Must not have empty, . or .. parts."),
-        ("/data/", "Must be a path from the top of the task repo, with forward slashes."),
+        ("data/empty/", "The task has no files in data/empty/. Add them, or give another folder."),
+        ("data/mnist-test", "This is a folder, so its path ends with /, such as data/."),
+        ("../data/", "The path cannot have empty, . or .. parts."),
+        ("/data/", "Give the path from the top of the task's files, with forward slashes (/)."),
     ],
 )
 def test_a_folder_value_names_a_folder_with_a_file_in_the_task(data: str, message: str) -> None:
@@ -978,7 +994,11 @@ SECRET_TASK = NOTEBOOK_TASK.replace(
 
 def test_a_secret_the_org_does_not_hold_is_refused() -> None:
     assert refused(SECRET_TASK, NOTEBOOK_PATHS, NOTEBOOK) == [
-        {"path": "inputs.key", "message": "The org holds no secret named openai."}
+        {
+            "path": "inputs.key",
+            "message": "The org has no secret called openai. Choose one it has, or add it to "
+            "the org.",
+        }
     ]
 
 
@@ -995,8 +1015,8 @@ def test_a_secret_into_an_unmarked_port_is_refused() -> None:
     assert refused(SECRET_TASK, NOTEBOOK_PATHS, workflow, secrets={"openai"}) == [
         {
             "path": "inputs.key",
-            "message": "key is a secret, and steps[0] gives it to note, which can hand the "
-            "secret to the contestant's program.",
+            "message": "key is a secret, and the step predict gives it to note, which could pass "
+            "it on to the entrant's program.",
         }
     ]
 
@@ -1007,8 +1027,8 @@ def test_a_secret_written_into_text_is_refused() -> None:
     assert refused(SECRET_TASK, NOTEBOOK_PATHS, workflow, secrets={"openai"}) == [
         {
             "path": "inputs.key",
-            "message": "key is a secret, and steps[0] writes it into text; give the secret to "
-            "its own port.",
+            "message": "key is a secret, and the step predict writes it into text. Give a "
+            "secret whole, to a port of its own.",
         }
     ]
 
@@ -1038,7 +1058,7 @@ def test_a_secret_is_text_naming_a_secret() -> None:
     assert refused(text, NOTEBOOK_PATHS, NOTEBOOK, secrets={"openai"}) == [
         {
             "path": "inputs.key",
-            "message": "Must be text, or {secret: <name>} naming a secret the org holds.",
+            "message": "Give text, or choose a secret the org holds.",
         }
     ]
 
@@ -1055,11 +1075,14 @@ def test_a_step_running_contestant_code_over_data_the_contestant_is_not_served_i
     )
     predict, score, credit = result.notes
     assert predict == (
-        "Step predict is sealed: it runs the contestant's code over data/mnist-test/, which the "
-        "contestant is not served, so what it reports is shown at the reveal."
+        "The step predict runs the entrant's code on data/mnist-test/, which entrants do not "
+        "see, so what it reports is shown only at the reveal."
     )
-    assert score.startswith("Step score is sealed")
-    assert credit == "fraction is reported, but credit is not set: an accepted test earns 1."
+    assert score.startswith("The step score reads what predict gives")
+    assert credit == (
+        "The workflow reports fraction, a score from 0 to 1 for each test, but the task does not "
+        "use it: an accepted test earns 1."
+    )
 
 
 def test_a_task_with_a_sealed_step_shows_every_group_after_close() -> None:
@@ -1071,13 +1094,16 @@ def test_a_task_with_a_sealed_step_shows_every_group_after_close() -> None:
     assert refused(text, paths, NOTEBOOK) == [
         {
             "path": "test_groups.main.show",
-            "message": "main is shown always, but step predict gives the contestant's code "
-            "data/mnist-test/; show it after_close, or serve the data under public/.",
+            "message": "main shows entrants its results as soon as a grading ends, but the step "
+            "predict runs the entrant's code on data/mnist-test/, which entrants do not see. Show "
+            "this group's results only at the reveal, or put that data in the task's public files.",
         },
         {
             "path": "test_groups.samples.show",
-            "message": "samples is shown verdict, but step predict gives the contestant's code "
-            "data/mnist-test/; show it after_close, or serve the data under public/.",
+            "message": "samples shows entrants its results as an outcome before the reveal, but "
+            "the step predict runs the entrant's code on data/mnist-test/, which entrants do not "
+            "see. Show this group's results only at the reveal, or put that data in the task's "
+            "public files.",
         },
     ]
 
@@ -1089,7 +1115,7 @@ def test_data_served_under_public_seals_nothing() -> None:
     result = compiled(text, {"public/mnist/images.bin", "tests/main/1/answer"}, NOTEBOOK)
 
     assert (result.sealed, result.held) == ((), NOTHING_SEALED)
-    assert not any(note.startswith("Step") for note in result.notes)
+    assert not any(note.startswith("The step") for note in result.notes)
 
 
 def _checked_around_notebook(before: bool) -> WorkflowDefinition:
@@ -1142,8 +1168,8 @@ def test_a_step_after_a_sealed_step_is_sealed_though_it_reads_nothing_of_it() ->
         steps=frozenset({"predict", "check"}), values=frozenset({"accuracy", "checked"})
     )
     assert (
-        "Step check is sealed: it runs after the sealed step predict, so whether it ran, and "
-        "what it reports, is shown at the reveal."
+        "The step check runs after predict, which uses data entrants do not see, so whether "
+        "check ran, and what it reports, is shown only at the reveal."
     ) in result.notes
 
 
@@ -1244,14 +1270,20 @@ def test_a_step_that_runs_no_contestant_code_is_not_sealed_by_hidden_data() -> N
 @pytest.mark.parametrize(
     ("expected", "message"),
     [
-        ("secret/missing.txt", "There is no file secret/missing.txt in the task."),
-        ("secret/", "Names one file, so it does not end with /."),
-        ("secret//expected.txt", "Must not have empty, . or .. parts."),
+        (
+            "secret/missing.txt",
+            "The task has no file secret/missing.txt. Add it, or give another file.",
+        ),
+        ("secret/", "This is one file, so its path does not end with /."),
+        ("secret//expected.txt", "The path cannot have empty, . or .. parts."),
         (
             "secret\\expected.txt",
-            "Must be a path from the top of the task repo, with forward slashes.",
+            "Give the path from the top of the task's files, with forward slashes (/).",
         ),
-        ("3", "Must be a path in the task repo, such as data/ or checker/checker.cpp."),
+        (
+            "3",
+            "Give the path of a file or folder in the task, such as data/ or checker/checker.cpp.",
+        ),
     ],
 )
 def test_a_file_value_names_a_file_in_the_task(expected: str, message: str) -> None:
@@ -1280,26 +1312,46 @@ def test_credit_names_a_number_fit_to_be_one(credit: str) -> None:
         (
             "steps_taken",
             "credit",
-            "steps_taken is not a credit: its workflow does not bound it to 0 to 1.",
+            "The workflow does not keep steps_taken between 0 and 1, so it cannot be what a "
+            "test earns. Choose another value.",
         ),
-        ("raw", "credit", "raw is not a credit: its workflow does not bound it to 0 to 1."),
-        ("miss", "credit", "miss is lower is better, so it is not a credit."),
-        ("log", "credit", "log is not a number the workflow reports per test."),
-        ("ghost", "credit", "ghost is not a number the workflow reports per test."),
+        (
+            "raw",
+            "credit",
+            "The workflow does not keep raw between 0 and 1, so it cannot be what a test earns. "
+            "Choose another value.",
+        ),
+        (
+            "miss",
+            "credit",
+            "For miss, lower is better, so it cannot be what a test earns. Choose another value.",
+        ),
+        (
+            "log",
+            "credit",
+            "The workflow does not report log as a number for each test. Choose another value.",
+        ),
+        (
+            "ghost",
+            "credit",
+            "The workflow does not report ghost as a number for each test. Choose another value.",
+        ),
         (
             "{relative: raw}",
             "credit.relative",
-            "raw has no direction: its workflow declares no better.",
+            "The workflow does not say whether a higher or a lower raw is better, so it cannot "
+            "be measured against the best. Choose another value.",
         ),
         (
             "{relative: reward}",
             "credit.relative",
-            "reward is not bounded below by 0: its workflow declares no at_least of 0 or more.",
+            "The workflow does not say that reward is never below 0. Choose another value.",
         ),
         (
             "{relative: log}",
             "credit.relative",
-            "log is not a number the workflow reports per test, with a direction.",
+            "The workflow does not report log as a number for each test with a direction, "
+            "higher or lower, that is better. Choose another value.",
         ),
     ],
 )
@@ -1314,8 +1366,10 @@ def test_credit_naming_a_number_unfit_to_be_one_is_refused(
 def test_a_bounded_number_credit_does_not_name_is_reported_not_refused() -> None:
     plain = compiled(CHECKED_TASK, classic_tests("main/1"), CHECKED)
     assert plain.notes == (
-        "fraction is reported, but credit is not set: an accepted test earns 1.",
-        "miss is reported, but credit is not set: an accepted test earns 1.",
+        "The workflow reports fraction, a score from 0 to 1 for each test, but the task does not "
+        "use it: an accepted test earns 1.",
+        "The workflow reports miss, a score from 0 to 1 for each test, but the task does not use "
+        "it: an accepted test earns 1.",
     )
 
     credited = compiled(
@@ -1323,7 +1377,10 @@ def test_a_bounded_number_credit_does_not_name_is_reported_not_refused() -> None
         classic_tests("main/1"),
         CHECKED,
     )
-    assert credited.notes == ("miss is reported, but credit names another value.",)
+    assert credited.notes == (
+        "The workflow reports miss, a score from 0 to 1 for each test, but the task counts another "
+        "value instead.",
+    )
 
 
 def test_a_compiled_report_carries_each_numbers_bounds() -> None:
@@ -1369,6 +1426,8 @@ def test_a_bound_of_thirty_significant_digits_survives_from_the_file_to_a_score(
 
 # Fit
 
+RUN = "a grading take 27 minutes, but a grading may take at most 25."
+
 
 def test_a_time_limit_pushing_the_run_past_the_ceiling_is_refused_at_the_input() -> None:
     text = task_with(inputs=CLASSIC_INPUTS + "  time_limit: 700\n  memory_limit: 256\n")
@@ -1376,7 +1435,7 @@ def test_a_time_limit_pushing_the_run_past_the_ceiling_is_refused_at_the_input()
     assert refused(text, classic_tests("main/1")) == [
         {
             "path": "inputs.time_limit",
-            "message": "1 test at time_limit 700 gives the run 27 minutes; a run may take 25.",
+            "message": "With time_limit at 700, 1 test makes " + RUN,
         }
     ]
 
@@ -1388,7 +1447,8 @@ def test_a_batch_sums_its_items_against_the_ceiling() -> None:
     assert refused(text, classic_tests(*sixty)) == [
         {
             "path": "inputs.time_limit",
-            "message": "60 tests at time_limit 10 give the run 28 minutes; a run may take 25.",
+            "message": "With time_limit at 10, 60 tests make a grading take 28 minutes, but a "
+            "grading may take at most 25.",
         }
     ]
     fits = task_with(inputs=CLASSIC_INPUTS + "  time_limit: 5\n  memory_limit: 256\n")
@@ -1459,7 +1519,7 @@ def test_a_run_too_long_is_blamed_on_the_task_input_it_was_raised_from() -> None
     assert refused(TIMED_TASK.format(seconds=15), paths, workflow, yamls=yamls) == [
         {
             "path": "inputs.seconds",
-            "message": "100 tests at seconds 15 give the run 27 minutes; a run may take 25.",
+            "message": "With seconds at 15, 100 tests make " + RUN,
         }
     ]
 
@@ -1472,15 +1532,14 @@ def test_a_run_too_long_is_blamed_on_the_test_that_gives_the_most() -> None:
     assert refused(TIMED_TASK.format(seconds=1), paths, workflow, yamls=yamls) == [
         {
             "path": "tests/main/7/test.yaml",
-            "message": "10 tests at seconds up to 1500 (main/7) give the run 27 minutes; a run "
-            "may take 25.",
+            "message": "With seconds up to 1500 (in main/7), 10 tests make " + RUN,
         }
     ]
     paths, yamls = timed_tests({"main/1": 1500})
     assert refused(TIMED_TASK.format(seconds=1), paths, workflow, yamls=yamls) == [
         {
             "path": "tests/main/1/test.yaml",
-            "message": "main/1's seconds 1500 gives the run 27 minutes; a run may take 25.",
+            "message": "With seconds at 1500, the test main/1 makes " + RUN,
         }
     ]
 
@@ -1511,12 +1570,11 @@ steps:
 
     assert by_input == {
         "path": "inputs.seconds",
-        "message": "100 tests at seconds 13 give the run 27 minutes; a run may take 25.",
+        "message": "With seconds at 13, 100 tests make " + RUN,
     }
     assert by_test == {
         "path": "tests/main/1/test.yaml",
-        "message": "100 tests at seconds up to 13 (main/1) give the run 27 minutes; a run may "
-        "take 25.",
+        "message": "With seconds up to 13 (in main/1), 100 tests make " + RUN,
     }
 
 
@@ -1526,8 +1584,7 @@ def test_a_run_too_long_from_a_number_the_workflow_writes_is_refused_at_the_work
     assert refused(TIMED_TASK.format(seconds=1), paths, timed("15"), yamls=yamls) == [
         {
             "path": "workflow",
-            "message": "100 tests at seconds 15, as acme/waiting@v1 writes it, give the run 27 "
-            "minutes; a run may take 25.",
+            "message": "With seconds at 15, as acme/waiting@v1 sets it, 100 tests make " + RUN,
         }
     ]
 
@@ -1543,8 +1600,8 @@ def test_a_run_too_long_with_no_limit_raised_is_blamed_on_the_number_of_tests() 
     assert refused(text, classic_tests(*many), OUTPUT_ONLY) == [
         {
             "path": "workflow",
-            "message": "91 tests through the steps of acme/output-only@v1 give the run 26 "
-            "minutes; a run may take 25.",
+            "message": "91 tests through the steps of acme/output-only@v1 make a grading take 26 "
+            "minutes, but a grading may take at most 25.",
         }
     ]
     compiled(text, classic_tests(*many[:90]), OUTPUT_ONLY)
@@ -1556,8 +1613,8 @@ def test_memory_beyond_the_platforms_machine_is_refused_at_the_input() -> None:
     assert refused(text, classic_tests("main/1")) == [
         {
             "path": "inputs.memory_limit",
-            "message": "memory_limit 20000 gives step run 20256 MB of memory; no machine this "
-            "task may run on has more than 16384.",
+            "message": "With memory_limit at 20000, the step run needs 20256 MB of memory, but no "
+            "machine this task may run on has more than 16384.",
         }
     ]
     assert Machine(memory_mb=16384, gpus=0, network=False) == PLATFORM_MACHINE
@@ -1580,8 +1637,8 @@ def test_a_gpu_is_refused_while_no_machine_has_one() -> None:
     assert refused(GPU_TASK, {"tests/main/1/answer"}, GPU) == [
         {
             "path": "inputs.gpus",
-            "message": "gpus 1 gives step train 1 GPUs; no machine this task may run on has more "
-            "than 0.",
+            "message": "With gpus at 1, the step train needs 1 GPUs, but no machine this task may "
+            "run on has more than 0.",
         }
     ]
     plan = compiled(GPU_TASK, {"tests/main/1/answer"}, GPU, machine=Machine(16384, 1, False)).plan
@@ -1602,7 +1659,7 @@ def test_a_step_reaching_the_network_is_refused_while_no_machine_gives_it() -> N
     assert refused(ONLINE_TASK, {"tests/main/1/answer"}, ONLINE) == [
         {
             "path": "workflow",
-            "message": "Step fetch uses acme/online@v1, which reaches the network, and no "
+            "message": "The step fetch uses acme/online@v1, which needs the network, but no "
             "machine this task may run on gives a step the network.",
         }
     ]
@@ -1634,8 +1691,8 @@ def test_a_plan_the_runners_contract_refuses_is_refused_at_the_workflow() -> Non
     (problem,) = raised.value.errors
     assert problem["path"] == "workflow"
     assert problem["message"].startswith(
-        "The plan this task compiles to with unicon/classic@v2 breaks the runner's contract at "
-        "harness_image: "
+        "Unicon cannot grade this task with unicon/classic@v2: the grading steps it makes break "
+        "one of the runner's rules (at harness_image: "
     )
 
 
@@ -1649,7 +1706,8 @@ def test_a_test_id_longer_than_the_contract_allows_is_refused_at_its_folder() ->
     assert problems == [
         {
             "path": f"tests/{group}/{test}/",
-            "message": "A test's id, <group>/<test>, is at most 255 characters; this one has 256.",
+            "message": "A test's group and name together, <group>/<test>, can be at most 255 "
+            "characters, and these are 256. Shorten them.",
         }
     ]
 
@@ -1701,7 +1759,7 @@ def test_the_same_plan_and_data_change_nothing() -> None:
 
 
 def test_a_changed_plan_is_named() -> None:
-    assert grading_changes(snapshot(), snapshot(b"other")) == ("plans/plan.json changed",)
+    assert grading_changes(snapshot(), snapshot(b"other")) == ("The way the task grades changed.",)
 
 
 def test_a_plan_whose_numbers_are_only_spelled_otherwise_changes_nothing() -> None:
@@ -1710,7 +1768,7 @@ def test_a_plan_whose_numbers_are_only_spelled_otherwise_changes_nothing() -> No
 
     assert grading_changes(before, after) == ()
     assert grading_changes(before, snapshot(b'{"limit": 2.6, "at_least": 1000.0}\n')) == (
-        "plans/plan.json changed",
+        "The way the task grades changed.",
     )
 
 
@@ -1736,8 +1794,8 @@ def test_a_plan_differing_only_in_a_steps_image_names_the_primitive_version_move
     after = snapshot(_plan(**{"unicon/compile@v2": COMPILE, "unicon/sandbox-run@v2": NEW_RUN}))
 
     assert grading_changes(before, after) == (
-        "plans/plan.json changed",
-        "sandbox-run@v2's image moved with a release",
+        "The way the task grades changed.",
+        "A release updated sandbox-run@v2 in place.",
     )
 
 
@@ -1745,7 +1803,7 @@ def test_a_step_moved_to_another_version_is_no_moved_image() -> None:
     before = snapshot(_plan(**{"unicon/sandbox-run@v1": OLD_RUN}))
     after = snapshot(_plan(**{"unicon/sandbox-run@v2": NEW_RUN}))
 
-    assert grading_changes(before, after) == ("plans/plan.json changed",)
+    assert grading_changes(before, after) == ("The way the task grades changed.",)
 
 
 def test_a_data_file_added_removed_or_changed_is_named() -> None:
@@ -1753,9 +1811,9 @@ def test_a_data_file_added_removed_or_changed_is_named() -> None:
     after = snapshot(tests__main__1__input="c", tests__main__2__input="d")
 
     assert grading_changes(before, after) == (
-        "tests/main/1/answer removed",
-        "tests/main/1/input changed",
-        "tests/main/2/input added",
+        "The file tests/main/1/answer was removed.",
+        "The file tests/main/1/input changed.",
+        "The file tests/main/2/input was added.",
     )
 
 

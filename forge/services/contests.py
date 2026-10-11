@@ -14,11 +14,16 @@ when it is asked for and it is made at the forge under its key, so the name
 is only ever a label (`forge.services.names`).
 """
 
-from forge.domain.definitions import CONTEST_FILE, starter_contest, title_of
+from dataclasses import dataclass
+from datetime import datetime
+
+from forge.domain.definitions import CONTEST_FILE, State, parse_contest, starter_contest, title_of
 from forge.domain.errors import PortError
-from forge.domain.ids import OrgId
+from forge.domain.identity import Identity
+from forge.domain.ids import ContestId, OrgId
 from forge.domain.names import Named, validate_contest_or_task_name
 from forge.domain.roles import Role, Scope, contest_scope
+from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -57,11 +62,40 @@ async def create(
     return Named(contest, name)
 
 
+@dataclass(frozen=True, slots=True)
+class Listed:
+    """A contest in its org's list: its id and name, and its state, start and
+    end as its `contest.yaml` says them, all three none when the file cannot
+    be read or does not validate.
+    """
+
+    id: str
+    name: str
+    state: State | None
+    start: datetime | None
+    end: datetime | None
+
+
 @action
-async def list(ctx: Context, organiser: Organiser, org: OrgId) -> tuple[Named, ...]:
-    """Every contest in the org with its name, by name, read as the
-    organiser, so they see the ones the forge lets them read. Needs the
-    observer role at the org.
+async def list(ctx: Context, organiser: Organiser, org: OrgId) -> tuple[Listed, ...]:
+    """Every contest in the org with its name, by name, and its state and
+    dates, read as the organiser, so they see the ones the forge lets them
+    read. Needs the observer role at the org. The connection is let go of
+    before the contests' settings are read, one forge read each.
     """
     require(organiser, Scope(org), Role.OBSERVER)
-    return await names.named(ctx, await ctx.forge.content.list_contests(organiser.identity, org))
+    found = await names.named(ctx, await ctx.forge.content.list_contests(organiser.identity, org))
+    await ctx.let_go()
+    return tuple([await _listed(ctx, organiser.identity, each) for each in found])
+
+
+async def _listed(ctx: Context, as_: Identity, contest: Named) -> Listed:
+    """The contest with its state, start and end, or none of them when its
+    settings cannot be read or do not validate.
+    """
+    try:
+        found = await ctx.forge.content.read_file(as_, ContestId(contest.id), CONTEST_FILE)
+        settings = parse_contest(found.content)
+    except PortError, InvalidDefinition:
+        return Listed(contest.id, contest.name, None, None, None)
+    return Listed(contest.id, contest.name, settings.state, settings.start, settings.end)

@@ -41,6 +41,7 @@ from forge.domain.definitions import (
     CONTEST_FILE,
     ContestDefinition,
     admin_only_changes,
+    admin_only_refusal,
     parse_contest,
 )
 from forge.domain.errors import AdminOnly, NotFound, PortError
@@ -190,9 +191,7 @@ async def write(
             keys = admin_only_changes("contest", before, content)
             if keys:
                 log.info("files.refused", place=place, keys=keys, user_id=organiser.user.id)
-                raise AdminOnly(
-                    f"Only an admin of {scope.name} may change {', '.join(keys)}.", keys=keys
-                )
+                raise AdminOnly(admin_only_refusal(scope.name, keys), keys=keys)
         await timelines.hold_rules(ctx, contest)
         problems = await timelines.check_contest(ctx, contest, _parsed(before), after)
         checked = await boards.check_contest(ctx, contest, after)

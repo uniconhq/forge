@@ -36,9 +36,11 @@ async def create(ctx: Context, username: str, *, email: str) -> tuple[User, str]
     first sign-in. A name reserved for service accounts is refused.
     """
     if not username.strip():
-        raise InvalidName("A username is needed.")
+        raise InvalidName("Give a username.")
     if is_service_account(username):
-        raise InvalidName(f"{username!r} is reserved for org service accounts.")
+        raise InvalidName(
+            f"{username!r} is kept for org service accounts. Choose another username."
+        )
     password = new_password()
     user = await ctx.forge.identity.create_user(
         username, email, password, must_change_password=True
@@ -84,7 +86,9 @@ def _give_back(ctx: Context, user_id: int, grant: RoleGrant) -> AfterRollback:
 
 def _require_fresh(ctx: Context, session: Session) -> None:
     if not is_fresh(session.created_at, ctx.now, ctx.settings.fresh_sign_in_window):
-        raise FreshSignInRequired("Sign in again to change your account.")
+        raise FreshSignInRequired(
+            "Sign in again to change your account: a change to an account needs a recent sign-in."
+        )
 
 
 async def _refuse_if_sole_admin(ctx: Context, user_id: int, grants: tuple[RoleGrant, ...]) -> None:
@@ -94,7 +98,10 @@ async def _refuse_if_sole_admin(ctx: Context, user_id: int, grants: tuple[RoleGr
         if grant.role is Role.ADMIN and await roles.admins_of(ctx, grant.scope) == {user_id}
     ]
     if alone:
-        raise roles.sole_admin(alone, "Someone else has to be an admin of these first.")
+        raise roles.sole_admin(
+            alone,
+            "You are the only admin of these. Make someone else an admin of each first.",
+        )
 
 
 async def _refuse_if_sharing_workflows(forge: Forge, user_id: int) -> None:
@@ -105,5 +112,7 @@ async def _refuse_if_sharing_workflows(forge: Forge, user_id: int) -> None:
     ]
     if shared:
         raise SharedWorkflowOwner(
-            "Make these workflows private or hand them over first.", workflows=shared
+            "Other people may be using these workflows. Make them private, or hand them over "
+            "to someone else, first.",
+            workflows=shared,
         )

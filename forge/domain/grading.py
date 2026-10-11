@@ -91,10 +91,10 @@ STEP_OVERHEAD = timedelta(seconds=15)
 START_WAIT = timedelta(minutes=5)
 MACHINE_WAIT = timedelta(hours=2)
 LOST_CHECK_AFTER = timedelta(minutes=2)
-NEVER_STARTED = "Its run was never started."
-NEVER_BEGAN = "Its run did not begin within two hours of being started."
-OVERDUE = "Its run did not report before its deadline."
-LOST = "The grading machine lost its run before it began."
+NEVER_STARTED = "The grading never started."
+NEVER_BEGAN = "The grading did not begin within two hours of being started."
+OVERDUE = "The grading did not finish before its deadline."
+LOST = "The machine that grades lost this grading before it began."
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,9 +201,9 @@ def cancel_reason(reason: str) -> str:
     """
     trimmed = reason.strip() if isinstance(reason, str) else ""
     if not trimmed:
-        raise InvalidReason("Say why, so the contestant can read it.")
+        raise InvalidReason("Give a reason, so the entrant knows why.")
     if len(trimmed) > CANCEL_REASON_MAX:
-        raise InvalidReason(f"A reason is at most {CANCEL_REASON_MAX} characters.")
+        raise InvalidReason(f"A reason can be at most {CANCEL_REASON_MAX} characters. Shorten it.")
     return trimmed
 
 

@@ -434,7 +434,7 @@ async def test_settings_that_do_not_read_are_told_with_their_errors(
     with pytest.raises(InvalidDefinition) as invalid:
         await tasks.standing(setup, observer, SPRING)
 
-    assert invalid.value.detail.startswith("contest.yaml ")
+    assert invalid.value.detail.startswith("There are 4 problems with the contest's settings.")
     assert {problem["path"] for problem in invalid.value.errors} >= {"start"}
     with pytest.raises(NotFound):
         await tasks.standing(setup, observer, ContestId("acme/autumn"))

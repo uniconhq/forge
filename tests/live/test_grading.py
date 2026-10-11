@@ -12,6 +12,7 @@ removed afterwards.
 
 import base64
 import hashlib
+import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -38,6 +39,7 @@ from forge.domain.ids import (
     VersionId,
     WorkspaceId,
 )
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.runtime.setup import Setup
@@ -52,6 +54,10 @@ from forge.services import (
 )
 from forge.services.publications import Published
 from tests.live.conftest import LIVE, credential_of, delete_org, delete_user, make_user, needs_ci
+
+U999999 = EntrantOwner(uuid.UUID(int=999999)).segment
+"""The workspace segments of the entrants these tests name by number."""
+
 
 pytestmark = [*LIVE, needs_ci]
 
@@ -151,7 +157,7 @@ async def test_a_grading_is_started_as_the_org_account_once_its_row_commits(
         starter.token,
     )
     assert isinstance(saved, Published), saved
-    workspace = WorkspaceId(f"{grading_org}/spring/@u999999")
+    workspace = WorkspaceId(f"{grading_org}/spring/@{U999999}")
     async with live_setup.unit_of_work() as ctx:
         row = gradings.new_row(
             ctx,
@@ -164,6 +170,7 @@ async def test_a_grading_is_started_as_the_org_account_once_its_row_commits(
             publication=saved.publication,
             attempt=1,
             key=None,
+            submitted_by=None,
         )
         grading = row.id
 

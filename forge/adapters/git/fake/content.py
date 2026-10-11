@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 
 from forge.adapters.git.fake.state import Repo, State, token_of
+from forge.adapters.git.fake.uploads import FakeUploads, repo_of
 from forge.adapters.ids import (
     CONTEST,
     PUBLISHED_PREFIX,
@@ -26,16 +27,21 @@ from forge.domain.content import (
     FileSet,
     TreeEntry,
 )
-from forge.domain.errors import Conflict, NotFound
+from forge.domain.errors import Conflict, NotFound, Rejected
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
 from forge.domain.roles import Role, Scope
 from forge.port.content import ContentPlace
+from forge.port.uploads import TaskPlace
+
+TASK_DEPTH = 2
+"""How many slashes a task's id holds: `<org>/<contest>/<task>`."""
 
 
 class FakeContent:
-    def __init__(self, state: State) -> None:
+    def __init__(self, state: State, uploads: FakeUploads) -> None:
         self._state = state
+        self._uploads = uploads
 
     async def create_contest(self, org: OrgId, key: str, files: Files) -> ContestId:
         self._state.record("create_contest", PLATFORM, org=org, key=key)
@@ -125,6 +131,25 @@ class FakeContent:
         if path not in files:
             raise NotFound(f"{path} is not in {place}")
         return File(path=path, content=files[path], token=token_of(files[path]))
+
+    async def read_media(
+        self, as_: Identity, place: ContentPlace, path: str, *, at: VersionId, max_size: int
+    ) -> bytes:
+        self._state.record("read_media", as_, place=place, path=path, at=at)
+        self._state.check_up()
+        repo = self._state.repo(*location(place))
+        self._state.require_read(as_, repo)
+        files = self._state.files_at(repo, at)
+        if path not in files:
+            raise NotFound(f"{path} is not in {place}")
+        content = files[path]
+        if place.count("/") == TASK_DEPTH:
+            # The object's bytes for a pointer the task holds, as Forgejo's
+            # media endpoint gives them, and the file itself otherwise.
+            content = self._uploads.resolve(repo_of(TaskPlace(TaskId(place))), content)
+        if len(content) > max_size:
+            raise Rejected(f"{path} is larger than {max_size} bytes")
+        return content
 
     async def write_file(
         self,

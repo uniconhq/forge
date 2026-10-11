@@ -142,6 +142,9 @@ class ForgejoThreads:
     async def close_thread(self, as_: Identity, thread: ThreadId) -> None:
         await self._patch(as_, thread, {"state": "closed"})
 
+    async def reopen_thread(self, as_: Identity, thread: ThreadId) -> None:
+        await self._patch(as_, thread, {"state": "open"})
+
     async def comment(self, as_: Identity, thread: ThreadId, body: str) -> None:
         org, repo, number = parse_thread(thread)
         await self._http.call(

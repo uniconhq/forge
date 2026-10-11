@@ -38,8 +38,8 @@ async def declaration(
                 return parse_primitive(text), None
             except InvalidDefinition as invalid:
                 return None, (
-                    f"The primitive {use} is not in the current format; use a later version of "
-                    f"it: {invalid.detail}"
+                    f"The primitive {use} is written in an older form that Unicon no longer "
+                    f"reads. Use a later version of it. {invalid.detail}"
                 )
     try:
         await ctx.forge.workflows.read_workflow_file(
@@ -47,10 +47,10 @@ async def declaration(
         )
     except NotFound, Forbidden:
         return None, (
-            f"{use} cannot be read: there is no such primitive or workflow at that version, "
-            "or it is not shared with you."
+            f"Unicon cannot open {use}: there is no such primitive or workflow at that "
+            "version, or it is not shared with you."
         )
-    return None, f"{use} is not a primitive: a step uses a primitive, never a workflow."
+    return None, f"{use} is a workflow, and a step can only use a primitive."
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +85,8 @@ async def listing(ctx: Context, session: Session) -> tuple[PrimitiveVersion, ...
                 text = await ctx.forge.primitives.read_declaration(as_, primitive.id, version)
             except NotFound, Forbidden:
                 problem = (
-                    f"{PRIMITIVE_OWNER}/{primitive.name}@{version} has no declaration to read."
+                    "Unicon cannot read the settings of "
+                    f"{PRIMITIVE_OWNER}/{primitive.name}@{version}."
                 )
                 found.append(PrimitiveVersion(primitive.name, version, None, problem))
                 continue

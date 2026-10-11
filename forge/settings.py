@@ -233,11 +233,11 @@ class Settings(BaseSettings):
     where grading machines reach the platform, for the envelope, the callback
     and the log they write, the public URL unless given. `org_creation_open`
     says whether any signed-in user may create an org, or only the operator.
-    `places_ahead` says whether a contestant's place to submit each task is
-    made once they are approved and once the task is first published, so the
+    `places_ahead` says whether an entrant's place to submit each task is
+    made once it is approved and once the task is first published, so the
     first uploads at a contest's start find them made; off, each is made at
-    the contestant's first upload to the task, and nobody who never submits
-    costs the forge a repository. `s3`, the object store's settings, is
+    the entrant's first upload to the task, and an entrant that never submits
+    costs the forge no repository. `s3`, the object store's settings, is
     required with `forgejo`; the fake keeps its store in memory.
     `mail`, the mail server's settings, is optional, and without it nothing
     is mailed. `harness_image` is the harness every plan names, by digest, and

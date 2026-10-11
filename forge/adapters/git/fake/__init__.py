@@ -36,8 +36,8 @@ class FakeGitHost:
             self.state, public_url=public_url, redirect_uri=sign_in_redirect_uri
         )
         self.orgs = FakeOrgs(self.state)
-        self.content = FakeContent(self.state)
         self.uploads = FakeUploads()
+        self.content = FakeContent(self.state, self.uploads)
         self.workspaces = FakeWorkspaces(self.state, self.uploads)
         self.threads = FakeThreads(self.state)
         self.workflows = FakeWorkflows(self.state)

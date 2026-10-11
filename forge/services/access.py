@@ -53,10 +53,13 @@ async def organiser(ctx: Context, session: Session, scope: Scope, role: Role) ->
     except Forbidden as exc:
         log.warning("access.credential_refused", user_id=session.user_id)
         sessions.revoke_at_end(ctx, session.id)
-        raise SessionExpired("Sign in again.") from exc
+        raise SessionExpired("Your session has ended. Sign in again.") from exc
     if not holds(grants, scope, role):
         log.info("access.refused", user_id=session.user_id, scope=scope.path, role=role.value)
-        raise Forbidden(f"This needs the {role.value} role at {scope.name}.")
+        raise Forbidden(
+            f"This needs the {role.value} role at {scope.name}. Ask an admin of {scope.name} "
+            "if you need it."
+        )
     return Organiser(
         user=User(id=session.user_id, username=session.username),
         grants=grants,
@@ -85,7 +88,9 @@ async def organiser_at(
         assert found is not None
         return await organiser(ctx, session, found, role)
     address = "/".join(part for part in (org, contest, task) if part is not None)
-    refused = Forbidden(f"This needs the {role.value} role at {address}.")
+    refused = Forbidden(
+        f"This needs the {role.value} role at {address}. Ask an admin of {address} if you need it."
+    )
     if found is None:
         raise refused
     try:
@@ -102,4 +107,7 @@ def require(organiser: Organiser, scope: Scope, role: Role) -> None:
     """
     if not holds(organiser.grants, scope, role):
         named = organiser.scope if scope == organiser.scope else scope
-        raise Forbidden(f"This needs the {role.value} role at {named.name}.")
+        raise Forbidden(
+            f"This needs the {role.value} role at {named.name}. Ask an admin of {named.name} "
+            "if you need it."
+        )

@@ -42,7 +42,7 @@ async def whoami(ctx: Context, session: Session) -> Me:
     except Forbidden as exc:
         log.warning("identity.credential_refused", user_id=session.user_id)
         sessions.revoke_at_end(ctx, session.id)
-        raise SessionExpired("Sign in again.") from exc
+        raise SessionExpired("Your session has ended. Sign in again.") from exc
     except Unavailable:
         return Me(user=User(id=session.user_id, username=session.username), roles=(), degraded=True)
     try:

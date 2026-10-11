@@ -54,9 +54,9 @@ async def test_an_org_a_contest_and_a_task_are_filed_under_keys_and_named_by_lab
     assert task.org in fake.state.orgs
     assert (task.org, f"{task.contest}.{task.task}.task") in fake.state.repos
     ada = await organiser(setup, fake, 7, contest, Role.OBSERVER)
-    assert await contests.list(setup, ada, OrgId(task.org)) == (
-        Named(contest_id_of(contest), "spring"),
-    )
+    assert [
+        Named(each.id, each.name) for each in await contests.list(setup, ada, OrgId(task.org))
+    ] == [Named(contest_id_of(contest), "spring")]
     assert await tasks.list(setup, ada, contest_id_of(contest)) == (Named(task_id_of(task), "sum"),)
     listed = fake.state.repos[(task.org, f"{task.contest}.contest")].files["contest.yaml"]
     assert b"id: sum" in listed
@@ -122,7 +122,10 @@ async def test_a_refusal_names_the_scope_by_its_names_not_its_keys(
     setup = setup_with_random_keys
     contest, _ = await _contest_and_task(setup, fake)
 
-    with pytest.raises(Forbidden, match=r"observer role at acme/spring\.$"):
+    with pytest.raises(
+        Forbidden,
+        match=r"observer role at acme/spring\. Ask an admin of acme/spring if you need it\.$",
+    ):
         await organiser(setup, fake, 8, contest, Role.OBSERVER)
 
 
@@ -168,7 +171,7 @@ async def test_a_workflow_name_that_comes_to_mean_another_workflow_is_refused_at
     assert isinstance(again, Draft)
     (error,) = again.errors
     assert error["path"] == "workflow"
-    assert "bob/sorting now names a different workflow" in error["message"]
+    assert "bob/sorting is now a different workflow" in error["message"]
 
 
 async def test_the_same_workflow_saved_again_publishes(
