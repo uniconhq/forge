@@ -1812,7 +1812,26 @@ def _plan_named(path: str) -> str:
 
 
 def _file_named(path: str) -> str:
+    """A data file in words a person reads: a test's entry by its field,
+    its test and its group, `tests/main/1/input.txt` being the input of test
+    1 in the group main; any other by its path.
+    """
+    parts = path.split("/")
+    if len(parts) >= 4 and parts[0] == "tests":
+        _, group, test, entry = parts[:4]
+        field = entry.split(".", 1)[0]
+        return f"The {field} of test {test} in the group {group}"
     return f"The file {path}"
+
+
+def _by_name(data: Mapping[str, str]) -> dict[str, list[str]]:
+    """Each data file's digests under the name `_file_named` gives it, so a
+    test entry renamed with what it holds unchanged is no change of it.
+    """
+    named: dict[str, list[str]] = {}
+    for path in sorted(data):
+        named.setdefault(_file_named(path), []).append(data[path])
+    return named
 
 
 def _moved_images(before: object, after: object) -> list[str]:
@@ -1866,7 +1885,7 @@ def _same(before: object, after: object) -> bool:
 def grading_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...]:
     """What changed how the task grades between the previous publication and
     this one, in words a person reads: `The way the task grades changed.`,
-    `The file tests/main/1/input was added.`, and after a changed plan each
+    `The input of test 1 in the group main was added.`, and after a changed plan each
     primitive version whose image a release moved, `A release updated
     sandbox-run@v2 in place.` Empty when nothing did, and for a first
     publication, which has nothing before it.
@@ -1875,5 +1894,5 @@ def grading_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...]
         return ()
     return (
         *_differences(before.plans, after.plans, _plan_named, _moved_images),
-        *_differences(before.data, after.data, _file_named),
+        *_differences(_by_name(before.data), _by_name(after.data), str),
     )

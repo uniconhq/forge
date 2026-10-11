@@ -1811,9 +1811,9 @@ def test_a_data_file_added_removed_or_changed_is_named() -> None:
     after = snapshot(tests__main__1__input="c", tests__main__2__input="d")
 
     assert grading_changes(before, after) == (
-        "The file tests/main/1/answer was removed.",
-        "The file tests/main/1/input changed.",
-        "The file tests/main/2/input was added.",
+        "The answer of test 1 in the group main was removed.",
+        "The input of test 1 in the group main changed.",
+        "The input of test 2 in the group main was added.",
     )
 
 

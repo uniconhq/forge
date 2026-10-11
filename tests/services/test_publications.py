@@ -475,8 +475,8 @@ async def test_a_removed_test_is_gone_from_the_change_and_the_grading_comparison
     assert (removed.number, removed.grading_changed) == (3, True)
     assert removed.changes == (
         "The way the task grades changed.",
-        "The file tests/main/2/answer was removed.",
-        "The file tests/main/2/input was removed.",
+        "The answer of test 2 in the group main was removed.",
+        "The input of test 2 in the group main was removed.",
     )
     (saved,) = acme.fake.calls_to("save_files")
     assert saved.arguments["paths"] == [
@@ -509,10 +509,8 @@ async def test_a_test_is_replaced_by_one_with_other_entry_names_in_one_save(
     assert isinstance(result, Published), result
     assert result.changes == (
         "The way the task grades changed.",
-        "The file tests/main/1/answer was removed.",
-        "The file tests/main/1/answer.txt was added.",
-        "The file tests/main/1/input was removed.",
-        "The file tests/main/1/input.txt was added.",
+        "The answer of test 1 in the group main changed.",
+        "The input of test 1 in the group main changed.",
     )
     plan = Plan.from_bytes(acme.fake.state.repos[("acme", "spring.sum.task")].files[PLAN_PATH])
     assert plan.task_paths() == ("tests/main/1/answer.txt", "tests/main/1/input.txt")
@@ -938,14 +936,14 @@ async def test_scoring_changes_never_change_grading_and_a_test_or_a_limit_does(
         (False, ()),
         (False, ()),
         (True, ("The way the task grades changed.",)),
-        (True, ("The file tests/main/1/input changed.",)),
+        (True, ("The input of test 1 in the group main changed.",)),
         (False, ()),
         (
             True,
             (
                 "The way the task grades changed.",
-                "The file tests/main/2/answer was added.",
-                "The file tests/main/2/input was added.",
+                "The answer of test 2 in the group main was added.",
+                "The input of test 2 in the group main was added.",
             ),
         ),
     ]
@@ -976,7 +974,7 @@ async def running(setup: Setup, acme: Acme, sum_task: TaskId) -> TaskId:
     ("change", "listed"),
     [
         ((b"time_limit: 2", b"time_limit: 1"), ["The way the task grades changed."]),
-        (None, ["The file tests/main/1/input changed."]),
+        (None, ["The input of test 1 in the group main changed."]),
     ],
     ids=["limit", "test"],
 )
