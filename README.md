@@ -920,8 +920,9 @@ each a `TaskStanding` with its name, its letter by its place, its
 `TaskState` as `tasks.state` gives it, the latest publication with its
 number, time and `grading_changed`, and whether a draft with errors sits on
 it, and its `Timeline` from its entry, each time at its default where the
-entry gives none: `worth` 100, none on a task whose latest publication
-gives no points or that has none, `release_at` the contest's start,
+entry gives none: `worth` its groups' total, the sum of their rule
+weights, and none on a task whose latest publication gives no points or
+that has none, `release_at` the contest's start,
 `due` none, `late_per_day` 1 with a due and none without, and `closes` the
 contest's end. A task of the org the contest does not list is not on it. A
 `contest.yaml` that does not read is `InvalidDefinition` naming the file
