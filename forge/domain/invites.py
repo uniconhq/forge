@@ -1,6 +1,7 @@
 """An invite: an organiser asking one person, by their username or by an email
-address, to take a contestant's place in a contest or an organiser's role at
-an org, a contest or a task. This module holds what an invite grants, where
+address, to take part in a contest, on their own or in one of its entrants,
+or to take an organiser's role at an org, a contest or a task; or a member
+of an entrant asking someone into it. This module holds what an invite grants, where
 it stands, what its mail did, and the rules an invite is checked against
 when it is made, each of which refuses with an error of its own.
 
@@ -38,19 +39,22 @@ ADDRESS = re.compile(
 
 
 class Grant(StrEnum):
-    """What an invite gives once accepted: a contestant's place in a contest,
-    which is eligibility to register for it, or one of the organiser roles
-    at the invite's scope."""
+    """What an invite gives once accepted: an organiser's place in a contest,
+    which registers the person or puts them in the entrant it names, and
+    lets them in by the contest's invite way; a member's place in their
+    entrant, asked by one of its members; or one of the organiser roles at
+    the invite's scope."""
 
     CONTESTANT = "contestant"
+    MEMBER = "member"
     ADMIN = "admin"
     MANAGER = "manager"
     OBSERVER = "observer"
 
     @property
     def role(self) -> Role | None:
-        """The organiser role it grants, or none for a contestant's place."""
-        return None if self is Grant.CONTESTANT else Role(self.value)
+        """The organiser role it grants, or none for a place in a contest."""
+        return None if self in (Grant.CONTESTANT, Grant.MEMBER) else Role(self.value)
 
 
 class InviteStatus(StrEnum):

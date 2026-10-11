@@ -4,10 +4,11 @@ its organisers can read it, with the members as collaborators: read on the
 desk, write on a submission repository, since a submit is recorded there as
 the contestant. Each is
 made on its own, and every part of making one checks before it acts, so a
-try that stopped halfway is finished by the next. The members are given
+try that stopped halfway is finished by the next. Anyone on one who is not
+a member of the entrant now is taken off first, and the members are given
 their access last, so a repository whose members all hold it is finished,
-and making it again costs two calls a member: their name, and what they may
-do there. A submission and a
+and making it again costs two calls, the repository and who is on it, and
+two a member: their name, and what they may do there. A submission and a
 publication are tags under a reserved prefix that only the platform account
 may create, each pointing at the exact commit the files went in with. A
 publication is an annotated tag whose message is its note.
@@ -42,7 +43,7 @@ from forge.domain.ids import (
     VersionId,
     WorkspaceId,
 )
-from forge.domain.names import TeamOwner, WorkspaceOwner
+from forge.domain.names import WorkspaceOwner
 from forge.domain.publications import Publication, read_note
 from forge.domain.roles import Scope
 from forge.domain.submissions import Submitted, write_note
@@ -105,27 +106,21 @@ class ForgejoWorkspaces:
         Each leaves what is already right alone, and when every member holds
         that access already nothing else is asked.
 
-        A repository that is there, not yet finished, and has a collaborator
-        who is not one of the members is somebody else's, and is refused with
-        `Conflict` rather than shared: the name is the owner's id, so this
-        only happens if something other than this code made or changed it. A
-        team's repository is the exception: its collaborators who are not
-        members are former members, taken off first.
+        Only the platform makes these repositories and only an entrant's
+        members are put on them, so a collaborator who is not one of the
+        members now is a former member whose removal a change that failed
+        halfway left undone, and is taken off first.
         """
         usernames = await self._usernames(member_ids)
-        if isinstance(ref.owner, TeamOwner):
-            await self._shed_former_members(ref.org, repo, usernames)
+        await self._shed_former_members(ref.org, repo, usernames)
         if usernames and await self._finished(ref.org, repo, usernames, permission):
             return
-        if await self._repos.exists(ref.org, repo):
-            await self._refuse_if_someone_elses(ref.org, repo, usernames)
-        else:
+        if not await self._repos.exists(ref.org, repo):
             try:
                 await self._repos.create(PLATFORM, ref.org, repo, {}, private=True)
             except Conflict:
                 if not await self._repos.exists(ref.org, repo):
                     raise
-                await self._refuse_if_someone_elses(ref.org, repo, usernames)
         await self._repos.protect_branch(ref.org, repo)
         await self._teams.attach_scope(Scope(ref.org, ref.contest), repo)
         if reserve:
@@ -134,11 +129,7 @@ class ForgejoWorkspaces:
             await self._repos.add_collaborator(ref.org, repo, username, permission=permission)
 
     async def _shed_former_members(self, org: str, repo: str, usernames: list[str]) -> None:
-        """Take off a team's part everyone who is not a member now: only the
-        platform makes these repositories and only members are put on them,
-        so anyone else is a former member whose removal a change that failed
-        halfway left undone.
-        """
+        """Take off an entrant's part everyone who is not a member now."""
         if not await self._repos.exists(org, repo):
             return
         members = {username.lower() for username in usernames}
@@ -162,16 +153,6 @@ class ForgejoWorkspaces:
             if await self._repos.permission_of(org, repo, username) != permission:
                 return False
         return True
-
-    async def _refuse_if_someone_elses(self, org: str, repo: str, usernames: list[str]) -> None:
-        members = {username.lower() for username in usernames}
-        others = sorted(
-            str(person["login"])
-            for person in await self._repos.collaborators(org, repo)
-            if str(person["login"]).lower() not in members
-        )
-        if others:
-            raise Conflict(f"{org}/{repo} already has other collaborators: {', '.join(others)}")
 
     async def share_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
         ref = parse_workspace(workspace)

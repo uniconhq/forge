@@ -25,7 +25,7 @@ from forge.adapters.git.forgejo import ForgejoForge
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, AsUser, OrgAccountRef
 from forge.domain.ids import OrgId, ThreadId
-from forge.domain.names import TeamOwner, UserOwner
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.uploads import POINTER_MAX, pointer_text
@@ -204,7 +204,7 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
         task = await forge.content.create_task(contest, "sum", {"task.yaml": b"y\n"})
         for _ in range(2):
             workspace = await forge.workspaces.open_workspace(
-                contest, UserOwner(int(contestant["id"])), member
+                contest, EntrantOwner(uuid.UUID(int=int(contestant["id"]))), member
             )
             await forge.workspaces.open_submission_place(workspace, task, member)
 
@@ -266,12 +266,12 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
         delete_user(admin, contestant["login"])
 
 
-async def test_the_same_person_has_a_workspace_in_each_contest_of_the_org(
+async def test_the_same_entrant_id_has_a_workspace_in_each_contest_of_the_org(
     forge: ForgejoForge, org: str, user: dict[str, Any], person: AsUser
 ) -> None:
     first = await forge.content.create_contest(OrgId(org), "one", {"contest.yaml": b"x\n"})
     second = await forge.content.create_contest(OrgId(org), "two", {"contest.yaml": b"x\n"})
-    owner = UserOwner(int(user["id"]))
+    owner = EntrantOwner(uuid.UUID(int=int(user["id"])))
 
     in_first = await forge.workspaces.open_workspace(first, owner, [int(user["id"])])
     in_second = await forge.workspaces.open_workspace(second, owner, [int(user["id"])])
@@ -315,7 +315,7 @@ async def test_the_org_search_finds_the_open_questions_and_a_follow_up_reopens_o
     person = as_person(admin, asker)
     contest = await forge.content.create_contest(OrgId(org), "asking", {"contest.yaml": b"x\n"})
     workspace = await forge.workspaces.open_workspace(
-        contest, UserOwner(int(asker["id"])), [int(asker["id"])]
+        contest, EntrantOwner(uuid.UUID(int=int(asker["id"]))), [int(asker["id"])]
     )
     thread = await forge.threads.post_thread(
         person, workspace, ThreadKind.CLARIFICATION, title="Input size?", body="How big?"
@@ -375,7 +375,7 @@ async def test_a_deleted_user_is_gone_and_their_questions_still_read(
     person = as_person(admin, leaver)
     contest = await forge.content.create_contest(OrgId(org), "leaving", {"contest.yaml": b"x\n"})
     workspace = await forge.workspaces.open_workspace(
-        contest, UserOwner(int(leaver["id"])), [int(leaver["id"])]
+        contest, EntrantOwner(uuid.UUID(int=int(leaver["id"]))), [int(leaver["id"])]
     )
     thread = await forge.threads.post_thread(
         person, workspace, ThreadKind.CLARIFICATION, title="Before I go", body="?"
@@ -555,7 +555,7 @@ async def test_the_addresses_the_forge_confirmed_are_read_for_a_person(
     assert confirmed == (person["email"],)
 
 
-async def test_a_teams_place_sheds_a_former_member_and_sharing_makes_the_members_exact(
+async def test_an_entrants_place_sheds_a_former_member_and_sharing_makes_the_members_exact(
     forge: ForgejoForge, org: str, admin: httpx.Client, stamp: str
 ) -> None:
     first = make_user(admin, f"teamone-{stamp}")
@@ -564,12 +564,12 @@ async def test_a_teams_place_sheds_a_former_member_and_sharing_makes_the_members
     try:
         contest = await forge.content.create_contest(OrgId(org), "teams", {"contest.yaml": b"x\n"})
         task = await forge.content.create_task(contest, "sum", {"task.yaml": b"y\n"})
-        workspace = forge.workspaces.workspace_of(contest, TeamOwner(uuid.uuid4()))
+        workspace = forge.workspaces.workspace_of(contest, EntrantOwner(uuid.uuid4()))
         await forge.workspaces.open_submission_place(workspace, task, both)
         place = next(
             entry["name"]
             for entry in admin.get(f"/api/v1/orgs/{org}/repos", params={"limit": 50}).json()
-            if entry["name"].startswith("teams.sum.team.")
+            if entry["name"].startswith("teams.sum.entrant.")
         )
 
         def logins() -> set[str]:

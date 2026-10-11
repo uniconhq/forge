@@ -5,8 +5,10 @@ grading row made by a submit included. A grading row round-trips with its
 result, its numbers exactly as written; the rows of states that are gone are
 moved to the ones that stand for them; and the task format's revision keeps
 one grading per submission and attempt, its result emptied, and gives
-extensions their tasks; and a submission staff cancelled before cancels
-carried a sentence is given a stock one.
+extensions their tasks; a submission staff cancelled before cancels
+carried a sentence is given a stock one; and entrants take the place of
+contestants and teams, the rows that named their workspaces gone with
+them, an organiser's invite kept.
 """
 
 import base64
@@ -43,14 +45,13 @@ revision 0013."""
 
 TABLES = {
     "sessions",
-    "contestants",
+    "entrants",
+    "entrant_members",
     "gradings",
     "uploads",
     "org_accounts",
     "names",
     "invites",
-    "teams",
-    "team_members",
     "marks",
 }
 
@@ -293,7 +294,7 @@ def test_going_back_from_submissions_keeps_the_rows_within_the_old_checks(
     ]
     assert not columns & {"task_id", "submission_number", "idempotency_key", "submitted_at"}
 
-    upgrade_to_head(migrated_database_url)
+    command.upgrade(alembic_config(migrated_database_url), "0017")
     engine = create_engine(migrated_database_url)
     with engine.connect() as connection:
         found = connection.execute(
@@ -384,7 +385,7 @@ def test_the_states_that_are_gone_become_the_ones_that_stand_for_them(
         )
     engine.dispose()
 
-    upgrade_to_head(migrated_database_url)
+    command.upgrade(alembic_config(migrated_database_url), "0017")
     engine = create_engine(migrated_database_url)
     with engine.connect() as connection:
         gradings = connection.execute(
@@ -720,7 +721,7 @@ def test_a_wrong_key_moves_nothing_in_either_direction(
     assert _revision(migrated_database_url) == "0016"
 
     monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", TEST_KEY)
-    command.upgrade(config, "head")
+    command.upgrade(config, "0017")
     monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", OTHER_KEY)
     with pytest.raises(RuntimeError, match="does not open"):
         command.downgrade(config, "0016")
@@ -734,7 +735,7 @@ def test_going_back_without_the_key_moves_nothing(
     command.downgrade(config, "0016")
     _accounts_before_the_state(migrated_database_url, b"ci-token-acme")
     monkeypatch.setenv("UNICON_TOKEN_ENCRYPTION_KEY", TEST_KEY)
-    command.upgrade(config, "head")
+    command.upgrade(config, "0017")
 
     monkeypatch.delenv("UNICON_TOKEN_ENCRYPTION_KEY")
     with pytest.raises(RuntimeError, match="UNICON_TOKEN_ENCRYPTION_KEY"):
@@ -742,3 +743,99 @@ def test_going_back_without_the_key_moves_nothing(
 
     assert _revision(migrated_database_url) == "0017"
     assert _rows(migrated_database_url, "ci_state")["acme"]["ci_state"] != b""
+
+
+def test_entrants_take_the_place_of_contestants_and_teams_and_what_named_them_goes(
+    migrated_database_url: str,
+) -> None:
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0017")
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO contestants (id, contest_id, user_id, status, registered_at) "
+                "VALUES (gen_random_uuid(), 'acme/spring', 8, 'approved', now())"
+            )
+        )
+        _grading(connection, "done", None, "k-1234567", stage=None)
+        connection.execute(
+            text(
+                "INSERT INTO marks (id, workspace_id, task_id, submission_number, marked_by) "
+                "VALUES (gen_random_uuid(), 'acme/spring/@u7', 'acme/spring/sum', 1, 7)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO uploads (id, owner_user_id, purpose, task_id, filename, size, "
+                "digest, status, expires_at) VALUES "
+                "(gen_random_uuid(), 8, 'submission', 'acme/spring/sum', 'main.py', 3, "
+                "'abc', 'verified', now()), "
+                "(gen_random_uuid(), 7, 'task_file', 'acme/spring/sum', 'input', 3, "
+                "'def', 'verified', now())"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO invites (id, scope, grants, username, user_id, invited_by_user_id, "
+                "token_hash, status, expires_at, mail_status) VALUES (gen_random_uuid(), "
+                "'acme/spring', 'contestant', 'bob', 8, 7, 'h', 'accepted', now(), 'off')"
+            )
+        )
+    engine.dispose()
+
+    command.upgrade(config, "0018")
+
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        counts: dict[str, int] = {
+            table: connection.execute(text(f"SELECT count(*) FROM {table}")).scalar_one()
+            for table in ("gradings", "marks", "entrants", "entrant_members")
+        }
+        purposes: list[str] = list(
+            connection.execute(text("SELECT purpose FROM uploads")).scalars()
+        )
+        kept = connection.execute(text("SELECT grants, entrant_id FROM invites")).all()
+        names = set(inspect(connection).get_table_names())
+    engine.dispose()
+    assert counts == {"gradings": 0, "marks": 0, "entrants": 0, "entrant_members": 0}
+    assert purposes == ["task_file"]
+    assert [tuple(row) for row in kept] == [("contestant", None)]
+    assert not names & {"contestants", "teams", "team_members"}
+
+
+def test_going_back_from_entrants_drops_a_members_invite_and_brings_the_tables_back_empty(
+    migrated_database_url: str,
+) -> None:
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO invites (id, scope, grants, username, user_id, invited_by_user_id, "
+                "token_hash, status, expires_at, mail_status, entrant_id) VALUES "
+                "(gen_random_uuid(), 'acme/spring', 'member', 'bob', 8, 7, 'h1', 'pending', "
+                "now(), 'off', gen_random_uuid()), "
+                "(gen_random_uuid(), 'acme/spring', 'contestant', 'cyd', 9, 7, 'h2', 'pending', "
+                "now(), 'off', NULL)"
+            )
+        )
+        with pytest.raises(IntegrityError), connection.begin_nested():
+            connection.execute(
+                text(
+                    "INSERT INTO invites (id, scope, grants, username, user_id, "
+                    "invited_by_user_id, token_hash, status, expires_at, mail_status) "
+                    "VALUES (gen_random_uuid(), 'acme/spring', 'member', 'dee', 10, 7, "
+                    "'h3', 'pending', now(), 'off')"
+                )
+            )
+    engine.dispose()
+
+    command.downgrade(alembic_config(migrated_database_url), "0017")
+
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        grants: list[str] = list(connection.execute(text("SELECT grants FROM invites")).scalars())
+        contestants: int = connection.execute(text("SELECT count(*) FROM contestants")).scalar_one()
+    engine.dispose()
+    assert (grants, contestants) == (["contestant"], 0)
+    upgrade_to_head(migrated_database_url)

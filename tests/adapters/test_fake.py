@@ -25,10 +25,13 @@ from forge.domain.ids import (
     WorkflowId,
     WorkspaceId,
 )
-from forge.domain.names import UserOwner
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
+
+U8 = EntrantOwner(uuid.UUID(int=8)).segment
+"""The workspace segments of the entrants these tests name by number."""
 
 
 def _as(fake: FakeForge, user_id: int) -> AsUser:
@@ -45,7 +48,7 @@ async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
     task = await fake.content.create_task(contest, "sum", {"task.yaml": b"y"})
     head = await fake.content.list_files(PLATFORM, task)
     publication = await fake.workspaces.publish(task, head.version, "grading_changed: false\n")
-    workspace = await fake.workspaces.open_workspace(contest, UserOwner(8), [8])
+    workspace = await fake.workspaces.open_workspace(contest, EntrantOwner(uuid.UUID(int=8)), [8])
     await fake.workspaces.open_submission_place(workspace, task, [8])
     bob = _as(fake, 8)
     submission = await fake.workspaces.record_submission(
@@ -97,7 +100,7 @@ async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> 
         task=task,
         publication=PublicationId(f"{task}#1"),
         publication_version=VersionId("0" * 40),
-        submission=SubmissionId("acme/spring/@u8/sum#1"),
+        submission=SubmissionId(f"acme/spring/@{U8}/sum#1"),
         submission_version=VersionId("1" * 40),
         envelope_url="http://machines.test/envelope",
         compute="pool:platform",
@@ -120,7 +123,7 @@ async def test_a_run_of_a_task_the_ci_does_not_know_is_not_found(fake: FakeForge
         task=task,
         publication=PublicationId(f"{task}#1"),
         publication_version=VersionId("0" * 40),
-        submission=SubmissionId("acme/spring/@u8/sum#1"),
+        submission=SubmissionId(f"acme/spring/@{U8}/sum#1"),
         submission_version=VersionId("1" * 40),
         envelope_url="http://machines.test/envelope",
         compute="pool:platform",
@@ -273,11 +276,11 @@ async def test_a_contest_manager_reads_a_clarification_and_a_stranger_does_not(
     fake.add_user(9, "eve")
     await fake.orgs.grant_role(9, Scope("acme", "spring"), Role.MANAGER)
     contest = await fake.content.create_contest(OrgId("acme"), "spring", {})
-    workspace = await fake.workspaces.open_workspace(contest, UserOwner(8), [8])
+    workspace = await fake.workspaces.open_workspace(contest, EntrantOwner(uuid.UUID(int=8)), [8])
     bob = _as(fake, 8)
     await fake.threads.post_thread(bob, workspace, ThreadKind.CLARIFICATION, title="Q", body="?")
     autumn = await fake.content.create_contest(OrgId("acme"), "autumn", {})
-    other = await fake.workspaces.open_workspace(autumn, UserOwner(8), [8])
+    other = await fake.workspaces.open_workspace(autumn, EntrantOwner(uuid.UUID(int=8)), [8])
     assert await fake.threads.list_threads(bob, other, ThreadKind.CLARIFICATION) == ()
 
     assert len(await fake.threads.list_threads(bob, workspace, ThreadKind.CLARIFICATION)) == 1
@@ -317,7 +320,7 @@ async def test_deleting_a_user_removes_them_and_what_they_own(fake: FakeForge) -
 async def test_a_deleted_users_questions_still_read_as_nobodys(fake: FakeForge) -> None:
     await fake.orgs.create_org(OrgId("acme"), description="Acme")
     contest = await fake.content.create_contest(OrgId("acme"), "spring", {})
-    workspace = await fake.workspaces.open_workspace(contest, UserOwner(8), [8])
+    workspace = await fake.workspaces.open_workspace(contest, EntrantOwner(uuid.UUID(int=8)), [8])
     bob = _as(fake, 8)
     thread = await fake.threads.post_thread(
         bob, workspace, ThreadKind.CLARIFICATION, title="Q", body="?"
@@ -538,17 +541,19 @@ async def test_a_publication_names_a_version_with_its_note_and_numbers_follow(
         await fake.workspaces.publish(task, VersionId("nowhere"), "")
 
 
-async def test_a_workspace_repo_someone_else_is_in_is_refused(fake: FakeForge) -> None:
+async def test_a_former_member_on_a_workspace_repo_is_taken_off(fake: FakeForge) -> None:
     await fake.orgs.create_org(OrgId("acme"), description="Acme")
     contest = await fake.content.create_contest(OrgId("acme"), "spring", {"contest.yaml": b"x"})
-    await fake.workspaces.open_workspace(contest, UserOwner(8), [8])
+    await fake.workspaces.open_workspace(contest, EntrantOwner(uuid.UUID(int=8)), [8])
     # Not finished for 8 any more, as a try that stopped halfway leaves it,
-    # and someone else is in it: that is somebody else's repository.
-    fake.state.repos[("acme", "spring.u8.desk")].readers.discard(8)
-    fake.state.repos[("acme", "spring.u8.desk")].writers.add(7)
+    # and 7, who left the entrant, still on it.
+    desk = fake.state.repos[("acme", f"spring.{U8}.desk")]
+    desk.readers.discard(8)
+    desk.writers.add(7)
 
-    with pytest.raises(Conflict, match="other collaborators"):
-        await fake.workspaces.open_workspace(contest, UserOwner(8), [8])
+    await fake.workspaces.open_workspace(contest, EntrantOwner(uuid.UUID(int=8)), [8])
+
+    assert (desk.readers, desk.writers) == ({8}, set())
 
 
 async def test_the_fake_refuses_to_delete_an_org_with_a_place_or_an_account_in_its_place() -> None:

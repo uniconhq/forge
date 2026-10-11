@@ -4,7 +4,9 @@ email address nobody has an account for yet, which the forge has nothing to
 hold, which is why the row exists. `user_id` is who the invite is for once
 that is known: at once for a username, and for an address when its owner
 first lists their invites or opens the link its mail carried, matched
-against the addresses the forge has confirmed for them.
+against the addresses the forge has confirmed for them. `entrant_id` names
+the entrant an invite asks someone into: always for a member's invite, and
+for an organiser's to a contest when it asks them straight into one.
 """
 
 import uuid
@@ -40,14 +42,17 @@ class Invite(Base, Timestamped):
     decided_at: Mapped[datetime | None]
     mail_status: Mapped[str]
     mailed_at: Mapped[datetime | None]
+    entrant_id: Mapped[uuid.UUID | None]
 
     __table_args__ = (
         CheckConstraint(f"grants in {GRANTS}", name="grants"),
         CheckConstraint(f"status in {STATUSES}", name="status"),
         CheckConstraint(f"mail_status in {MAIL_STATUSES}", name="mail_status"),
         CheckConstraint("(username IS NULL) <> (email IS NULL)", name="target"),
+        CheckConstraint("grants <> 'member' OR entrant_id IS NOT NULL", name="member_entrant"),
         Index("ix_invites_scope_created_at", "scope", "created_at"),
         Index("ix_invites_user_id_status", "user_id", "status"),
+        Index("ix_invites_entrant_id_status", "entrant_id", "status"),
         Index(
             "ix_invites_email_unattached",
             "email",
