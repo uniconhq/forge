@@ -641,10 +641,13 @@ async def move_member(
     """Move someone from an entrant to another of the contest, within its
     `entrants.most` (`entrant_full`), and answer with the one they are in
     now. Refused with `entrant_has_submissions` when they are the last member
-    of an entrant that has submitted, whose results would have nobody. Needs
-    the manager role at the contest.
+    of an entrant that has submitted, whose results would have nobody; with
+    `wrong_status` into an entrant neither pending nor approved; and with
+    `is_staff` for someone who holds a role at the contest by now. Needs the
+    manager role at the contest.
     """
     settings = await _managed(ctx, organiser, contest)
+    await roles.one_change_at_a_time(ctx, contest_scope(contest).org)
     await _hold_people(ctx, contest, [user_id])
     await _hold_invites_into(ctx, [entrant])
     held = {row.id: row for row in await _hold_entrants(ctx, contest, [entrant, to])}
@@ -654,6 +657,9 @@ async def move_member(
         raise NotFound("That person is not in this entrant.")
     if source.id == target.id:
         return await _view(ctx, target, settings)
+    registration.refuse_undecidable(Status(target.status), registration.REGISTERED, "joined")
+    if await roles.holds_role_in_contest(ctx, user_id, contest):
+        raise IsStaff("That person has a role at this contest, so they cannot be in an entrant.")
     others = [other for other in await member_ids(ctx, source.id) if other != user_id]
     if not others and await submitted(ctx, source):
         raise EntrantHasSubmissions(
@@ -682,9 +688,14 @@ async def delete(
     the manager role at the contest.
     """
     await _managed(ctx, organiser, contest)
-    await _hold_people(ctx, contest, await member_ids(ctx, entrant))
+    people = await member_ids(ctx, entrant)
+    await _hold_people(ctx, contest, people)
     await _hold_invites_into(ctx, [entrant])
     (row,) = await _hold_entrants(ctx, contest, [entrant])
+    if not set(await member_ids(ctx, row.id)) <= set(people):
+        # Someone joined between the first read and the hold, without their
+        # own lock held here.
+        raise EntrantChanged("This entrant changed in the meantime. Try again.")
     if await submitted(ctx, row):
         raise EntrantHasSubmissions(
             "This entrant has submitted, so it cannot be deleted: it is kept with its results."

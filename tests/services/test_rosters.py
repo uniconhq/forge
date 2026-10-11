@@ -28,6 +28,7 @@ from forge.adapters.ids import parse_task, parse_workspace
 from forge.db.tables import Entrant
 from forge.domain.errors import (
     AlreadyInvited,
+    EntrantChanged,
     EntrantFull,
     EntrantHasSubmissions,
     EntrantIncomplete,
@@ -982,3 +983,49 @@ async def test_a_rejected_entrant_loses_its_access_and_has_it_again_once_reopene
     assert _repo(acme.fake, adders.id, sum_task).writers == set()
     await entrants.reopen(setup, manager, SPRING, adders.id)
     assert _repo(acme.fake, adders.id, sum_task).writers == {21, 22}
+
+
+async def test_an_organiser_moves_people_only_into_an_entrant_that_stands_and_never_staff(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], manager: Organiser
+) -> None:
+    await write_contest(
+        acme.fake, TIMED.replace("{signup: {approval: auto}}", "{signup: {approval: manual}}")
+    )
+    adders = await entrants.register(setup, crowd["bob"], SPRING, name="Adders")
+    lone = await entrants.register(setup, crowd["carol"], SPRING, name="Lone")
+    takers = await entrants.register(setup, crowd["dan"], SPRING, name="Takers")
+    await entrants.reject(setup, manager, SPRING, takers.id, "Not this time.")
+
+    with pytest.raises(WrongStatus):
+        await entrants.move_member(setup, manager, SPRING, adders.id, 8, takers.id)
+    await entrants.reject(setup, manager, SPRING, lone.id, "Not this time.")
+    await acme.fake.orgs.grant_role(20, Scope("acme", "spring"), Role.OBSERVER)
+    with pytest.raises(IsStaff):
+        await entrants.move_member(setup, manager, SPRING, lone.id, 20, adders.id)
+
+
+async def test_deleting_an_entrant_someone_joined_meanwhile_is_asked_again(
+    setup: Setup,
+    acme: Acme,
+    crowd: dict[str, Session],
+    manager: Organiser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bob, carol = crowd["bob"], crowd["carol"]
+    adders = await entrants.register(setup, bob, SPRING, name="Adders")
+    asked = await invites_of(setup, bob, "carol")
+    holding = entrants._hold_people
+    joined: list[bool] = []
+
+    async def carol_joins_first(ctx: Any, contest: Any, user_ids: Any) -> None:
+        if not joined:
+            joined.append(True)
+            await invites.accept(setup, carol, asked.id)
+        await holding(ctx, contest, user_ids)
+
+    monkeypatch.setattr(entrants, "_hold_people", carol_joins_first)
+
+    with pytest.raises(EntrantChanged):
+        await entrants.delete(setup, manager, SPRING, adders.id)
+    kept = await _mine(setup, carol)
+    assert kept is not None and kept.id == adders.id
