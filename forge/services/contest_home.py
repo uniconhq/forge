@@ -20,6 +20,12 @@ inputs a contestant gives, and nothing else of what the task holds, only
 once the task is visible. A task that is not, or a contest the person may
 not see, is no such task or contest, the same answer as one that is not
 there at all.
+
+Beside its statement, the files under a task's `public/` are served one by
+one (`public_file`), to whoever reads its page, with the same checks, and to
+whoever holds a role reaching the task, who reads every file of it as an
+organiser anyway, released or not, so a statement shows its images while it
+is being written.
 """
 
 from dataclasses import dataclass, replace
@@ -34,14 +40,14 @@ from forge.domain.ids import ContestId, TaskId
 from forge.domain.names import ScopeNames
 from forge.domain.registration import Status
 from forge.domain.release import Closed, Extension, close_of, due_of
-from forge.domain.roles import contest_id_of, contest_scope, task_scope
+from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_scope
 from forge.domain.sessions import Session
 from forge.domain.submissions import Field
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import entrants, invites, names, published, release
 from forge.services.entrants import Mine
-from forge.services.published import PublishedTask
+from forge.services.published import PublicFile, PublishedTask
 from forge.services.release import TaskRelease
 
 
@@ -204,17 +210,9 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
     signed-in person. `NotFound` for a task that is not visible to them, or
     in a contest they may not see.
     """
-    contest = contest_id_of(task_scope(task))
-    try:
-        settings, person = await release.seen(ctx, session, contest)
-    except NotFound as exc:
-        raise NotFound(published.NO_SUCH_TASK) from exc
-    found = await published.task(ctx, task, settings)
+    settings, person, found = await _visible(ctx, session, task)
     extension = release.row_extension(person)
-    await ctx.let_go()
     now = ctx.now
-    if found is None or not rules.visible(settings, found.name, now):
-        raise NotFound(published.NO_SUCH_TASK)
     form = await published.form(ctx, found)
     return TaskPage(
         task=task,
@@ -234,6 +232,53 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
             else None
         ),
     )
+
+
+@action
+async def public_file(ctx: Context, session: Session, task: TaskId, path: str) -> PublicFile:
+    """A file under the task's `public/`, by its path in the task, as its
+    latest publication holds it, for a signed-in person who reads the task's
+    page (`task`), or who holds a role reaching the task, whether or not it
+    is released. `NotFound` for a task neither, a path outside `public/` or
+    not there; `PublicFileTooLarge` for one larger than a page is served.
+    """
+    path = published.public_path(path)
+    found: PublishedTask | None
+    if await _organises(ctx, session, task):
+        found = await published.task(ctx, task)
+        if found is None:
+            raise NotFound(published.NO_SUCH_TASK)
+    else:
+        _, _, found = await _visible(ctx, session, task)
+    return await published.public_file(ctx, found, path)
+
+
+async def _visible(
+    ctx: Context, session: Session, task: TaskId
+) -> tuple[ContestDefinition, release.Reader, PublishedTask]:
+    """The contest's settings, the person as its reads see them, and the task
+    at its latest publication, once it is visible to them. `NotFound`
+    otherwise, the same as for a task that is not there.
+    """
+    contest = contest_id_of(task_scope(task))
+    try:
+        settings, person = await release.seen(ctx, session, contest)
+    except NotFound as exc:
+        raise NotFound(published.NO_SUCH_TASK) from exc
+    found = await published.task(ctx, task, settings)
+    await ctx.let_go()
+    if found is None or not rules.visible(settings, found.name, ctx.now):
+        raise NotFound(published.NO_SUCH_TASK)
+    return settings, person, found
+
+
+async def _organises(ctx: Context, session: Session, task: TaskId) -> bool:
+    """Whether the person holds a role at the task, its contest or its org,
+    which lets them read every file of it.
+    """
+    await ctx.let_go()
+    grants = await ctx.forge.orgs.roles_of_user(session.user_id)
+    return holds(grants, task_scope(task), Role.OBSERVER)
 
 
 def _due(

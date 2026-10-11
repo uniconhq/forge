@@ -91,6 +91,12 @@ class ForgejoContent:
         owner, name = location(place)
         return await self._repos.read_file(as_, owner, name, path, at=at)
 
+    async def read_media(
+        self, as_: Identity, place: ContentPlace, path: str, *, at: VersionId, max_size: int
+    ) -> bytes:
+        owner, name = location(place)
+        return await self._repos.read_raw(as_, owner, name, path, at=at, max_size=max_size)
+
     async def write_file(
         self,
         as_: Identity,

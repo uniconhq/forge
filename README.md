@@ -106,13 +106,15 @@ forge/api/
                 remove_member, move_member, delete, and the Entrant, Member,
                 Invited, Mine, Invitation, Refusal, Entered and EntrantRef
                 they return, with its Status, WayKind and Locks
-  contest_home.py  contests, home, task, and the ContestSummary, ContestHome,
-                TaskEntry and TaskPage they return, with the Limits and Rate a
+  contest_home.py  contests, home, task, public_file, and the ContestSummary,
+                ContestHome, TaskEntry, TaskPage and PublicFile they return,
+                PUBLIC_MOST, the most of a public file served, with the Limits and Rate a
                 page carries, the ContestantInput entries and their InputType
                 a submit panel is built from, and the State and
                 ContestVisibility of a contest
-  landing.py    contests, contest, statement, and the PublicContest, PublicTask
-                and PublicStatement they return
+  landing.py    contests, contest, statement, public_file, and the
+                PublicContest, PublicTask, PublicStatement and PublicFile they
+                return, with PUBLIC_MOST
   events.py     check and publish, EVENTS_PATH, where the door is, and
                 SIGNATURE_HEADERS and KIND_HEADERS, the headers the signature
                 and the event's kind come in
@@ -555,8 +557,8 @@ hosting process calls are actions, marked `@action` from
 | `publications` | `save`, `list`, `workflow_form` |
 | `release` | `of_task` |
 | `entrants` | `register`, `mine`, `invite`, `withdraw_invite`, `leave`, `rename`, `list`, `approve`, `reject`, `reopen`, `remove`, `extend`, `organise_rename`, `remove_member`, `move_member`, `delete` |
-| `contest_home` | `contests`, `home`, `task` |
-| `landing` | `contests`, `contest`, `statement` |
+| `contest_home` | `contests`, `home`, `task`, `public_file` |
+| `landing` | `contests`, `contest`, `statement`, `public_file` |
 | `events` | `check`, `publish` |
 | `announcements` | `post`, `edit`, `close`, `reopen`, `manage`, `contest`, `task` |
 | `clarifications` | `ask`, `mine`, `follow_up`, `inbox`, `of_contest`, `reply`, `mark`, `unmark`, `answer_publicly` |
@@ -1169,6 +1171,20 @@ list live. Everything else is read live as the platform from the latest
 publication of each task, with the contest's visibility and the release
 rules applied first, and a contest or task the reader may not see is no
 such contest or task, the same answer as one that is not there.
+
+Beside a task's statement, its readers are served the files under its
+`public/` folder (TASK-FORMAT.md section 1.2), such as a statement's
+images, one at a time by its path in the task: `landing.public_file` for a
+visitor and `contest_home.public_file` for a signed-in person, each with
+exactly the checks its statement is read with, and the second also for
+whoever holds a role reaching the task, released or not, since they read
+every file of it as organisers anyway and a statement being written shows
+its images. A file is read as the task's latest publication holds it, never
+a draft saved after it, and an upload by the bytes its pointer names,
+through the content port's `read_media` (Forgejo's media endpoint, the read
+a submission's file already goes through). A path outside `public/`, with
+an empty, `.` or `..` segment, or not there is `NotFound`, and a file over
+`PUBLIC_MOST`, 10 MiB, is `PublicFileTooLarge`, read no further.
 
 ## Invites
 
@@ -1802,6 +1818,7 @@ structured members in `extra`:
 | `UploadLimit` | `upload_limit` | `limit`, the open uploads one person may hold for a task, and `bytes`, what they may declare together |
 | `InvalidInputs` | `invalid_inputs` | `errors`, each `{"input", "message"}` |
 | `LogTooLarge` | `log_too_large` | `limit`, the most of a run log read, in bytes |
+| `PublicFileTooLarge` | `public_file_too_large` | `limit`, the most of a public file served, in bytes |
 | `MarkLimit` | `mark_limit` | `limit`, the marks a row may hold on the task |
 | `EntrantFull` | `entrant_full` | `limit`, the most people in an entrant, invites waiting counted |
 | `EntrantIncomplete` | `entrant_incomplete` | `fewest`, the members an entrant needs, and `members`, how many it has |

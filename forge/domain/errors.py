@@ -378,6 +378,14 @@ class LogTooLarge(ServiceError):
     code = "log_too_large"
 
 
+class PublicFileTooLarge(ServiceError):
+    """A file under a task's `public/` is larger than the platform serves
+    of it to a reader. `limit` is the most served, in bytes.
+    """
+
+    code = "public_file_too_large"
+
+
 class InvalidIdempotencyKey(ServiceError):
     """A submit's idempotency key is missing or not the short random text a
     browser makes once per submit.

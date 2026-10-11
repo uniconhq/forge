@@ -1,5 +1,6 @@
 """What a signed-in person reads of the contests they may see: the list, a
-contest's home and a task's page, and the types they come back as.
+contest's home, a task's page and the files under its `public/`, and the
+types they come back as.
 """
 
 from forge.domain.definitions import ContestVisibility, Rate, State, Submissions
@@ -12,14 +13,18 @@ from forge.services.contest_home import (
     TaskPage,
     contests,
     home,
+    public_file,
     task,
 )
+from forge.services.published import PUBLIC_MOST, PublicFile
 
 __all__ = [
+    "PUBLIC_MOST",
     "ContestHome",
     "ContestSummary",
     "ContestVisibility",
     "Field",
+    "PublicFile",
     "Rate",
     "State",
     "Submissions",
@@ -28,5 +33,6 @@ __all__ = [
     "Type",
     "contests",
     "home",
+    "public_file",
     "task",
 ]

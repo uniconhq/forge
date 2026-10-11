@@ -8,7 +8,15 @@ release rules itself before it hands anything on.
 
 A task with no publication has nothing to show. A task whose latest
 publication cannot be read as `task.yaml` shows nothing either, which cannot
-happen through a save, since only a valid save publishes. A contest whose
+happen through a save, since only a valid save publishes.
+
+Of a task's files, its readers are served its statement and the files under
+its `public/` folder (TASK-FORMAT.md section 1.2), such as a statement's
+images, one by one by its path in the task, as its latest publication holds
+it (`public_file`); an upload by its bytes, never its pointer. A path
+outside `public/`, or one not there, is no such file, and one larger than
+`PUBLIC_MOST` is refused with `PublicFileTooLarge`, since a page shows these
+whole. A contest whose
 `contest.yaml` does not read is no such contest to its readers, the same
 answer as one that is not there, so its errors reach nobody but the log.
 """
@@ -17,6 +25,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
+from forge.domain.content import check_path
 from forge.domain.definitions import (
     CONTEST_FILE,
     STATEMENT_FILE,
@@ -28,7 +37,7 @@ from forge.domain.definitions import (
     parse_task,
     worth_of,
 )
-from forge.domain.errors import NotFound, PortError
+from forge.domain.errors import InvalidPath, NotFound, PortError, PublicFileTooLarge, Rejected
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.plans import PLAN_PATH, Plan
@@ -44,6 +53,10 @@ log = get_logger(__name__)
 
 NO_SUCH_CONTEST = names.NO_SUCH_CONTEST
 NO_SUCH_TASK = names.NO_SUCH_TASK
+NO_SUCH_FILE = "There is no such file."
+PUBLIC_FOLDER = "public/"
+PUBLIC_MOST = 10 * 1024 * 1024
+"""The most bytes of one public file the platform serves a reader."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +210,58 @@ async def statement(ctx: Context, published: PublishedTask) -> str:
     except NotFound:
         return ""
     return found.content.decode("utf-8", errors="replace")
+
+
+@dataclass(frozen=True, slots=True)
+class PublicFile:
+    """A file under a task's `public/`, as its latest publication holds it:
+    its path in the task and its bytes, an upload's own bytes rather than
+    its pointer.
+    """
+
+    path: str
+    content: bytes
+
+
+def public_path(path: str) -> str:
+    """`path` when it names a file under `public/` plainly, and `NotFound`
+    otherwise: a path outside it, the folder itself, or one with an empty,
+    `.` or `..` segment or a character `check_path` refuses.
+    """
+    try:
+        check_path(path)
+    except InvalidPath:
+        raise NotFound(NO_SUCH_FILE) from None
+    if not path.startswith(PUBLIC_FOLDER):
+        raise NotFound(NO_SUCH_FILE)
+    return path
+
+
+async def public_file(ctx: Context, published: PublishedTask, path: str) -> PublicFile:
+    """The file at `path`, under `public/`, as the task's latest publication
+    holds it, read as the platform, its large-file object's bytes for an
+    upload. The caller has checked the reader may read the task and the path
+    with `public_path`. `NotFound` for a file not there, and
+    `PublicFileTooLarge` for one over `PUBLIC_MOST` bytes, read no further.
+    """
+    version = published.publication.version
+    await ctx.let_go()
+    try:
+        files = await ctx.forge.content.list_files(PLATFORM, published.id, at=version)
+        if path not in files.tokens:
+            raise NotFound(NO_SUCH_FILE)
+        content = await ctx.forge.content.read_media(
+            PLATFORM, published.id, path, at=version, max_size=PUBLIC_MOST
+        )
+    except NotFound:
+        raise NotFound(NO_SUCH_FILE) from None
+    except Rejected:
+        log.info("published.public_file_too_large", task=published.id, path=path)
+        raise PublicFileTooLarge(
+            f"The file is larger than the {PUBLIC_MOST // (1024 * 1024)} MB a page is served.",
+            limit=PUBLIC_MOST,
+        ) from None
+    return PublicFile(path, content)
 
 
 EVERY_CONTEST_KEPT = timedelta(seconds=30)
