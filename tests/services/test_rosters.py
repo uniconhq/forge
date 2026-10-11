@@ -869,3 +869,30 @@ async def test_the_last_one_out_and_an_accept_of_the_entrants_invite_take_turns(
 
     assert isinstance(accepted, WrongStatus), accepted
     assert await _mine(setup, carol) is None
+
+
+async def test_an_entrant_is_approved_on_its_own_once_the_member_holding_it_back_is_gone(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], manager: Organiser
+) -> None:
+    acme.fake.add_user(22, "eve", email="eve@u.nus.edu")
+    await write_contest(
+        acme.fake,
+        contest(
+            most=3,
+            ways=(
+                "[{signup: {name: Students, domains: [u.nus.edu], approval: auto}}, "
+                "{signup: {name: Guests}}]"
+            ),
+        ),
+    )
+    eve, dan, carol = await signed_in(setup, acme.fake, 22), crowd["dan"], crowd["carol"]
+    adders = await entrants.register(setup, eve, SPRING, name="Adders")
+    await _join(setup, eve, dan, "dan")
+    await _join(setup, eve, carol, "carol")
+
+    await entrants.leave(setup, dan, SPRING)
+    still = await _mine(setup, eve)
+    assert still is not None and still.status is Status.PENDING
+
+    removed = await entrants.remove_member(setup, manager, SPRING, adders.id, 20)
+    assert removed is not None and removed.status is Status.APPROVED

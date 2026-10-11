@@ -71,7 +71,7 @@ entrant left with nobody and no submissions is deleted, its member rows kept
 
 An entrant is approved straight away once it is complete and every member
 came in by a way that approves straight away, checked whenever someone
-joins; one who joins an approved entrant by a way an organiser approves
+joins it or leaves it pending; one who joins an approved entrant by a way an organiser approves
 sends it back to `pending`, which can happen only before the roster locks,
 so nothing it submitted is held back.
 
@@ -433,7 +433,7 @@ async def leave(ctx: Context, session: Session, contest: ContestId) -> None:
     (row,) = await _hold_entrants(ctx, contest, [member.entrant_id])
     registration.refuse_undecidable(Status(row.status), registration.REGISTERED, "left")
     rules.refuse_locked(settings, ctx.now, submitted=await submitted(ctx, row))
-    await _take_out(ctx, row, member)
+    await _take_out(ctx, row, member, settings)
     log.info("entrants.left", entrant=str(row.id), user_id=session.user_id)
 
 
@@ -616,7 +616,7 @@ async def remove_member(
     member = await membership(ctx, contest, user_id)
     if member is None or member.entrant_id != row.id:
         raise NotFound("That person is not in this entrant.")
-    kept = await _take_out(ctx, row, member)
+    kept = await _take_out(ctx, row, member, settings)
     log.info("entrants.member_removed", entrant=str(entrant), user_id=user_id, by=organiser.user.id)
     return await _view(ctx, row, settings) if kept else None
 
@@ -653,7 +653,7 @@ async def move_member(
             "need someone in it. Move someone else in first."
         )
     rules.refuse_full(len(await member_ids(ctx, target.id)), settings.entrants.most)
-    await _take_out(ctx, source, member)
+    await _take_out(ctx, source, member, settings)
     await _join(ctx, target, settings, user_id, ORGANISER)
     log.info(
         "entrants.member_moved",
@@ -732,7 +732,7 @@ async def take_place(
     if current is not None:
         source = held[current.entrant_id]
         await _refuse_moving(ctx, settings, source)
-        await _take_out(ctx, source, current)
+        await _take_out(ctx, source, current, settings)
     await _join(ctx, target, settings, user.id, qualified)
     log.info("entrants.joined", entrant=str(target.id), user_id=user.id, invite=str(invite.id))
     return Entered(await ref(ctx, target), Status(target.status), "joined")
@@ -1437,13 +1437,7 @@ async def _after_join(
     """
     status = Status(row.status)
     if status is Status.PENDING:
-        approvals = await ctx.db.scalars(
-            select(EntrantMember.approval).where(
-                EntrantMember.entrant_id == row.id, EntrantMember.status == MemberStatus.MEMBER
-            )
-        )
-        if rules.approved_on_its_own(settings, [Approval(found) for found in approvals]):
-            await _approve(ctx, row, decided_by=None)
+        await _approve_if_due(ctx, row, settings)
     elif status is Status.APPROVED and joined is Approval.MANUAL:
         row.status = Status.PENDING
         row.decided_at = None
@@ -1451,6 +1445,20 @@ async def _after_join(
         row.reason = None
         await ctx.db.flush()
         log.info("entrants.pending_again", entrant=str(row.id))
+
+
+async def _approve_if_due(ctx: Context, row: EntrantRow, settings: ContestDefinition) -> None:
+    """Approve a pending entrant that is complete and whose every member
+    came in by a way that approves straight away, whether someone just
+    joined it or the member who held it back just left.
+    """
+    approvals = await ctx.db.scalars(
+        select(EntrantMember.approval).where(
+            EntrantMember.entrant_id == row.id, EntrantMember.status == MemberStatus.MEMBER
+        )
+    )
+    if rules.approved_on_its_own(settings, [Approval(found) for found in approvals]):
+        await _approve(ctx, row, decided_by=None)
 
 
 async def _approve(ctx: Context, row: EntrantRow, *, decided_by: int | None) -> None:
@@ -1469,10 +1477,13 @@ def _decide(
     row.reason = reason
 
 
-async def _take_out(ctx: Context, row: EntrantRow, member: EntrantMember) -> bool:
+async def _take_out(
+    ctx: Context, row: EntrantRow, member: EntrantMember, settings: ContestDefinition
+) -> bool:
     """End a membership: the person's access to the entrant's workspace taken
     away first, then the row `left`, and an entrant left with nobody and no
-    submissions deleted. Whether the entrant is still there.
+    submissions deleted; a pending one that the rest now approve on their
+    own is approved. Whether the entrant is still there.
     """
     await _close(ctx, workspace_of(ctx, row), [member.user_id])
     member.status = MemberStatus.LEFT
@@ -1482,6 +1493,8 @@ async def _take_out(ctx: Context, row: EntrantRow, member: EntrantMember) -> boo
         await _end(ctx, row)
         log.info("entrants.emptied", entrant=str(row.id))
         return False
+    if Status(row.status) is Status.PENDING:
+        await _approve_if_due(ctx, row, settings)
     return True
 
 
