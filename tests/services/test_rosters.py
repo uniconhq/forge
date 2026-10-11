@@ -57,6 +57,7 @@ from forge.domain.sessions import Session
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
 from forge.services import (
+    account,
     clarifications,
     entrants,
     identity,
@@ -1029,3 +1030,24 @@ async def test_deleting_an_entrant_someone_joined_meanwhile_is_asked_again(
         await entrants.delete(setup, manager, SPRING, adders.id)
     kept = await _mine(setup, carol)
     assert kept is not None and kept.id == adders.id
+
+
+async def test_a_deleted_account_leaves_every_team_still_open_and_stays_in_one_fixed(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, contest(most=3))
+    bob, carol, dan = crowd["bob"], crowd["carol"], crowd["dan"]
+    await entrants.register(setup, bob, SPRING, name="Adders")
+    await _join(setup, bob, carol, "carol")
+    await entrants.invite(setup, carol, SPRING, email="friend@example.test")
+    takers = await entrants.register(setup, dan, SPRING, name="Takers")
+
+    await account.delete(setup, carol)
+
+    adders = await _mine(setup, bob)
+    assert adders is not None and [m.user_id for m in adders.members] == [8]
+    assert adders.invites == ()
+    clock.set(START + timedelta(hours=1))
+    await account.delete(setup, await signed_in(setup, acme.fake, 21))
+    async with setup.unit_of_work() as ctx:
+        assert await entrants.member_ids(ctx, takers.id) == [21]

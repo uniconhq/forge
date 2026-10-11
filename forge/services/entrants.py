@@ -808,6 +808,46 @@ async def _refuse_moving(ctx: Context, settings: ContestDefinition, source: Entr
         )
 
 
+async def forget_person(ctx: Context, user_id: int) -> None:
+    """For someone whose account is going: withdraw the invites into their
+    entrants they sent that still wait, and take them out of every entrant
+    whose roster is still open, as leaving would, so they hold no seat and
+    count toward no team's size. Where the roster has locked they stay, shown
+    as `DELETED_USER`: the team was fixed with them in it, and only the
+    organisers change it from then on.
+    """
+    await ctx.db.execute(
+        update(InviteRow)
+        .where(
+            InviteRow.invited_by_user_id == user_id,
+            InviteRow.grants == Grant.MEMBER,
+            InviteRow.status == InviteStatus.PENDING,
+        )
+        .values(status=InviteStatus.WITHDRAWN, decided_at=ctx.now)
+    )
+    held = (
+        await ctx.db.scalars(
+            select(EntrantMember).where(
+                EntrantMember.user_id == user_id, EntrantMember.status == MemberStatus.MEMBER
+            )
+        )
+    ).all()
+    for found in held:
+        contest = ContestId(found.contest_id)
+        try:
+            settings = await published.contest(ctx, contest)
+        except NotFound:
+            continue
+        await _hold_people(ctx, contest, [user_id])
+        await _hold_invites_into(ctx, [found.entrant_id])
+        (row,) = await _hold_entrants(ctx, contest, [found.entrant_id])
+        member = await membership(ctx, contest, user_id)
+        if member is None or rules.locked(settings, ctx.now, submitted=await submitted(ctx, row)):
+            continue
+        await _take_out(ctx, row, member, settings)
+        log.info("entrants.account_left", entrant=str(row.id), user_id=user_id)
+
+
 # Reading, for the services that work in an entrant's workspace.
 
 
