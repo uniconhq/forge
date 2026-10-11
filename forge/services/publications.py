@@ -131,7 +131,7 @@ from forge.domain.plans import (
 )
 from forge.domain.primitives import PrimitiveDeclaration
 from forge.domain.publications import Publication, write_note
-from forge.domain.release import has_started, reveal_of
+from forge.domain.release import has_started, in_words, reveal_of
 from forge.domain.roles import (
     Role,
     contest_id_of,
@@ -415,9 +415,10 @@ async def _report(
     latest: Publication | None,
     changed: bool,
 ) -> builtins.list[str]:
-    """T9: each group's most points, the task's reveal, which boards the
-    save moves and whose scope a `show` change moves, and each board
-    ranking `points` that counts nothing from the task.
+    """T9: each group's most points, the task's reveal in words when it
+    hides anything (a group not shown at once, or a sealed step), which
+    boards the save moves and whose scope a `show` change moves, and each
+    board ranking `points` that counts nothing from the task.
     """
     contest = await _contest(ctx, task)
     name = (await names.names_of(ctx, [task])).get(task)
@@ -433,11 +434,13 @@ async def _report(
             + ", ".join(f"{group} {written(points)}" for group, points in most.items())
             + "."
         )
-    if entry is not None:
+    hides = bool(compiled.sealed) or any(
+        group.shown is not Show.ALWAYS for group in definition.test_groups.values()
+    )
+    if entry is not None and hides:
         extensions = await timelines.every_extension(ctx, contest_id_of(task_scope(task)))
         found.append(
-            f"{name} shows its hidden results at "
-            f"{reveal_of(contest, entry, extensions).isoformat()}."
+            f"{name} shows its hidden results on {in_words(reveal_of(contest, entry, extensions))}."
         )
     before = await _definition_of(ctx, task, latest) if latest is not None else None
     for board in contest.leaderboards:

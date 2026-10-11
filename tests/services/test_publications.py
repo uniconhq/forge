@@ -161,7 +161,6 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
     # The save reports what each board will read of the task (T9).
     assert result.notes == (
         "The most points each test group gives: main 100.",
-        "sum shows its hidden results at 2026-10-03T17:00:00+00:00.",
         "sum now counts on the leaderboard Standings.",
     )
     (saved,) = acme.fake.calls_to("save_files")

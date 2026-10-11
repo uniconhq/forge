@@ -577,7 +577,8 @@ async def test_an_organiser_extends_an_entrant_on_the_named_tasks_alone(
     with pytest.raises(InvalidExtension, match="third's hidden results were shown"):
         await entrants.extend(setup, manager, SPRING, takers.id, timedelta(hours=1))
     made = (
-        "sum's submission 1, made at 2026-09-26T16:30:00+00:00, would then be after the task closed"
+        "sum's submission 1, made on 26 September 2026 at 16:30 UTC, would then be after the "
+        "task closed"
     )
     with pytest.raises(InvalidExtension, match=re.escape(made)):
         await entrants.extend(

@@ -372,7 +372,7 @@ async def test_a_release_that_has_passed_is_not_moved_later(
     )
 
     said = (
-        "sum was released at 2026-09-26T10:00:00+00:00, so entrants have seen it, and a later "
+        "sum was released on 26 September 2026 at 10:00 UTC, so entrants have seen it, and a later "
         "release time would hide it again."
     )
     assert refused == [("tasks[0].release_at", said)]
@@ -393,7 +393,7 @@ async def test_a_due_is_not_moved_earlier_past_a_submission_it_would_make_late(
     assert refused == [
         (
             "tasks[0].due",
-            "sum's submission 1, made at 2026-09-26T12:00:00+00:00, was on time, and an "
+            "sum's submission 1, made on 26 September 2026 at 12:00 UTC, was on time, and an "
             "earlier due time would make it late.",
         )
     ]
@@ -412,7 +412,7 @@ async def test_a_close_is_not_moved_earlier_than_a_submission_already_made(
     assert refused == [
         (
             "tasks[0].closes",
-            "sum's submission 1, made at 2026-09-26T12:00:00+00:00, would then be after the "
+            "sum's submission 1, made on 26 September 2026 at 12:00 UTC, would then be after the "
             "task closed. Close it later.",
         )
     ]
@@ -432,7 +432,7 @@ async def test_a_close_is_not_moved_later_once_the_task_has_revealed(
     assert refused == [
         (
             "tasks[0].closes",
-            "sum's hidden results were shown at 2026-09-26T12:05:00+00:00, so a later closing "
+            "sum's hidden results were shown on 26 September 2026 at 12:05 UTC, so a later closing "
             "time would let entrants submit knowing them.",
         )
     ]
@@ -452,14 +452,14 @@ async def test_an_end_moved_before_a_submission_or_later_after_the_reveal_is_ref
     assert before == [
         (
             "end",
-            "sum's submission 1, made at 2026-09-26T12:00:00+00:00, would then be after the "
+            "sum's submission 1, made on 26 September 2026 at 12:00 UTC, would then be after the "
             "task closed. Close it later.",
         )
     ]
     assert after == [
         (
             "end",
-            "sum's hidden results were shown at 2026-09-26T12:05:00+00:00, so a later closing "
+            "sum's hidden results were shown on 26 September 2026 at 12:05 UTC, so a later closing "
             "time would let entrants submit knowing them.",
         )
     ]
@@ -500,7 +500,7 @@ async def test_an_entry_naming_no_task_of_the_contest_is_refused_at_its_id(
         ),
         (
             "tasks",
-            "sum was released at 2026-09-26T10:00:00+00:00, so entrants have seen it, and it "
+            "sum was released on 26 September 2026 at 10:00 UTC, so entrants have seen it, and it "
             "cannot be taken out of the contest.",
         ),
     ]

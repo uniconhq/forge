@@ -620,7 +620,7 @@ async def test_a_tasks_save_reports_each_groups_most_its_reveal_and_the_boards_i
 
     assert saved.notes[-4:] == (
         "The most points each test group gives: main 100, small 30, large 70.",
-        "sum shows its hidden results at 2026-09-26T15:00:00+00:00.",
+        "sum shows its hidden results on 26 September 2026 at 15:00 UTC.",
         "This save changes the leaderboard Standings.",
         "This save changes the leaderboard Final.",
     )

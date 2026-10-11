@@ -51,7 +51,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
-from forge.domain.release import Extension, close_of, due_of, released, reveal_of
+from forge.domain.release import Extension, close_of, due_of, in_words, released, reveal_of
 from forge.domain.yaml_models import Problem
 from forge.runtime.context import Context
 from forge.services import names, published
@@ -171,7 +171,7 @@ class Made:
     at: datetime
 
     def said(self) -> str:
-        return f"submission {self.number}, made at {self.at.isoformat()},"
+        return f"submission {self.number}, made on {in_words(self.at)},"
 
 
 async def submissions(
@@ -312,7 +312,7 @@ def _dropped(
     if released(before, entry.id, now):
         opened = before.release_of(entry)
         return (
-            f"{entry.id} was released at {opened.isoformat()}, so entrants have seen it, and it "
+            f"{entry.id} was released on {in_words(opened)}, so entrants have seen it, and it "
             "cannot be taken out of the contest."
         )
     if made:
@@ -381,7 +381,7 @@ def _moved(
         found.append(
             (
                 release_key,
-                f"{task} was released at {old_release.isoformat()}, so entrants have seen it, "
+                f"{task} was released on {in_words(old_release)}, so entrants have seen it, "
                 "and a later release time would hide it again.",
             )
         )
@@ -416,7 +416,7 @@ def _moved(
         found.append(
             (
                 closes_key,
-                f"{task}'s hidden results were shown at {revealed.isoformat()}, so a later "
+                f"{task}'s hidden results were shown on {in_words(revealed)}, so a later "
                 "closing time would let entrants submit knowing them.",
             )
         )
@@ -444,7 +444,7 @@ async def refuse_extension(
             revealed = reveal_of(settings, entry, extensions)
             if revealed <= ctx.now and close_of(settings, entry, after) > ctx.now:
                 raise InvalidExtension(
-                    f"{entry.id}'s hidden results were shown at {revealed.isoformat()}, so "
+                    f"{entry.id}'s hidden results were shown on {in_words(revealed)}, so "
                     "extra time on it would let this entrant submit knowing them."
                 )
         for number, at in own.get(entry.id, []):
