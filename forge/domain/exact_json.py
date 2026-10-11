@@ -4,7 +4,10 @@ as the exact rational of that decimal: `0.1` is 1/10, never the binary
 double nearest it, and `1.0000000000000000001` is more than 1. `loads`
 reads every number with a point or an exponent as a `Decimal`, and `dumps`
 writes a `Decimal` back as the digits it holds, so a result passes through
-the platform, its database included, without a digit changing.
+the platform, its database included, without a digit changing. A whole
+number of any length is read and written by way of a `Decimal`, which
+Python's limit on turning text of more than 4300 digits into an int, and
+back, does not cover.
 """
 
 import json
@@ -22,7 +25,12 @@ def loads(text: str | bytes) -> Any:
     def refuse(name: str) -> Any:
         raise ValueError(f"{name} is not a JSON number")
 
-    return json.loads(text, parse_float=Decimal, parse_constant=refuse)
+    return json.loads(
+        text,
+        parse_float=Decimal,
+        parse_int=lambda digits: int(Decimal(digits)),
+        parse_constant=refuse,
+    )
 
 
 def dumps(value: Any, *, indent: int | None = None, sort_keys: bool = False) -> str:
@@ -72,7 +80,7 @@ def _parts(value: Any) -> list[str]:
         case bool():
             return ["true" if value else "false"]
         case int():
-            return [str(value)]
+            return [str(Decimal(value))]
         case Decimal():
             if not value.is_finite():
                 raise ValueError(f"{value} is not a finite number")

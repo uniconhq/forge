@@ -276,12 +276,14 @@ def spelled(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
-        return str(value)
+        return str(Decimal(value))
     if isinstance(value, float | Decimal):
-        number = Decimal(exact_number(value))
-        if number == number.to_integral_value():
-            return str(int(number))
-        return format(number.normalize(), "f")
+        # Every digit, never rounded to a context's precision, and never
+        # through an int's text, which Python refuses past 4300 digits.
+        text = format(Decimal(exact_number(value)), "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return "0" if text in ("-0", "") else text
     return str(value)
 
 
