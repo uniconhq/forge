@@ -226,7 +226,7 @@ def test_raw_scores_of_ten_to_the_eighth_sum_exactly_and_a_failure_counts_at_lea
         {
             "main/1": ("accepted", {"score": Decimal("100000000")}),
             "main/2": ("accepted", {"score": Decimal("100000000")}),
-            "main/3": "time_limit_exceeded",
+            "main/3": "time_limit",
         }
     )
     first = score(one, ids, groups, None, SCORE, worth=None)

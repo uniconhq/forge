@@ -251,6 +251,7 @@ async def save(
     said = message or SAVE_MESSAGE
 
     await timelines.hold_rules(ctx, contest_id_of(scope))
+    await timelines.hold_task(ctx, task)
     checked = await check(ctx, as_, task, head, written)
     if checked.errors:
         version = await _write(ctx, as_, task, head, written, {}, said)

@@ -150,7 +150,7 @@ from forge.domain.submissions import Submitted
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import names, org_accounts, published, teams
+from forge.services import names, org_accounts, published, teams, timelines
 from forge.services.access import Organiser, require
 from forge.services.credentials import CannotDecrypt
 
@@ -563,15 +563,20 @@ def finish(ctx: Context, row: Grading, status: GradingStatus, *, error: str | No
     changed(ctx, row)
 
 
-def changed(ctx: Context, row: Grading) -> None:
+def changed(ctx: Context, row: Grading, *, organisers_only: bool = False) -> None:
     """Nudge whoever may hear of the grading that it moved, once the unit of
     work commits: the contestant whose workspace it grades, and the
     organisers who observe its task. Every write of a grading's status or
     progress calls this, which is what moves a contestant's submissions
     while they watch; a grading is the platform's own and no push from the
-    forge will ever name one.
+    forge will ever name one. Progress goes to the organisers alone
+    (`organisers_only`): a per-test step reports it once a test, hidden ones
+    too, so a nudge to the row on each would count and time a hidden
+    group's tests (TASK-FORMAT.md section 3.5).
     """
-    owner = ctx.forge.workspaces.owner_of(WorkspaceId(row.workspace_id))
+    owner = (
+        None if organisers_only else ctx.forge.workspaces.owner_of(WorkspaceId(row.workspace_id))
+    )
     ctx.nudge(
         Nudge(
             NudgeKind.GRADING,
@@ -805,9 +810,11 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     is. `WrongStatus` for one that is not finished and for a submission
     staff cancelled, which that ends, and `Conflict` for one with a later
     attempt, which is the one to retry, or while another attempt of it is
-    graded.
+    graded. The task is held alone, as by a save and a rejudge, so no
+    regrade numbers an attempt from rows read before this one landed.
     """
     found = await _managed(ctx, organiser, grading, lock=False)
+    await timelines.hold_task(ctx, TaskId(found.task_id))
     gone = await lost(ctx, [found])
     attempts = await _attempts(ctx, [found.submission_id])
     row = next(attempt for attempt in attempts if attempt.id == grading)
@@ -940,8 +947,11 @@ def _cancel_after_commit(ctx: Context, run: RunId) -> None:
 async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
     """A new attempt of every submission's latest attempt, against the
     task's current publication. `NotFound` for a task with no publication.
+    The task is held alone, as a save holds it, so a save's regrade and
+    this one each start from every attempt the other made.
     """
     require(organiser, task_scope(task), Role.MANAGER)
+    await timelines.hold_task(ctx, task)
     current = await published.task(ctx, task)
     if current is None:
         raise NotFound("The task has no publication to grade against.")
@@ -1415,8 +1425,8 @@ async def regrade(ctx: Context, task: TaskId, publication: PublicationId) -> Rej
     the CI once this has committed. A submission staff cancelled, its latest
     attempt `cancelled` with a sentence, is left as it is.
     """
-    # Which runs the CI has lost is asked before any row is held, since
-    # asking takes the CI's time.
+    # Which runs the CI has lost is asked before any row is locked, since
+    # asking takes the CI's time; the task itself is held by the caller.
     gone = await lost(
         ctx,
         (await ctx.db.execute(select(Grading).where(Grading.task_id == task))).scalars().all(),

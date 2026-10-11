@@ -1092,10 +1092,119 @@ def test_data_served_under_public_seals_nothing() -> None:
     assert not any(note.startswith("Step") for note in result.notes)
 
 
+def _checked_around_notebook(before: bool) -> WorkflowDefinition:
+    """The notebook run over the task's data, and a once check that reads
+    nothing of it, reporting `checked`, before the notebook or after it."""
+    check = """  - id: check
+    use: acme/score@v1
+    with:
+      actual: ${{ inputs.reference }}
+      expected: ${{ inputs.reference }}
+"""
+    predict = """  - id: predict
+    use: acme/notebook@v1
+    with:
+      notebook: ${{ inputs.notebook }}
+      data: ${{ inputs.data }}
+"""
+    return parse_workflow(
+        """inputs:
+  notebook: {type: file, contestant: true}
+  data: folder
+  reference: file
+test:
+  answer: file
+steps:
+"""
+        + (check + predict if before else predict + check)
+        + """report:
+  accuracy: ${{ steps.predict.accuracy }}
+  checked: ${{ steps.check.steps }}
+"""
+    )
+
+
+CHECKED_NOTEBOOK_TASK = NOTEBOOK_TASK.replace(
+    "  data: data/mnist-test/\n", "  data: data/mnist-test/\n  reference: public/reference.txt\n"
+)
+CHECKED_NOTEBOOK_PATHS = NOTEBOOK_PATHS | {"public/reference.txt"}
+
+
+def test_a_step_after_a_sealed_step_is_sealed_though_it_reads_nothing_of_it() -> None:
+    """Whether it runs at all says whether the sealed step stopped the run, so
+    its stop and values wait for the reveal (#432)."""
+    result = compiled(
+        CHECKED_NOTEBOOK_TASK, CHECKED_NOTEBOOK_PATHS, _checked_around_notebook(False)
+    )
+
+    assert result.sealed == ("check", "predict")
+    assert result.held == Sealed(
+        steps=frozenset({"predict", "check"}), values=frozenset({"accuracy", "checked"})
+    )
+    assert (
+        "Step check is sealed: it runs after the sealed step predict, so whether it ran, and "
+        "what it reports, is shown at the reveal."
+    ) in result.notes
+
+
+def test_a_step_before_the_first_sealed_step_is_shown_at_once() -> None:
+    result = compiled(CHECKED_NOTEBOOK_TASK, CHECKED_NOTEBOOK_PATHS, _checked_around_notebook(True))
+
+    assert result.sealed == ("predict",)
+    assert result.held == Sealed(steps=frozenset({"predict"}), values=frozenset({"accuracy"}))
+
+
 def test_classic_is_not_sealed_since_each_run_reads_only_its_own_tests_input() -> None:
     result = compiled(CLASSIC_TASK, classic_tests("main/1", "main/2"))
 
     assert result.sealed == ()
+
+
+ACME["acme/write@v1"] = declared(
+    "write",
+    LIMITS
+    + """inputs:
+  code: text
+outputs:
+  program: file
+  outcome: outcome
+""",
+)
+PRIMITIVES_READ["acme/write@v1"] = ACME["acme/write@v1"]
+
+
+def _written_program(code: str) -> WorkflowDefinition:
+    """The contestant's text made into a program, which runs over the
+    task's data: `code` is how the text reaches the program's maker."""
+    return parse_workflow(
+        f"""inputs:
+  code: {{type: text, contestant: true}}
+  data: folder
+test:
+  answer: file
+steps:
+  - id: write
+    use: acme/write@v1
+    with:
+      code: {code}
+  - id: predict
+    use: acme/notebook@v1
+    with:
+      notebook: ${{{{ steps.write.program }}}}
+      data: ${{{{ inputs.data }}}}
+"""
+    )
+
+
+@pytest.mark.parametrize("code", ['"${{ inputs.code }}"', '"// ${{ inputs.code }}"'])
+def test_a_contestant_value_written_into_text_seals_what_runs_it_as_the_value_whole_does(
+    code: str,
+) -> None:
+    whole = compiled(NOTEBOOK_TASK, NOTEBOOK_PATHS, _written_program("${{ inputs.code }}"))
+    written = compiled(NOTEBOOK_TASK, NOTEBOOK_PATHS, _written_program(code))
+
+    assert whole.sealed == ("predict",)
+    assert written.sealed == whole.sealed
 
 
 UNSEALED = parse_workflow(

@@ -10,6 +10,7 @@ import pytest
 
 from forge.domain.clock import FakeClock
 from forge.domain.content import ConflictToken, FileSet, check_path
+from forge.domain.contracts import _validator
 from forge.domain.errors import InvalidName, InvalidPath, NotFound
 from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.names import (
@@ -125,6 +126,7 @@ def test_a_sign_in_lands_only_on_a_path_inside_the_platform() -> None:
         "//evil.test",
         "/\\evil",
         "/a\nb",
+        "/\t/evil.test",
         "/" + "a" * 3000,
     ):
         assert safe_next(outside) == "/"
@@ -206,3 +208,15 @@ def test_a_contest_id_is_not_a_task_and_a_task_id_is_not_a_contest() -> None:
         contest_scope(ContestId("acme/spring/sum"))
     with pytest.raises(NotFound):
         task_scope(TaskId("acme/spring"))
+
+
+def test_the_contracts_check_the_formats_their_schemas_name() -> None:
+    """`uri` and `date-time` take their validators, named as dependencies in
+    place of jsonschema's whole format extra; `uuid` needs none."""
+    checker = _validator("result").format_checker
+    assert checker is not None
+    assert checker.conforms("https://x.test/a", "uri")
+    assert not checker.conforms("not a uri", "uri")
+    assert checker.conforms("2026-10-11T00:00:00Z", "date-time")
+    assert not checker.conforms("yesterday", "date-time")
+    assert not checker.conforms("not-a-uuid", "uuid")

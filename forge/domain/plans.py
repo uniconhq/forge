@@ -60,7 +60,7 @@ from forge.domain.definitions import (
     TaskDefinition,
     form_problems,
 )
-from forge.domain.grading import BASE_WALL, STEP_OVERHEAD, WALL_CEILING, Machine
+from forge.domain.grading import WALL_CEILING, Machine, wall_seconds
 from forge.domain.primitives import BATCH_SCALED, IMAGE, LIMIT_NAMES, Port, PrimitiveDeclaration
 from forge.domain.scoring import Better, Measure, exact
 from forge.domain.showing import NOTHING_SEALED, Sealed
@@ -276,12 +276,14 @@ def spelled(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
-        return str(value)
+        return str(Decimal(value))
     if isinstance(value, float | Decimal):
-        number = Decimal(exact_number(value))
-        if number == number.to_integral_value():
-            return str(int(number))
-        return format(number.normalize(), "f")
+        # Every digit, never rounded to a context's precision, and never
+        # through an int's text, which Python refuses past 4300 digits.
+        text = format(Decimal(exact_number(value)), "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return "0" if text in ("-0", "") else text
     return str(value)
 
 
@@ -921,6 +923,10 @@ class _Compiler:
         or that the sealed step it reads ran it over."""
         self.reads_sealed: dict[str, str] = {}
         """Each step sealed by reading a sealed step's output, with that step."""
+        self.after_sealed: dict[str, str] = {}
+        """Each step sealed by coming after a sealed step, with the first
+        sealed step: whether it runs at all depends on whether that one
+        stopped the run (#432)."""
         self.raised: list[_Raised] = []
         """Every limit raised above its primitive's, run by run."""
         self.served = self._served()
@@ -1056,6 +1062,7 @@ class _Compiler:
             declaration = self.primitives[str(step.use)]
             made = self._step(index, step.id, step.use, step.per_test, step.with_, declaration)
             steps.extend(made)
+        self._seal_what_follows()
         report = self._report()
         contestant = {
             name: ContestantInput(
@@ -1075,6 +1082,21 @@ class _Compiler:
             steps=tuple(steps),
             report=report,
         )
+
+    def _seal_what_follows(self) -> None:
+        """Seal every step after the first sealed step in the workflow's
+        order (#432): it runs only when that step did not stop the run, so
+        its values being there, or its own stop, would tell the contestant
+        whether it stopped.
+        """
+        order = [step.id for step in self.workflow.steps]
+        first = next((at for at, step in enumerate(order) if step in self.sealed), None)
+        if first is None:
+            return
+        for step in order[first + 1 :]:
+            if step not in self.sealed:
+                self.sealed[step] = self.sealed[order[first]]
+                self.after_sealed[step] = order[first]
 
     def _step(
         self,
@@ -1158,7 +1180,10 @@ class _Compiler:
         assert isinstance(raw, str)
         whole = whole_reference(raw)
         if whole is None:
-            return self._written(raw, test), _Taint()
+            written = self._written(raw, test)
+            # A contestant's value written into text is theirs as much as one
+            # given whole (TASK-FORMAT.md section 3.5): it is a template part.
+            return written, _Taint(contestant="parts" in written)
         return self._reference(whole, port, test)
 
     def _reference(
@@ -1365,8 +1390,7 @@ def _fit(compiler: _Compiler, plan: Plan) -> list[Problem]:
     number that pushed it over came from.
     """
     problems: list[Problem] = []
-    seconds = sum(step.limits.time_ms for step in plan.steps) / 1000
-    total = seconds + BASE_WALL.total_seconds() + STEP_OVERHEAD.total_seconds() * len(plan.steps)
+    total = wall_seconds(plan)
     ceiling = WALL_CEILING.total_seconds()
     if total > ceiling:
         said = f"the run {math.ceil(total / 60)} minutes; a run may take {int(ceiling // 60)}."
@@ -1644,7 +1668,11 @@ def _sealed(task: TaskDefinition, compiler: _Compiler) -> list[Problem]:
 
 def _sealed_notes(compiler: _Compiler) -> list[str]:
     return [
-        f"Step {step} is sealed: it reads what the sealed step "
+        f"Step {step} is sealed: it runs after the sealed step "
+        f"{compiler.after_sealed[step]}, so whether it ran, and what it reports, is shown "
+        "at the reveal."
+        if step in compiler.after_sealed
+        else f"Step {step} is sealed: it reads what the sealed step "
         f"{compiler.reads_sealed[step]} wrote, so what it reports is shown at the reveal."
         if step in compiler.reads_sealed
         else f"Step {step} is sealed: it runs the contestant's code over {data}, which the "

@@ -15,7 +15,7 @@ from forge.adapters.fakes import FakeForge
 from forge.domain.clock import FakeClock
 from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import PLATFORM, AsUser
-from forge.domain.ids import OrgId, PrimitiveId, TaskId, WorkspaceId
+from forge.domain.ids import OrgId, PrimitiveId, SubmissionId, TaskId, WorkspaceId
 from forge.domain.names import UserOwner
 from forge.port.uploads import SubmissionPlace, TaskPlace
 from forge.testing import PRIMITIVES, seed_primitives
@@ -171,3 +171,15 @@ async def test_a_result_url_stops_working_when_it_expires(
         fake.objects.put(url, b"late")
     with pytest.raises(NotFound):
         await fake.objects.read("logs/g/2.log")
+
+
+async def test_a_download_of_a_submission_that_is_not_there_is_not_found(fake: FakeForge) -> None:
+    workspace, task, bob = await _place(fake)
+    made = await fake.workspaces.record_submission(
+        bob, workspace, task, {"files/a/x.py": b"1", "submission.json": b"{}"}, key="first-key"
+    )
+    door = await fake.workspaces.download(bob, made.id, "files/a/x.py")
+    assert door.path.endswith(f"?ref={made.version}")
+
+    with pytest.raises(NotFound):
+        await fake.workspaces.download(bob, SubmissionId(f"{made.id}9"), "files/a/x.py")

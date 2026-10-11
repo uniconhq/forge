@@ -17,6 +17,7 @@ many days late each was, and nobody else's.
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from fractions import Fraction
@@ -856,7 +857,7 @@ async def test_a_contestant_reads_their_own_submissions_and_their_files(
     door = await submissions.download(
         setup, entered.session, entered.task, 2, "files/submission/main.py"
     )
-    assert door.path.endswith("/media/files/submission/main.py?ref=submission%2F2")
+    assert re.search(r"/media/files/submission/main\.py\?ref=[0-9a-f]{40}$", door.path), door.path
     assert await acme.fake.workspaces.fetch(door) == b"print(2)\n"
     with pytest.raises(NotFound):
         await submissions.download(setup, entered.session, entered.task, 2, "submission.json")

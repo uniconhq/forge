@@ -116,6 +116,11 @@ class FakeIdentity:
         self._state.check_up()
         if any(user.username.lower() == username.lower() for user in self._state.users.values()):
             raise Conflict(f"user already exists [name: {username}]")
+        if any(
+            user.email is not None and user.email.lower() == email.lower()
+            for user in self._state.users.values()
+        ):
+            raise Conflict(f"e-mail already in use [email: {email}]")
         user = User(id=self._state.new_user_id(), username=username, email=email)
         self._state.users[user.id] = user
         self._state.passwords[user.id] = password

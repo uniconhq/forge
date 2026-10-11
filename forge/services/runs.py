@@ -254,7 +254,7 @@ async def callback(
             row.started_at = row.started_at or ctx.now
         case Event.PROGRESS:
             row.progress = report.progress
-            gradings.changed(ctx, row)
+            gradings.changed(ctx, row, organisers_only=True)
         case Event.FINISHED:
             _finished(ctx, row, report.result)
     await ctx.db.flush()

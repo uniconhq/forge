@@ -276,8 +276,21 @@ def _server_url() -> str:
     return url
 
 
+PLAIN = "sslmode=disable&gssencmode=disable"
+"""How the tests connect when the server URL says nothing of it: plainly,
+without first asking for TLS and GSS, which a test server refuses at the
+cost of a round each, a third of a connection's time. A test opens several
+connections, so this is seconds a run."""
+
+
+def _plain(url: str) -> str:
+    return url if "?" in url else f"{url}?{PLAIN}"
+
+
 def _connect(url: str) -> psycopg.Connection[tuple[object, ...]]:
-    return psycopg.connect(url.replace("postgresql+psycopg://", "postgresql://"), autocommit=True)
+    return psycopg.connect(
+        _plain(url.replace("postgresql+psycopg://", "postgresql://")), autocommit=True
+    )
 
 
 @pytest.fixture
@@ -457,7 +470,8 @@ def _drop_others(
 
 
 def _database(server_url: str, name: str) -> str:
-    return server_url.rsplit("/", 1)[0] + "/" + name
+    base, _, query = server_url.partition("?")
+    return _plain(base.rsplit("/", 1)[0] + "/" + name + (f"?{query}" if query else ""))
 
 
 @pytest.fixture

@@ -74,6 +74,7 @@ async def mark(ctx: Context, session: Session, task: TaskId, number: int) -> Mar
     has passed, and `MarkLimit` when the row already holds as many marks as
     it may.
     """
+    await _hold_rules(ctx, task)
     entrant = await submitters.entrant(ctx, session, task)
     workspace, most, closes_at = await _place(ctx, entrant)
     await _change(ctx, entrant, workspace, closes_at)
@@ -105,6 +106,7 @@ async def unmark(ctx: Context, session: Session, task: TaskId, number: int) -> M
     """Take a mark off one of the row's submissions to the task.
     `MarksFrozen` once the row's close has passed.
     """
+    await _hold_rules(ctx, task)
     entrant = await submitters.entrant(ctx, session, task)
     workspace, most, closes_at = await _place(ctx, entrant)
     await _change(ctx, entrant, workspace, closes_at)
@@ -180,15 +182,23 @@ async def _place(ctx: Context, entrant: Entrant) -> tuple[WorkspaceId, int, date
     return entrant.workspace, most, close_of(settings, entry, extension)
 
 
+async def _hold_rules(ctx: Context, task: TaskId) -> None:
+    """Hold the contest's rules shared before the task's `marks` and the
+    row's close are read, so a save changing either waits for this change
+    or this change reads what the save wrote (C1).
+    """
+    await timelines.hold_rules(ctx, contest_id_of(task_scope(task)), shared=True)
+
+
 async def _change(
     ctx: Context, entrant: Entrant, workspace: WorkspaceId, closes_at: datetime
 ) -> None:
     """Refuse a change after the row's close, and hold the row's marks on
-    the task, and the person's team, until the unit of work ends.
+    the task, and the person's team, until the unit of work ends; the
+    contest's rules are held already (`_hold_rules`).
     """
     if ctx.now >= closes_at:
         raise MarksFrozen("Your close on this task has passed, so your marks are frozen.")
-    await timelines.hold_rules(ctx, contest_id_of(task_scope(entrant.task)), shared=True)
     await ctx.db.execute(
         text("SELECT pg_advisory_xact_lock(:space, hashtext(:target))"),
         {"space": MARKS_LOCK, "target": f"{workspace}|{entrant.task}"},

@@ -58,8 +58,10 @@ submission staff cancelled does not count against the task's
 `system_error` or staff cancelled (`scores.fallen_back`), it is read by its
 last good result instead, as the boards count it, and counts against
 `submissions.max`. A grading is
-shown with the publication it ran under: its sealed facts, and its
-`test_groups` unless the latest publication's plan lists the same tests. A
+shown with the publication it ran under: its sealed facts always, and
+the latest publication's `test_groups`, `credit` and value meanings when
+its own is of the same generation (no grading change published since) and
+the latest plan lists the same tests, its own otherwise (`showing.under`). A
 past publication's `task.yaml` and plan are read once per process, since a
 publication never changes; one that does not read shows nothing of its
 gradings but where they stand. Each grading is scored on read
@@ -240,12 +242,22 @@ async def submit(
         await submitters.refuse(ctx, entrant)
         await submitters.open_place(ctx, entrant)
         opened = True
+    # The task is held shared from here and read again under it: a save of
+    # the task waits for this submit, or this submit reads what the save
+    # published, so a grading change's regrade never misses it
+    # (TASK-FORMAT.md section 2, step 12). Another task's save never waits.
+    await timelines.hold_task(ctx, task, shared=True)
+    entrant = await submitters.entrant(ctx, session, task)
+    workspace = entrant.workspace
     if workspace is not None:
         await _hold(ctx, workspace, task)
         await submitters.hold_standing(ctx, entrant)
         again = await _again(ctx, entrant, workspace, idempotency_key)
         if again is not None:
             return again
+    # The submission's time is when it was checked open, not when the forge
+    # has recorded it, which may be seconds later and past the close.
+    at = ctx.now
     _, workspace = await submitters.refuse(ctx, entrant)
     made = await _listed(ctx, workspace, task) or ()
     await _finish_unrecorded(ctx, entrant, workspace, made)
@@ -274,7 +286,7 @@ async def submit(
     for path, upload in layout.files.items():
         files[path] = await _pointer(ctx, entrant, user, chosen[upload])
     recorded = await _record(ctx, user, workspace, task, files, idempotency_key)
-    grading = _insert(ctx, entrant, workspace, recorded, idempotency_key, at=ctx.now)
+    grading = _insert(ctx, entrant, workspace, recorded, idempotency_key, at=at)
     for used in chosen.values():
         used.status = UploadStatus.CONSUMED
         used.consumed_by = recorded.id
@@ -285,9 +297,7 @@ async def submit(
         number=recorded.number,
         user_id=entrant.session.user_id,
     )
-    return await _submission(
-        ctx, Reading.of(entrant, workspace), recorded.number, ctx.now, [grading]
-    )
+    return await _submission(ctx, Reading.of(entrant, workspace), recorded.number, at, [grading])
 
 
 @action

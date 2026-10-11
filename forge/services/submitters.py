@@ -21,7 +21,7 @@ from datetime import datetime
 
 from sqlalchemy import select
 
-from forge.db.tables import Contestant
+from forge.db.tables import Contestant, Team
 from forge.domain import release as rules
 from forge.domain.definitions import ContestDefinition, State
 from forge.domain.errors import (
@@ -34,6 +34,7 @@ from forge.domain.errors import (
     Unavailable,
 )
 from forge.domain.ids import TaskId, WorkspaceId
+from forge.domain.names import TeamOwner
 from forge.domain.registration import Status
 from forge.domain.release import Closed, Extension
 from forge.domain.roles import contest_id_of, task_scope
@@ -128,11 +129,13 @@ async def extension(ctx: Context, entrant: Entrant) -> Extension:
 
 
 async def hold_standing(ctx: Context, entrant: Entrant) -> None:
-    """Hold the person's registration until the unit of work ends, so no
-    change of team passes this submit, and refuse with `Conflict` when the
-    workspace they work in changed since the entrant was read: a person
-    joining a team, leaving one or being moved waits for the submit, and a
-    submit that started before such a change is asked again.
+    """Hold the person's registration, and their team's row when they are
+    in one, until the unit of work ends, so no change of team and no change
+    of the team's extension passes this submit, and refuse with `Conflict`
+    when the workspace they work in changed since the entrant was read: a
+    person joining a team, leaving one or being moved, and a team's
+    extension shortened, waits for the submit, and a submit that started
+    before a change of team is asked again.
     """
     if entrant.row is None:
         return
@@ -141,6 +144,10 @@ async def hold_standing(ctx: Context, entrant: Entrant) -> None:
     )
     contest = contest_id_of(task_scope(entrant.task))
     standing = await teams.standing(ctx, contest, entrant.session.user_id)
+    if isinstance(standing.owner, TeamOwner):
+        await ctx.db.execute(
+            select(Team.id).where(Team.id == standing.owner.team_id).with_for_update(read=True)
+        )
     if ctx.forge.workspaces.workspace_of(contest, standing.owner) != entrant.workspace:
         raise TeamChanged("Your team changed while you submitted; submit again.")
 

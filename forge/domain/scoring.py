@@ -27,7 +27,7 @@ only a rational that is no finite decimal, such as 1/3.
 """
 
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, localcontext
@@ -79,7 +79,10 @@ def decimal_of(number: Fraction) -> Decimal:
     if rest == 1:
         scale = max(twos, fives)
         digits = number.numerator * 10**scale // number.denominator
-        return Decimal(f"{digits}e-{scale}") if scale else Decimal(digits)
+        # Built from the int's own digits, never its text, which Python
+        # refuses past 4300 digits.
+        whole = Decimal(digits).as_tuple()
+        return Decimal((whole.sign, whole.digits, -scale))
     with localcontext() as context:
         context.prec = SIGNIFICANT
         return Decimal(number.numerator) / Decimal(number.denominator)
@@ -349,14 +352,7 @@ class Scored:
         verdict is shown, in `test_groups` order; `accepted` when there is
         none; none when no group that ran is shown.
         """
-        outcomes = [
-            group.outcome
-            for group in self.groups
-            if group.outcome is not None and seen.verdict(group.show)
-        ]
-        if not outcomes:
-            return None
-        return next((outcome for outcome in outcomes if outcome != ACCEPTED), ACCEPTED)
+        return first_failed(group.outcome for group in self.groups if seen.verdict(group.show))
 
 
 def everywhere(show: Show) -> bool:
@@ -388,6 +384,18 @@ def points_seen(scored: Scored, seen: Seen, reveal_at: datetime | None) -> Point
 
 def group_of(test: str) -> str:
     return test.split("/", 1)[0]
+
+
+def first_failed(outcomes: Iterable[str | None]) -> str | None:
+    """The first of `outcomes` other than `accepted`, in their order;
+    `accepted` when every one is; none when there is none. A group's
+    outcome over its tests and a submission's over its shown groups are
+    both this rule.
+    """
+    given = [outcome for outcome in outcomes if outcome is not None]
+    if not given:
+        return None
+    return next((outcome for outcome in given if outcome != ACCEPTED), ACCEPTED)
 
 
 def name_in_group(test: str) -> str:
@@ -485,10 +493,7 @@ def _earned(group: Group, tests: Sequence[TestScore]) -> Fraction:
 
 
 def _outcome(tests: Sequence[TestScore]) -> str:
-    return next(
-        (test.outcome for test in tests if test.outcome is not None and test.outcome != ACCEPTED),
-        ACCEPTED,
-    )
+    return first_failed(test.outcome for test in tests) or ACCEPTED
 
 
 def best_of(

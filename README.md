@@ -981,7 +981,8 @@ and a contestant's as a template the harness fills, raises each limit a
 value raises and rounds it up, folds a per-test step over a primitive that
 takes a batch into one container and writes one entry per test otherwise,
 works out which steps are sealed, running the contestant's code over a task
-file the contestant is not served, or reading what such a step wrote, and
+file the contestant is not served, reading what such a step wrote, or coming
+after a sealed step in the workflow's order (#432), and
 refuses a task with a sealed step that shows a group before it closes (T5),
 checks the plan fits a machine, its whole time within the 25 minutes a run
 may take, each step's memory and GPUs within `PLATFORM_MACHINE` and no step
@@ -1807,9 +1808,9 @@ what came back, `error` a line for staff, and `cancel_reason` the sentence
 staff cancelled it with, which its contestant reads, on every submission
 staff cancelled (a stock one on those cancelled before 0013) and on no
 attempt a rejudge replaced. An `uploads` row is one
-browser upload: its owner, task and input, name, declared and measured
-size, digest, status, the id of its parts while they arrive, the submission
-that consumed it, and when its lifetime ends. An `invites` row is one
+browser upload: its owner, its purpose, task and input (or, for a task's
+own file, the path it goes in the task), name, type, size, digest, status,
+the submission that consumed it, and when its lifetime ends. An `invites` row is one
 invite: the scope's keys, what it grants, the username or the address it
 names, who it is for once known, who sent it, its token's SHA-256, its
 status, its expiry, when it was decided, and what became of its mail. A

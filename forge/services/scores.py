@@ -16,9 +16,9 @@ not stopped, accepted on the test.
 Where a submission stands on a board is its latest attempt's: finished, it
 is a candidate when its run was not stopped, an attempt when a sealed step
 stopped it, and nothing otherwise; staff cancelled, nothing; in
-`system_error`, still grading to its row; still running or queued, the
-latest attempt that finished before it while there is one, so a regrade in
-progress moves no board until it ends, and otherwise still grading. A
+`system_error`, still grading to its row; still running or queued, where
+it stood by its attempts before that one, so a regrade in progress moves no
+board until it ends, and with none before it still grading. A
 fallback, staff's on the latest attempt or the contest's
 `on_system_error: last_result`, has a submission in `system_error` or staff
 cancelled stand as its latest earlier attempt that finished with a result
@@ -50,7 +50,7 @@ from forge.domain.ids import PublicationId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.release import Extension, due_of, late_days
 from forge.domain.roles import contest_id_of, task_scope
-from forge.domain.scoring import ONE, Scored, best_of, late_factor, score
+from forge.domain.scoring import ONE, Better, Scored, best_of, late_factor, score
 from forge.domain.showing import Graded, under
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
@@ -105,12 +105,17 @@ def usable(
         if gradings.staff_cancelled(latest):
             return Usable(State.VOID, None)
         return Usable(State.GRADING, None)
+    if status is not GradingStatus.CANCELLED:
+        # Still running or queued: the board holds where the submission stood
+        # before this attempt, a system error with no fallback included.
+        earlier = [row for row in rows if row.attempt < latest.attempt]
+        if earlier:
+            return usable(ctx, earlier, lost, contest)
+        return Usable(State.GRADING, None)
     good = gradings.last_good(rows, latest)
     if good is not None:
         return Usable(State.CANDIDATE, good)
-    if status is GradingStatus.CANCELLED:
-        return Usable(State.VOID, None)
-    return Usable(State.GRADING, None)
+    return Usable(State.VOID, None)
 
 
 def fallen_back(
@@ -154,8 +159,9 @@ def stands(row: Grading, graded: Graded) -> State:
 
 class Scorer:
     """Scores one task's gradings for one read, `B` worked out once for
-    each generation it is asked for, by the attempts the contest's
-    `on_system_error` has a board read.
+    each generation, value and direction it is asked for (two publications
+    of one generation may name different values in `relative`), by the
+    attempts the contest's `on_system_error` has a board read.
     """
 
     def __init__(self, ctx: Context, current: PublishedTask, contest: OnSystemError) -> None:
@@ -163,7 +169,7 @@ class Scorer:
         self.current = current
         self.contest = contest
         self._latest: Graded | None = None
-        self._bests: dict[int, Mapping[str, Fraction]] = {}
+        self._bests: dict[tuple[int, str, Better | None], Mapping[str, Fraction]] = {}
 
     async def latest(self) -> Graded:
         if self._latest is None:
@@ -208,10 +214,11 @@ class Scorer:
         )
 
     async def _best(self, graded: Graded, name: str) -> Mapping[str, Fraction]:
-        if graded.generation in self._bests:
-            return self._bests[graded.generation]
         measure = graded.measures.get(name)
         better = measure.better if measure is not None else None
+        key = (graded.generation, name, better)
+        if key in self._bests:
+            return self._bests[key]
         generations = {each.id: self.current.generation(each) for each in self.current.publications}
         results = [
             row.result
@@ -221,7 +228,7 @@ class Scorer:
             and generations.get(PublicationId(row.publication_id)) == graded.generation
         ]
         found = best_of(results, name, better)
-        self._bests[graded.generation] = found
+        self._bests[key] = found
         return found
 
     async def _candidates(self) -> list[Grading]:

@@ -104,7 +104,7 @@ async def complete(
     except Forbidden as exc:
         log.info("sign_in.refused", reason="code", state=state[:STATE_PREFIX])
         raise SignInInvalid("This sign-in could not be completed.") from exc
-    if signed.nonce is not None and not compare_digest(signed.nonce, attempt.nonce):
+    if signed.nonce is None or not compare_digest(signed.nonce, attempt.nonce):
         log.info("sign_in.refused", reason="nonce", state=state[:STATE_PREFIX])
         raise SignInInvalid("This sign-in did not start here.")
     session = await sessions.create(
