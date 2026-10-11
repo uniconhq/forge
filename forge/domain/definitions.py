@@ -25,9 +25,9 @@ valid as written.
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import MAX_PREC, Decimal, localcontext
 from enum import StrEnum
 from itertools import pairwise
 from typing import Annotated, Any, Literal
@@ -715,12 +715,11 @@ class Group(Model):
 
     @property
     def weight(self) -> int | Decimal:
-        """What the group can earn, `R_g`: its rule weights summed."""
-        total: int | Decimal = 0
-        for value in (self.each, self.worst, self.pass_):
-            if value is not None:
-                total += value
-        return total
+        """What the group can earn, `R_g`: its rule weights summed, to the
+        digit."""
+        return exact_sum(
+            value for value in (self.each, self.worst, self.pass_) if value is not None
+        )
 
     @property
     def shown(self) -> Show:
@@ -894,12 +893,21 @@ class TaskDefinition(Model):
     def total_weight(self) -> int | Decimal:
         """`W`, every group's rule weight summed: what the task is worth in a
         contest whose entry gives no `worth`, so a group's numbers are its
-        points unless the contest says otherwise.
+        points unless the contest says otherwise; to the digit, as every
+        number is.
         """
-        total: int | Decimal = 0
-        for group in self.test_groups.values():
-            total += group.weight
-        return total
+        return exact_sum(group.weight for group in self.test_groups.values())
+
+
+def exact_sum(values: Iterable[int | Decimal]) -> int | Decimal:
+    """The numbers summed with no rounding: a sum of finite decimals is one,
+    and Decimal's usual 28 digits would round a long weight's last ones.
+    """
+    total: int | Decimal = 0
+    with localcontext(prec=MAX_PREC):
+        for value in values:
+            total += value
+    return total
 
 
 def worth_of(entry: ContestTask, definition: TaskDefinition) -> int | Decimal | None:

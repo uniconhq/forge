@@ -888,6 +888,14 @@ def test_a_task_entry_with_no_worth_is_worth_its_groups_total() -> None:
     assert worth_of(plain, parse_task(task_text("{main: {each: 0.5}}"))) == Decimal("0.5")
 
 
+def test_a_groups_total_keeps_every_digit_of_its_weights() -> None:
+    long = "0.1234567890123456789012345678"
+    task = parse_task(task_text(f"{{small: {{pass: {long}, each: {long}}}, large: {{pass: 100}}}}"))
+
+    assert task.test_groups["small"].weight == Decimal("0.2469135780246913578024691356")
+    assert task.total_weight == Decimal("100.2469135780246913578024691356")
+
+
 def test_credit_is_a_value_name_or_relative_to_one() -> None:
     assert parse_task(task_text("{main: {each: 1}}", credit="fraction")).credit == "fraction"
     assert parse_task(task_text("{main: {each: 1}}", credit="{relative: time_ms}")).credit == (
