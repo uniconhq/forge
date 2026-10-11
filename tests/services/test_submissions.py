@@ -355,6 +355,20 @@ async def test_a_recovered_submission_consumes_the_uploads_its_own_files_point_a
     }
 
 
+async def test_a_submission_its_own_submitter_sends_again_is_recorded_as_theirs(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    used = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
+    await _lost(setup, acme, entered, used.id)
+
+    await submissions.submit(
+        setup, entered.session, entered.task, code(used.id), idempotency_key=KEY
+    )
+
+    [row] = await _gradings(setup)
+    assert row.submitted_by == entered.session.user_id
+
+
 async def test_of_two_uploads_of_one_file_a_recovered_submission_consumes_the_oldest(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
