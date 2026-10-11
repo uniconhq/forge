@@ -132,6 +132,7 @@ from forge.domain.errors import (
     PortError,
     RegistrationClosed,
     RegistrationRefused,
+    Unavailable,
 )
 from forge.domain.identity import User
 from forge.domain.ids import ContestId, WorkspaceId, new_id
@@ -157,6 +158,10 @@ the contest and the user id hashed by Postgres."""
 NO_SUCH_ENTRANT = "There is no such entrant in this contest."
 NOT_IN_ONE = "You have not entered this contest."
 ENDED = "Entrants cannot change once the contest has ended. Ask the organisers."
+ADDRESSES_UNREAD = (
+    "Unicon could not check your email addresses just now, so it cannot tell whether you may "
+    "register. Try again in a moment."
+)
 MEMBER_DAILY_MAX = 10
 """The most invites an entrant's members send in a day, together: a team
 finds its few people, and no contestant mails strangers through the
@@ -877,15 +882,20 @@ async def panel(
     else:
         invited = person.invited
         emails = await _emails_or_none(ctx, session.user_id, settings)
-        asks = registration.asks_code(rules_now, emails=emails, invited=invited)
+        asks = emails is not None and registration.asks_code(
+            rules_now, emails=emails, invited=invited
+        )
         try:
             _refuse_window(settings, ctx.now)
             _refuse_fixed(settings, ctx.now)
             if person.organises:
                 raise IsStaff("You have a role at this contest, so you cannot also enter it.")
-            if not asks:
+            if emails is None:
+                refused = Refusal(Unavailable.code, ADDRESSES_UNREAD)
+            elif not asks:
                 registration.qualify(rules_now, emails=emails, code=None, invited=invited)
-            await _refuse_full(ctx, contest, settings)
+            if refused is None:
+                await _refuse_full(ctx, contest, settings)
         except RegistrationRefused as refusal:
             refused = Refusal(refusal.code, refusal.detail)
     return Mine(
@@ -1225,14 +1235,14 @@ async def _emails(ctx: Context, user_id: int, settings: ContestDefinition) -> tu
 
 async def _emails_or_none(
     ctx: Context, user_id: int, settings: ContestDefinition
-) -> tuple[str, ...]:
+) -> tuple[str, ...] | None:
     """`_emails`, or none when the forge does not answer, for a panel that
-    says what it can rather than failing.
+    says so rather than failing, and never blames the person's addresses.
     """
     try:
         return await _emails(ctx, user_id, settings)
     except PortError:
-        return ()
+        return None
 
 
 async def _hold_people(ctx: Context, contest: ContestId, user_ids: Sequence[int]) -> None:

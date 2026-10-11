@@ -1051,3 +1051,20 @@ async def test_a_deleted_account_leaves_every_team_still_open_and_stays_in_one_f
     await account.delete(setup, await signed_in(setup, acme.fake, 21))
     async with setup.unit_of_work() as ctx:
         assert await entrants.member_ids(ctx, takers.id) == [21]
+
+
+async def test_the_panel_says_the_addresses_could_not_be_checked_when_the_forge_did_not_answer(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await write_contest(acme.fake, contest(ways="[{signup: {domains: [u.nus.edu]}}]"))
+
+    async def unanswered(user_id: int) -> tuple[str, ...]:
+        raise Unavailable("the forge did not answer")
+
+    monkeypatch.setattr(acme.fake.identity, "verified_emails", unanswered)
+
+    panel = await entrants.mine(setup, crowd["bob"], SPRING)
+
+    assert panel.can_register is False
+    assert panel.refused is not None and panel.refused.code == "forge_unavailable"
+    assert "addresses" in panel.refused.detail and "Try again" in panel.refused.detail
