@@ -50,7 +50,7 @@ from forge.domain.ids import PublicationId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.release import Extension, due_of, late_days
 from forge.domain.roles import contest_id_of, task_scope
-from forge.domain.scoring import ONE, Better, Scored, best_of, late_factor, score
+from forge.domain.scoring import ONE, Better, Scored, best_of, late_factor, rule_weight, score
 from forge.domain.showing import Graded, under
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
@@ -202,13 +202,20 @@ class Scorer:
         best = None
         if isinstance(graded.credit, Relative):
             best = await self._best(graded, graded.credit.relative)
+        worth: object = self.current.worth
+        entry = self.current.entry
+        if worth is not None and entry is not None and entry.worth is None:
+            # Worth its groups' total by default: the groups it is scored
+            # with, an earlier generation's included, so each group's
+            # numbers stay its points.
+            worth = sum((rule_weight(group) for group in graded.groups.values()), Fraction(0))
         return score(
             row.result or {},
             graded.tests,
             graded.groups,
             graded.credit,
             graded.measures,
-            worth=self.current.worth,
+            worth=worth,
             factor=late,
             best=best,
         )
