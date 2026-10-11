@@ -1169,7 +1169,7 @@ name: {_yaml_text(name)}
 workflow: unicon/classic@v2
 inputs:
   submission: {{label: Your solution}}
-  language: {{options: [python]}}
+  language: {{label: Language, options: [python]}}
   time_limit: 2
   memory_limit: 256
 test_groups:
@@ -1177,7 +1177,7 @@ test_groups:
 """
     return {
         TASK_FILE: task.encode(),
-        STATEMENT_FILE: b"Write the statement contestants read here.\n",
+        STATEMENT_FILE: b"Write the statement entrants read here.\n",
         f"{PUBLIC_FOLDER}.gitkeep": b"",
         f"{TESTS_FOLDER}main/1/input": b"1 2\n",
         f"{TESTS_FOLDER}main/1/answer": b"3\n",

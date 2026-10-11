@@ -1022,10 +1022,11 @@ def test_the_starter_task_is_the_formats() -> None:
     assert task.workflow == WorkflowRef("unicon", "classic", "v2")
     assert task.inputs == {
         "submission": {"label": "Your solution"},
-        "language": {"options": ["python"]},
+        "language": {"label": "Language", "options": ["python"]},
         "time_limit": 2,
         "memory_limit": 256,
     }
+    assert files["statement.md"] == b"Write the statement entrants read here.\n"
     assert list(task.test_groups) == ["main"]
     assert task.test_groups["main"].each == 100
     assert task.credit is None

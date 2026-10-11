@@ -173,7 +173,7 @@ async def test_a_task_page_gives_the_published_statement_caps_and_form(
     assert (page.submissions.max, page.submissions.rate) == (50, Rate(count=1, per=30))
     assert [(field.id, field.type, field.label, field.options) for field in page.inputs] == [
         ("submission", Type.FILE, "Your solution", None),
-        ("language", Type.ENUM, "language", ("python",)),
+        ("language", Type.ENUM, "Language", ("python",)),
     ]
 
 
