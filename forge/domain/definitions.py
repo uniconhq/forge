@@ -90,6 +90,7 @@ __all__ = [
     "starter_contest",
     "starter_task",
     "title_of",
+    "worth_of",
 ]
 
 CONTEST_FILE = "contest.yaml"
@@ -309,7 +310,6 @@ class ContestTask(Model):
     marks: Annotated[int, Field(strict=True, ge=1, le=10)] | None = None
 
 
-DEFAULT_WORTH = 100
 DEFAULT_LATE_PER_DAY = 1
 """The fraction a started late day takes off a task whose entry gives a
 `due` and no `late_per_day`: all of it, so a late submission earns nothing."""
@@ -648,6 +648,27 @@ class TaskDefinition(Model):
     def gives_points(self) -> bool:
         """Whether some group carries a rule weight, `W > 0`."""
         return any(group.weight > 0 for group in self.test_groups.values())
+
+    @property
+    def total_weight(self) -> int | Decimal:
+        """`W`, every group's rule weight summed: what the task is worth in a
+        contest whose entry gives no `worth`, so a group's numbers are its
+        points unless the contest says otherwise.
+        """
+        total: int | Decimal = 0
+        for group in self.test_groups.values():
+            total += group.weight
+        return total
+
+
+def worth_of(entry: ContestTask, definition: TaskDefinition) -> int | Decimal | None:
+    """The most points a task gives in its contest: the entry's `worth`, or
+    the task's groups' total when the entry gives none, and none on a task
+    that gives no points.
+    """
+    if not definition.gives_points:
+        return None
+    return entry.worth if entry.worth is not None else definition.total_weight
 
 
 def _is_public(value: object) -> bool:

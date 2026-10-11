@@ -19,7 +19,6 @@ from decimal import Decimal
 
 from forge.domain.definitions import (
     CONTEST_FILE,
-    DEFAULT_WORTH,
     STATEMENT_FILE,
     TASK_FILE,
     ContestDefinition,
@@ -27,6 +26,7 @@ from forge.domain.definitions import (
     TaskDefinition,
     parse_contest,
     parse_task,
+    worth_of,
 )
 from forge.domain.errors import NotFound, PortError
 from forge.domain.identity import PLATFORM
@@ -72,12 +72,13 @@ class PublishedTask:
     @property
     def worth(self) -> int | Decimal | None:
         """The most points the task gives in the contest: its entry's `worth`,
-        100 on a task that gives points when the entry says none, and none on
-        a task that gives no points or that the contest does not list.
+        its groups' total on a task that gives points when the entry says
+        none, and none on a task that gives no points or that the contest
+        does not list.
         """
-        if self.entry is None or not self.definition.gives_points:
+        if self.entry is None:
             return None
-        return self.entry.worth if self.entry.worth is not None else DEFAULT_WORTH
+        return worth_of(self.entry, self.definition)
 
 
 async def contest(ctx: Context, contest: ContestId) -> ContestDefinition:

@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from forge.domain.content import Edit
 from forge.domain.definitions import Rate
 from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM
@@ -24,7 +25,8 @@ from forge.domain.release import Closed
 from forge.domain.roles import Role, Scope
 from forge.domain.types import Type
 from forge.runtime.setup import Setup
-from forge.services import contest_home, contestants, contests
+from forge.services import contest_home, contestants, contests, publications
+from forge.services.publications import Published
 from forge.testing import FakeClock, register_contestant
 from tests.services.conftest import (
     ACME,
@@ -181,6 +183,23 @@ async def test_a_task_page_reads_the_caps_its_publication_gives(
 
     assert (page.label, page.worth, page.due, page.closes) == ("A", 100, None, at(15))
     assert (page.submissions.max, page.submissions.rate) == (5, Rate(count=2, per=60))
+
+
+async def test_a_task_its_entry_gives_no_worth_is_worth_its_groups_total(
+    setup: Setup, acme: Acme, published: list[TaskId]
+) -> None:
+    diff = TaskId("acme/spring/diff")
+    head = await acme.fake.content.list_files(PLATFORM, diff)
+    current = await acme.fake.content.read_file(PLATFORM, diff, "task.yaml")
+    seven_and_three = current.content.replace(b"{each: 100}", b"{each: 7, pass: 3}")
+    edit = Edit(seven_and_three, head.tokens["task.yaml"])
+    saved = await publications.save(setup, acme.ada, diff, {"task.yaml": edit})
+    assert isinstance(saved, Published)
+    bob = await signed_in(setup, acme.fake, 8)
+
+    page = await contest_home.task(setup, bob, diff)
+
+    assert (page.label, page.worth) == ("A", 10)
 
 
 @pytest.mark.parametrize("name", ["later", "unsaved", "unlisted", "nothing"])

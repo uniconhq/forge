@@ -47,7 +47,6 @@ from decimal import Decimal
 from forge.domain.contest_entries import Unlisted, with_entry
 from forge.domain.definitions import (
     CONTEST_FILE,
-    DEFAULT_WORTH,
     TASK_FILE,
     ContestDefinition,
     ContestTask,
@@ -75,7 +74,7 @@ log = get_logger(__name__)
 
 LIST_TRIES = 3
 POINTS_KEPT = timedelta(hours=1)
-"""How long this process keeps whether a publication gives points: a
+"""How long this process keeps a publication's total rule weight: a
 publication never changes, so the time only bounds what is held."""
 
 
@@ -98,7 +97,7 @@ class TaskState:
 class Timeline:
     """A task's timeline in its contest, from its entry in `contest.yaml`,
     each time at its default where the entry gives none: `worth`, the most
-    points it gives, 100 unless the entry says, and none on a task whose
+    points it gives, its groups' total unless the entry says, and none on a task whose
     latest publication gives no points or that has none; `release_at`, the
     contest's start unless the entry says; `due`, after which a submission
     is late, and `late_per_day`, the fraction a started late day takes off,
@@ -291,9 +290,9 @@ async def _timeline(
     task: TaskId,
     latest: Publication | None,
 ) -> Timeline:
-    gives_points = latest is not None and await _gives_points(ctx, task, latest)
+    total = None if latest is None else await _total_weight(ctx, task, latest)
     return Timeline(
-        worth=(entry.worth if entry.worth is not None else DEFAULT_WORTH) if gives_points else None,
+        worth=None if total is None else entry.worth if entry.worth is not None else total,
         release_at=settings.release_of(entry),
         due=due_of(settings, entry, NONE),
         late_per_day=settings.late_per_day_of(entry),
@@ -301,19 +300,20 @@ async def _timeline(
     )
 
 
-async def _gives_points(ctx: Context, task: TaskId, latest: Publication) -> bool:
-    """Whether the task as `latest` froze it gives points, read once per
-    process for each publication.
+async def _total_weight(ctx: Context, task: TaskId, latest: Publication) -> int | Decimal | None:
+    """The task's groups' total rule weight as `latest` froze it, none when
+    it gives no points, read once per process for each publication.
     """
 
-    async def read() -> bool:
+    async def read() -> int | Decimal | None:
         found = await ctx.forge.content.read_file(PLATFORM, task, TASK_FILE, at=latest.version)
         try:
-            return parse_task(found.content).gives_points
+            definition = parse_task(found.content)
         except InvalidDefinition:
-            return False
+            return None
+        return definition.total_weight if definition.gives_points else None
 
-    return await ctx.memo.remembered(f"tasks.gives_points.{latest.id}", POINTS_KEPT, read)
+    return await ctx.memo.remembered(f"tasks.total_weight.{latest.id}", POINTS_KEPT, read)
 
 
 @action

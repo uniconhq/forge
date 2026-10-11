@@ -85,7 +85,6 @@ from forge.domain.content import (
 from forge.domain.definitions import (
     ADMIN_ONLY_FILES,
     CONTEST_FILE,
-    DEFAULT_WORTH,
     TASK_FILE,
     ContestDefinition,
     Group,
@@ -96,6 +95,7 @@ from forge.domain.definitions import (
     admin_only_changes,
     parse_contest,
     parse_task,
+    worth_of,
 )
 from forge.domain.errors import (
     AdminOnly,
@@ -403,9 +403,9 @@ async def _report(
         return []
     entry = contest.entry(name)
     found: builtins.list[str] = []
-    if entry is not None and definition.gives_points:
-        worth = exact(entry.worth if entry.worth is not None else DEFAULT_WORTH) or ZERO
-        most = group_max(definition.test_groups, worth)
+    worth = worth_of(entry, definition) if entry is not None else None
+    if worth is not None:
+        most = group_max(definition.test_groups, exact(worth) or ZERO)
         found.append(
             "Each group's most points: "
             + ", ".join(f"{group} {written(points)}" for group, points in most.items())

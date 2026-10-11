@@ -34,6 +34,7 @@ from forge.domain.definitions import (
     starter_contest,
     starter_task,
     title_of,
+    worth_of,
 )
 from forge.domain.errors import ServiceError
 from forge.domain.workflow_definition import WorkflowRef
@@ -765,6 +766,17 @@ def test_credit_on_a_task_with_no_rule_weight_is_refused() -> None:
         {"path": "credit", "message": "No group has a rule weight, so credit scores nothing."}
     ]
     assert not parse_task(task_text("{samples: {}}")).gives_points
+
+
+def test_a_task_entry_with_no_worth_is_worth_its_groups_total() -> None:
+    task = parse_task(task_text("{samples: {}, small: {pass: 3}, large: {each: 2, pass: 5}}"))
+    contest = parse_contest(HEAD + "tasks: [{id: a}, {id: b, worth: 50}]\n")
+    plain, scaled = contest.tasks
+
+    assert task.total_weight == 10
+    assert (worth_of(plain, task), worth_of(scaled, task)) == (10, 50)
+    assert worth_of(plain, parse_task(task_text("{samples: {}}"))) is None
+    assert worth_of(plain, parse_task(task_text("{main: {each: 0.5}}"))) == Decimal("0.5")
 
 
 def test_credit_is_a_value_name_or_relative_to_one() -> None:
