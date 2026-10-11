@@ -111,7 +111,8 @@ class Change:
     """One entry of a place's history: the version it made, who made it, what
     they said about it and when. `author` is the username of `author_id`,
     which the history names whether or not they still hold a role there, and
-    none when the forge knows no such account or the change has no author.
+    none when the forge knows no such account, the change has no author, or
+    the platform made it, which is no person (a new task's first files).
     """
 
     version: VersionId

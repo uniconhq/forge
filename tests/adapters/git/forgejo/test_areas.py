@@ -27,7 +27,7 @@ from forge.domain.names import EntrantOwner, OrgProfile
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
 from forge.domain.workflows import Visibility
-from tests.adapters.conftest import Recorder, ok
+from tests.adapters.conftest import CONFIG, Recorder, ok
 
 U7 = EntrantOwner(uuid.UUID(int=7)).segment
 U8 = EntrantOwner(uuid.UUID(int=8)).segment
@@ -381,6 +381,31 @@ async def test_one_files_history_is_listed_by_its_path_on_the_default_branch(
     )
     (asked,) = [seen for seen in recorder.seen if seen.url.path.endswith("/commits")]
     assert (asked.url.params["path"], asked.url.params["sha"]) == ("public/hint.txt", "main")
+
+
+async def test_a_change_the_platform_made_names_no_author(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.sum.task/commits",
+        ok(
+            [
+                {
+                    "sha": "commit-1",
+                    "author": {"id": 2, "login": CONFIG.platform_account},
+                    "commit": {
+                        "message": "Make the task\n",
+                        "committer": {"date": "2026-10-10T11:41:57Z"},
+                    },
+                }
+            ]
+        ),
+    )
+
+    (change,) = await forgejo.content.history(AsUser(7, _credential()), TaskId("acme/spring/sum"))
+
+    assert (change.author_id, change.author) == (None, None)
 
 
 async def test_creating_a_file_that_exists_is_a_conflict(
