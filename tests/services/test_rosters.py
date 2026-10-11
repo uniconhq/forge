@@ -15,6 +15,7 @@ the request that changes it, one count of submissions, one extension, and
 one desk of questions.
 """
 
+import asyncio
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -43,6 +44,7 @@ from forge.domain.errors import (
     RegistrationClosed,
     RosterLocked,
     TaskClosed,
+    WrongStatus,
 )
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.invites import Grant, InviteStatus
@@ -707,7 +709,8 @@ async def test_an_organisers_invite_into_an_entrant_is_an_organisers_change_and_
     setup: Setup, acme: Acme, crowd: dict[str, Session], clock: FakeClock, manager: Organiser
 ) -> None:
     await write_contest(
-        acme.fake, contest(most=3, ways="[{invite: {approval: manual}}, {signup: {approval: auto}}]")
+        acme.fake,
+        contest(most=3, ways="[{invite: {approval: manual}}, {signup: {approval: auto}}]"),
     )
     adders = await entrants.register(setup, crowd["bob"], SPRING, name="Adders")
     assert adders.status is Status.APPROVED
@@ -755,7 +758,9 @@ async def test_an_organisers_invite_is_accepted_only_while_the_contest_is_open(
         assert await _invite_status(setup, manager, invite.id) is InviteStatus.PENDING
     clock.set(START + timedelta(hours=1))
     for state in ("archived", "draft"):
-        await write_contest(acme.fake, contest(most=3).replace("state: published", f"state: {state}"))
+        await write_contest(
+            acme.fake, contest(most=3).replace("state: published", f"state: {state}")
+        )
         for person, invite in ((crowd["dan"], alone), (crowd["carol"], into)):
             with pytest.raises(RegistrationClosed):
                 await invites.accept(setup, person, invite.id)
@@ -812,7 +817,9 @@ async def test_a_submit_reads_its_entrant_again_once_it_holds_it(
     monkeypatch.setattr(entrants, "hold_for_reading", taken_away_first)
 
     with pytest.raises(TaskClosed):
-        await submissions.submit(setup, bob, sum_task, code(made.id), idempotency_key="key-0001-race")
+        await submissions.submit(
+            setup, bob, sum_task, code(made.id), idempotency_key="key-0001-race"
+        )
 
 
 async def test_a_team_sends_ten_invites_a_day_of_its_own_and_never_the_orgs(
@@ -838,3 +845,27 @@ async def test_a_team_sends_ten_invites_a_day_of_its_own_and_never_the_orgs(
     await invites.create(setup, manager, Scope("acme", "spring"), Grant.CONTESTANT, username="dan")
     clock.advance(timedelta(days=1, seconds=1))
     await entrants.invite(setup, bob, SPRING, email="one-more@example.test")
+
+
+async def test_the_last_one_out_and_an_accept_of_the_entrants_invite_take_turns(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bob, carol = crowd["bob"], crowd["carol"]
+    await entrants.register(setup, bob, SPRING, name="Adders")
+    asked = await invites_of(setup, bob, "carol")
+    closing = entrants._close
+    accepting: list[asyncio.Future[Any]] = []
+
+    async def slow_close(ctx: Any, workspace: Any, user_ids: Any) -> None:
+        # bob's leave is under way; carol accepts the entrant's invite now.
+        accepting.append(asyncio.ensure_future(invites.accept(setup, carol, asked.id)))
+        await asyncio.sleep(1.0)
+        await closing(ctx, workspace, user_ids)
+
+    monkeypatch.setattr(entrants, "_close", slow_close)
+
+    await entrants.leave(setup, bob, SPRING)
+    (accepted,) = await asyncio.gather(*accepting, return_exceptions=True)
+
+    assert isinstance(accepted, WrongStatus), accepted
+    assert await _mine(setup, carol) is None

@@ -88,9 +88,11 @@ leaving behind an entrant whose results would have nobody
 
 A change takes, in this order, the org's lock on role changes when it reads
 roles, the invite it acts on, an advisory lock on each person it moves in
-the order of their ids, the contest's places, then the entrant rows it
-touches in the order of their ids, so two changes of one person or one
-entrant happen one after another and a removal never passes a join; a
+the order of their ids, the invites still waiting into an entrant it may
+leave empty, which ending it withdraws, the contest's places, then the
+entrant rows it touches in the order of their ids, so two changes of one
+person or one entrant happen one after another, a removal never passes a
+join, and no change holds an entrant while it waits for an invite; a
 submit holds its entrant's row for reading, so no change of who is in it
 passes the submit.
 """
@@ -355,6 +357,7 @@ async def invite(
             "Everyone enters this contest alone, so there is no team to invite anyone into."
         )
     target = await invites.target(ctx, username, email)
+    await roles.one_change_at_a_time(ctx, contest_scope(contest).org)
     row = await _held_own(ctx, contest, session.user_id)
     registration.refuse_undecidable(Status(row.status), registration.REGISTERED, "joined")
     rules.refuse_locked(settings, ctx.now, submitted=await submitted(ctx, row))
@@ -426,6 +429,7 @@ async def leave(ctx: Context, session: Session, contest: ContestId) -> None:
     member = await membership(ctx, contest, session.user_id)
     if member is None:
         raise NotFound(NOT_IN_ONE)
+    await _hold_invites_into(ctx, [member.entrant_id])
     (row,) = await _hold_entrants(ctx, contest, [member.entrant_id])
     registration.refuse_undecidable(Status(row.status), registration.REGISTERED, "left")
     rules.refuse_locked(settings, ctx.now, submitted=await submitted(ctx, row))
@@ -607,6 +611,7 @@ async def remove_member(
     """
     settings = await _managed(ctx, organiser, contest)
     await _hold_people(ctx, contest, [user_id])
+    await _hold_invites_into(ctx, [entrant])
     (row,) = await _hold_entrants(ctx, contest, [entrant])
     member = await membership(ctx, contest, user_id)
     if member is None or member.entrant_id != row.id:
@@ -633,6 +638,7 @@ async def move_member(
     """
     settings = await _managed(ctx, organiser, contest)
     await _hold_people(ctx, contest, [user_id])
+    await _hold_invites_into(ctx, [entrant])
     held = {row.id: row for row in await _hold_entrants(ctx, contest, [entrant, to])}
     source, target = held[entrant], held[to]
     member = await membership(ctx, contest, user_id)
@@ -669,6 +675,7 @@ async def delete(
     """
     await _managed(ctx, organiser, contest)
     await _hold_people(ctx, contest, await member_ids(ctx, entrant))
+    await _hold_invites_into(ctx, [entrant])
     (row,) = await _hold_entrants(ctx, contest, [entrant])
     if await submitted(ctx, row):
         raise EntrantHasSubmissions(
@@ -707,6 +714,8 @@ async def take_place(
     if current is not None and current.entrant_id == invite.entrant_id:
         raise InEntrant("You are in this team already.")
     wanted = [invite.entrant_id, *([current.entrant_id] if current is not None else [])]
+    if current is not None:
+        await _hold_invites_into(ctx, [current.entrant_id])
     held = {row.id: row for row in await _hold_entrants(ctx, contest, wanted)}
     target = held[invite.entrant_id]
     registration.refuse_undecidable(Status(target.status), registration.REGISTERED, "joined")
@@ -1186,6 +1195,24 @@ async def _hold_places(ctx: Context, contest: ContestId) -> None:
     await ctx.db.execute(
         text("SELECT pg_advisory_xact_lock(:space, hashtext(:contest))"),
         {"space": PLACES_LOCK, "contest": contest},
+    )
+
+
+async def _hold_invites_into(ctx: Context, entrants: Sequence[uuid.UUID]) -> None:
+    """Hold every invite still waiting into the entrants, in the order of
+    their ids, until the unit of work ends: a change that may leave an
+    entrant empty, which withdraws them (`_end`), takes them before the
+    entrant, as accepting or withdrawing one does, so the two never wait on
+    each other.
+    """
+    await ctx.db.execute(
+        select(InviteRow.id)
+        .where(
+            InviteRow.entrant_id.in_(sorted(set(entrants))),
+            InviteRow.status == InviteStatus.PENDING,
+        )
+        .order_by(InviteRow.id)
+        .with_for_update()
     )
 
 
