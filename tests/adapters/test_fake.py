@@ -574,3 +574,10 @@ async def test_the_fake_refuses_to_delete_an_org_with_a_place_or_an_account_in_i
 
     assert fake.state.orgs == {}
     assert fake.state.repos == {}
+
+
+async def test_an_account_whose_email_is_taken_is_a_conflict(fake: FakeForge) -> None:
+    await fake.identity.create_user("zed", "z@unicon.invalid", "pw", must_change_password=True)
+
+    with pytest.raises(Conflict):
+        await fake.identity.create_user("bob", "A@unicon.invalid", "pw", must_change_password=True)

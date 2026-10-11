@@ -153,7 +153,9 @@ class _ExactConstructor(SafeConstructor):
         text = str(self.construct_scalar(node))
         if text.startswith(("0o", "0x")):
             return int(text[2:], 8 if text[1] == "o" else 16)
-        return int(text, 10)
+        # By way of a Decimal, which Python's limit on turning more than 4300
+        # digits of text into an int does not cover.
+        return int(Decimal(text))
 
 
 _ExactConstructor.add_constructor(_TAG + "float", _ExactConstructor.construct_exact_float)

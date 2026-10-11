@@ -13,14 +13,13 @@ import pytest
 
 from forge.domain.definitions import Group, Show
 from forge.domain.grading import GradingStatus
-from forge.domain.scoring import Better, Measure, Points, score
+from forge.domain.scoring import Better, Measure, Points, group_of, score
 from forge.domain.showing import (
     NOTHING_SEALED,
     Graded,
     GroupShown,
     Sealed,
     SubmissionState,
-    group_of,
     shown,
     told,
     under,
@@ -181,7 +180,10 @@ def test_a_group_a_sealed_stop_kept_from_running_reads_as_hidden_until_the_revea
     assert after.groups[1] == GroupShown("second", Show.AFTER_CLOSE, None, (), None, ran=False)
 
 
-def test_a_held_stop_reads_the_same_as_a_run_that_was_not_stopped_until_the_reveal() -> None:
+def test_a_held_stop_holds_back_every_group_its_points_and_its_folds_until_the_reveal() -> None:
+    """Showing alone, on groups T5 would refuse beside a sealed step: a held
+    stop shows nothing of any group until the reveal, where the same groups
+    of a run not stopped show what their `show` allows."""
     groups = {
         "open": Group.model_validate({"each": 1, "show": "always"}),
         "first": Group.model_validate({"each": 1, "show": "verdict"}),

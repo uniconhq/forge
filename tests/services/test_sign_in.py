@@ -4,6 +4,7 @@ nonce is refused.
 """
 
 from dataclasses import replace
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -170,3 +171,23 @@ async def test_a_credential_the_forge_refuses_ends_the_session_whatever_the_call
 
     with pytest.raises(SessionExpired):
         await identity.current(session.id, setup=setup)
+
+
+async def test_an_answer_whose_identity_token_carries_no_nonce_is_refused(
+    setup: Setup, ctx: Context, fake: FakeForge, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sign-in asked for a nonce, so an identity token without one is no
+    answer to it (OpenID Connect Core, 3.1.3.7)."""
+    started = sign_in.start("/", setup=setup)
+    code, state = _answer(fake, started)
+    complete = fake.identity.complete_sign_in
+
+    async def without_nonce(**kwargs: Any) -> Any:
+        return replace(await complete(**kwargs), nonce=None)
+
+    monkeypatch.setattr(fake.identity, "complete_sign_in", without_nonce)
+
+    with pytest.raises(SignInInvalid):
+        await sign_in.complete(
+            ctx, code=code, state=state, attempt=started.attempt, ip=None, user_agent=None
+        )

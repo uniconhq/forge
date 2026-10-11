@@ -43,7 +43,16 @@ from typing import Any
 
 from forge.domain.definitions import Group, Relative, Show
 from forge.domain.grading import GradingStatus
-from forge.domain.scoring import Measure, Points, Scored, Seen, TestScore, points_seen
+from forge.domain.scoring import (
+    Measure,
+    Points,
+    Scored,
+    Seen,
+    TestScore,
+    first_failed,
+    group_of,
+    points_seen,
+)
 
 ACCEPTED = "accepted"
 
@@ -173,10 +182,6 @@ def told(status: GradingStatus) -> SubmissionState:
     return _TOLD[status]
 
 
-def group_of(test: str) -> str:
-    return test.split("/", 1)[0]
-
-
 def shown(
     result: Mapping[str, Any],
     groups: Mapping[str, Group],
@@ -286,13 +291,10 @@ def _row(
 
 
 def _outcome(tests: Sequence[Mapping[str, Any]]) -> str:
-    return next((str(row["outcome"]) for row in tests if row["outcome"] != ACCEPTED), ACCEPTED)
+    return first_failed(str(row["outcome"]) for row in tests) or ACCEPTED
 
 
 def _viewed(stopped: str | None, groups: Sequence[GroupShown]) -> str | None:
     if stopped is not None:
         return stopped
-    outcomes = [group.outcome for group in groups if group.outcome is not None]
-    if not outcomes:
-        return None
-    return next((outcome for outcome in outcomes if outcome != ACCEPTED), ACCEPTED)
+    return first_failed(group.outcome for group in groups)

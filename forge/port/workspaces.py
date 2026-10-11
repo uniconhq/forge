@@ -32,8 +32,9 @@ class WorkspacePort(Protocol):
         self, contest: ContestId, owner: WorkspaceOwner, member_ids: Sequence[int]
     ) -> WorkspaceId:
         """Make the owner's workspace in the contest with its desk, which the
-        contest's organisers read, and give the members write access to the
-        desk, as the platform. What is there already is kept and only what
+        contest's organisers read, and give the members read access to the
+        desk, as the platform: everything they write there goes through the
+        platform. What is there already is kept and only what
         is missing is made, so this can be run again.
         """
         ...
@@ -120,8 +121,10 @@ class WorkspacePort(Protocol):
     async def download(self, as_: Identity, submission: SubmissionId, path: str) -> Door:
         """Where one file of a submission is read whole, at the version it
         was made with, and what to present there as `as_`, for the proxy to
-        fetch it from and stream to the person. Nothing is called and nothing
-        is read: the forge checks `as_` may read it when the proxy asks.
+        fetch it from and stream to the person. The submission's version is
+        read as `as_`, to name its commit; the file itself is not, and the
+        forge checks `as_` may read it when the proxy asks. `NotFound` for a
+        submission that is not there.
         """
         ...
 

@@ -377,25 +377,34 @@ async def owned(
 ) -> dict[uuid.UUID, UploadRow]:
     """The uploads among `ids` that the person made for the task, held until
     the unit of work ends. One made by someone else, for another task, or
-    not at all is left out.
+    not at all is left out. They are read `OWNED_AT_ONCE` at a time, in id
+    order, so a submit naming more ids than Postgres takes parameters in one
+    statement is answered rather than failing.
     """
-    if not ids:
-        return {}
-    rows = (
-        await ctx.db.execute(
-            select(UploadRow)
-            .where(
-                UploadRow.id.in_(list(ids)),
-                UploadRow.owner_user_id == user_id,
-                UploadRow.task_id == task,
-                UploadRow.purpose == UploadPurpose.SUBMISSION,
+    found: dict[uuid.UUID, UploadRow] = {}
+    wanted = sorted(set(ids))
+    for start in range(0, len(wanted), OWNED_AT_ONCE):
+        rows = (
+            await ctx.db.execute(
+                select(UploadRow)
+                .where(
+                    UploadRow.id.in_(wanted[start : start + OWNED_AT_ONCE]),
+                    UploadRow.owner_user_id == user_id,
+                    UploadRow.task_id == task,
+                    UploadRow.purpose == UploadPurpose.SUBMISSION,
+                )
+                .order_by(UploadRow.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
-            .order_by(UploadRow.id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).scalars()
-    return {row.id: row for row in rows}
+        ).scalars()
+        found.update((row.id, row) for row in rows)
+    return found
+
+
+OWNED_AT_ONCE = 10_000
+"""How many upload ids one read names, well under the 65,535 parameters
+Postgres takes in one statement."""
 
 
 def forge_failure(exc: PortError, event: str, **fields: str) -> PortError:

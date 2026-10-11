@@ -712,3 +712,16 @@ async def test_places_are_made_a_few_at_a_time_in_turn() -> None:
 
     assert most == submitters.PLACES_AT_ONCE
     assert finished == list(range(10))
+
+
+async def test_more_upload_ids_than_one_statement_takes_are_read_in_turn(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    """A submit may name more ids than Postgres takes parameters at once."""
+    mine = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
+    ids = [uuid.uuid4() for _ in range(70_000)] + [mine.id]
+
+    async with setup.unit_of_work() as ctx:
+        found = await uploads.owned(ctx, entered.session.user_id, entered.task, ids)
+
+    assert list(found) == [mine.id]

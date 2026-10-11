@@ -21,7 +21,7 @@ import uuid
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, text, update
 
 import forge.api
 from forge.adapters.fakes import FakeForge
@@ -175,6 +175,25 @@ async def test_an_action_that_has_written_keeps_its_connection(
             raise Conflict("refused after writing")
 
     assert (await identity.current(session.id, setup=setup)).id == session.id
+
+
+@pytest.mark.parametrize("lock", ["advisory", "for update"])
+async def test_an_action_holding_a_lock_keeps_its_connection(
+    setup: Setup, ctx: Context, fake: FakeForge, lock: str
+) -> None:
+    """A lock a service takes before a slow call, the contest's rules or a
+    row, is held until the unit of work ends: letting go would drop it."""
+    session = await _signed_in(ctx, fake)
+
+    async with setup.unit_of_work() as own:
+        if lock == "advisory":
+            await own.db.execute(text("SELECT pg_advisory_xact_lock(1, 2)"))
+        else:
+            await own.db.execute(
+                select(SessionRow.id).where(SessionRow.id == session.id).with_for_update()
+            )
+        await own.let_go()
+        assert own.db.in_transaction()
 
 
 async def test_a_sign_in_sweeps_the_sessions_that_ended_long_ago(

@@ -231,7 +231,11 @@ class Repos:
             token = expected.get(path)
             if content is None:
                 if token is None:
-                    raise NotFound(f"{path} is removed only with the version it was read at")
+                    # No token says the file is not there: one that is has
+                    # moved since, as the port and the fake say.
+                    if await self._exists(as_, owner, name, path):
+                        raise Conflict(f"{path} has changed since it was read")
+                    raise NotFound(f"{path} is not there to remove")
                 operations.append({"operation": "delete", "path": path, "sha": str(token)})
             elif token is None:
                 operations.append(
@@ -269,21 +273,30 @@ class Repos:
         self, as_: Identity, owner: str, name: str, path: str, *, at: str | None = None
     ) -> File:
         params = {"ref": at} if at else {}
-        entry = json_of(
+        entry: object = (
             await self._http.call(
                 as_,
                 "GET",
                 f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents/{file_path(path)}",
                 params=params,
             )
-        )
-        if entry.get("type") != "file":
+        ).json()
+        # A folder answers a list of its entries, which is no file.
+        if not isinstance(entry, dict) or entry.get("type") != "file":
             raise NotFound(f"{path} is not a file")
-        return File(
-            path=path,
-            content=base64.b64decode(entry.get("content") or ""),
-            token=ConflictToken(str(entry["sha"])),
-        )
+        content = base64.b64decode(entry.get("content") or "")
+        size = entry.get("size")
+        if isinstance(size, int) and len(content) != size:
+            # Past its largest inline blob (10 MiB by default) Forgejo answers
+            # `content` empty with the right `size`, and so does its blobs
+            # endpoint. The raw endpoint reads the file whole as the commit the
+            # answer names holds it, and a read still short is an error, never
+            # the file: saved back, it would empty it.
+            commit = entry.get("last_commit_sha") or at or DEFAULT_BRANCH
+            content = await self.read_blob(as_, owner, name, path, at=str(commit), max_size=size)
+            if len(content) != size:
+                raise Unavailable(f"{path} came back as {len(content)} of its {size} bytes")
+        return File(path=path, content=content, token=ConflictToken(str(entry["sha"])))
 
     async def media_door(self, as_: Identity, owner: str, name: str, path: str, *, at: str) -> Door:
         """Where one file's bytes at a version are read whole, big files
@@ -356,13 +369,16 @@ class Repos:
     async def tree(
         self, as_: Identity, owner: str, name: str, path: str = ""
     ) -> tuple[TreeEntry, ...]:
-        entries = list_of(
+        entries: object = (
             await self._http.call(
                 as_,
                 "GET",
                 f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents/{file_path(path)}",
             )
-        )
+        ).json()
+        # A file answers one entry of its own, which is no folder.
+        if not isinstance(entries, list):
+            raise NotFound(f"{path} is not a folder")
         return tuple(
             TreeEntry(
                 path=str(entry["path"]),

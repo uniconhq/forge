@@ -7,19 +7,8 @@ platform at, and writes its log straight there; the platform only reads what
 arrived.
 """
 
-from dataclasses import dataclass
 from datetime import timedelta
 from typing import Protocol
-
-
-@dataclass(frozen=True, slots=True)
-class Measured:
-    """What arrived at a key: its size in bytes and the SHA-256 of its
-    content.
-    """
-
-    size: int
-    sha256: bytes
 
 
 class ObjectStore(Protocol):
