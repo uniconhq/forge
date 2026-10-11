@@ -41,6 +41,7 @@ from forge.domain.definitions import (
     CONTEST_FILE,
     ContestDefinition,
     admin_only_changes,
+    admin_only_refusal,
     parse_contest,
 )
 from forge.domain.errors import AdminOnly, NotFound, PortError
@@ -190,11 +191,10 @@ async def write(
             keys = admin_only_changes("contest", before, content)
             if keys:
                 log.info("files.refused", place=place, keys=keys, user_id=organiser.user.id)
-                raise AdminOnly(
-                    f"Only an admin of {scope.name} may change {', '.join(keys)}.", keys=keys
-                )
+                raise AdminOnly(admin_only_refusal(scope.name, keys), keys=keys)
         await timelines.hold_rules(ctx, contest)
-        problems = await timelines.check_contest(ctx, contest, _parsed(before), after)
+        standing = await _last_read(ctx, organiser, contest, before)
+        problems = await timelines.check_contest(ctx, contest, standing, after)
         checked = await boards.check_contest(ctx, contest, after)
         problems += checked.problems
         notes = checked.notes
@@ -248,10 +248,39 @@ async def rollback(
     return written
 
 
-def _parsed(content: bytes | None) -> ContestDefinition | None:
-    """The contest's settings as they stood, or none when they did not read,
-    which leaves nothing for a move to be checked against.
+SETTINGS_LOOKED_BACK = 50
+"""How many earlier versions of `contest.yaml` a save looks back through for
+settings that read, when the ones it replaces do not."""
+
+
+async def _last_read(
+    ctx: Context, organiser: Organiser, contest: ContestId, before: bytes | None
+) -> ContestDefinition | None:
+    """The contest's settings a save is checked against (C2, #438): the
+    ones it replaces, or, when those do not read, the latest earlier
+    version's that do, since what entrants already have does not depend on
+    whether yesterday's file reads; none for a contest whose settings never
+    read, or a new file.
     """
+    found = _parsed(before)
+    if found is not None or before is None:
+        return found
+    changes = await ctx.forge.content.history(organiser.identity, contest, CONTEST_FILE)
+    for change in changes[1 : SETTINGS_LOOKED_BACK + 1]:
+        try:
+            older = await ctx.forge.content.read_file(
+                organiser.identity, contest, CONTEST_FILE, at=change.version
+            )
+        except NotFound:
+            continue
+        found = _parsed(older.content)
+        if found is not None:
+            return found
+    return None
+
+
+def _parsed(content: bytes | None) -> ContestDefinition | None:
+    """The contest's settings as they stood, or none when they did not read."""
     if content is None:
         return None
     try:

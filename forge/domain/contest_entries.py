@@ -3,10 +3,10 @@
 comments and layout included.
 
 The entry is `{id: <task>}`: the task's label is its place in the list, and
-its worth the default 100 once it gives points (TASK-FORMAT.md section 1.1).
-In a contest already published, the entry also sets `release_at` and
-`closes` at the contest's `end`, so work in progress shows nothing until the
-organisers move them. It goes at the end of the list: a `tasks: []`
+its worth by default its groups' total once it gives points
+(TASK-FORMAT.md section 1.1). In a contest already published, the entry also
+sets `release_at` and `closes` at the contest's `end`, so work in progress
+shows nothing until the organisers move them. It goes at the end of the list: a `tasks: []`
 becomes a list of one, a block list gets one more item at the indent its
 items already use, and a file with no `tasks` key gets one at the end. A
 list written in flow style with items in it, `tasks: [{id: a, ...}]`, is

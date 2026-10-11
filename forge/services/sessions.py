@@ -115,9 +115,9 @@ async def check(ctx: Context, session_id: uuid.UUID, *, touch: bool = True) -> t
         )
     ).one_or_none()
     if row is None:
-        raise Unauthenticated("No session.")
+        raise Unauthenticated("You are not signed in. Sign in to continue.")
     if is_expired(_times(row), now, ctx.settings.session_idle_ttl):
-        raise SessionExpired("This session has ended.")
+        raise SessionExpired("Your session has ended. Sign in again.")
     if touch and needs_touch(row.last_seen_at, now):
         ctx.after_end(_touch(session_id, now))
     return _session(row), refresh_due(row.credential_expires_at, now)
@@ -142,7 +142,7 @@ async def credential_for(ctx: Context, session_id: uuid.UUID) -> Credential:
     """
     stored = await _stored(ctx, session_id)
     if stored.expires_at <= ctx.now:
-        raise Unavailable("The forge did not answer. Try again in a moment.")
+        raise Unavailable("The server did not answer. Try again in a moment.")
     return _decrypt(stored.credential, ctx.settings)
 
 
@@ -175,7 +175,7 @@ async def keep_fresh(setup: ActionSetup, session_id: uuid.UUID) -> None:
                 return
             log.info("session.credential_refused", session=str(session_id), reason=exc.detail)
             await _end(setup, session_id)
-            raise SessionExpired("Sign in again to keep working at the forge.") from exc
+            raise SessionExpired("Your session has ended. Sign in again to keep working.") from exc
         await _store(setup, session_id, was=stored.credential, issued=issued)
 
 
@@ -189,7 +189,7 @@ async def revoke(ctx: Context, session_id: uuid.UUID, *, owner: int | None = Non
         statement = statement.where(SessionRow.user_id == owner)
     revoked = await ctx.db.execute(statement)
     if owner is not None and _rows_touched(revoked) == 0:
-        raise NotFound("No such session.")
+        raise NotFound("There is no such session.")
 
 
 @action
@@ -291,7 +291,7 @@ async def _stored(ctx: Context, session_id: uuid.UUID) -> _Stored:
         )
     ).one_or_none()
     if found is None or found.revoked_at is not None or not found.credential:
-        raise Unauthenticated("No session.")
+        raise Unauthenticated("You are not signed in. Sign in to continue.")
     return _Stored(credential=found.credential, expires_at=found.credential_expires_at)
 
 
@@ -335,4 +335,4 @@ def _decrypt(blob: bytes, settings: Settings) -> Credential:
     try:
         return credentials.decrypt(blob, settings)
     except CannotDecrypt as exc:
-        raise SessionExpired("Sign in again.") from exc
+        raise SessionExpired("Your session has ended. Sign in again.") from exc

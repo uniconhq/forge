@@ -31,7 +31,7 @@ from forge.domain.ids import (
     VersionId,
     WorkspaceId,
 )
-from forge.domain.names import TeamOwner, WorkspaceOwner
+from forge.domain.names import WorkspaceOwner
 from forge.domain.publications import Publication, read_note
 from forge.domain.roles import Scope
 from forge.domain.submissions import Submitted, write_note
@@ -97,12 +97,12 @@ class FakeWorkspaces:
         read_only: bool = False,
     ) -> None:
         """One repository of the workspace, its submissions reserved before
-        anyone may write it, and one that is there with someone else in it
-        refused, as the Forgejo implementation does.
+        anyone may write it, and anyone on one that is there who is not a
+        member now taken off first, as the Forgejo implementation does.
         """
         scope = Scope(ref.org, ref.contest)
         repo = self._state.repos.get((ref.org, name))
-        if repo is not None and isinstance(ref.owner, TeamOwner):
+        if repo is not None:
             repo.writers.intersection_update(member_ids)
             repo.readers.intersection_update(member_ids)
         holding = set() if repo is None else repo.readers if read_only else repo.writers
@@ -110,8 +110,6 @@ class FakeWorkspaces:
             return
         if repo is None:
             repo = self._state.create_repo(PLATFORM, ref.org, name, {}, scope=scope)
-        elif (repo.writers | repo.readers) - set(member_ids):
-            raise Conflict(f"{ref.org}/{name} already has other collaborators")
         repo.rewrites_refused = True
         repo.teams.add(scope)
         if reserve:

@@ -56,10 +56,10 @@ An organiser managing the task reads its gradings and acts on one:
 An organiser of a contest reads its gradings together:
 
 - `feed` lists every grading of the contest's tasks the organiser observes,
-  newest first, filtered by task, by who submitted, a contestant's own and
-  their teams' while they were in them, and by status, each with who
-  submitted it, a contestant by username or a team by name, as `list` gives
-  a task's; every attempt is a row of its own;
+  newest first, filtered by task, by the member who submitted, by entrant,
+  and by status, each with whose it is, the entrant by the name it is shown
+  under and the member who submitted it by username, as `list` gives a
+  task's; every attempt is a row of its own;
 - `queue_depth` counts the ones waiting for a machine by status, `queued`
   and `dispatched`, one that is overdue or lost not among them, since it
   reads as a system error.
@@ -85,7 +85,7 @@ from typing import Any
 from pydantic import ValidationError
 from sqlalchemy import ColumnElement, and_, func, not_, or_, select, tuple_
 
-from forge.db.tables import Grading, Team
+from forge.db.tables import Entrant, Grading
 from forge.domain.definitions import ContestDefinition, OnSystemError
 from forge.domain.errors import (
     Conflict,
@@ -134,7 +134,7 @@ from forge.domain.ids import (
     new_id,
 )
 from forge.domain.live import Nudge, NudgeKind
-from forge.domain.names import TeamOwner, UserOwner, is_username
+from forge.domain.names import EntrantOwner, is_username
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.publications import Publication
 from forge.domain.roles import (
@@ -150,15 +150,15 @@ from forge.domain.submissions import Submitted
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import names, org_accounts, published, teams, timelines
+from forge.services import entrants, names, org_accounts, published, timelines
 from forge.services.access import Organiser, require
 from forge.services.credentials import CannotDecrypt
 
 log = get_logger(__name__)
 
 NO_SUCH_GRADING = "There is no such grading."
-NO_LOG = "This grading has no run log."
-LOG_STORE_UNAVAILABLE = "The run log could not be read; try again in a moment."
+NO_LOG = "This grading has no log."
+LOG_STORE_UNAVAILABLE = "The grading's log could not be read. Try again in a moment."
 LIST_LIMIT = 500
 RUN_STATE_KEPT = timedelta(seconds=15)
 """How long this process keeps the CI's answer about where one run is, so a
@@ -166,10 +166,10 @@ contestant's page polling every two seconds asks the CI a few times a
 minute at most."""
 
 ACCOUNT_NOT_READY = "The org's grading account is not ready."
-NOT_ACTIVATED = "The task is not taken for grading at the CI."
-REFUSED = "The CI refused the org's grading account."
-NO_RUN = "The CI answered without starting a run."
-NO_ANSWER = "The CI did not answer."
+NOT_ACTIVATED = "The task is not set up for grading yet."
+REFUSED = "The grading service refused the org's grading account."
+NO_RUN = "The grading service answered without starting the grading."
+NO_ANSWER = "The grading service did not answer."
 PUBLICATION_GONE = "The publication it grades against is gone."
 
 CI_CONFIG_PATH = "/api/v1/ci/config"
@@ -185,7 +185,8 @@ CALLBACK_PATH = "/api/v1/gradings/{grading}/callback"
 @dataclass(frozen=True, slots=True)
 class GradingRecord:
     """One grading as an organiser reads it: which submission and attempt,
-    whether that is the submission's latest attempt, the one staff act on,
+    who of the entrant submitted it, none when that is not known, whether
+    that is the submission's latest attempt, the one staff act on,
     against which publication, where it stands, why when it is a system
     error, the sentence staff cancelled it with, the result as it came
     back, whether its log was written, the last progress its run reported,
@@ -207,6 +208,7 @@ class GradingRecord:
     publication: PublicationId
     attempt: int
     latest: bool
+    submitted_by: int | None
     status: GradingStatus
     error: str | None
     result: dict[str, Any] | None
@@ -225,14 +227,16 @@ class GradingRecord:
 
 @dataclass(frozen=True, slots=True)
 class Submitter:
-    """Who made a submission, as an organiser recognises them: a contestant,
-    by user id and username, or a team, by id and name. The name is none
-    once the account or the team is gone, or when the forge did not say.
+    """Whose a submission is, as an organiser recognises it: the entrant, by
+    its id and the name it is shown under, none once it is gone; and the
+    member who submitted it, by user id and username, none when a reconcile
+    found it at the forge, the username none when the forge did not say.
     """
 
+    entrant: uuid.UUID
+    entrant_name: str | None
     user_id: int | None
-    team: uuid.UUID | None
-    name: str | None
+    username: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +293,7 @@ def new_row(
     publication: PublicationId,
     attempt: int,
     key: str | None,
+    submitted_by: int | None,
 ) -> Grading:
     """A new `queued` grading, added to the unit of work, with the hash of
     its run's callback token, whose run starts once the unit of work
@@ -298,6 +303,7 @@ def new_row(
         id=new_id(),
         task_id=task,
         workspace_id=workspace,
+        submitted_by=submitted_by,
         submission_id=submission,
         submission_number=number,
         submission_version=version,
@@ -467,8 +473,11 @@ def queue_submission(
     publication: Publication,
     key: str | None,
     at: datetime,
+    submitted_by: int | None,
 ) -> Grading:
-    """The submission's queued grading, attempt 1, against `publication`."""
+    """The submission's queued grading, attempt 1, against `publication`,
+    made by the member `submitted_by`, none when that is not known.
+    """
     return new_row(
         ctx,
         task=task,
@@ -480,6 +489,7 @@ def queue_submission(
         publication=publication.id,
         attempt=1,
         key=key,
+        submitted_by=submitted_by,
     )
 
 
@@ -565,7 +575,7 @@ def finish(ctx: Context, row: Grading, status: GradingStatus, *, error: str | No
 
 def changed(ctx: Context, row: Grading, *, organisers_only: bool = False) -> None:
     """Nudge whoever may hear of the grading that it moved, once the unit of
-    work commits: the contestant whose workspace it grades, and the
+    work commits: the members of the entrant whose workspace it grades, and the
     organisers who observe its task. Every write of a grading's status or
     progress calls this, which is what moves a contestant's submissions
     while they watch; a grading is the platform's own and no push from the
@@ -581,8 +591,7 @@ def changed(ctx: Context, row: Grading, *, organisers_only: bool = False) -> Non
         Nudge(
             NudgeKind.GRADING,
             str(row.id),
-            user=owner.user_id if isinstance(owner, UserOwner) else None,
-            team=str(owner.team_id) if isinstance(owner, TeamOwner) else None,
+            entrant=str(owner.entrant_id) if owner is not None else None,
             scope=task_scope(TaskId(row.task_id)),
         )
     )
@@ -788,11 +797,12 @@ async def cancel(
     status = status_of(ctx, row, gone)
     if status is not GradingStatus.SYSTEM_ERROR:
         raise WrongStatus(
-            f"Only a grading in system_error is cancelled; this one is {status.value}.",
+            f"Only a grading that failed with a system error can be cancelled, and this one is "
+            f"{status.value}.",
             current=status.value,
         )
     if any(other.attempt > row.attempt for other in attempts):
-        raise Conflict("A later attempt of this submission exists; cancel that one.")
+        raise Conflict("This submission has a later attempt. Cancel that one instead.")
     stored = GradingStatus(row.status)
     if stored in AT_THE_CI and row.run_id is not None:
         _cancel_after_commit(ctx, RunId(row.run_id))
@@ -820,16 +830,21 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     row = next(attempt for attempt in attempts if attempt.id == grading)
     status = status_of(ctx, row, gone)
     if status not in FINISHED:
-        raise WrongStatus(f"The grading is {status.value}, not finished.", current=status.value)
+        raise WrongStatus(
+            f"This grading is {status.value} and has not finished, so it cannot be retried yet.",
+            current=status.value,
+        )
     if staff_cancelled(row):
         raise WrongStatus(
-            "Staff cancelled this submission, which ends it; it is not graded again.",
+            "The organisers cancelled this submission, which ends it, so it is not graded again.",
             current=status.value,
         )
     if any(other.attempt > row.attempt for other in attempts):
-        raise Conflict("A later attempt of this submission exists; retry that one.")
+        raise Conflict("This submission has a later attempt. Retry that one instead.")
     if any(status_of(ctx, other, gone) in UNFINISHED for other in attempts):
-        raise Conflict("Another attempt of this grading is still being graded.")
+        raise Conflict(
+            "Another attempt of this submission is still being graded. Wait for it to finish."
+        )
     _settle(ctx, row, gone)
     made = _next_attempt(ctx, row, PublicationId(row.publication_id), attempts)
     await ctx.db.flush()
@@ -857,14 +872,16 @@ async def fall_back(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> G
     status = status_of(ctx, row, gone)
     if not broken(row, status):
         raise WrongStatus(
-            "Only a grading in system_error, or one staff cancelled, falls back; "
-            f"this one is {status.value}.",
+            "Only a grading that failed with a system error, or one the organisers cancelled, "
+            f"can fall back to an earlier result, and this one is {status.value}.",
             current=status.value,
         )
     if any(other.attempt > row.attempt for other in attempts):
-        raise Conflict("A later attempt of this submission exists; that one counts.")
+        raise Conflict("This submission has a later attempt, and that one counts.")
     if last_good(attempts, row) is None:
-        raise Conflict("No earlier attempt of this submission finished with a result.")
+        raise Conflict(
+            "No earlier attempt of this submission finished with a result to fall back to."
+        )
     _settle(ctx, row, gone)
     row.falls_back = True
     await ctx.db.flush()
@@ -954,7 +971,9 @@ async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
     await timelines.hold_task(ctx, task)
     current = await published.task(ctx, task)
     if current is None:
-        raise NotFound("The task has no publication to grade against.")
+        raise NotFound(
+            "The task has no publication to grade against yet. Save it so that it publishes."
+        )
     return await regrade(ctx, task, current.publication.id)
 
 
@@ -1000,17 +1019,16 @@ async def feed(
     *,
     task: TaskId | None = None,
     user: str | None = None,
-    team: uuid.UUID | None = None,
+    entrant: uuid.UUID | None = None,
     status: GradingStatus | None = None,
     limit: int = 100,
 ) -> tuple[FeedEntry, ...]:
     """The gradings of the contest's tasks the organiser observes, newest
     first, at most `limit` of them and never more than 500: of one `task`,
-    of the submissions of the contestant whose username is `user`, their
-    own and their teams' while they were in them, or of the team `team`,
-    and reading as `status`, each filter when given. A task, contestant or
-    team the organiser cannot see there gives none, and so does a `user`
-    that breaks the forge's username rule (`is_username`).
+    of the submissions the member whose username is `user` made, of the
+    entrant `entrant`, and reading as `status`, each filter when given. A
+    task, person or entrant the organiser cannot see there gives none, and
+    so does a `user` that breaks the forge's username rule (`is_username`).
     `Forbidden` for someone holding no role in the contest.
     """
     observed = _observed(organiser, contest)
@@ -1028,9 +1046,9 @@ async def feed(
             found = await ctx.forge.identity.find_user_by_username(user)
         except NotFound:
             return ()
-        where.append(await _submitted_by(ctx, contest, found.id))
-    if team is not None:
-        where.append(Grading.workspace_id == _workspace(ctx, contest, TeamOwner(team)))
+        where.append(Grading.submitted_by == found.id)
+    if entrant is not None:
+        where.append(Grading.workspace_id == _workspace(ctx, contest, EntrantOwner(entrant)))
     if status is not None:
         where.append(_may_read_as(status, ctx.now))
     size = max(1, min(limit, LIST_LIMIT))
@@ -1105,7 +1123,10 @@ def _observed(organiser: Organiser, contest: ContestId) -> frozenset[TaskId] | N
     )
     if not tasks:
         named = organiser.scope if organiser.scope == scope else scope
-        raise Forbidden(f"This needs the observer role at {named.name} or one of its tasks.")
+        raise Forbidden(
+            f"This needs the observer role at {named.name} or at one of its tasks. Ask an "
+            f"admin of {named.name} if you need it."
+        )
     return tasks
 
 
@@ -1115,40 +1136,24 @@ def _in_contest(contest: ContestId, observed: frozenset[TaskId] | None) -> Colum
     return Grading.task_id.in_(sorted(observed))
 
 
-def _workspace(ctx: Context, contest: ContestId, owner: UserOwner | TeamOwner) -> WorkspaceId:
+def _workspace(ctx: Context, contest: ContestId, owner: EntrantOwner) -> WorkspaceId:
     return ctx.forge.workspaces.workspace_of(contest, owner)
-
-
-async def _submitted_by(ctx: Context, contest: ContestId, user_id: int) -> ColumnElement[bool]:
-    """The gradings of the submissions made while the person worked in a
-    workspace of the contest: their own, and each team's from when they
-    joined it until they left, by when the submission was taken.
-    """
-    spans = [
-        and_(
-            Grading.workspace_id == _workspace(ctx, contest, TeamOwner(member.team)),
-            Grading.submitted_at >= member.joined_at,
-            *([Grading.submitted_at < member.left_at] if member.left_at is not None else []),
-        )
-        for member in await teams.memberships(ctx, contest, user_id)
-    ]
-    return or_(Grading.workspace_id == _workspace(ctx, contest, UserOwner(user_id)), *spans)
 
 
 async def _entries(
     ctx: Context, contest: ContestId, records: Sequence[GradingRecord]
 ) -> tuple[FeedEntry, ...]:
-    """Each grading with who submitted it and its task's name and label: the
-    names and the teams read first, and the usernames and the contest's
+    """Each grading with whose it is and its task's name and label: the
+    names and the entrants read first, and the usernames and the contest's
     settings from the forge once the connection is let go of.
     """
     tasks = await names.names_of(ctx, {found.task for found in records})
-    by = await _submitters(ctx, {found.workspace for found in records})
+    by = await _submitters(ctx, records)
     settings = await _settings(ctx, contest) if records else None
     return tuple(
         FeedEntry(
             _placed(found, settings),
-            by[found.workspace],
+            by[found.id],
             task_name=(name := tasks.get(found.task)),
             label=settings.label_of(name) if settings is not None and name is not None else None,
         )
@@ -1166,37 +1171,29 @@ async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition | Non
         return None
 
 
-async def _submitters(
-    ctx: Context, workspaces: Collection[WorkspaceId]
-) -> dict[WorkspaceId, Submitter]:
-    """Who works in each workspace, with the name an organiser knows them
-    by: a team's from its row, read first, and a contestant's username from
-    the forge once the connection is let go of, a forge that does not say
-    leaving the name out.
+async def _submitters(ctx: Context, records: Sequence[GradingRecord]) -> dict[uuid.UUID, Submitter]:
+    """Whose each grading is, with the names an organiser knows them by: the
+    entrants read first, and the usernames from the forge once the
+    connection is let go of, a forge that does not say leaving the name out.
     """
-    owners = {workspace: ctx.forge.workspaces.owner_of(workspace) for workspace in workspaces}
-    team_ids = {owner.team_id for owner in owners.values() if isinstance(owner, TeamOwner)}
-    teams: dict[uuid.UUID, str] = {}
-    if team_ids:
-        found = await ctx.db.execute(
-            select(Team.id, Team.name).where(Team.id.in_(sorted(team_ids)))
-        )
-        teams = {row.id: row.name for row in found}
-    await ctx.let_go()
+    owners = {
+        found.id: ctx.forge.workspaces.owner_of(found.workspace).entrant_id for found in records
+    }
+    ids = sorted(set(owners.values()))
+    rows = (await ctx.db.scalars(select(Entrant).where(Entrant.id.in_(ids)))).all() if ids else []
+    shown = await entrants.display_names(ctx, rows)
     users: dict[int, str | None] = {}
-    for owner in owners.values():
-        if isinstance(owner, UserOwner) and owner.user_id not in users:
-            try:
-                users[owner.user_id] = (await ctx.forge.identity.find_user(owner.user_id)).username
-            except PortError:
-                users[owner.user_id] = None
+    for found in records:
+        if found.submitted_by is not None and found.submitted_by not in users:
+            users[found.submitted_by] = await entrants.username_of(ctx, found.submitted_by) or None
     return {
-        workspace: (
-            Submitter(owner.user_id, None, users[owner.user_id])
-            if isinstance(owner, UserOwner)
-            else Submitter(None, owner.team_id, teams.get(owner.team_id))
+        found.id: Submitter(
+            entrant=owners[found.id],
+            entrant_name=shown.get(owners[found.id]),
+            user_id=found.submitted_by,
+            username=users.get(found.submitted_by) if found.submitted_by is not None else None,
         )
-        for workspace, owner in owners.items()
+        for found in records
     }
 
 
@@ -1224,7 +1221,8 @@ async def run_log(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> byt
     except Rejected as exc:
         log.warning("gradings.log_too_large", grading=str(grading), detail=exc.detail)
         raise LogTooLarge(
-            f"The run log is larger than the {RUN_LOG_MAX} bytes shown.", limit=RUN_LOG_MAX
+            f"The grading's log is larger than the {RUN_LOG_MAX} bytes Unicon shows.",
+            limit=RUN_LOG_MAX,
         ) from None
     except PortError as exc:
         raise _log_failure(exc, grading) from None
@@ -1264,6 +1262,7 @@ def record(
         publication=PublicationId(row.publication_id),
         attempt=row.attempt,
         latest=latest,
+        submitted_by=row.submitted_by,
         status=status,
         error=late or row.error,
         result=row.result,
@@ -1371,6 +1370,7 @@ def _next_attempt(
         publication=publication,
         attempt=max(other.attempt for other in attempts) + 1,
         key=None,
+        submitted_by=row.submitted_by,
     )
 
 

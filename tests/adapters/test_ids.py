@@ -26,9 +26,11 @@ from forge.adapters.ids import (
     thread_id,
 )
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
-from forge.domain.names import TeamOwner, UserOwner
+from forge.domain.names import EntrantOwner
 
-TEAM = uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31")
+ENTRANT = uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31")
+OWNER = EntrantOwner(ENTRANT)
+SEGMENT = "entrant.0199a2c16b7e7c3a9f105d2e4b8a6c31"
 
 
 def test_contest_and_task_names_end_in_their_word() -> None:
@@ -37,18 +39,24 @@ def test_contest_and_task_names_end_in_their_word() -> None:
 
 
 def test_workspace_names_carry_the_owner_between_the_second_dot_and_the_word() -> None:
-    person = WorkspaceRef("acme", "spring", UserOwner(7))
-    assert person.desk_repo == "spring.u7.desk"
-    assert WorkspaceRef("acme", "autumn", UserOwner(7)).desk_repo != person.desk_repo
-    assert person.submission_repo("sum") == "spring.sum.u7.sub"
-    team = WorkspaceRef("acme", "spring", TeamOwner(TEAM))
-    assert team.submission_repo("sum") == f"spring.sum.team.{TEAM}.sub"
+    entrant = WorkspaceRef("acme", "spring", OWNER)
+    assert entrant.desk_repo == f"spring.{SEGMENT}.desk"
+    assert WorkspaceRef("acme", "autumn", OWNER).desk_repo != entrant.desk_repo
+    assert entrant.submission_repo("sum") == f"spring.sum.{SEGMENT}.sub"
+
+
+def test_the_longest_name_a_workspace_makes_fits_the_forge() -> None:
+    key = "a" * 26
+    longest = WorkspaceRef("acme", key, EntrantOwner(uuid.UUID(int=2**128 - 1)))
+
+    assert len(longest.submission_repo(key)) == 98
+    assert len(longest.submission_repo(key)) <= 100
 
 
 def test_ids_round_trip() -> None:
     contest = ContestRef("acme", "spring")
     task = TaskRef("acme", "spring", "sum")
-    workspace = WorkspaceRef("acme", "spring", UserOwner(7))
+    workspace = WorkspaceRef("acme", "spring", OWNER)
     assert parse_contest(contest.id) == contest
     assert parse_task(task.id) == task
     assert parse_workspace(workspace.id) == workspace
@@ -58,17 +66,24 @@ def test_ids_round_trip() -> None:
 
 
 def test_a_workspace_id_is_told_apart_from_a_task_id() -> None:
-    assert is_workspace(WorkspaceRef("acme", "spring", UserOwner(7)).id)
+    assert is_workspace(WorkspaceRef("acme", "spring", OWNER).id)
     assert not is_workspace(TaskRef("acme", "spring", "sum").id)
     with pytest.raises(MalformedId):
         parse_workspace(WorkspaceId("acme/spring/sum"))
 
 
 def test_a_workspace_owner_round_trips_through_its_segment() -> None:
-    team = TeamOwner(TEAM)
-    assert owner_from_segment(team.segment) == team
-    assert owner_from_segment(UserOwner(7).segment) == UserOwner(7)
-    for segment in ("team.not-a-uuid", "ada", "u", "u7x", "u-7"):
+    assert OWNER.segment == SEGMENT
+    assert owner_from_segment(SEGMENT) == OWNER
+    for segment in (
+        f"entrant.{ENTRANT}",
+        SEGMENT.upper(),
+        SEGMENT[:-1],
+        f"team.{ENTRANT}",
+        "entrant.not-an-id",
+        "ada",
+        "u7",
+    ):
         with pytest.raises(MalformedId):
             owner_from_segment(segment)
 
@@ -76,7 +91,7 @@ def test_a_workspace_owner_round_trips_through_its_segment() -> None:
 def test_a_place_is_located_at_its_repository() -> None:
     assert location("acme/spring") == ("acme", "spring.contest")
     assert location("acme/spring/sum") == ("acme", "spring.sum.task")
-    assert location("acme/spring/@u7") == ("acme", "spring.u7.desk")
+    assert location(f"acme/spring/@{SEGMENT}") == ("acme", f"spring.{SEGMENT}.desk")
 
 
 def test_an_id_from_elsewhere_is_refused() -> None:
@@ -88,6 +103,12 @@ def test_an_id_from_elsewhere_is_refused() -> None:
 
 def test_a_task_is_read_back_from_its_repository() -> None:
     assert task_of_repo("acme", "spring.sum.task") == TaskRef("acme", "spring", "sum")
-    for name in ("spring.contest", "spring.sum.u8.sub", "sum.task", "spring.sum.task.x", ".task"):
+    for name in (
+        "spring.contest",
+        f"spring.sum.{SEGMENT}.sub",
+        "sum.task",
+        "spring.sum.task.x",
+        ".task",
+    ):
         with pytest.raises(MalformedId):
             task_of_repo("acme", name)

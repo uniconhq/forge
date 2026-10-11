@@ -5,10 +5,15 @@ it (P1); `secret` is an input's word; every primitive declares its outcome;
 and the keys and words the format no longer has are refused at their paths.
 """
 
+from collections.abc import Mapping
+
 import pytest
 
 from forge.domain.contracts import violation
-from forge.domain.primitives import parse_primitive
+from forge.domain.definitions import parse_task
+from forge.domain.grading import PLATFORM_MACHINE
+from forge.domain.plans import compile_plan
+from forge.domain.primitives import Port, PrimitiveDeclaration, parse_primitive
 from forge.domain.types import Type
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml
 from forge.testing import PLACEHOLDER_DIGEST, PRIMITIVES
@@ -72,6 +77,71 @@ def test_each_seeded_primitive_is_its_repos_declaration_with_the_image_written_i
     assert "".join(line for line in lines if not line.startswith("image: ")) == published
 
 
+def test_a_primitive_and_its_ports_say_what_they_are_for_and_no_plan_reads_it() -> None:
+    run = parse_primitive(PRIMITIVES["sandbox-run"])
+    plain = parse_primitive(BASE + OUTCOME)
+
+    assert run.title == "Run program"
+    assert run.description is not None and run.description.startswith("Runs a program")
+    assert run.inputs["binary"].description == "The program to run."
+    assert run.outputs["outcome"].description is not None
+    assert (plain.title, plain.description, plain.outputs["outcome"].description) == (
+        None,
+        None,
+        None,
+    )
+    # A plan compiled from the declarations without their words is the
+    # same to the byte.
+    from tests.test_plans import CLASSIC_TASK, CLASSIC_WORKFLOW, HARNESS, cases_of, classic_tests
+
+    def wordless(found: PrimitiveDeclaration) -> PrimitiveDeclaration:
+        def ports(given: Mapping[str, Port]) -> dict[str, Port]:
+            return {
+                name: port.model_copy(update={"description": None}) for name, port in given.items()
+            }
+
+        return found.model_copy(
+            update={
+                "title": None,
+                "description": None,
+                "inputs": ports(found.inputs),
+                "outputs": ports(found.outputs),
+            }
+        )
+
+    worded = {f"unicon/{name}@v2": parse_primitive(text) for name, text in PRIMITIVES.items()}
+    assert any(found.title is not None for found in worded.values())
+    paths = classic_tests("main/1")
+    tests = cases_of(CLASSIC_WORKFLOW, paths, {})
+
+    def plan(primitives: Mapping[str, PrimitiveDeclaration]) -> bytes:
+        made = compile_plan(
+            parse_task(CLASSIC_TASK),
+            CLASSIC_WORKFLOW,
+            primitives,
+            paths,
+            tests,
+            secrets=frozenset(),
+            machine=PLATFORM_MACHINE,
+            harness_image=HARNESS,
+        )
+        return made.plan.to_bytes()
+
+    assert plan(worded) == plan({ref: wordless(found) for ref, found in worded.items()})
+
+
+@pytest.mark.parametrize(
+    ("extra", "path"),
+    [
+        ('title: ""\n', "title"),
+        ('description: "Two\\nlines."\n', "description"),
+        ("inputs:\n  x: {type: number, description: 3}\n", "inputs.x.description"),
+    ],
+)
+def test_a_title_or_description_is_one_line_of_text(extra: str, path: str) -> None:
+    assert path in [problem["path"] for problem in refused(BASE + OUTCOME + extra)]
+
+
 def test_the_smallest_declaration_is_an_image_limits_and_an_outcome() -> None:
     declared = parse_primitive(BASE + OUTCOME)
 
@@ -90,8 +160,8 @@ def test_a_file_or_folder_port_without_runs_is_refused_naming_it(kind: str) -> N
     assert problems == [
         {
             "path": "inputs.data",
-            "message": f"data is a {kind} port: say whether the primitive runs it, runs: true "
-            "or runs: false.",
+            "message": f"data is a {kind} port. Say whether the primitive runs it as a "
+            "program, with runs: true or runs: false.",
         }
     ]
 
@@ -107,19 +177,19 @@ def test_runs_on_a_scalar_port_is_refused(kind: str) -> None:
     problems = refused(BASE + f"inputs:\n  k: {{type: {kind}, runs: false}}\n" + OUTCOME)
 
     assert problems == [
-        {"path": "inputs.k.runs", "message": "Applies only to a file or folder port."}
+        {"path": "inputs.k.runs", "message": "This applies only to a file or folder port."}
     ]
 
 
 def test_runs_on_an_output_is_refused() -> None:
     problems = refused(BASE + "outputs:\n  outcome: outcome\n  out: {type: file, runs: true}\n")
 
-    assert problems == [{"path": "outputs.out.runs", "message": "Applies only to an input."}]
+    assert problems == [{"path": "outputs.out.runs", "message": "This applies only to an input."}]
 
 
 def test_secret_on_an_output_is_refused_and_on_an_input_is_kept() -> None:
     problems = refused(BASE + "outputs:\n  outcome: outcome\n  log: {type: text, secret: true}\n")
-    assert problems == [{"path": "outputs.log.secret", "message": "Applies only to an input."}]
+    assert problems == [{"path": "outputs.log.secret", "message": "This applies only to an input."}]
 
     declared = parse_primitive(
         BASE
@@ -133,18 +203,26 @@ def test_secret_on_an_output_is_refused_and_on_an_input_is_kept() -> None:
 @pytest.mark.parametrize(
     ("outputs", "path", "message"),
     [
-        ("", "outputs", "Every primitive declares the output outcome: outcome."),
-        ("outputs:\n  result: text\n", "outputs", "Every primitive declares the output outcome"),
-        ("outputs:\n  outcome: text\n", "outputs", "Every primitive declares the output outcome"),
+        ("", "outputs", "Every primitive must have an output called outcome, of type outcome."),
+        (
+            "outputs:\n  result: text\n",
+            "outputs",
+            "Every primitive must have an output called outcome",
+        ),
+        (
+            "outputs:\n  outcome: text\n",
+            "outputs",
+            "Every primitive must have an output called outcome",
+        ),
         (
             "outputs:\n  outcome: {type: outcome, optional: true}\n",
             "outputs.outcome.optional",
-            "A step always says its outcome.",
+            "The outcome cannot be optional: every step gives one.",
         ),
         (
             "outputs:\n  outcome: outcome\n  verdict: outcome\n",
             "outputs.verdict",
-            "Only the output named outcome is an outcome.",
+            "Only the output called outcome can be of type outcome.",
         ),
     ],
 )
@@ -157,30 +235,34 @@ def test_every_primitive_declares_its_outcome(outputs: str, path: str, message: 
 
 def test_an_input_port_is_one_of_the_six_value_types() -> None:
     assert refused(BASE + "inputs:\n  k: outcome\n" + OUTCOME) == [
-        {"path": "inputs.k.type", "message": "An input takes one of the six value types."}
+        {
+            "path": "inputs.k.type",
+            "message": "An input must be text, a number, true or false, an enum, a file or a "
+            "folder.",
+        }
     ]
 
 
 @pytest.mark.parametrize(
     ("text", "path", "sentence"),
     [
-        ("name: unicon/probe\n" + BASE + OUTCOME, "name", "its repo is its name"),
-        ("version: v1\n" + BASE + OUTCOME, "version", "its tag is its version"),
-        ("schema_version: 4\n" + BASE + OUTCOME, "schema_version", "no schema_version"),
+        ("name: unicon/probe\n" + BASE + OUTCOME, "name", "the name it was made under"),
+        ("version: v1\n" + BASE + OUTCOME, "version", "set when the version is made"),
+        ("schema_version: 4\n" + BASE + OUTCOME, "schema_version", "no longer used"),
         (
             BASE + "inputs:\n  kind: {type: enum, values: [a, b]}\n" + OUTCOME,
             "inputs.kind",
-            "`values` is now `options`.",
+            "values is now called options.",
         ),
         (
             BASE + "inputs:\n  data: {type: 'file[]', runs: false}\n" + OUTCOME,
             "inputs.data",
-            "`file[]` is now `folder`.",
+            "The type file[] is now called folder.",
         ),
         (
             BASE + "outputs:\n  outcome: outcome\n  files: 'file[]'\n",
             "outputs.files",
-            "`file[]` is now `folder`.",
+            "The type file[] is now called folder.",
         ),
     ],
 )

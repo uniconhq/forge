@@ -65,6 +65,16 @@ class ContentPort(Protocol):
         """
         ...
 
+    async def read_media(
+        self, as_: Identity, place: ContentPlace, path: str, *, at: VersionId, max_size: int
+    ) -> bytes:
+        """One file's bytes at a version, an upload's included: for a file
+        kept in the large-file store, the bytes its pointer names and never
+        the pointer. `NotFound` when there is no such file; `Rejected` when
+        it is larger than `max_size` bytes, read no further.
+        """
+        ...
+
     async def write_file(
         self,
         as_: Identity,

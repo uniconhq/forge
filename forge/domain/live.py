@@ -4,8 +4,8 @@ for the thing through the ordinary routes, which check the caller as for any
 other request; the stream is never a second way to read anything.
 
 Who may hear a nudge is decided before it is sent, and conservatively: the
-one person it concerns (`user`), or the members of the one team it
-concerns (`team`), the organisers who observe `scope` or a broader one, and
+one person it concerns (`user`), or the members of the one entrant it
+concerns (`entrant`), the organisers who observe `scope` or a broader one, and
 the contestants of `contest`, each as their session's `Audience` holds
 them. Anyone else hears nothing of it.
 
@@ -43,7 +43,7 @@ class Nudge:
     user: int | None = None
     scope: Scope | None = None
     contest: ContestId | None = None
-    team: str | None = None
+    entrant: str | None = None
 
     def payload(self) -> str:
         return json.dumps(
@@ -51,7 +51,7 @@ class Nudge:
                 "k": self.kind.value,
                 "i": self.id,
                 "u": self.user,
-                "t": self.team,
+                "e": self.entrant,
                 "s": _scope_path(self.scope),
                 "c": self.contest,
             },
@@ -70,7 +70,7 @@ def read_payload(payload: str) -> Nudge | None:
         user = found.get("u")
         scope = found.get("s")
         contest = found.get("c")
-        team = found.get("t")
+        entrant = found.get("e")
     except ValueError, KeyError, TypeError:
         return None
     if not isinstance(id_, str) or (user is not None and not isinstance(user, int)):
@@ -79,7 +79,7 @@ def read_payload(payload: str) -> Nudge | None:
         return None
     if contest is not None and not isinstance(contest, str):
         return None
-    if team is not None and not isinstance(team, str):
+    if entrant is not None and not isinstance(entrant, str):
         return None
     return Nudge(
         kind=kind,
@@ -87,14 +87,14 @@ def read_payload(payload: str) -> Nudge | None:
         user=user,
         scope=_scope_of(scope) if scope else None,
         contest=ContestId(contest) if contest else None,
-        team=team or None,
+        entrant=entrant or None,
     )
 
 
 @dataclass(frozen=True, slots=True)
 class Audience:
     """Who one session's stream speaks to: the person, every role they hold,
-    the contests where they are an approved contestant, and the teams they
+    the contests where they are in an approved entrant, and the entrants they
     are a member of, read when the stream opens and again every few minutes
     while it stays open.
     """
@@ -102,7 +102,7 @@ class Audience:
     user_id: int
     grants: tuple[RoleGrant, ...]
     contests: frozenset[ContestId]
-    teams: frozenset[str] = frozenset()
+    entrants: frozenset[str] = frozenset()
 
 
 def hears(audience: Audience, nudge: Nudge) -> bool:
@@ -111,7 +111,7 @@ def hears(audience: Audience, nudge: Nudge) -> bool:
         return True
     if nudge.user is not None and nudge.user == audience.user_id:
         return True
-    if nudge.team is not None and nudge.team in audience.teams:
+    if nudge.entrant is not None and nudge.entrant in audience.entrants:
         return True
     if nudge.scope is not None and holds(audience.grants, nudge.scope, Role.OBSERVER):
         return True

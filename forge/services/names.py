@@ -263,7 +263,7 @@ async def workflow_place(ctx: Context, owner: str, name: str) -> WorkflowId:
 
 async def _reserve(ctx: Context, kind: str, parent: str, name: str) -> str:
     if await _find(ctx, kind, parent, name) is not None:
-        raise Conflict(f"The name {name!r} is taken.")
+        raise Conflict(f"The name {name!r} is taken. Choose another.")
     key = ctx.make_key(name)
     id_ = key if parent == NO_PARENT else f"{parent}/{key}"
     async with ctx.db.begin_nested():
@@ -271,7 +271,7 @@ async def _reserve(ctx: Context, kind: str, parent: str, name: str) -> str:
         try:
             await ctx.db.flush()
         except IntegrityError as exc:
-            raise Conflict(f"The name {name!r} is taken.") from exc
+            raise Conflict(f"The name {name!r} is taken. Choose another.") from exc
     return id_
 
 

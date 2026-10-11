@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import select
 
 from forge.adapters.fakes import FakeForge
-from forge.db.tables import Contestant, OrgAccount
+from forge.db.tables import Entrant, EntrantMember, OrgAccount
 from forge.domain.errors import ContestantConflict, Forbidden, NotFound, SoleAdmin
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, OrgId
@@ -63,8 +63,20 @@ async def _organiser(
 
 
 async def _register(ctx: Context, user_id: int, contest: str, status: str) -> None:
+    """The user alone in an entrant of the contest with `status`."""
+    entrant = Entrant(contest_id=contest, status=status, registered_at=ctx.now)
+    ctx.db.add(entrant)
+    await ctx.db.flush()
     ctx.db.add(
-        Contestant(contest_id=contest, user_id=user_id, status=status, registered_at=ctx.now)
+        EntrantMember(
+            entrant_id=entrant.id,
+            contest_id=contest,
+            user_id=user_id,
+            status="member",
+            joined_at=ctx.now,
+            way_kind="signup",
+            approval="manual",
+        )
     )
     await ctx.db.flush()
 
@@ -190,7 +202,7 @@ async def test_a_managers_grant_of_admin_is_refused_and_writes_nothing(
     organiser = await _organiser(ctx, acme, 7, SPRING)
     acme.reset_calls()
 
-    with pytest.raises(Forbidden, match="Only an admin of acme/spring may grant admin"):
+    with pytest.raises(Forbidden, match="Only an admin of acme/spring can grant admin"):
         await roles.grant(ctx, organiser, SPRING, "bob", Role.ADMIN)
 
     assert _writes(acme) == []
@@ -203,9 +215,9 @@ async def test_a_manager_may_not_remove_or_demote_an_admin(ctx: Context, acme: F
     organiser = await _organiser(ctx, acme, 7, SPRING)
     acme.reset_calls()
 
-    with pytest.raises(Forbidden, match="may remove an admin"):
+    with pytest.raises(Forbidden, match="can remove an admin"):
         await roles.revoke(ctx, organiser, SPRING, 8)
-    with pytest.raises(Forbidden, match="may demote an admin"):
+    with pytest.raises(Forbidden, match="can demote an admin"):
         await roles.grant(ctx, organiser, SPRING, "bob", Role.OBSERVER)
 
     assert _writes(acme) == []
@@ -288,7 +300,7 @@ async def test_an_unknown_user_is_not_found_by_name_or_id(ctx: Context, acme: Fa
     organiser = await _organiser(ctx, acme, 7, SPRING)
     acme.reset_calls()
 
-    with pytest.raises(NotFound, match="no user named 'nobody'"):
+    with pytest.raises(NotFound, match="no user called 'nobody'"):
         await roles.grant(ctx, organiser, SPRING, "nobody", Role.OBSERVER)
     with pytest.raises(NotFound):
         await roles.revoke(ctx, organiser, SPRING, 99)

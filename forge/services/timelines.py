@@ -2,14 +2,11 @@
 reveals, and the checks that keep a timeline from moving behind a row
 (TASK-FORMAT.md sections 1.1 and 2, C1 and C2).
 
-A row is a contestant, or a team while a contestant works in one. Its
-extension sits on its row: on its `contestants` row while it works alone, on
-its `teams` row while it is in a team. It is a length and the tasks it is
-for, by name, every task when it names none, and it moves the row's due and
-close on those tasks, and so those tasks' reveal for everyone. The
-extensions in force are those of approved contestants who are in no team,
-and of teams with an approved member; a removed contestant's, or a team
-member's own, moves nothing.
+A row is an entrant. Its extension sits on its `entrants` row: a length
+and the tasks it is for, by name, every task when it names none, and it
+moves the entrant's due and close on those tasks, and so those tasks'
+reveal for everyone. The extensions in force are those of approved
+entrants; a removed or rejected entrant's moves nothing.
 
 A contest save is checked against every row's submissions, read from the
 gradings, one per submission, at the moment it was taken:
@@ -26,6 +23,14 @@ gradings, one per submission, at the moment it was taken:
   contest's `end`, does not move earlier than a submission already made,
   nor later once the task has revealed under the settings saved before. A
   contest that was never published released nothing, and moves freely.
+- An open contest, `published` or `archived` under the settings saved
+  before, goes back to `draft` only before its start (#438): from the start
+  on, contestants have work in it that a draft would hide, so the only way
+  out is `archived`. The settings saved before are the latest that read,
+  when the ones replaced do not (`files._last_read`).
+- From the start on, `entrants` no longer asks more of a team than it did,
+  nor allows fewer, nor moves between everyone entering alone and in teams:
+  a team's roster is locked by then, so it could not mend what that breaks.
 
 Changing an extension is checked the same way (`refuse_extension`): it may
 not let a row submit to a task whose reveal has passed, nor, shortened or
@@ -33,22 +38,20 @@ withdrawn, leave a submission after the due or the close it was made
 before.
 """
 
-import uuid
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import Select, func, select, text
+from sqlalchemy import func, select, text
 
-from forge.db.tables import Contestant, Grading, Team, TeamMember
-from forge.domain.definitions import ContestDefinition, ContestTask
+from forge.db.tables import Entrant, Grading
+from forge.domain.definitions import ContestDefinition, ContestTask, State
 from forge.domain.errors import InvalidExtension
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
-from forge.domain.names import TeamOwner, UserOwner, WorkspaceOwner
+from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
-from forge.domain.release import Extension, close_of, due_of, released, reveal_of
-from forge.domain.teams import MemberStatus
+from forge.domain.release import Extension, close_of, due_of, in_words, released, reveal_of
 from forge.domain.yaml_models import Problem
 from forge.runtime.context import Context
 from forge.services import names, published
@@ -94,117 +97,54 @@ def extension_of(length_seconds: int, tasks: Sequence[str] | None) -> Extension:
     )
 
 
-def of_contestant(row: Contestant | None) -> Extension:
-    """A contestant's own extension, none without a row."""
+def of_entrant(row: Entrant | None) -> Extension:
+    """An entrant's extension, none without one."""
     if row is None:
         return Extension()
     return extension_of(row.time_extension_seconds, row.extension_tasks)
 
 
 async def of_owner(ctx: Context, contest: ContestId, owner: WorkspaceOwner) -> Extension:
-    """The extension of the row that owns a workspace."""
-    if isinstance(owner, TeamOwner):
-        team = await ctx.db.get(Team, owner.team_id)
-        return (
-            extension_of(team.time_extension_seconds, team.extension_tasks) if team else Extension()
-        )
-    assert isinstance(owner, UserOwner)
-    row = await ctx.db.scalar(
-        select(Contestant).where(
-            Contestant.contest_id == contest, Contestant.user_id == owner.user_id
-        )
-    )
-    return of_contestant(row)
+    """The extension of the entrant that owns a workspace."""
+    return of_entrant(await ctx.db.get(Entrant, owner.entrant_id))
 
 
 async def of_owners(
     ctx: Context, contest: ContestId, owners: Collection[WorkspaceOwner]
 ) -> dict[WorkspaceOwner, Extension]:
-    """`of_owner` for every one of `owners`, in two reads."""
+    """`of_owner` for every one of `owners`, in one read."""
     found: dict[WorkspaceOwner, Extension] = {owner: Extension() for owner in owners}
-    team_ids = sorted(owner.team_id for owner in owners if isinstance(owner, TeamOwner))
-    user_ids = sorted(owner.user_id for owner in owners if isinstance(owner, UserOwner))
-    if team_ids:
-        for team_id, seconds, tasks in await ctx.db.execute(
-            select(Team.id, Team.time_extension_seconds, Team.extension_tasks).where(
-                Team.id.in_(team_ids)
-            )
-        ):
-            found[TeamOwner(team_id)] = extension_of(seconds, tasks)
-    if user_ids:
-        for row in await ctx.db.scalars(
-            select(Contestant).where(
-                Contestant.contest_id == contest, Contestant.user_id.in_(user_ids)
-            )
-        ):
-            found[UserOwner(row.user_id)] = of_contestant(row)
+    ids = sorted(owner.entrant_id for owner in owners)
+    if ids:
+        for row in await ctx.db.scalars(select(Entrant).where(Entrant.id.in_(ids))):
+            found[EntrantOwner(row.id)] = of_entrant(row)
     return found
-
-
-def _members(contest: ContestId) -> Select[int, uuid.UUID]:
-    """Each approved contestant of the contest who is a member of a team,
-    with the team: the members that make a team one of the rows.
-    """
-    return (
-        select(TeamMember.user_id, TeamMember.team_id)
-        .join(
-            Contestant,
-            (Contestant.contest_id == TeamMember.contest_id)
-            & (Contestant.user_id == TeamMember.user_id),
-        )
-        .where(
-            TeamMember.contest_id == contest,
-            TeamMember.status == MemberStatus.MEMBER,
-            Contestant.status == Status.APPROVED,
-        )
-    )
 
 
 async def rows(ctx: Context, contest: ContestId) -> list[WorkspaceOwner]:
     """Every row of the contest, the ones `every_extension` reads: each
-    approved contestant in no team, and each team with an approved member.
+    approved entrant, the earliest registered first.
     """
-    members = _members(contest)
-    people = await ctx.db.scalars(
-        select(Contestant.user_id).where(
-            Contestant.contest_id == contest,
-            Contestant.status == Status.APPROVED,
-            Contestant.user_id.not_in(members.with_only_columns(TeamMember.user_id)),
-        )
+    found = await ctx.db.scalars(
+        select(Entrant.id)
+        .where(Entrant.contest_id == contest, Entrant.status == Status.APPROVED)
+        .order_by(Entrant.registered_at, Entrant.id)
     )
-    teams_with_members = await ctx.db.scalars(
-        select(Team.id).where(
-            Team.contest_id == contest,
-            Team.id.in_(members.with_only_columns(TeamMember.team_id)),
-        )
-    )
-    owners: list[WorkspaceOwner] = [UserOwner(user_id) for user_id in people]
-    owners += [TeamOwner(team_id) for team_id in teams_with_members]
-    return owners
+    return [EntrantOwner(entrant) for entrant in found]
 
 
 async def every_extension(ctx: Context, contest: ContestId) -> list[Extension]:
     """Every extension in force in the contest that is more than nothing:
-    each approved contestant's who is in no team, and each team's that has
-    an approved member.
+    each approved entrant's.
     """
-    members = _members(contest)
-    people = await ctx.db.execute(
-        select(Contestant.time_extension_seconds, Contestant.extension_tasks).where(
-            Contestant.contest_id == contest,
-            Contestant.status == Status.APPROVED,
-            Contestant.time_extension_seconds > 0,
-            Contestant.user_id.not_in(members.with_only_columns(TeamMember.user_id)),
+    found = await ctx.db.execute(
+        select(Entrant.time_extension_seconds, Entrant.extension_tasks).where(
+            Entrant.contest_id == contest,
+            Entrant.status == Status.APPROVED,
+            Entrant.time_extension_seconds > 0,
         )
     )
-    teams = await ctx.db.execute(
-        select(Team.time_extension_seconds, Team.extension_tasks).where(
-            Team.contest_id == contest,
-            Team.time_extension_seconds > 0,
-            Team.id.in_(members.with_only_columns(TeamMember.team_id)),
-        )
-    )
-    return [extension_of(seconds, tasks) for seconds, tasks in [*people, *teams]]
+    return [extension_of(seconds, tasks) for seconds, tasks in found]
 
 
 async def reveal(
@@ -231,7 +171,7 @@ class Made:
     at: datetime
 
     def said(self) -> str:
-        return f"submission {self.number}, made {self.at.isoformat()}"
+        return f"submission {self.number}, made on {in_words(self.at)},"
 
 
 async def submissions(
@@ -276,13 +216,20 @@ async def check_contest(
     listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
     tasks = {each.name: TaskId(each.id) for each in listed}
     problems = [
-        Problem(path=f"tasks[{index}].id", message=f"{entry.id} is not a task of this contest.")
+        Problem(
+            path=f"tasks[{index}].id",
+            message=f"{entry.id} is not one of this contest's tasks. Remove it here, or make a "
+            f"task called {entry.id} first.",
+        )
         for index, entry in enumerate(after.tasks)
         if entry.id not in tasks
     ]
     problems += await _points(ctx, after, tasks)
     if before is None:
         return problems
+    if _drafted_after_start(before, after, ctx.now):
+        problems.append(Problem(path="state", message=STARTED_STAYS_OPEN))
+    problems += _sizes_moved(before, after, ctx.now)
     made = await submissions(ctx, contest, tasks)
     extensions = await every_extension(ctx, contest)
     for entry in before.tasks:
@@ -300,6 +247,62 @@ async def check_contest(
     return problems
 
 
+STARTED_STAYS_OPEN = (
+    "The contest has started, so it can no longer go back to draft: that would hide "
+    "the work entrants have done in it. Archive it instead to close it."
+)
+
+
+def _drafted_after_start(
+    before: ContestDefinition, after: ContestDefinition, now: datetime
+) -> bool:
+    """Whether a save takes a contest that was open, or archived since, and
+    has started, back to draft: entrants of an archived contest still read
+    it, so going through `archived` hides their work all the same.
+    """
+    return before.state is not State.DRAFT and before.start <= now and after.state is State.DRAFT
+
+
+def _sizes_moved(
+    before: ContestDefinition, after: ContestDefinition, now: datetime
+) -> list[Problem]:
+    """Once a contest that was open has started, a change of `entrants`
+    that would shut a team out mid-contest, whose roster is locked so it
+    cannot mend it: more members needed, fewer allowed, or a move between
+    everyone entering alone and entering in teams.
+    """
+    if before.state is State.DRAFT or before.start > now:
+        return []
+    old, new = before.entrants, after.entrants
+    problems: list[Problem] = []
+    if (old.most == 1) != (new.most == 1):
+        problems.append(
+            Problem(
+                path="entrants.most",
+                message="The contest has started, so it can no longer change between everyone "
+                "entering alone and entering in teams.",
+            )
+        )
+    elif new.most < old.most:
+        problems.append(
+            Problem(
+                path="entrants.most",
+                message=f"The contest has started, so a team can no longer be made smaller than "
+                f"{old.most} people: teams that have more would be shut out.",
+            )
+        )
+    if new.fewest > old.fewest:
+        problems.append(
+            Problem(
+                path="entrants.fewest",
+                message=f"The contest has started, so a team can no longer need more than "
+                f"{old.fewest} {'person' if old.fewest == 1 else 'people'}: teams that have "
+                "fewer could not submit, and can no longer add anyone.",
+            )
+        )
+    return problems
+
+
 def _dropped(
     before: ContestDefinition, entry: ContestTask, made: Collection[Made], now: datetime
 ) -> str | None:
@@ -308,10 +311,13 @@ def _dropped(
     """
     if released(before, entry.id, now):
         opened = before.release_of(entry)
-        return f"{entry.id} opened at {opened.isoformat()}; it cannot be hidden again."
+        return (
+            f"{entry.id} was released on {in_words(opened)}, so entrants have seen it, and it "
+            "cannot be taken out of the contest."
+        )
     if made:
         count = f"{len(made)} submission" + ("s" if len(made) > 1 else "")
-        return f"{entry.id} has {count}; it cannot be hidden, so keep its entry."
+        return f"{entry.id} has {count}, so it cannot be taken out of the contest."
     return None
 
 
@@ -331,7 +337,8 @@ async def _points(
             problems.append(
                 Problem(
                     path=f"tasks[{index}].worth",
-                    message=f"{entry.id} gives no points, so it has no worth: rank it on a value.",
+                    message=f"{entry.id} gives no points, so it cannot have a worth. Leave this "
+                    "empty, and rank it by a value instead.",
                 )
             )
         if entry.due is not None:
@@ -339,7 +346,8 @@ async def _points(
                 Problem(
                     path=f"tasks[{index}].due",
                     message=(
-                        f"{entry.id} gives no points, so a due would change nothing; use closes."
+                        f"{entry.id} gives no points, so a due time would change nothing. Give it "
+                        "a closing time instead."
                     ),
                 )
             )
@@ -373,7 +381,8 @@ def _moved(
         found.append(
             (
                 release_key,
-                f"{task} opened at {old_release.isoformat()}; it cannot be hidden again.",
+                f"{task} was released on {in_words(old_release)}, so entrants have seen it, "
+                "and a later release time would hide it again.",
             )
         )
     for submission in made:
@@ -387,7 +396,8 @@ def _moved(
             found.append(
                 (
                     "due",
-                    f"{task}'s {submission.said()} was on time; an earlier due would make it late.",
+                    f"{task}'s {submission.said()} was on time, and an earlier due time would make "
+                    "it late.",
                 )
             )
             break
@@ -396,7 +406,8 @@ def _moved(
             found.append(
                 (
                     closes_key,
-                    f"{task}'s {submission.said()} would be after the task closed; close it later.",
+                    f"{task}'s {submission.said()} would then be after the task closed. Close it "
+                    "later.",
                 )
             )
             break
@@ -405,8 +416,8 @@ def _moved(
         found.append(
             (
                 closes_key,
-                f"{task}'s hidden results were shown at {revealed.isoformat()}; a later close "
-                "would let rows submit knowing them.",
+                f"{task}'s hidden results were shown on {in_words(revealed)}, so a later "
+                "closing time would let entrants submit knowing them.",
             )
         )
     return found
@@ -433,20 +444,21 @@ async def refuse_extension(
             revealed = reveal_of(settings, entry, extensions)
             if revealed <= ctx.now and close_of(settings, entry, after) > ctx.now:
                 raise InvalidExtension(
-                    f"{entry.id}'s hidden results were shown at {revealed.isoformat()}; an "
-                    "extension on it would let this row submit knowing them."
+                    f"{entry.id}'s hidden results were shown on {in_words(revealed)}, so "
+                    "extra time on it would let this entrant submit knowing them."
                 )
         for number, at in own.get(entry.id, []):
             made = Made(after, number, at)
             due_now, due_then = due_of(settings, entry, after), due_of(settings, entry, before)
             if due_now is not None and at > due_now and (due_then is None or at <= due_then):
                 raise InvalidExtension(
-                    f"{entry.id}'s {made.said()} was on time; a shorter extension would make "
-                    f"it late."
+                    f"{entry.id}'s {made.said()} was on time, and less extra time would make "
+                    "it late."
                 )
             if at >= close_of(settings, entry, after):
                 raise InvalidExtension(
-                    f"{entry.id}'s {made.said()} would be after the task closed for this row."
+                    f"{entry.id}'s {made.said()} would then be after the task closed for this "
+                    "entrant."
                 )
 
 

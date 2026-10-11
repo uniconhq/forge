@@ -77,7 +77,7 @@ def test_a_tag_of_yaml_1_1_alone_is_refused(written: str) -> None:
     with pytest.raises(InvalidDefinition) as raised:
         load_mapping("task.yaml", f"value: {written}\n")
 
-    assert "is not one of YAML 1.2's core schema" in raised.value.errors[0]["message"]
+    assert "is not one Unicon reads" in raised.value.errors[0]["message"]
 
 
 def test_a_key_given_twice_is_refused_at_its_line() -> None:
@@ -85,7 +85,8 @@ def test_a_key_given_twice_is_refused_at_its_line() -> None:
         load_mapping("task.yaml", "name: a\ntest_groups: {}\nname: b\n")
 
     assert raised.value.errors[0]["message"] == (
-        "The file does not parse as YAML at line 3: the key 'name' is given twice."
+        "Unicon could not read the task's settings, because of a mistake on line 3: the setting "
+        "'name' is given twice."
     )
 
 
@@ -154,10 +155,10 @@ def test_a_time_is_read_in_every_spelling_a_definition_file_has_used(
 @pytest.mark.parametrize(
     ("written", "message"),
     [
-        ("2026-06-01", "Must carry a time and a timezone as well as a date"),
-        ("2026-06-01T09:00:00", "Must carry a timezone"),
-        ("2026-02-30T09:00:00Z", "Must be a date and time"),
-        ("tomorrow", "Must be a date and time"),
+        ("2026-06-01", "Give a time and a time zone as well as the date"),
+        ("2026-06-01T09:00:00", "Give the time zone with the time"),
+        ("2026-02-30T09:00:00Z", "Give a date and a time"),
+        ("tomorrow", "Give a date and a time"),
     ],
 )
 def test_a_time_that_is_not_one_says_what_it_lacks(written: str, message: str) -> None:

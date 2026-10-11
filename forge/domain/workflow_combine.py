@@ -86,12 +86,37 @@ def _merge[D: (WorkflowInput, TestField)](
     took otherwise gets a free id. The renames, old id to new.
     """
     earlier = dict(into)
-    shared = {key for key, declaration in declared.items() if earlier.get(key) == declaration}
+    shared = {key for key, declaration in declared.items() if _alike(earlier.get(key), declaration)}
+    for key in shared:
+        into[key] = _with_form_text(earlier[key], declared[key])
     rest = [key for key in declared if key not in shared]
     renames = _renames(rest, set(earlier), separator)
     for key in rest:
         into[renames[key]] = declared[key]
     return {**{key: key for key in shared}, **renames}
+
+
+_FORM_TEXT = {"title": None, "help": None, "unit": None}
+"""What an input says to the organiser's form, which changes nothing that
+grades, so two inputs that differ only there are declared alike."""
+
+
+def _alike[D: (WorkflowInput, TestField)](earlier: D | None, later: D) -> bool:
+    if earlier is None:
+        return False
+    if isinstance(earlier, WorkflowInput) and isinstance(later, WorkflowInput):
+        return earlier.model_copy(update=_FORM_TEXT) == later.model_copy(update=_FORM_TEXT)
+    return earlier == later
+
+
+def _with_form_text[D: (WorkflowInput, TestField)](earlier: D, later: D) -> D:
+    """The earlier declaration, with the later one's form text where the
+    earlier gives none.
+    """
+    if not isinstance(earlier, WorkflowInput) or not isinstance(later, WorkflowInput):
+        return earlier
+    missing = {key: getattr(later, key) for key in _FORM_TEXT if getattr(earlier, key) is None}
+    return earlier.model_copy(update=missing)
 
 
 def _free(key: str, taken: set[str], separator: str) -> str:

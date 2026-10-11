@@ -26,11 +26,13 @@ VALUE_TYPES = (Type.TEXT, Type.NUMBER, Type.BOOLEAN, Type.ENUM, Type.FILE, Type.
 SCALARS = frozenset({Type.TEXT, Type.NUMBER, Type.BOOLEAN, Type.ENUM})
 FILES = frozenset({Type.FILE, Type.FOLDER})
 RETIRED_TYPES = {
-    "code": "`code` is gone: a program is a `file` input, and its language an `enum` input.",
-    "file[]": "`file[]` is now `folder`.",
-    "dataset": "`dataset` is now `file` or `folder`.",
-    "jupyter": "`jupyter` is now `file`.",
-    "tests": "Tests are folders under `tests/`, declared by the workflow's `test` block.",
+    "code": "This type is no longer used: give a program as a file input, and its language "
+    "as an enum input.",
+    "file[]": "This type is now called folder.",
+    "dataset": "This type is no longer used: use file or folder instead.",
+    "jupyter": "This type is no longer used: use file instead.",
+    "tests": "Tests are no longer an input: the files each test has are the workflow's test "
+    "fields.",
 }
 
 
@@ -49,4 +51,4 @@ def retired_type(value: object) -> bool:
 
 def retired_type_message(value: object) -> str:
     found = value.get("type") if isinstance(value, dict) else value
-    return RETIRED_TYPES.get(str(found), "This type is not part of the format.")
+    return RETIRED_TYPES.get(str(found), "Unicon does not know this type.")

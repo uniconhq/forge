@@ -34,7 +34,7 @@ from forge.domain.errors import (
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM, User
 from forge.domain.ids import TaskId
-from forge.domain.names import UserOwner
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.sessions import Session
 from forge.domain.showing import SubmissionState
@@ -44,7 +44,7 @@ from forge.runtime.setup import Setup
 from forge.services import (
     boards,
     contest_home,
-    contestants,
+    entrants,
     files,
     gradings,
     identity,
@@ -107,8 +107,11 @@ def keys(*numbers: int) -> tuple[Fraction | None, ...]:
     return tuple(Fraction(number) for number in numbers)
 
 
-def contest(extra: str = "", entry: str = "") -> str:
-    return RUNNING.format(visibility="everyone") + entry + extra
+def contest(extra: str = "", entry: str = "", worth: str = "    worth: 100\n") -> str:
+    """The running contest with `sum` worth 100, as the arithmetic here
+    reads it, though its groups total 200.
+    """
+    return RUNNING.format(visibility="everyone") + worth + entry + extra
 
 
 async def _task_yaml(acme: Acme, task: TaskId) -> bytes:
@@ -141,11 +144,15 @@ async def _three_groups(setup: Setup, acme: Acme, task: TaskId) -> Published:
 
 
 async def _submit(setup: Setup, acme: Acme, entered: Entered, key: str) -> int:
-    made = await upload(setup, acme.fake, entered.session, entered.task, key.encode())
+    return await _submit_as(setup, acme, entered.session, entered.task, key)
+
+
+async def _submit_as(setup: Setup, acme: Acme, session: Session, task: TaskId, key: str) -> int:
+    made = await upload(setup, acme.fake, session, task, key.encode())
     submission = await submissions.submit(
         setup,
-        entered.session,
-        entered.task,
+        session,
+        task,
         {
             "submission": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
@@ -197,7 +204,7 @@ async def test_a_contestant_reads_their_own_row_with_its_counts_and_the_hidden_b
     standings, final = await boards.seen(setup, ranked.session, SPRING)
 
     (bob,) = standings.rows
-    assert bob.owner == UserOwner(8)
+    assert bob.owner == EntrantOwner(ranked.entrant)
     assert (bob.cells["sum"].grading, bob.cells["sum"].submissions) == (0, (1,))
     assert final.nothing_shown
     assert final.shown_at == END
@@ -238,9 +245,9 @@ async def test_an_organiser_reads_now_every_row_and_final_as_every_task_revealed
 async def _contestant(setup: Setup, acme: Acme, user_id: int, name: str) -> Session:
     acme.fake.add_user(user_id, name)
     session = await signed_in(setup, acme.fake, user_id)
-    await contestants.register(setup, session, SPRING)
+    entrant = await entrants.register(setup, session, SPRING)
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await contestants.approve(setup, manager, SPRING, user_id)
+    await entrants.approve(setup, manager, SPRING, entrant.id)
     return session
 
 
@@ -249,11 +256,12 @@ async def test_an_organiser_picks_a_row_of_the_contest_and_reads_the_boards_it_s
 ) -> None:
     await write_contest(acme.fake, contest(BOARDS + "  - {name: Staff, who: organisers}\n"))
     observer = await organiser(setup, acme.fake, 7, Scope("acme", "spring"))
-    await _contestant(setup, acme, 30, "cyd")
+    theirs = (await entrants.mine(setup, await _contestant(setup, acme, 30, "cyd"), SPRING)).entrant
+    assert theirs is not None
 
     with pytest.raises(NotFound):
-        await boards.organised(setup, observer, SPRING, row=UserOwner(31))
-    picked = await boards.organised(setup, observer, SPRING, row=UserOwner(30))
+        await boards.organised(setup, observer, SPRING, row=EntrantOwner(uuid.uuid4()))
+    picked = await boards.organised(setup, observer, SPRING, row=EntrantOwner(theirs.id))
 
     assert [each.now.board.name for each in picked] == ["Standings", "Final"]
     bob = next(row for row in picked[0].now.rows if row.name == "bob")
@@ -371,7 +379,7 @@ async def test_relative_credit_is_against_the_best_of_the_rows_candidates_only(
     cyd = await _contestant(setup, acme, 30, "cyd")
     await _submit(setup, acme, entered, "key-0001-bob")
     await _grade_waiting(setup, _main(time_ms=10))
-    await _submit(setup, acme, Entered(cyd, entered.task), "key-0001-cyd")
+    await _submit_as(setup, acme, cyd, entered.task, "key-0001-cyd")
     await _grade_waiting(setup, _main(time_ms=20))
 
     def points(standings: Any) -> dict[str, Fraction | None]:
@@ -415,7 +423,7 @@ async def test_relative_credit_counts_a_fallen_back_result_while_the_fallback_ho
     cyd = await _contestant(setup, acme, 30, "cyd")
     await _submit(setup, acme, entered, "key-0001-bob")
     await _grade_waiting(setup, _main(time_ms=10))
-    await _submit(setup, acme, Entered(cyd, entered.task), "key-0001-cyd")
+    await _submit_as(setup, acme, cyd, entered.task, "key-0001-cyd")
     await _grade_waiting(setup, _main(time_ms=20))
     manager = await _manager(setup, acme)
     broken = await _broken_retry(setup, manager, "key-0001-bob")
@@ -546,7 +554,7 @@ async def test_a_tasks_marks_are_not_lowered_below_what_a_row_holds(
     refused = await _refused(setup, acme, contest(BOARDS, "    marks: 1\n"))
     dropped = await _refused(setup, acme, contest(BOARDS))
 
-    said = "1 row holds 2 marks on sum; it cannot take fewer."
+    said = "1 entrant has marked 2 submissions on sum, so it cannot allow fewer marks."
     assert refused == [("tasks[0].marks", said)]
     assert dropped == [("tasks[0]", said)]
     assert await _write(setup, acme, contest(BOARDS, "    marks: 3\n"))
@@ -564,8 +572,8 @@ async def test_a_lower_is_better_value_first_over_two_tasks_is_refused_on_the_co
     alone = "leaderboards:\n  - {name: Fastest, tasks: [sum], order: [time_ms]}\n"
 
     said = (
-        "Fastest ranks time_ms, which is lower is better, over more than one task: rank it on "
-        "a board of one task."
+        "The leaderboard Fastest ranks first by time_ms, for which lower is better, over more "
+        "than one task. Rank by time_ms on a leaderboard of one task."
     )
     assert refused == [("leaderboards[0].order[0]", said), ("leaderboards[0].order[0]", said)]
     assert await _write(setup, acme, contest(alone, "  - id: product\n"))
@@ -586,8 +594,9 @@ async def test_a_tasks_save_is_refused_where_a_board_ranks_what_its_groups_hide(
     assert [(error["path"], error["message"]) for error in refused.errors] == [
         (
             "test_groups",
-            "Fast ranks time_ms over live, so sum needs a group shown always, since a verdict "
-            "group's tests show only at the reveal.",
+            "The leaderboard Fast ranks by time_ms, counting the results shown during the "
+            "contest, so sum needs a test group whose results entrants see as soon as a grading "
+            "ends, since a group shown as an outcome shows its tests only at the reveal.",
         )
     ]
 
@@ -595,7 +604,7 @@ async def test_a_tasks_save_is_refused_where_a_board_ranks_what_its_groups_hide(
 async def test_a_tasks_save_reports_each_groups_most_its_reveal_and_the_boards_it_moves(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    await write_contest(acme.fake, contest(BOARDS))
+    await write_contest(acme.fake, contest(BOARDS, worth=""))
 
     saved = await _three_groups(setup, acme, entered.task)
     current = await _task_yaml(acme, entered.task)
@@ -610,14 +619,14 @@ async def test_a_tasks_save_reports_each_groups_most_its_reveal_and_the_boards_i
     )
 
     assert saved.notes[-4:] == (
-        "Each group's most points: main 50, small 15, large 35.",
-        "sum reveals at 2026-09-26T15:00:00+00:00.",
-        "This save moves Standings.",
-        "This save moves Final.",
+        "The most points each test group gives: main 100, small 30, large 70.",
+        "sum shows its hidden results on 26 September 2026 at 15:00 UTC.",
+        "This save changes the leaderboard Standings.",
+        "This save changes the leaderboard Final.",
     )
     assert isinstance(pointless, Published), pointless
-    assert "Standings counts nothing from sum." in pointless.notes
-    assert "Final counts nothing from sum." in pointless.notes
+    assert "The leaderboard Standings counts nothing from sum." in pointless.notes
+    assert "The leaderboard Final counts nothing from sum." in pointless.notes
 
 
 async def test_the_contests_save_answers_each_board_that_counts_nothing_from_a_task(
@@ -627,11 +636,11 @@ async def test_the_contests_save_answers_each_board_that_counts_nothing_from_a_t
     pointless = current[: current.index(b"test_groups:")] + b"test_groups:\n  main: {}\n"
     assert isinstance(await _save(setup, acme, entered.task, {"task.yaml": pointless}), Published)
 
-    written = await _write(setup, acme, contest(BOARDS))
+    written = await _write(setup, acme, contest(BOARDS, worth=""))
 
     assert written.notes == (
-        "Standings counts nothing from sum.",
-        "Final counts nothing from sum.",
+        "The leaderboard Standings counts nothing from sum.",
+        "The leaderboard Final counts nothing from sum.",
     )
     (standings, final) = await boards.organised(setup, acme.ada, SPRING)
     assert standings.notes + final.notes == written.notes
@@ -667,7 +676,9 @@ async def test_an_organiser_reads_a_hidden_groups_points_and_tests_before_the_re
 ) -> None:
     observer = _observer_of(acme, Scope("acme", "spring", "sum"))
 
-    seen = await submissions.organised(setup, observer, ranked.task, UserOwner(8), 1)
+    seen = await submissions.organised(
+        setup, observer, ranked.task, EntrantOwner(ranked.entrant), 1
+    )
     own = await submissions.one(setup, ranked.session, ranked.task, 1)
 
     assert seen.grading is not None and own.grading is not None
@@ -698,7 +709,11 @@ async def test_a_contestants_own_read_is_unchanged_by_an_organisers(
     before = await submissions.one(setup, ranked.session, ranked.task, 1)
 
     await submissions.organised(
-        setup, _observer_of(acme, Scope("acme", "spring")), ranked.task, UserOwner(8), 1
+        setup,
+        _observer_of(acme, Scope("acme", "spring")),
+        ranked.task,
+        EntrantOwner(ranked.entrant),
+        1,
     )
     after = await submissions.one(setup, ranked.session, ranked.task, 1)
 
@@ -716,7 +731,7 @@ async def test_an_organiser_without_the_observer_role_at_the_task_is_refused(
     elsewhere = _observer_of(acme, Scope("acme", "spring", "product"))
 
     with pytest.raises(Forbidden):
-        await submissions.organised(setup, elsewhere, ranked.task, UserOwner(8), 1)
+        await submissions.organised(setup, elsewhere, ranked.task, EntrantOwner(ranked.entrant), 1)
     with pytest.raises(Forbidden):
         await gradings.list(setup, elsewhere, ranked.task)
 
@@ -726,7 +741,7 @@ async def test_a_row_with_no_such_submission_is_no_such_submission(
 ) -> None:
     observer = _observer_of(acme, Scope("acme", "spring"))
 
-    for owner, number in ((UserOwner(8), 3), (UserOwner(7), 1)):
+    for owner, number in ((EntrantOwner(ranked.entrant), 3), (EntrantOwner(uuid.uuid4()), 1)):
         with pytest.raises(NotFound):
             await submissions.organised(setup, observer, ranked.task, owner, number)
 

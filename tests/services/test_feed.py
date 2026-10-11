@@ -1,11 +1,12 @@
 """A contest's gradings read together, over a real Postgres and the fake.
 The feed lists every grading of the contest's tasks the organiser observes,
-newest first, each attempt a row of its own with who submitted it, a
-contestant by username or a team by name, and narrows by task, by who
-submitted and by status, an overdue or lost grading reading as a system
-error there as everywhere. The queue depth counts the waiting ones by
-status in one read. An organiser of one task sees that task's alone, and
-someone with no role in the contest is refused.
+newest first, each attempt a row of its own with whose it is, the entrant
+by the name it is shown under and the member who submitted it by username,
+and narrows by task, by the member who submitted, by entrant and by status,
+an overdue or lost grading reading as a system error there as everywhere.
+The queue depth counts the waiting ones by status in one read. An organiser
+of one task sees that task's alone, and someone with no role in the contest
+is refused.
 """
 
 import uuid
@@ -30,7 +31,7 @@ from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.sessions import Session
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import contestants, gradings, submissions, teams
+from forge.services import entrants, gradings, submissions
 from forge.services.access import Organiser
 from forge.testing import FakeClock
 from tests.services.conftest import (
@@ -72,12 +73,12 @@ async def _set(setup: Setup, grading: uuid.UUID, **values: Any) -> None:
 
 
 async def _enter(setup: Setup, acme: Acme, user_id: int, name: str) -> Session:
-    """Someone else registered and approved in acme/spring."""
+    """Someone else entered alone in acme/spring, and approved."""
     acme.fake.add_user(user_id, name)
     person = await signed_in(setup, acme.fake, user_id)
-    await contestants.register(setup, person, SPRING)
+    entrant = await entrants.register(setup, person, SPRING)
     manager = await organiser(setup, acme.fake, 7, CONTEST, Role.MANAGER)
-    await contestants.approve(setup, manager, SPRING, user_id)
+    await entrants.approve(setup, manager, SPRING, entrant.id)
     return person
 
 
@@ -130,12 +131,13 @@ async def test_the_feed_lists_every_attempt_newest_first_with_who_submitted_it(
         busy["retried"],
         busy["first"],
     ]
-    assert [(entry.by.user_id, entry.by.team, entry.by.name) for entry in listed] == [
-        (20, None, "carol"),
-        (8, None, "bob"),
-        (8, None, "bob"),
-        (8, None, "bob"),
+    assert [(entry.by.entrant_name, entry.by.user_id, entry.by.username) for entry in listed] == [
+        ("carol", 20, "carol"),
+        ("bob", 8, "bob"),
+        ("bob", 8, "bob"),
+        ("bob", 8, "bob"),
     ]
+    assert {entry.by.entrant for entry in listed[1:]} == {entered.entrant}
     first, retried = listed[3].grading, listed[2].grading
     # The two attempts of one submission group by its workspace and number.
     assert (first.workspace, first.submission_number, first.attempt) == (
@@ -230,44 +232,52 @@ async def test_the_queue_depth_counts_the_waiting_gradings_by_status(
     assert await gradings.queue_depth(setup, observer, SPRING) == gradings.QueueDepth(0, 2)
 
 
-async def test_a_teams_submission_is_shown_as_the_team(
+ENTRANTS_OF_TWO = RUNNING + "entrants: {{most: 2}}\n"
+
+
+async def test_an_entrants_submission_is_shown_as_the_entrant_and_its_member(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    await write_contest(acme.fake, RUNNING.format(visibility="everyone") + "team_size: 2\n")
-    team = await teams.create(setup, entered.session, SPRING, "Adders")
+    await write_contest(acme.fake, ENTRANTS_OF_TWO.format(visibility="everyone"))
+    manager = await organiser(setup, acme.fake, 7, CONTEST, Role.MANAGER)
+    await entrants.organise_rename(setup, manager, SPRING, entered.entrant, "Adders")
     made = await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
     observer = await organiser(setup, acme.fake, 7, CONTEST, Role.OBSERVER)
 
-    (entry,) = await gradings.feed(setup, observer, SPRING, team=team.id)
+    (entry,) = await gradings.feed(setup, observer, SPRING, entrant=entered.entrant)
 
-    assert (entry.grading.id, entry.by) == (made, gradings.Submitter(None, team.id, "Adders"))
+    assert (entry.grading.id, entry.by) == (
+        made,
+        gradings.Submitter(entered.entrant, "Adders", 8, "bob"),
+    )
+    assert entry.grading.submitted_by == 8
+    assert await gradings.feed(setup, observer, SPRING, entrant=uuid.uuid4()) == ()
 
 
-async def test_a_contestants_gradings_include_their_teams_while_they_were_in_it(
+async def test_a_members_gradings_are_the_submissions_they_made_and_the_entrants_are_all(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
-    await write_contest(acme.fake, RUNNING.format(visibility="everyone") + "team_size: 2\n")
-    team = await teams.create(setup, entered.session, SPRING, "Adders")
-    by_team = await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
-    clock.advance(timedelta(seconds=1))
     carol = await _enter(setup, acme, 20, "carol")
-    await teams.request(setup, carol, SPRING, team.id)
-    await teams.approve(setup, entered.session, SPRING, team.id, 20)
-    clock.advance(timedelta(seconds=1))
-    await teams.leave(setup, entered.session, SPRING)
+    await write_contest(acme.fake, ENTRANTS_OF_TWO.format(visibility="everyone"))
+    manager = await organiser(setup, acme.fake, 7, CONTEST, Role.MANAGER)
+    (hers,) = [
+        entrant
+        for entrant in await entrants.list(setup, manager, SPRING)
+        if entrant.id != entered.entrant
+    ]
+    await entrants.move_member(setup, manager, SPRING, hers.id, 20, entered.entrant)
+    by_bob = await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
     clock.advance(timedelta(seconds=31))
     by_carol = await _submit(setup, acme, carol, entered.task, "key-0002-bbbb")
-    clock.advance(timedelta(seconds=31))
-    alone = await _submit(setup, acme, entered.session, entered.task, "key-0003-cccc")
     observer = await organiser(setup, acme.fake, 7, CONTEST, Role.OBSERVER)
 
-    async def ids(user: str) -> list[uuid.UUID]:
-        found = await gradings.feed(setup, observer, SPRING, user=user)
+    async def ids(**filters: Any) -> list[uuid.UUID]:
+        found = await gradings.feed(setup, observer, SPRING, **filters)
         return [entry.grading.id for entry in found]
 
-    # Bob's own and the team's from before he left; carol's from when she joined.
-    assert await ids("bob") == [alone, by_team]
-    assert await ids("carol") == [by_carol]
+    assert await ids(user="bob") == [by_bob]
+    assert await ids(user="carol") == [by_carol]
+    assert await ids(entrant=entered.entrant) == [by_carol, by_bob]
 
 
 async def test_a_task_the_contest_no_longer_lists_keeps_its_name_and_has_no_label(
@@ -291,13 +301,13 @@ async def test_a_tasks_gradings_say_who_submitted_each_as_the_feed_does(
     listed = await gradings.list(setup, observer, entered.task)
 
     assert [
-        (entry.grading.id, entry.by.name, entry.task_name, entry.label) for entry in listed
+        (entry.grading.id, entry.by.username, entry.task_name, entry.label) for entry in listed
     ] == [
         (busy["by_carol"], "carol", "sum", "A"),
         (busy["retried"], "bob", "sum", "A"),
         (busy["first"], "bob", "sum", "A"),
     ]
-    assert listed[0].by == gradings.Submitter(20, None, "carol")
+    assert (listed[0].by.entrant_name, listed[0].by.user_id) == ("carol", 20)
 
 
 async def test_a_filter_by_status_finds_each_grading_as_the_unfiltered_feed_reads_it(

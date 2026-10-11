@@ -1,8 +1,7 @@
 """Whether a row sees a task and may submit to it, and when its submissions
 are late, worked out from `contest.yaml` and the clock on every read
 (TASK-FORMAT.md section 1.1). Nobody releases a task and nothing fires when
-the moment comes. A row is a contestant, or a team when the contest has
-teams.
+the moment comes. A row is an entrant.
 
 A task's timeline is its entry in the contest's `tasks`. It is released once
 its contest has been published and has started and the entry's
@@ -114,6 +113,19 @@ def late_days(due: datetime | None, at: datetime) -> int:
     if due is None or at <= due:
         return 0
     return math.ceil((at - due) / DAY)
+
+
+def in_words(moment: datetime) -> str:
+    """A moment as a sentence says it, in the offset it was written with:
+    `26 September 2026 at 15:00 UTC`, or `... at 03:04 UTC+08:00`.
+    """
+    offset = moment.utcoffset() or timedelta(0)
+    zone = "UTC"
+    if offset:
+        minutes = int(abs(offset).total_seconds()) // 60
+        sign = "-" if offset < timedelta(0) else "+"
+        zone += f"{sign}{minutes // 60:02d}:{minutes % 60:02d}"
+    return f"{moment.day} {moment:%B %Y} at {moment:%H:%M} {zone}"
 
 
 def reveal_of(

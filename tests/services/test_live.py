@@ -31,7 +31,16 @@ from forge.runtime.setup import Setup
 from forge.services import events, gradings, live, runs, sessions, submissions
 from forge.settings import Settings
 from forge.testing import CALLBACK_PATH, FakeClock
-from tests.services.conftest import SPRING, Acme, Entered, make_task, organiser, signed_in, upload
+from tests.services.conftest import (
+    SPRING,
+    Acme,
+    Entered,
+    make_task,
+    organiser,
+    segment,
+    signed_in,
+    upload,
+)
 
 SOURCE = b"print(1)\n"
 
@@ -112,7 +121,12 @@ async def test_each_status_change_of_a_grading_publishes_its_id_once(
         1,
     ]
     nudge = cancelled[0]
-    assert (nudge.user, nudge.scope, nudge.contest) == (8, task_scope(entered.task), None)
+    assert (nudge.user, nudge.entrant, nudge.scope, nudge.contest) == (
+        None,
+        str(entered.entrant),
+        task_scope(entered.task),
+        None,
+    )
 
 
 async def test_a_runs_progress_reaches_the_tasks_organisers_and_never_its_contestant(
@@ -137,14 +151,19 @@ async def test_a_runs_progress_reaches_the_tasks_organisers_and_never_its_contes
     await runs.callback(setup, grading, f"Bearer {token}", json.dumps(report).encode())
     (progressed,) = await _heard(listening)
 
-    contestant = Audience(user_id=8, grants=(), contests=frozenset({SPRING}))
+    contestant = Audience(
+        user_id=8,
+        grants=(),
+        contests=frozenset({SPRING}),
+        entrants=frozenset({str(entered.entrant)}),
+    )
     observer = Audience(
         user_id=7,
         grants=(RoleGrant(task_scope(entered.task), Role.OBSERVER),),
         contests=frozenset(),
     )
     assert (progressed.kind, progressed.id) == (NudgeKind.GRADING, str(grading))
-    assert (progressed.user, progressed.team) == (None, None)
+    assert (progressed.user, progressed.entrant) == (None, None)
     assert not hears(contestant, progressed)
     assert hears(observer, progressed)
 
@@ -175,7 +194,8 @@ async def test_a_push_nudges_who_may_hear_of_each_kind_of_thread(
 ) -> None:
     hidden = await make_task(setup, acme, "hidden")
 
-    await events.publish(setup, OrgId("acme"), "issue_comment", _event("spring.u8.desk", 2))
+    desk = f"spring.{segment(entered.entrant)}.desk"
+    await events.publish(setup, OrgId("acme"), "issue_comment", _event(desk, 2))
     await events.publish(setup, OrgId("acme"), "issues", _event("spring.contest"))
     await events.publish(setup, OrgId("acme"), "issues", _event("spring.sum.task"))
     await events.publish(setup, OrgId("acme"), "issues", _event("spring.hidden.task"))
@@ -184,9 +204,9 @@ async def test_a_push_nudges_who_may_hear_of_each_kind_of_thread(
     await events.publish(setup, OrgId("acme"), "issues", _event("spring.contest", label="bug"))
 
     asked, contest, released, unreleased = await _heard(listening)
-    assert (asked.kind, asked.user, asked.scope, asked.contest) == (
+    assert (asked.kind, asked.entrant, asked.scope, asked.contest) == (
         NudgeKind.CLARIFICATION,
-        8,
+        str(entered.entrant),
         contest_scope(SPRING),
         None,
     )
@@ -278,6 +298,7 @@ async def test_an_organisers_audience_holds_their_roles_and_a_contestants_their_
     ada = await live.audience(setup, await signed_in(setup, acme.fake, 7))
 
     assert (bob.user_id, bob.contests) == (8, frozenset({SPRING}))
+    assert bob.entrants == frozenset({str(entered.entrant)})
     assert ada.contests == frozenset()
     assert RoleGrant(Scope("acme"), Role.ADMIN) in ada.grants
 

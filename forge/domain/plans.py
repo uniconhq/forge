@@ -292,15 +292,17 @@ def path_problem(value: object, *, folder: bool) -> str | None:
     folder's path ends in `/` and a file's does not.
     """
     if not isinstance(value, str) or not value:
-        return "Must be a path in the task repo, such as data/ or checker/checker.cpp."
+        return (
+            "Give the path of a file or folder in the task, such as data/ or checker/checker.cpp."
+        )
     if value.startswith("/") or "\\" in value:
-        return "Must be a path from the top of the task repo, with forward slashes."
+        return "Give the path from the top of the task's files, with forward slashes (/)."
     if any(part in ("", ".", "..") for part in value.removesuffix("/").split("/")):
-        return "Must not have empty, . or .. parts."
+        return "The path cannot have empty, . or .. parts."
     if folder and not value.endswith("/"):
-        return "Names a folder, so it ends with /, such as data/."
+        return "This is a folder, so its path ends with /, such as data/."
     if not folder and value.endswith("/"):
-        return "Names one file, so it does not end with /."
+        return "This is one file, so its path does not end with /."
     return None
 
 
@@ -367,8 +369,8 @@ def read_tests(
             problems.append(
                 Problem(
                     path=path,
-                    message=f"{where} holds only folders: tests/<group>/<test>/ and the "
-                    "test's entries in it.",
+                    message=f"{where} can hold only folders: one for each test group, with "
+                    "one for each test inside. Move this into a test's folder.",
                 )
             )
             continue
@@ -388,7 +390,9 @@ def read_tests(
         if bad_name:
             problems.append(
                 Problem(
-                    path=where, message=f"{bad_name[0]!r} is not a name: letters, digits, _ and -."
+                    path=where,
+                    message=f"{bad_name[0]!r} cannot be used as a name. Use only letters, digits, "
+                    "hyphens (-) and underscores (_).",
                 )
             )
             continue
@@ -396,8 +400,9 @@ def read_tests(
             problems.append(
                 Problem(
                     path=where,
-                    message=f"A test's id, <group>/<test>, is at most {TEST_ID_MAX} characters; "
-                    f"this one has {len(group) + 1 + len(test)}.",
+                    message=f"A test's group and name together, <group>/<test>, can be at "
+                    f"most {TEST_ID_MAX} characters, and these are {len(group) + 1 + len(test)}. "
+                    "Shorten them.",
                 )
             )
             continue
@@ -428,7 +433,8 @@ def _test(
             problems.append(
                 Problem(
                     path=f"{where}{found[0]}",
-                    message=f"The test {group}/{test} has an entry for no field: {found[0]}.",
+                    message=f"The test {group}/{test} has {found[0]}, which is none of the "
+                    "workflow's test fields. Rename it after one, or remove it.",
                 )
             )
             continue
@@ -436,28 +442,29 @@ def _test(
             problems.append(
                 Problem(
                     path=where,
-                    message=f"The test {group}/{test} gives {name} twice: {', '.join(found)}.",
+                    message=f"The test {group}/{test} has {name} more than once: "
+                    f"{', '.join(found)}. Keep one.",
                 )
             )
             continue
         is_folder = found[0].endswith("/")
         if is_folder != (declared.type is Type.FOLDER):
             wanted = "a folder" if declared.type is Type.FOLDER else "a file"
-            problems.append(
-                Problem(path=f"{where}{found[0]}", message=f"{name} is {wanted} field.")
-            )
+            problems.append(Problem(path=f"{where}{found[0]}", message=f"{name} must be {wanted}."))
             continue
         files[name] = f"{where}{found[0]}"
     for name, declared in fields.items():
         if declared.type in FILES and name not in files and name not in entries:
-            problems.append(Problem(path=where, message=f"The test {group}/{test} has no {name}."))
+            problems.append(
+                Problem(path=where, message=f"The test {group}/{test} has no {name}. Add it.")
+            )
     has_yaml = "test" in entries and TEST_FILE in entries["test"]
     if has_yaml and not scalar_fields:
         problems.append(
             Problem(
                 path=f"{where}{TEST_FILE}",
-                message="The workflow's tests have no text, number, true-or-false or enum "
-                "field, so a test has no test.yaml.",
+                message="The workflow's tests have no values besides their files, so this "
+                "test has nothing to give here. Remove it.",
             )
         )
     elif scalar_fields:
@@ -473,7 +480,9 @@ def _scalars(
     at = f"{where}{TEST_FILE}"
     if text is None:
         problems.append(
-            Problem(path=where, message=f"The test needs a test.yaml giving {', '.join(fields)}.")
+            Problem(
+                path=where, message=f"This test needs values for {', '.join(fields)}. Add them."
+            )
         )
         return {}
     try:
@@ -483,14 +492,16 @@ def _scalars(
         return {}
     found: dict[str, object] = {}
     for key in sorted(set(document) - set(fields)):
-        problems.append(Problem(path=at, message=f"{key} is not a field of the workflow's tests."))
+        problems.append(
+            Problem(path=at, message=f"{key} is not one of the workflow's test fields. Remove it.")
+        )
     for name, declared in fields.items():
         if name not in document:
-            problems.append(Problem(path=at, message=f"{name} is not given."))
+            problems.append(Problem(path=at, message=f"This test needs a value for {name}."))
             continue
         problem = _scalar_problem(declared.type, declared.options, document[name])
         if problem is not None:
-            problems.append(Problem(path=at, message=f"{name}: {problem}"))
+            problems.append(Problem(path=at, message=f"The value for {name} {problem}."))
             continue
         found[name] = document[name]
     return found
@@ -499,16 +510,16 @@ def _scalars(
 def _scalar_problem(kind: Type, options: Sequence[str] | None, value: object) -> str | None:
     match kind:
         case Type.TEXT:
-            return None if isinstance(value, str) else "Must be text."
+            return None if isinstance(value, str) else "must be text"
         case Type.NUMBER:
-            return None if is_number(value) else "Must be a number."
+            return None if is_number(value) else "must be a number"
         case Type.BOOLEAN:
-            return None if isinstance(value, bool) else "Must be true or false."
+            return None if isinstance(value, bool) else "must be true or false"
         case Type.ENUM:
             return (
-                None if value in (options or ()) else f"Must be one of {', '.join(options or ())}."
+                None if value in (options or ()) else f"must be one of {', '.join(options or ())}"
             )
-    return "Must be a value of its type."
+    return "is not a value of its type"
 
 
 def group_problems(
@@ -523,7 +534,7 @@ def group_problems(
         problems.append(
             Problem(
                 path="test_groups",
-                message="The task has no tests/ folder: add tests/<group>/<test>/.",
+                message="The task has no tests yet. Add a test to each test group.",
             )
         )
         return problems
@@ -549,8 +560,8 @@ def group_problems(
         problems.append(
             Problem(
                 path=f"tests/{folder}/",
-                message=f"{folder} is a folder of tests/ but not a group in test_groups: list it, "
-                "or move its tests.",
+                message=f"{folder} holds tests but is not one of the task's test groups. Add "
+                f"a test group called {folder}, or move its tests.",
             )
         )
     for name, group in task.test_groups.items():
@@ -558,7 +569,7 @@ def group_problems(
             problems.append(
                 Problem(
                     path=f"test_groups.{name}",
-                    message=f"There is no folder tests/{name}/ with a test in it.",
+                    message=f"The test group {name} has no tests. Add a test to it.",
                 )
             )
             continue
@@ -566,7 +577,10 @@ def group_problems(
         # of its group here, so its problem is not said twice.
         if not by_group.get(name) and not test_folders.get(name):
             problems.append(
-                Problem(path=f"test_groups.{name}", message=f"tests/{name}/ holds no test.")
+                Problem(
+                    path=f"test_groups.{name}",
+                    message=f"The test group {name} has no tests. Add a test to it.",
+                )
             )
         for weighted in sorted((group.test_weights or {}).keys()):
             if weighted not in by_group.get(name, []) and weighted not in test_folders.get(
@@ -575,7 +589,8 @@ def group_problems(
                 problems.append(
                     Problem(
                         path=f"test_groups.{name}.test_weights.{weighted}",
-                        message=f"{name}/{weighted} is not a test of {name}.",
+                        message=f"{name}/{weighted} is not a test in the test group {name}. "
+                        "Add the test, or remove its weight.",
                     )
                 )
     return problems
@@ -611,14 +626,18 @@ def check_workflow(
         declaration = primitives.get(str(step.use))
         if declaration is None:
             problems.append(
-                Problem(path=path_text((*where, "use")), message=f"{step.use} is not a primitive.")
+                Problem(
+                    path=path_text((*where, "use")),
+                    message=f"{step.use} is not a primitive Unicon knows. Check its owner, name "
+                    "and version.",
+                )
             )
             continue
         for name in sorted(set(step.with_) - set(declaration.inputs)):
             problems.append(
                 Problem(
                     path=path_text((*where, "with", name)),
-                    message=f"{step.use} has no input {name}.",
+                    message=f"{step.use} has no input called {name}. Remove it.",
                 )
             )
         for name, port in declaration.inputs.items():
@@ -626,7 +645,7 @@ def check_workflow(
                 problems.append(
                     Problem(
                         path=path_text((*where, "with", name)),
-                        message=f"{step.use} needs the input {name}.",
+                        message=f"{step.use} needs a value for its input {name}.",
                     )
                 )
         raised = {source.input for source in declaration.limits_from.values()}
@@ -663,10 +682,11 @@ def _kind_of(
         case "inputs":
             declared = workflow.inputs.get(found.name)
             if declared is None:
-                raise _Refused(f"{found.name} is not an input of the workflow.")
+                raise _Refused(f"The workflow has no input called {found.name}.")
             if declared.per_test and not per_test:
                 raise _Refused(
-                    f"{found.name} is given once per test, so only a per-test step reads it."
+                    f"{found.name} is given once for each test, so only a step that runs for "
+                    "each test can read it."
                 )
             options = frozenset(declared.options) if declared.options else None
             source: Literal["input", "contestant"] = (
@@ -676,25 +696,27 @@ def _kind_of(
         case "test":
             field_ = workflow.test.get(found.name)
             if field_ is None:
-                raise _Refused(f"{found.name} is not a field of the workflow's tests.")
+                raise _Refused(f"{found.name} is not one of the workflow's test fields.")
             if not per_test:
-                raise _Refused("test.<field> is there only in a step that runs per test.")
+                raise _Refused("Only a step that runs for each test can read a test's fields.")
             options = frozenset(field_.options) if field_.options else None
             return Kind(field_.type, options, "test")
     assert found.output is not None
     known = outputs.get(found.name)
     if known is None:
-        raise _Refused(f"{found.name} is not a step before this one.")
+        raise _Refused(f"There is no step called {found.name} before this one.")
     declaration, step_per_test = known
     port = declaration.outputs.get(found.output)
     if port is None:
-        raise _Refused(f"The step {found.name} has no output {found.output}.")
+        raise _Refused(f"The step {found.name} has no output called {found.output}.")
     if step_per_test and not per_test:
         raise _Refused(
-            f"The step {found.name} runs per test, and a step that runs once cannot read it."
+            f"The step {found.name} runs for each test, so a step that runs once cannot read it."
         )
     if port.type is Type.OUTCOME:
-        raise _Refused("A step's outcome is read by the harness, not given to another step.")
+        raise _Refused(
+            "A step's outcome is read by Unicon itself, and cannot be given to another step."
+        )
     options = frozenset(port.options) if port.options else None
     return Kind(port.type, options, "step", port.optional)
 
@@ -710,14 +732,14 @@ def _check_value(
     kind = _raw_kind(workflow, outputs, per_test, raw)
     if raises_limit and kind.source in ("contestant", "step", "text"):
         if kind.source == "contestant":
-            raise _Refused(
-                "This port raises a limit, so the task must give it, not the contestant."
-            )
-        raise _Refused("This port raises a limit, so it must be known at the save.")
+            raise _Refused("This value raises a limit, so the task must give it, not the entrant.")
+        raise _Refused("This value raises a limit, so it must be known when the task is saved.")
     if kind.optional and not port.optional:
         if kind.source == "step":
-            raise _Refused("The output may be absent, so it feeds only an optional port.")
-        raise _Refused("The input is optional, so it feeds only an optional port.")
+            raise _Refused(
+                "That output may be missing, so it can be given only to an optional port."
+            )
+        raise _Refused("That input is optional, so it can be given only to an optional port.")
     _fits(kind, port, raw)
 
 
@@ -733,11 +755,11 @@ def _raw_kind(
         return Kind(Type.NUMBER)
     if raw is None or isinstance(raw, list | dict):
         raise _Refused(
-            "Must be text, a number, true or false, or a ${{ }} reference; not a list, a "
-            "mapping or nothing."
+            "Give text, a number, true or false, or a ${{ }} reference, not a list, a set "
+            "of settings or nothing."
         )
     if not isinstance(raw, str):
-        raise _Refused("Must be text, a number, true or false, or a ${{ }} reference.")
+        raise _Refused("Give text, a number, true or false, or a ${{ }} reference.")
     try:
         whole = whole_reference(raw)
         written = references(raw) if whole is None else []
@@ -749,17 +771,17 @@ def _raw_kind(
         return Kind(Type.TEXT)
     for _, found in written:
         if found.kind == "steps":
-            raise _Refused("A step's output is given whole, never written into text.")
+            raise _Refused("A step's output can be given only whole, not written into text.")
         kind = _kind_of(workflow, outputs, per_test, found)
         if kind.type not in SCALARS:
             raise _Refused(
-                f"{found} is a {kind.type}, and only text, a number, true or false or an enum "
-                f"is written into text."
+                f"{found} is {_a(kind.type)}, and only text, a number, true or false or an enum "
+                "can be written into text."
             )
         if kind.optional:
             raise _Refused(
-                f"{found} is optional, so it is given whole to optional ports, never written "
-                f"into text."
+                f"{found} is optional, so it can be given only whole, to an optional port, not "
+                "written into text."
             )
     return Kind(Type.TEXT, source="text")
 
@@ -778,15 +800,30 @@ def _fits(kind: Kind, port: Port, raw: object) -> None:
         if kind.type is Type.TEXT and kind.source == "literal":
             if raw in allowed:
                 return
-            raise _Refused(f"Takes one of {', '.join(port.options or ())}.")
+            raise _Refused(f"This takes one of {', '.join(port.options or ())}.")
         if kind.type is Type.ENUM and kind.options is not None:
             extra = sorted(kind.options - allowed)
             if not extra:
                 return
-            raise _Refused(f"Takes one of {', '.join(port.options or ())}, not {', '.join(extra)}.")
-        raise _Refused(f"Takes one of {', '.join(port.options or ())}.")
+            raise _Refused(
+                f"This takes one of {', '.join(port.options or ())}, not {', '.join(extra)}."
+            )
+        raise _Refused(f"This takes one of {', '.join(port.options or ())}.")
     if kind.type is not wanted:
-        raise _Refused(f"Takes {wanted}, not {kind.type}.")
+        raise _Refused(f"This takes {_a(wanted)}, not {_a(kind.type)}.")
+
+
+def _a(kind: Type) -> str:
+    """A type as a sentence names one value of it."""
+    return {
+        Type.TEXT: "text",
+        Type.NUMBER: "a number",
+        Type.BOOLEAN: "true or false",
+        Type.ENUM: "an enum",
+        Type.FILE: "a file",
+        Type.FOLDER: "a folder",
+        Type.OUTCOME: "an outcome",
+    }.get(kind, str(kind))
 
 
 def _check_report(
@@ -798,25 +835,27 @@ def _check_report(
     except BadReference as bad:
         raise _Refused(str(bad)) from None
     if found is None or found.kind != "steps" or found.output is None:
-        raise _Refused("Must be ${{ steps.<id>.<output> }}.")
+        raise _Refused("Give the step output this reports, as ${{ steps.<id>.<output> }}.")
     known = outputs.get(found.name)
     port = known[0].outputs.get(found.output) if known is not None else None
     if known is None or port is None:
-        raise _Refused(f"steps.{found.name}.{found.output} is not an output of a step.")
+        raise _Refused(f"steps.{found.name}.{found.output} is not the output of any step.")
     if port.type not in (Type.TEXT, Type.NUMBER):
         raise _Refused(
-            f"steps.{found.name}.{found.output} is {port.type}; a report holds text or numbers."
+            f"steps.{found.name}.{found.output} is {_a(port.type)}, and only text or a number "
+            "can be reported."
         )
     if isinstance(entry, Meaning):
         if port.type is not Type.NUMBER and any(
             value is not None for value in (entry.fold, entry.better, entry.at_least, entry.at_most)
         ):
             raise _Refused(
-                "fold, better, at_least and at_most say what a number means; this is text."
+                "fold, better, at_least and at_most apply only to a number, and this is text."
             )
         if not known[1] and (entry.fold is not None or entry.better is not None):
             raise _Refused(
-                "fold and better are for a number reported per test; this step runs once."
+                "fold and better apply only to a number reported for each test, and this "
+                "step runs once."
             )
 
 
@@ -948,7 +987,10 @@ class _Compiler:
     def bind(self) -> None:
         declared = self.workflow.inputs
         for key in sorted(set(self.task.inputs) - set(declared)):
-            self.refuse(f"inputs.{key}", f"The workflow {self.task.workflow} has no input {key}.")
+            self.refuse(
+                f"inputs.{key}",
+                f"The workflow {self.task.workflow} has no input called {key}. Remove it.",
+            )
         for name, wanted in declared.items():
             given = self.task.inputs.get(name, ABSENT if name not in self.task.inputs else None)
             at = f"inputs.{name}"
@@ -964,8 +1006,8 @@ class _Compiler:
         if not isinstance(given, dict):
             self.refuse(
                 at,
-                "The contestant gives this one: give its form details, such as {label: ...}, "
-                "or leave it out.",
+                "Entrants give this input themselves, so the task cannot give it a value. "
+                "Set how it is asked for instead, such as its label, or leave it as it is.",
             )
             return
         for path, message in form_problems(given, wanted.type.value, wanted.options):
@@ -976,7 +1018,7 @@ class _Compiler:
             if wanted.optional:
                 self.values[name] = ABSENT
             else:
-                self.refuse(at, f"Give this input a value: a {_described(wanted.type)}.")
+                self.refuse(at, f"Give this input a value: {_described(wanted.type)}.")
             return
         problem = self._value_problem(wanted, given)
         if problem is not None:
@@ -997,18 +1039,25 @@ class _Compiler:
                         or not isinstance(secret, str)
                         or not SECRET_NAME.match(secret)
                     ):
-                        return "Must be text, or {secret: <name>} naming a secret the org holds."
+                        return "Give text, or choose a secret the org holds."
                     if secret not in self.secrets:
-                        return f"The org holds no secret named {secret}."
+                        return (
+                            f"The org has no secret called {secret}. Choose one it has, or add "
+                            "it to the org."
+                        )
                     return None
-                return None if isinstance(given, str) else "Must be text, or {secret: <name>}."
+                return (
+                    None
+                    if isinstance(given, str)
+                    else "Give text, or choose a secret the org holds."
+                )
             case Type.NUMBER:
-                return None if is_number(given) else "Must be a number."
+                return None if is_number(given) else "This must be a number."
             case Type.BOOLEAN:
-                return None if isinstance(given, bool) else "Must be true or false."
+                return None if isinstance(given, bool) else "This must be true or false."
             case Type.ENUM:
                 options = wanted.options or ()
-                return None if given in options else f"Must be one of {', '.join(options)}."
+                return None if given in options else f"This must be one of {', '.join(options)}."
             case Type.FILE | Type.FOLDER:
                 folder = wanted.type is Type.FOLDER
                 problem = path_problem(given, folder=folder)
@@ -1017,12 +1066,12 @@ class _Compiler:
                 assert isinstance(given, str)
                 if not has_path(self.paths, given):
                     return (
-                        f"There is no file under {given} in the task."
+                        f"The task has no files in {given}. Add them, or give another folder."
                         if folder
-                        else f"There is no file {given} in the task."
+                        else f"The task has no file {given}. Add it, or give another file."
                     )
                 return None
-        return "Must be a value of its type."
+        return "This is not a value this input takes."
 
     def _check_secrets(self) -> None:
         """Each input given as a secret is wired whole into ports marked
@@ -1031,7 +1080,7 @@ class _Compiler:
         for name, value in self.values.items():
             if not isinstance(value, Secret):
                 continue
-            for index, step in enumerate(self.workflow.steps):
+            for step in self.workflow.steps:
                 declaration = self.primitives[str(step.use)]
                 for port_name, raw in step.with_.items():
                     if not isinstance(raw, str):
@@ -1044,14 +1093,14 @@ class _Compiler:
                     if whole is None:
                         self.refuse(
                             f"inputs.{name}",
-                            f"{name} is a secret, and steps[{index}] writes it into text; give the "
-                            "secret to its own port.",
+                            f"{name} is a secret, and the step {step.id} writes it into "
+                            "text. Give a secret whole, to a port of its own.",
                         )
                     elif not port.secret or port.type is not Type.TEXT:
                         self.refuse(
                             f"inputs.{name}",
-                            f"{name} is a secret, and steps[{index}] gives it to {port_name}, "
-                            "which can hand the secret to the contestant's program.",
+                            f"{name} is a secret, and the step {step.id} gives it to "
+                            f"{port_name}, which could pass it on to the entrant's program.",
                         )
 
     # check 7: the steps
@@ -1316,12 +1365,12 @@ def _escaped(text: str) -> str:
 
 def _described(kind: Type) -> str:
     return {
-        Type.TEXT: "text, or {secret: <name>}",
-        Type.NUMBER: "number",
+        Type.TEXT: "text, or a secret the org holds",
+        Type.NUMBER: "a number",
         Type.BOOLEAN: "true or false",
         Type.ENUM: "one of its options",
-        Type.FILE: "file path in the task",
-        Type.FOLDER: "folder path in the task, ending in /",
+        Type.FILE: "the path of a file in the task",
+        Type.FOLDER: "the path of a folder in the task, ending in /",
     }.get(kind, str(kind))
 
 
@@ -1363,8 +1412,8 @@ def compile_plan(
             [
                 Problem(
                     path="workflow",
-                    message=f"The plan this task compiles to with {task.workflow} breaks "
-                    f"the runner's contract {broken}.",
+                    message=f"Unicon cannot grade this task with {task.workflow}: the "
+                    f"grading steps it makes break one of the runner's rules ({broken}).",
                 )
             ],
         )
@@ -1393,7 +1442,9 @@ def _fit(compiler: _Compiler, plan: Plan) -> list[Problem]:
     total = wall_seconds(plan)
     ceiling = WALL_CEILING.total_seconds()
     if total > ceiling:
-        said = f"the run {math.ceil(total / 60)} minutes; a run may take {int(ceiling // 60)}."
+        said = (
+            f"{math.ceil(total / 60)} minutes, but a grading may take at most {int(ceiling // 60)}."
+        )
         problems.append(_over_time(compiler, plan, said))
     machine = compiler.machine
     for step in plan.steps:
@@ -1404,16 +1455,16 @@ def _fit(compiler: _Compiler, plan: Plan) -> list[Problem]:
             wanted = getattr(step.limits, limit)
             if wanted > most:
                 said = (
-                    f"step {step.id} {wanted} {unit}; no machine this task may run on has more "
-                    f"than {most}."
+                    f"the step {step.id} needs {wanted} {unit}, but no machine this task may "
+                    f"run on has more than {most}."
                 )
                 problems.append(_over_machine(compiler, step, limit, wanted, said))
         if step.network and not machine.network:
             problems.append(
                 Problem(
                     path="workflow",
-                    message=f"Step {step.id} uses {step.primitive}, which reaches the network, "
-                    "and no machine this task may run on gives a step the network.",
+                    message=f"The step {step.id} uses {step.primitive}, which needs the "
+                    "network, but no machine this task may run on gives a step the network.",
                 )
             )
     return _unique(problems)
@@ -1422,37 +1473,44 @@ def _fit(compiler: _Compiler, plan: Plan) -> list[Problem]:
 def _over_time(compiler: _Compiler, plan: Plan, said: str) -> Problem:
     """The run ceiling's refusal, blamed on the raised time limit that adds
     the most time to the run, or on the number of tests when none is raised.
+    `said` is how long a grading takes and may take.
     """
     by_origin: dict[tuple[str, str], list[_Raised]] = {}
     for raised in compiler.raised:
         if raised.limit == "time_ms":
             by_origin.setdefault((raised.origin.kind, raised.origin.name), []).append(raised)
     if not by_origin:
-        count = _tests(len(plan.tests))
+        count = len(plan.tests)
         return Problem(
             path="workflow",
-            message=f"{count} through the steps of {compiler.task.workflow} give {said}",
+            message=f"{_tests(count)} through the steps of {compiler.task.workflow} "
+            f"{_make(count)} a grading take {said}",
         )
     runs = max(by_origin.values(), key=lambda runs: sum(run.value for run in runs))
     tests = sorted({run.test.id for run in runs if run.test is not None}, key=natural)
     most = max(runs, key=lambda run: run.value)
     origin = most.origin
-    written = f"{origin.name} {spelled(origin.value)}"
+    written = f"{origin.name} at {spelled(origin.value)}"
     if origin.kind == "test":
         assert origin.test is not None
         if len(tests) == 1:
-            return Problem(path=origin.path, message=f"{origin.test.id}'s {written} gives {said}")
+            return Problem(
+                path=origin.path,
+                message=f"With {written}, the test {origin.test.id} makes a grading take {said}",
+            )
         return Problem(
             path=origin.path,
-            message=f"{_tests(len(tests))} at {origin.name} up to {spelled(origin.value)} "
-            f"({origin.test.id}) give {said}",
+            message=f"With {origin.name} up to {spelled(origin.value)} (in {origin.test.id}), "
+            f"{_tests(len(tests))} make a grading take {said}",
         )
     if origin.kind == "literal":
-        written = f"{written}, as {compiler.task.workflow} writes it,"
+        written = f"{written}, as {compiler.task.workflow} sets it"
     if not tests:
-        return Problem(path=origin.path, message=f"{written} gives {said}")
-    verb = "gives" if len(tests) == 1 else "give"
-    return Problem(path=origin.path, message=f"{_tests(len(tests))} at {written} {verb} {said}")
+        return Problem(path=origin.path, message=f"With {written}, a grading takes {said}")
+    return Problem(
+        path=origin.path,
+        message=f"With {written}, {_tests(len(tests))} {_make(len(tests))} a grading take {said}",
+    )
 
 
 def _over_machine(
@@ -1472,18 +1530,24 @@ def _over_machine(
         None,
     )
     if origin is None:
-        return Problem(path="workflow", message=f"{step.primitive} gives {said}")
-    written = f"{origin.name} {spelled(origin.value)}"
+        return Problem(path="workflow", message=f"As {step.primitive} sets it, {said}")
+    written = f"{origin.name} at {spelled(origin.value)}"
     if origin.kind == "test":
         assert origin.test is not None
-        return Problem(path=origin.path, message=f"{origin.test.id}'s {written} gives {said}")
+        return Problem(
+            path=origin.path, message=f"With {written} in the test {origin.test.id}, {said}"
+        )
     if origin.kind == "literal":
-        written = f"{written}, as {compiler.task.workflow} writes it,"
-    return Problem(path=origin.path, message=f"{written} gives {said}")
+        written = f"{written}, as {compiler.task.workflow} sets it"
+    return Problem(path=origin.path, message=f"With {written}, {said}")
 
 
 def _tests(count: int) -> str:
     return "1 test" if count == 1 else f"{count} tests"
+
+
+def _make(count: int) -> str:
+    return "makes" if count == 1 else "make"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1570,7 +1634,8 @@ def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[P
                 Problem(
                     path="credit.relative",
                     message=(
-                        f"{name} is not a number the workflow reports per test, with a direction."
+                        f"The workflow does not report {name} as a number for each test with a "
+                        "direction, higher or lower, that is better. Choose another value."
                     ),
                 )
             ]
@@ -1578,7 +1643,8 @@ def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[P
             return [
                 Problem(
                     path="credit.relative",
-                    message=f"{name} has no direction: its workflow declares no better.",
+                    message=f"The workflow does not say whether a higher or a lower {name} "
+                    "is better, so it cannot be measured against the best. Choose another value.",
                 )
             ]
         if meaning.at_least is None or meaning.at_least < 0:
@@ -1586,8 +1652,8 @@ def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[P
                 Problem(
                     path="credit.relative",
                     message=(
-                        f"{name} is not bounded below by 0: its workflow declares no "
-                        f"at_least of 0 or more."
+                        f"The workflow does not say that {name} is never below 0. Choose "
+                        "another value."
                     ),
                 )
             ]
@@ -1596,7 +1662,11 @@ def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[P
     value = values.get(name)
     if value is None or not _per_test_number(value):
         return [
-            Problem(path="credit", message=f"{name} is not a number the workflow reports per test.")
+            Problem(
+                path="credit",
+                message=f"The workflow does not report {name} as a number for each test. "
+                "Choose another value.",
+            )
         ]
     meaning = value.meaning
     if (
@@ -1609,12 +1679,17 @@ def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[P
         return [
             Problem(
                 path="credit",
-                message=f"{name} is not a credit: its workflow does not bound it to 0 to 1.",
+                message=f"The workflow does not keep {name} between 0 and 1, so it cannot be "
+                "what a test earns. Choose another value.",
             )
         ]
     if _better(meaning, task) == "lower":
         return [
-            Problem(path="credit", message=f"{name} is lower is better, so it is not a credit.")
+            Problem(
+                path="credit",
+                message=f"For {name}, lower is better, so it cannot be what a test earns. Choose "
+                "another value.",
+            )
         ]
     return []
 
@@ -1641,10 +1716,14 @@ def _credit_notes(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> 
         ):
             if task.credit is None:
                 notes.append(
-                    f"{name} is reported, but credit is not set: an accepted test earns 1."
+                    f"The workflow reports {name}, a score from 0 to 1 for each test, but the "
+                    "task does not use it: an accepted test earns 1."
                 )
             else:
-                notes.append(f"{name} is reported, but credit names another value.")
+                notes.append(
+                    f"The workflow reports {name}, a score from 0 to 1 for each test, but the "
+                    "task counts another value instead."
+                )
     return notes
 
 
@@ -1658,25 +1737,32 @@ def _sealed(task: TaskDefinition, compiler: _Compiler) -> list[Problem]:
     return [
         Problem(
             path=f"test_groups.{name}.show",
-            message=f"{name} is shown {group.shown}, but step {step} gives the contestant's code "
-            f"{data}; show it after_close, or serve the data under public/.",
+            message=f"{name} shows entrants its results {_SHOWN[group.shown]}, but the step "
+            f"{step} runs the entrant's code on {data}, which entrants do not see. Show this "
+            "group's results only at the reveal, or put that data in the task's public files.",
         )
         for name, group in task.test_groups.items()
         if group.shown is not Show.AFTER_CLOSE
     ]
 
 
+_SHOWN = {
+    Show.ALWAYS: "as soon as a grading ends",
+    Show.VERDICT: "as an outcome before the reveal",
+    Show.AFTER_CLOSE: "at the reveal",
+}
+
+
 def _sealed_notes(compiler: _Compiler) -> list[str]:
     return [
-        f"Step {step} is sealed: it runs after the sealed step "
-        f"{compiler.after_sealed[step]}, so whether it ran, and what it reports, is shown "
-        "at the reveal."
+        f"The step {step} runs after {compiler.after_sealed[step]}, which uses data entrants "
+        f"do not see, so whether {step} ran, and what it reports, is shown only at the reveal."
         if step in compiler.after_sealed
-        else f"Step {step} is sealed: it reads what the sealed step "
-        f"{compiler.reads_sealed[step]} wrote, so what it reports is shown at the reveal."
+        else f"The step {step} reads what {compiler.reads_sealed[step]} gives, which comes from "
+        "data entrants do not see, so what it reports is shown only at the reveal."
         if step in compiler.reads_sealed
-        else f"Step {step} is sealed: it runs the contestant's code over {data}, which the "
-        "contestant is not served, so what it reports is shown at the reveal."
+        else f"The step {step} runs the entrant's code on {data}, which entrants do not see, "
+        "so what it reports is shown only at the reveal."
         for step, data in sorted(compiler.sealed.items())
     ]
 
@@ -1705,19 +1791,47 @@ class Snapshot:
 def _differences(
     before: Mapping[str, object],
     after: Mapping[str, object],
+    named: Callable[[str], str],
     why: Callable[[object, object], list[str]] | None = None,
 ) -> list[str]:
     changes: list[str] = []
     for key in sorted(before.keys() | after.keys()):
         if key not in before:
-            changes.append(f"{key} added")
+            changes.append(f"{named(key)} was added.")
         elif key not in after:
-            changes.append(f"{key} removed")
+            changes.append(f"{named(key)} was removed.")
         elif not _same(before[key], after[key]):
-            changes.append(f"{key} changed")
+            changes.append(f"{named(key)} changed.")
             if why is not None:
                 changes += why(before[key], after[key])
     return changes
+
+
+def _plan_named(path: str) -> str:
+    return "The way the task grades"
+
+
+def _file_named(path: str) -> str:
+    """A data file in words a person reads: a test's entry by its field,
+    its test and its group, `tests/main/1/input.txt` being the input of test
+    1 in the group main; any other by its path.
+    """
+    parts = path.split("/")
+    if len(parts) >= 4 and parts[0] == "tests":
+        _, group, test, entry = parts[:4]
+        field = entry.split(".", 1)[0]
+        return f"The {field} of test {test} in the group {group}"
+    return f"The file {path}"
+
+
+def _by_name(data: Mapping[str, str]) -> dict[str, list[str]]:
+    """Each data file's digests under the name `_file_named` gives it, so a
+    test entry renamed with what it holds unchanged is no change of it.
+    """
+    named: dict[str, list[str]] = {}
+    for path in sorted(data):
+        named.setdefault(_file_named(path), []).append(data[path])
+    return named
 
 
 def _moved_images(before: object, after: object) -> list[str]:
@@ -1727,7 +1841,7 @@ def _moved_images(before: object, after: object) -> list[str]:
     """
     old, new = _images(before), _images(after)
     return [
-        f"{ref.partition('/')[2]}'s image moved with a release"
+        f"A release updated {ref.partition('/')[2]} in place."
         for ref in sorted(old.keys() & new.keys())
         if old[ref] != new[ref]
     ]
@@ -1770,15 +1884,15 @@ def _same(before: object, after: object) -> bool:
 
 def grading_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...]:
     """What changed how the task grades between the previous publication and
-    this one, in words a person reads: `plans/plan.json changed`,
-    `tests/main/1/input added`, and after a changed plan each primitive
-    version whose image a release moved, `sandbox-run@v2's image moved with
-    a release`. Empty when nothing did, and for a first publication, which
-    has nothing before it.
+    this one, in words a person reads: `The way the task grades changed.`,
+    `The input of test 1 in the group main was added.`, and after a changed plan each
+    primitive version whose image a release moved, `A release updated
+    sandbox-run@v2 in place.` Empty when nothing did, and for a first
+    publication, which has nothing before it.
     """
     if before is None:
         return ()
     return (
-        *_differences(before.plans, after.plans, _moved_images),
-        *_differences(before.data, after.data),
+        *_differences(before.plans, after.plans, _plan_named, _moved_images),
+        *_differences(_by_name(before.data), _by_name(after.data), str),
     )

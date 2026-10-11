@@ -101,19 +101,24 @@ forge/api/
                 Publication, WorkflowForm, DeclaredInput and DeclaredField
                 they return
   release.py    of_task, and the TaskRelease it returns with its Closed reason
-  contestants.py  register, mine, list, approve, reject, reopen, remove, extend, and the
-                Registration they return with its Status
-  contest_home.py  contests, home, task, and the ContestSummary, ContestHome,
-                TaskEntry and TaskPage they return, with the Limits and Rate a
+  entrants.py   register, mine, invite, withdraw_invite, leave, rename, list,
+                approve, reject, reopen, remove, extend, organise_rename,
+                remove_member, move_member, delete, and the Entrant, Member,
+                Invited, Mine, Invitation, Refusal, Entered and EntrantRef
+                they return, with its Status, WayKind and Locks
+  contest_home.py  contests, home, task, public_file, and the ContestSummary,
+                ContestHome, TaskEntry, TaskPage and PublicFile they return,
+                PUBLIC_MOST, the most of a public file served, with the Limits and Rate a
                 page carries, the ContestantInput entries and their InputType
                 a submit panel is built from, and the State and
                 ContestVisibility of a contest
-  landing.py    contests, contest, statement, and the PublicContest, PublicTask
-                and PublicStatement they return
+  landing.py    contests, contest, statement, public_file, and the
+                PublicContest, PublicTask, PublicStatement and PublicFile they
+                return, with PUBLIC_MOST
   events.py     check and publish, EVENTS_PATH, where the door is, and
                 SIGNATURE_HEADERS and KIND_HEADERS, the headers the signature
                 and the event's kind come in
-  announcements.py  post, edit, close, manage, contest, task, and the
+  announcements.py  post, edit, close, reopen, manage, contest, task, and the
                 Announcement and AnsweredQuestion they return
   clarifications.py  ask, mine, follow_up, inbox, of_contest, reply, mark,
                 unmark, answer_publicly, and the Clarification and Message
@@ -128,8 +133,7 @@ forge/api/
                 SubmittedFiles, GradingStatus and Show they return
   boards.py     seen, organised, held, mark, unmark, written, and the
                 Standings, Key, Column, NotInView, Ranked, Cell,
-                OrganisedBoard, Marks, Points, UserOwner and TeamOwner they
-                return
+                OrganisedBoard, Marks, Points and EntrantOwner they return
   gradings.py   cancel, retry, fall_back, clear_fallback, rejudge, list,
                 run_log, task_of, feed, queue_depth, and the GradingRecord,
                 Rejudged, FeedEntry, Submitter, QueueDepth, GradingStatus and
@@ -140,10 +144,7 @@ forge/api/
                 ENVELOPE_PATH and CALLBACK_PATH, where each is served
   roles.py      holders, grant, revoke, and the Holder holders returns
   invites.py    create, at, send_again, withdraw, mine, by_token, accept,
-                decline, and the Invite they return
-  teams.py      create, request, cancel, leave, invite, approve, remove, the
-                organise_ actions, mine, listed, every, and the Team, Member,
-                Listed and Mine they return
+                decline, and the Invite and Accepted they return
   cookies.py    what goes into the two cookies and what comes out, and the policy
   log.py        setup, get_logger, and the Logger it returns
   errors.py     every error the package raises to its callers
@@ -262,7 +263,7 @@ every force-push), and for a task its publications are reserved for the
 platform account (the `published/*` tag protection). `secure` checks each
 first and puts back only what is missing, so it can be run again, and says
 how many it put back. `content.save_files` writes several files as one
-change as the person saving, each carrying the token it was read with, and refuses the
+change as the person saving, a file given as none removed, each carrying the token it was read with, and refuses the
 whole change as `Conflict` when any has moved; `content.list_files` gives
 every file of a place at a version with its token, the same for the same
 content, which is how a save compares data files without reading them.
@@ -463,7 +464,8 @@ from the org's key, the platform's org `unicon` as it is, or a person by
 their username, under which the forge keeps their workflows.
 
 A person is filed by their user id at the forge, which never changes and is
-never another's; a workspace's owner is `u<user id>`, never a username.
+never another's; a workspace's owner is an entrant, `entrant.<id>` with the
+id's 32 hex digits, never a username.
 
 ## The setup
 
@@ -554,11 +556,11 @@ hosting process calls are actions, marked `@action` from
 | `files` | `read`, `tree`, `history`, `write`, `rollback`, `write_upload` |
 | `publications` | `save`, `list`, `workflow_form` |
 | `release` | `of_task` |
-| `contestants` | `register`, `mine`, `list`, `approve`, `reject`, `reopen`, `remove`, `extend` |
-| `contest_home` | `contests`, `home`, `task` |
-| `landing` | `contests`, `contest`, `statement` |
+| `entrants` | `register`, `mine`, `invite`, `withdraw_invite`, `leave`, `rename`, `list`, `approve`, `reject`, `reopen`, `remove`, `extend`, `organise_rename`, `remove_member`, `move_member`, `delete` |
+| `contest_home` | `contests`, `home`, `task`, `public_file` |
+| `landing` | `contests`, `contest`, `statement`, `public_file` |
 | `events` | `check`, `publish` |
-| `announcements` | `post`, `edit`, `close`, `manage`, `contest`, `task` |
+| `announcements` | `post`, `edit`, `close`, `reopen`, `manage`, `contest`, `task` |
 | `clarifications` | `ask`, `mine`, `follow_up`, `inbox`, `of_contest`, `reply`, `mark`, `unmark`, `answer_publicly` |
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
@@ -639,7 +641,7 @@ without waiting for it. One that fails goes to the log as
 `setup.background_failed`; nothing starts when it rolls back; `stop` cuts
 short whatever is running, and `Setup.settle()` waits for it, for a test.
 Only work that something else finishes when it never runs goes there: the
-places made ahead (below), which a contestant's first upload makes itself
+places made ahead (below), which an entrant's first upload makes itself
 when it finds one missing.
 
 Making something at the forge is several calls, and a create makes every
@@ -784,9 +786,10 @@ the other. Deleting an account takes the same lock for every org the person
 has a role in. A scope is never left without an admin, counting
 admins of broader scopes, so a contest's only admin may step down while an
 org admin stands (`SoleAdmin`). A role at a contest or its tasks is refused
-to someone registered in it, and a role at an org to someone registered in
-any of its contests (`ContestantConflict`); `roles.holds_role_in_contest`
-answers the other direction for registration. An org's service account is
+to a member of a pending or approved entrant of it, and a role at an org to
+one in any of its contests (`ContestantConflict`);
+`roles.holds_role_in_contest` answers the other direction for registering
+and joining an entrant. An org's service account is
 never listed, granted or removed, and a role is changed only at a contest or
 task that is there, which `content.exists` asks as the platform.
 
@@ -819,10 +822,14 @@ moved earlier than a submission it would make late, a close moved earlier
 than a submission already made, or later once the task has revealed. A task
 has opened when the settings saved before released it, the contest
 published and past its start and the task's `release_at` passed, so a
-contest that was never published moves freely. A task reveals once it has
+contest that was never published moves freely. A contest that has started,
+saved before as `published` or `archived`, never goes back to `draft`
+(#438), and its `entrants` no longer asks more of a team, allows fewer, or
+moves between everyone entering alone and in teams. When the settings saved
+before do not read, these are checked against the latest earlier version
+that does. A task reveals once it has
 closed for every row, with the longest extension in force on it: an
-approved contestant's who is in no team, or a team's with an approved
-member. A save of the contest's settings, like a save of one of its tasks,
+approved entrant's. A save of the contest's settings, like a save of one of its tasks,
 holds the contest's rules alone until it commits and a mark change holds
 them shared (`timelines.hold_rules`), so the checks one save makes against
 the other's file, and against the marks rows hold, read what is there. A
@@ -851,15 +858,19 @@ ordinary files costs the listing alone.
 ## The save
 
 There is no publish button. `publications.save(organiser, task, changes)`
-takes each path with its new content and the token it was read with, as an
-`Edit`, and runs these steps in order, refusing before anything is written:
+takes each path with its new content, or none to remove the file, and the
+token it was read with, as an `Edit`, and runs these steps in order, refusing
+before anything is written. Removing a folder, such as a test, is removing
+each file under it, named one by one.
 
 1. A path inside `plans/` is refused with `ReservedPath`: the compiler is
-   the only writer there. A manager's save that changes the `name` or the
-   `submissions` of `task.yaml`, or touches `statement.md`, is refused with
-   `AdminOnly`, naming each. An admin passes.
-2. The state being saved, the files at the head with the save's over them,
-   is checked in the order of `TASK-FORMAT.md` section 2: `task.yaml`
+   the only writer there. A removal with no token is refused with
+   `InvalidInputs`, naming it, and one whose token has moved is `Conflict`,
+   as an edit's is. A manager's save that changes the `name` or the
+   `submissions` of `task.yaml`, removes it, or touches `statement.md`, is
+   refused with `AdminOnly`, naming each. An admin passes.
+2. The state being saved, the files at the head with the save's over them
+   and its removals taken out, is checked in the order of `TASK-FORMAT.md` section 2: `task.yaml`
    validates; the workflow it names is read at its version as the
    organiser, with every primitive its steps use, and checks as a version,
    one in an old format refused at the `workflow` line so its owner tags a
@@ -914,8 +925,9 @@ each a `TaskStanding` with its name, its letter by its place, its
 `TaskState` as `tasks.state` gives it, the latest publication with its
 number, time and `grading_changed`, and whether a draft with errors sits on
 it, and its `Timeline` from its entry, each time at its default where the
-entry gives none: `worth` 100, none on a task whose latest publication
-gives no points or that has none, `release_at` the contest's start,
+entry gives none: `worth` its groups' total, the sum of their rule
+weights, and none on a task whose latest publication gives no points or
+that has none, `release_at` the contest's start,
 `due` none, `late_per_day` 1 with a due and none without, and `closes` the
 contest's end. A task of the org the contest does not list is not on it. A
 `contest.yaml` that does not read is `InvalidDefinition` naming the file
@@ -1006,78 +1018,166 @@ starter carries one test, so its first save publishes.
 `release.of_task(session, task)` says whether the signed-in person sees the
 task and may submit to it now: released, visible and open, and why not. It
 reads `contest.yaml`, where the task's entry is its timeline, and the
-extension of the person's row, their team's while they are in one and their
-own otherwise, all as the platform, and a task with no publication, or one
+extension of the entrant the person is in, all as the platform, and a task with no publication, or one
 the contest does not list, is not released. Nothing at the forge changes
 when a task becomes released.
 
-## Contestants
+## Entrants
 
-A person asks to join a contest with `contestants.register(session,
-contest)`, with the code the contest asks for when it asks for one. A
-request nobody has approved has nothing at the forge, so all of it is a row
-in `contestants`. The contest has to be one they see: published, and
-`everyone` or `signed-in`, or `hidden` for someone who has accepted an invite
-to it. Then, stopping at the first refusal, each with a
-code of its own: the registration window is open (`registration_closed`);
-they hold no role at the contest, its tasks or its org (`is_staff`), read
-under the org's lock on role changes, the one `roles.grant` takes, so a
-grant and a registration never pass each other; they have no registration
-there already (`already_registered`); the invite, the code and the email
-address the contest asks for (`invite_required`, `wrong_invite_code`,
-`domain_not_allowed`), where the invite is one they have accepted (below)
-and a pattern must match the whole of one of the
-addresses the forge has confirmed are theirs, whatever its case, within a
-time limit, since the pattern is an organiser's; an address counts only as
-far as the forge confirms it, so with Forgejo that needs
-`REGISTER_EMAIL_CONFIRM` on wherever people sign themselves up; and a place is free (`contest_full`), counted under an
-advisory lock on the contest, so the last place goes once. The row is written pending with what let it through;
-with `approval: auto` it is approved in the same call. The rules themselves
-are in `forge/domain/registration.py`.
+A contest has one kind of entry, the entrant: one or more people who enter
+together, from `entrants.fewest` to `entrants.most` in `contest.yaml`, one
+and one by default, so everyone enters alone. Registration, the organisers'
+decision, the extension, the workspace and the row on a board are the
+entrant's. An entrant is an `entrants` row, with an `entrant_members` row
+for each time someone was in it; nothing about it is at the forge until its
+workspace is made. `services/entrants.py` holds the actions,
+`forge/domain/entrants.py` and `forge/domain/registration.py` the rules.
 
-An organiser managing the contest decides: `approve` a pending registration,
-`reject` a pending one with a reason the person reads (`invalid_reason`
-without one), `reopen` a rejected one, which leaves it pending again and is
-refused like a new registration when the person holds a role there by now
-(`is_staff`) or every place is taken (`contest_full`), `remove` an approved
-one, and `extend` a pending or approved one, which moves that person's due
-and close on the tasks it names, every task when it names none, while they
-work alone (`invalid_extension` below nothing, past a year, naming a task
-the contest does not list, letting them submit to a task whose reveal has
-passed, or leaving a submission after the due or the close it was made
-before). `teams.organise_extend` does the same for a team. A decision from any other status is `wrong_status`, naming the
-status. `list` gives every registration of the contest to anyone observing
-it, oldest first; `mine` gives a person their own.
+A person registers a new entrant, and is its first member, with
+`entrants.register(session, contest, name=, code=)`. The contest has to be
+one they see: published, and `everyone` or `signed-in`, or `hidden` for
+someone who has accepted an organiser's invite to it. Then, stopping at the
+first refusal, each with a code of its own: the window is open, the
+contest has not ended, and, where entrants need more than one person, the
+roster lock has not passed for a new entrant, which could never grow
+(`registration_closed`); they hold no role at the
+contest, its tasks or its org (`is_staff`), read under the org's lock on
+role changes, the one `roles.grant` takes, so a grant and a registration
+never pass each other; they are in no entrant of the contest, whatever
+became of it (`already_registered`); they qualify by one of the contest's
+`registration.ways`; a place is free (`contest_full`), the entrants pending
+or approved counted under an advisory lock on the contest, so the last
+place goes once; and the name, needed when entrants may be more than one
+person (`entrant_name_required`), refused when they are one each
+(`entrants_alone`), one to sixty printable characters
+(`invalid_entrant_name`) and no other entrant's, ignoring case
+(`entrant_name_taken`). An entrant of one person each has no name and is
+shown under its member's username.
 
-A contestant's workspace is made a part at a time. With
-`UNICON_PLACES_AHEAD` on, the default, approving someone starts making their
-place to submit every task the contest has published, and a task's first
-publication starts making it for everyone approved, each once the request
-has committed and without the request waiting (`services/places.py`). The
-work takes two turns in a process, apart from the four the first uploads
-take, so a crowd approved at once never holds an upload back; the tasks it
-makes places at are read once a minute per contest, and a contest that is
-archived or over gets none. A place is made by the same steps as at a first
-upload, holding nothing while the forge works, then the contestant's row is
-held and read again and someone removed meanwhile has the access taken back.
-A forge that fails stops the rest of that piece of work, in the log as
-`places.ahead_stopped`. Whatever is not made ahead, by a restart, a forge
-that failed or the setting off, is made at the contestant's first upload to
-the task (below), which finds a place made ahead finished in one call. Off,
-nobody who never submits costs the forge a repository. The workspace's id
-comes from the contest and the person's user id (`workspaces.workspace_of`),
-so the contestant's row holds no workspace. Removing a contestant takes
-their access to whichever parts were made away and keeps what is in them.
+A way is `invite`, the people an organiser invited, or `signup`, people who
+register themselves under every condition it gives: a `code`, and one
+confirmed address at one of its `domains` and matching its
+`email_pattern`; one with none admits anyone. Each has its own `approval`,
+straight away by default for an invite and by an organiser for a sign-up;
+no ways listed is one manual sign-up, and `ways: []` takes nobody
+(`registration_closed`). Every way that admits the person is found and the
+most lenient wins, one that approves straight away before one an organiser
+approves, the first listed among equals. None admitting them is refused
+with what would help: `wrong_invite_code` when a sign-up would take them
+with its code, `domain_not_allowed` when the sign-ups turn their addresses
+away, `invite_required` when only an invite would. A domain is the whole
+part of an address after its last `@`, whatever its case, and a pattern
+must match the whole address, within a time limit, since it is an
+organiser's. Only addresses the forge confirms count: with Forgejo, the
+entries of `GET /api/v1/user/emails` read with `sudo` as the person whose
+`verified` is true, which needs `REGISTER_EMAIL_CONFIRM` on wherever people
+sign themselves up. The way, its name and kind and what let them through
+are kept on their member row.
+
+A member asks someone in with `invite(session, contest, username=|email=)`,
+an invite with `grants = member` mailed as an organiser's is, by a member
+of a pending or approved entrant, refused once the roster has locked
+(`roster_locked`), when the members and the invites waiting reach
+`entrants.most` (`entrant_full`), when entrants are one person each
+(`entrants_alone`), or once the entrant's members have sent ten in a day,
+withdrawn ones included, a limit of its own apart from the org's
+(`invite_limit`); any member withdraws one (`withdraw_invite`). The person
+joins by accepting it (`invites.accept`, below), qualifying by a way as
+themselves, a code included. Accepting any invite to a place is refused,
+closing nothing, unless the contest is open and has not ended or been
+archived (`registration_closed`). An organiser's invite to a contest
+registers whoever accepts it by the invite way (refused, closing nothing,
+as `invite_required` once the contest has none), and one naming an entrant
+puts them in it as an organiser's change, way kind `organiser`, so it
+never sends an approved entrant back to pending. Joining is refused once
+the roster has locked or the window is closed, unless an organiser sent
+the invite; for someone holding
+a role; when the entrant is full; and for someone in an entrant they may no
+longer leave (`in_entrant`): a person moves only from one whose roster is
+open, that has no submissions and was not turned away. `leave` takes the
+person out before the roster locks, and is how someone changes entrant;
+`rename` renames it. The roster locks at the contest's start, or at the
+entrant's first submission with `entrants.locks: first_submission`, and
+once the contest has ended; from then on only organisers change it.
+
+An entrant is complete with `entrants.fewest` members, and approved
+straight away once it is complete and every member came in by a way that
+approves straight away, checked whenever someone joins it or leaves it
+pending; one who joins an
+approved entrant by a way an organiser approves sends it back to pending,
+which happens only before the roster locks, so nothing submitted is held
+back. A submit is refused for an entrant not approved (`not_approved`) or,
+once a member left, not complete (`entrant_incomplete`).
+
+An organiser managing the contest decides, whatever the lock and the
+window: `approve` a pending entrant (`entrant_incomplete`, naming how many
+it needs, while it is short), `reject` one with a reason its members read
+(`invalid_reason` without one), `reopen` a rejected one, refused like a new
+registration when a member holds a role there by now (`is_staff`) or every
+place is taken (`contest_full`), `remove` an approved one, taking every
+member's access away and keeping what the workspace holds, and `extend` a
+pending or approved one, which moves its due and close on the tasks it
+names, every task when it names none (`invalid_extension` below nothing,
+past a year, naming a task the contest does not list, letting it submit to
+a task whose reveal has passed, or leaving a submission after the due or
+the close it was made before). A decision from any other status is
+`wrong_status`, naming the status. A rejection takes the members' access
+to the workspace away, and reopening gives it back. The manager also
+renames an entrant (`organise_rename`), takes a member out
+(`remove_member`), moves one to another pending or approved entrant within
+its size (`move_member`, refused as `entrant_has_submissions` for the last
+member of an entrant that has submitted, whose results would have nobody,
+and as `is_staff` for someone holding a role there by now), and deletes an
+entrant that has submitted nothing (`delete`, `entrant_changed` when
+someone joined it meanwhile). `list` gives every entrant to anyone
+observing the contest, the earliest registered first, with its members,
+the way each came in by, the invites waiting, its decision, extension, and
+whether it has submitted, is complete and is locked; `mine` gives a person
+their registration panel: their entrant, their invites into the contest's
+entrants, whether they may register and why not, and whether to ask for a
+code, only when a code would let them in. An entrant left with nobody and
+no submissions is deleted, its member rows kept `left`. Deleting an account
+takes the person out of every entrant whose roster is still open, as
+leaving would, and withdraws the invites into them they sent; where the
+roster has locked they keep their row, shown as `Deleted user`.
+
+Who reaches an entrant's workspace (`EntrantOwner`, named
+`entrant.<id>`) changes in the request that changes the membership, at the
+forge first: a joiner is given access to every part already made
+(`share_workspace`, which also takes off anyone else), and someone who
+leaves, is taken out or is moved loses it; a call that fails fails the
+request, the access given or taken before it is put back to the members
+that stand, and asking again finishes it. A part made later is made with the
+members then, and checked against them afterwards (`entrants.settle`),
+since it is made holding no lock; every repository of a workspace also
+sheds anyone not a member now whenever it is opened. With
+`UNICON_PLACES_AHEAD` on, the default, approving an entrant starts making
+its place to submit every task the contest has published, and a task's
+first publication starts making it for every approved entrant, each once
+the request has committed and without the request waiting
+(`services/places.py`); the work takes two turns in a process, apart from
+the four the first uploads take, and a contest archived or over gets none.
+A place made ahead is made by the same steps as at a first upload, then the
+entrant is held and read again and one removed meanwhile has the access
+taken back; a forge that fails stops the rest, in the log as
+`places.ahead_stopped`, and whatever is not made ahead is made at the
+entrant's first upload. The workspace's id comes from the contest and the
+entrant's id, so no row holds one. A change takes, in this order, the org's
+lock on role changes when it reads roles, the invite it acts on, an
+advisory lock on each person it moves, the contest's places, then the
+entrant rows it touches by id; a submit holds its entrant's row for
+reading, so no change of who is in it passes the submit, and is asked
+again (`entrant_changed`) when the person's entrant changed under it.
 
 What a signed-in person reads of a contest is `contest_home`: `contests`,
-every contest they see with their own status; `home`, a contest's dates,
-their registration, what the register form needs, the server's clock and
-the tasks released to them in the contest's order, each with its label, its
-place as a letter, its worth, and when it falls due and closes for their
-row; and `task`, a visible task's statement, its submission caps and the
-inputs a contestant gives, read from its plan with the task's form details,
-the labels, options, bounds and sizes a submit panel shows, and nothing else
-of what it holds. A visitor with no session reads
+every contest they see with the status of their entrant; `home`, a
+contest's dates, their registration panel as `entrants.mine` gives it, the
+server's clock and the tasks released to them in the contest's order, each
+with its label, its place as a letter, its worth, and when it falls due and
+closes for their entrant; and `task`, a visible task's statement, its
+submission caps and the inputs a contestant gives, read from its plan with
+the task's form details, the labels, options, bounds and sizes a submit
+panel shows, and nothing else of what it holds. A visitor with no session reads
 `landing`: the public contests, one with its released tasks, and a released
 task's statement. Both lists of contests, a signed-in person's and a
 visitor's, start from every published contest as the process read it at
@@ -1093,19 +1193,41 @@ publication of each task, with the contest's visibility and the release
 rules applied first, and a contest or task the reader may not see is no
 such contest or task, the same answer as one that is not there.
 
+Beside a task's statement, its readers are served the files under its
+`public/` folder (TASK-FORMAT.md section 1.2), such as a statement's
+images, one at a time by its path in the task: `landing.public_file` for a
+visitor and `contest_home.public_file` for a signed-in person, each with
+exactly the checks its statement is read with, and the second also for
+whoever holds a role reaching the task, released or not, since they read
+every file of it as organisers anyway and a statement being written shows
+its images. A file is read as the task's latest publication holds it, never
+a draft saved after it, except for whoever holds a role reaching the task,
+who reads it as the task's head holds it, the draft the statement's preview
+draws, published or not. Which files a publication holds never changes, so
+its listing is kept in the process's memo, one listing per publication
+whoever reads. An upload is read by the bytes its pointer names,
+through the content port's `read_media` (Forgejo's media endpoint, the read
+a submission's file already goes through). A path outside `public/`, with
+an empty, `.` or `..` segment, or not there is `NotFound`, and a file over
+`PUBLIC_MOST`, 10 MiB, is `PublicFileTooLarge`, read no further.
+
 ## Invites
 
 `invites` lets an organiser ask one person, by username or by email address,
-to take a contestant's place in a contest or an organiser's role at an org,
-a contest or a task. An invite is a row in `invites`, since it may name an
-address with no account behind it. `create` needs what granting it would:
-the manager role at the scope, admin to invite an admin, and a contestant's
-place only at a contest; a username is looked up at once, someone who holds
-the role or a registration already, or could not take it (a role in a
-contest they are registered for, a place in one where they hold a role), is
+to take part in a contest, on their own or straight into one of its
+entrants (`entrant=`), or to take an organiser's role at an org, a contest
+or a task; a member's invite into their entrant is the same row with
+`grants = member` (`entrants.invite`). An invite is a row in `invites`,
+since it may name an address with no account behind it. `create` needs
+what granting it would: the manager role at the scope, admin to invite an
+admin, and a place only at a contest whose ways include `invite`
+(`no_invite_way`) and in an entrant with room (`entrant_full`); a username
+is looked up at once, someone who holds the role already, is in an entrant
+of the contest or the one named, or could not take it (a role in a contest
+they are in an entrant of, a place in one where they hold a role), is
 refused (`invalid_invite`), the same pending invite twice is
-`already_invited`, and an org makes at most 1000 invites a day
-(`invite_limit`). An address is one plain address and nothing else, so one
+`already_invited`, and an org's organisers make at most 1000 invites a
+day (`invite_limit`), members' invites into their entrants counted apart. An address is one plain address and nothing else, so one
 invite mails one person. Making and changing invites take the org's lock
 on role changes, the one `roles.grant` takes. `at` lists a scope's invites
 to its observers, newest first, at most 500; `send_again` mails a pending
@@ -1113,7 +1235,8 @@ one again, lapsed or not, with a new token, so the earlier link stops
 working, and its whole lifetime again from then, at most once every ten
 minutes (`invite_limit`) and only where there is a mail server
 (`invalid_invite`); and `withdraw` takes back a pending one, or an accepted
-contestant's place until its person registers.
+place in a contest, which otherwise lets its person in by the invite way
+when they register again.
 
 The mail goes out once the request that made the invite has committed, and
 the request answers without waiting (`ctx.in_background`), so a mail server
@@ -1137,10 +1260,12 @@ carries when it is theirs and is `not_found` for anyone else, or
 grants what the invite carries and `decline` grants nothing, both closing
 it, and a lapsed one does neither (`invite_expired`). An organiser role is
 granted by the rules a grant keeps, and never lowers a role the person
-holds; a contestant's place is the eligibility an invite-only contest asks
-for, and shows a hidden contest to them until they register, when their
-registration decides. Either is taken only while whoever sent the invite
-may still grant it. Deleting an account withdraws the pending invites to
+holds; a place in a contest registers them or puts them in the entrant it
+names (`entrants.take_place`), with the `code` a member's invite may need,
+and `accept` answers with the entrant they are in now and whether it was
+made, joined or found already; an accepted organiser's place also shows a
+hidden contest to them while they are in no entrant there. Either is taken
+only while whoever sent the invite may still grant it. Deleting an account withdraws the pending invites to
 it. The rules are in `forge/domain/invites.py`.
 
 ## Announcements and clarifications
@@ -1150,26 +1275,28 @@ nothing about either is kept in the database: the thread is the record.
 
 An **announcement** is an organiser's message to a contest or one of its
 tasks, a thread labelled `announcement` on the contest's or the task's own
-repository. A manager there posts, edits and closes one, each as
+repository. A manager there posts, edits, closes and reopens one, each as
 themselves with their own credential, so the forge's record says who wrote
-it (`announcements.post`, `edit`, `close`); an observer reads every one,
-closed ones included (`manage`). There is no delete: a message people have
-read is closed and stays readable. A signed-in person reads the open
+it (`announcements.post`, `edit`, `close`, `reopen`); an observer reads every
+one, closed ones included (`manage`). There is no delete: a message people
+have read is closed and stays readable, and one closed by mistake is
+reopened, its issue opened again at the forge. A signed-in person reads the open
 announcements of a contest they see and of each task released to them
 (`contest`), and of one released task (`task`), read live as the platform,
 since a contestant reaches no repository at the forge; a task not released
 to them contributes nothing.
 
-A **clarification** is a contestant's question, a thread labelled
-`clarification` on the desk of their own workspace, which is what keeps it
-private to them and the organisers who reach the desk through the
-contest's roles. An approved contestant asks as themselves, and their first
-question makes the desk, as the platform (`clarifications.ask`), with them
-a reader on it, so they cannot change an organiser's reply or a label; the
+A **clarification** is an entrant's question, a thread labelled
+`clarification` on the desk of its workspace, which is what keeps it
+private to its members and the organisers who reach the desk through the
+contest's roles; a question is named by its desk, `entrant.<id>`. A member
+of an approved entrant asks as themselves, and its first question makes
+the desk, as the platform (`clarifications.ask`), with every member a
+reader on it, so they cannot change an organiser's reply or a label; the
 port puts the label on as the platform when Forgejo drops a reader's. A
 question may name a task released to them, kept as a line in its body that
 is checked against the question's contest whenever it is read, since the
-asker can edit their own question at the forge. They read their own
+asker can edit their own question at the forge. Members read the entrant's
 questions with every message (`mine`), and comment again on one
 (`follow_up`), after which, on an answered question, the platform takes the
 mark off and opens it, so the follow-up lands back with the organisers in
@@ -1199,15 +1326,16 @@ A page that shows something that can change while it is open hears of the
 change and asks for the thing again; nothing that changed travels on the
 stream. A nudge (`domain/live.py`) is a kind, `grading`, `announcement` or
 `clarification`, and an id, with who may hear it: the one person it
-concerns, the organisers who observe a scope or a broader one, and the
-approved contestants of a contest. `resync` tells a page that nudges may
+concerns, the members of the one entrant it concerns, the organisers who
+observe a scope or a broader one, and the members of a contest's approved
+entrants. `resync` tells a page that nudges may
 have been missed.
 
 A unit of work nudges with `ctx.nudge(...)`, and the setup publishes every
 nudge the unit of work left in one `pg_notify` on its own transaction, just
 before the commit, so Postgres delivers them with it and never for a unit
 of work that rolls back. Every write of a grading's status or progress
-nudges its contestant and its task's organisers (`gradings.changed`, from
+nudges its entrant's members and its task's organisers (`gradings.changed`, from
 `new_row`, the start, `finish`, the envelope and the progress callback),
 which is what moves a submissions list while its owner watches. Its scope
 is the task, and a role at the contest or the org covers the task, so
@@ -1216,8 +1344,8 @@ feed's page asks for the feed again on every grading nudge, since a nudge
 says only that some grading moved, and a new attempt is a new id. A thread's
 changes come from the forge: the host answers the forge's push as soon as
 `events.check` passes, then hands the body to `events.publish`, which reads
-it through the port and nudges a clarification's asker and its contest's
-organisers, an announcement of a contest its contestants and organisers,
+it through the port and nudges the members of the entrant that asked a
+clarification and its contest's organisers, an announcement of a contest its contestants and organisers,
 and one of a task its organisers and, only once the task is released, its
 contestants. An event about anything else, about an issue that does not
 carry the label of the thread its repository holds, about a pull request,
@@ -1230,7 +1358,8 @@ stream subscribes and closed when the last leaves, so whichever process
 published a nudge, every process's streams hear it. `live.stream(session)`
 is what the host serves as one Server-Sent Events connection per open
 tab: it checks the session, reads its audience (the person, every role they
-hold and the contests where they are an approved contestant), yields `None`
+hold, the entrants they are in and the contests where those are approved),
+yields `None`
 once it has subscribed, so the host can wait for that and have any refusal
 raised before it answers, and then each nudge that audience hears, or
 `None` every fifteen seconds for a keepalive. It holds no database
@@ -1243,48 +1372,6 @@ resync, and so is every stream when the listening connection drops and is
 opened again a second later, and a stream that subscribed while the
 connection was still being opened. A session holds at most eight streams
 in a process; one more ends the oldest.
-
-## Teams
-
-`teams` lets contestants of a contest whose `contest.yaml` turns `teams` on
-enter together and count as one contestant. Everyone in a team registers
-and is approved first, so the contest's rules hold for every person. An
-approved contestant `create`s a team, leading it, or `request`s to join one,
-which accepts the leader's invitation when there is one; the leader
-`invite`s an approved contestant, `approve`s a request and `remove`s a
-member, or turns a request down; a member `leave`s, and the lead passes to
-the member who joined earliest. Organisers of the contest make
-(`organise_create`), delete (`organise_delete`, refused as
-`team_has_submissions` for a team that has submitted), move people between
-(`organise_move`), take people out of (`organise_remove`) and change the
-leader of (`organise_lead`) teams, and an observer lists them all (`every`).
-`mine` gives a person their team and the teams they asked or are asked
-into, and `listed` the teams to choose from. Refusals: `teams_off`,
-`invalid_team_name`, `team_name_taken` (names are unique in a contest,
-ignoring case), `team_full` (with `limit`, the contest's `max_size`),
-`in_team`, `submitted_alone` (someone who submitted on their own joins no
-team, since those results are theirs), `not_approved` and `forbidden`. A
-contestant's changes stop at the contest's end; organisers can still mend
-teams, and a member can leave and organisers remove after teams are turned
-off. A team left with nobody that never submitted is deleted, its members'
-rows kept `left`.
-
-Once in a team, the team is the person's contestant: their workspace is the
-team's (`TeamOwner`, named `team.<id>`), so its gradings, the task's limits,
-which are counted per workspace, and its questions are the team's, and
-every member sees them. Who reaches the team's workspace changes in the
-request that changes the membership, at the forge first: a joiner is given
-access to every part already made (`share_workspace`, which also takes off
-anyone else), and someone who leaves, is removed, moved or taken out of the
-contest loses it; a call that fails fails the request, and asking again
-finishes it. A part made later is made with the members then, and checked
-against them afterwards (`teams.settle`), since it is made holding no lock;
-a team's repository also sheds any former member whenever it is opened. A
-submit holds the person's registration so no change of team passes it, and
-is asked again (`team_changed`) when their team changed under it. In a
-contest with teams, places are made ahead for teams, not people. Live
-updates reach every member of a team. Locks: contestant rows first, then
-team rows by id.
 
 ## Uploads
 
@@ -1424,8 +1511,8 @@ names every test, the hidden ones too, so it is the organisers'
 (`gradings.run_log`). Anyone else's submission is no such submission.
 
 `organised` gives organisers who observe the task one submission of any
-row, picked as the boards pick one (a contestant's `UserOwner` or a team's
-`TeamOwner`) and its number, as its row reads it with everything filled in
+row, picked as the boards pick one (an entrant's `EntrantOwner`) and its
+number, as its row reads it with everything filled in
 (TASK-FORMAT.md section 1.7): the same attempt, the same publication and
 the same scoring, shown as once the task has revealed, so a hidden group's
 outcome, tests and points and every sealed value are there, the points all
@@ -1581,11 +1668,11 @@ action answers the grading's status after the report.
 inserted, and a database restored from a backup lacks the gradings of every
 submission made since, so `unicon-forge reconcile`, which the operator runs
 once after a restore, reads them at the forge. Over every contest of every
-org the platform made, for every published task and every person with a row
-in `contestants` for the contest, whatever became of their registration, it
-lists that person's submissions of the task and inserts, for any with no
-grading, one queued grading against the current
-publication, carrying the idempotency key its tag's note carries. Their runs
+org the platform made, for every published task and every entrant of the
+contest, whatever became of it, it lists the entrant's submissions of the
+task and inserts, for any with no grading, one queued grading against the
+current publication, carrying the idempotency key its tag's note carries
+and naming no member as its submitter, which the forge's list does not say. Their runs
 start once it commits. Before a task's submissions it activates the task at
 the CI as the org's account, signing it in again once if the CI refuses it,
 since the CI's database restored from a dump taken at another moment, or
@@ -1658,21 +1745,22 @@ no log is `NotFound`, and a store that fails is `Unavailable` in fixed
 words, with what it said in the log. A route that names only the grading
 checks the organiser at the task `gradings.task_of(grading)` gives.
 
-**A contest's gradings.** `gradings.feed(contest, task=, user=, team=,
+**A contest's gradings.** `gradings.feed(contest, task=, user=, entrant=,
 status=, limit=)` lists the gradings of the contest's tasks as one feed,
 newest first, at most `limit` (100 unless given) and never more than 500,
 each a `FeedEntry`: the `GradingRecord`, with the overdue and lost reading
-and its reason and `latest`; `by`, a `Submitter`, the contestant by user id
-and username or the team by id and name, the name none once the account or
-the team is gone or the forge does not say; and `task_name` and `label`,
+and its reason and `latest`, with `submitted_by`, the member who submitted
+it, none for one a reconcile found at the forge; `by`, a `Submitter`, the
+entrant by id and the name it is shown under, and the member by user id and
+username, the username none when the forge does not say; and `task_name`
+and `label`,
 the task's name and the letter of its place in the contest's `tasks`, the
 label none once the contest no longer lists the task or its settings do not
 read, so a page needs no second read for them. Every attempt is a row of
 its own, so the attempts of one submission group by its workspace and
-number. `task` narrows to one task; `user` to what a contestant submitted,
-by username: on their own, and in each team of the contest while they were
-in it, from when they joined until they left, by when the submission was
-taken; `team` to a team's; and `status` to the gradings that read as it. A
+number. `task` narrows to one task; `user` to what a member submitted, by
+username; `entrant` to an entrant's; and `status` to the gradings that
+read as it. A
 `user` that breaks the forge's username rule (`names.is_username`:
 letters, digits, `-`, `_` and `.`, beginning and ending with a letter or a
 digit, none of the three twice in a row, at most 40 characters) matches
@@ -1686,8 +1774,8 @@ observer of the contest, or of its
 org, sees every task's gradings; someone holding a role at some of its
 tasks alone sees theirs, a task they do not observe left out rather than
 refused, and someone holding none of either is `Forbidden`. The usernames
-cost one read of the forge per contestant on the page, kept a minute by
-`CachedForge`, and a team's name one query. `gradings.queue_depth(contest)`
+cost one read of the forge per member on the page, kept a minute by
+`CachedForge`, and the entrants one query. `gradings.queue_depth(contest)`
 counts, in one read over the same gradings, the ones waiting for a machine,
 as a `QueueDepth` of `queued` and `dispatched`, by the status they read as:
 one overdue or lost reads as `system_error` and is not counted. Nothing
@@ -1708,14 +1796,13 @@ plan. A submission is read with its points shown and those still decided
 at the reveal.
 
 `boards.seen(session, contest)` gives every board the reader's audience
-sees, a visitor reading with no session, and an archived contest's to its
-approved contestants alone; `boards.organised(organiser, contest, row=)`
+sees, a visitor reading with no session, and an archived contest's to the
+members of its approved entrants alone; `boards.organised(organiser, contest, row=)`
 gives every board as `now` and `final`, every row, or, for a row of the
 contest, `now` of each board shown to contestants as that row sees it,
 beside what the boards ask of their tasks that does not hold. A board is
 ranked on read (`domain/boards.py`) over the contest's rows, each approved
-contestant in no team and each team with an approved member, read once a
-request: which submission counts per row and task (`best`,
+entrant, named as it is shown, read once a request: which submission counts per row and task (`best`,
 `best_per_group`, `marked`), its keys in turn, ties sharing a rank. A
 submission still grading, stopped by a step that is not sealed, or
 cancelled is no attempt; a regrade in progress leaves the earlier attempt
@@ -1745,7 +1832,7 @@ structured members in `extra`:
 | `SoleAdmin` | `sole_admin` | `scopes`, each `{"kind", "name"}` |
 | `ContestantConflict` | `contestant_conflict` | `contests` |
 | `SharedWorkflowOwner` | `shared_workflow_owner` | `workflows` |
-| `WrongStatus` | `wrong_status` | `current`, the registration's or the grading's status |
+| `WrongStatus` | `wrong_status` | `current`, the entrant's or the grading's status |
 | `InvalidMessage` | `invalid_message` | `field`, `title` or `body` |
 | `TaskClosed` | `task_closed` | `reason`, `closed` |
 | `SubmissionLimit` | `submission_limit` | `limit`, the submissions allowed |
@@ -1756,7 +1843,10 @@ structured members in `extra`:
 | `UploadLimit` | `upload_limit` | `limit`, the open uploads one person may hold for a task, and `bytes`, what they may declare together |
 | `InvalidInputs` | `invalid_inputs` | `errors`, each `{"input", "message"}` |
 | `LogTooLarge` | `log_too_large` | `limit`, the most of a run log read, in bytes |
+| `PublicFileTooLarge` | `public_file_too_large` | `limit`, the most of a public file served, in bytes |
 | `MarkLimit` | `mark_limit` | `limit`, the marks a row may hold on the task |
+| `EntrantFull` | `entrant_full` | `limit`, the most people in an entrant, invites waiting counted |
+| `EntrantIncomplete` | `entrant_incomplete` | `fewest`, the members an entrant needs, and `members`, how many it has |
 
 The rest, `invalid_name`, `unauthenticated`, `session_expired`,
 `fresh_sign_in_required`, `sign_in_invalid`, `sign_in_denied`,
@@ -1765,8 +1855,10 @@ The rest, `invalid_name`, `unauthenticated`, `session_expired`,
 `domain_not_allowed` and `contest_full`, which share the base class
 `RegistrationRefused`, `invalid_reason` and `invalid_extension`, the
 invites' `invalid_invite`, `already_invited` (with `invite`, the one held
-already), `invite_limit` (with `retry_at`) and `invite_expired`, the
-teams' refusals (above) and `team_changed`, and
+already), `invite_limit` (with `retry_at`), `invite_expired` and
+`no_invite_way`, the entrants' `entrants_alone`, `invalid_entrant_name`,
+`entrant_name_required`, `entrant_name_taken`, `in_entrant`,
+`roster_locked`, `entrant_has_submissions` and `entrant_changed`, and
 `archived` (the contest is archived), `not_approved` and
 `invalid_idempotency_key`, and grading's
 `ci_request_refused` (the CI's request does not verify or names no grading
@@ -1779,10 +1871,10 @@ passed), carry nothing beyond the detail. The refusals of an upload or a submit 
 
 ## The tables
 
-Ten tables, keyed by UUID v7 but for `names`, keyed by the id it names,
+Nine tables, keyed by UUID v7 but for `names`, keyed by the id it names,
 with every enumeration as `text` under a `CHECK`: `sessions`,
-`contestants`, `gradings`, `uploads`, `org_accounts`, `names`,
-`invites`, `teams`, `team_members` and `marks`. They
+`entrants`, `entrant_members`, `gradings`, `uploads`, `org_accounts`,
+`names`, `invites` and `marks`. They
 hold what a forge cannot: of users, orgs, contests and tasks only the names
 people gave the last three (above), the rest read live. `org_accounts` is
 one row per org, by the org's id, its service account's
@@ -1794,9 +1886,16 @@ but for revision `0017`, which keeps a frozen copy of the sealing so it
 reads the same whatever the package does later. Revision `0017` moved the three columns Woodpecker's sign-in filled into
 `ci_state`, which reads `UNICON_TOKEN_ENCRYPTION_KEY` whenever there is a
 token to move and stops before changing anything without it.
-A `contestants` row is one person's registration for one contest, and
-names no workspace, since a workspace's id comes from the contest and the
-person. A `gradings` row names the task, the workspace, the submission with
+An `entrants` row is one entrant of one contest, with its name, if it has
+one, its registration, the decision on it and its extension, and names no
+workspace, since a workspace's id comes from the contest and the entrant's
+id; an `entrant_members` row is one time one person was in one, with the
+way they came in by, as the contest's ways stood then, what let them
+through, and when they joined and left, at most one `member` row per person
+and contest. Revision `0018` put these in place of `contestants`, `teams`
+and `team_members`, and emptied the gradings, marks and submission uploads
+that named the workspaces those owned. A `gradings` row names the task, the
+workspace, the member who submitted, the submission with
 its number and the exact version its files went in with, when it was
 submitted, the publication, the attempt, and the idempotency key
 of the submit that made it; its status is one of `queued`, `dispatched`,
@@ -1812,8 +1911,9 @@ browser upload: its owner, its purpose, task and input (or, for a task's
 own file, the path it goes in the task), name, type, size, digest, status,
 the submission that consumed it, and when its lifetime ends. An `invites` row is one
 invite: the scope's keys, what it grants, the username or the address it
-names, who it is for once known, who sent it, its token's SHA-256, its
-status, its expiry, when it was decided, and what became of its mail. A
+names, who it is for once known, who sent it, the entrant it asks someone
+into, if any, its token's SHA-256, its status, its expiry, when it was
+decided, and what became of its mail. A
 `marks` row is one submission a row marked: the workspace, the task, the
 submission's number, and who marked it.
 `unicon-forge migrate` reads `UNICON_DATABASE_URL`, applies the migrations

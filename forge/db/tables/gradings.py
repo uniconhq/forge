@@ -2,7 +2,9 @@
 ran, where, its status, and the result as it was returned. Nothing
 in the row names a forge object but by the opaque ids the port hands out.
 
-`task_id` and `workspace_id` say whose submission of which task it is, and
+`task_id` and `workspace_id` say whose submission of which task it is, the
+entrant's whose workspace it is, and `submitted_by` which of its members
+submitted it, none when a reconcile found it at the forge; and
 `submission_number` and `submission_version` which one and the exact version
 its files went in with, so the CI's run can be pinned to it and checked
 against it. `submitted_at` is when the submit was taken, by the package's
@@ -28,7 +30,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, Index, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, CheckConstraint, Index, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.db.base import Base, Timestamped
@@ -44,6 +46,7 @@ class Grading(Base, Timestamped):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=new_id)
     task_id: Mapped[str]
     workspace_id: Mapped[str]
+    submitted_by: Mapped[int | None] = mapped_column(BigInteger)
     submission_id: Mapped[str]
     submission_number: Mapped[int]
     submission_version: Mapped[str]

@@ -91,6 +91,7 @@ from tests.services.conftest import (
     Entered,
     organiser,
     publish,
+    segment,
     upload,
     write_contest,
 )
@@ -629,7 +630,7 @@ async def test_the_envelope_is_the_runs_served_once_and_its_fetch_starts_the_clo
         "task": "/woodpecker/task",
         "submission": "/woodpecker/submission",
     }
-    assert document["submission"]["repo"] == "spring.sum.u8.sub"
+    assert document["submission"]["repo"] == f"spring.sum.{segment(entered.entrant)}.sub"
     assert "stage" not in document
     assert (document["schema_version"], document["attempt"], document["secrets"]) == (5, 1, {})
     acme.fake.objects.put(document["log_put"], b"the log")

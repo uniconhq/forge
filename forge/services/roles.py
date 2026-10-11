@@ -18,10 +18,10 @@ so a refusal leaves nothing half made:
   scopes, so a contest's only admin may step down while an org admin stands.
   The same holds for a person changing their own role.
 - Nobody is an organiser and a contestant of one contest. A role at a
-  contest or one of its tasks is refused to someone registered in it, and a
-  role at an org to someone registered in any of its contests, with
-  `ContestantConflict`. `holds_role_in_contest` is the other direction, for
-  registration to ask.
+  contest or one of its tasks is refused to a member of an entrant of it
+  that is pending or approved, and a role at an org to one in any of its
+  contests, with `ContestantConflict`. `holds_role_in_contest` is the other
+  direction, for registering and joining an entrant to ask.
 - An org's service account is not a person. It is never listed, and it is
   neither granted a role nor removed from one. It is known by its id in
   `org_accounts`, never by its name.
@@ -44,7 +44,8 @@ from dataclasses import dataclass
 
 from sqlalchemy import select, text
 
-from forge.db.tables import Contestant
+from forge.db.tables import Entrant, EntrantMember
+from forge.domain.entrants import MemberStatus
 from forge.domain.errors import ContestantConflict, Forbidden, NotFound, SoleAdmin
 from forge.domain.identity import User
 from forge.domain.ids import ContestId
@@ -218,7 +219,8 @@ async def refuse_unless_may_grant(ctx: Context, user_id: int, scope: Scope, leas
         held = ()
     if not holds(held, scope, least):
         raise Forbidden(
-            "Whoever sent this invite may no longer grant it; ask the organisers for a new one."
+            "Whoever sent this invite can no longer give what it offers. Ask the organisers for a "
+            "new one."
         )
 
 
@@ -270,7 +272,7 @@ def sole_admin(scopes: Iterable[Scope], detail: str) -> SoleAdmin:
 
 def _require_admin(organiser: Organiser, scope: Scope, doing: str) -> None:
     if not holds(organiser.grants, scope, Role.ADMIN):
-        raise Forbidden(f"Only an admin of {scope.name} may {doing} there.")
+        raise Forbidden(f"Only an admin of {scope.name} can {doing} there.")
 
 
 async def require_scope(ctx: Context, scope: Scope) -> None:
@@ -282,12 +284,12 @@ async def person_named(ctx: Context, username: str) -> User:
     try:
         return await ctx.forge.identity.find_user_by_username(username)
     except NotFound as exc:
-        raise NotFound(f"There is no user named {username!r} at the forge.") from exc
+        raise NotFound(f"There is no user called {username!r}.") from exc
 
 
 async def refuse_service_account(ctx: Context, user_id: int) -> None:
     if user_id in await org_accounts.service_account_ids(ctx):
-        raise Forbidden("That is an org's service account, which holds no role.")
+        raise Forbidden("That is an org's service account, which cannot be given a role.")
 
 
 def _direct(grants: tuple[RoleGrant, ...], scope: Scope) -> set[Role]:
@@ -296,26 +298,35 @@ def _direct(grants: tuple[RoleGrant, ...], scope: Scope) -> set[Role]:
 
 async def _refuse_if_last_admin(ctx: Context, user_id: int, scope: Scope) -> None:
     if not await admins_of(ctx, scope, leaving=user_id):
-        raise sole_admin([scope], f"Someone else has to be an admin of {scope.name} first.")
+        raise sole_admin(
+            [scope],
+            f"{scope.name} would have no admin left. Make someone else an admin there first.",
+        )
 
 
 async def refuse_if_contestant(ctx: Context, user: User, scope: Scope) -> None:
-    statement = select(Contestant.contest_id).where(
-        Contestant.user_id == user.id, Contestant.status.in_(REGISTERED)
+    statement = (
+        select(Entrant.contest_id)
+        .join(EntrantMember, EntrantMember.entrant_id == Entrant.id)
+        .where(
+            EntrantMember.user_id == user.id,
+            EntrantMember.status == MemberStatus.MEMBER,
+            Entrant.status.in_(REGISTERED),
+        )
     )
     if scope.kind is ScopeKind.ORG:
         statement = statement.where(
-            Contestant.contest_id.startswith(contest_id_prefix(scope.org), autoescape=True)
+            Entrant.contest_id.startswith(contest_id_prefix(scope.org), autoescape=True)
         )
     else:
-        statement = statement.where(Contestant.contest_id == contest_id_of(scope))
+        statement = statement.where(Entrant.contest_id == contest_id_of(scope))
     contests = sorted((await ctx.db.execute(statement)).scalars())
     if contests:
         where = await names.places_named(ctx, contests)
         named = sorted(where[contest].path if contest in where else contest for contest in contests)
         raise ContestantConflict(
-            f"{user.username} is a contestant in {', '.join(named)} and cannot also "
-            f"hold a role at {scope.name}.",
+            f"{user.username} has entered {', '.join(named)}, so they cannot also have a "
+            f"role at {scope.name}.",
             contests=named,
         )
 

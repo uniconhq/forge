@@ -7,7 +7,8 @@ it was without reading either.
 
 An `Edit` is one file as a save writes it, with the token it was read with:
 either the bytes the save carries, or an `Uploaded` naming a file already at
-the forge, whose pointer the save writes instead;
+the forge, whose pointer the save writes instead, or none, which removes the
+file; removing a folder is removing each file under it, named one by one;
 a `FileSet` is every file of a place at one version, by path, with its
 token. A file that is an upload carries its `UploadInfo`, read from the
 pointer its commit holds (`forge.domain.uploads.upload_info`). `check_path`
@@ -41,7 +42,11 @@ def check_path(path: str) -> str:
         or any(segment in ("", ".", "..") for segment in segments)
         or any(character in UNSAFE_CHARACTERS or ord(character) < 32 for character in path)
     ):
-        raise InvalidPath(f"{path!r} is not a path inside the place.", path=path)
+        raise InvalidPath(
+            f"{path!r} cannot be used as a file's path. Give a path inside the task or "
+            "contest, with no empty, . or .. parts.",
+            path=path,
+        )
     return path
 
 
@@ -106,7 +111,8 @@ class Change:
     """One entry of a place's history: the version it made, who made it, what
     they said about it and when. `author` is the username of `author_id`,
     which the history names whether or not they still hold a role there, and
-    none when the forge knows no such account or the change has no author.
+    none when the forge knows no such account, the change has no author, or
+    the platform made it, which is no person (a new task's first files).
     """
 
     version: VersionId
@@ -131,22 +137,24 @@ class Uploaded:
 @dataclass(frozen=True, slots=True)
 class Edit:
     """One file as a save writes it: its new content, either typed text the
-    save carries or an upload the forge already holds, and the token it was
-    read with, or none for a file the save creates.
+    save carries or an upload the forge already holds, or none to remove the
+    file, and the token it was read with, or none for a file the save
+    creates. A removal always carries its token.
     """
 
-    content: bytes | Uploaded
+    content: bytes | Uploaded | None
     token: ConflictToken | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class WrittenEdit:
     """One file as the write carries it, once an edit naming an upload has
-    become the pointer to it. Everything past the save's first step works on
-    these, so nothing below it has to ask where a file's bytes came from.
+    become the pointer to it, and none for a file the save removes.
+    Everything past the save's first step works on these, so nothing below
+    it has to ask where a file's bytes came from.
     """
 
-    content: bytes
+    content: bytes | None
     token: ConflictToken | None = None
 
 

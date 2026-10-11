@@ -77,10 +77,10 @@ from forge.services.access import Organiser, require
 log = get_logger(__name__)
 
 NO_SUCH_UPLOAD = "There is no such upload."
-FORGE_UNAVAILABLE = "The file store did not answer; try again in a moment."
-FORGE_REFUSED = "The file store will not take this file from you."
+FORGE_UNAVAILABLE = "The file store did not answer. Try again in a moment."
+FORGE_REFUSED = "The file store would not take this file. Try again, or tell the organisers."
 NO_SUCH_PLACE = "There is nowhere for that file to go."
-DOOR_REFUSED = "That upload cannot be sent."
+DOOR_REFUSED = "That upload cannot be sent. Start the upload again."
 UPLOAD_LOCK = 0x55504C44
 """The first key of every lock on a person's slots for a task, the second
 being the person and task hashed by Postgres."""
@@ -140,29 +140,31 @@ async def slot(
     task's contestant input `input`, whose content hashes to `sha256`,
     recorded as an upload of the signed-in person.
     """
-    entrant = await submitters.entrant(ctx, session, task)
-    _, workspace = await submitters.refuse(ctx, entrant)
-    form = await published.form(ctx, entrant.published)
+    person = await submitters.person(ctx, session, task)
+    _, workspace = await submitters.refuse(ctx, person)
+    form = await published.form(ctx, person.published)
     entry = _file_input(form.fields, input)
     _refuse_file(entry, filename, size, sha256, content_type, form.tests)
     limit = min(entry.max_size, FILE_CEILING)
     if size > limit:
         raise TooLarge(
-            f"The file is larger than the {limit} bytes allowed.", limit=limit, input=entry.id
+            f"The file is larger than the {limit} bytes allowed. Choose a smaller file.",
+            limit=limit,
+            input=entry.id,
         )
     if not await _asked_before(
-        ctx, entrant.session.user_id, task, UploadPurpose.SUBMISSION, since=entrant.since
+        ctx, person.session.user_id, task, UploadPurpose.SUBMISSION, since=person.since
     ):
         # An object belongs to a repository at the forge, so the place has to
         # be there before any bytes are sent. A row for this task, taken or
         # not, means an earlier slot made it, so a submission of twenty files
         # costs one call between them and not one each. Two first slots at
         # once both make it, which is making it once.
-        await submitters.open_place(ctx, entrant)
-    await _clear_lapsed(ctx, entrant.session.user_id, UploadPurpose.SUBMISSION)
+        await submitters.open_place(ctx, person)
+    await _clear_lapsed(ctx, person.session.user_id, UploadPurpose.SUBMISSION)
     await _refuse_open(
         ctx,
-        entrant.session.user_id,
+        person.session.user_id,
         task,
         size,
         rules.open_bytes(
@@ -170,13 +172,13 @@ async def slot(
         ),
     )
     place = SubmissionPlace(workspace, task)
-    as_ = AsUser(entrant.session.user_id, await sessions.credential_for(ctx, entrant.session.id))
+    as_ = AsUser(person.session.user_id, await sessions.credential_for(ctx, person.session.id))
     return await _record(
         ctx,
         place=place,
         as_=as_,
         purpose=UploadPurpose.SUBMISSION,
-        user_id=entrant.session.user_id,
+        user_id=person.session.user_id,
         task=task,
         input_id=entry.id,
         filename=filename,
@@ -272,7 +274,9 @@ async def complete(ctx: Context, session: Session, task: TaskId, upload: uuid.UU
         return view(row)
     as_ = AsUser(fresh.user_id, await sessions.credential_for(ctx, session.id))
     if not await holds(ctx, await _place_of(ctx, row, fresh.user_id), as_, row):
-        raise UploadNotReady("The file has not arrived yet.", uploads=[str(upload)])
+        raise UploadNotReady(
+            "The file has not finished uploading. Try again once it has.", uploads=[str(upload)]
+        )
     row.status = UploadStatus.VERIFIED
     await ctx.db.flush()
     log.info("uploads.completed", upload=str(upload), size=row.size, user_id=fresh.user_id)
@@ -325,10 +329,15 @@ async def door(ctx: Context, session: Session, upload: uuid.UUID, *, length: int
         # can outlive its lifetime by a while; the door is where that stops.
         log.info("uploads.door_refused", why="lapsed", upload=str(upload), user_id=fresh.user_id)
         raise Forbidden(DOOR_REFUSED)
+    try:
+        place = await _place_of(ctx, row, fresh.user_id)
+    except NotFound:
+        log.info(
+            "uploads.door_refused", why="in no entrant", upload=str(upload), user_id=fresh.user_id
+        )
+        raise Forbidden(DOOR_REFUSED) from None
     as_ = AsUser(fresh.user_id, await sessions.credential_for(ctx, session.id))
-    answer = ctx.forge.uploads.door(
-        await _place_of(ctx, row, fresh.user_id), as_=as_, digest=row.digest, size=row.size
-    )
+    answer = ctx.forge.uploads.door(place, as_=as_, digest=row.digest, size=row.size)
     log.info("uploads.door_opened", upload=str(upload), size=row.size, user_id=fresh.user_id)
     return answer
 
@@ -497,8 +506,8 @@ async def _record(
 
 async def _place_of(ctx: Context, row: UploadRow, user_id: int) -> UploadPlace:
     """The repository an upload's bytes belong to: the place to submit the
-    task the person works in, their team's while they are in one, or the
-    task itself for an organiser's file.
+    task of the entrant the person is in, or the task itself for an
+    organiser's file. `NotFound` for a person in no entrant now.
     """
     task = TaskId(row.task_id or "")
     if row.purpose == UploadPurpose.TASK_FILE:
@@ -542,10 +551,10 @@ async def _asked_before(
     since: datetime | None = None,
 ) -> bool:
     """Whether any slot of this kind was kept for the person at the task,
-    taken or not, since `since`, when they joined or left a team, and so
-    whether the place they now upload into is made already with them on it.
-    Read without a lock: the answer only saves a call to the forge, and a
-    place made twice is made once.
+    taken or not, since `since`, when they joined their entrant by the
+    database's clock, and so whether the place they now upload into is made
+    already with them on it. Read without a lock: the answer only saves a
+    call to the forge, and a place made twice is made once.
     """
     query = select(UploadRow.id).where(
         UploadRow.owner_user_id == user_id,
@@ -553,9 +562,10 @@ async def _asked_before(
         UploadRow.purpose == purpose,
     )
     if since is not None:
-        # Asked for at `expires_at` less the lifetime, by the same clock as
-        # `since`; the row's own `created_at` is the database's.
-        query = query.where(UploadRow.expires_at > since + rules.LIFETIME)
+        # Both by the database's clock, which sets a row's `created_at` when
+        # its unit of work begins, so a slot kept after the person joined is
+        # later than the joining, and one kept before it is not.
+        query = query.where(UploadRow.created_at > since)
     found = await ctx.db.scalar(query.limit(1))
     return found is not None
 
@@ -606,9 +616,9 @@ async def _refuse_open(
             user_id=user_id,
         )
         raise UploadLimit(
-            f"You hold as many uploads for this task as you may before submitting them: "
-            f"{rules.OPEN_MAX} files, or {most_bytes} bytes together. Submit them, or wait "
-            f"for them to be cleared two days after each was made.",
+            "You have as many uploads waiting for this task as you can have before submitting "
+            f"them: {rules.OPEN_MAX} files, or {most_bytes} bytes in all. Submit them, or wait: "
+            "each is cleared two days after it was made.",
             limit=rules.OPEN_MAX,
             bytes=most_bytes,
         )
@@ -619,8 +629,8 @@ def _file_input(declared: Sequence[Field], input: str) -> Field:
         if entry.id == input and entry.files:
             return entry
     raise InvalidInputs(
-        "The task has no input a file is uploaded for by that name.",
-        errors=[{"input": input, "message": "The task has no file input by that name."}],
+        "This task has no file input by that name.",
+        errors=[{"input": input, "message": "This task has no file input by that name."}],
     )
 
 

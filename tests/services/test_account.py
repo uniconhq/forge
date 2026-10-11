@@ -136,7 +136,7 @@ async def test_an_account_is_created_with_a_first_password_shown_once(
 
 
 async def test_a_service_account_name_and_a_blank_one_are_refused(ctx: Context) -> None:
-    with pytest.raises(InvalidName, match="reserved"):
+    with pytest.raises(InvalidName, match="kept for org service accounts"):
         await account.create(ctx, "unicon-ci-acme", email="x@example.test")
     with pytest.raises(InvalidName):
         await account.create(ctx, " ", email="x@example.test")
