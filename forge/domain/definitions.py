@@ -804,8 +804,8 @@ class TaskDefinition(Model):
                 found.append(
                     (
                         ("pass_at",),
-                        'This applies only when the group gives points under "every test must '
-                        'pass". Give those points, or leave this empty.',
+                        'This applies only when the group gives points under "at least a share '
+                        'of its tests must pass". Give those points, or leave this empty.',
                     )
                 )
             if not 0 < group.pass_at <= 1:

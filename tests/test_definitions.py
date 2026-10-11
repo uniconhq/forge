@@ -788,8 +788,8 @@ def test_pass_at_applies_only_beside_pass() -> None:
     problems = task_problems(task_text("{main: {each: 1, pass_at: 0.5}}"))
 
     assert at(problems, "test_groups.main.pass_at") == (
-        'This applies only when the group gives points under "every test must pass". Give those '
-        "points, or leave this empty."
+        'This applies only when the group gives points under "at least a share of its tests '
+        'must pass". Give those points, or leave this empty.'
     )
 
 
