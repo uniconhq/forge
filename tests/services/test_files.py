@@ -24,7 +24,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import files, publications, submissions
+from forge.services import files, publications, submissions, timelines
 from forge.services.access import Organiser
 from forge.services.publications import Published
 from tests.services.conftest import (
@@ -487,6 +487,25 @@ async def test_an_entry_is_dropped_only_from_a_task_that_neither_opened_nor_has_
 
     assert refused == [("tasks", "sum has 1 submission; it cannot be hidden, so keep its entry.")]
     assert version
+
+
+async def test_an_open_contest_goes_back_to_draft_until_its_start_and_is_only_archived_after(
+    setup: Setup, acme: Acme, sum_task: TaskId, clock: FakeClock
+) -> None:
+    open_ = _running(SUM_ENTRY)
+    drafted = open_.replace(b"state: published", b"state: draft")
+    await write_contest(acme.fake, open_.decode())
+
+    refused = await _refused(setup, acme, drafted)
+    archived = await _write_contest(
+        setup, acme, open_.replace(b"state: published", b"state: archived")
+    )
+
+    assert refused == [("state", timelines.STARTED_STAYS_OPEN)]
+    assert archived
+    clock.advance(-timedelta(hours=3))
+    await write_contest(acme.fake, open_.decode())
+    assert await _write_contest(setup, acme, drafted)
 
 
 async def test_a_contest_that_was_never_published_moves_its_passed_dates_freely(

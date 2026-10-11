@@ -26,6 +26,10 @@ gradings, one per submission, at the moment it was taken:
   contest's `end`, does not move earlier than a submission already made,
   nor later once the task has revealed under the settings saved before. A
   contest that was never published released nothing, and moves freely.
+- An open contest, `published` under the settings saved before, goes back
+  to `draft` only before its start (#438): from the start on, contestants
+  have work in it that a draft would hide, so the only way out is
+  `archived`.
 
 Changing an extension is checked the same way (`refuse_extension`): it may
 not let a row submit to a task whose reveal has passed, nor, shortened or
@@ -41,7 +45,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import Select, func, select, text
 
 from forge.db.tables import Contestant, Grading, Team, TeamMember
-from forge.domain.definitions import ContestDefinition, ContestTask
+from forge.domain.definitions import ContestDefinition, ContestTask, State
 from forge.domain.errors import InvalidExtension
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
@@ -283,6 +287,8 @@ async def check_contest(
     problems += await _points(ctx, after, tasks)
     if before is None:
         return problems
+    if _drafted_after_start(before, after, ctx.now):
+        problems.append(Problem(path="state", message=STARTED_STAYS_OPEN))
     made = await submissions(ctx, contest, tasks)
     extensions = await every_extension(ctx, contest)
     for entry in before.tasks:
@@ -298,6 +304,21 @@ async def check_contest(
             at = path if path in ("start", "end") else f"tasks[{index}].{path}"
             problems.append(Problem(path=at, message=message))
     return problems
+
+
+STARTED_STAYS_OPEN = (
+    "The contest has started, so it can no longer go back to draft: that would hide "
+    "the work contestants have done in it. Archive it instead to close it."
+)
+
+
+def _drafted_after_start(
+    before: ContestDefinition, after: ContestDefinition, now: datetime
+) -> bool:
+    """Whether a save takes a contest that was open, and has started, back
+    to draft.
+    """
+    return before.state is State.PUBLISHED and before.start <= now and after.state is State.DRAFT
 
 
 def _dropped(
