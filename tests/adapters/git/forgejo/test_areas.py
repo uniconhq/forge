@@ -12,7 +12,14 @@ import pytest
 from forge.adapters.ci.woodpecker.ci_state import WoodpeckerState, written
 from forge.adapters.git.forgejo import ForgejoForge
 from forge.domain.content import ConflictToken
-from forge.domain.errors import Conflict, Forbidden, Misconfigured, NotFound, Rejected
+from forge.domain.errors import (
+    Conflict,
+    Forbidden,
+    Misconfigured,
+    NotFound,
+    Rejected,
+    Unavailable,
+)
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId, WorkflowId, WorkspaceId
 from forge.domain.names import OrgProfile, UserOwner
@@ -1493,26 +1500,54 @@ async def test_reading_a_folder_as_a_file_or_a_file_as_a_folder_is_not_found(
         await forgejo.content.list_tree(PLATFORM, ContestId("acme/spring"), "contest.yaml")
 
 
-async def test_a_file_over_forgejos_inline_size_is_read_whole_from_its_blob(
+async def test_a_file_over_forgejos_inline_size_is_read_whole_through_the_raw_endpoint(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
     """Forgejo's contents leave `content` empty past its largest inline blob
-    (10 MiB by default), and an empty read saved back would empty the file."""
+    (10 MiB by default), and so does its blobs endpoint, each with the right
+    `size`; an empty read saved back would empty the file. The raw endpoint
+    reads it whole, at the commit the contents name."""
     whole = b"x" * 20
+    repo = "/api/v1/repos/acme/spring.contest"
     recorder.on(
         "GET",
-        "/api/v1/repos/acme/spring.contest/contents/data.txt",
-        ok({"type": "file", "sha": "blob-9", "content": "", "size": len(whole)}),
+        f"{repo}/contents/data.txt",
+        ok(
+            {
+                "type": "file",
+                "sha": "blob-9",
+                "content": "",
+                "size": len(whole),
+                "last_commit_sha": "c-9",
+            }
+        ),
     )
     recorder.on(
-        "GET",
-        "/api/v1/repos/acme/spring.contest/git/blobs/blob-9",
-        ok({"sha": "blob-9", "content": base64.b64encode(whole).decode(), "size": len(whole)}),
+        "GET", f"{repo}/git/blobs/blob-9", ok({"sha": "blob-9", "content": "", "size": len(whole)})
     )
+    recorder.on("GET", f"{repo}/raw/data.txt", httpx.Response(200, content=whole))
 
     read = await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "data.txt")
 
     assert (read.content, read.token) == (whole, ConflictToken("blob-9"))
+    raw = next(request for request in recorder.seen if "/raw/" in request.url.path)
+    assert raw.url.params["ref"] == "c-9"
+
+
+async def test_a_short_read_of_a_file_is_an_error_never_its_content(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    """A file whose bytes do not come back whole is not read as fewer bytes."""
+    repo = "/api/v1/repos/acme/spring.contest"
+    recorder.on(
+        "GET",
+        f"{repo}/contents/data.txt",
+        ok({"type": "file", "sha": "blob-9", "content": "", "size": 20, "last_commit_sha": "c-9"}),
+    )
+    recorder.on("GET", f"{repo}/raw/data.txt", httpx.Response(200, content=b"x" * 7))
+
+    with pytest.raises(Unavailable):
+        await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "data.txt")
 
 
 async def test_an_account_whose_email_is_taken_is_a_conflict_as_a_taken_name_is(

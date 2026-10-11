@@ -287,17 +287,15 @@ class Repos:
         content = base64.b64decode(entry.get("content") or "")
         size = entry.get("size")
         if isinstance(size, int) and len(content) != size:
-            # Past its largest inline blob Forgejo leaves `content` empty; the
-            # blob itself, by the sha the token is, is read whole instead.
-            blob = json_of(
-                await self._http.call(
-                    as_,
-                    "GET",
-                    f"/api/v1/repos/{segment(owner)}/{segment(name)}/git/blobs/"
-                    f"{segment(str(entry['sha']))}",
-                )
-            )
-            content = base64.b64decode(blob.get("content") or "")
+            # Past its largest inline blob (10 MiB by default) Forgejo answers
+            # `content` empty with the right `size`, and so does its blobs
+            # endpoint. The raw endpoint reads the file whole as the commit the
+            # answer names holds it, and a read still short is an error, never
+            # the file: saved back, it would empty it.
+            commit = entry.get("last_commit_sha") or at or DEFAULT_BRANCH
+            content = await self.read_blob(as_, owner, name, path, at=str(commit), max_size=size)
+            if len(content) != size:
+                raise Unavailable(f"{path} came back as {len(content)} of its {size} bytes")
         return File(path=path, content=content, token=ConflictToken(str(entry["sha"])))
 
     async def media_door(self, as_: Identity, owner: str, name: str, path: str, *, at: str) -> Door:
