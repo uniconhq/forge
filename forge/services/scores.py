@@ -16,9 +16,9 @@ not stopped, accepted on the test.
 Where a submission stands on a board is its latest attempt's: finished, it
 is a candidate when its run was not stopped, an attempt when a sealed step
 stopped it, and nothing otherwise; staff cancelled, nothing; in
-`system_error`, still grading to its row; still running or queued, the
-latest attempt that finished before it while there is one, so a regrade in
-progress moves no board until it ends, and otherwise still grading. A
+`system_error`, still grading to its row; still running or queued, where
+it stood by its attempts before that one, so a regrade in progress moves no
+board until it ends, and with none before it still grading. A
 fallback, staff's on the latest attempt or the contest's
 `on_system_error: last_result`, has a submission in `system_error` or staff
 cancelled stand as its latest earlier attempt that finished with a result
@@ -105,12 +105,17 @@ def usable(
         if gradings.staff_cancelled(latest):
             return Usable(State.VOID, None)
         return Usable(State.GRADING, None)
+    if status is not GradingStatus.CANCELLED:
+        # Still running or queued: the board holds where the submission stood
+        # before this attempt, a system error with no fallback included.
+        earlier = [row for row in rows if row.attempt < latest.attempt]
+        if earlier:
+            return usable(ctx, earlier, lost, contest)
+        return Usable(State.GRADING, None)
     good = gradings.last_good(rows, latest)
     if good is not None:
         return Usable(State.CANDIDATE, good)
-    if status is GradingStatus.CANCELLED:
-        return Usable(State.VOID, None)
-    return Usable(State.GRADING, None)
+    return Usable(State.VOID, None)
 
 
 def fallen_back(
