@@ -789,9 +789,8 @@ def test_an_optional_input_never_says_which_way_is_better() -> None:
     text = (
         CLASSIC.decode()
         .replace(
-            "  memory_limit: number\n",
-            "  memory_limit: number\n"
-            "  dir: {type: enum, options: [higher, lower], optional: true}\n",
+            "\ntest:\n",
+            "\n  dir: {type: enum, options: [higher, lower], optional: true}\ntest:\n",
         )
         .replace(
             "better: lower, at_least: 0}\n  log:",

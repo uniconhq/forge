@@ -107,8 +107,11 @@ def keys(*numbers: int) -> tuple[Fraction | None, ...]:
     return tuple(Fraction(number) for number in numbers)
 
 
-def contest(extra: str = "", entry: str = "") -> str:
-    return RUNNING.format(visibility="everyone") + entry + extra
+def contest(extra: str = "", entry: str = "", worth: str = "    worth: 100\n") -> str:
+    """The running contest with `sum` worth 100, as the arithmetic here
+    reads it, though its groups total 200.
+    """
+    return RUNNING.format(visibility="everyone") + worth + entry + extra
 
 
 async def _task_yaml(acme: Acme, task: TaskId) -> bytes:
@@ -595,7 +598,7 @@ async def test_a_tasks_save_is_refused_where_a_board_ranks_what_its_groups_hide(
 async def test_a_tasks_save_reports_each_groups_most_its_reveal_and_the_boards_it_moves(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    await write_contest(acme.fake, contest(BOARDS))
+    await write_contest(acme.fake, contest(BOARDS, worth=""))
 
     saved = await _three_groups(setup, acme, entered.task)
     current = await _task_yaml(acme, entered.task)
@@ -610,7 +613,7 @@ async def test_a_tasks_save_reports_each_groups_most_its_reveal_and_the_boards_i
     )
 
     assert saved.notes[-4:] == (
-        "Each group's most points: main 50, small 15, large 35.",
+        "Each group's most points: main 100, small 30, large 70.",
         "sum reveals at 2026-09-26T15:00:00+00:00.",
         "This save moves Standings.",
         "This save moves Final.",
@@ -627,7 +630,7 @@ async def test_the_contests_save_answers_each_board_that_counts_nothing_from_a_t
     pointless = current[: current.index(b"test_groups:")] + b"test_groups:\n  main: {}\n"
     assert isinstance(await _save(setup, acme, entered.task, {"task.yaml": pointless}), Published)
 
-    written = await _write(setup, acme, contest(BOARDS))
+    written = await _write(setup, acme, contest(BOARDS, worth=""))
 
     assert written.notes == (
         "Standings counts nothing from sum.",

@@ -614,7 +614,7 @@ async def _secret_workflow(acme: Acme) -> None:
     await _workflow(
         acme,
         "args",
-        CLASSIC.replace(b"  time_limit: number\n", b"  time_limit: number\n  args: text\n").replace(
+        CLASSIC.replace(b"\ntest:\n", b"\n  args: text\ntest:\n").replace(
             b"      memory_limit: ${{ inputs.memory_limit }}\n",
             b"      memory_limit: ${{ inputs.memory_limit }}\n      args: ${{ inputs.args }}\n",
         ),

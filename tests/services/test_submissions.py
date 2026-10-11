@@ -74,9 +74,7 @@ KEY = "key-0001-aaaa"
 SOURCE = b"print(sum(map(int, input().split())))\n"
 END = datetime(2026, 9, 26, 15, 0, tzinfo=UTC)
 
-FOLDERS = CLASSIC.replace(
-    b"submission: {type: file, contestant: true}", b"submission: {type: folder, contestant: true}"
-)
+FOLDERS = CLASSIC.replace(b"  submission:\n    type: file\n", b"  submission:\n    type: folder\n")
 """classic, with the contestant's sources a folder."""
 
 ANSWERS = b"""\
@@ -933,8 +931,8 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
     # The groups whose verdict is shown passed; large's verdict waits.
     assert before.grading.outcome == "accepted"
     assert before.grading.values == {"log": "compiled"}
-    # Worth 100 over rule weights 100, 30 and 70: main 50, small 15 and
-    # large's 35 decided at the reveal.
+    # No worth in the contest, so the task is worth its groups' total, 200:
+    # main 100, small 30 and large's 70 decided at the reveal.
     assert before.grading.groups == (
         GroupShown(
             group="main",
@@ -949,8 +947,8 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
                 },
             ),
             shown_at=None,
-            points=Fraction(50),
-            max=Fraction(50),
+            points=Fraction(100),
+            max=Fraction(100),
         ),
         GroupShown(
             group="small",
@@ -958,8 +956,8 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
             outcome="accepted",
             tests=None,
             shown_at=END,
-            points=Fraction(15),
-            max=Fraction(15),
+            points=Fraction(30),
+            max=Fraction(30),
         ),
         GroupShown(
             group="large",
@@ -967,11 +965,11 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
             outcome=None,
             tests=None,
             shown_at=END,
-            max=Fraction(35),
+            max=Fraction(70),
         ),
     )
     assert before.grading.points == Points(
-        shown=Fraction(65), pending=Fraction(35), pending_until=END
+        shown=Fraction(130), pending=Fraction(70), pending_until=END
     )
 
     clock.set(END)
@@ -988,7 +986,7 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
     assert after.grading.groups[2].tests == (_credited(0),)
     assert after.grading.groups[1].tests == (_credited(2),)
     assert after.grading.points == Points(
-        shown=Fraction(65), pending=Fraction(0), pending_until=None
+        shown=Fraction(130), pending=Fraction(0), pending_until=None
     )
     assert after.grading.groups[2].points == 0
 
@@ -1070,7 +1068,7 @@ async def test_an_extension_holds_the_reveal_back_for_everyone(
         outcome=None,
         tests=None,
         shown_at=END + timedelta(hours=1),
-        max=Fraction(35),
+        max=Fraction(70),
     )
 
 
