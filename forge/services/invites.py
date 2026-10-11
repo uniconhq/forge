@@ -13,10 +13,11 @@ in by (`no_invite_way`), and into an entrant only while its members and the
 invites waiting to join it leave room (`entrant_full`). A username is looked
 up at the forge then and there, so the invite is that person's from the
 start; an address is matched later. The same pending invite twice is
-refused (`already_invited`), since the first can be sent again, and an org
-makes at most `ORG_DAILY_MAX` invites in a day (`invite_limit`), a member's
-counted with its organisers', so an org nobody vetted cannot turn the
-platform's mail server on strangers. Making, sending again, withdrawing,
+refused (`already_invited`), since the first can be sent again, and an org's
+organisers make at most `ORG_DAILY_MAX` invites in a day (`invite_limit`), so
+an org nobody vetted cannot turn the platform's mail server on strangers; an
+entrant's members, at most `entrants.MEMBER_DAILY_MAX` of their own, so no
+contestant can spend the org's. Making, sending again, withdrawing,
 accepting and declining take the org's lock on role changes, the one
 `roles` takes, so two organisers cannot both make the same invite and an
 acceptance never passes a grant or a removal.
@@ -214,11 +215,13 @@ async def make(
 ) -> Invite:
     """A new pending invite to what `grants` gives at the scope, into
     `entrant` when it names one, mailed once the unit of work commits, once
-    the same invite is not waiting already and the org has invites left
-    today. The caller has checked who may make it.
+    the same invite is not waiting already and, for an organiser's, the org
+    has invites left today. The caller has checked who may make it, and a
+    member's invite against its entrant's own limit (`entrants.invite`).
     """
     await refuse_twice(ctx, scope, grants, named, entrant)
-    await _refuse_too_many(ctx, scope.org)
+    if grants is not Grant.MEMBER:
+        await _refuse_too_many(ctx, scope.org)
     token = rules.new_token()
     row = InviteRow(
         scope=scope.path,
@@ -543,8 +546,9 @@ async def refuse_twice(
 
 
 async def _refuse_too_many(ctx: Context, org: str) -> None:
-    """`InviteLimit` once the org has made `ORG_DAILY_MAX` invites in the last
-    day, at all its scopes together.
+    """`InviteLimit` once the org's organisers have made `ORG_DAILY_MAX`
+    invites in the last day, at all its scopes together; members' invites
+    into their entrants count under their own limit.
     """
     since = ctx.now - timedelta(days=1)
     made = await ctx.db.scalar(
@@ -552,6 +556,7 @@ async def _refuse_too_many(ctx: Context, org: str) -> None:
         .select_from(InviteRow)
         .where(
             or_(InviteRow.scope == org, InviteRow.scope.startswith(f"{org}/", autoescape=True)),
+            InviteRow.grants != Grant.MEMBER,
             InviteRow.created_at > since,
         )
     )

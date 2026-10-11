@@ -28,11 +28,13 @@ has ended or is archived, since an entrant stands as it is from then on:
    (`invalid_entrant_name`) and no other entrant's, ignoring case
    (`entrant_name_taken`).
 2. `invite` asks someone into the person's entrant, by username or address,
-   as an invite with `grants = member` mailed as an organiser's is, under
-   the org's daily limit; refused once the roster has locked
-   (`roster_locked`), when the members and the invites waiting reach the
-   contest's `entrants.most` (`entrant_full`), or when entrants are one
-   person each (`entrants_alone`). Any member withdraws its waiting
+   as an invite with `grants = member` mailed as an organiser's is, by a
+   member of a pending or approved entrant; refused once the roster has
+   locked (`roster_locked`), when the members and the invites waiting reach
+   the contest's `entrants.most` (`entrant_full`), when entrants are one
+   person each (`entrants_alone`), or once the entrant's members have sent
+   `MEMBER_DAILY_MAX` in a day, apart from the org's own limit
+   (`invite_limit`). Any member withdraws its waiting
    invites (`withdraw_invite`).
 3. Accepting an invite (`invites.accept`, which calls `take_place`) puts
    the person in the entrant it names, or, for an organiser's invite to the
@@ -119,6 +121,7 @@ from forge.domain.errors import (
     EntrantNameTaken,
     EntrantsAlone,
     InEntrant,
+    InviteLimit,
     InviteRequired,
     IsStaff,
     NotFound,
@@ -150,6 +153,10 @@ the contest and the user id hashed by Postgres."""
 NO_SUCH_ENTRANT = "There is no such entrant in this contest."
 NOT_IN_ONE = "You have not entered this contest."
 ENDED = "Entrants cannot change once the contest has ended. Ask the organisers."
+MEMBER_DAILY_MAX = 10
+"""The most invites an entrant's members send in a day, together: a team
+finds its few people, and no contestant mails strangers through the
+platform."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,6 +370,7 @@ async def invite(
         len(await member_ids(ctx, row.id)) + await _waiting(ctx, row.id),
         settings.entrants.most,
     )
+    await _refuse_too_many_sent(ctx, row.id)
     made = await invites.make(
         ctx,
         contest_scope(contest),
@@ -1229,6 +1237,29 @@ async def _waiting(ctx: Context, entrant: uuid.UUID) -> int:
         )
     )
     return found or 0
+
+
+async def _refuse_too_many_sent(ctx: Context, entrant: uuid.UUID) -> None:
+    """`InviteLimit` once the entrant's members have sent `MEMBER_DAILY_MAX`
+    invites into it in the last day, the ones withdrawn since included.
+    """
+    since = ctx.now - timedelta(days=1)
+    sent = await ctx.db.scalar(
+        select(func.count())
+        .select_from(InviteRow)
+        .where(
+            InviteRow.entrant_id == entrant,
+            InviteRow.grants == Grant.MEMBER,
+            InviteRow.created_at > since,
+        )
+    )
+    if (sent or 0) >= MEMBER_DAILY_MAX:
+        retry_at = ctx.now + timedelta(hours=1)
+        raise InviteLimit(
+            f"Your team has sent {MEMBER_DAILY_MAX} invites in the last day, the most it can. "
+            "Send more later.",
+            retry_at=retry_at.isoformat(),
+        )
 
 
 def _new_name(settings: ContestDefinition, name: str | None) -> str | None:

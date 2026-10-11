@@ -35,6 +35,7 @@ from forge.domain.errors import (
     Forbidden,
     InEntrant,
     InvalidExtension,
+    InviteLimit,
     IsStaff,
     NoInviteWay,
     NotFound,
@@ -812,3 +813,28 @@ async def test_a_submit_reads_its_entrant_again_once_it_holds_it(
 
     with pytest.raises(TaskClosed):
         await submissions.submit(setup, bob, sum_task, code(made.id), idempotency_key="key-0001-race")
+
+
+async def test_a_team_sends_ten_invites_a_day_of_its_own_and_never_the_orgs(
+    setup: Setup,
+    acme: Acme,
+    crowd: dict[str, Session],
+    clock: FakeClock,
+    manager: Organiser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(invites, "ORG_DAILY_MAX", 3)
+    clock.set(START - timedelta(days=3))
+    bob = crowd["bob"]
+    await entrants.register(setup, bob, SPRING, name="Adders")
+    for number in range(10):
+        made = await entrants.invite(setup, bob, SPRING, email=f"someone{number}@example.test")
+        await entrants.withdraw_invite(setup, bob, SPRING, made.id)
+
+    with pytest.raises(InviteLimit) as refused:
+        await entrants.invite(setup, bob, SPRING, email="one-more@example.test")
+    assert refused.value.code == "invite_limit"
+    # The org's own limit counts only its organisers' invites.
+    await invites.create(setup, manager, Scope("acme", "spring"), Grant.CONTESTANT, username="dan")
+    clock.advance(timedelta(days=1, seconds=1))
+    await entrants.invite(setup, bob, SPRING, email="one-more@example.test")
