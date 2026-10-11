@@ -37,13 +37,17 @@ has ended or is archived, since an entrant stands as it is from then on:
    contest, registers them as `register` would, by the contest's invite way,
    without a name when entrants are one person each and named after their
    username otherwise; someone in an entrant already accepts that one
-   without anything else changing. Joining is refused when the roster has
+   without anything else changing. Accepting is refused, closing nothing,
+   unless the contest is open (`published`) and has not ended or been
+   archived (`registration_closed`). Joining is refused when the roster has
    locked or the window is closed, unless an organiser sent the invite;
    when they hold a role (`is_staff`); when the entrant is full
    (`entrant_full`); or when they do not qualify: an organiser's invite
-   qualifies them by the invite way (`invite_required` once the contest has
-   none), and a member's does not, so they qualify as themselves and may
-   need a code. Someone in another entrant of the contest moves out of it
+   into an entrant puts them in as an organiser's change, as `move_member`
+   does, so it never sends an approved entrant back to pending; one to the
+   contest registers them by the invite way (`invite_required` once the
+   contest has none); and a member's does neither, so they qualify as
+   themselves and may need a code. Someone in another entrant of the contest moves out of it
    only while its roster is open, it has no submissions and it has not been
    turned away (`in_entrant`).
 4. `leave` takes the person out before the roster locks (`roster_locked`);
@@ -679,6 +683,7 @@ async def take_place(
     """
     contest = contest_id_of(invites.scope_of(invite.scope))
     settings = await published.contest(ctx, contest)
+    _refuse_shut(settings, ctx.now)
     by_organiser = invite.grants == Grant.CONTESTANT
     user = await ctx.forge.identity.find_user(session.user_id)
     if invite.entrant_id is None:
@@ -699,7 +704,7 @@ async def take_place(
         rules.refuse_locked(settings, ctx.now, submitted=await submitted(ctx, target))
     rules.refuse_full(len(await member_ids(ctx, target.id)), settings.entrants.most)
     if by_organiser:
-        qualified = _by_invite_way(settings)
+        qualified = ORGANISER
     else:
         qualified = registration.qualify(
             settings.registration, emails=emails, code=code, invited=invited
@@ -1071,6 +1076,20 @@ async def _decided(
     (row,) = await _hold_entrants(ctx, contest, [entrant])
     registration.refuse_undecidable(Status(row.status), allowed, doing)
     return settings, row
+
+
+def _refuse_shut(settings: ContestDefinition, now: datetime) -> None:
+    """`RegistrationClosed` unless the contest is open and has not ended:
+    the one thing an organiser's invite, which passes the window and the
+    roster's lock, still needs.
+    """
+    if settings.state is State.ARCHIVED or now >= settings.end:
+        raise RegistrationClosed("The contest has ended, so registration is closed.")
+    if settings.state is not State.PUBLISHED:
+        raise RegistrationClosed(
+            "This contest is not open yet, so nobody can enter it. Try again once the organisers "
+            "open it."
+        )
 
 
 def _refuse_window(settings: ContestDefinition, now: datetime) -> None:

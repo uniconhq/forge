@@ -39,6 +39,7 @@ from forge.domain.errors import (
     NoInviteWay,
     NotFound,
     RateLimited,
+    RegistrationClosed,
     RosterLocked,
     TaskClosed,
 )
@@ -368,7 +369,7 @@ async def test_the_roster_locks_at_the_start_and_then_only_organisers_change_it(
         True,
         [8, 21],
     )
-    assert [m.way_kind for m in renamed.members] == [WayKind.SIGNUP, WayKind.INVITE]
+    assert [m.way_kind for m in renamed.members] == [WayKind.SIGNUP, WayKind.ORGANISER]
 
 
 async def test_the_roster_locks_at_the_entrants_first_submission(
@@ -694,3 +695,72 @@ async def test_nobody_outside_the_entrant_acts_for_it(
         await entrants.rename(setup, crowd["carol"], SPRING, "Mine now")
     with pytest.raises(Forbidden):
         await organiser(setup, acme.fake, 8, Scope("acme", "spring"))
+
+
+async def _invite_status(setup: Setup, manager: Organiser, invite: uuid.UUID) -> InviteStatus:
+    listed = await invites.at(setup, manager, Scope("acme", "spring"))
+    return next(found.status for found in listed if found.id == invite)
+
+
+async def test_an_organisers_invite_into_an_entrant_is_an_organisers_change_and_never_reopens_it(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], clock: FakeClock, manager: Organiser
+) -> None:
+    await write_contest(
+        acme.fake, contest(most=3, ways="[{invite: {approval: manual}}, {signup: {approval: auto}}]")
+    )
+    adders = await entrants.register(setup, crowd["bob"], SPRING, name="Adders")
+    assert adders.status is Status.APPROVED
+    placed = await invites.create(
+        setup, manager, Scope("acme", "spring"), Grant.CONTESTANT, username="dan", entrant=adders.id
+    )
+    clock.set(START + timedelta(hours=1))
+
+    accepted = await invites.accept(setup, crowd["dan"], placed.id)
+
+    assert accepted.entered is not None and accepted.entered.status is Status.APPROVED
+    mine = await _mine(setup, crowd["bob"])
+    assert mine is not None
+    assert [(m.user_id, m.way_kind) for m in mine.members] == [
+        (8, WayKind.SIGNUP),
+        (21, WayKind.ORGANISER),
+    ]
+
+
+async def test_an_organisers_invite_is_accepted_only_while_the_contest_is_open(
+    setup: Setup, acme: Acme, crowd: dict[str, Session], clock: FakeClock, manager: Organiser
+) -> None:
+    await write_contest(acme.fake, contest(most=3))
+    scope = Scope("acme", "spring")
+    adders = await entrants.register(setup, crowd["bob"], SPRING, name="Adders")
+    alone = await invites.create(
+        setup, manager, scope, Grant.CONTESTANT, username="dan", lifetime=timedelta(days=30)
+    )
+    into = await invites.create(
+        setup,
+        manager,
+        scope,
+        Grant.CONTESTANT,
+        username="carol",
+        entrant=adders.id,
+        lifetime=timedelta(days=30),
+    )
+
+    # Past the end, and archived or a draft before it, nobody takes a place.
+    clock.set(START + timedelta(days=2))
+    for person, invite in ((crowd["dan"], alone), (crowd["carol"], into)):
+        with pytest.raises(RegistrationClosed) as ended:
+            await invites.accept(setup, person, invite.id)
+        assert ended.value.code == "registration_closed"
+        assert await _invite_status(setup, manager, invite.id) is InviteStatus.PENDING
+    clock.set(START + timedelta(hours=1))
+    for state in ("archived", "draft"):
+        await write_contest(acme.fake, contest(most=3).replace("state: published", f"state: {state}"))
+        for person, invite in ((crowd["dan"], alone), (crowd["carol"], into)):
+            with pytest.raises(RegistrationClosed):
+                await invites.accept(setup, person, invite.id)
+
+    await write_contest(acme.fake, contest(most=3))
+    placed = await invites.accept(setup, crowd["dan"], alone.id)
+    assert placed.entered is not None and placed.entered.how == "made"
+    joined = await invites.accept(setup, crowd["carol"], into.id)
+    assert joined.entered is not None and joined.entered.entrant.id == adders.id
