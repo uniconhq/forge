@@ -2,13 +2,17 @@
 button: every save of a task, from a form or from the file editor, runs these
 steps in order, and refuses before anything is written.
 
-1. A save that writes inside `plans/`, where only the compiler writes, is
-   refused with `ReservedPath`. A manager's save that changes an admin-only
-   key of `task.yaml` or touches `statement.md` is refused with `AdminOnly`,
-   naming each.
+1. A save that writes or removes inside `plans/`, where only the compiler
+   writes, is refused with `ReservedPath`. A removal carries the token the
+   file was read with, and one that does not is refused with
+   `InvalidInputs`, naming it; a removal whose token has moved is
+   `Conflict`, as an edit's is. A manager's save that changes an admin-only
+   key of `task.yaml`, removes it, or touches `statement.md` is refused with
+   `AdminOnly`, naming each.
 2. The state being saved, the files at the head with the save's files over
-   them, is checked (TASK-FORMAT.md section 2): `task.yaml` validates; the
-   workflow it names is read at its version as the organiser saving, with
+   them and its removals taken out, is checked (TASK-FORMAT.md section 2):
+   `task.yaml` validates; the workflow it names is read at its version as
+   the organiser saving, with
    every primitive its steps use, and checks as a version
    (`plans.check_workflow`), a workflow in an old format refused at the
    `workflow` line so its owner tags a new version; the task's tests are
@@ -233,16 +237,17 @@ async def save(
     keep_as_draft: bool = False,
     message: str | None = None,
 ) -> Published | Draft:
-    """Save the task's files, each path with its new content and the token
-    it was read with, and publish the result when it is valid. Needs the
-    manager role at the task. `keep_as_draft` writes the files and publishes
-    nothing, on any save; otherwise `confirm` publishes a change to how the
-    task grades while its contest runs. A token that has moved is
-    `Conflict`, with nothing written.
+    """Save the task's files, each path with its new content, or none to
+    remove it, and the token it was read with, and publish the result when
+    it is valid. Needs the manager role at the task. `keep_as_draft` writes
+    the files and publishes nothing, on any save; otherwise `confirm`
+    publishes a change to how the task grades while its contest runs. A
+    token that has moved is `Conflict`, with nothing written.
     """
     scope = task_scope(task)
     require(organiser, scope, Role.MANAGER)
     _refuse_reserved(changes)
+    _refuse_untokened_removals(changes)
     as_ = organiser.identity
     written = await _resolve(ctx, organiser, task, changes)
     head = await ctx.forge.content.list_files(as_, task)
@@ -328,7 +333,7 @@ async def check(
         definition = parse_task(text)
     except InvalidDefinition as invalid:
         return Checked(None, None, tuple(invalid.errors))
-    present = {*head.tokens, *written}
+    present = _present(head, written)
     workflow, pins, problems = await _workflow(ctx, as_, definition.workflow)
     problems.extend(await _moved_workflows(ctx, task, definition, pins))
     if workflow is None or problems:
@@ -605,6 +610,30 @@ def _refuse_reserved(written: Mapping[str, Edit]) -> None:
         )
 
 
+def _refuse_untokened_removals(changes: Mapping[str, Edit]) -> None:
+    """A removal names the file as it was read, so one with no token, which
+    would remove whatever is there now, is refused naming each.
+    """
+    untokened = sorted(
+        path for path, edit in changes.items() if edit.content is None and edit.token is None
+    )
+    if untokened:
+        raise InvalidInputs(
+            "A file is removed with the token it was read with.",
+            errors=[
+                {"input": path, "message": "No token to remove it with."} for path in untokened
+            ],
+        )
+
+
+def _present(head: FileSet, written: Mapping[str, WrittenEdit]) -> set[str]:
+    """Every file of the state a save leaves: the head's and the save's,
+    without the ones it removes.
+    """
+    removed = {path for path, edit in written.items() if edit.content is None}
+    return {*head.tokens, *written} - removed
+
+
 async def _content(
     ctx: Context,
     as_: Identity,
@@ -614,7 +643,8 @@ async def _content(
     written: Mapping[str, WrittenEdit],
 ) -> bytes | None:
     """A file's content in the state: the save's when it writes the file,
-    otherwise the head's, or none when neither has it.
+    otherwise the head's, or none when neither has it or the save removes
+    it.
     """
     if path in written:
         return written[path].content
@@ -741,7 +771,8 @@ async def _saved_snapshot(
     """What the saved state's grading would depend on. A data file the save
     does not write compares by its token at the head; one it writes compares
     by the token it had at the publication when its content is the same, and
-    otherwise by a digest of its content that no token equals.
+    otherwise by a digest of its content that no token equals; one it
+    removes is not there, so the comparison names it removed.
     """
     assert checked.compiled is not None
     plan = checked.compiled.plan
@@ -751,7 +782,7 @@ async def _saved_snapshot(
             if path not in written:
                 data[path] = str(token)
         for path, edit in written.items():
-            if has_path((path,), named):
+            if edit.content is not None and has_path((path,), named):
                 data[path] = await _digest(ctx, as_, task, path, edit.content, published)
     return Snapshot(plans={PLAN_PATH: plan.to_bytes()}, data=data)
 
@@ -1016,7 +1047,8 @@ async def _resolve(
     becomes the pointer to it, and the upload is marked as taken by this
     save, while typed content that would read as a pointer is refused,
     unless it is exactly a pointer to an object the task already holds, as
-    a rollback or a file saved back unchanged writes.
+    a rollback or a file saved back unchanged writes. A removal passes as
+    it is.
 
     A pointer names bytes by their hash alone, and a grading machine serves
     one from the org's shared store without asking the forge, so the only
@@ -1031,6 +1063,9 @@ async def _resolve(
     rows = await uploads.for_save(ctx, organiser.identity.user_id, task, set(named.values()))
     resolved: dict[str, WrittenEdit] = {}
     for path, edit in changes.items():
+        if edit.content is None:
+            resolved[path] = WrittenEdit(None, edit.token)
+            continue
         if isinstance(edit.content, Uploaded):
             row = rows.get(edit.content.upload)
             if row is None or row.status not in (UploadStatus.WAITING, UploadStatus.VERIFIED):

@@ -261,7 +261,7 @@ every force-push), and for a task its publications are reserved for the
 platform account (the `published/*` tag protection). `secure` checks each
 first and puts back only what is missing, so it can be run again, and says
 how many it put back. `content.save_files` writes several files as one
-change as the person saving, each carrying the token it was read with, and refuses the
+change as the person saving, a file given as none removed, each carrying the token it was read with, and refuses the
 whole change as `Conflict` when any has moved; `content.list_files` gives
 every file of a place at a version with its token, the same for the same
 content, which is how a save compares data files without reading them.
@@ -851,15 +851,19 @@ ordinary files costs the listing alone.
 ## The save
 
 There is no publish button. `publications.save(organiser, task, changes)`
-takes each path with its new content and the token it was read with, as an
-`Edit`, and runs these steps in order, refusing before anything is written:
+takes each path with its new content, or none to remove the file, and the
+token it was read with, as an `Edit`, and runs these steps in order, refusing
+before anything is written. Removing a folder, such as a test, is removing
+each file under it, named one by one.
 
 1. A path inside `plans/` is refused with `ReservedPath`: the compiler is
-   the only writer there. A manager's save that changes the `name` or the
-   `submissions` of `task.yaml`, or touches `statement.md`, is refused with
-   `AdminOnly`, naming each. An admin passes.
-2. The state being saved, the files at the head with the save's over them,
-   is checked in the order of `TASK-FORMAT.md` section 2: `task.yaml`
+   the only writer there. A removal with no token is refused with
+   `InvalidInputs`, naming it, and one whose token has moved is `Conflict`,
+   as an edit's is. A manager's save that changes the `name` or the
+   `submissions` of `task.yaml`, removes it, or touches `statement.md`, is
+   refused with `AdminOnly`, naming each. An admin passes.
+2. The state being saved, the files at the head with the save's over them
+   and its removals taken out, is checked in the order of `TASK-FORMAT.md` section 2: `task.yaml`
    validates; the workflow it names is read at its version as the
    organiser, with every primitive its steps use, and checks as a version,
    one in an old format refused at the `workflow` line so its owner tags a

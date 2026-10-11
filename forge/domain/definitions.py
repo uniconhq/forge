@@ -952,11 +952,12 @@ _MISSING = object()
 
 
 def admin_only_changes(
-    kind: Literal["contest", "task"], before: bytes | None, after: bytes
+    kind: Literal["contest", "task"], before: bytes | None, after: bytes | None
 ) -> list[str]:
     """The admin-only top-level keys whose values differ between `before`
     and `after`, in the order the keys are listed. `before` is none for a
-    new file. A key added or removed counts as changed. A text that does not
+    new file, and `after` for a file removed. A key added or removed counts
+    as changed. A text that does not
     parse compares as an empty mapping, because reporting it is
     validation's work.
     """

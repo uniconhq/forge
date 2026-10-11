@@ -31,12 +31,13 @@ from forge.domain.errors import (
     ConfirmationRequired,
     Conflict,
     Forbidden,
+    InvalidInputs,
     ReservedPath,
 )
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, TaskId
-from forge.domain.plans import Plan
+from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.roles import Role, RoleGrant, Scope, contest_id_of, task_scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.workflows import Visibility
@@ -96,7 +97,7 @@ outputs:
 """`unicon/compile@v1`'s declaration as the format before this one wrote it."""
 
 
-async def _edits(acme: Acme, task: TaskId, contents: Mapping[str, bytes]) -> dict[str, Edit]:
+async def _edits(acme: Acme, task: TaskId, contents: Mapping[str, bytes | None]) -> dict[str, Edit]:
     """Each file with the token it has now, as an editor would send it."""
     head = await acme.fake.content.list_files(PLATFORM, task)
     return {path: Edit(content, head.tokens.get(path)) for path, content in contents.items()}
@@ -117,7 +118,7 @@ async def _save(
     setup: Setup,
     acme: Acme,
     task: TaskId,
-    contents: Mapping[str, bytes],
+    contents: Mapping[str, bytes | None],
     who: Organiser | None = None,
     **options: Any,
 ) -> Published | Draft:
@@ -450,6 +451,257 @@ async def test_a_test_out_of_its_layout_is_a_draft_at_its_folder(
     assert isinstance(draft, Draft)
     assert [(error["path"], error["message"]) for error in draft.errors] == [(path, said)]
     assert acme.fake.calls_to("publish") == []
+
+
+SECOND_TEST = {"tests/main/2/input": b"1 1\n", "tests/main/2/answer": b"2\n"}
+
+
+async def test_a_removed_test_is_gone_from_the_change_and_the_grading_comparison_names_it(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _published(setup, acme, sum_task)
+    added = await _save(setup, acme, sum_task, SECOND_TEST)
+    assert isinstance(added, Published), added
+    acme.fake.reset_calls()
+
+    removed = await _save(setup, acme, sum_task, dict.fromkeys(SECOND_TEST))
+
+    assert isinstance(removed, Published), removed
+    assert (removed.number, removed.grading_changed) == (3, True)
+    assert removed.changes == (
+        "plans/plan.json changed",
+        "tests/main/2/answer removed",
+        "tests/main/2/input removed",
+    )
+    (saved,) = acme.fake.calls_to("save_files")
+    assert saved.arguments["paths"] == [
+        "plans/plan.json",
+        "tests/main/2/answer",
+        "tests/main/2/input",
+    ]
+    repo = acme.fake.state.repos[("acme", "spring.sum.task")]
+    assert not any(path.startswith("tests/main/2/") for path in repo.files)
+    assert Plan.from_bytes(repo.files["plans/plan.json"]).tests == ("main/1",)
+
+
+async def test_a_test_is_replaced_by_one_with_other_entry_names_in_one_save(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _published(setup, acme, sum_task)
+
+    result = await _save(
+        setup,
+        acme,
+        sum_task,
+        {
+            "tests/main/1/input": None,
+            "tests/main/1/answer": None,
+            "tests/main/1/input.txt": b"4 5\n",
+            "tests/main/1/answer.txt": b"9\n",
+        },
+    )
+
+    assert isinstance(result, Published), result
+    assert result.changes == (
+        "plans/plan.json changed",
+        "tests/main/1/answer removed",
+        "tests/main/1/answer.txt added",
+        "tests/main/1/input removed",
+        "tests/main/1/input.txt added",
+    )
+    plan = Plan.from_bytes(acme.fake.state.repos[("acme", "spring.sum.task")].files[PLAN_PATH])
+    assert plan.task_paths() == ("tests/main/1/answer.txt", "tests/main/1/input.txt")
+
+
+async def test_removing_a_groups_last_test_is_a_draft_at_the_group(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    samples = {"tests/samples/1/input": b"1 2\n", "tests/samples/1/answer": b"3\n"}
+    first = await _save(
+        setup,
+        acme,
+        sum_task,
+        {
+            **_with(acme, b"  main: {each: 100}\n", b"  samples: {}\n  main: {each: 100}\n"),
+            **samples,
+        },
+    )
+    assert isinstance(first, Published), first
+    acme.fake.reset_calls()
+
+    draft = await _save(setup, acme, sum_task, dict.fromkeys(samples))
+
+    assert isinstance(draft, Draft)
+    assert [(error["path"], error["message"]) for error in draft.errors] == [
+        ("test_groups.samples", "There is no folder tests/samples/ with a test in it.")
+    ]
+    assert acme.fake.calls_to("publish") == []
+    repo = acme.fake.state.repos[("acme", "spring.sum.task")]
+    assert not any(path.startswith("tests/samples/") for path in repo.files)
+    assert len(repo.versions) == 1
+
+
+async def test_removing_every_test_is_a_draft_saying_the_task_has_none(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    draft = await _save(
+        setup, acme, sum_task, {"tests/main/1/input": None, "tests/main/1/answer": None}
+    )
+
+    assert isinstance(draft, Draft)
+    assert [(error["path"], error["message"]) for error in draft.errors] == [
+        ("test_groups", "The task has no tests/ folder: add tests/<group>/<test>/.")
+    ]
+
+
+async def test_removing_one_field_of_a_test_is_a_draft_at_the_test(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    draft = await _save(setup, acme, sum_task, {"tests/main/1/answer": None})
+
+    assert isinstance(draft, Draft)
+    assert [(error["path"], error["message"]) for error in draft.errors] == [
+        ("tests/main/1/", "The test main/1 has no answer.")
+    ]
+
+
+FIXED_ANSWER = (
+    CLASSIC.replace(b"  answer: file\n", b"")
+    .replace(b"expected: ${{ test.answer }}", b"expected: ${{ inputs.expected }}")
+    .replace(b"\ntest:\n", b"\n  expected:\n    type: file\ntest:\n")
+)
+"""Classic with one answer for every test, a file the task names."""
+
+
+async def test_removing_a_file_an_input_names_is_a_draft_at_that_input(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _workflow(acme, "fixed", FIXED_ANSWER)
+    task_yaml = (
+        _task_yaml(acme)
+        .replace(b"unicon/classic@v2", b"unicon/fixed@v1")
+        .replace(b"  time_limit: 2\n", b"  time_limit: 2\n  expected: data/answer.txt\n")
+    )
+    first = await _save(
+        setup,
+        acme,
+        sum_task,
+        {"task.yaml": task_yaml, "data/answer.txt": b"3\n", "tests/main/1/answer": None},
+    )
+    assert isinstance(first, Published), first
+    acme.fake.reset_calls()
+
+    draft = await _save(setup, acme, sum_task, {"data/answer.txt": None})
+
+    assert isinstance(draft, Draft)
+    assert [(error["path"], error["message"]) for error in draft.errors] == [
+        ("inputs.expected", "There is no file data/answer.txt in the task.")
+    ]
+    assert acme.fake.calls_to("publish") == []
+
+
+async def test_a_removal_with_a_stale_token_is_a_conflict_and_nothing_is_written(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _published(setup, acme, sum_task)
+    await _save(setup, acme, sum_task, {"public/hint.txt": b"One.\n"})
+    stale = await _edits(acme, sum_task, {"public/hint.txt": None})
+    await _save(setup, acme, sum_task, {"public/hint.txt": b"Two.\n"})
+    repo = acme.fake.state.repos[("acme", "spring.sum.task")]
+    head = repo.head
+    acme.fake.reset_calls()
+
+    with pytest.raises(Conflict):
+        await publications.save(setup, acme.ada, sum_task, stale)
+
+    assert acme.fake.calls_to("publish") == []
+    assert (repo.head, repo.files["public/hint.txt"]) == (head, b"Two.\n")
+
+
+async def test_a_removal_of_a_file_that_is_not_there_is_a_conflict(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _published(setup, acme, sum_task)
+    token = (await acme.fake.content.list_files(PLATFORM, sum_task)).tokens["statement.md"]
+    repo = acme.fake.state.repos[("acme", "spring.sum.task")]
+    head = repo.head
+
+    with pytest.raises(Conflict):
+        await publications.save(setup, acme.ada, sum_task, {"public/gone.txt": Edit(None, token)})
+
+    assert acme.fake.calls_to("publish") == []
+    assert repo.head == head
+
+
+async def test_a_removal_without_its_token_is_refused_naming_it(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    with pytest.raises(InvalidInputs) as refused:
+        await publications.save(
+            setup,
+            acme.ada,
+            sum_task,
+            {"tests/main/1/input": Edit(None), "statement.md": Edit(b"x\n")},
+        )
+
+    assert refused.value.extra["errors"] == [
+        {"input": "tests/main/1/input", "message": "No token to remove it with."}
+    ]
+    assert _written(acme) == []
+
+
+async def test_a_removal_inside_plans_is_refused_and_writes_nothing(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _published(setup, acme, sum_task)
+
+    with pytest.raises(ReservedPath) as refused:
+        await _save(setup, acme, sum_task, {PLAN_PATH: None})
+
+    assert refused.value.extra["paths"] == [PLAN_PATH]
+    assert _written(acme) == []
+
+
+@pytest.mark.parametrize(
+    ("removed", "keys"),
+    [
+        ("statement.md", ["statement.md"]),
+        ("task.yaml", ["name"]),
+    ],
+    ids=["statement", "task-yaml"],
+)
+async def test_removing_an_admins_file_is_the_admins_alone(
+    setup: Setup,
+    acme: Acme,
+    sum_task: TaskId,
+    manager: Organiser,
+    removed: str,
+    keys: list[str],
+) -> None:
+    with pytest.raises(AdminOnly) as refused:
+        await _save(setup, acme, sum_task, {removed: None}, manager)
+
+    assert refused.value.extra["keys"] == keys
+    assert _written(acme) == []
+    assert isinstance(await _save(setup, acme, sum_task, {removed: None}), Published | Draft)
+    assert removed not in acme.fake.state.repos[("acme", "spring.sum.task")].files
+
+
+async def test_a_manager_removes_tests_and_public_files(
+    setup: Setup, acme: Acme, sum_task: TaskId, manager: Organiser
+) -> None:
+    await _save(setup, acme, sum_task, {**SECOND_TEST, "public/hint.txt": b"Add.\n"})
+    acme.fake.reset_calls()
+
+    result = await _save(
+        setup, acme, sum_task, {**dict.fromkeys(SECOND_TEST), "public/hint.txt": None}, manager
+    )
+
+    assert isinstance(result, Published), result
+    (saved,) = acme.fake.calls_to("save_files")
+    assert saved.identity == manager.identity
+    files = acme.fake.state.repos[("acme", "spring.sum.task")].files
+    assert "public/hint.txt" not in files and "tests/main/2/input" not in files
 
 
 @pytest.mark.parametrize(
