@@ -981,7 +981,8 @@ and a contestant's as a template the harness fills, raises each limit a
 value raises and rounds it up, folds a per-test step over a primitive that
 takes a batch into one container and writes one entry per test otherwise,
 works out which steps are sealed, running the contestant's code over a task
-file the contestant is not served, or reading what such a step wrote, and
+file the contestant is not served, reading what such a step wrote, or coming
+after a sealed step in the workflow's order (#432), and
 refuses a task with a sealed step that shows a group before it closes (T5),
 checks the plan fits a machine, its whole time within the 25 minutes a run
 may take, each step's memory and GPUs within `PLATFORM_MACHINE` and no step

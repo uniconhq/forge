@@ -198,7 +198,8 @@ def digest_problem(digest: str) -> str | None:
 
 
 GIT_FOLDER = ".git"
-"""The one name git keeps for itself, refused in any case, as git does."""
+"""The one name git keeps for itself, refused in any case, with trailing dots
+and as its short name `git~1`, as git does (`core.protectNTFS`, on by default)."""
 
 
 def filename_problem(name: str) -> str | None:
@@ -211,7 +212,7 @@ def filename_problem(name: str) -> str | None:
         return 'A file name has none of \\ ? # % : * " < > | and no control characters.'
     if name != name.strip():
         return "A file name does not start or end with a space."
-    if name.lower() == GIT_FOLDER:
+    if name.lower().rstrip(".") == GIT_FOLDER or name.lower() == "git~1":
         return f"A file name cannot be {GIT_FOLDER}: git keeps its own data there."
     if name == ATTRIBUTES_FILE:
         return f"A file cannot be named {ATTRIBUTES_FILE}: it would decide how its folder is read."

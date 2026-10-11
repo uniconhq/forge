@@ -230,9 +230,11 @@ class FakeWorkspaces:
     async def download(self, as_: Identity, submission: SubmissionId, path: str) -> Door:
         self._state.record("download", as_, submission=submission, path=path)
         ref, task_name, number = parse_submission(submission)
-        repo = self._state.repos[(ref.org, ref.submission_repo(task_name))]
+        repo = self._state.repos.get((ref.org, ref.submission_repo(task_name)))
         # At the version's commit, as the real door reads it, never its name.
-        at = repo.versions[f"{SUBMISSION_PREFIX}{number}"]
+        at = None if repo is None else repo.versions.get(f"{SUBMISSION_PREFIX}{number}")
+        if at is None:
+            raise NotFound(f"There is no submission {submission}.")
         address = (
             f"/api/v1/repos/{ref.org}/{ref.submission_repo(task_name)}/media/{quote(path)}?ref={at}"
         )

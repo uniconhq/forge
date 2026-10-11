@@ -121,8 +121,10 @@ class WorkspacePort(Protocol):
     async def download(self, as_: Identity, submission: SubmissionId, path: str) -> Door:
         """Where one file of a submission is read whole, at the version it
         was made with, and what to present there as `as_`, for the proxy to
-        fetch it from and stream to the person. Nothing is called and nothing
-        is read: the forge checks `as_` may read it when the proxy asks.
+        fetch it from and stream to the person. The submission's version is
+        read as `as_`, to name its commit; the file itself is not, and the
+        forge checks `as_` may read it when the proxy asks. `NotFound` for a
+        submission that is not there.
         """
         ...
 

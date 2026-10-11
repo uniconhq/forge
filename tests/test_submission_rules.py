@@ -58,6 +58,11 @@ from tests.conftest import sibling
         (" main.py", False),
         ("x" * 256, False),
         (".gitattributes", False),
+        (".GIT", False),
+        (".git.", False),
+        (".git..", False),
+        ("GIT~1", False),
+        (".github", True),
     ],
 )
 def test_a_file_name_is_one_plain_name(name: str, fine: bool) -> None:

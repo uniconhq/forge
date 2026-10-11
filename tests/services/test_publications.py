@@ -24,7 +24,6 @@ import pytest
 from sqlalchemy import select, update
 
 from forge.db.tables import Grading
-from forge.domain.clock import SystemClock
 from forge.domain.content import Edit
 from forge.domain.contracts import violation
 from forge.domain.errors import (
@@ -1276,18 +1275,17 @@ async def test_a_submission_is_stamped_when_it_was_checked_open_not_when_the_for
 ) -> None:
     """The forge may take seconds to record a submission, past the close;
     the submission is at the moment it was checked open."""
-    checked = SystemClock().now()
-    later = checked + timedelta(hours=1)
-    recorded: list[bool] = []
+    clock = setup.clock
+    assert isinstance(clock, FakeClock)
+    checked = clock.now()
     record = submissions._record
 
     async def slow_record(*args: Any, **kwargs: Any) -> Any:
         done = await record(*args, **kwargs)
-        recorded.append(True)
+        clock.advance(timedelta(hours=1))
         return done
 
     monkeypatch.setattr(submissions, "_record", slow_record)
-    monkeypatch.setattr(SystemClock, "now", lambda self: later if recorded else checked)
     made = await upload(setup, acme.fake, entered.session, entered.task, b"print(3)\n")
     submitted = await submissions.submit(
         setup,
@@ -1321,10 +1319,20 @@ async def test_a_rejudge_in_flight_and_a_saves_regrade_give_each_submission_its_
             await asyncio.sleep(1)
         return done
 
+    held = asyncio.Event()
+    hold_task = timelines.hold_task
+
+    async def hold_then_say(*args: Any, **kwargs: Any) -> None:
+        await hold_task(*args, **kwargs)
+        held.set()
+
     monkeypatch.setattr(gradings, "regrade", slow_first)
+    monkeypatch.setattr(timelines, "hold_task", hold_then_say)
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring", "sum"), Role.MANAGER)
     rejudging = asyncio.create_task(gradings.rejudge(setup, manager, entered.task))
-    await asyncio.sleep(0.3)
+    # The save starts only once the rejudge holds the task, so it is the save
+    # that waits.
+    await held.wait()
     change = _with(acme, b"time_limit: 2", b"time_limit: 1")
 
     saved = await _save(setup, acme, entered.task, change, confirm=True)

@@ -1,6 +1,7 @@
 """The names people give orgs, contests and tasks, and the ids they are
 filed under. `scope_at` turns the names in an address into the scope a route
-acts on, `NotFound` naming the first part that is not there. The records
+acts on, `NotFound` in fixed words when a part is not there or not the
+caller's to see, so hidden and missing read alike. The records
 the other modules hand back carry the names a page shows, so a host never
 reads a name out of an id.
 """

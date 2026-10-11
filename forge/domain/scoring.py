@@ -79,7 +79,10 @@ def decimal_of(number: Fraction) -> Decimal:
     if rest == 1:
         scale = max(twos, fives)
         digits = number.numerator * 10**scale // number.denominator
-        return Decimal(f"{digits}e-{scale}") if scale else Decimal(digits)
+        # Built from the int's own digits, never its text, which Python
+        # refuses past 4300 digits.
+        whole = Decimal(digits).as_tuple()
+        return Decimal((whole.sign, whole.digits, -scale))
     with localcontext() as context:
         context.prec = SIGNIFICANT
         return Decimal(number.numerator) / Decimal(number.denominator)

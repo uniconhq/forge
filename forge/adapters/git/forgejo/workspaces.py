@@ -1,6 +1,8 @@
 """The workspace area over Forgejo. A workspace is a desk repository plus one
 submission repository per task, each attached to the contest's role teams so
-its organisers can read it, with the members as read collaborators. Each is
+its organisers can read it, with the members as collaborators: read on the
+desk, write on a submission repository, since a submit is recorded there as
+the contestant. Each is
 made on its own, and every part of making one checks before it acts, so a
 try that stopped halfway is finished by the next. The members are given
 their access last, so a repository whose members all hold it is finished,
