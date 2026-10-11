@@ -163,22 +163,41 @@ PRIMITIVES: dict[str, bytes] = {
     "compile": _declared(
         "compile",
         """\
+title: Compile
+description: Compiles the contestant's source files into one program.
 batch: false
 network: false
 limits: {time_ms: 60000, cpu_ms: 60000, memory_mb: 1024, pids: 128, output_mb: 64, gpus: 0}
 inputs:
-  source: {type: folder, runs: true}
-  language: {type: enum, options: [c, cpp, java, python]}
-  entry: {type: text, optional: true}
+  source:
+    type: folder
+    runs: true
+    description: The source files to compile, with their layout.
+  language:
+    type: enum
+    options: [c, cpp, java, python]
+    description: The language the source files are written in.
+  entry:
+    type: text
+    optional: true
+    description: The file the program starts from, such as src/Main.java.
 outputs:
-  binary: {type: file}
-  compile_log: {type: text}
-  outcome: {type: outcome}
+  binary:
+    type: file
+    description: The compiled program, ready to run.
+  compile_log:
+    type: text
+    description: Everything the compiler printed.
+  outcome:
+    type: outcome
+    description: Accepted when the source compiled, compile error when it did not.
 """,
     ),
     "sandbox-run": _declared(
         "sandbox-run",
         """\
+title: Run program
+description: Runs a program on each test's input and records its output, time and memory.
 batch: true
 network: false
 limits: {time_ms: 2000, cpu_ms: 2000, memory_mb: 256, pids: 128, output_mb: 64, gpus: 0}
@@ -187,29 +206,60 @@ limits_from:
   cpu_ms: {input: time_limit, scale: 2000, add: 3000}
   memory_mb: {input: memory_limit, add: 256}
 inputs:
-  binary: {type: file, runs: true}
-  input: {type: file, runs: false}
-  args: {type: text, optional: true}
-  time_limit: {type: number}
-  memory_limit: {type: number}
+  binary:
+    type: file
+    runs: true
+    description: The program to run.
+  input:
+    type: file
+    runs: false
+    description: What the program reads on standard input.
+  args:
+    type: text
+    optional: true
+    description: Arguments added to the program's command line, split on spaces.
+  time_limit:
+    type: number
+    description: Seconds of CPU time the program may use on each test.
+  memory_limit:
+    type: number
+    description: Megabytes of memory the program may use on each test.
 outputs:
-  output: {type: file}
-  time_ms: {type: number}
-  memory_kb: {type: number}
-  outcome: {type: outcome}
+  output:
+    type: file
+    description: What the program printed on standard output.
+  time_ms:
+    type: number
+    description: The CPU time the program used, in milliseconds.
+  memory_kb:
+    type: number
+    description: The most memory the program used, in kilobytes.
+  outcome:
+    type: outcome
+    description: Accepted, or the limit the program went over, or a runtime error.
 """,
     ),
     "diff-check": _declared(
         "diff-check",
         """\
+title: Compare with the answer
+description: Compares a program's output with the answer, ignoring trailing whitespace.
 batch: true
 network: false
 limits: {time_ms: 2000, cpu_ms: 2000, memory_mb: 256, pids: 32, output_mb: 1, gpus: 0}
 inputs:
-  actual: {type: file, runs: false}
-  expected: {type: file, runs: false}
+  actual:
+    type: file
+    runs: false
+    description: What the program printed.
+  expected:
+    type: file
+    runs: false
+    description: The expected answer, from the task.
 outputs:
-  outcome: {type: outcome}
+  outcome:
+    type: outcome
+    description: Accepted when the two match, wrong answer when they do not.
 """,
     ),
 }

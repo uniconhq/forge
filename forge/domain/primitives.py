@@ -32,6 +32,7 @@ from forge.domain.workflow_definition import Options
 from forge.domain.yaml_models import (
     ANY,
     Handle,
+    Line,
     Model,
     Number,
     Problems,
@@ -66,8 +67,9 @@ Limit = Annotated[int, Field(strict=True, ge=1)]
 
 class Port(Model):
     """One input or output: its type, the options an enum allows, whether
-    it may be left out, and on an input whether the primitive runs what
-    arrives there and whether it keeps it secret from the program it runs.
+    it may be left out, on an input whether the primitive runs what arrives
+    there and whether it keeps it secret from the program it runs, and a
+    sentence for the workflow editor saying what it takes or gives back.
     """
 
     type: Type
@@ -75,6 +77,7 @@ class Port(Model):
     optional: Flag = False
     runs: Flag | None = None
     secret: Flag = False
+    description: Line | None = None
 
     @model_validator(mode="after")
     def _check(self) -> Port:
@@ -128,9 +131,12 @@ Declared = Annotated[Port, BeforeValidator(declared)]
 
 class PrimitiveDeclaration(Model):
     """A `primitive.yaml`. `batch` and `network` default to off, and
-    `limits_from` and `inputs` to none.
+    `limits_from` and `inputs` to none. `title` and `description` are for
+    the workflow editor, and change nothing a plan holds.
     """
 
+    title: Line | None = None
+    description: Line | None = None
     image: Image
     batch: Flag = False
     network: Flag = False

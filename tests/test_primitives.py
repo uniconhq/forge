@@ -72,6 +72,33 @@ def test_each_seeded_primitive_is_its_repos_declaration_with_the_image_written_i
     assert "".join(line for line in lines if not line.startswith("image: ")) == published
 
 
+def test_a_primitive_and_its_ports_say_what_they_are_for_and_no_plan_reads_it() -> None:
+    run = parse_primitive(PRIMITIVES["sandbox-run"])
+    plain = parse_primitive(BASE + OUTCOME)
+
+    assert run.title == "Run program"
+    assert run.description is not None and run.description.startswith("Runs a program")
+    assert run.inputs["binary"].description == "The program to run."
+    assert run.outputs["outcome"].description is not None
+    assert (plain.title, plain.description, plain.outputs["outcome"].description) == (
+        None,
+        None,
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra", "path"),
+    [
+        ('title: ""\n', "title"),
+        ('description: "Two\\nlines."\n', "description"),
+        ("inputs:\n  x: {type: number, description: 3}\n", "inputs.x.description"),
+    ],
+)
+def test_a_title_or_description_is_one_line_of_text(extra: str, path: str) -> None:
+    assert path in [problem["path"] for problem in refused(BASE + OUTCOME + extra)]
+
+
 def test_the_smallest_declaration_is_an_image_limits_and_an_outcome() -> None:
     declared = parse_primitive(BASE + OUTCOME)
 
