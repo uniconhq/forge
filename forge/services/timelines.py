@@ -251,10 +251,11 @@ STARTED_STAYS_OPEN = (
 def _drafted_after_start(
     before: ContestDefinition, after: ContestDefinition, now: datetime
 ) -> bool:
-    """Whether a save takes a contest that was open, and has started, back
-    to draft.
+    """Whether a save takes a contest that was open, or archived since, and
+    has started, back to draft: entrants of an archived contest still read
+    it, so going through `archived` hides their work all the same.
     """
-    return before.state is State.PUBLISHED and before.start <= now and after.state is State.DRAFT
+    return before.state is not State.DRAFT and before.start <= now and after.state is State.DRAFT
 
 
 def _dropped(

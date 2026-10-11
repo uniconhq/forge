@@ -541,6 +541,30 @@ async def test_an_open_contest_goes_back_to_draft_until_its_start_and_is_only_ar
     assert await _write_contest(setup, acme, drafted)
 
 
+async def test_a_started_contest_never_goes_to_draft_through_archived(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    open_ = _running(SUM_ENTRY)
+    await write_contest(acme.fake, open_.decode())
+    await _write_contest(setup, acme, open_.replace(b"state: published", b"state: archived"))
+
+    refused = await _refused(setup, acme, open_.replace(b"state: published", b"state: draft"))
+
+    assert refused == [("state", timelines.STARTED_STAYS_OPEN)]
+
+
+async def test_a_save_over_settings_that_do_not_read_is_checked_against_the_last_that_did(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    open_ = _running(SUM_ENTRY)
+    await write_contest(acme.fake, open_.decode())
+    await write_contest(acme.fake, open_.decode() + "registration:\n  invite_only: true\n")
+
+    refused = await _refused(setup, acme, open_.replace(b"state: published", b"state: draft"))
+
+    assert refused == [("state", timelines.STARTED_STAYS_OPEN)]
+
+
 async def test_a_contest_that_was_never_published_moves_its_passed_dates_freely(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
