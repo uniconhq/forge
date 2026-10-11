@@ -112,6 +112,15 @@ def test_two_workflows_share_what_they_declare_alike_and_rename_the_rest() -> No
     assert meaning.from_ == "${{ steps.run-2.time_ms }}"
 
 
+def test_inputs_that_differ_only_in_their_form_text_are_shared_with_the_text_kept() -> None:
+    combined = parse_workflow(combine_workflows([parse_workflow(TUNABLE), parse_workflow(CLASSIC)]))
+    time_limit = combined.inputs["time_limit"]
+
+    assert "time_limit-2" not in combined.inputs
+    assert (time_limit.title, time_limit.unit) == ("Time limit", "seconds")
+    assert combined.inputs["submission"].title == "Solution"
+
+
 def test_the_combination_checks_as_a_version_on_its_own() -> None:
     combined = parse_workflow(combine_workflows([parse_workflow(CLASSIC), parse_workflow(TUNABLE)]))
 
