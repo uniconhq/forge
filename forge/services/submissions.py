@@ -151,9 +151,9 @@ SUBMIT_LOCK = 0x5355424D
 """The first key of every lock on a workspace's submits of a task, the second
 being the workspace and task hashed by Postgres."""
 NO_SUCH_SUBMISSION = "There is no such submission."
-FORGE_UNAVAILABLE = "The forge did not answer; try again in a moment."
-FORGE_MISCONFIGURED = "The forge refused the platform's own registration."
-FORGE_REFUSED = "The forge refused the submission; submit again, or tell the organisers."
+FORGE_UNAVAILABLE = "The server did not answer. Try again in a moment."
+FORGE_MISCONFIGURED = "Unicon is not set up right, so this cannot be done. Tell whoever runs it."
+FORGE_REFUSED = "The submission could not be saved. Submit again, or tell the organisers."
 SUBMISSION_FILE = rules.SUBMISSION_FILE
 DOCUMENT_MAX = 1024 * 1024
 """The most of a `submission.json` read; the platform writes a few hundred bytes."""
@@ -574,7 +574,8 @@ async def _refuse_rate(ctx: Context, person: Person, workspace: WorkspaceId) -> 
     if len(times) >= rate.count:
         retry_at = sorted(times)[len(times) - rate.count] + rate.window
         raise RateLimited(
-            f"This task takes {rate.count} submission(s) every {rate.per}s.",
+            f"This task takes {rate.count} {'submission' if rate.count == 1 else 'submissions'} "
+            f"every {rate.per} seconds. Wait a moment, then submit again.",
             rate=f"{rate.count} per {rate.per}s",
             retry_at=retry_at.isoformat(),
         )
@@ -591,7 +592,10 @@ async def _chosen(
     rows = await uploads.owned(ctx, person.session.user_id, person.task, set(named))
     foreign = sorted({str(upload) for upload in named if upload not in rows})
     if foreign:
-        raise UploadNotYours("An upload named is not one of yours for this task.", uploads=foreign)
+        raise UploadNotYours(
+            "A file in this submission is not one you uploaded for this task. Upload it again.",
+            uploads=foreign,
+        )
     unready = sorted(
         str(row.id)
         for row in rows.values()
@@ -599,7 +603,8 @@ async def _chosen(
     )
     if unready:
         raise UploadNotReady(
-            "An upload named is not a complete, checked file that is not submitted yet.",
+            "A file in this submission has not finished uploading, or was submitted already. "
+            "Upload it again.",
             uploads=unready,
         )
     form = await published.form(ctx, person.published)
@@ -608,7 +613,8 @@ async def _chosen(
         entry = declared.get(row.input_id or "")
         if entry is not None and _size(row) > entry.max_size:
             raise TooLarge(
-                f"A file for {entry.id} is larger than the {entry.max_size} bytes allowed.",
+                f"A file for {entry.id} is larger than the {entry.max_size} bytes allowed. "
+                "Choose a smaller file.",
                 limit=entry.max_size,
                 input=entry.id,
             )
@@ -635,7 +641,7 @@ async def _pointer(ctx: Context, person: Person, as_: AsUser, row: UploadRow) ->
     if place is None or not await uploads.holds(ctx, place, as_, row):
         log.warning("submissions.upload_gone", upload=str(row.id))
         raise UploadNotReady(
-            "An upload is no longer at the forge; upload it again.", uploads=[str(row.id)]
+            "A file you uploaded is no longer kept. Upload it again.", uploads=[str(row.id)]
         )
     return pointer_text(row.digest, row.size)
 
@@ -655,11 +661,13 @@ async def _record(
         return await ctx.forge.workspaces.record_submission(user, workspace, task, files, key=key)
     except Forbidden as exc:
         log.warning("submissions.refused_at_forge", task=task, detail=exc.detail)
-        raise Forbidden("Your place to submit this task does not take your submissions.") from exc
+        raise Forbidden(
+            "Your place to submit this task does not take your submissions. Tell the organisers."
+        ) from exc
     except Conflict as exc:
         log.warning("submissions.numbering_failed", task=task, detail=exc.detail)
         raise Conflict(
-            "Other submissions were being made at the same moment; submit again."
+            "Other submissions were being made at the same moment. Submit again."
         ) from exc
     except PortError as exc:
         raise _forge_failure(exc, "submissions.record_failed", task=task) from None

@@ -554,7 +554,7 @@ async def test_a_tasks_marks_are_not_lowered_below_what_a_row_holds(
     refused = await _refused(setup, acme, contest(BOARDS, "    marks: 1\n"))
     dropped = await _refused(setup, acme, contest(BOARDS))
 
-    said = "1 row holds 2 marks on sum; it cannot take fewer."
+    said = "1 entrant has marked 2 submissions on sum, so it cannot allow fewer marks."
     assert refused == [("tasks[0].marks", said)]
     assert dropped == [("tasks[0]", said)]
     assert await _write(setup, acme, contest(BOARDS, "    marks: 3\n"))
@@ -572,8 +572,8 @@ async def test_a_lower_is_better_value_first_over_two_tasks_is_refused_on_the_co
     alone = "leaderboards:\n  - {name: Fastest, tasks: [sum], order: [time_ms]}\n"
 
     said = (
-        "Fastest ranks time_ms, which is lower is better, over more than one task: rank it on "
-        "a board of one task."
+        "The leaderboard Fastest ranks first by time_ms, for which lower is better, over more "
+        "than one task. Rank by time_ms on a leaderboard of one task."
     )
     assert refused == [("leaderboards[0].order[0]", said), ("leaderboards[0].order[0]", said)]
     assert await _write(setup, acme, contest(alone, "  - id: product\n"))
@@ -594,8 +594,9 @@ async def test_a_tasks_save_is_refused_where_a_board_ranks_what_its_groups_hide(
     assert [(error["path"], error["message"]) for error in refused.errors] == [
         (
             "test_groups",
-            "Fast ranks time_ms over live, so sum needs a group shown always, since a verdict "
-            "group's tests show only at the reveal.",
+            "The leaderboard Fast ranks by time_ms, counting the results shown during the "
+            "contest, so sum needs a test group whose results entrants see as soon as a grading "
+            "ends, since a group shown as an outcome shows its tests only at the reveal.",
         )
     ]
 
@@ -618,14 +619,14 @@ async def test_a_tasks_save_reports_each_groups_most_its_reveal_and_the_boards_i
     )
 
     assert saved.notes[-4:] == (
-        "Each group's most points: main 100, small 30, large 70.",
-        "sum reveals at 2026-09-26T15:00:00+00:00.",
-        "This save moves Standings.",
-        "This save moves Final.",
+        "The most points each test group gives: main 100, small 30, large 70.",
+        "sum shows its hidden results at 2026-09-26T15:00:00+00:00.",
+        "This save changes the leaderboard Standings.",
+        "This save changes the leaderboard Final.",
     )
     assert isinstance(pointless, Published), pointless
-    assert "Standings counts nothing from sum." in pointless.notes
-    assert "Final counts nothing from sum." in pointless.notes
+    assert "The leaderboard Standings counts nothing from sum." in pointless.notes
+    assert "The leaderboard Final counts nothing from sum." in pointless.notes
 
 
 async def test_the_contests_save_answers_each_board_that_counts_nothing_from_a_task(
@@ -638,8 +639,8 @@ async def test_the_contests_save_answers_each_board_that_counts_nothing_from_a_t
     written = await _write(setup, acme, contest(BOARDS, worth=""))
 
     assert written.notes == (
-        "Standings counts nothing from sum.",
-        "Final counts nothing from sum.",
+        "The leaderboard Standings counts nothing from sum.",
+        "The leaderboard Final counts nothing from sum.",
     )
     (standings, final) = await boards.organised(setup, acme.ada, SPRING)
     assert standings.notes + final.notes == written.notes

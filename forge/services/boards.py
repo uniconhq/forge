@@ -87,7 +87,7 @@ from forge.services.published import PublishedTask
 
 log = get_logger(__name__)
 
-NO_SUCH_ROW = "No such entrant on this contest's boards."
+NO_SUCH_ROW = "There is no such entrant on this contest's leaderboards."
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,9 +201,12 @@ async def _held_marks(
         most, rows = await marks.most_held(ctx, ids[entry.id])
         if most <= allowed:
             continue
-        held = f"{rows} {'row holds' if rows == 1 else 'rows hold'} {most} marks on {entry.id}"
+        held = (
+            f"{rows} {'entrant has' if rows == 1 else 'entrants have'} marked {most} "
+            f"submissions on {entry.id}"
+        )
         path = f"tasks[{index}].marks" if entry.marks is not None else f"tasks[{index}]"
-        problems.append(Problem(path=path, message=f"{held}; it cannot take fewer."))
+        problems.append(Problem(path=path, message=f"{held}, so it cannot allow fewer marks."))
     return problems
 
 

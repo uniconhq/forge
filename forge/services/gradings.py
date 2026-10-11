@@ -157,8 +157,8 @@ from forge.services.credentials import CannotDecrypt
 log = get_logger(__name__)
 
 NO_SUCH_GRADING = "There is no such grading."
-NO_LOG = "This grading has no run log."
-LOG_STORE_UNAVAILABLE = "The run log could not be read; try again in a moment."
+NO_LOG = "This grading has no log."
+LOG_STORE_UNAVAILABLE = "The grading's log could not be read. Try again in a moment."
 LIST_LIMIT = 500
 RUN_STATE_KEPT = timedelta(seconds=15)
 """How long this process keeps the CI's answer about where one run is, so a
@@ -166,10 +166,10 @@ contestant's page polling every two seconds asks the CI a few times a
 minute at most."""
 
 ACCOUNT_NOT_READY = "The org's grading account is not ready."
-NOT_ACTIVATED = "The task is not taken for grading at the CI."
-REFUSED = "The CI refused the org's grading account."
-NO_RUN = "The CI answered without starting a run."
-NO_ANSWER = "The CI did not answer."
+NOT_ACTIVATED = "The task is not set up for grading yet."
+REFUSED = "The grading service refused the org's grading account."
+NO_RUN = "The grading service answered without starting the grading."
+NO_ANSWER = "The grading service did not answer."
 PUBLICATION_GONE = "The publication it grades against is gone."
 
 CI_CONFIG_PATH = "/api/v1/ci/config"
@@ -797,11 +797,12 @@ async def cancel(
     status = status_of(ctx, row, gone)
     if status is not GradingStatus.SYSTEM_ERROR:
         raise WrongStatus(
-            f"Only a grading in system_error is cancelled; this one is {status.value}.",
+            f"Only a grading that failed with a system error can be cancelled, and this one is "
+            f"{status.value}.",
             current=status.value,
         )
     if any(other.attempt > row.attempt for other in attempts):
-        raise Conflict("A later attempt of this submission exists; cancel that one.")
+        raise Conflict("This submission has a later attempt. Cancel that one instead.")
     stored = GradingStatus(row.status)
     if stored in AT_THE_CI and row.run_id is not None:
         _cancel_after_commit(ctx, RunId(row.run_id))
@@ -829,16 +830,21 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     row = next(attempt for attempt in attempts if attempt.id == grading)
     status = status_of(ctx, row, gone)
     if status not in FINISHED:
-        raise WrongStatus(f"The grading is {status.value}, not finished.", current=status.value)
+        raise WrongStatus(
+            f"This grading is {status.value} and has not finished, so it cannot be retried yet.",
+            current=status.value,
+        )
     if staff_cancelled(row):
         raise WrongStatus(
-            "Staff cancelled this submission, which ends it; it is not graded again.",
+            "The organisers cancelled this submission, which ends it, so it is not graded again.",
             current=status.value,
         )
     if any(other.attempt > row.attempt for other in attempts):
-        raise Conflict("A later attempt of this submission exists; retry that one.")
+        raise Conflict("This submission has a later attempt. Retry that one instead.")
     if any(status_of(ctx, other, gone) in UNFINISHED for other in attempts):
-        raise Conflict("Another attempt of this grading is still being graded.")
+        raise Conflict(
+            "Another attempt of this submission is still being graded. Wait for it to finish."
+        )
     _settle(ctx, row, gone)
     made = _next_attempt(ctx, row, PublicationId(row.publication_id), attempts)
     await ctx.db.flush()
@@ -866,14 +872,16 @@ async def fall_back(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> G
     status = status_of(ctx, row, gone)
     if not broken(row, status):
         raise WrongStatus(
-            "Only a grading in system_error, or one staff cancelled, falls back; "
-            f"this one is {status.value}.",
+            "Only a grading that failed with a system error, or one the organisers cancelled, "
+            f"can fall back to an earlier result, and this one is {status.value}.",
             current=status.value,
         )
     if any(other.attempt > row.attempt for other in attempts):
-        raise Conflict("A later attempt of this submission exists; that one counts.")
+        raise Conflict("This submission has a later attempt, and that one counts.")
     if last_good(attempts, row) is None:
-        raise Conflict("No earlier attempt of this submission finished with a result.")
+        raise Conflict(
+            "No earlier attempt of this submission finished with a result to fall back to."
+        )
     _settle(ctx, row, gone)
     row.falls_back = True
     await ctx.db.flush()
@@ -963,7 +971,9 @@ async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
     await timelines.hold_task(ctx, task)
     current = await published.task(ctx, task)
     if current is None:
-        raise NotFound("The task has no publication to grade against.")
+        raise NotFound(
+            "The task has no publication to grade against yet. Save it so that it publishes."
+        )
     return await regrade(ctx, task, current.publication.id)
 
 
@@ -1113,7 +1123,10 @@ def _observed(organiser: Organiser, contest: ContestId) -> frozenset[TaskId] | N
     )
     if not tasks:
         named = organiser.scope if organiser.scope == scope else scope
-        raise Forbidden(f"This needs the observer role at {named.name} or one of its tasks.")
+        raise Forbidden(
+            f"This needs the observer role at {named.name} or at one of its tasks. Ask an "
+            f"admin of {named.name} if you need it."
+        )
     return tasks
 
 
@@ -1208,7 +1221,8 @@ async def run_log(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> byt
     except Rejected as exc:
         log.warning("gradings.log_too_large", grading=str(grading), detail=exc.detail)
         raise LogTooLarge(
-            f"The run log is larger than the {RUN_LOG_MAX} bytes shown.", limit=RUN_LOG_MAX
+            f"The grading's log is larger than the {RUN_LOG_MAX} bytes Unicon shows.",
+            limit=RUN_LOG_MAX,
         ) from None
     except PortError as exc:
         raise _log_failure(exc, grading) from None

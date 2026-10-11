@@ -258,7 +258,8 @@ async def public_file(ctx: Context, published: PublishedTask, path: str) -> Publ
     except Rejected:
         log.info("published.public_file_too_large", task=published.id, path=path)
         raise PublicFileTooLarge(
-            f"The file is larger than the {PUBLIC_MOST // (1024 * 1024)} MB a page is served.",
+            f"The file is larger than the {PUBLIC_MOST // (1024 * 1024)} MB Unicon shows on a "
+            "page.",
             limit=PUBLIC_MOST,
         ) from None
     return PublicFile(path, content)

@@ -583,7 +583,7 @@ async def test_shortening_an_extension_is_refused_when_it_would_make_a_submissio
     clock.advance(timedelta(hours=1, minutes=15))
     assert await _submit_sum(setup, acme, entered, "key-0001-aaaa") == 1
 
-    made = "sum's submission 1, made 2026-09-26T13:15:00+00:00 was on time"
+    made = "sum's submission 1, made at 2026-09-26T13:15:00+00:00, was on time"
     for shorter, tasks in (
         (timedelta(minutes=30), ["sum"]),
         (timedelta(0), None),
@@ -608,7 +608,8 @@ async def test_shortening_an_extension_is_refused_when_it_would_close_before_a_s
 
     with pytest.raises(
         InvalidExtension,
-        match="sum's submission 1, made 2026-09-26T13:30:00\\+00:00 would be after the task closed",
+        match="sum's submission 1, made at 2026-09-26T13:30:00\\+00:00, would then be after "
+        "the task closed",
     ):
         await entrants.extend(setup, manager, SPRING, bob, timedelta(minutes=20), tasks=["sum"])
     longer = await entrants.extend(setup, manager, SPRING, bob, timedelta(hours=2), tasks=["sum"])

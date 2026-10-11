@@ -569,7 +569,9 @@ async def test_an_organiser_extends_an_entrant_on_the_named_tasks_alone(
     assert refused.value.extra == {"reason": "closed"}
     with pytest.raises(InvalidExtension, match="third's hidden results were shown"):
         await entrants.extend(setup, manager, SPRING, takers.id, timedelta(hours=1))
-    made = "sum's submission 1, made 2026-09-26T16:30:00+00:00 would be after the task closed"
+    made = (
+        "sum's submission 1, made at 2026-09-26T16:30:00+00:00, would then be after the task closed"
+    )
     with pytest.raises(InvalidExtension, match=re.escape(made)):
         await entrants.extend(
             setup, manager, SPRING, adders.id, timedelta(minutes=20), tasks=["sum"]

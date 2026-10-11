@@ -76,7 +76,10 @@ async def test_someone_holding_no_role_is_refused_at_every_scope_naming_it(
 
     with pytest.raises(Forbidden) as refused:
         await access.organiser(ctx, session, scope, Role.OBSERVER)
-    assert refused.value.detail == f"This needs the observer role at {scope.name}."
+    assert refused.value.detail == (
+        f"This needs the observer role at {scope.name}. Ask an admin of {scope.name} if you "
+        "need it."
+    )
 
 
 async def test_a_credential_the_forge_refuses_ends_the_session(

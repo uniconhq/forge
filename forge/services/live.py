@@ -68,7 +68,7 @@ async def audience(ctx: Context, session: Session, previous: Audience | None = N
         pass
     except Forbidden:
         sessions.revoke_at_end(ctx, session.id)
-        raise SessionExpired("Sign in again.") from None
+        raise SessionExpired("Your session has ended. Sign in again.") from None
     return Audience(user_id=session.user_id, grants=tuple(grants), contests=contests, entrants=mine)
 
 

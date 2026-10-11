@@ -160,9 +160,9 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
     assert (result.number, result.grading_changed, result.changes) == (1, False, ())
     # The save reports what each board will read of the task (T9).
     assert result.notes == (
-        "Each group's most points: main 100.",
-        "sum reveals at 2026-10-03T17:00:00+00:00.",
-        "sum joins Standings.",
+        "The most points each test group gives: main 100.",
+        "sum shows its hidden results at 2026-10-03T17:00:00+00:00.",
+        "sum now counts on the leaderboard Standings.",
     )
     (saved,) = acme.fake.calls_to("save_files")
     assert saved.identity == acme.ada.identity
@@ -389,7 +389,7 @@ async def test_a_group_with_no_tests_is_a_draft_and_the_state_recomputes_its_err
     assert draft.errors == (
         {
             "path": "test_groups.samples",
-            "message": "There is no folder tests/samples/ with a test in it.",
+            "message": "The test group samples has no tests. Add a test to it.",
         },
     )
     assert draft.held_back == ()
@@ -418,22 +418,27 @@ async def test_a_group_with_no_tests_is_a_draft_and_the_state_recomputes_its_err
 @pytest.mark.parametrize(
     ("files", "path", "said"),
     [
-        ({"tests/main/2/input": b"2 2\n"}, "tests/main/2/", "The test main/2 has no answer."),
+        (
+            {"tests/main/2/input": b"2 2\n"},
+            "tests/main/2/",
+            "The test main/2 has no answer. Add it.",
+        ),
         (
             {"tests/main/1/notes": b"x\n"},
             "tests/main/1/notes",
-            "The test main/1 has an entry for no field: notes.",
+            "The test main/1 has notes, which is none of the workflow's test fields. Rename it "
+            "after one, or remove it.",
         ),
         (
             {"tests/main/1/answer.txt": b"3\n"},
             "tests/main/1/",
-            "The test main/1 gives answer twice: answer, answer.txt.",
+            "The test main/1 has answer more than once: answer, answer.txt. Keep one.",
         ),
         (
             {"tests/other/1/input": b"1 2\n", "tests/other/1/answer": b"3\n"},
             "tests/other/",
-            "other is a folder of tests/ but not a group in test_groups: list it, or move its "
-            "tests.",
+            "other holds tests but is not one of the task's test groups. Add a test group "
+            "called other, or move its tests.",
         ),
     ],
     ids=["missing-field", "no-such-field", "field-twice", "unlisted-group"],
@@ -469,9 +474,9 @@ async def test_a_removed_test_is_gone_from_the_change_and_the_grading_comparison
     assert isinstance(removed, Published), removed
     assert (removed.number, removed.grading_changed) == (3, True)
     assert removed.changes == (
-        "plans/plan.json changed",
-        "tests/main/2/answer removed",
-        "tests/main/2/input removed",
+        "The way the task grades changed.",
+        "The file tests/main/2/answer was removed.",
+        "The file tests/main/2/input was removed.",
     )
     (saved,) = acme.fake.calls_to("save_files")
     assert saved.arguments["paths"] == [
@@ -503,11 +508,11 @@ async def test_a_test_is_replaced_by_one_with_other_entry_names_in_one_save(
 
     assert isinstance(result, Published), result
     assert result.changes == (
-        "plans/plan.json changed",
-        "tests/main/1/answer removed",
-        "tests/main/1/answer.txt added",
-        "tests/main/1/input removed",
-        "tests/main/1/input.txt added",
+        "The way the task grades changed.",
+        "The file tests/main/1/answer was removed.",
+        "The file tests/main/1/answer.txt was added.",
+        "The file tests/main/1/input was removed.",
+        "The file tests/main/1/input.txt was added.",
     )
     plan = Plan.from_bytes(acme.fake.state.repos[("acme", "spring.sum.task")].files[PLAN_PATH])
     assert plan.task_paths() == ("tests/main/1/answer.txt", "tests/main/1/input.txt")
@@ -533,7 +538,7 @@ async def test_removing_a_groups_last_test_is_a_draft_at_the_group(
 
     assert isinstance(draft, Draft)
     assert [(error["path"], error["message"]) for error in draft.errors] == [
-        ("test_groups.samples", "There is no folder tests/samples/ with a test in it.")
+        ("test_groups.samples", "The test group samples has no tests. Add a test to it.")
     ]
     assert acme.fake.calls_to("publish") == []
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
@@ -550,7 +555,7 @@ async def test_removing_every_test_is_a_draft_saying_the_task_has_none(
 
     assert isinstance(draft, Draft)
     assert [(error["path"], error["message"]) for error in draft.errors] == [
-        ("test_groups", "The task has no tests/ folder: add tests/<group>/<test>/.")
+        ("test_groups", "The task has no tests yet. Add a test to each test group.")
     ]
 
 
@@ -561,7 +566,7 @@ async def test_removing_one_field_of_a_test_is_a_draft_at_the_test(
 
     assert isinstance(draft, Draft)
     assert [(error["path"], error["message"]) for error in draft.errors] == [
-        ("tests/main/1/", "The test main/1 has no answer.")
+        ("tests/main/1/", "The test main/1 has no answer. Add it.")
     ]
 
 
@@ -595,7 +600,7 @@ async def test_removing_a_file_an_input_names_is_a_draft_at_that_input(
 
     assert isinstance(draft, Draft)
     assert [(error["path"], error["message"]) for error in draft.errors] == [
-        ("inputs.expected", "There is no file data/answer.txt in the task.")
+        ("inputs.expected", "The task has no file data/answer.txt. Add it, or give another file.")
     ]
     assert acme.fake.calls_to("publish") == []
 
@@ -645,7 +650,7 @@ async def test_a_removal_without_its_token_is_refused_naming_it(
         )
 
     assert refused.value.extra["errors"] == [
-        {"input": "tests/main/1/input", "message": "No token to remove it with."}
+        {"input": "tests/main/1/input", "message": "Reload the files, then remove this one again."}
     ]
     assert _written(acme) == []
 
@@ -730,7 +735,7 @@ async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_line_nami
     assert isinstance(draft, Draft)
     (error,) = draft.errors
     assert error["path"] == "workflow"
-    assert "cannot be read" in error["message"]
+    assert "Unicon cannot open the workflow" in error["message"]
     assert named in error["message"]
     assert acme.fake.calls_to("publish") == []
     reads = acme.fake.calls_to("read_workflow_file")
@@ -753,7 +758,8 @@ async def test_a_workflow_in_an_old_format_is_refused_at_its_line_for_its_owner_
     (error,) = draft.errors
     assert error["path"] == "workflow"
     assert error["message"].startswith(
-        "The workflow unicon/old@v1 is not in the current format, so its owner tags a new version: "
+        "The workflow unicon/old@v1 is written in an older form that Unicon no longer reads, so "
+        "its owner needs to make a new version of it. There are "
     )
     assert acme.fake.calls_to("publish") == []
 
@@ -775,7 +781,10 @@ async def test_a_workflow_that_does_not_check_as_a_version_is_refused_at_its_lin
     assert isinstance(draft, Draft)
     assert draft.errors
     assert {error["path"] for error in draft.errors} == {"workflow"}
-    assert all(error["message"].startswith("In unicon/broken@v1, ") for error in draft.errors)
+    assert all(
+        error["message"].startswith("The workflow unicon/broken@v1 has a problem (")
+        for error in draft.errors
+    )
 
 
 @pytest.mark.parametrize(
@@ -783,13 +792,14 @@ async def test_a_workflow_that_does_not_check_as_a_version_is_refused_at_its_lin
     [
         (
             b"unicon/compile@v7",
-            "In unicon/custom@v1, steps[0].use: unicon/compile@v7 cannot be read: there is no "
-            "such primitive or workflow at that version, or it is not shared with you.",
+            "In the workflow unicon/custom@v1, the step compile cannot run: Unicon cannot open "
+            "unicon/compile@v7: there is no such primitive or workflow at that version, or it is "
+            "not shared with you.",
         ),
         (
             b"unicon/classic@v2",
-            "In unicon/custom@v1, steps[0].use: unicon/classic@v2 is not a primitive: a step "
-            "uses a primitive, never a workflow.",
+            "In the workflow unicon/custom@v1, the step compile cannot run: unicon/classic@v2 is "
+            "a workflow, and a step can only use a primitive.",
         ),
     ],
     ids=["no-such-version", "a-workflow"],
@@ -832,8 +842,9 @@ async def test_a_primitive_in_an_old_format_is_refused_naming_it(
     (error,) = draft.errors
     assert error["path"] == "workflow"
     assert error["message"].startswith(
-        "In unicon/custom@v1, steps[0].use: The primitive unicon/odd@v1 is not in the current "
-        "format; use a later version of it: "
+        "In the workflow unicon/custom@v1, the step compile cannot run: The primitive "
+        "unicon/odd@v1 is written in an older form that Unicon no longer reads. Use a later "
+        "version of it. There are "
     )
 
 
@@ -888,7 +899,7 @@ async def test_a_secret_is_refused_since_the_org_holds_none_and_a_plain_text_pub
 
     assert isinstance(refused, Draft)
     assert [(error["path"], error["message"]) for error in refused.errors] == [
-        ("inputs.args", "The org holds no secret named k.")
+        ("inputs.args", "The org has no secret called k. Choose one it has, or add it to the org.")
     ]
     assert isinstance(published, Published), published
 
@@ -926,15 +937,15 @@ async def test_scoring_changes_never_change_grading_and_a_test_or_a_limit_does(
         (False, ()),
         (False, ()),
         (False, ()),
-        (True, ("plans/plan.json changed",)),
-        (True, ("tests/main/1/input changed",)),
+        (True, ("The way the task grades changed.",)),
+        (True, ("The file tests/main/1/input changed.",)),
         (False, ()),
         (
             True,
             (
-                "plans/plan.json changed",
-                "tests/main/2/answer added",
-                "tests/main/2/input added",
+                "The way the task grades changed.",
+                "The file tests/main/2/answer was added.",
+                "The file tests/main/2/input was added.",
             ),
         ),
     ]
@@ -950,7 +961,7 @@ async def test_scoring_changes_never_change_grading_and_a_test_or_a_limit_does(
         False,
         True,
     ]
-    assert history[5].changes == ("plans/plan.json changed",)
+    assert history[5].changes == ("The way the task grades changed.",)
 
 
 @pytest.fixture
@@ -964,8 +975,8 @@ async def running(setup: Setup, acme: Acme, sum_task: TaskId) -> TaskId:
 @pytest.mark.parametrize(
     ("change", "listed"),
     [
-        ((b"time_limit: 2", b"time_limit: 1"), ["plans/plan.json changed"]),
-        (None, ["tests/main/1/input changed"]),
+        ((b"time_limit: 2", b"time_limit: 1"), ["The way the task grades changed."]),
+        (None, ["The file tests/main/1/input changed."]),
     ],
     ids=["limit", "test"],
 )
@@ -1015,7 +1026,7 @@ async def test_a_grading_change_kept_as_a_draft_is_written_and_not_published(
     )
 
     assert isinstance(kept, Draft)
-    assert (kept.errors, kept.held_back) == ((), ("plans/plan.json changed",))
+    assert (kept.errors, kept.held_back) == ((), ("The way the task grades changed.",))
     assert _written(acme) == ["save_files"]
     (saved,) = acme.fake.calls_to("save_files")
     assert saved.arguments["paths"] == ["task.yaml"]
@@ -1023,7 +1034,7 @@ async def test_a_grading_change_kept_as_a_draft_is_written_and_not_published(
     assert (state.draft, state.errors) == (True, ())
     published = await publications.save(setup, acme.ada, running, {}, confirm=True)
     assert isinstance(published, Published)
-    assert published.changes == ("plans/plan.json changed",)
+    assert published.changes == ("The way the task grades changed.",)
 
 
 @pytest.mark.parametrize("confirm", [False, True], ids=["alone", "with-confirm"])
@@ -1090,12 +1101,12 @@ async def _graded(setup: Setup, acme: Acme, entered: Entered, key: str = "key-00
 @pytest.mark.parametrize(
     ("before", "after", "refused"),
     [
-        (b"{each: 100}", b"{each: 100, show: after_close}", "main was shown always"),
-        (b"{each: 100}", b"{pass: 100, show: verdict}", "main was shown always"),
+        (b"{each: 100}", b"{each: 100, show: after_close}", "main as soon as a grading ends"),
+        (b"{each: 100}", b"{pass: 100, show: verdict}", "main as soon as a grading ends"),
         (
             b"{pass: 100, show: verdict}",
             b"{pass: 100, show: after_close}",
-            "main was shown verdict",
+            "main as an outcome before the reveal",
         ),
         (b"{each: 100, show: after_close}", b"{each: 100}", None),
         (b"{each: 100, show: after_close}", b"{pass: 100, show: verdict}", None),
@@ -1130,7 +1141,11 @@ async def test_once_graded_what_was_shown_is_not_hidden_again_and_the_other_way_
         return
     assert isinstance(result, Draft)
     assert [(error["path"], error["message"]) for error in result.errors] == [
-        ("test_groups.main.show", f"{refused}: what was shown cannot be hidden again.")
+        (
+            "test_groups.main.show",
+            f"Entrants have seen the results of {refused}, and what they have seen cannot be "
+            "hidden again.",
+        )
     ]
     assert acme.fake.calls_to("publish") == []
 
@@ -1171,8 +1186,8 @@ async def test_once_graded_a_new_group_must_say_its_show(
     assert [(error["path"], error["message"]) for error in draft.errors] == [
         (
             "test_groups.large",
-            "large is new and states no show: say always to show it at once, or verdict or "
-            "after_close.",
+            "large is a new test group, and the task has graded submissions, so choose when "
+            "entrants see its results.",
         )
     ]
     assert isinstance(said, Published), said
@@ -1239,7 +1254,8 @@ async def test_what_any_graded_publication_showed_is_not_hidden_when_its_group_c
     assert [(error["path"], error["message"]) for error in refused.errors] == [
         (
             "test_groups.large.show",
-            "large was shown always: what was shown cannot be hidden again.",
+            "Entrants have seen the results of large as soon as a grading ends, and what they "
+            "have seen cannot be hidden again.",
         )
     ]
     assert isinstance(shown, Published), shown
@@ -1278,7 +1294,7 @@ async def test_the_confirmation_counts_the_submissions_the_save_regrades_and_no_
         await _save(setup, acme, entered.task, change)
     confirmed = await _save(setup, acme, entered.task, change, confirm=True)
 
-    assert asked.value.extra == {"changes": ["plans/plan.json changed"], "regrades": 2}
+    assert asked.value.extra == {"changes": ["The way the task grades changed."], "regrades": 2}
     assert isinstance(confirmed, Published)
     assert confirmed.regraded == 2
 
@@ -1299,7 +1315,10 @@ async def test_a_save_that_picks_up_a_moved_image_names_it_beside_the_regrade_co
         await _save(setup, acme, entered.task, statement)
 
     assert asked.value.extra == {
-        "changes": ["plans/plan.json changed", "sandbox-run@v2's image moved with a release"],
+        "changes": [
+            "The way the task grades changed.",
+            "A release updated sandbox-run@v2 in place.",
+        ],
         "regrades": 1,
     }
 
@@ -1332,8 +1351,8 @@ DUE = RUNNING + "    due: 2026-09-26T14:00:00Z\n"
 @pytest.mark.parametrize(
     ("contest", "line"),
     [
-        (WORTH, "contest.yaml tasks[0].worth gives sum worth 50"),
-        (DUE, "contest.yaml tasks[0].due gives sum a due"),
+        (WORTH, "gives it a worth of 50"),
+        (DUE, "gives it a due time"),
     ],
     ids=["worth", "due"],
 )
@@ -1349,7 +1368,8 @@ async def test_a_task_left_giving_no_points_is_refused_while_its_contest_entry_s
     assert [(error["path"], error["message"]) for error in result.errors] == [
         (
             "test_groups",
-            f"No group has a rule weight, so sum gives no points, and {line}; remove it first.",
+            f"No test group gives points, so sum gives no points, but the contest {line}. Remove "
+            "that from the contest first.",
         )
     ]
     await write_contest(acme.fake, RUNNING.format(state="draft"))
@@ -1414,10 +1434,10 @@ async def test_a_draft_still_shows_its_workflows_inputs(
 @pytest.mark.parametrize(
     ("workflow", "problem"),
     [
-        (b"", "names no workflow"),
-        (b"workflow: [\n", "does not read"),
+        (b"", "does not name a workflow"),
+        (b"workflow: [\n", "could not read the task's settings"),
         (b"workflow: classic\n", "must end in @ and a version"),
-        (b"workflow: unicon/nothing@v1\n", "cannot be read"),
+        (b"workflow: unicon/nothing@v1\n", "Unicon cannot open the workflow"),
     ],
     ids=["none", "not yaml", "not a reference", "unreadable"],
 )
@@ -1441,7 +1461,7 @@ async def test_a_workflow_in_an_old_format_gives_the_form_its_reason(
     form = await publications.workflow_form(setup, acme.ada, sum_task)
 
     assert form.workflow == "unicon/old@v1"
-    assert form.problem is not None and "not in the current format" in form.problem
+    assert form.problem is not None and "an older form that Unicon no longer reads" in form.problem
     elsewhere = Scope("acme", "autumn")
     stranger = Organiser(
         user=acme.ada.user,

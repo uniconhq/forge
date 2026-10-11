@@ -167,7 +167,7 @@ class Made:
     at: datetime
 
     def said(self) -> str:
-        return f"submission {self.number}, made {self.at.isoformat()}"
+        return f"submission {self.number}, made at {self.at.isoformat()},"
 
 
 async def submissions(
@@ -212,7 +212,11 @@ async def check_contest(
     listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
     tasks = {each.name: TaskId(each.id) for each in listed}
     problems = [
-        Problem(path=f"tasks[{index}].id", message=f"{entry.id} is not a task of this contest.")
+        Problem(
+            path=f"tasks[{index}].id",
+            message=f"{entry.id} is not one of this contest's tasks. Remove it here, or make a "
+            f"task called {entry.id} first.",
+        )
         for index, entry in enumerate(after.tasks)
         if entry.id not in tasks
     ]
@@ -240,7 +244,7 @@ async def check_contest(
 
 STARTED_STAYS_OPEN = (
     "The contest has started, so it can no longer go back to draft: that would hide "
-    "the work contestants have done in it. Archive it instead to close it."
+    "the work entrants have done in it. Archive it instead to close it."
 )
 
 
@@ -261,10 +265,13 @@ def _dropped(
     """
     if released(before, entry.id, now):
         opened = before.release_of(entry)
-        return f"{entry.id} opened at {opened.isoformat()}; it cannot be hidden again."
+        return (
+            f"{entry.id} was released at {opened.isoformat()}, so entrants have seen it, and it "
+            "cannot be taken out of the contest."
+        )
     if made:
         count = f"{len(made)} submission" + ("s" if len(made) > 1 else "")
-        return f"{entry.id} has {count}; it cannot be hidden, so keep its entry."
+        return f"{entry.id} has {count}, so it cannot be taken out of the contest."
     return None
 
 
@@ -284,7 +291,8 @@ async def _points(
             problems.append(
                 Problem(
                     path=f"tasks[{index}].worth",
-                    message=f"{entry.id} gives no points, so it has no worth: rank it on a value.",
+                    message=f"{entry.id} gives no points, so it cannot have a worth. Leave this "
+                    "empty, and rank it by a value instead.",
                 )
             )
         if entry.due is not None:
@@ -292,7 +300,8 @@ async def _points(
                 Problem(
                     path=f"tasks[{index}].due",
                     message=(
-                        f"{entry.id} gives no points, so a due would change nothing; use closes."
+                        f"{entry.id} gives no points, so a due time would change nothing. Give it "
+                        "a closing time instead."
                     ),
                 )
             )
@@ -326,7 +335,8 @@ def _moved(
         found.append(
             (
                 release_key,
-                f"{task} opened at {old_release.isoformat()}; it cannot be hidden again.",
+                f"{task} was released at {old_release.isoformat()}, so entrants have seen it, "
+                "and a later release time would hide it again.",
             )
         )
     for submission in made:
@@ -340,7 +350,8 @@ def _moved(
             found.append(
                 (
                     "due",
-                    f"{task}'s {submission.said()} was on time; an earlier due would make it late.",
+                    f"{task}'s {submission.said()} was on time, and an earlier due time would make "
+                    "it late.",
                 )
             )
             break
@@ -349,7 +360,8 @@ def _moved(
             found.append(
                 (
                     closes_key,
-                    f"{task}'s {submission.said()} would be after the task closed; close it later.",
+                    f"{task}'s {submission.said()} would then be after the task closed. Close it "
+                    "later.",
                 )
             )
             break
@@ -358,8 +370,8 @@ def _moved(
         found.append(
             (
                 closes_key,
-                f"{task}'s hidden results were shown at {revealed.isoformat()}; a later close "
-                "would let rows submit knowing them.",
+                f"{task}'s hidden results were shown at {revealed.isoformat()}, so a later "
+                "closing time would let entrants submit knowing them.",
             )
         )
     return found
@@ -386,20 +398,21 @@ async def refuse_extension(
             revealed = reveal_of(settings, entry, extensions)
             if revealed <= ctx.now and close_of(settings, entry, after) > ctx.now:
                 raise InvalidExtension(
-                    f"{entry.id}'s hidden results were shown at {revealed.isoformat()}; an "
-                    "extension on it would let this row submit knowing them."
+                    f"{entry.id}'s hidden results were shown at {revealed.isoformat()}, so "
+                    "extra time on it would let this entrant submit knowing them."
                 )
         for number, at in own.get(entry.id, []):
             made = Made(after, number, at)
             due_now, due_then = due_of(settings, entry, after), due_of(settings, entry, before)
             if due_now is not None and at > due_now and (due_then is None or at <= due_then):
                 raise InvalidExtension(
-                    f"{entry.id}'s {made.said()} was on time; a shorter extension would make "
-                    f"it late."
+                    f"{entry.id}'s {made.said()} was on time, and less extra time would make "
+                    "it late."
                 )
             if at >= close_of(settings, entry, after):
                 raise InvalidExtension(
-                    f"{entry.id}'s {made.said()} would be after the task closed for this row."
+                    f"{entry.id}'s {made.said()} would then be after the task closed for this "
+                    "entrant."
                 )
 
 

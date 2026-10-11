@@ -48,7 +48,7 @@ from forge.services.turns import Turns
 
 log = get_logger(__name__)
 
-NOT_APPROVED = "Only an approved entrant of the contest submits to its tasks."
+NOT_APPROVED = "Only approved entrants of this contest can submit to its tasks."
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,9 +113,12 @@ async def refuse(ctx: Context, person: Person) -> tuple[EntrantRow, WorkspaceId]
         case Closed.NOT_RELEASED:
             raise NotFound(published.NO_SUCH_TASK)
         case Closed.ARCHIVED:
-            raise Archived("The contest is archived and takes no submissions.")
+            raise Archived("This contest is archived, so it takes no more submissions.")
         case Closed.CLOSED:
-            raise TaskClosed("The task has closed for you.", reason=Closed.CLOSED.value)
+            raise TaskClosed(
+                "This task has closed for you, so it takes no more submissions from you.",
+                reason=Closed.CLOSED.value,
+            )
     row = person.entrant
     if row is None or row.status != Status.APPROVED:
         raise NotApproved(NOT_APPROVED)
@@ -146,7 +149,7 @@ async def hold_standing(ctx: Context, person: Person) -> None:
     contest = contest_id_of(task_scope(person.task))
     member = await entrants.membership(ctx, contest, person.session.user_id)
     if member is None or member.entrant_id != person.entrant.id:
-        raise EntrantChanged("Your entrant changed while you submitted; submit again.")
+        raise EntrantChanged("Your team changed while you were submitting. Submit again.")
 
 
 PLACES_AT_ONCE = 4
@@ -195,7 +198,7 @@ async def open_place(ctx: Context, person: Person) -> None:
             error=type(exc).__name__,
             detail=exc.detail,
         )
-        raise Unavailable("The forge did not answer; try again in a moment.") from None
+        raise Unavailable("The server did not answer. Try again in a moment.") from None
     if not approved:
         raise NotApproved(NOT_APPROVED)
     log.info("submitters.place_opened", task=person.task, user_id=user_id)

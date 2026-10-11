@@ -122,7 +122,10 @@ async def test_a_refusal_names_the_scope_by_its_names_not_its_keys(
     setup = setup_with_random_keys
     contest, _ = await _contest_and_task(setup, fake)
 
-    with pytest.raises(Forbidden, match=r"observer role at acme/spring\.$"):
+    with pytest.raises(
+        Forbidden,
+        match=r"observer role at acme/spring\. Ask an admin of acme/spring if you need it\.$",
+    ):
         await organiser(setup, fake, 8, contest, Role.OBSERVER)
 
 
@@ -168,7 +171,7 @@ async def test_a_workflow_name_that_comes_to_mean_another_workflow_is_refused_at
     assert isinstance(again, Draft)
     (error,) = again.errors
     assert error["path"] == "workflow"
-    assert "bob/sorting now names a different workflow" in error["message"]
+    assert "bob/sorting is now a different workflow" in error["message"]
 
 
 async def test_the_same_workflow_saved_again_publishes(

@@ -67,7 +67,7 @@ from forge.services.announcements import Announcement, AnsweredQuestion
 log = get_logger(__name__)
 
 NO_SUCH_QUESTION = "There is no such question."
-NOT_APPROVED = "Only an approved entrant of the contest asks it questions."
+NOT_APPROVED = "Only approved entrants of this contest can ask its organisers questions."
 ABOUT = re.compile(r"\n*<!-- unicon:task (\S+) -->\s*$")
 
 
@@ -136,7 +136,7 @@ async def ask(
     workspace = await ctx.forge.workspaces.open_workspace(contest, standing.owner, standing.members)
     current = await entrants.settle(ctx, standing.entrant.id, workspace, standing.members)
     if session.user_id not in current:
-        raise EntrantChanged("Your entrant changed while your question was asked; ask again.")
+        raise EntrantChanged("Your team changed while your question was being sent. Ask it again.")
     thread = await ctx.forge.threads.post_thread(
         as_, workspace, ThreadKind.CLARIFICATION, title=title, body=body
     )
@@ -204,9 +204,9 @@ async def inbox(ctx: Context, session: Session, org: str) -> tuple[Clarification
         grants = await ctx.forge.orgs.roles_of(as_)
     except Forbidden:
         sessions.revoke_at_end(ctx, session.id)
-        raise SessionExpired("Sign in again.") from None
+        raise SessionExpired("Your session has ended. Sign in again.") from None
     if found is None or not any(grant.scope.org == found for grant in grants):
-        raise Forbidden(f"This needs a role at {org}.")
+        raise Forbidden(f"This needs a role at {org}. Ask an admin of {org} if you need one.")
     threads = [
         thread
         for thread, contest in _questions(

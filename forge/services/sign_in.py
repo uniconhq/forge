@@ -95,18 +95,22 @@ async def complete(
     """
     if attempt is None:
         log.info("sign_in.refused", reason="attempt", state=state[:STATE_PREFIX])
-        raise SignInInvalid("This sign-in did not start here, or took too long.")
+        raise SignInInvalid(
+            "This sign-in did not start here, or took too long. Start again from the sign-in page."
+        )
     if not compare_digest(attempt.state.encode(), state.encode()):
         log.info("sign_in.refused", reason="state", state=state[:STATE_PREFIX])
-        raise SignInInvalid("This sign-in did not start here.")
+        raise SignInInvalid("This sign-in did not start here. Start again from the sign-in page.")
     try:
         signed = await ctx.forge.identity.complete_sign_in(code=code, verifier=attempt.verifier)
     except Forbidden as exc:
         log.info("sign_in.refused", reason="code", state=state[:STATE_PREFIX])
-        raise SignInInvalid("This sign-in could not be completed.") from exc
+        raise SignInInvalid(
+            "This sign-in could not be finished. Start again from the sign-in page."
+        ) from exc
     if signed.nonce is None or not compare_digest(signed.nonce, attempt.nonce):
         log.info("sign_in.refused", reason="nonce", state=state[:STATE_PREFIX])
-        raise SignInInvalid("This sign-in did not start here.")
+        raise SignInInvalid("This sign-in did not start here. Start again from the sign-in page.")
     session = await sessions.create(
         ctx, user=signed.user, credential=signed.credential, ip=ip, user_agent=user_agent
     )

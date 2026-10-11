@@ -206,13 +206,17 @@ def checked(title: str, body: str) -> tuple[str, str]:
     """
     title, body = _unmarked(title), _unmarked(body)
     if not title:
-        raise InvalidMessage("A title is needed.", field="title")
+        raise InvalidMessage("Give a title.", field="title")
     if len(title) > TITLE_MOST:
-        raise InvalidMessage(f"A title is at most {TITLE_MOST} characters.", field="title")
+        raise InvalidMessage(
+            f"A title can be at most {TITLE_MOST} characters. Shorten it.", field="title"
+        )
     if not body:
-        raise InvalidMessage("Some text is needed.", field="body")
+        raise InvalidMessage("Write some text.", field="body")
     if len(body) > BODY_MOST:
-        raise InvalidMessage(f"The text is at most {BODY_MOST} characters.", field="body")
+        raise InvalidMessage(
+            f"The text can be at most {BODY_MOST} characters. Shorten it.", field="body"
+        )
     return title, body
 
 
@@ -233,7 +237,7 @@ def place_of(scope: Scope) -> ThreadPlace:
         return ContestId(scope.path)
     if scope.kind is ScopeKind.TASK:
         return TaskId(scope.path)
-    raise NotFound("An org has no announcements of its own.")
+    raise NotFound("An org has no announcements of its own. Post one in a contest or a task.")
 
 
 def announcement(thread: Thread, where: ScopeNames, *, organiser: bool) -> Announcement:

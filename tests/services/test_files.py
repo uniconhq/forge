@@ -248,8 +248,16 @@ async def test_a_path_that_is_not_plainly_inside_the_place_is_refused_unread(
 @pytest.mark.parametrize(
     ("old", "new", "said"),
     [
-        (b"visibility: everyone", b"visibility: public", "public is now everyone."),
-        (b"  - id: sum\n", b"  - id: sum\n    points: 50\n", "points is now worth."),
+        (
+            b"visibility: everyone",
+            b"visibility: public",
+            'This is now called "everyone". Choose that instead.',
+        ),
+        (
+            b"  - id: sum\n",
+            b"  - id: sum\n    points: 50\n",
+            "This is now called worth. Give the task's worth instead, and remove this.",
+        ),
     ],
     ids=["visibility", "points"],
 )
@@ -319,8 +327,16 @@ async def test_a_worth_or_a_due_on_a_task_that_gives_no_points_is_refused_at_its
     )
 
     assert refused == [
-        ("tasks[0].worth", "sum gives no points, so it has no worth: rank it on a value."),
-        ("tasks[0].due", "sum gives no points, so a due would change nothing; use closes."),
+        (
+            "tasks[0].worth",
+            "sum gives no points, so it cannot have a worth. Leave this empty, and rank it by a "
+            "value instead.",
+        ),
+        (
+            "tasks[0].due",
+            "sum gives no points, so a due time would change nothing. Give it a closing time "
+            "instead.",
+        ),
     ]
     assert await _write_contest(
         setup, acme, _running(SUM_ENTRY + "    closes: 2026-09-26T14:00:00Z\n")
@@ -355,7 +371,10 @@ async def test_a_release_that_has_passed_is_not_moved_later(
         setup, acme, _running(SUM_ENTRY).replace(b"T10:00:00Z", b"T11:00:00Z")
     )
 
-    said = "sum opened at 2026-09-26T10:00:00+00:00; it cannot be hidden again."
+    said = (
+        "sum was released at 2026-09-26T10:00:00+00:00, so entrants have seen it, and a later "
+        "release time would hide it again."
+    )
     assert refused == [("tasks[0].release_at", said)]
     assert started_later == [("start", said)]
 
@@ -374,8 +393,8 @@ async def test_a_due_is_not_moved_earlier_past_a_submission_it_would_make_late(
     assert refused == [
         (
             "tasks[0].due",
-            "sum's submission 1, made 2026-09-26T12:00:00+00:00 was on time; an earlier due "
-            "would make it late.",
+            "sum's submission 1, made at 2026-09-26T12:00:00+00:00, was on time, and an "
+            "earlier due time would make it late.",
         )
     ]
     assert earlier
@@ -393,8 +412,8 @@ async def test_a_close_is_not_moved_earlier_than_a_submission_already_made(
     assert refused == [
         (
             "tasks[0].closes",
-            "sum's submission 1, made 2026-09-26T12:00:00+00:00 would be after the task closed; "
-            "close it later.",
+            "sum's submission 1, made at 2026-09-26T12:00:00+00:00, would then be after the "
+            "task closed. Close it later.",
         )
     ]
 
@@ -413,8 +432,8 @@ async def test_a_close_is_not_moved_later_once_the_task_has_revealed(
     assert refused == [
         (
             "tasks[0].closes",
-            "sum's hidden results were shown at 2026-09-26T12:05:00+00:00; a later close would "
-            "let rows submit knowing them.",
+            "sum's hidden results were shown at 2026-09-26T12:05:00+00:00, so a later closing "
+            "time would let entrants submit knowing them.",
         )
     ]
 
@@ -433,15 +452,15 @@ async def test_an_end_moved_before_a_submission_or_later_after_the_reveal_is_ref
     assert before == [
         (
             "end",
-            "sum's submission 1, made 2026-09-26T12:00:00+00:00 would be after the task closed; "
-            "close it later.",
+            "sum's submission 1, made at 2026-09-26T12:00:00+00:00, would then be after the "
+            "task closed. Close it later.",
         )
     ]
     assert after == [
         (
             "end",
-            "sum's hidden results were shown at 2026-09-26T12:05:00+00:00; a later close would "
-            "let rows submit knowing them.",
+            "sum's hidden results were shown at 2026-09-26T12:05:00+00:00, so a later closing "
+            "time would let entrants submit knowing them.",
         )
     ]
 
@@ -466,10 +485,24 @@ async def test_an_entry_naming_no_task_of_the_contest_is_refused_at_its_id(
     added = await _refused(setup, acme, _running(SUM_ENTRY + "  - id: summ\n"))
     misspelled = await _refused(setup, acme, _running("  - id: summ\n"))
 
-    assert added == [("tasks[1].id", "summ is not a task of this contest.")]
+    assert added == [
+        (
+            "tasks[1].id",
+            "summ is not one of this contest's tasks. Remove it here, or make a task called "
+            "summ first.",
+        )
+    ]
     assert misspelled == [
-        ("tasks[0].id", "summ is not a task of this contest."),
-        ("tasks", "sum opened at 2026-09-26T10:00:00+00:00; it cannot be hidden again."),
+        (
+            "tasks[0].id",
+            "summ is not one of this contest's tasks. Remove it here, or make a task called "
+            "summ first.",
+        ),
+        (
+            "tasks",
+            "sum was released at 2026-09-26T10:00:00+00:00, so entrants have seen it, and it "
+            "cannot be taken out of the contest.",
+        ),
     ]
 
 
@@ -485,7 +518,7 @@ async def test_an_entry_is_dropped_only_from_a_task_that_neither_opened_nor_has_
     refused = await _refused(setup, acme, draft.replace(SUM_ENTRY.encode(), product))
     version = await _write_contest(setup, acme, draft)
 
-    assert refused == [("tasks", "sum has 1 submission; it cannot be hidden, so keep its entry.")]
+    assert refused == [("tasks", "sum has 1 submission, so it cannot be taken out of the contest.")]
     assert version
 
 

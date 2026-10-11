@@ -45,7 +45,9 @@ async def create(ctx: Context, session: Session, name: str, *, description: str)
     when the name is taken.
     """
     if not ctx.settings.org_creation_open:
-        raise Forbidden("Org creation is closed on this deployment; ask the operator.")
+        raise Forbidden(
+            "This Unicon does not let people make orgs. Ask whoever runs it to make one for you."
+        )
     org = await _reserve(ctx, name)
     await _make(ctx, org, description=description, admin=session.user_id)
     log.info("orgs.created", org=org, user_id=session.user_id)
@@ -62,7 +64,7 @@ async def create_by_operator(
     try:
         admin = await ctx.forge.identity.find_user_by_username(admin_username)
     except NotFound as exc:
-        raise NotFound(f"There is no user named {admin_username!r} at the forge.") from exc
+        raise NotFound(f"There is no user called {admin_username!r}.") from exc
     org = await _reserve(ctx, name)
     await _make(ctx, org, description=description, admin=admin.id)
     log.info("orgs.created", org=org, user_id=admin.id)
@@ -141,7 +143,10 @@ async def update(
     """
     if not holds(organiser.grants, Scope(org), Role.ADMIN):
         named = organiser.scope if organiser.scope == Scope(org) else Scope(org)
-        raise Forbidden(f"This needs the admin role at {named.name}.")
+        raise Forbidden(
+            f"This needs the admin role at {named.name}. Ask an admin of {named.name} if you "
+            "need it."
+        )
     await ctx.forge.orgs.update_org(org, description=description, display_name=display_name)
     log.info("orgs.updated", org=org, user_id=organiser.user.id)
 
@@ -154,7 +159,9 @@ async def read(ctx: Context, organiser: Organiser, org: OrgId) -> OrgProfile:
     """
     if not any(grant.scope.org == org for grant in organiser.grants):
         named = organiser.scope if organiser.scope == Scope(org) else Scope(org)
-        raise Forbidden(f"This needs a role in {named.name}.")
+        raise Forbidden(
+            f"This needs a role in {named.name}. Ask an admin of {named.name} if you need one."
+        )
     return await ctx.forge.orgs.read_org(org)
 
 
@@ -165,9 +172,11 @@ async def _reserve(ctx: Context, name: str) -> OrgId:
     """
     validate_org_name(name)
     if await names.org_id(ctx, name) is not None:
-        raise Conflict(f"The name {name!r} is taken.")
+        raise Conflict(f"The name {name!r} is taken. Choose another.")
     if await ctx.forge.orgs.name_taken(name):
-        raise Conflict(f"The name {name!r} is taken at the forge.")
+        raise Conflict(
+            f"The name {name!r} is already used by an account or an org. Choose another."
+        )
     return await names.reserve_org(ctx, name)
 
 

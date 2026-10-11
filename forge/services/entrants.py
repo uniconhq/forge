@@ -142,8 +142,8 @@ PEOPLE_LOCK = 0x50504C45
 """The first key of every lock on one person in one contest, the second being
 the contest and the user id hashed by Postgres."""
 NO_SUCH_ENTRANT = "There is no such entrant in this contest."
-NOT_IN_ONE = "You are in no entrant of this contest."
-ENDED = "Entrants stand as they are once the contest ends; ask the organisers."
+NOT_IN_ONE = "You have not entered this contest."
+ENDED = "Entrants cannot change once the contest has ended. Ask the organisers."
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,7 +300,7 @@ async def register(
     await _refuse_staff(ctx, user.id, contest)
     await _hold_people(ctx, contest, [user.id])
     if await membership(ctx, contest, user.id) is not None:
-        raise AlreadyRegistered("You are in an entrant of this contest already.")
+        raise AlreadyRegistered("You have already entered this contest.")
     qualified = registration.qualify(
         settings.registration, emails=emails, code=code, invited=invited
     )
@@ -337,17 +337,19 @@ async def invite(
     """
     settings, _ = await _own(ctx, session, contest)
     if settings.entrants.most == 1:
-        raise EntrantsAlone("Everyone enters this contest alone, so nobody is invited in.")
+        raise EntrantsAlone(
+            "Everyone enters this contest alone, so there is no team to invite anyone into."
+        )
     target = await invites.target(ctx, username, email)
     row = await _held_own(ctx, contest, session.user_id)
     registration.refuse_undecidable(Status(row.status), registration.REGISTERED, "joined")
     rules.refuse_locked(settings, ctx.now, submitted=await submitted(ctx, row))
     if target.user is not None:
         if target.user.id in await member_ids(ctx, row.id):
-            raise InEntrant(f"{target.user.username} is in this entrant already.")
+            raise InEntrant(f"{target.user.username} is in this team already.")
         if await roles.holds_role_in_contest(ctx, target.user.id, contest):
             raise IsStaff(
-                f"{target.user.username} holds a role at this contest, so cannot enter it."
+                f"{target.user.username} has a role at this contest, so they cannot enter it."
             )
     await invites.refuse_twice(ctx, contest_scope(contest), Grant.MEMBER, target, row.id)
     rules.refuse_full(
@@ -492,7 +494,10 @@ async def reopen(
     await roles.one_change_at_a_time(ctx, contest_scope(contest).org)
     for user_id in await member_ids(ctx, entrant):
         if await roles.holds_role_in_contest(ctx, user_id, contest):
-            raise IsStaff("A member of this entrant holds a role at this contest now.")
+            raise IsStaff(
+                "A member of this entrant now has a role at this contest, so the entrant cannot "
+                "be reopened."
+            )
     await _hold_places(ctx, contest)
     settings, row = await _decided(ctx, organiser, contest, entrant, (Status.REJECTED,), "reopened")
     await _refuse_full(ctx, contest, settings)
@@ -623,8 +628,8 @@ async def move_member(
     others = [other for other in await member_ids(ctx, source.id) if other != user_id]
     if not others and await submitted(ctx, source):
         raise EntrantHasSubmissions(
-            "That person is the last member of an entrant that has submitted, so its results "
-            "would have nobody; move someone else in first."
+            "That person is the last member of an entrant that has submitted, and its results "
+            "need someone in it. Move someone else in first."
         )
     rules.refuse_full(len(await member_ids(ctx, target.id)), settings.entrants.most)
     await _take_out(ctx, source, member)
@@ -651,7 +656,9 @@ async def delete(
     await _hold_people(ctx, contest, await member_ids(ctx, entrant))
     (row,) = await _hold_entrants(ctx, contest, [entrant])
     if await submitted(ctx, row):
-        raise EntrantHasSubmissions("This entrant has submitted, so it stays with its results.")
+        raise EntrantHasSubmissions(
+            "This entrant has submitted, so it cannot be deleted: it is kept with its results."
+        )
     current = await member_ids(ctx, row.id)
     if current:
         await _close(ctx, workspace_of(ctx, row), current)
@@ -682,7 +689,7 @@ async def take_place(
     await _hold_people(ctx, contest, [user.id])
     current = await membership(ctx, contest, user.id)
     if current is not None and current.entrant_id == invite.entrant_id:
-        raise InEntrant("You are in this entrant already.")
+        raise InEntrant("You are in this team already.")
     wanted = [invite.entrant_id, *([current.entrant_id] if current is not None else [])]
     held = {row.id: row for row in await _hold_entrants(ctx, contest, wanted)}
     target = held[invite.entrant_id]
@@ -735,7 +742,9 @@ def _by_invite_way(settings: ContestDefinition) -> Qualified:
     """
     index = settings.registration.invite_way
     if index is None:
-        raise InviteRequired("This contest no longer takes people by invite.")
+        raise InviteRequired(
+            "This contest no longer takes people by invite. Ask the organisers how to enter."
+        )
     way = settings.registration.ways[index]
     return Qualified(index, WayKind.INVITE, None, way.approval, {"invited": True})
 
@@ -750,7 +759,9 @@ async def _refuse_moving(ctx: Context, settings: ContestDefinition, source: Entr
         or await submitted(ctx, source)
         or rules.locked(settings, ctx.now, submitted=False)
     ):
-        raise InEntrant("You are in another entrant of this contest that you can no longer leave.")
+        raise InEntrant(
+            "You are already in another team in this contest, and can no longer leave it."
+        )
 
 
 # Reading, for the services that work in an entrant's workspace.
@@ -782,7 +793,7 @@ async def panel(
         try:
             _refuse_window(settings, ctx.now)
             if person.organises:
-                raise IsStaff("Organisers of a contest cannot also enter it.")
+                raise IsStaff("You have a role at this contest, so you cannot also enter it.")
             if not asks:
                 registration.qualify(rules_now, emails=emails, code=None, invited=invited)
             await _refuse_full(ctx, contest, settings)
@@ -1035,7 +1046,7 @@ async def _held_own(ctx: Context, contest: ContestId, user_id: int) -> EntrantRo
         raise NotFound(NOT_IN_ONE)
     (row,) = await _hold_entrants(ctx, contest, [member.entrant_id])
     if user_id not in await member_ids(ctx, row.id):
-        raise EntrantChanged("Your entrant changed meanwhile; try again.")
+        raise EntrantChanged("Your team changed in the meantime. Try again.")
     return row
 
 
@@ -1067,13 +1078,13 @@ def _refuse_window(settings: ContestDefinition, now: datetime) -> None:
     running or to come.
     """
     if settings.state is State.ARCHIVED or now >= settings.end:
-        raise RegistrationClosed("The contest has ended.")
+        raise RegistrationClosed("The contest has ended, so registration is closed.")
     registration.refuse_closed(settings.registration, now)
 
 
 async def _refuse_staff(ctx: Context, user_id: int, contest: ContestId) -> None:
     if await roles.holds_role_in_contest(ctx, user_id, contest):
-        raise IsStaff("Organisers of a contest cannot also enter it.")
+        raise IsStaff("You have a role at this contest, so you cannot also enter it.")
 
 
 async def _emails(ctx: Context, user_id: int, settings: ContestDefinition) -> tuple[str, ...]:
@@ -1176,10 +1187,12 @@ def _new_name(settings: ContestDefinition, name: str | None) -> str | None:
     """
     if settings.entrants.most == 1:
         if name is not None:
-            raise EntrantsAlone("Everyone enters this contest alone, so an entrant has no name.")
+            raise EntrantsAlone(
+                "Everyone enters this contest alone, so there is no team name to give."
+            )
         return None
     if name is None:
-        raise EntrantNameRequired("Give the entrant a name.")
+        raise EntrantNameRequired("Give the team a name.")
     return rules.checked_name(name)
 
 
@@ -1246,7 +1259,9 @@ async def _refuse_taken(
     if other_than is not None:
         query = query.where(EntrantRow.id != other_than)
     if await ctx.db.scalar(query.limit(1)) is not None:
-        raise EntrantNameTaken(f"This contest has an entrant named {name} already.")
+        raise EntrantNameTaken(
+            f"There is already a team called {name} in this contest. Choose another name."
+        )
 
 
 async def _flush_once(ctx: Context) -> None:
@@ -1259,9 +1274,11 @@ async def _flush_once(ctx: Context) -> None:
             await ctx.db.flush()
     except IntegrityError as exc:
         if "ix_entrants_contest_id_name" in str(exc.orig):
-            raise EntrantNameTaken("This contest has an entrant of that name already.") from exc
+            raise EntrantNameTaken(
+                "There is already a team with that name in this contest. Choose another name."
+            ) from exc
         if "ix_entrant_members_one_entrant" in str(exc.orig):
-            raise InEntrant("That person is in an entrant of this contest already.") from exc
+            raise InEntrant("That person has already entered this contest.") from exc
         raise
 
 

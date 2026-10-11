@@ -28,13 +28,13 @@ from forge.runtime.context import Context
 log = get_logger(__name__)
 
 SAID: dict[type[PortError], str] = {
-    Misconfigured: "The forge refused the platform's own registration.",
-    Conflict: "The forge already holds something by that name; try again.",
-    NotFound: "The forge did not find something this needs; try again.",
-    Forbidden: "The forge refused this; try again, or tell the operator.",
-    Rejected: "The forge refused this; try again, or tell the operator.",
+    Misconfigured: "Unicon is not set up right, so this cannot be done. Tell whoever runs it.",
+    Conflict: "Something by that name already exists. Try again.",
+    NotFound: "Something this needs could not be found. Try again.",
+    Forbidden: "This was refused. Try again, or tell whoever runs Unicon.",
+    Rejected: "This was refused. Try again, or tell whoever runs Unicon.",
 }
-NO_ANSWER = "The forge or the CI did not answer; try again in a moment."
+NO_ANSWER = "A server Unicon relies on did not answer. Try again in a moment."
 
 
 def failure(exc: PortError, event: str, **fields: str) -> PortError:

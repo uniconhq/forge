@@ -92,7 +92,7 @@ async def test_a_username_that_cannot_name_a_workflow_is_refused(setup: Setup, a
     acme.fake.add_user(30, "ken.l")
     ken = await signed_in(setup, acme.fake, 30)
 
-    with pytest.raises(InvalidName, match="cannot name a workflow"):
+    with pytest.raises(InvalidName, match="cannot be used to name a workflow"):
         await workflows.create(setup, ken, "ken.l", "tuned")
     assert acme.fake.calls_to("create_workflow") == []
 
@@ -150,7 +150,9 @@ async def test_an_org_without_a_role_one_not_there_and_another_person_are_refuse
     with pytest.raises(Forbidden) as refused:
         await workflows.create(setup, bob, owner, "tuned")
 
-    assert refused.value.detail == f"This needs the manager role at {owner}."
+    assert refused.value.detail == (
+        f"This needs the manager role at {owner}. Ask an admin of {owner} if you need it."
+    )
     assert acme.fake.calls_to("create_workflow") == []
 
 
@@ -167,7 +169,7 @@ async def test_a_name_the_owner_has_already_is_a_conflict(setup: Setup, acme: Ac
     ada = await signed_in(setup, acme.fake, 7)
     await workflows.create(setup, ada, "acme", "tuned")
 
-    with pytest.raises(Conflict, match="There is a workflow acme/tuned already"):
+    with pytest.raises(Conflict, match="There is already a workflow called acme/tuned"):
         await workflows.create(setup, ada, "acme", "tuned")
 
 

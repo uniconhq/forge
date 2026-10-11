@@ -40,7 +40,9 @@ MARKS_LOCK = 0x4D41524B
 """The first key of every lock on a row's marks on a task, the second being
 the workspace and task hashed by Postgres."""
 NO_SUCH_SUBMISSION = "There is no such submission."
-NOT_MARKED = "The task takes no marks: no board with select: marked covers it."
+NOT_MARKED = (
+    "This task does not take marks: no leaderboard that counts marked submissions covers it."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,8 +87,8 @@ async def mark(ctx: Context, session: Session, task: TaskId, number: int) -> Mar
     if number not in marked:
         if len(marked) >= most:
             raise MarkLimit(
-                f"Your row holds {most} {'mark' if most == 1 else 'marks'} on this task, "
-                "the most it may; unmark one first.",
+                f"You have marked {most} {'submission' if most == 1 else 'submissions'} on this "
+                "task, the most you can. Unmark one first.",
                 limit=most,
             )
         ctx.db.add(
@@ -173,7 +175,7 @@ async def _place(ctx: Context, person: Person) -> tuple[WorkspaceId, int, dateti
     """
     row = person.entrant
     if row is None or row.status != Status.APPROVED or person.workspace is None:
-        raise NotApproved("Only an approved entrant marks submissions.")
+        raise NotApproved("Only approved entrants can mark submissions.")
     settings: ContestDefinition = person.settings
     entry = settings.entry(person.published.name)
     most = settings.marks_of(entry) if entry is not None else None
@@ -199,7 +201,7 @@ async def _change(
     contest's rules are held already (`_hold_rules`).
     """
     if ctx.now >= closes_at:
-        raise MarksFrozen("Your close on this task has passed, so your marks are frozen.")
+        raise MarksFrozen("This task has closed for you, so your marks can no longer change.")
     await ctx.db.execute(
         text("SELECT pg_advisory_xact_lock(:space, hashtext(:target))"),
         {"space": MARKS_LOCK, "target": f"{workspace}|{person.task}"},

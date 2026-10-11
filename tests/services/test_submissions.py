@@ -683,7 +683,8 @@ async def test_a_folder_input_takes_a_tree_of_files_within_its_size_together(
     assert refused.value.extra["errors"] == [
         {
             "input": "submission",
-            "message": "The files of this input total more than the 1024 bytes allowed.",
+            "message": "The files of this input come to more than the 1024 bytes allowed. "
+            "Make them smaller.",
         }
     ]
     with pytest.raises(InvalidInputs) as empty:
@@ -761,7 +762,10 @@ async def test_a_per_test_input_takes_one_file_named_for_each_test(
             idempotency_key="key-0002-bbbb",
         )
     assert twice.value.extra["errors"] == [
-        {"input": "answers", "message": "Two files answer the same test."}
+        {
+            "input": "answers",
+            "message": "Two files are for the same test. Give one file for each test.",
+        }
     ]
     one = await submissions.submit(
         setup,

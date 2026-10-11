@@ -95,7 +95,9 @@ async def make(
         log.info("places.taken_back", task=task, entrant=str(entrant))
         return False
     if for_user is not None and for_user not in current:
-        raise EntrantChanged("Your entrant changed while your place to submit was made; try again.")
+        raise EntrantChanged(
+            "Your team changed while your place to submit was being set up. Try again."
+        )
     return status == Status.APPROVED
 
 

@@ -172,9 +172,9 @@ async def create(
     """
     _require_to_grant(organiser, scope, grants)
     if grants is Grant.MEMBER:
-        raise InvalidInvite("A member's invite is made by a member of the entrant.")
+        raise InvalidInvite("Only a member of a team can invite someone into it.")
     if entrant is not None and grants is not Grant.CONTESTANT:
-        raise InvalidInvite("Only a place in a contest is offered in an entrant.")
+        raise InvalidInvite("An invite into a team can only offer a place in the contest.")
     rules.checked_target(username, email)
     standing = rules.checked_lifetime(lifetime)
     await roles.one_change_at_a_time(ctx, scope.org)
@@ -279,12 +279,13 @@ async def send_again(ctx: Context, organiser: Organiser, scope: Scope, invite: u
         rules.refuse_closed(InviteStatus(row.status), row.expires_at, ctx.now, "sent again")
     if not ctx.forge.mail.configured:
         raise InvalidInvite(
-            "This deployment sends no mail; the person finds the invite in Unicon once signed in."
+            "This Unicon sends no email. The person will find the invite in Unicon once they "
+            "sign in."
         )
     if row.mailed_at is not None and ctx.now < row.mailed_at + SEND_AGAIN_AFTER:
         retry_at = row.mailed_at + SEND_AGAIN_AFTER
         raise InviteLimit(
-            f"This invite was mailed minutes ago; send it again after {retry_at:%H:%M} UTC.",
+            f"This invite was emailed a few minutes ago. Send it again after {retry_at:%H:%M} UTC.",
             retry_at=retry_at.isoformat(),
         )
     token = rules.new_token()
@@ -352,7 +353,7 @@ async def by_token(ctx: Context, session: Session, token: str) -> Invite:
         raise NotFound(NO_SUCH_INVITE)
     if row.user_id is None and row.status == InviteStatus.PENDING:
         if not await _attach(ctx, session.user_id):
-            raise Unavailable("The forge did not answer; try the link again in a moment.")
+            raise Unavailable("The server did not answer. Try the link again in a moment.")
         await ctx.db.refresh(row)
     if row.user_id != session.user_id:
         raise NotFound(NO_SUCH_INVITE)
@@ -441,9 +442,9 @@ def _require_to_grant(organiser: Organiser, scope: Scope, grants: Grant) -> None
     """
     require(organiser, scope, Role.MANAGER)
     if grants is Grant.ADMIN and not holds(organiser.grants, scope, Role.ADMIN):
-        raise Forbidden(f"Only an admin of {scope.name} may invite an admin there.")
+        raise Forbidden(f"Only an admin of {scope.name} can invite another admin there.")
     if grants.role is None and scope.kind is not ScopeKind.CONTEST:
-        raise InvalidInvite("A place in a contest is offered at a contest.")
+        raise InvalidInvite("An invite to enter a contest is made from that contest.")
 
 
 async def _refuse_no_invite_way(ctx: Context, contest: ContestId) -> None:
@@ -451,8 +452,8 @@ async def _refuse_no_invite_way(ctx: Context, contest: ContestId) -> None:
     settings = await published.contest(ctx, contest)
     if settings.registration.invite_way is None:
         raise NoInviteWay(
-            "Add the invite way first: this contest's registration.ways has none, so "
-            "nobody invited could come in."
+            "This contest has no way in by invite, so nobody invited could enter it. Add a way "
+            "in by invite first."
         )
 
 
@@ -467,7 +468,7 @@ async def _refuse_held(
     role = grants.role
     if role is not None:
         if holds(await ctx.forge.orgs.roles_of_user(user.id), scope, role):
-            raise InvalidInvite(f"{user.username} holds that role at {scope.name} already.")
+            raise InvalidInvite(f"{user.username} already has that role at {scope.name}.")
         try:
             await roles.refuse_if_contestant(ctx, user, scope)
         except ContestantConflict as exc:
@@ -476,11 +477,11 @@ async def _refuse_held(
     contest = contest_id_of(scope)
     found = await entrants.of_person(ctx, contest, user.id)
     if found is not None and entrant is not None and found.id == entrant:
-        raise InvalidInvite(f"{user.username} is in that entrant already.")
+        raise InvalidInvite(f"{user.username} is in that team already.")
     if found is not None and entrant is None and Status(found.status) in REGISTERED:
-        raise InvalidInvite(f"{user.username} is in an entrant of this contest already.")
+        raise InvalidInvite(f"{user.username} has already entered this contest.")
     if await roles.holds_role_in_contest(ctx, user.id, contest):
-        raise InvalidInvite(f"{user.username} holds a role at this contest, so cannot enter it.")
+        raise InvalidInvite(f"{user.username} has a role at this contest, so they cannot enter it.")
 
 
 async def _refuse_full_entrant(ctx: Context, contest: ContestId, entrant: uuid.UUID) -> None:
@@ -537,7 +538,7 @@ async def refuse_twice(
     )
     if found is not None:
         raise AlreadyInvited(
-            "That person holds this invite already; send it again instead.", invite=str(found)
+            "That person already has this invite. Send it again instead.", invite=str(found)
         )
 
 
@@ -557,7 +558,8 @@ async def _refuse_too_many(ctx: Context, org: str) -> None:
     if (made or 0) >= ORG_DAILY_MAX:
         retry_at = ctx.now + timedelta(hours=1)
         raise InviteLimit(
-            f"This org has made {ORG_DAILY_MAX} invites in the last day; make more later.",
+            f"This org has made {ORG_DAILY_MAX} invites in the last day, the most it can. Make "
+            "more later.",
             retry_at=retry_at.isoformat(),
         )
 
