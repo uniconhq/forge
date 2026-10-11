@@ -1117,6 +1117,13 @@ async def test_the_task_form_reads_the_inputs_and_test_fields_its_workflow_decla
         ("memory_limit", "number", False),
     ]
     assert form.inputs[1].options == ("c", "cpp", "java", "python")
+    assert [(field.title, field.unit) for field in form.inputs] == [
+        ("Solution", None),
+        ("Language", None),
+        ("Time limit", "seconds"),
+        ("Memory limit", "MB"),
+    ]
+    assert form.inputs[3].help == "The memory the program may use on each test."
     assert [(field.name, field.type) for field in form.test] == [
         ("input", "file"),
         ("answer", "file"),

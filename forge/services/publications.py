@@ -874,9 +874,10 @@ async def _number_of(ctx: Context, task: TaskId, publication: PublicationId) -> 
 class DeclaredInput:
     """One input a workflow declares, as the task form shows it: its id, its
     type, whether the contestant gives it, its options on an enum, whether
-    it is given once per test, and whether a task may leave it out. A
-    workflow gives no defaults: a contestant input's `default` is the
-    task's, in `task.yaml`.
+    it is given once per test, whether a task may leave it out, and the
+    title, line of help and unit the workflow gives the organiser for it,
+    each none when it gives none. A workflow gives no defaults: a
+    contestant input's `default` is the task's, in `task.yaml`.
     """
 
     id: str
@@ -885,6 +886,9 @@ class DeclaredInput:
     options: tuple[str, ...] | None
     per_test: bool
     optional: bool
+    title: str | None = None
+    help: str | None = None
+    unit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -967,6 +971,9 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
                 options=declared.options,
                 per_test=declared.per_test,
                 optional=declared.optional,
+                title=declared.title,
+                help=declared.help,
+                unit=declared.unit,
             )
             for name, declared in workflow.inputs.items()
         ),

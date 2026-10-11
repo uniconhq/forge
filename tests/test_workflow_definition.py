@@ -139,6 +139,22 @@ def test_the_classic_workflow_parses() -> None:
     assert check_workflow(workflow, SEEDED) == []
 
 
+def test_an_input_names_itself_to_the_organisers_form_and_no_plan_reads_it() -> None:
+    workflow = parse_workflow(CLASSIC)
+    time_limit = workflow.inputs["time_limit"]
+    document = classic()
+    for declared in document["inputs"].values():
+        for key in ("title", "help", "unit"):
+            declared.pop(key, None)
+    plain = parse_workflow(one_line(document))
+
+    assert (time_limit.title, time_limit.unit) == ("Time limit", "seconds")
+    assert time_limit.help == "The CPU time the program may use on each test."
+    assert workflow.inputs["submission"].unit is None
+    assert check_workflow(plain, SEEDED) == check_workflow(workflow, SEEDED) == []
+    assert plain.steps == workflow.steps and plain.report == workflow.report
+
+
 def test_the_seeded_classic_workflow_is_the_one_tested_here() -> None:
     seeded = sibling("deploy", "workflows", "classic", "v2", "workflow.yaml")
     assert parse_workflow(seeded.read_bytes()) == parse_workflow(CLASSIC)
@@ -152,7 +168,7 @@ def test_a_new_workflow_starts_as_classic() -> None:
 
 def test_a_declaration_may_be_just_its_types_name() -> None:
     document = classic()
-    document["inputs"]["time_limit"] = {"type": "number"}
+    document["test"]["input"] = {"type": "file"}
 
     assert parse_workflow(one_line(document)) == parse_workflow(CLASSIC)
 
@@ -237,6 +253,9 @@ def test_foreach_is_refused_naming_per_test() -> None:
             "inputs.x.optional",
         ),
         ({"inputs": {"x": {"type": "text", "label": "X"}}}, "inputs.x.label"),
+        ({"inputs": {"x": {"type": "number", "title": ""}}}, "inputs.x.title"),
+        ({"inputs": {"x": {"type": "number", "help": "Two\nlines."}}}, "inputs.x.help"),
+        ({"inputs": {"x": {"type": "number", "unit": 3}}}, "inputs.x.unit"),
         ({"test": {"input": {"type": "number", "public": True}}}, "test.input.public"),
         ({"report": {"Time": "${{ steps.run.time_ms }}"}}, "report.Time"),
         ({"report": {"x": 3}}, "report.x"),

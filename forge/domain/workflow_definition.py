@@ -29,6 +29,7 @@ from forge.domain.names import validate_name
 from forge.domain.types import VALUE_TYPES, Type, declared, retired_type, retired_type_message
 from forge.domain.yaml_models import (
     ANY,
+    Line,
     Model,
     Number,
     Problems,
@@ -177,7 +178,9 @@ def _handle(value: object) -> str:
 class WorkflowInput(Model):
     """One input: its type; `contestant` when the submission fills it;
     `options` on an enum; `per_test` on a contestant file given once per
-    test; `optional` on an input a task may leave out.
+    test; `optional` on an input a task may leave out; and, for the task's
+    form only, `title`, `help` and `unit`, which name it to the organiser
+    ("Time limit", "seconds") and change no plan.
     """
 
     type: ValueType
@@ -185,6 +188,9 @@ class WorkflowInput(Model):
     options: Options | None = None
     per_test: Flag = False
     optional: Flag = False
+    title: Line | None = None
+    help: Line | None = None
+    unit: Line | None = None
 
     @model_validator(mode="after")
     def _check(self) -> WorkflowInput:
@@ -480,10 +486,27 @@ def starter_workflow(owner: str, name: str) -> dict[str, bytes]:
 # limits, and compare each run's output with that test's answer. The
 # format is TASK-FORMAT.md section 1.3.
 inputs:
-  submission: {{type: file, contestant: true}}
-  language: {{type: enum, options: [c, cpp, java, python], contestant: true}}
-  time_limit: number
-  memory_limit: number
+  submission:
+    type: file
+    contestant: true
+    title: Solution
+    help: The source file the contestant submits.
+  language:
+    type: enum
+    options: [c, cpp, java, python]
+    contestant: true
+    title: Language
+    help: The languages a contestant may write their solution in.
+  time_limit:
+    type: number
+    title: Time limit
+    unit: seconds
+    help: The CPU time the program may use on each test.
+  memory_limit:
+    type: number
+    title: Memory limit
+    unit: MB
+    help: The memory the program may use on each test.
 
 test:
   input: file

@@ -97,10 +97,27 @@ CLASSIC = b"""\
 # unicon/classic.workflow at the forge, at the tag v2. The format is
 # TASK-FORMAT.md section 1.3.
 inputs:
-  submission: {type: file, contestant: true}
-  language: {type: enum, options: [c, cpp, java, python], contestant: true}
-  time_limit: number
-  memory_limit: number
+  submission:
+    type: file
+    contestant: true
+    title: Solution
+    help: The source file the contestant submits.
+  language:
+    type: enum
+    options: [c, cpp, java, python]
+    contestant: true
+    title: Language
+    help: The languages a contestant may write their solution in.
+  time_limit:
+    type: number
+    title: Time limit
+    unit: seconds
+    help: The CPU time the program may use on each test.
+  memory_limit:
+    type: number
+    title: Memory limit
+    unit: MB
+    help: The memory the program may use on each test.
 test:
   input: file
   answer: file
