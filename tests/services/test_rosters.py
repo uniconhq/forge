@@ -44,6 +44,7 @@ from forge.domain.errors import (
     RegistrationClosed,
     RosterLocked,
     TaskClosed,
+    Unavailable,
     WrongStatus,
 )
 from forge.domain.ids import ContestId, TaskId
@@ -896,3 +897,55 @@ async def test_an_entrant_is_approved_on_its_own_once_the_member_holding_it_back
 
     removed = await entrants.remove_member(setup, manager, SPRING, adders.id, 20)
     assert removed is not None and removed.status is Status.APPROVED
+
+
+async def test_a_move_the_forge_fails_halfway_leaves_access_as_the_membership_stands(
+    setup: Setup,
+    acme: Acme,
+    sum_task: TaskId,
+    crowd: dict[str, Session],
+    clock: FakeClock,
+    manager: Organiser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bob, carol, dan = crowd["bob"], crowd["carol"], crowd["dan"]
+    adders = await entrants.register(setup, bob, SPRING, name="Adders")
+    await _join(setup, bob, carol, "carol")
+    takers = await entrants.register(setup, dan, SPRING, name="Takers")
+    clock.set(START + timedelta(minutes=30))
+    await upload(setup, acme.fake, carol, sum_task, b"print(1)\n")
+    await upload(setup, acme.fake, dan, sum_task, b"print(2)\n")
+    workspaces = acme.fake.workspaces
+    sharing = workspaces.share_workspace
+
+    async def down_for_takers(workspace: Any, member_ids: Any) -> None:
+        if str(takers.id.hex) in workspace:
+            raise Unavailable("the forge did not answer")
+        await sharing(workspace, member_ids)
+
+    monkeypatch.setattr(workspaces, "share_workspace", down_for_takers)
+
+    with pytest.raises(Unavailable):
+        await entrants.move_member(setup, manager, SPRING, adders.id, 20, takers.id)
+
+    assert _repo(acme.fake, adders.id, sum_task).writers == {8, 20}
+    assert _repo(acme.fake, takers.id, sum_task).writers == {21}
+    stayed = await _mine(setup, carol)
+    assert stayed is not None and stayed.id == adders.id
+
+    # The other way round: the source's access fails to go.
+    monkeypatch.setattr(workspaces, "share_workspace", sharing)
+    closing = workspaces.close_workspace
+
+    async def down_for_adders(workspace: Any, member_ids: Any) -> None:
+        if str(adders.id.hex) in workspace:
+            raise Unavailable("the forge did not answer")
+        await closing(workspace, member_ids)
+
+    monkeypatch.setattr(workspaces, "close_workspace", down_for_adders)
+
+    with pytest.raises(Unavailable):
+        await entrants.move_member(setup, manager, SPRING, adders.id, 20, takers.id)
+
+    assert _repo(acme.fake, adders.id, sum_task).writers == {8, 20}
+    assert _repo(acme.fake, takers.id, sum_task).writers == {21}

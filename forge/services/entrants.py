@@ -63,11 +63,13 @@ Who may reach an entrant's workspace changes in the request that changes
 the membership, before the membership is written: someone who joins is given
 access to every part already made, and someone who leaves, is taken out or
 is moved loses it. A call to the forge that fails fails the request, and
-asking again finishes it, since giving or taking access twice changes
-nothing. A part made later is made with whoever is a member then (`settle`),
-so a place to submit is finished only once every member can write it. An
-entrant left with nobody and no submissions is deleted, its member rows kept
-`left`.
+whatever access it gave or took before then is put back to the members as
+they stand (`_shared_again`), so a move whose second call fails leaves the
+person reaching the entrant they are still in; asking again finishes it,
+since giving or taking access twice changes nothing. A part made later is
+made with whoever is a member then (`settle`), so a place to submit is
+finished only once every member can write it. An entrant left with nobody
+and no submissions is deleted, its member rows kept `left`.
 
 An entrant is approved straight away once it is complete and every member
 came in by a way that approves straight away, checked whenever someone
@@ -140,7 +142,7 @@ from forge.domain.roles import Role, contest_id_of, contest_scope
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.actions import action
-from forge.runtime.context import Context
+from forge.runtime.context import AfterRollback, Context
 from forge.services import invites, places, published, release, roles, timelines
 from forge.services.access import Organiser, require
 
@@ -1421,7 +1423,9 @@ async def _join(
     """
     current = await member_ids(ctx, row.id)
     rules.refuse_full(len(current), settings.entrants.most)
-    await ctx.forge.workspaces.share_workspace(workspace_of(ctx, row), [*current, user_id])
+    workspace = workspace_of(ctx, row)
+    await ctx.forge.workspaces.share_workspace(workspace, [*current, user_id])
+    ctx.after_rollback(_shared_again(ctx, workspace, current))
     _add_member(ctx, row, user_id, qualified)
     await _flush_once(ctx)
     await _after_join(ctx, row, settings, qualified.approval)
@@ -1485,7 +1489,10 @@ async def _take_out(
     submissions deleted; a pending one that the rest now approve on their
     own is approved. Whether the entrant is still there.
     """
-    await _close(ctx, workspace_of(ctx, row), [member.user_id])
+    workspace = workspace_of(ctx, row)
+    members = await member_ids(ctx, row.id)
+    await _close(ctx, workspace, [member.user_id])
+    ctx.after_rollback(_shared_again(ctx, workspace, members))
     member.status = MemberStatus.LEFT
     member.left_at = ctx.now
     await ctx.db.flush()
@@ -1515,6 +1522,20 @@ async def _end(ctx: Context, row: EntrantRow) -> None:
     )
     await ctx.db.delete(row)
     await ctx.db.flush()
+
+
+def _shared_again(ctx: Context, workspace: WorkspaceId, user_ids: Sequence[int]) -> AfterRollback:
+    """Work that puts the workspace back to exactly `user_ids`, the members
+    it had before this change, for a change that gave or took access at the
+    forge and then failed, so access follows the membership that stands.
+    """
+    members = builtins.list(user_ids)
+
+    async def share_again() -> None:
+        await ctx.forge.workspaces.share_workspace(workspace, members)
+        log.info("entrants.access_restored", workspace=workspace, user_ids=members)
+
+    return share_again
 
 
 async def _close(ctx: Context, workspace: WorkspaceId, user_ids: Sequence[int]) -> None:
