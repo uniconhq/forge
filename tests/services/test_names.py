@@ -54,9 +54,9 @@ async def test_an_org_a_contest_and_a_task_are_filed_under_keys_and_named_by_lab
     assert task.org in fake.state.orgs
     assert (task.org, f"{task.contest}.{task.task}.task") in fake.state.repos
     ada = await organiser(setup, fake, 7, contest, Role.OBSERVER)
-    assert await contests.list(setup, ada, OrgId(task.org)) == (
-        Named(contest_id_of(contest), "spring"),
-    )
+    assert [
+        Named(each.id, each.name) for each in await contests.list(setup, ada, OrgId(task.org))
+    ] == [Named(contest_id_of(contest), "spring")]
     assert await tasks.list(setup, ada, contest_id_of(contest)) == (Named(task_id_of(task), "sum"),)
     listed = fake.state.repos[(task.org, f"{task.contest}.contest")].files["contest.yaml"]
     assert b"id: sum" in listed

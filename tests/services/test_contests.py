@@ -4,7 +4,8 @@ titled by its name when no title is given, and its roles and protection. A
 failure at either step fails the request, removes the contest if the first
 step made it, and leaves the name free for the next try, and so does a
 commit that fails after both; a removal that fails is logged and the step's
-own error is raised; the list is read as the organiser.
+own error is raised; the list is read as the organiser, each contest with
+its state and dates, none of them for one whose settings do not read.
 """
 
 import logging
@@ -14,7 +15,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.domain.definitions import parse_contest
+from forge.domain.definitions import State, parse_contest
 from forge.domain.errors import Conflict, Forbidden, InvalidName, Rejected, Unavailable
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId
@@ -24,7 +25,15 @@ from forge.domain.roles import Role, Scope
 from forge.runtime.setup import Setup
 from forge.services import contests, making, names
 from forge.testing import logged
-from tests.services.conftest import ACME, SPRING, Acme, forge_state, organiser
+from tests.services.conftest import (
+    ACME,
+    RUNNING,
+    SPRING,
+    Acme,
+    forge_state,
+    organiser,
+    write_contest,
+)
 
 
 async def test_a_manager_makes_the_contest_with_a_valid_starter(setup: Setup, acme: Acme) -> None:
@@ -151,7 +160,7 @@ async def test_a_failure_fails_the_request_and_the_next_try_makes_the_contest(
 
     assert made.name == "spring"
     assert made.id != SPRING
-    assert await contests.list(setup, acme.ada, ACME) == (made,)
+    assert [each.id for each in await contests.list(setup, acme.ada, ACME)] == [made.id]
 
 
 @pytest.mark.parametrize("operation", ["create_contest", "secure"])
@@ -246,6 +255,46 @@ async def test_the_contests_of_an_org_are_listed_as_the_organiser(
 
     listed = await contests.list(setup, acme.ada, ACME)
 
-    assert listed == (Named("acme/autumn", "autumn"), Named(SPRING, "spring"))
+    assert [(each.id, each.name) for each in listed] == [
+        ("acme/autumn", "autumn"),
+        (SPRING, "spring"),
+    ]
     (call,) = acme.fake.calls_to("list_contests")
     assert call.identity == acme.ada.identity
+    assert {call.identity for call in acme.fake.calls_to("read_file")} == {acme.ada.identity}
+
+
+async def test_each_listed_contest_carries_its_state_and_dates_as_its_settings_say(
+    setup: Setup, acme: Acme, spring: ContestId
+) -> None:
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
+    await contests.create(setup, acme.ada, ACME, "autumn")
+
+    listed = await contests.list(setup, acme.ada, ACME)
+
+    assert listed == (
+        contests.Listed(
+            "acme/autumn",
+            "autumn",
+            State.DRAFT,
+            datetime(2026, 10, 3, 12, 0, tzinfo=UTC),
+            datetime(2026, 10, 3, 17, 0, tzinfo=UTC),
+        ),
+        contests.Listed(
+            SPRING,
+            "spring",
+            State.PUBLISHED,
+            datetime(2026, 9, 26, 10, 0, tzinfo=UTC),
+            datetime(2026, 9, 26, 15, 0, tzinfo=UTC),
+        ),
+    )
+
+
+async def test_a_contest_whose_settings_do_not_read_is_listed_without_state_or_dates(
+    setup: Setup, acme: Acme, spring: ContestId
+) -> None:
+    await write_contest(acme.fake, "name: Spring\nstart: not a time\n")
+
+    (listed,) = await contests.list(setup, acme.ada, ACME)
+
+    assert listed == contests.Listed(SPRING, "spring", None, None, None)
