@@ -57,7 +57,6 @@ from forge.domain.definitions import (
     parse_contest,
     parse_task,
     starter_task,
-    statement_written,
     title_of,
 )
 from forge.domain.errors import Conflict, Forbidden, NotFound, PortError
@@ -71,7 +70,7 @@ from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import making, names, org_accounts, publications, taking_out
+from forge.services import making, names, org_accounts, publications, published, taking_out
 from forge.services.access import Organiser, require
 from forge.services.taking_out import TakeOut
 
@@ -243,33 +242,19 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
     """
     require(organiser, task_scope(task), Role.OBSERVER)
     head = await ctx.forge.content.list_files(organiser.identity, task)
-    published = await ctx.forge.workspaces.list_publications(task)
-    latest = published[-1] if published else None
+    made = await ctx.forge.workspaces.list_publications(task)
+    latest = made[-1] if made else None
     token = head.tokens.get(STATEMENT_FILE)
-    written = token is not None and await _statement_written(ctx, task, head.version, token)
+    written = token is not None and await published.statement_written_at(
+        ctx, task, head.version, token
+    )
     if latest is not None and latest.version == head.version:
         return TaskState(head.version, latest, False, (), written, written)
     checked = await publications.check(ctx, organiser.identity, task, head, {})
-    published_written = latest is not None and await _statement_written(
+    published_written = latest is not None and await published.statement_written_at(
         ctx, task, latest.version, latest.id
     )
     return TaskState(head.version, latest, True, checked.errors, published_written, written)
-
-
-async def _statement_written(ctx: Context, task: TaskId, version: VersionId, key: str) -> bool:
-    """Whether the task's `statement.md` at `version` holds a statement,
-    read as the platform once per process for each `key`, the file's token
-    or the publication's id, neither of which ever names other content.
-    """
-
-    async def read() -> bool:
-        try:
-            found = await ctx.forge.content.read_file(PLATFORM, task, STATEMENT_FILE, at=version)
-        except NotFound:
-            return False
-        return statement_written(found.content)
-
-    return await ctx.memo.remembered(f"tasks.statement.{task}.{key}", POINTS_KEPT, read)
 
 
 @action

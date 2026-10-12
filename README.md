@@ -897,7 +897,14 @@ published and past its start and the task's `release_at` passed, so a
 contest that was never published moves freely. A contest that has started,
 saved before as `published` or `archived`, never goes back to `draft`
 (#438), and its `entrants` no longer asks more of a team, allows fewer, or
-moves between everyone entering alone and in teams. When the settings saved
+moves between everyone entering alone and in teams. The save that opens the
+contest, from `draft` to `published`, is refused while a task it lists, but
+a withdrawn one, has no publication or its latest publication's statement
+is not written (C5, M57), the grounds the organisers' opening checklist
+blocks on, each task at the `state` line by its letter and name: "A · sum:
+it is not published yet.", "A · sum: its statement is not written yet.".
+Only that save: a task added or saved once the contest is open keeps no
+later save of its settings from being made. When the settings saved
 before do not read, these are checked against the latest earlier version
 that does. A task reveals once it has
 closed for every row, with the longest extension in force on it: an

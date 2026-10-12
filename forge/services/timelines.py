@@ -1,6 +1,6 @@
 """A task's timeline against what rows did: each row's extension, when a task
 reveals, and the checks that keep a timeline from moving behind a row
-(TASK-FORMAT.md sections 1.1 and 2, C1 and C2).
+(TASK-FORMAT.md sections 1.1 and 2, C1, C2 and C5).
 
 A row is an entrant. Its extension sits on its `entrants` row: a length
 and the tasks it is for, by name, every task when it names none, and it
@@ -33,6 +33,13 @@ gradings, one per submission, at the moment it was taken:
 - From the start on, `entrants` no longer asks more of a team than it did,
   nor allows fewer, nor moves between everyone entering alone and in teams:
   a team's roster is locked by then, so it could not mend what that breaks.
+- C5, the save that opens the contest, from `draft` (or settings that never
+  read) to `published`: every task it lists but a withdrawn one has a
+  publication whose statement is written, not blank and not the starter's
+  placeholder (M57), as the organisers' opening checklist asks; each one
+  that has not is refused at the `state` line, "A · sum: its statement is
+  not written yet". Only that save: a task added to an open contest, or
+  saved since, does not keep a later save of its settings from being made.
 
 Changing an extension is checked the same way (`refuse_extension`): it may
 not let a row submit to a task whose reveal has passed, nor, shortened or
@@ -47,8 +54,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select, text
 
 from forge.db.tables import Entrant, Grading
-from forge.domain.definitions import ContestDefinition, ContestTask, State
-from forge.domain.errors import InvalidExtension
+from forge.domain.definitions import ContestDefinition, ContestTask, State, letters
+from forge.domain.errors import InvalidExtension, NotFound
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.domain.names import EntrantOwner, WorkspaceOwner
@@ -227,6 +234,8 @@ async def check_contest(
         if entry.id not in tasks
     ]
     problems += await _points(ctx, after, tasks)
+    if after.state is State.PUBLISHED and (before is None or before.state is State.DRAFT):
+        problems += await _not_ready(ctx, after, tasks)
     if before is None:
         return problems
     if _drafted_after_start(before, after, ctx.now):
@@ -246,6 +255,33 @@ async def check_contest(
         ):
             at = path if path in ("start", "end") else f"tasks[{index}].{path}"
             problems.append(Problem(path=at, message=message))
+    return problems
+
+
+async def _not_ready(
+    ctx: Context, after: ContestDefinition, tasks: Mapping[str, TaskId]
+) -> list[Problem]:
+    """C5, for the save that opens the contest: each task it lists, but a
+    withdrawn one, that has no publication, or whose latest publication's
+    statement is not written (M57), at the `state` line, named by its letter
+    and name as the opening checklist names it.
+    """
+    problems: list[Problem] = []
+    for index, entry in enumerate(after.tasks):
+        task = tasks.get(entry.id)
+        if task is None or entry.withdrawn:
+            continue
+        named = f"{letters(index)} · {entry.id}"
+        try:
+            made = await ctx.forge.workspaces.list_publications(task)
+        except NotFound:
+            made = ()
+        if not made:
+            problems.append(Problem(path="state", message=f"{named}: it is not published yet."))
+        elif not await published.statement_written_at(ctx, task, made[-1].version, made[-1].id):
+            problems.append(
+                Problem(path="state", message=f"{named}: its statement is not written yet.")
+            )
     return problems
 
 

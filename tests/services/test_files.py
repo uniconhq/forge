@@ -35,6 +35,7 @@ from tests.services.conftest import (
     Entered,
     make_task,
     organiser,
+    publish,
     upload,
     write_contest,
 )
@@ -539,6 +540,51 @@ async def test_an_entry_is_dropped_only_from_a_task_that_neither_opened_nor_has_
         )
     ]
     assert version
+
+
+async def test_a_contest_opens_only_once_each_task_is_published_with_its_statement_written(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    # The same grounds the opening checklist blocks on (M57), for a save
+    # through the API: a task not published, or published with its
+    # statement still the starter's, keeps the contest from opening.
+    draft = (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content
+    opened = draft.replace(b"state: draft", b"state: published")
+
+    unpublished = await _refused(setup, acme, opened)
+    await publish(setup, acme, sum_task)
+    placeholder = await _refused(setup, acme, opened)
+    statement = await files.read(setup, acme.ada, sum_task, "statement.md")
+    await files.write(
+        setup, acme.ada, sum_task, "statement.md", b"Add two numbers.\n", statement.token
+    )
+
+    assert unpublished == [("state", "A · sum: it is not published yet.")]
+    assert placeholder == [("state", "A · sum: its statement is not written yet.")]
+    assert await _write_contest(setup, acme, opened)
+
+
+async def test_a_withdrawn_task_does_not_keep_a_contest_from_opening_nor_does_a_later_one(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await publish(setup, acme, sum_task)
+    statement = await files.read(setup, acme.ada, sum_task, "statement.md")
+    await files.write(
+        setup, acme.ada, sum_task, "statement.md", b"Add two numbers.\n", statement.token
+    )
+    await make_task(setup, acme, "product")
+    draft = (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content
+    withdrawn = draft.replace(b"- id: product", b"- {id: product, withdrawn: true}")
+    assert withdrawn != draft
+
+    assert await _write_contest(
+        setup, acme, withdrawn.replace(b"state: draft", b"state: published")
+    )
+    # Open, a task made since and not published yet stops no save.
+    await make_task(setup, acme, "quotient")
+    current = (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content
+    assert b"- id: quotient" in current
+    assert await _write_contest(setup, acme, current.replace(b"name: ", b"name: Late ", 1))
 
 
 async def test_an_open_contest_goes_back_to_draft_until_its_start_and_is_only_archived_after(
