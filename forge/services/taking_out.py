@@ -62,7 +62,7 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, making, names, org_accounts, published, timelines
+from forge.services import boards, making, names, org_accounts, places, published, timelines
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -160,6 +160,7 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
     if problems:
         raise InvalidDefinition(CONTEST_FILE, problems)
     await _write(ctx, contest, found, updated, f"Put {name} back in the contest")
+    places.ahead_at(ctx, task)
     log.info("tasks.put_back", task=task, user_id=organiser.user.id)
     return PutBack(tuple(checked.notes))
 
@@ -214,6 +215,7 @@ async def _write(
         PLATFORM, contest, CONTEST_FILE, updated, message=message, expected=found.token
     )
     published.forget_contests(ctx)
+    places.forget_tasks(ctx, contest)
 
 
 async def _withdraw(ctx: Context, contest: ContestId, found: File, name: str) -> None:

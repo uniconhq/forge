@@ -116,6 +116,13 @@ def ahead_for(ctx: Context, contest: ContestId, entrant: uuid.UUID) -> None:
     ctx.in_background(work)
 
 
+def forget_tasks(ctx: Context, contest: ContestId) -> None:
+    """Drop this process's list of the contest's tasks places are made
+    ahead at, after a task left it.
+    """
+    ctx.memo.forget(_tasks_name(contest))
+
+
 def ahead_at(ctx: Context, task: TaskId) -> None:
     """Once this unit of work commits, start making the task's place for
     every approved entrant of its contest, the earliest registered first.
