@@ -8,7 +8,7 @@ graded.
 
 from fractions import Fraction
 
-from forge.domain.regrades import Change, Side, change_of, counted
+from forge.domain.regrades import ChangeKind, Side, change_of, counted
 from forge.domain.scoring import Better
 
 
@@ -28,30 +28,30 @@ def _valued(accepted: int, tests: int, **values: tuple[str, Better]) -> Side:
 
 
 def test_points_say_up_down_or_unchanged() -> None:
-    assert change_of(_points(40), _points(100)) is Change.UP
-    assert change_of(_points(100), _points(40)) is Change.DOWN
-    assert change_of(_points(100), _points(100)) is Change.UNCHANGED
+    assert change_of(_points(40), _points(100)) is ChangeKind.UP
+    assert change_of(_points(100), _points(40)) is ChangeKind.DOWN
+    assert change_of(_points(100), _points(100)) is ChangeKind.UNCHANGED
 
 
 def test_a_run_now_stopped_before_its_tests_is_told_apart_whatever_its_points() -> None:
-    assert change_of(_points(0), _points(0, stopped="compile_error")) is Change.STOPPED
-    assert change_of(_points(100), _points(0, stopped="compile_error")) is Change.STOPPED
+    assert change_of(_points(0), _points(0, stopped="compile_error")) is ChangeKind.STOPPED
+    assert change_of(_points(100), _points(0, stopped="compile_error")) is ChangeKind.STOPPED
     # Stopped before and after is read by its points.
     assert (
         change_of(_points(0, stopped="compile_error"), _points(0, stopped="compile_error"))
-        is Change.UNCHANGED
+        is ChangeKind.UNCHANGED
     )
-    assert change_of(_points(0, stopped="compile_error"), _points(100)) is Change.UP
+    assert change_of(_points(0, stopped="compile_error"), _points(100)) is ChangeKind.UP
 
 
 def test_with_nothing_to_compare_it_is_newly_graded() -> None:
-    assert change_of(None, _points(100)) is Change.NEW
-    assert change_of(_points(100), None) is Change.NEW
+    assert change_of(None, _points(100)) is ChangeKind.NEW
+    assert change_of(_points(100), None) is ChangeKind.NEW
 
 
 def test_with_no_points_the_share_accepted_decides_first() -> None:
-    assert change_of(_valued(8, 10), _valued(9, 12)) is Change.DOWN
-    assert change_of(_valued(1, 2), _valued(3, 4)) is Change.UP
+    assert change_of(_valued(8, 10), _valued(9, 12)) is ChangeKind.DOWN
+    assert change_of(_valued(1, 2), _valued(3, 4)) is ChangeKind.UP
 
 
 def test_with_the_same_share_any_value_worse_is_down() -> None:
@@ -59,18 +59,18 @@ def test_with_the_same_share_any_value_worse_is_down() -> None:
     before = _valued(2, 2, time_ms=("100", lower), score=("7", higher))
 
     assert change_of(before, _valued(2, 2, time_ms=("90", lower), score=("7", higher))) is (
-        Change.UP
+        ChangeKind.UP
     )
     assert change_of(before, _valued(2, 2, time_ms=("90", lower), score=("6", higher))) is (
-        Change.DOWN
+        ChangeKind.DOWN
     )
     assert change_of(before, _valued(2, 2, time_ms=("100", lower), score=("7", higher))) is (
-        Change.UNCHANGED
+        ChangeKind.UNCHANGED
     )
 
 
 def test_every_change_is_counted_zero_where_none() -> None:
-    found = counted([Change.UP, Change.UP, Change.FAILED])
+    found = counted([ChangeKind.UP, ChangeKind.UP, ChangeKind.FAILED])
 
-    assert found[Change.UP] == 2 and found[Change.FAILED] == 1
-    assert set(found) == set(Change) and found[Change.DOWN] == 0
+    assert found[ChangeKind.UP] == 2 and found[ChangeKind.FAILED] == 1
+    assert set(found) == set(ChangeKind) and found[ChangeKind.DOWN] == 0

@@ -4,11 +4,11 @@ regrade's gradings each with what it did to its submission; and the types
 they come back as.
 """
 
-from forge.domain.regrades import Change, Compared, RegradeCause, Side
+from forge.domain.regrades import ChangeKind, Compared, RegradeCause, Side
 from forge.services.regrades import Summary, dismiss, gradings_of, latest
 
 __all__ = [
-    "Change",
+    "ChangeKind",
     "Compared",
     "RegradeCause",
     "Side",

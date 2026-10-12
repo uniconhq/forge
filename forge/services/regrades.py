@@ -43,7 +43,7 @@ from forge.domain.grading import UNFINISHED, GradingStatus
 from forge.domain.ids import ContestId, PublicationId, TaskId, WorkspaceId
 from forge.domain.regrades import (
     GRADED,
-    Change,
+    ChangeKind,
     Compared,
     RegradeCause,
     Side,
@@ -87,7 +87,7 @@ class Summary:
     total: int
     graded: int
     running: bool
-    counts: Mapping[Change, int]
+    counts: Mapping[ChangeKind, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,7 +142,7 @@ async def latest(ctx: Context, organiser: Organiser, contest: ContestId) -> tupl
                 ),
                 total=len(read),
                 graded=sum(1 for change in changes if change in GRADED),
-                running=Change.RUNNING in changes,
+                running=ChangeKind.RUNNING in changes,
                 counts=counted(changes),
             )
         )
@@ -173,7 +173,7 @@ async def gradings_of(
     contest: ContestId,
     regrade: uuid.UUID,
     *,
-    change: Change | None = None,
+    change: ChangeKind | None = None,
     user: str | None = None,
     entrant: uuid.UUID | None = None,
     limit: int = 100,
@@ -290,11 +290,11 @@ async def _read(
         status = gradings.status_of(ctx, row, gone)
         before = await _side(scorer, earlier, factors) if earlier is not None else None
         if status in UNFINISHED:
-            compared = Compared(Change.RUNNING, before, None)
+            compared = Compared(ChangeKind.RUNNING, before, None)
         elif status is GradingStatus.OVER_LIMIT:
-            compared = Compared(Change.OVER_LIMIT, before, None)
+            compared = Compared(ChangeKind.OVER_LIMIT, before, None)
         elif not gradings.good(row):
-            compared = Compared(Change.FAILED, before, None)
+            compared = Compared(ChangeKind.FAILED, before, None)
         else:
             now = await _side(scorer, row, factors)
             compared = Compared(change_of(before, now), before, now)

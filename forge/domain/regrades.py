@@ -6,7 +6,7 @@ it (`RegradeCause`). Each submission's latest attempt of it is compared with
 the result that counted for that submission when the regrade began, the
 latest earlier attempt that finished with one, both as organisers see
 results: every group, nothing held back, the late factor applied
-(`Side`). What it changed is one `Change`:
+(`Side`). What it changed is one `ChangeKind`:
 
 - `up` and `down`, its points went up or down; on a task that gives no
   points, a larger or smaller share of its tests accepted, or with the same
@@ -44,7 +44,7 @@ class RegradeCause(StrEnum):
     SAVE = "save"
 
 
-class Change(StrEnum):
+class ChangeKind(StrEnum):
     """What a regrade did to one submission, as the module says."""
 
     UP = "up"
@@ -57,7 +57,7 @@ class Change(StrEnum):
     OVER_LIMIT = "over_limit"
 
 
-GRADED = (Change.UP, Change.DOWN, Change.STOPPED, Change.UNCHANGED, Change.NEW)
+GRADED = (ChangeKind.UP, ChangeKind.DOWN, ChangeKind.STOPPED, ChangeKind.UNCHANGED, ChangeKind.NEW)
 """The changes of a submission whose regrade finished with a result."""
 
 
@@ -91,20 +91,20 @@ class Compared:
     own, none while it has none or it could not be scored.
     """
 
-    change: Change
+    change: ChangeKind
     earlier: Side | None
     now: Side | None
 
 
-def change_of(earlier: Side | None, now: Side | None) -> Change:
+def change_of(earlier: Side | None, now: Side | None) -> ChangeKind:
     """What a regrade's result `now` changed against `earlier`, the result it
     replaced; `new` when there is no earlier one, or either could not be
     scored (none). Only a finished result is asked about here.
     """
     if earlier is None or now is None:
-        return Change.NEW
+        return ChangeKind.NEW
     if now.stopped is not None and earlier.stopped is None:
-        return Change.STOPPED
+        return ChangeKind.STOPPED
     if now.points is not None and earlier.points is not None:
         return _by(now.points - earlier.points)
     if now.share is not None and earlier.share is not None and now.share != earlier.share:
@@ -119,21 +119,21 @@ def change_of(earlier: Side | None, now: Side | None) -> Change:
         better |= improved
         worse |= not improved
     if worse:
-        return Change.DOWN
-    return Change.UP if better else Change.UNCHANGED
+        return ChangeKind.DOWN
+    return ChangeKind.UP if better else ChangeKind.UNCHANGED
 
 
-def _by(difference: Fraction) -> Change:
+def _by(difference: Fraction) -> ChangeKind:
     if difference > 0:
-        return Change.UP
+        return ChangeKind.UP
     if difference < 0:
-        return Change.DOWN
-    return Change.UNCHANGED
+        return ChangeKind.DOWN
+    return ChangeKind.UNCHANGED
 
 
-def counted(changes: Iterable[Change]) -> dict[Change, int]:
+def counted(changes: Iterable[ChangeKind]) -> dict[ChangeKind, int]:
     """How many submissions each change counts, every change named, 0 where
     none.
     """
     found = Counter(changes)
-    return {change: found[change] for change in Change}
+    return {change: found[change] for change in ChangeKind}

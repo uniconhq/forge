@@ -23,7 +23,7 @@ from forge.db.tables import Grading, Regrade
 from forge.domain.content import Edit
 from forge.domain.errors import Forbidden, NotFound
 from forge.domain.identity import User
-from forge.domain.regrades import Change, RegradeCause
+from forge.domain.regrades import ChangeKind, RegradeCause
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
@@ -110,7 +110,7 @@ def _held(acme: Acme, scope: Scope, role: Role) -> Organiser:
     )
 
 
-def _counts(summary: regrades.Summary) -> dict[Change, int]:
+def _counts(summary: regrades.Summary) -> dict[ChangeKind, int]:
     return {change: count for change, count in summary.counts.items() if count}
 
 
@@ -150,31 +150,33 @@ async def test_a_rejudge_is_one_regrade_and_says_what_it_changed(
     assert (summary.started_by, summary.started_by_name) == (7, "ada")
     assert (summary.total, summary.graded, summary.running) == (5, 4, True)
     assert _counts(summary) == {
-        Change.DOWN: 1,
-        Change.UP: 1,
-        Change.STOPPED: 1,
-        Change.UNCHANGED: 1,
-        Change.RUNNING: 1,
+        ChangeKind.DOWN: 1,
+        ChangeKind.UP: 1,
+        ChangeKind.STOPPED: 1,
+        ChangeKind.UNCHANGED: 1,
+        ChangeKind.RUNNING: 1,
     }
 
-    (down,) = await regrades.gradings_of(setup, observer, SPRING, kept.id, change=Change.DOWN)
+    (down,) = await regrades.gradings_of(setup, observer, SPRING, kept.id, change=ChangeKind.DOWN)
     change = down.grading.change
     assert change is not None and change.earlier is not None and change.now is not None
     assert (down.grading.submission_number, down.grading.attempt, down.label) == (1, 2, "A")
-    assert (change.change, change.earlier.attempt, change.now.attempt) == (Change.DOWN, 1, 2)
+    assert (change.change, change.earlier.attempt, change.now.attempt) == (ChangeKind.DOWN, 1, 2)
     assert (change.earlier.points, change.now.points) == (Fraction(100), Fraction(0))
     assert (change.earlier.accepted, change.now.accepted, change.now.tests) == (1, 0, 1)
     every = await regrades.gradings_of(setup, observer, SPRING, kept.id)
     assert [entry.grading.submission_number for entry in every] == [5, 4, 3, 2, 1]
     assert all(entry.grading.regrade == kept.id for entry in every)
-    (stopped,) = await regrades.gradings_of(setup, observer, SPRING, kept.id, change=Change.STOPPED)
+    (stopped,) = await regrades.gradings_of(
+        setup, observer, SPRING, kept.id, change=ChangeKind.STOPPED
+    )
     assert stopped.grading.change is not None and stopped.grading.change.now is not None
     assert stopped.grading.change.now.stopped == "compile_error"
 
     # The delayed one graded, it is newly graded: there was nothing to compare.
     await _stands(setup, 5, **ACCEPTED)
     (summary,) = await regrades.latest(setup, observer, SPRING)
-    assert (summary.graded, summary.running, summary.counts[Change.NEW]) == (5, False, 1)
+    assert (summary.graded, summary.running, summary.counts[ChangeKind.NEW]) == (5, False, 1)
 
 
 async def test_a_retry_of_a_regrades_attempt_belongs_to_it(
@@ -187,16 +189,16 @@ async def test_a_retry_of_a_regrades_attempt_belongs_to_it(
     await _stands(setup, 1, **FAILED)
     (failed,) = [row for row in await _rows(setup) if row.attempt == 2]
     (summary,) = await regrades.latest(setup, manager, SPRING)
-    assert _counts(summary) == {Change.FAILED: 1}
+    assert _counts(summary) == {ChangeKind.FAILED: 1}
 
     retried = await gradings.retry(setup, manager, failed.id)
 
     assert retried.regrade == rejudged.regrade
     (summary,) = await regrades.latest(setup, manager, SPRING)
-    assert _counts(summary) == {Change.RUNNING: 1}
+    assert _counts(summary) == {ChangeKind.RUNNING: 1}
     await _stands(setup, 1, **WRONG)
     (summary,) = await regrades.latest(setup, manager, SPRING)
-    assert _counts(summary) == {Change.DOWN: 1}
+    assert _counts(summary) == {ChangeKind.DOWN: 1}
     # Retried again, it is still the regrade's; a retry of an attempt of no
     # regrade belongs to none.
     again = await gradings.retry(setup, manager, retried.id)
@@ -231,7 +233,7 @@ async def test_a_saves_regrade_is_one_too_and_replaces_the_one_before(
         saved.publication,
         7,
     )
-    assert _counts(summary) == {Change.RUNNING: 1}
+    assert _counts(summary) == {ChangeKind.RUNNING: 1}
 
 
 async def test_a_manager_dismisses_a_regrade_for_everyone(
