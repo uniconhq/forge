@@ -22,6 +22,7 @@ import pytest
 from forge.adapters.ci.woodpecker import WoodpeckerCi
 from forge.adapters.ci.woodpecker.ci_state import read_state
 from forge.adapters.git.forgejo import ForgejoForge
+from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, AsUser, OrgAccountRef
 from forge.domain.ids import OrgId, ThreadId
@@ -155,7 +156,7 @@ async def test_an_org_with_its_roles_and_a_contest_with_its_files(
     (listed,) = await forge.content.list_tree(PLATFORM, task)
     assert listed.path == "task.yaml" and listed.token is not None
     # The listing's token names the blob, which one batched read gives back.
-    blobs = await forge.content.read_blobs(PLATFORM, task, [listed.token])
+    blobs = await forge.content.read_blobs(PLATFORM, task, [ConflictToken(listed.token)])
     assert blobs == {
         listed.token: (await forge.content.read_file(PLATFORM, task, "task.yaml")).content
     }

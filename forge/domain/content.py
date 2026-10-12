@@ -104,7 +104,8 @@ class TreeEntry:
     holds and that commit, the one that last changed it, which holds it as
     listed whatever the head has moved to since (none when the forge does
     not say), or a folder. `upload` tells an uploaded file from a typed one.
-    `token` is the file's, as a read gives it; `start` is how a small text
+    `token` is the file's `ConflictToken`, as a read gives it, plain text so the
+    entry is served as it is; `start` is how a small text
     file begins (`start_of`), none for any other file and for an upload,
     whose commit holds only the pointer to its bytes.
     """
@@ -114,7 +115,7 @@ class TreeEntry:
     size: int | None = None
     upload: UploadInfo | None = None
     version: VersionId | None = None
-    token: ConflictToken | None = None
+    token: str | None = None
     start: str | None = None
 
 

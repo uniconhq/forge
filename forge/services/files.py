@@ -145,7 +145,7 @@ async def tree(
             return ()
         raise
     small = {
-        entry.token
+        ConflictToken(entry.token)
         for entry in entries
         if entry.kind is EntryKind.FILE
         and entry.token is not None
@@ -155,7 +155,7 @@ async def tree(
     blobs = await ctx.forge.content.read_blobs(organiser.identity, place, small) if small else {}
     found: list[TreeEntry] = []
     for entry in entries:
-        content = blobs.get(entry.token) if entry.token is not None else None
+        content = blobs.get(ConflictToken(entry.token)) if entry.token is not None else None
         if content is None:
             found.append(await _with_upload(ctx, organiser, place, entry))
             continue
