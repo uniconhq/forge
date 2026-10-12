@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from forge.domain.content import Edit, Uploaded, UploadInfo
+from forge.domain.content import Edit, EntryKind, Uploaded, UploadInfo
 from forge.domain.errors import Forbidden, InvalidInputs, UploadLimit, UploadNotReady
 from forge.domain.ids import TaskId
 from forge.domain.roles import Role, Scope
@@ -90,6 +90,32 @@ async def test_an_uploaded_file_is_listed_and_read_as_an_upload_and_a_typed_one_
     # Only the files whose size a pointer could have were read to list them.
     tree_reads = sorted(call.arguments["path"] for call in acme.fake.calls_to("read_file"))
     assert tree_reads == sorted([PATH, "data/notes.txt", PATH, "data/notes.txt"])
+
+
+async def test_a_listing_names_the_version_holding_each_file_as_listed_and_it_downloads_there(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await files.write(setup, acme.ada, entered.task, "data/big.txt", b"b" * 4096, None)
+    await files.write(setup, acme.ada, entered.task, "data/notes.txt", b"n", None)
+    big = await files.read(setup, acme.ada, entered.task, "data/big.txt")
+    notes = await files.read(setup, acme.ada, entered.task, "data/notes.txt")
+
+    listed = {
+        entry.path: entry for entry in await files.tree(setup, acme.ada, entered.task, "data")
+    }
+    named = [entry for entry in await files.tree(setup, acme.ada, entered.task) if entry.version]
+
+    # Each file at the change that last made it, not the head.
+    assert big.version != notes.version
+    assert (listed["data/big.txt"].version, listed["data/notes.txt"].version) == (
+        big.version,
+        notes.version,
+    )
+    assert named and all(entry.kind is EntryKind.FILE for entry in named)
+    version = listed["data/big.txt"].version
+    assert version is not None
+    door = await files.download(setup, acme.ada, entered.task, "data/big.txt", version)
+    assert await acme.fake.content.fetch(door) == b"b" * 4096
 
 
 async def test_a_save_marks_the_upload_it_took(setup: Setup, acme: Acme, entered: Entered) -> None:

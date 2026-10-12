@@ -79,10 +79,15 @@ class Field:
         return self.type in FILES
 
 
-def fields_of(contestant: Mapping[str, Any], inputs: Mapping[str, Any]) -> tuple[Field, ...]:
+def fields_of(
+    contestant: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+    titles: Mapping[str, str] | None = None,
+) -> tuple[Field, ...]:
     """The contestant's inputs, each from the plan's `contestant` declaration
     of it and the task's form details in `inputs`: in the order `task.yaml`
-    lists them, then the rest by name.
+    lists them, then the rest by name. Each is labelled by the task's
+    `label`, else the workflow's title in `titles`, else its key.
     """
     order = [name for name in inputs if name in contestant]
     order += sorted(name for name in contestant if name not in order)
@@ -96,7 +101,7 @@ def fields_of(contestant: Mapping[str, Any], inputs: Mapping[str, Any]) -> tuple
             Field(
                 id=name,
                 type=Type(declared.type),
-                label=form.label or name,
+                label=form.label or (titles or {}).get(name) or name,
                 options=options,
                 per_test=bool(declared.per_test),
                 default=form.default,

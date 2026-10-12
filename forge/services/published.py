@@ -193,7 +193,10 @@ async def form(ctx: Context, published: PublishedTask) -> TaskForm:
             PLATFORM, published.id, PLAN_PATH, at=published.publication.version
         )
         plan = Plan.from_bytes(found.content)
-        return TaskForm(fields_of(plan.contestant, published.definition.inputs), plan.tests)
+        fields = fields_of(
+            plan.contestant, published.definition.inputs, published.publication.titles
+        )
+        return TaskForm(fields, plan.tests)
 
     key = f"published.form.{published.id}.{published.publication.version}"
     return await ctx.memo.remembered(key, FORM_KEPT, read)

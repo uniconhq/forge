@@ -44,7 +44,7 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, tuple_
 
 from forge.db.tables import Upload as UploadRow
 from forge.domain import uploads as rules
@@ -548,13 +548,14 @@ async def _asked_before(
     task: TaskId,
     purpose: UploadPurpose,
     *,
-    since: datetime | None = None,
+    since: tuple[datetime, uuid.UUID] | None = None,
 ) -> bool:
     """Whether any slot of this kind was kept for the person at the task,
-    taken or not, since `since`, when they joined their entrant by the
-    database's clock, and so whether the place they now upload into is made
-    already with them on it. Read without a lock: the answer only saves a
-    call to the forge, and a place made twice is made once.
+    taken or not, after `since`, when they joined their entrant, both by the
+    package's clock and then by id, which is made in order, and so whether
+    the place they now upload into is made already with them on it. Read
+    without a lock: the answer only saves a call to the forge, and a place
+    made twice is made once.
     """
     query = select(UploadRow.id).where(
         UploadRow.owner_user_id == user_id,
@@ -562,10 +563,13 @@ async def _asked_before(
         UploadRow.purpose == purpose,
     )
     if since is not None:
-        # Both by the database's clock, which sets a row's `created_at` when
-        # its unit of work begins, so a slot kept after the person joined is
-        # later than the joining, and one kept before it is not.
-        query = query.where(UploadRow.created_at > since)
+        # A slot is kept at `expires_at` less `LIFETIME`, by the package's
+        # clock, as the joining is, and ids break a tie in the order the
+        # rows were made; never the database's clock, which can step back.
+        joined, member = since
+        query = query.where(
+            tuple_(UploadRow.expires_at, UploadRow.id) > tuple_(joined + rules.LIFETIME, member)
+        )
     found = await ctx.db.scalar(query.limit(1))
     return found is not None
 

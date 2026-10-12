@@ -22,10 +22,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from sqlalchemy import select, update
 
 from forge.adapters.fakes import FakeForge
 from forge.adapters.ids import parse_task, parse_workspace
-from forge.db.tables import Entrant
+from forge.db.tables import Entrant, EntrantMember, Upload
 from forge.domain.errors import (
     AlreadyInvited,
     EntrantChanged,
@@ -646,6 +647,76 @@ async def test_someone_who_left_uploads_into_the_place_of_the_entrant_they_are_i
     await upload(setup, acme.fake, bob, sum_task, b"print(1)\n")
     await entrants.leave(setup, bob, SPRING)
     alone = await entrants.register(setup, bob, SPRING, name="Alone")
+
+    await upload(setup, acme.fake, bob, sum_task, b"print(2)\n", filename="b.py")
+
+    assert _repo(acme.fake, alone.id, sum_task).writers == {8}
+    assert _repo(acme.fake, adders.id, sum_task).writers == {20}
+
+
+async def _stepped_back(setup: Setup, table: Any, *rows: Any) -> None:
+    """Each of `rows` stamped by the database a minute earlier than the one
+    before it, as a database clock stepped back would stamp them.
+    """
+    async with setup.unit_of_work() as ctx:
+        for back, row in enumerate(rows):
+            await ctx.db.execute(
+                update(table)
+                .where(table.id == row)
+                .values(created_at=table.created_at - timedelta(minutes=back))
+            )
+
+
+async def _member_rows(setup: Setup, user_id: int) -> list[uuid.UUID]:
+    async with setup.unit_of_work() as ctx:
+        return list(
+            (
+                await ctx.db.execute(
+                    select(EntrantMember.id)
+                    .where(EntrantMember.user_id == user_id)
+                    .order_by(EntrantMember.id)
+                )
+            ).scalars()
+        )
+
+
+async def test_members_joined_at_one_moment_are_listed_as_they_joined_not_by_the_databases_clock(
+    setup: Setup, acme: Acme, crowd: dict[str, Session]
+) -> None:
+    bob, carol = crowd["bob"], crowd["carol"]
+    await entrants.register(setup, bob, SPRING, name="Adders")
+    await _join(setup, bob, carol, "carol")
+    (bobs,) = await _member_rows(setup, 8)
+    (carols,) = await _member_rows(setup, 20)
+    await _stepped_back(setup, EntrantMember, bobs, carols)
+
+    mine = await _mine(setup, bob)
+
+    assert mine is not None
+    assert [member.user_id for member in mine.members] == [8, 20]
+
+
+async def test_someone_who_left_uploads_into_their_new_place_whatever_the_databases_clock(
+    setup: Setup, acme: Acme, sum_task: TaskId, crowd: dict[str, Session], clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, contest(locks="first_submission"))
+    bob, carol = crowd["bob"], crowd["carol"]
+    adders = await entrants.register(setup, bob, SPRING, name="Adders")
+    await _join(setup, bob, carol, "carol")
+    clock.set(START + timedelta(minutes=30))
+    first = await upload(setup, acme.fake, bob, sum_task, b"print(1)\n")
+    await entrants.leave(setup, bob, SPRING)
+    alone = await entrants.register(setup, bob, SPRING, name="Alone")
+    # The database stamped joining Alone before the upload made in Adders.
+    *_, joined = await _member_rows(setup, 8)
+    async with setup.unit_of_work() as ctx:
+        made = await ctx.db.scalar(select(Upload.created_at).where(Upload.id == first.id))
+        assert made is not None
+        await ctx.db.execute(
+            update(EntrantMember)
+            .where(EntrantMember.id == joined)
+            .values(created_at=made - timedelta(minutes=1))
+        )
 
     await upload(setup, acme.fake, bob, sum_task, b"print(2)\n", filename="b.py")
 

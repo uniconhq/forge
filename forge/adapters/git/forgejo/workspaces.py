@@ -268,6 +268,7 @@ class ForgejoWorkspaces:
                     workflows=note.workflows,
                     sealed=note.sealed,
                     measures=note.measures,
+                    titles=note.titles,
                     at=datetime.fromisoformat(str(commit["created"])),
                 )
             )

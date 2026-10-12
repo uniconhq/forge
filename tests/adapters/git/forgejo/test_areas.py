@@ -1648,6 +1648,79 @@ async def test_a_short_read_of_a_file_is_an_error_never_its_content(
         await forgejo.content.read_file(PLATFORM, ContestId("acme/spring"), "data.txt")
 
 
+async def test_a_read_names_the_commit_holding_the_file_and_a_door_reads_it_there(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    """A read names the commit that last changed the file, or the version it
+    was read at when the forge names none; the door is the media endpoint
+    for the file at that commit, a large-file upload's bytes included, with
+    each segment quoted and the person's own credential, and calls nothing.
+    """
+    repo = "/api/v1/repos/acme/spring.sum.task"
+    commit = "c" * 40
+    recorder.on(
+        "GET",
+        f"{repo}/contents/data/a.txt",
+        ok({"type": "file", "sha": "b-1", "content": "eA==", "size": 1, "last_commit_sha": commit}),
+        ok({"type": "file", "sha": "b-1", "content": "eA==", "size": 1}),
+    )
+    task = TaskId("acme/spring/sum")
+    ada = AsUser(7, _credential())
+
+    latest = await forgejo.content.read_file(ada, task, "data/a.txt")
+    unnamed = await forgejo.content.read_file(ada, task, "data/a.txt", at=VersionId("d" * 40))
+    seen = len(recorder.seen)
+    door = await forgejo.content.media_door(ada, task, "data/my file#1.bin", at=VersionId(commit))
+
+    assert (latest.version, unnamed.version) == (commit, "d" * 40)
+    assert door.path == f"{repo}/media/data/my%20file%231.bin?ref={commit}"
+    assert door.authorization == "Bearer access"
+    assert len(recorder.seen) == seen
+
+
+async def test_a_read_at_a_name_the_forge_names_no_commit_for_names_no_version(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    """A branch's or a tag's name moves, so a read at one with no commit
+    from the forge gives no version a download could be refused at."""
+    repo = "/api/v1/repos/acme/spring.sum.task"
+    recorder.on(
+        "GET", f"{repo}/contents/data/a.txt", ok({"type": "file", "sha": "b-1", "content": "eA=="})
+    )
+
+    read = await forgejo.content.read_file(
+        PLATFORM, TaskId("acme/spring/sum"), "data/a.txt", at=VersionId("published/1")
+    )
+
+    assert read.version is None
+
+
+async def test_a_listing_names_the_commit_holding_each_file_as_listed(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/spring.sum.task"
+    commit = "e" * 40
+    recorder.on(
+        "GET",
+        f"{repo}/contents/data",
+        ok(
+            [
+                {"type": "file", "path": "data/a.bin", "size": 9, "last_commit_sha": commit},
+                {"type": "dir", "path": "data/more", "last_commit_sha": commit},
+                {"type": "file", "path": "data/b.bin", "size": 1},
+            ]
+        ),
+    )
+
+    listed = await forgejo.content.list_tree(PLATFORM, TaskId("acme/spring/sum"), "data")
+
+    assert [(entry.path, entry.version) for entry in listed] == [
+        ("data/a.bin", commit),
+        ("data/more", None),
+        ("data/b.bin", None),
+    ]
+
+
 async def test_an_account_whose_email_is_taken_is_a_conflict_as_a_taken_name_is(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
