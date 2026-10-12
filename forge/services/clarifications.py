@@ -32,7 +32,15 @@ stored in the database: the thread is the record.
   twice.
 - `answer_publicly`: an organiser turns an answer into an announcement on the
   contest, or on the task the question names, pointing back at the question,
-  which stays private.
+  which stays private; a message on the question, "Answered publicly in the
+  announcement" and its title in quotes, says so to everyone who reads it and names the
+  announcement, so the page links to it; and the question is marked
+  answered unless asked not to (M62). The three writes are the
+  announcement, the mark and then the message, the last being what says
+  the answer is done: a retry after any of them failed finds the
+  announcement already answering the question with no message on it yet,
+  brings its title and text to the ones given, and finishes, rather than
+  posting a second one.
 
 Each of the organiser's changes needs the manager role at the contest, and
 is made as the organiser, so the record says who answered.
@@ -56,7 +64,7 @@ from forge.domain.names import ScopeNames, WorkspaceOwner, entrant_owner
 from forge.domain.registration import Status
 from forge.domain.roles import Role, contest_scope, holds, task_scope
 from forge.domain.sessions import Session
-from forge.domain.threads import Thread, ThreadKind
+from forge.domain.threads import Comment, Thread, ThreadKind
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -69,17 +77,33 @@ log = get_logger(__name__)
 NO_SUCH_QUESTION = "There is no such question."
 NOT_APPROVED = "Only approved entrants of this contest can ask its organisers questions."
 ABOUT = re.compile(r"\n*<!-- unicon:task (\S+) -->\s*$")
+ANNOUNCED = re.compile(r"\n*<!-- unicon:announcement (\S+)#(\d+) -->\s*$")
+ANSWERED_PUBLICLY = "Answered publicly in the announcement ‘{title}’"  # noqa: RUF001
+"""The message a public answer leaves on its question, naming the
+announcement by its title in curly single quotes."""
+
+
+@dataclass(frozen=True, slots=True)
+class AnnouncementLink:
+    """The announcement a message names: on the question's contest, or on
+    the task of it named `task`, by its number there.
+    """
+
+    task: str | None
+    number: int
 
 
 @dataclass(frozen=True, slots=True)
 class Message:
     """One message under a question: whether the asker wrote it, what it
-    says, and when.
+    says, when, and, on the message a public answer leaves, the
+    announcement it was answered in.
     """
 
     from_asker: bool
     body: str
     at: datetime
+    announcement: AnnouncementLink | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +124,16 @@ class Clarification:
     answered: bool
     closed: bool
     messages: tuple[Message, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PublicAnswer:
+    """A public answer: the announcement every entrant reads, and the
+    question as it now stands, with the message naming it.
+    """
+
+    announcement: Announcement
+    question: Clarification
 
 
 @action
@@ -301,22 +335,62 @@ async def answer_publicly(
     *,
     title: str,
     body: str,
-) -> Announcement:
+    mark: bool = True,
+) -> PublicAnswer:
     """Turn an answer into an announcement every contestant reads, on the
     task the question names or else on the contest, pointing back at the
-    question, which stays where it is. Needs the manager role at that place.
+    question, which stays where it is; mark the question answered, unless
+    `mark` is false, as a reply's "Mark it answered" is; and leave a message
+    on it, as the organiser, naming the announcement, which only those who
+    read the question see. Needs the manager role at that place.
+
+    The message is written last, so it says the answer is done: an
+    announcement answering the question that no message on it names yet is
+    one a call that failed part way posted, and a retry finishes that one,
+    with the title and text it is given now, instead of posting another.
     """
     thread = await _managed(ctx, organiser, contest, asker, number)
     about = _about(thread, contest)
     scope = task_scope(about) if about is not None else contest_scope(contest)
-    return await announcements.post(
-        ctx,
-        organiser,
-        scope,
-        title=title,
-        body=body,
-        answers=AnsweredQuestion(_asker(_owner(asker)), number),
+    place = announcements.place_of(scope)
+    question = AnsweredQuestion(_asker(_owner(asker)), number)
+    askers = await entrants.everyone_in(ctx, _owner(asker).entrant_id)
+    noted = {
+        (str(found.group(1)), int(found.group(2)))
+        for comment in thread.comments
+        if comment.author_id not in askers and (found := ANNOUNCED.search(comment.body)) is not None
+    }
+    unfinished = [
+        posted
+        for posted in await announcements.answering(ctx, organiser, scope, question)
+        if (str(place), posted.number) not in noted
+    ]
+    if unfinished:
+        posted = unfinished[-1]
+        if (posted.title, posted.body) != announcements.checked(title, body):
+            posted = await announcements.edit(
+                ctx, organiser, scope, posted.number, title=title, body=body
+            )
+    else:
+        posted = await announcements.post(
+            ctx, organiser, scope, title=title, body=body, answers=question
+        )
+    if mark and not (thread.answered and thread.closed):
+        await ctx.forge.threads.mark_answered(organiser.identity, thread.id)
+    said = ANSWERED_PUBLICLY.format(title=posted.title)
+    await ctx.forge.threads.comment(
+        organiser.identity,
+        thread.id,
+        f"{said}\n\n<!-- unicon:announcement {place}#{posted.number} -->",
     )
+    log.info(
+        "clarifications.answered_publicly",
+        contest=contest,
+        number=number,
+        announcement=posted.number,
+        by=organiser.user.id,
+    )
+    return PublicAnswer(posted, await _again(ctx, organiser.identity, thread))
 
 
 async def _managed(
@@ -420,6 +494,13 @@ async def _shown(
     about = [(thread, contest, owner, _about(thread, contest)) for thread, contest, owner in asked]
     wanted = {contest for _, contest, _ in asked if contest not in (known or {})}
     tasks = {task for _, _, _, task in about if task is not None}
+    tasks |= {
+        TaskId(found.group(1))
+        for thread, contest, _, _ in about
+        for comment in thread.comments
+        if (found := ANNOUNCED.search(comment.body)) is not None
+        and _in_contest(found.group(1), contest) == "task"
+    }
     places: dict[str, ScopeNames] = {
         str(contest): where for contest, where in (known or {}).items()
     }
@@ -446,13 +527,47 @@ async def _shown(
                 answered=thread.answered,
                 closed=thread.closed,
                 messages=tuple(
-                    Message(
-                        from_asker=comment.author_id in askers[asker],
-                        body=comment.body,
-                        at=comment.at,
-                    )
+                    _message(comment, comment.author_id in askers[asker], contest, places)
                     for comment in thread.comments
                 ),
             )
         )
     return tuple(shown)
+
+
+def _message(
+    comment: Comment, from_asker: bool, contest: ContestId, places: dict[str, ScopeNames]
+) -> Message:
+    """A comment as a message, with the announcement it names when it is the
+    one a public answer left: written by an organiser, naming an
+    announcement of the question's own contest or of a task of it. The
+    asker can write anything at the forge, so a mark in their own message,
+    or one naming another contest's, is read as no link.
+    """
+    found = ANNOUNCED.search(comment.body)
+    if found is None:
+        return Message(from_asker=from_asker, body=comment.body, at=comment.at)
+    link: AnnouncementLink | None = None
+    kind = _in_contest(found.group(1), contest)
+    if not from_asker and kind == "contest":
+        link = AnnouncementLink(None, int(found.group(2)))
+    elif not from_asker and kind == "task" and found.group(1) in places:
+        link = AnnouncementLink(places[found.group(1)].task, int(found.group(2)))
+    return Message(
+        from_asker=from_asker,
+        body=ANNOUNCED.sub("", comment.body).rstrip(),
+        at=comment.at,
+        announcement=link,
+    )
+
+
+def _in_contest(place: str, contest: ContestId) -> str | None:
+    """Whether a place an announcement mark names is `contest` itself, a
+    task of it, or neither.
+    """
+    if place == contest:
+        return "contest"
+    parts = place.split("/")
+    if len(parts) == 3 and all(parts) and f"{parts[0]}/{parts[1]}" == contest:
+        return "task"
+    return None

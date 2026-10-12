@@ -6,13 +6,16 @@ beside it. `refuse` then applies the rules a submit is checked against
 before anything is written, in this order, stopping at the first:
 
 1. the task is open by the server's clock plus the entrant's extension on it
-   (`task_closed`, or `archived` for a contest that is);
+   (`task_closed`, or `archived` for a contest that is), and not withdrawn
+   from its contest (`task_withdrawn`);
 2. the person is in an approved entrant (`not_approved`);
 3. the entrant still has as many members as the contest asks, since a
    member may have left it (`entrant_incomplete`).
 
 A task that is not released, or a contest the person may not see, is no
-such task, the same answer as one that is not there. An archived contest is
+such task, the same answer as one that is not there; so is a withdrawn
+task, its submissions included, to everything but an upload or a submit,
+which are told it was withdrawn. An archived contest is
 seen by nobody but its organisers, and still by everyone in an entrant of
 it, who read their own submissions there and are told it is archived when
 they submit.
@@ -33,6 +36,7 @@ from forge.domain.errors import (
     NotFound,
     PortError,
     TaskClosed,
+    TaskWithdrawn,
     Unavailable,
 )
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
@@ -71,10 +75,14 @@ class Person:
     since: tuple[datetime, uuid.UUID] | None = None
 
 
-async def person(ctx: Context, session: Session, task: TaskId) -> Person:
+async def person(
+    ctx: Context, session: Session, task: TaskId, *, submitting: bool = False
+) -> Person:
     """The person behind `session` at `task`. `Unauthenticated` or
     `SessionExpired` for a session that has ended, and `NotFound` for a task
-    that is not released to them or in a contest they may not see.
+    that is not released to them or in a contest they may not see. A task
+    withdrawn once its timeline released it is found when `submitting`, so
+    `refuse` can say why it takes nothing.
     """
     fresh = await sessions.authenticate(ctx, session.id)
     contest = contest_id_of(task_scope(task))
@@ -87,7 +95,14 @@ async def person(ctx: Context, session: Session, task: TaskId) -> Person:
     if not release.sees(settings, reader) and not entered:
         raise NotFound(published.NO_SUCH_TASK)
     found = await published.task(ctx, task, settings)
-    if found is None or not rules.released(settings, found.name, ctx.now):
+    if found is None or not (
+        rules.released(settings, found.name, ctx.now)
+        or (
+            submitting
+            and rules.withdrawn(settings, found.name)
+            and rules.reached(settings, found.name, ctx.now)
+        )
+    ):
         raise NotFound(published.NO_SUCH_TASK)
     standing = await entrants.standing(ctx, contest, fresh.user_id)
     if standing is None:
@@ -113,6 +128,11 @@ async def refuse(ctx: Context, person: Person) -> tuple[EntrantRow, WorkspaceId]
     match openness.reason:
         case Closed.NOT_RELEASED:
             raise NotFound(published.NO_SUCH_TASK)
+        case Closed.WITHDRAWN:
+            raise TaskWithdrawn(
+                "This task was withdrawn from the contest, so it takes no submissions.",
+                reason=Closed.WITHDRAWN.value,
+            )
         case Closed.ARCHIVED:
             raise Archived("This contest is archived, so it takes no more submissions.")
         case Closed.CLOSED:

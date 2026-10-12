@@ -281,6 +281,7 @@ class FakeWorkspaces:
                     sealed=note.sealed,
                     measures=note.measures,
                     titles=note.titles,
+                    meanings=note.meanings,
                     at=self._state.published_at.get((task, number), self._state.clock.now()),
                 )
             )

@@ -15,7 +15,7 @@ from datetime import timedelta
 import pytest
 
 from forge.domain.clock import FakeClock
-from forge.domain.content import Edit
+from forge.domain.content import Edit, start_of
 from forge.domain.definitions import parse_contest
 from forge.domain.errors import AdminOnly, Conflict, Forbidden, InvalidPath, NotFound
 from forge.domain.identity import PLATFORM
@@ -93,7 +93,7 @@ async def test_an_observer_reads_the_file_the_tree_and_the_history_as_themself(
     changes = await files.history(setup, bob, sum_task, "statement.md")
 
     assert found.content.startswith(b"# The task's settings")
-    assert [entry.path for entry in listed] == ["public", "statement.md", "task.yaml", "tests"]
+    assert [entry.path for entry in listed] == ["statement.md", "task.yaml", "tests"]
     assert [entry.path for entry in folder] == ["tests/main"]
     assert [change.message for change in changes] == ["Create"]
     assert {
@@ -325,7 +325,11 @@ async def test_a_worth_or_a_due_on_a_task_that_gives_no_points_is_refused_at_its
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
     pointless = current.content.replace(b"main: {each: 100}", b"main: {}")
     saved = await publications.save(
-        setup, acme.ada, entered.task, {"task.yaml": Edit(pointless, head.tokens["task.yaml"])}
+        setup,
+        acme.ada,
+        entered.task,
+        {"task.yaml": Edit(pointless, head.tokens["task.yaml"])},
+        confirm=True,
     )
     assert isinstance(saved, Published), saved
 
@@ -507,8 +511,8 @@ async def test_an_entry_naming_no_task_of_the_contest_is_refused_at_its_id(
         ),
         (
             "tasks",
-            "sum was released on 26 September 2026 at 10:00 UTC, so entrants have seen it, and it "
-            "cannot be taken out of the contest.",
+            "sum was released on 26 September 2026 at 10:00 UTC, so entrants have seen it. Take "
+            "it out from the contest's list of tasks instead, which deletes it too.",
         ),
     ]
 
@@ -525,7 +529,13 @@ async def test_an_entry_is_dropped_only_from_a_task_that_neither_opened_nor_has_
     refused = await _refused(setup, acme, draft.replace(SUM_ENTRY.encode(), product))
     version = await _write_contest(setup, acme, draft)
 
-    assert refused == [("tasks", "sum has 1 submission, so it cannot be taken out of the contest.")]
+    assert refused == [
+        (
+            "tasks",
+            "sum has 1 submission, so it cannot be taken out of the contest. Withdraw it instead: "
+            "entrants no longer see it and no leaderboard counts it, and its submissions are kept.",
+        )
+    ]
     assert version
 
 
@@ -604,3 +614,43 @@ async def test_a_contest_that_was_never_published_moves_its_passed_dates_freely(
 
     assert version
     assert parse_contest(moved).start.month == 10
+
+
+async def test_a_listing_gives_each_small_text_files_start_in_one_read_of_them_all(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    head = await acme.fake.content.list_files(PLATFORM, sum_task)
+    saved = await publications.save(
+        setup,
+        acme.ada,
+        sum_task,
+        {
+            "tests/main/1/input": Edit(b"1 2\n" + b"9 " * 600, head.tokens["tests/main/1/input"]),
+            "tests/main/1/answer": Edit(b"", head.tokens["tests/main/1/answer"]),
+            "tests/main/1/picture.bin": Edit(b"\x89PNG\x00\x01", None),
+            "tests/main/1/latin.txt": Edit("café".encode("latin-1"), None),
+            "tests/main/1/long.txt": Edit("ü".encode() * 100, None),
+        },
+    )
+    assert isinstance(saved, (Published, publications.Draft))
+    acme.fake.reset_calls()
+
+    listed = {
+        entry.path: entry for entry in await files.tree(setup, acme.ada, sum_task, "tests/main/1")
+    }
+
+    starts = {path.rsplit("/", 1)[1]: entry.start for path, entry in listed.items()}
+    # Over a kilobyte, not text, or not UTF-8: no start; empty: an empty one.
+    assert starts == {
+        "answer": "",
+        "input": None,
+        "latin.txt": None,
+        "long.txt": "ü" * 80,
+        "picture.bin": None,
+    }
+    assert listed["tests/main/1/input"].size == 4 + 1200
+    (batch,) = acme.fake.calls_to("read_blobs")
+    assert len(batch.arguments["tokens"]) == 4
+    assert acme.fake.calls_to("read_file") == []
+    assert start_of(b"") == "" and start_of(b"a\x00b") is None
+    assert all(entry.token is not None for entry in listed.values())

@@ -6,7 +6,9 @@ the moment comes. A row is an entrant.
 A task's timeline is its entry in the contest's `tasks`. It is released once
 its contest has been published and has started and the entry's
 `release_at`, the contest's `start` when it gives none, has passed. A task
-the contest does not list has no timeline and is never released. An
+the contest does not list has no timeline and is never released, and
+neither is one its entry marks `withdrawn`, whatever its timeline says, so
+entrants no longer see it or submit to it. An
 archived contest was published before, so its tasks stay released. A task
 is visible while it is released and its contest is not archived, so
 contestants keep the statement and their results after the end. It is open
@@ -39,6 +41,7 @@ class Closed(StrEnum):
     otherwise open, as a submit would be refused.
     """
 
+    WITHDRAWN = "withdrawn"
     NOT_RELEASED = "not_released"
     ARCHIVED = "archived"
     CLOSED = "closed"
@@ -71,11 +74,27 @@ class Openness:
 
 
 def released(contest: ContestDefinition, task: str, now: datetime) -> bool:
-    """Whether the task, by its name, is released to contestants at `now`."""
+    """Whether the task, by its name, is released to contestants at `now`:
+    its timeline has released it and it is not withdrawn.
+    """
+    entry = contest.entry(task)
+    return entry is not None and not entry.withdrawn and reached(contest, task, now)
+
+
+def reached(contest: ContestDefinition, task: str, now: datetime) -> bool:
+    """Whether the task's timeline has released it at `now`, withdrawn or
+    not: what entrants have seen of it, which a withdrawal does not undo.
+    """
     if contest.state is State.DRAFT or now < contest.start:
         return False
     entry = contest.entry(task)
     return entry is not None and now >= contest.release_of(entry)
+
+
+def withdrawn(contest: ContestDefinition, task: str) -> bool:
+    """Whether the contest lists the task, by its name, as withdrawn."""
+    entry = contest.entry(task)
+    return entry is not None and entry.withdrawn
 
 
 def visible(contest: ContestDefinition, task: str, now: datetime) -> bool:
@@ -97,6 +116,8 @@ def openness(
 ) -> Openness:
     """Whether one row, with its own `extension`, may submit to the task."""
     entry = contest.entry(task)
+    if entry is not None and entry.withdrawn:
+        return Openness(False, Closed.WITHDRAWN)
     if entry is None or not released(contest, task, now):
         return Openness(False, Closed.NOT_RELEASED)
     if contest.state is State.ARCHIVED:

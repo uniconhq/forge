@@ -161,6 +161,23 @@ async def manage(ctx: Context, organiser: Organiser, scope: Scope) -> tuple[Anno
     return tuple(announcement(thread, where, organiser=True) for thread in threads)
 
 
+async def answering(
+    ctx: Context, organiser: Organiser, scope: Scope, question: AnsweredQuestion
+) -> tuple[Announcement, ...]:
+    """Every announcement at the contest or task that answers `question`,
+    closed ones included, oldest first, read as the organiser. Needs the
+    observer role there.
+    """
+    require(organiser, scope, Role.OBSERVER)
+    where = await names.scope_names(ctx, scope)
+    await ctx.let_go()
+    threads = await ctx.forge.threads.list_threads(
+        organiser.identity, place_of(scope), ThreadKind.ANNOUNCEMENT, comments=False
+    )
+    found = (announcement(thread, where, organiser=True) for thread in threads)
+    return tuple(each for each in found if each.answers == question)
+
+
 @action
 async def contest(ctx: Context, session: Session, contest: ContestId) -> tuple[Announcement, ...]:
     """The open announcements of a contest the person sees and of each of its

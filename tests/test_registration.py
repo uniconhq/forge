@@ -160,6 +160,31 @@ def test_a_domain_is_the_whole_part_after_the_last_at_whatever_its_case(
         assert refused.value.code == "domain_not_allowed"
 
 
+@pytest.mark.parametrize(
+    ("email", "passes"),
+    [
+        ("ada@nus.edu.sg", True),
+        ("ada@comp.nus.edu.sg", True),
+        ("Ada@Comp.NUS.edu.SG", True),
+        ("ada@a.b.nus.edu.sg", True),
+        ("ada@xnus.edu.sg", False),
+        ("ada@nus.edu.sg.evil.test", False),
+        ("ada@edu.sg", False),
+        ("nus.edu.sg@evil.test", False),
+    ],
+)
+def test_a_domain_under_star_takes_it_and_every_domain_under_it(email: str, passes: bool) -> None:
+    assert domain_matches("*.nus.edu.sg", email) is passes
+    rules = ways(signup(domains=("*.nus.edu.sg",)))
+    if passes:
+        assert qualify(rules, emails=(email,), code=None, invited=False).eligibility == {
+            "email": email
+        }
+    else:
+        with pytest.raises(DomainNotAllowed):
+            qualify(rules, emails=(email,), code=None, invited=False)
+
+
 def test_an_address_the_forge_never_confirmed_matches_no_domain() -> None:
     # Only confirmed addresses reach the rules: someone whose student
     # address is unconfirmed has none.

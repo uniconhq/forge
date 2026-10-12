@@ -61,6 +61,7 @@ from forge.domain.definitions import (
     form_problems,
 )
 from forge.domain.grading import WALL_CEILING, Machine, wall_seconds
+from forge.domain.meanings import ValueMeaning, with_measures
 from forge.domain.primitives import BATCH_SCALED, IMAGE, LIMIT_NAMES, Port, PrimitiveDeclaration
 from forge.domain.scoring import Better, Measure, exact
 from forge.domain.showing import NOTHING_SEALED, Sealed
@@ -632,6 +633,49 @@ def stray_units(workflow: WorkflowDefinition) -> list[Problem]:
     return problems
 
 
+def stray_report_units(
+    workflow: WorkflowDefinition, primitives: Mapping[str, PrimitiveDeclaration]
+) -> list[Problem]:
+    """A unit on a reported value that is not a number, refused where a
+    version is made or checked, naming the value, as `stray_units` does for
+    an input. A version made with one before is read with it dropped
+    (`value_meanings`), and a task on it saves, since a unit changes no
+    plan. `primitives` holds the declaration of every `use:` that reads; an
+    entry whose output cannot be found is refused by `check_workflow`.
+    """
+    problems: list[Problem] = []
+    for name, entry in workflow.report.items():
+        if not isinstance(entry, Meaning) or entry.unit is None:
+            continue
+        port = _reported_port(workflow, primitives, entry.from_)
+        if port is not None and port.type is not Type.NUMBER:
+            problems.append(
+                Problem(
+                    path=path_text(("report", name, "unit")),
+                    message=f"Only a number takes a unit, and {name} is {_a(port.type)}. "
+                    "Remove the unit.",
+                )
+            )
+    return problems
+
+
+def _reported_port(
+    workflow: WorkflowDefinition, primitives: Mapping[str, PrimitiveDeclaration], raw: str
+) -> Port | None:
+    """The output port a report entry's `from` reads, or none when it names
+    no output of a step whose primitive reads.
+    """
+    try:
+        found = whole_reference(raw)
+    except BadReference:
+        return None
+    if found is None or found.kind != "steps" or found.output is None:
+        return None
+    step = next((step for step in workflow.steps if step.id == found.name), None)
+    declaration = primitives.get(str(step.use)) if step is not None else None
+    return declaration.outputs.get(found.output) if declaration is not None else None
+
+
 RESERVED_FOLDERS = {
     "tests": "its tests",
     "public": "the files every contestant is served",
@@ -981,9 +1025,10 @@ class _Raised:
 class Compiled:
     """A compiled task: its plan, its sealed steps and what they hold back
     until the reveal, what the save says of it beside publishing it, what
-    each per-test value means, and the workflow's title of each contestant
+    each per-test value means, the workflow's title of each contestant
     input that has one, which the entrant's form names it by when the task
-    gives no label.
+    gives no label, and every reported value in the workflow's order with
+    the title and unit a page names it by (`value_meanings`).
     """
 
     plan: Plan
@@ -992,6 +1037,7 @@ class Compiled:
     held: Sealed = NOTHING_SEALED
     measures: Mapping[str, Measure] = field(default_factory=dict)
     titles: Mapping[str, str] = field(default_factory=dict)
+    meanings: tuple[ValueMeaning, ...] = ()
 
 
 @dataclass
@@ -1475,17 +1521,19 @@ def compile_plan(
             name for name, entry in plan.report.items() if entry.step in compiler.sealed
         ),
     )
+    measured = measures(values, task)
     return Compiled(
         plan,
         tuple(sorted(compiler.sealed)),
         (*_sealed_notes(compiler), *_credit_notes(task, values)),
         held,
-        measures(values, task),
+        measured,
         {
             name: declared.title
             for name, declared in workflow.inputs.items()
             if declared.contestant and declared.title is not None
         },
+        with_measures(value_meanings(workflow, values), measured),
     )
 
 
@@ -1636,6 +1684,26 @@ def reported(
             step.per_test, port.type, entry if isinstance(entry, Meaning) else None
         )
     return found
+
+
+def value_meanings(
+    workflow: WorkflowDefinition, values: Mapping[str, ReportedValue]
+) -> tuple[ValueMeaning, ...]:
+    """Every value the workflow reports, in its order, with the title and
+    unit a page names it by: a unit on a value that is not a number, which a
+    version made before it was refused may hold, is dropped.
+    """
+    found: list[ValueMeaning] = []
+    for name, entry in workflow.report.items():
+        value = values.get(name)
+        if value is None:
+            continue
+        if not isinstance(entry, Meaning):
+            found.append(ValueMeaning(name))
+            continue
+        unit = entry.unit if value.type is Type.NUMBER else None
+        found.append(ValueMeaning(name, entry.title, unit))
+    return tuple(found)
 
 
 def measures(values: Mapping[str, ReportedValue], task: TaskDefinition) -> dict[str, Measure]:

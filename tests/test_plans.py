@@ -20,6 +20,7 @@ from forge.domain import exact_json
 from forge.domain.contracts import violation
 from forge.domain.definitions import parse_task, starter_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine
+from forge.domain.meanings import ValueMeaning, shown_meanings
 from forge.domain.plans import (
     PLAN_PATH,
     Compiled,
@@ -42,9 +43,9 @@ from forge.domain.plans import (
 )
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.publications import read_note, write_note
-from forge.domain.scoring import fold, written
+from forge.domain.scoring import Better, fold, written
 from forge.domain.showing import NOTHING_SEALED, Sealed
-from forge.domain.workflow_definition import WorkflowDefinition, parse_workflow
+from forge.domain.workflow_definition import Fold, WorkflowDefinition, parse_workflow
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES
 
@@ -737,6 +738,51 @@ def test_a_non_batching_per_test_step_is_one_entry_per_test() -> None:
         "expected": {"task": "tests/main/2/answer"},
     }
     assert written["steps"][1]["limits"]["time_ms"] == 1000
+
+
+def test_a_values_title_and_unit_change_no_plan_and_are_compiled_beside_it() -> None:
+    titled = compiled(CLASSIC_TASK, classic_tests("main/1"))
+    plain = parse_workflow(
+        CLASSIC.replace(b"    title: Run time\n    unit: ms\n", b"").replace(
+            b"    title: Compile log\n", b""
+        )
+    )
+    untitled = compiled(CLASSIC_TASK, classic_tests("main/1"), plain)
+
+    assert untitled.plan.to_bytes() == titled.plan.to_bytes()
+    assert titled.meanings == (
+        ValueMeaning("time_ms", "Run time", "ms", Fold.MAX, Better.LOWER),
+        ValueMeaning("memory_kb", "Memory used", "KB", Fold.MAX, Better.LOWER),
+        ValueMeaning("log", "Compile log"),
+    )
+    assert untitled.meanings == (
+        ValueMeaning("time_ms", fold=Fold.MAX, better=Better.LOWER),
+        ValueMeaning("memory_kb", "Memory used", "KB", Fold.MAX, Better.LOWER),
+        ValueMeaning("log"),
+    )
+
+
+def test_a_publications_note_keeps_each_values_words_in_the_reports_order() -> None:
+    built = compiled(CLASSIC_TASK, classic_tests("main/1"))
+
+    note = read_note(write_note(False, (), measures=built.measures, meanings=built.meanings))
+    before = read_note(write_note(False, (), measures=built.measures))
+
+    assert note.meanings == built.meanings
+    assert [meaning.name for meaning in note.meanings] == ["time_ms", "memory_kb", "log"]
+    # A publication made before the words were noted names its per-test
+    # numbers alone, by key.
+    assert before.meanings == (
+        ValueMeaning("memory_kb", fold=Fold.MAX, better=Better.LOWER),
+        ValueMeaning("time_ms", fold=Fold.MAX, better=Better.LOWER),
+    )
+
+
+def test_a_value_a_sealed_step_holds_back_is_not_named_until_the_reveal() -> None:
+    meanings = (ValueMeaning("accuracy", "Accuracy"), ValueMeaning("log", "Compile log"))
+
+    assert shown_meanings(meanings, {"accuracy"}, revealed=False) == (meanings[1],)
+    assert shown_meanings(meanings, {"accuracy"}, revealed=True) == meanings
 
 
 def test_a_plan_is_the_same_bytes_every_time_and_reads_back() -> None:

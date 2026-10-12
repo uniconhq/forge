@@ -3,8 +3,10 @@ answer, the organisers' inbox across an org, and an answer made public.
 """
 
 from forge.services.clarifications import (
+    AnnouncementLink,
     Clarification,
     Message,
+    PublicAnswer,
     answer_publicly,
     ask,
     follow_up,
@@ -17,8 +19,10 @@ from forge.services.clarifications import (
 )
 
 __all__ = [
+    "AnnouncementLink",
     "Clarification",
     "Message",
+    "PublicAnswer",
     "answer_publicly",
     "ask",
     "follow_up",

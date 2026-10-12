@@ -188,7 +188,11 @@ async def test_an_input_the_task_gives_no_label_is_named_by_its_workflows_title(
     )
     assert unlabelled.count(b"label") == 0
     saved = await publications.save(
-        setup, acme.ada, sum_task, {"task.yaml": Edit(unlabelled, head.tokens["task.yaml"])}
+        setup,
+        acme.ada,
+        sum_task,
+        {"task.yaml": Edit(unlabelled, head.tokens["task.yaml"])},
+        confirm=True,
     )
     assert isinstance(saved, Published), saved
     bob = await signed_in(setup, acme.fake, 8)
@@ -222,7 +226,7 @@ async def test_a_task_its_entry_gives_no_worth_is_worth_its_groups_total(
     current = await acme.fake.content.read_file(PLATFORM, diff, "task.yaml")
     seven_and_three = current.content.replace(b"{each: 100}", b"{each: 7, pass: 3}")
     edit = Edit(seven_and_three, head.tokens["task.yaml"])
-    saved = await publications.save(setup, acme.ada, diff, {"task.yaml": edit})
+    saved = await publications.save(setup, acme.ada, diff, {"task.yaml": edit}, confirm=True)
     assert isinstance(saved, Published)
     bob = await signed_in(setup, acme.fake, 8)
 

@@ -339,7 +339,7 @@ async def _read(setup: Setup, acme: Acme, entered: Entered, reader: str) -> None
             assert await boards.seen(setup, entered.session, SPRING)
         case "contest home":
             (task,) = (await contest_home.home(setup, entered.session, SPRING)).tasks
-            assert task.points is not None
+            assert task.points[0].points is not None
         case "task's gradings":
             assert await gradings.list(setup, observer, entered.task)
         case "queue depth":

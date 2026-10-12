@@ -17,8 +17,10 @@ gradings, one per submission, at the moment it was taken:
   judged, since its first save says what it gives.
 - C2, for what happened: a task released under the settings saved before,
   its contest published and past its start and its `release_at` passed,
-  does not move its release later, nor lose its entry; a task with
-  submissions does not lose its entry either. A `due` does not move earlier
+  withdrawn since or not, does not move its release later, nor lose its
+  entry; a task with submissions does not lose its entry either, and is
+  withdrawn instead. Taking a task out of its contest is its own action
+  (`forge.services.taking_out`). A `due` does not move earlier
   past a submission it would make late. A close, the task's `closes` or the
   contest's `end`, does not move earlier than a submission already made,
   nor later once the task has revealed under the settings saved before. A
@@ -51,7 +53,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
-from forge.domain.release import Extension, close_of, due_of, in_words, released, reveal_of
+from forge.domain.release import Extension, close_of, due_of, in_words, reached, reveal_of
 from forge.domain.yaml_models import Problem
 from forge.runtime.context import Context
 from forge.services import names, published
@@ -307,17 +309,23 @@ def _dropped(
     before: ContestDefinition, entry: ContestTask, made: Collection[Made], now: datetime
 ) -> str | None:
     """Why the task's entry may not leave `tasks`, or none: a task released
-    under `before`, or with submissions, would be hidden by it.
+    under `before`, withdrawn since or not, or with submissions, would be
+    hidden by it. Taking it out of the contest is its own action, which
+    deletes the task with its entry, or withdraws one with submissions.
     """
-    if released(before, entry.id, now):
-        opened = before.release_of(entry)
-        return (
-            f"{entry.id} was released on {in_words(opened)}, so entrants have seen it, and it "
-            "cannot be taken out of the contest."
-        )
     if made:
         count = f"{len(made)} submission" + ("s" if len(made) > 1 else "")
-        return f"{entry.id} has {count}, so it cannot be taken out of the contest."
+        return (
+            f"{entry.id} has {count}, so it cannot be taken out of the contest. Withdraw it "
+            "instead: entrants no longer see it and no leaderboard counts it, and its "
+            "submissions are kept."
+        )
+    if reached(before, entry.id, now):
+        opened = before.release_of(entry)
+        return (
+            f"{entry.id} was released on {in_words(opened)}, so entrants have seen it. Take it "
+            "out from the contest's list of tasks instead, which deletes it too."
+        )
     return None
 
 
@@ -373,7 +381,7 @@ def _moved(
     found: list[tuple[str, str]] = []
     task = new.id
     old = listed if listed is not None else ContestTask(id=task)
-    opened = released(before, task, now)
+    opened = reached(before, task, now)
     release_key = "release_at" if new.release_at is not None else "start"
     closes_key = "closes" if new.closes is not None else "end"
     old_release, new_release = before.release_of(old), after.release_of(new)

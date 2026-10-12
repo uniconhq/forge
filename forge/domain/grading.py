@@ -61,6 +61,13 @@ its submission for good: it is graded again by nothing.
 Of a submission's attempts, the latest that finished with a result counts,
 until a newer one finishes with one: a failure or a cancel never takes a
 result away, and a cancel voids only a submission that never had one.
+
+A delayed submission, one with no result whose latest attempt failed, is
+graded again only while its entrant has room under the task's
+`submissions.max` (`room`): its submissions with a result, those waiting
+that are not delayed, and the delayed ones made before it, fewer than the
+most, so the first `max` to get a result are the ones that count. Without
+room the new attempt ends `over_limit` at once, run by nothing.
 """
 
 import base64
@@ -68,7 +75,7 @@ import hashlib
 import hmac
 import math
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -141,8 +148,10 @@ class GradingStatus(StrEnum):
     had its envelope fetched by the harness. It ends `done` with a result,
     `system_error`, a grading that failed for a reason of the platform's,
     never a grade: its run could not be started, or did not report before
-    its deadline; or `cancelled`, by staff ending one in `system_error`, or
-    by a rejudge replacing one still being graded.
+    its deadline; `cancelled`, by staff ending one in `system_error`, or
+    by a rejudge replacing one still being graded; or `over_limit`, made to
+    grade a delayed submission again and ended at once, run by nothing,
+    since its entrant had no room left under the task's `submissions.max`.
     """
 
     QUEUED = "queued"
@@ -151,12 +160,18 @@ class GradingStatus(StrEnum):
     DONE = "done"
     CANCELLED = "cancelled"
     SYSTEM_ERROR = "system_error"
+    OVER_LIMIT = "over_limit"
 
 
 UNFINISHED = (GradingStatus.QUEUED, GradingStatus.DISPATCHED, GradingStatus.RUNNING)
 AT_THE_CI = (GradingStatus.DISPATCHED, GradingStatus.RUNNING)
 """The statuses of a grading whose run the CI holds."""
-FINISHED = (GradingStatus.DONE, GradingStatus.CANCELLED, GradingStatus.SYSTEM_ERROR)
+FINISHED = (
+    GradingStatus.DONE,
+    GradingStatus.CANCELLED,
+    GradingStatus.SYSTEM_ERROR,
+    GradingStatus.OVER_LIMIT,
+)
 WAITING = (GradingStatus.QUEUED, GradingStatus.DISPATCHED)
 """The statuses of a grading waiting for a machine to begin it, which a
 contest's queue depth counts."""
@@ -203,6 +218,44 @@ def cancel_reason(reason: str) -> str:
     if len(trimmed) > CANCEL_REASON_MAX:
         raise InvalidReason(f"A reason can be at most {CANCEL_REASON_MAX} characters. Shorten it.")
     return trimmed
+
+
+class Place(StrEnum):
+    """Where one of an entrant's submissions to a task stands against the
+    task's `submissions.max`: it `holds` a place, having a result or
+    waiting for one while not delayed; it is `delayed`, with no result and
+    its latest attempt failed, holding none while it waits; or it holds
+    `none`, void or over the limit.
+    """
+
+    HOLDS = "holds"
+    DELAYED = "delayed"
+    NONE = "none"
+
+
+def room(places: Mapping[int, Place], limit: int, asking: Collection[int]) -> frozenset[int]:
+    """Which of `asking`, an entrant's submissions to a task by number, each
+    delayed or over the limit, may be graded again under a `submissions.max`
+    of `limit`, `places` saying where each of the entrant's submissions to
+    the task stands. The places held count first; then the delayed ones,
+    those asked for among them, and those over the limit asked for, take
+    what is left in the order they were made, so the earliest count: one
+    delayed and not asked for keeps its place for its own retry.
+    """
+    asked = set(asking)
+    holding = sum(
+        1 for number, place in places.items() if place is Place.HOLDS and number not in asked
+    )
+    found: set[int] = set()
+    for number in sorted(
+        number for number, place in places.items() if number in asked or place is Place.DELAYED
+    ):
+        if holding >= limit:
+            break
+        holding += 1
+        if number in asked:
+            found.add(number)
+    return frozenset(found)
 
 
 def worth_asking(status: GradingStatus, dispatched_at: datetime | None, now: datetime) -> bool:

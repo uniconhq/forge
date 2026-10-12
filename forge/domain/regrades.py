@@ -1,0 +1,139 @@
+"""A regrade of many and what it changed (TASK-FORMAT.md section 3.5).
+
+A rejudge of a task and the regrade every submission to it gets when a save
+publishes a change to how it grades are each one regrade, by what started
+it (`RegradeCause`). Each submission's latest attempt of it is compared with
+the result that counted for that submission when the regrade began, the
+latest earlier attempt that finished with one, both as organisers see
+results: every group, nothing held back, the late factor applied
+(`Side`). What it changed is one `Change`:
+
+- `up` and `down`, its points went up or down; on a task that gives no
+  points, a larger or smaller share of its tests accepted, or with the same
+  share, its values with a declared direction: down when any got worse, up
+  when none did and one got better, so a regrade that makes anything worse
+  is never read as an improvement;
+- `stopped`, it now stops before its tests where the result it replaced did
+  not: in the classic workflow, it now fails to compile;
+- `unchanged`, all of that the same;
+- `new`, it had no result to compare with, or one of the two could not be
+  scored, its publication no longer reading;
+- `running`, still being graded; `failed`, no result yet, its latest
+  attempt a system error or cancelled; and `over_limit`, ended without
+  being graded since its entrant had no room left under `submissions.max`.
+
+A regrade's summary counts its submissions by change, `graded` being those
+that finished with a result.
+"""
+
+from collections import Counter
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from enum import StrEnum
+from fractions import Fraction
+
+from forge.domain.scoring import Better
+
+
+class RegradeCause(StrEnum):
+    """What started a regrade of many: staff's `rejudge` of the task, or the
+    `save` that published a change to how it grades.
+    """
+
+    REJUDGE = "rejudge"
+    SAVE = "save"
+
+
+class Change(StrEnum):
+    """What a regrade did to one submission, as the module says."""
+
+    UP = "up"
+    DOWN = "down"
+    STOPPED = "stopped"
+    UNCHANGED = "unchanged"
+    NEW = "new"
+    RUNNING = "running"
+    FAILED = "failed"
+    OVER_LIMIT = "over_limit"
+
+
+GRADED = (Change.UP, Change.DOWN, Change.STOPPED, Change.UNCHANGED, Change.NEW)
+"""The changes of a submission whose regrade finished with a result."""
+
+
+@dataclass(frozen=True, slots=True)
+class Side:
+    """One result a regrade compares, as organisers see it: its attempt,
+    its points, none on a task that gives no points, how many of its tests
+    were accepted of how many it has, the outcome that stopped its run
+    before its tests, none when nothing did, each value with a fold and a
+    declared direction, folded over every test, and that direction.
+    """
+
+    attempt: int
+    points: Fraction | None
+    accepted: int
+    tests: int
+    stopped: str | None = None
+    values: Mapping[str, Fraction] = field(default_factory=dict)
+    better: Mapping[str, Better] = field(default_factory=dict)
+
+    @property
+    def share(self) -> Fraction | None:
+        """The part of its tests accepted, none with no tests."""
+        return Fraction(self.accepted, self.tests) if self.tests else None
+
+
+@dataclass(frozen=True, slots=True)
+class Compared:
+    """What a regrade did to one submission: the change, the result it
+    replaced, none when there was none or it could not be scored, and its
+    own, none while it has none or it could not be scored.
+    """
+
+    change: Change
+    earlier: Side | None
+    now: Side | None
+
+
+def change_of(earlier: Side | None, now: Side | None) -> Change:
+    """What a regrade's result `now` changed against `earlier`, the result it
+    replaced; `new` when there is no earlier one, or either could not be
+    scored (none). Only a finished result is asked about here.
+    """
+    if earlier is None or now is None:
+        return Change.NEW
+    if now.stopped is not None and earlier.stopped is None:
+        return Change.STOPPED
+    if now.points is not None and earlier.points is not None:
+        return _by(now.points - earlier.points)
+    if now.share is not None and earlier.share is not None and now.share != earlier.share:
+        return _by(now.share - earlier.share)
+    worse = better = False
+    for name, value in now.values.items():
+        before = earlier.values.get(name)
+        direction = now.better.get(name)
+        if before is None or direction is None or before == value:
+            continue
+        improved = value > before if direction is Better.HIGHER else value < before
+        better |= improved
+        worse |= not improved
+    if worse:
+        return Change.DOWN
+    return Change.UP if better else Change.UNCHANGED
+
+
+def _by(difference: Fraction) -> Change:
+    if difference > 0:
+        return Change.UP
+    if difference < 0:
+        return Change.DOWN
+    return Change.UNCHANGED
+
+
+def counted(changes: Iterable[Change]) -> dict[Change, int]:
+    """How many submissions each change counts, every change named, 0 where
+    none.
+    """
+    found = Counter(changes)
+    return {change: found[change] for change in Change}

@@ -10,6 +10,7 @@ from forge.db.tables.invites import Invite
 from forge.db.tables.marks import Mark
 from forge.db.tables.names import Name
 from forge.db.tables.org_accounts import OrgAccount
+from forge.db.tables.regrades import Regrade
 from forge.db.tables.sessions import Session
 from forge.db.tables.uploads import Upload
 
@@ -21,6 +22,7 @@ __all__ = [
     "Mark",
     "Name",
     "OrgAccount",
+    "Regrade",
     "Session",
     "Upload",
     "metadata",

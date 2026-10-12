@@ -140,7 +140,7 @@ async def slot(
     task's contestant input `input`, whose content hashes to `sha256`,
     recorded as an upload of the signed-in person.
     """
-    person = await submitters.person(ctx, session, task)
+    person = await submitters.person(ctx, session, task, submitting=True)
     _, workspace = await submitters.refuse(ctx, person)
     form = await published.form(ctx, person.published)
     entry = _file_input(form.fields, input)

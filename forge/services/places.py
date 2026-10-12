@@ -116,6 +116,13 @@ def ahead_for(ctx: Context, contest: ContestId, entrant: uuid.UUID) -> None:
     ctx.in_background(work)
 
 
+def forget_tasks(ctx: Context, contest: ContestId) -> None:
+    """Drop this process's list of the contest's tasks places are made
+    ahead at, after a task left it.
+    """
+    ctx.memo.forget(_tasks_name(contest))
+
+
 def ahead_at(ctx: Context, task: TaskId) -> None:
     """Once this unit of work commits, start making the task's place for
     every approved entrant of its contest, the earliest registered first.
@@ -165,10 +172,11 @@ async def _tasks(ctx: Context, contest: ContestId) -> tuple[TaskId, ...]:
 
 def made_ahead(settings: ContestDefinition, task: str, now: datetime) -> bool:
     """Whether places are made ahead at the task, by name: the contest lists
-    it, and its `release_at` is the contest's start or has passed.
+    it, not withdrawn, and its `release_at` is the contest's start or has
+    passed.
     """
     entry = settings.entry(task)
-    if entry is None:
+    if entry is None or entry.withdrawn:
         return False
     released_at = settings.release_of(entry)
     return released_at <= max(settings.start, now)
