@@ -605,6 +605,20 @@ HIDDEN_LARGE = {
 SMALL_AND_LARGE = [*named("small", 2), *named("large", 2)]
 
 
+def points_on(
+    on: Column,
+    entries: Sequence[Entry],
+    select: Select = Select.BEST,
+    *,
+    directions: Mapping[str, Better | None] | None = None,
+    **fields: Any,
+) -> Points | None:
+    """A row's points on the task `on` as a board over it counts them."""
+    counting = board(select=select.value, **fields)
+    keys = keys_of(counting, directions or {})
+    return task_points(counting, keys, START, on, entries)
+
+
 def test_a_tasks_points_are_what_a_board_over_it_counts_a_hidden_group_pending() -> None:
     # The first passes small and fails large, the second the other way: before
     # the reveal only small is shown, so the first's 30 counts, and large's 70
@@ -616,7 +630,7 @@ def test_a_tasks_points_are_what_a_board_over_it_counts_a_hidden_group_pending()
         on = column("sum", HIDDEN_LARGE, revealed=revealed)
         (ranked,) = standings(board(), [on], [row(1, "ana", sum=entries)]).rows
 
-        points = task_points(on, entries)
+        points = points_on(on, entries)
 
         assert points == Points(Fraction(shown), Fraction(pending), CLOSE if pending else None)
         assert ranked.keys[0] == points.shown
@@ -625,8 +639,8 @@ def test_a_tasks_points_are_what_a_board_over_it_counts_a_hidden_group_pending()
 def test_a_tasks_points_hold_back_a_hidden_groups_points_until_the_reveal() -> None:
     passed_large = candidate(1, minute(1), graded(SMALL_AND_LARGE, HIDDEN_LARGE, ["small/1"]))
 
-    before = task_points(column("sum", HIDDEN_LARGE), [passed_large])
-    after = task_points(column("sum", HIDDEN_LARGE, revealed=True), [passed_large])
+    before = points_on(column("sum", HIDDEN_LARGE), [passed_large])
+    after = points_on(column("sum", HIDDEN_LARGE, revealed=True), [passed_large])
 
     assert before == Points(Fraction(0), Fraction(70), CLOSE)
     assert after == Points(Fraction(70), Fraction(0), None)
@@ -638,11 +652,9 @@ def test_a_run_a_sealed_step_stopped_reads_as_every_group_hidden_until_the_revea
     held = Entry(1, minute(1), State.ATTEMPT, failed)
     unheld = candidate(1, minute(1), failed)
 
-    assert task_points(column("sum", hidden), [held]) == task_points(
-        column("sum", hidden), [unheld]
-    )
-    assert task_points(column("sum", hidden), [held]) == Points(None, Fraction(100), CLOSE)
-    assert task_points(column("sum", hidden, revealed=True), [held]) == Points(
+    assert points_on(column("sum", hidden), [held]) == points_on(column("sum", hidden), [unheld])
+    assert points_on(column("sum", hidden), [held]) == Points(None, Fraction(100), CLOSE)
+    assert points_on(column("sum", hidden, revealed=True), [held]) == Points(
         Fraction(0), Fraction(0), None
     )
 
@@ -659,8 +671,8 @@ def test_a_held_runs_group_shown_at_once_is_pending_too_not_shown_as_what_it_ear
     held = Entry(1, minute(1), State.ATTEMPT, failed)
     unheld = candidate(1, minute(1), failed)
 
-    assert task_points(column("sum", groups), [held]) == Points(Fraction(0), Fraction(100), CLOSE)
-    assert task_points(column("sum", groups), [unheld]) == Points(Fraction(0), Fraction(60), CLOSE)
+    assert points_on(column("sum", groups), [held]) == Points(Fraction(0), Fraction(100), CLOSE)
+    assert points_on(column("sum", groups), [unheld]) == Points(Fraction(0), Fraction(60), CLOSE)
 
 
 def test_a_tasks_points_are_none_shown_while_no_group_is_shown_and_a_shown_0_stays_0() -> None:
@@ -668,9 +680,9 @@ def test_a_tasks_points_are_none_shown_while_no_group_is_shown_and_a_shown_0_sta
     passed = candidate(1, minute(1), graded(named("main", 1), hidden))
     zero = candidate(1, minute(1), graded(SMALL_AND_LARGE, HIDDEN_LARGE, ["small/1", "large/1"]))
 
-    assert task_points(column("sum", hidden), [passed]) == Points(None, Fraction(100), CLOSE)
-    assert task_points(column("sum", hidden), []) == Points(None, Fraction(0), None)
-    assert task_points(column("sum", HIDDEN_LARGE), [zero]) == Points(
+    assert points_on(column("sum", hidden), [passed]) == Points(None, Fraction(100), CLOSE)
+    assert points_on(column("sum", hidden), []) == Points(None, Fraction(0), None)
+    assert points_on(column("sum", HIDDEN_LARGE), [zero]) == Points(
         Fraction(0), Fraction(70), CLOSE
     )
 
@@ -688,7 +700,7 @@ def test_a_tasks_points_count_the_submissions_its_board_counts_by_group_or_marke
         rows = [row(1, "ana", sum=[first, second])]
         (ranked,) = standings(board(select=select), [on], rows).rows
 
-        points = task_points(on, [first, second], Select(select))
+        points = points_on(on, [first, second], Select(select))
 
         assert points == Points(Fraction(shown), Fraction(0), None), select
         assert ranked.keys[0] == points.shown
@@ -696,9 +708,7 @@ def test_a_tasks_points_count_the_submissions_its_board_counts_by_group_or_marke
     # A marked submission that scored nothing counts nothing, as its board.
     nothing = candidate(2, minute(2), graded(["a/1", "b/1"], SPLIT, ["a/1", "b/1"]), marked=True)
     (ranked,) = standings(board(select="marked"), [on], [row(1, "ana", sum=[first, nothing])]).rows
-    assert task_points(on, [first, nothing], Select.MARKED) == Points(
-        Fraction(0), Fraction(0), None
-    )
+    assert points_on(on, [first, nothing], Select.MARKED) == Points(Fraction(0), Fraction(0), None)
     assert ranked.keys[0] == 0
 
 
@@ -716,11 +726,11 @@ def test_a_tasks_points_pending_by_group_add_each_groups_most_still_to_come() ->
     second = candidate(2, minute(2), graded(tests, groups, ["a/1", "c/1"]))
     entries = [first, second]
 
-    assert task_points(column("sum", groups), entries, Select.BEST_PER_GROUP) == Points(
+    assert points_on(column("sum", groups), entries, Select.BEST_PER_GROUP) == Points(
         Fraction(80), Fraction(20), CLOSE
     )
-    assert task_points(column("sum", groups), entries) == Points(Fraction(40), Fraction(20), CLOSE)
-    assert task_points(
+    assert points_on(column("sum", groups), entries) == Points(Fraction(40), Fraction(20), CLOSE)
+    assert points_on(
         column("sum", groups, revealed=True), entries, Select.BEST_PER_GROUP
     ) == Points(Fraction(100), Fraction(0), None)
 
@@ -735,15 +745,68 @@ def test_a_tasks_points_pending_when_marked_come_from_the_marked_or_the_one_it_c
     second = candidate(2, minute(2), graded(SMALL_AND_LARGE, HIDDEN_LARGE))
     on = column("sum", HIDDEN_LARGE)
 
-    assert task_points(on, [first, second], Select.MARKED) == Points(
-        Fraction(0), Fraction(70), CLOSE
-    )
+    assert points_on(on, [first, second], Select.MARKED) == Points(Fraction(0), Fraction(70), CLOSE)
     unmarked = candidate(1, minute(1), failed_small)
-    assert task_points(on, [unmarked, second], Select.MARKED) == Points(
+    assert points_on(on, [unmarked, second], Select.MARKED) == Points(
         Fraction(30), Fraction(70), CLOSE
     )
 
 
 def test_a_task_with_nothing_submitted_has_nothing_pending_and_one_giving_no_points_none() -> None:
-    assert task_points(column("sum", HIDDEN_LARGE), []) == Points(Fraction(0), Fraction(0), None)
-    assert task_points(column("sum", HIDDEN_LARGE, worth=None), []) is None
+    assert points_on(column("sum", HIDDEN_LARGE), []) == Points(Fraction(0), Fraction(0), None)
+    assert points_on(column("sum", HIDDEN_LARGE, worth=None), []) is None
+
+
+def test_a_tasks_points_on_a_board_count_only_its_scope_and_hold_back_what_it_does() -> None:
+    # The first passes small, shown as a verdict, and fails large, shown at
+    # the close; the second the other way. A board over the live groups
+    # counts small's 30 and has nothing to come; one over the close shows
+    # nothing until the reveal, with large's 70 to come, then the second's.
+    first = candidate(1, minute(1), graded(SMALL_AND_LARGE, HIDDEN_LARGE, ["large/1"]))
+    second = candidate(2, minute(2), graded(SMALL_AND_LARGE, HIDDEN_LARGE, ["small/1"]))
+    entries = [first, second]
+    before, after = column("sum", HIDDEN_LARGE), column("sum", HIDDEN_LARGE, revealed=True)
+
+    assert points_on(before, entries, over="live") == Points(Fraction(30), Fraction(0), None)
+    assert points_on(before, entries, over="after_close") == Points(None, Fraction(70), CLOSE)
+    assert points_on(after, entries, over="after_close") == Points(Fraction(70), Fraction(0), None)
+    for over in ("live", "after_close"):
+        on = before if over == "live" else after
+        (ranked,) = standings(board(over=over), [on], [row(1, "ana", sum=entries)]).rows
+        assert ranked.keys[0] == points_on(on, entries, over=over).shown  # type: ignore[union-attr]
+
+
+def test_a_tasks_points_on_a_board_ranked_by_a_value_are_its_counted_submissions() -> None:
+    # The first passes both tests and scores 2; the second passes one and
+    # scores 9, its wrong test counting 0. Points first counts the first's
+    # 100; the score first counts the second's 50.
+    groups = {"main": group(each=100)}
+    ids = named("main", 2)
+    first = graded(ids, groups, values={"score": {"main/1": "1", "main/2": "1"}}, measures=SCORE)
+    second = graded(
+        ids, groups, ["main/2"], values={"score": {"main/1": "9", "main/2": "9"}}, measures=SCORE
+    )
+    entries = [candidate(1, minute(1), first), candidate(2, minute(2), second)]
+    on = column("opt", groups)
+    directions = {"score": Better.HIGHER}
+
+    by_points = points_on(on, entries, order=["points", "score"], directions=directions)
+    by_score = points_on(on, entries, order=["score"], directions=directions)
+
+    assert by_points == Points(Fraction(100), Fraction(0), None)
+    assert by_score == Points(Fraction(50), Fraction(0), None)
+
+
+def test_a_tasks_points_are_0_on_a_board_whose_cell_does_not_count() -> None:
+    # A wrong answer has no time, so a board ranked by time alone counts
+    # nothing from it, though it earned points.
+    groups = {"main": group(each=100)}
+    ids = named("main", 2)
+    half = graded(ids, groups, ["main/2"], values={"time_ms": {"main/1": "5"}}, measures=TIME)
+    entries = [candidate(1, minute(1), half)]
+    on = column("a", groups)
+
+    assert points_on(on, entries) == Points(Fraction(50), Fraction(0), None)
+    assert points_on(
+        on, entries, order=["time_ms"], directions={"time_ms": Better.LOWER}
+    ) == Points(Fraction(0), Fraction(0), None)

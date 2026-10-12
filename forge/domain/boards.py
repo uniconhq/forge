@@ -48,7 +48,6 @@ from forge.domain.scoring import (
     Points,
     Scored,
     Seen,
-    everywhere,
 )
 
 POINTS = "points"
@@ -460,19 +459,26 @@ def _cell(
 
 
 def task_points(
-    column: Column, entries: Sequence[Entry], select: Select = Select.BEST
+    board: Leaderboard,
+    keys: Sequence[Key],
+    start: datetime,
+    column: Column,
+    entries: Sequence[Entry],
 ) -> Points | None:
-    """A row's points on one task as a board over that task alone counts
-    them now: every group in scope, the submissions `select` counts
-    (TASK-FORMAT.md section 3.6), so `shown` counts only the groups whose
-    verdict is shown, as every board does, and is none while no group of
-    the task is shown yet. `pending` is the most the groups not shown yet
-    could still add to it, until `pending_until`, the task's reveal: each
-    submission read as its own row reads it, a group's points once shown
-    and its most points while not (section 1.7), and of those, the best
-    sum (`best`), the best sum over the marked ones or, with none marked,
-    the one the board counts (`marked`), or each group's most added up
-    (`best_per_group`), less `shown`, so the number once every group is
+    """A row's points on one task as `board` counts the task now
+    (TASK-FORMAT.md sections 1.7 and 3.6), read by the same cell as the
+    board's own row (`_cell`): the groups of its scope, the submissions its
+    `select` counts under its `order`, and, of those, the points (`points`
+    on a board ranking it, the counted submission's points on its scope on
+    one that does not), so `shown` counts only the groups whose verdict is
+    shown, 0 while the cell does not count, and none while the board shows
+    nothing of the task yet. `pending` is the most the scope's groups not
+    shown yet could still add to it, until `pending_until`, the task's
+    reveal: each submission read as its own row reads it, a group's points
+    once shown and its most points while not (section 1.7), and of those,
+    the best sum (`best`), the best sum over the marked ones or, with none
+    marked, the one the board counts (`marked`), or each group's most added
+    up (`best_per_group`), less `shown`, so the number once every group is
     shown lies between the two. A run a sealed step stopped reads, until
     the reveal, as one whose every group is still hidden, so it counts all
     its points as pending, as its row reads it, and its stop is not told
@@ -481,29 +487,60 @@ def task_points(
     if column.worth is None:
         return None
     seen = Seen(column.revealed)
-    keys = (Key(POINTS, Better.HIGHER),)
-    counted = _cell(select, keys, column.release_at, everywhere, seen, entries).numbers.get(
-        POINTS, ZERO
-    )
+    scope = in_scope(board.over)
+    cell = _cell(board.select, keys, start, scope, seen, entries)
+    counted = _cell_points(cell, scope, seen, entries)
     within = [
-        (entry, most) for entry in entries if (most := _most(entry, column.revealed)) is not None
+        (entry, most)
+        for entry in entries
+        if (most := _most(entry, column.revealed, scope)) is not None
     ]
-    if select is Select.MARKED:
+    if board.select is Select.MARKED:
         within = _marked_reach(within)
-    if select is Select.BEST_PER_GROUP:
+    if board.select is Select.BEST_PER_GROUP:
         groups = {name for _, most in within for name in most}
         reach = sum((max(most.get(name, ZERO) for _, most in within) for name in groups), ZERO)
     else:
         reach = max((sum(most.values(), ZERO) for _, most in within), default=ZERO)
-    pending = max(reach, counted) - counted
-    shown = counted if any(seen.verdict(show) for show in column.shows.values()) else None
+    # With nothing of the scope left to show, nothing is to come, though a
+    # board ranking a value may count a submission that earned fewer points.
+    waiting = _not_in_view([column], scope, {column.name: seen}, keys) or any(
+        entry.state is State.ATTEMPT and not column.revealed for entry in entries
+    )
+    pending = max(reach, counted) - counted if waiting else ZERO
+    shown = counted if _shows_some(column, scope, seen, keys[0]) else None
     return Points(shown, pending, column.reveal_at if pending else None)
 
 
-def _most(entry: Entry, revealed: bool) -> dict[str, Fraction] | None:
-    """What each group of a submission can still come to as its own row
-    reads it: its points once its verdict is shown, its most points with
-    the late factor while not; none for a submission that counts nothing.
+def _cell_points(
+    cell: Cell, scope: Callable[[Show], bool], seen: Seen, entries: Sequence[Entry]
+) -> Fraction:
+    """The points a cell counts: its number on `points`, or, on a board that
+    does not rank by points, its counted submission's points on the scope;
+    0 while it does not count.
+    """
+    if not cell.counting:
+        return ZERO
+    if POINTS in cell.numbers:
+        return cell.numbers[POINTS]
+    counted = set(cell.submissions or ())
+    return sum(
+        (
+            entry.scored.points(scope, seen) or ZERO
+            for entry in entries
+            if entry.number in counted and entry.scored is not None
+        ),
+        ZERO,
+    )
+
+
+def _most(
+    entry: Entry, revealed: bool, scope: Callable[[Show], bool]
+) -> dict[str, Fraction] | None:
+    """What each group of a submission in `scope` can still come to as its
+    own row reads it: its points once its verdict is shown, its most points
+    with the late factor while not; none for a submission that counts
+    nothing.
     """
     held = entry.state is State.ATTEMPT and not revealed
     scored = entry.scored
@@ -515,6 +552,7 @@ def _most(entry: Entry, revealed: bool) -> dict[str, Fraction] | None:
         if at.verdict(group.show)
         else (group.max or ZERO) * scored.factor
         for group in scored.groups
+        if scope(group.show)
     }
 
 

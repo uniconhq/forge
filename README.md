@@ -1203,17 +1203,20 @@ contest's dates, their registration panel as `entrants.mine` gives it, the
 server's clock and the tasks released to them in the contest's order, each
 with its label, its place as a letter, its worth, when it falls due and
 closes for their entrant, and, for a member of an approved entrant, its
-`points` (`boards.own_points`): the entrant's points on the task as a board
-over that task alone would count them (every group, the submissions
-counted as the board standing for the task counts them: the first in the
-contest's file that entrants see, that covers it and that ranks by points
-first, failing that the first entrants see that covers it, failing that
-the first that covers it, `best` with none), `shown` over the groups
-whose results are shown, none while no group of the task is shown yet, so
-a shown 0 reads apart from nothing shown, and `pending`,
-the most the groups not shown yet could still add, until `pending_until`,
-the task's reveal, so the home never shows a number the boards hold back;
-none for anyone else and on a task that gives no points; and `task`, a
+`points` (`boards.own_points`): one for each leaderboard an entrant sees,
+in the contest's file's order, the home's `boards` naming them, so a page
+draws a column per board under one header. Each says whether the board
+covers the task, and, where it does and the task gives points, the
+entrant's points on the task as that board counts it: its scope (`over`),
+the submissions its `select` counts under its `order`, read by the same
+cell as the board's own row, so the two never disagree; `shown` over the
+scope's groups whose results are shown, 0 while the board's cell does not
+count, none while the board shows nothing of the task yet, so a shown 0
+reads apart from nothing shown; `pending`, the most the scope's groups not
+shown yet could still add, until `pending_until`, the task's reveal, so
+the home never shows a number a board holds back; and `most`, the most
+the board can count from the task. Anyone else gets `boards` and every
+task's `points` empty, and reads the task's worth; and `task`, a
 visible task's statement, its
 submission caps and the inputs a contestant gives, read from its plan with
 the task's form details, the labels, options, bounds and sizes a submit
