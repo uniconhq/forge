@@ -13,6 +13,7 @@ import hashlib
 import pytest
 
 from forge.domain.errors import Forbidden, InvalidPath, NotFound
+from forge.domain.identity import AsUser
 from forge.domain.ids import TaskId, VersionId
 from forge.domain.roles import Role, Scope
 from forge.domain.uploads import Door
@@ -124,11 +125,24 @@ async def test_an_entrant_and_a_stranger_reach_no_door(
     acme.fake.add_user(31, "dee")
     stranger = await signed_in(setup, acme.fake, 31)
 
-    for session in (entered.session, stranger):
+    version = await _version(setup, acme, entered.task, "task.yaml")
+
+    for user, session in ((8, entered.session), (31, stranger)):
         with pytest.raises(Forbidden):
             await access.organiser_at(setup, session, Role.OBSERVER, "acme", "spring", "sum")
         with pytest.raises(Forbidden):
             await access.organiser(setup, session, Scope("acme", "spring", "sum"), Role.OBSERVER)
+        # Let past a guard as if checked, holding no role, the download
+        # refuses them itself.
+        unchecked = access.Organiser(
+            acme.fake.users[user],
+            (),
+            Scope("acme", "spring", "sum"),
+            Role.OBSERVER,
+            AsUser(user, acme.fake.mint(user)),
+        )
+        with pytest.raises(Forbidden):
+            await files.download(setup, unchecked, entered.task, "task.yaml", version)
     assert acme.fake.calls_to("media_door") == []
 
 
@@ -143,8 +157,13 @@ async def test_a_role_at_another_task_opens_no_door_to_this_one(
 
     with pytest.raises(Forbidden):
         await files.download(setup, obi, entered.task, "task.yaml", version)
-    assert other != entered.task
     assert acme.fake.calls_to("media_door") == []
+    # The same role opens the door to its own task's file.
+    own = await files.download(
+        setup, obi, other, "task.yaml", await _version(setup, acme, other, "task.yaml")
+    )
+    assert [call.arguments["place"] for call in acme.fake.calls_to("media_door")] == [other]
+    assert own.path
 
 
 @pytest.mark.parametrize(
