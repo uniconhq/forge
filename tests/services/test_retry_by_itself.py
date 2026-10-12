@@ -1,7 +1,8 @@
 """A grading that ends in `system_error` is tried again once by itself
-(#442): the CI's report, a start that fails and a read that finds it overdue
-each start the retry once their unit of work commits, in the background,
-and nothing runs on a timer. The new attempt is marked `automatic`, a second
+(#442): the CI's report and a read that finds it overdue each start the
+retry once their unit of work commits, in the background, and a start that
+fails is retried by the first read a minute after; nothing runs on a
+timer. The new attempt is marked `automatic`, a second
 failure waits for staff, and staff retry as often as they like, each staff
 attempt that fails getting its one retry by itself. Two retries by itself of
 one grading at once make one attempt, and a staff cancel or retry before it
@@ -27,7 +28,7 @@ from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
 from forge.services import gradings, runs, submissions
-from forge.services.gradings import NO_ANSWER, NO_RUN
+from forge.services.gradings import NO_ANSWER, NO_RUN, START_RETRY_WAIT
 from forge.settings import Settings
 from forge.testing import APP_URL, FORGE_URL, FakeClock
 from tests.services.conftest import SPRING, Acme, Entered, organiser, upload
@@ -228,20 +229,26 @@ async def test_a_run_past_its_deadline_is_retried_by_itself_once_found(
     assert (new.attempt, new.automatic) == (2, True)
 
 
-async def test_a_start_that_fails_is_retried_by_itself(
-    setup: Setup, acme: Acme, entered: Entered
+async def test_a_start_that_fails_is_retried_by_the_first_read_a_minute_after(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
     acme.fake.ci.refuse_starts = 1
 
     await _submit(setup, acme, entered)
+    clock.advance(START_RETRY_WAIT - timedelta(seconds=1))
+    await _told(setup, entered)
 
+    (only,) = await _rows(setup)
+    assert (only.status, only.error) == (GradingStatus.SYSTEM_ERROR, NO_RUN)
+    clock.advance(timedelta(seconds=1))
+    await _told(setup, entered)
     old, new = await _rows(setup)
-    assert (old.status, old.error) == (GradingStatus.SYSTEM_ERROR, NO_RUN)
+    assert (old.id, old.status) == (only.id, GradingStatus.SYSTEM_ERROR)
     assert (new.attempt, new.automatic, new.status) == (2, True, GradingStatus.DISPATCHED)
 
 
 async def test_a_retry_that_cannot_start_either_waits_for_staff(
-    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
 ) -> None:
     async def down(*args: Any, **kwargs: Any) -> RunId:
         raise Unavailable("the CI went away")
@@ -249,6 +256,9 @@ async def test_a_retry_that_cannot_start_either_waits_for_staff(
     monkeypatch.setattr(acme.fake.grading, "start_run", down)
 
     await _submit(setup, acme, entered)
+    for _ in range(2):
+        clock.advance(START_RETRY_WAIT)
+        await _told(setup, entered)
 
     assert [(row.attempt, row.status, row.error, row.automatic) for row in await _rows(setup)] == [
         (1, GradingStatus.SYSTEM_ERROR, NO_ANSWER, False),

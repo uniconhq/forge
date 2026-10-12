@@ -1767,10 +1767,13 @@ drops the `falls_back` column and adds `automatic` (below).
 **Tried again once by itself.** A latest attempt that ends in
 `system_error` is retried once without staff (`gradings.notice`,
 `gradings.retry_by_itself`), started by whatever finds it so: the CI's
-report, a start that fails, and every read that reads its status (a
-contestant's submissions, the boards, the contest home, the task's
-gradings, the feed and the queue depth), which finds it overdue or lost
-too. Nothing runs on a timer: the reader starts the retry once its unit of
+report, and every read that reads its status (a contestant's submissions,
+the boards, the contest home, the task's gradings, the feed and the queue
+depth), which finds it overdue or lost too. A start that fails waits
+`START_RETRY_WAIT`, a minute, for its retry, which the first read after
+starts (`gradings.start_waits`), so the one retry is not spent against a
+CI that refused a moment ago; a failure the CI reports and an overdue or
+lost run are retried at once. Nothing runs on a timer: the reader starts the retry once its unit of
 work commits, in the background (`ctx.in_background`), and does not wait
 for it, and a process remembers for `NOTICED_KEPT`, 30 seconds, that it
 started one, so a crowd of readers starts it once. The retry holds the task

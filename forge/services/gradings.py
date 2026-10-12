@@ -181,6 +181,11 @@ RUN_STATE_KEPT = timedelta(seconds=15)
 """How long this process keeps the CI's answer about where one run is, so a
 contestant's page polling every two seconds asks the CI a few times a
 minute at most."""
+START_RETRY_WAIT = timedelta(minutes=1)
+"""How long a grading whose run could not be started waits before a read
+may start its retry by itself, so the one retry is not spent against a CI
+that refused a moment ago; still nothing runs on a timer."""
+
 NOTICED_KEPT = timedelta(seconds=30)
 """How long this process remembers that it started the retry of a failed
 grading, so a crowd of readers finding the failure together starts it once;
@@ -460,7 +465,8 @@ async def _start_run(ctx: Context, account: AsOrgAccount, run: GradingRun, spec:
 
 async def _not_started(ctx: Context, grading: uuid.UUID, exc: Exception, reason: str) -> None:
     """End the grading in `system_error` with `reason`, unless it moved on
-    meanwhile, and start its retry by itself once that commits.
+    meanwhile. Its retry by itself is left to the first read that finds it
+    `START_RETRY_WAIT` after (`notice`).
     """
     log.warning(
         "gradings.start_failed", grading=str(grading), error=type(exc).__name__, detail=str(exc)
@@ -468,7 +474,6 @@ async def _not_started(ctx: Context, grading: uuid.UUID, exc: Exception, reason:
     row = await find(ctx, grading, lock=True)
     if row is not None and row.status == GradingStatus.QUEUED:
         finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=reason)
-        await notice(ctx, [row])
 
 
 async def _cancel_quietly(ctx: Context, run: RunId) -> None:
@@ -664,15 +669,19 @@ def last_good(attempts: Iterable[Grading], row: Grading) -> Grading | None:
 async def notice(ctx: Context, rows: Iterable[Grading], lost: Collection[uuid.UUID] = ()) -> None:
     """Start, once this unit of work commits, the retry the platform makes by
     itself of each of `rows`, the latest attempts of their submissions, that
-    reads as a system error now and was not itself such a retry. Each is
-    started once by this process in `NOTICED_KEPT` however many readers
-    find it, and `retry_by_itself` makes it once whatever any other process
-    does. Nothing is started while `retry_failed` is off.
+    reads as a system error now and was not itself such a retry, and, for
+    one whose run could not be started, failed `START_RETRY_WAIT` ago or
+    more (`start_waits`). Each is started once by this process in
+    `NOTICED_KEPT` however many readers find it, and `retry_by_itself`
+    makes it once whatever any other process does. Nothing is started
+    while `retry_failed` is off.
     """
     if not ctx.settings.retry_failed:
         return
     for row in rows:
         if row.automatic or status_of(ctx, row, lost) is not GradingStatus.SYSTEM_ERROR:
+            continue
+        if start_waits(ctx, row):
             continue
         if not await _first_to_notice(ctx, row.id):
             continue
@@ -682,6 +691,20 @@ async def notice(ctx: Context, rows: Iterable[Grading], lost: Collection[uuid.UU
             await retry_by_itself(later, grading)
 
         ctx.in_background(retry_it)
+
+
+def start_waits(ctx: Context, row: Grading) -> bool:
+    """Whether a grading whose run could not be started (a system error
+    with no run) failed less than `START_RETRY_WAIT` ago, so its retry by
+    itself waits. A failure the CI reported, and an overdue or lost run,
+    wait for nothing.
+    """
+    return (
+        row.status == GradingStatus.SYSTEM_ERROR
+        and row.run_id is None
+        and row.finished_at is not None
+        and ctx.now < row.finished_at + START_RETRY_WAIT
+    )
 
 
 async def _first_to_notice(ctx: Context, grading: uuid.UUID) -> bool:
@@ -702,7 +725,8 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
     `system_error`, a new attempt marked `automatic` against the publication
     it graded against, or none when there is nothing to retry: the grading
     is not the latest attempt of its submission any more, does not read as
-    a system error, staff ended it, it was itself such a retry, or another
+    a system error, its run could not be started and it still waits
+    (`start_waits`), staff ended it, it was itself such a retry, or another
     attempt is still being graded. The task and the submission's attempts
     are held as a staff retry holds them, so two of these at once, or one
     beside a staff retry, a cancel or a rejudge, make one attempt between
@@ -719,7 +743,7 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
     row = next(attempt for attempt in attempts if attempt.id == grading)
     if row.automatic or any(other.attempt > row.attempt for other in attempts):
         return None
-    if status_of(ctx, row, gone) is not GradingStatus.SYSTEM_ERROR:
+    if status_of(ctx, row, gone) is not GradingStatus.SYSTEM_ERROR or start_waits(ctx, row):
         return None
     if any(status_of(ctx, other, gone) in UNFINISHED for other in attempts):
         return None
