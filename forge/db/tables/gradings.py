@@ -23,7 +23,8 @@ that ended in `system_error`, kept when staff then cancel it with
 `cancel_reason`, the sentence its contestant reads. `automatic` marks the
 attempt the platform made by itself when the one before it ended in
 `system_error`; a failure of an attempt so marked is not tried again by
-itself, but waits for staff.
+itself, but waits for staff. `submission_limit` is the task's
+`submissions.max` an `over_limit` attempt ended against, none on any other.
 """
 
 import uuid
@@ -70,6 +71,7 @@ class Grading(Base, Timestamped):
     error: Mapped[str | None]
     cancel_reason: Mapped[str | None]
     automatic: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    submission_limit: Mapped[int | None]
 
     __table_args__ = (
         CheckConstraint(f"status in {STATUSES}", name="status"),

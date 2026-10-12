@@ -955,7 +955,8 @@ each file under it, named one by one.
    refused with `ConfirmationRequired`, listing the changes and how many
    submissions it would grade again (`gradings.to_regrade`, counted as the
    regrade chooses them: each submission's latest attempt, but one staff
-   cancelled), and nothing is written; the same save with `confirm=True`
+   cancelled and a delayed or over-the-limit one whose entrant has no room
+   left under `submissions.max`), and nothing is written; the same save with `confirm=True`
    publishes. A save with
    `keep_as_draft=True` is written as a draft that says what it held back
    and publishes nothing, on any save, valid or not, started contest or not.
@@ -972,7 +973,8 @@ each file under it, named one by one.
    save checks and publishes the task as it then stands.
 6. A publication that changed how the task grades regrades every submission
    to the task, as `gradings.rejudge` does: a new attempt of each one's
-   latest attempt against it.
+   latest attempt against it, the delayed ones held to their entrants' room
+   under the `submissions.max` the save published.
 
 `tasks.standing(contest)` is the list an observer of the contest works
 its tasks from: every task the contest's `tasks` lists, in that order,
@@ -1577,7 +1579,9 @@ once per process. A contestant is told where a submission stands in
 TASK-FORMAT.md section 1.7's words (`SubmissionState`): `queued` until its
 run is started, `grading` while the CI holds or runs it, `graded` once it
 has a result, `delayed` while it has none and its latest attempt failed,
-and `cancelled` once staff end it; organisers read the grading's own
+`over_limit` once it was to be graded again with no room left under
+`submissions.max` (`Result.limit` the most reached), and `cancelled` once
+staff end it; organisers read the grading's own
 status. A submission is told by the attempt the boards count
 (`scores.counted`): the latest that finished with a result, so a regrade
 under way, a failure or a cancel leaves its result as it was; and while
@@ -1792,16 +1796,37 @@ and against `submissions.max`, until a newer attempt finishes with one. A
 regrade under way, a `system_error` and a staff cancel never take a result
 away. A submission none of whose attempts has a result is still grading on
 a board while its latest attempt is queued, running or a `system_error`,
-and void once staff cancel it; while its latest attempt is a
-`system_error` it is `delayed` to its contestant and is left out of
-`submissions.max`, and once it finishes with a result it counts, even past
-the most. Every `GradingRecord` of a latest attempt that has not finished
+and void once staff cancel it or it ends over the limit; while its latest
+attempt is a `system_error` it is `delayed` to its contestant and is left
+out of `submissions.max`. Every `GradingRecord` of a latest attempt that has not finished
 with a result carries `last_good`, the latest earlier attempt that did,
 the one its submission counts meanwhile. The contest's `on_system_error`
 is retired: a save that has it is refused at it, saying why, and a stored
 file that still holds it reads with it ignored (`IGNORED_ON_READ`), since
 nothing took its place. Migration 0019
 drops the `falls_back` column and adds `automatic` (below).
+
+**The first `max` to get a result count.** A delayed submission holds no
+place under `submissions.max` while it waits, so it is graded again only
+while its entrant has room (#445): its retry by itself, a staff retry and a
+regrade each check, under the task's hold, that the entrant's submissions
+to the task with a result and those waiting that are not delayed, with the
+delayed ones made before it, are fewer than the most
+(`forge.domain.grading.room`, `gradings.place_of`; the submit's own count
+reads the same places). Without room the new attempt is made and ended at
+once `over_limit`, run by nothing, with the most it reached in
+`submission_limit`; the submission is then void on every board, left out
+of `submissions.max`, and served to its contestant as `over_limit` with
+that `limit`. No one grades one past the most: a staff retry is checked
+the same way, and the organisers' `GradingRecord` of a latest attempt with
+no result carries `retry_limit`, the most a retry now would end over, so
+the retry's confirmation says so before it runs. A staff retry or a regrade
+checks an over-the-limit submission again, so room that opens (a waiting
+submission ending delayed, the most raised) lets it be graded; a regrade
+leaves one still without room as it is, and ends a delayed one without room
+over the limit, each entrant's taken in the order they were made. Migration
+0020 adds the status and `submission_limit`; going back cancels an
+over-the-limit attempt with a sentence saying why, which leaves it void.
 
 **Tried again once by itself.** A latest attempt that ends in
 `system_error` is retried once without staff (`gradings.notice`,
@@ -1838,7 +1863,9 @@ committed, so it does not keep a machine's containers going.
 `gradings.rejudge(task)` makes a new attempt of every submission's latest
 attempt, against the current publication, cancelling first one still being
 graded against an older publication and leaving one being graded against
-the current one, and answers a `Rejudged` with its counts.
+the current one, holding delayed and over-the-limit submissions to their
+entrants' room, and answers a `Rejudged` with its counts, `over_limit`
+among them.
 `gradings.list(task)` gives the task's gradings, newest first, at most 500,
 to anyone observing the task, each a `FeedEntry` as the feed gives it
 (below), so it says who submitted each. Every `GradingRecord` an organiser

@@ -7,9 +7,10 @@ first refusal, each with a code of its own, before anything is written:
    (`submitters.refuse`).
 2. The entrant has submissions left (`submission_limit`), counted from the
    submissions at the forge, leaving out one that has no result and whose
-   latest attempt is cancelled, void (`scores.usable`), or is a system
-   error, delayed (`scores.delayed`), and the task's rate holds (`rate_limited`),
-   counted from the grading rows of its submissions within its window.
+   latest attempt is cancelled or over the limit, void, or is a system
+   error, delayed (`gradings.place_of`), and the task's rate holds
+   (`rate_limited`), counted from the grading rows of its submissions
+   within its window.
 3. Every upload named is theirs, for this task (`upload_not_yours`), and a
    checked file no submission has used (`upload_not_ready`).
 4. Each file is within its input's `max_size` (`too_large`).
@@ -58,9 +59,12 @@ latest that finished with a result, so a regrade under way, a system error
 and a staff cancel leave the result read as it was; and while none has, the
 latest, of which a run in `system_error` is read as `delayed` and nothing
 more, and one staff then cancelled as `cancelled` with the sentence they
-gave. A submission with no result whose latest attempt is delayed or staff
-cancelled does not count against the task's `submissions.max`; once it
-finishes with a result it counts, even past the most. A grading is
+gave. A submission with no result whose latest attempt is delayed, staff
+cancelled or over the limit does not count against the task's
+`submissions.max`. A delayed one is graded again only while its entrant
+has room under the most, and otherwise ends over the limit, read as
+`over_limit` with the most it reached (`gradings.retry_by_itself`), so no
+entrant gets more results than the most allows. A grading is
 shown with the publication it ran under: its sealed facts always, and
 the latest publication's `test_groups`, `credit` and value meanings when
 its own is of the same generation (no grading change published since) and
@@ -103,7 +107,6 @@ from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
 from forge.domain import exact_json
 from forge.domain import submissions as rules
-from forge.domain.boards import State
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Conflict,
@@ -120,7 +123,7 @@ from forge.domain.errors import (
     UploadNotReady,
     UploadNotYours,
 )
-from forge.domain.grading import GradingStatus
+from forge.domain.grading import GradingStatus, Place
 from forge.domain.identity import AsUser
 from forge.domain.ids import PublicationId, SubmissionId, TaskId, WorkspaceId
 from forge.domain.names import WorkspaceOwner
@@ -172,8 +175,10 @@ class Result:
     they include. Where it stands is in the contestant's words
     (`SubmissionState`): a run in `system_error` is `delayed` to its
     contestant, with nothing else; one staff cancelled is `cancelled`, with
-    `reason`, the sentence they gave. Read by organisers, everything is
-    shown and where it stands is the grading's own `GradingStatus`.
+    `reason`, the sentence they gave; and one ended over the limit is
+    `over_limit`, with `limit`, the `submissions.max` its entrant had
+    reached. Read by organisers, everything is shown and where it stands is
+    the grading's own `GradingStatus`.
     """
 
     id: uuid.UUID
@@ -187,6 +192,7 @@ class Result:
     points: Points | None = None
     factor: Fraction | None = None
     folded: Mapping[str, Fraction] = field(default_factory=dict)
+    limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,11 +386,12 @@ async def _submitted_before(ctx: Context, workspace: WorkspaceId, task: TaskId) 
 
 async def _uncounted(ctx: Context, workspace: WorkspaceId, task: TaskId) -> set[str]:
     """The workspace's submissions of the task that do not count against its
-    `submissions.max`: those none of whose attempts finished with a result
-    and whose latest is a cancel, void as on the boards (`scores.usable`),
-    or reads as a system error, delayed (`scores.delayed`). Whether the CI
-    lost a run is not asked here, under the submit's holds: such a run
-    counts until a read finds it lost and its retry starts.
+    `submissions.max`, by the rule a delayed one is graded again by
+    (`gradings.place_of`): those none of whose attempts finished with a
+    result and whose latest is a cancel or over the limit, void as on the
+    boards, or reads as a system error, delayed. Whether the CI lost a run
+    is not asked here, under the submit's holds: such a run counts until a
+    read finds it lost and its retry starts.
     """
     rows = (
         await ctx.db.execute(
@@ -397,7 +404,7 @@ async def _uncounted(ctx: Context, workspace: WorkspaceId, task: TaskId) -> set[
     return {
         submission
         for submission, attempts in grouped.items()
-        if scores.usable(ctx, attempts, ()).state is State.VOID or scores.delayed(ctx, attempts, ())
+        if gradings.place_of(ctx, attempts) is not Place.HOLDS
     }
 
 
@@ -867,6 +874,8 @@ async def _result(
     state: SubmissionState | GradingStatus = status if everything else told(status)
     if status is GradingStatus.CANCELLED:
         return Result(row.id, row.attempt, state, None, None, (), {}, row.cancel_reason)
+    if status is GradingStatus.OVER_LIMIT:
+        return Result(row.id, row.attempt, state, None, None, (), {}, limit=row.submission_limit)
     if status is not GradingStatus.DONE or row.result is None:
         return Result(row.id, row.attempt, state, None, None, (), {})
     graded = await scorer.graded(PublicationId(row.publication_id))

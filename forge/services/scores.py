@@ -21,7 +21,8 @@ away (`counted`). Finished, that attempt is a candidate when its run was
 not stopped, an attempt when a sealed step stopped it, and nothing
 otherwise. A submission none of whose attempts finished with a result is
 still grading while its latest attempt is queued, running or a system
-error, and nothing once that attempt is cancelled.
+error, and nothing once that attempt is cancelled or ended over the limit
+(`forge.domain.grading.room`): it then counts on no board.
 """
 
 import uuid
@@ -94,12 +95,12 @@ def usable(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -
     submission stands by it, before its run's stop is read: the latest
     attempt that finished with a result, a candidate; with none, still
     grading while the latest attempt is queued, running or a system error,
-    and nothing once it is cancelled.
+    and nothing once it is cancelled or ended over the limit.
     """
     row = counted(rows)
     if gradings.good(row):
         return Usable(State.CANDIDATE, row)
-    if gradings.status_of(ctx, row, lost) is GradingStatus.CANCELLED:
+    if gradings.status_of(ctx, row, lost) in (GradingStatus.CANCELLED, GradingStatus.OVER_LIMIT):
         return Usable(State.VOID, None)
     return Usable(State.GRADING, None)
 

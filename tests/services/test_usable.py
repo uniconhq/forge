@@ -2,8 +2,9 @@
 that finished with a result, until a newer attempt finishes with one, so a
 regrade in progress, a system error and a staff cancel never take a result
 away; with none, still grading while the latest attempt is queued, running
-or a system error, and nothing once it is cancelled (TASK-FORMAT.md section
-3.5; #442).
+or a system error, and nothing once it is cancelled or ended over the limit
+(TASK-FORMAT.md section 3.5; #442, #445); and where a submission stands
+against its task's `submissions.max` by the same reading.
 """
 
 from datetime import UTC, datetime
@@ -12,7 +13,9 @@ from typing import Any, cast
 
 from forge.db.tables import Grading
 from forge.domain.boards import State
+from forge.domain.grading import Place
 from forge.runtime.context import Context
+from forge.services.gradings import place_of
 from forge.services.scores import counted, delayed, usable
 
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
@@ -103,3 +106,26 @@ def test_a_submission_with_no_result_is_pending_while_graded_or_failed() -> None
     assert usable(CTX, failed, ()).state is State.GRADING
     assert delayed(CTX, failed, ())
     assert not delayed(CTX, retried, ())
+
+
+def test_a_submission_ended_over_the_limit_is_void_and_holds_no_place() -> None:
+    over = _attempt(2, "over_limit")
+    rows = [_attempt(1, "system_error"), over]
+
+    read = usable(CTX, rows, ())
+
+    assert (read.state, read.row) == (State.VOID, None)
+    assert not delayed(CTX, rows, ())
+    assert place_of(CTX, rows) is Place.NONE
+
+
+def test_where_a_submission_stands_against_the_most() -> None:
+    graded = [_attempt(1, "done", {"stopped": None}), _attempt(2, "system_error")]
+    waiting = [_attempt(1, "queued")]
+    failed = [_attempt(1, "system_error")]
+    cancelled = [_attempt(1, "cancelled", reason=REASON)]
+
+    assert place_of(CTX, graded) is Place.HOLDS
+    assert place_of(CTX, waiting) is Place.HOLDS
+    assert place_of(CTX, failed) is Place.DELAYED
+    assert place_of(CTX, cancelled) is Place.NONE

@@ -37,6 +37,20 @@ on the boards, for relative credit, to its row and against
 `submissions.max`, until a newer attempt finishes with one: a failure or a
 cancel never takes a result away (`scores.usable`).
 
+A delayed submission, one with no result whose latest attempt reads as a
+system error, holds no place under `submissions.max` while it waits, so the
+first `max` to get a result are the ones that count: its retry by itself, a
+staff retry and a regrade grade it again only while its entrant's
+submissions with a result, those waiting that are not delayed, and the
+delayed ones made before it are fewer than the most
+(`forge.domain.grading.room`), read under the task's hold. Otherwise the
+new attempt ends `over_limit` at once, run by nothing, with the most it
+reached; the submission then counts on no board and against nothing. One
+over the limit is checked again the same way by a staff retry or a
+regrade, and a regrade leaves one still without room as it is. No one
+grades one past the most; the organisers' list says when a retry would end
+over the limit (`retry_limit`), before it runs.
+
 An organiser managing the task reads its gradings and acts on one:
 
 - `cancel` ends a submission whose latest grading reads as a system error,
@@ -53,13 +67,16 @@ An organiser managing the task reads its gradings and acts on one:
   that reads as finished only because it is overdue or lost is ended
   first, with the reason written on its row, and the old run is cancelled
   at the CI once the retry has committed, so it does not keep a machine's
-  containers going;
+  containers going. A delayed or over-the-limit submission is held to its
+  entrant's room, as above;
 - `rejudge` makes a new attempt of every submission's latest attempt,
   against the task's current publication, as a save that publishes a
   change to how the task grades does (`regrade`).
   A latest attempt still being graded against an older publication is
   cancelled first; one being graded against the current one is left to
-  finish, and a submission staff cancelled stays cancelled;
+  finish, a submission staff cancelled stays cancelled, and delayed and
+  over-the-limit ones are held to their entrant's room, the earliest
+  first;
 - `run_log` reads a grading's run log, for an organiser observing the
   task: it names every test, hidden ones too, so it is the organisers'
   alone. It is read whole up to `RUN_LOG_MAX` bytes and refused above
@@ -94,7 +111,7 @@ before a control whose route names only the grading.
 import builtins
 import uuid
 from collections import Counter
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -128,6 +145,7 @@ from forge.domain.grading import (
     WAITING,
     GradingRun,
     GradingStatus,
+    Place,
     RunSpec,
     RunState,
     callback_token,
@@ -135,6 +153,7 @@ from forge.domain.grading import (
     envelope_key,
     log_key,
     overdue,
+    room,
     token_hash,
     worth_asking,
 )
@@ -223,6 +242,12 @@ class GradingRecord:
     graded, a system error or staff cancelled, `last_good` is the latest
     earlier attempt that did, the one its submission counts meanwhile; none
     on any other, and when there is no such attempt.
+
+    `limit` is the task's `submissions.max` an `over_limit` attempt ended
+    against. On a latest attempt of a submission with no result that reads
+    as a system error or over the limit, `retry_limit` is the task's
+    `submissions.max` when a retry of it now would end over the limit, so
+    the retry's confirmation can say so before it runs; none otherwise.
     """
 
     id: uuid.UUID
@@ -247,6 +272,8 @@ class GradingRecord:
     cancel_reason: str | None = None
     automatic: bool = False
     last_good: int | None = None
+    limit: int | None = None
+    retry_limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,8 +323,9 @@ class QueueDepth:
 class Rejudged:
     """What a rejudge did: the publication the new attempts grade against,
     how many it queued, how many unfinished attempts against an older
-    publication it cancelled first, and how many it left to finish against
-    the current one.
+    publication it cancelled first, how many it left to finish against
+    the current one, and how many delayed submissions it ended over the
+    limit, their entrants having no room left under `submissions.max`.
     """
 
     task: TaskId
@@ -305,6 +333,7 @@ class Rejudged:
     queued: int
     cancelled: int
     left_running: int
+    over_limit: int = 0
 
 
 def new_row(
@@ -321,11 +350,14 @@ def new_row(
     key: str | None,
     submitted_by: int | None,
     automatic: bool = False,
+    over_limit: int | None = None,
 ) -> Grading:
     """A new `queued` grading, added to the unit of work, with the hash of
     its run's callback token, whose run starts once the unit of work
     commits; `automatic` when the platform makes it by itself, retrying the
-    attempt before it.
+    attempt before it. With `over_limit`, the task's `submissions.max` its entrant has no
+    room left under, it is ended `over_limit` at once instead, and nothing
+    runs.
     """
     row = Grading(
         id=new_id(),
@@ -345,6 +377,10 @@ def new_row(
     )
     row.callback_token_hash = token_hash(callback_token_of(ctx, row))
     ctx.db.add(row)
+    if over_limit is not None:
+        row.submission_limit = over_limit
+        finish(ctx, row, GradingStatus.OVER_LIMIT)
+        return row
     changed(ctx, row)
     grading = row.id
 
@@ -666,6 +702,118 @@ def last_good(attempts: Iterable[Grading], row: Grading) -> Grading | None:
     return latest_good(other for other in attempts if other.attempt < row.attempt)
 
 
+def place_of(ctx: Context, attempts: Sequence[Grading], lost: Collection[uuid.UUID] = ()) -> Place:
+    """Where one submission stands against its task's `submissions.max`, by
+    its attempts: it holds a place once one finished with a result, and
+    while its latest is still being graded; it is delayed while it has no
+    result and its latest reads as a system error; and it holds none once
+    that is cancelled or over the limit.
+    """
+    if latest_good(attempts) is not None:
+        return Place.HOLDS
+    status = status_of(ctx, max(attempts, key=lambda row: row.attempt), lost)
+    if status in UNFINISHED or status is GradingStatus.DONE:
+        return Place.HOLDS
+    if status is GradingStatus.SYSTEM_ERROR:
+        return Place.DELAYED
+    return Place.NONE
+
+
+def waits_for_room(
+    ctx: Context, attempts: Sequence[Grading], lost: Collection[uuid.UUID] = ()
+) -> bool:
+    """Whether a submission is graded again only while its entrant has room
+    under the task's `submissions.max`: none of its attempts finished with a
+    result, and its latest reads as a system error, delayed, or ended over
+    the limit.
+    """
+    if latest_good(attempts) is not None:
+        return False
+    latest = max(attempts, key=lambda row: row.attempt)
+    return status_of(ctx, latest, lost) in (GradingStatus.SYSTEM_ERROR, GradingStatus.OVER_LIMIT)
+
+
+async def task_limit(ctx: Context, task: TaskId) -> int | None:
+    """The task's `submissions.max` as its latest publication says, none
+    while it has none.
+    """
+    found = await published.task(ctx, task)
+    return found.definition.submissions.max if found is not None else None
+
+
+async def _places(
+    ctx: Context, workspace: str, task: str, lost: Collection[uuid.UUID] = ()
+) -> dict[int, Place]:
+    """Where each of the workspace's submissions to the task stands against
+    its `submissions.max` (`place_of`), by number.
+    """
+    grouped: dict[int, builtins.list[Grading]] = {}
+    for row in await ctx.db.scalars(
+        select(Grading).where(Grading.workspace_id == workspace, Grading.task_id == task)
+    ):
+        grouped.setdefault(row.submission_number, []).append(row)
+    return {number: place_of(ctx, attempts, lost) for number, attempts in grouped.items()}
+
+
+async def _over_limit(
+    ctx: Context, row: Grading, attempts: Sequence[Grading], lost: Collection[uuid.UUID]
+) -> int | None:
+    """The task's `submissions.max` when grading `row`'s submission again now,
+    `attempts` being all of its attempts, would end it over the limit: it
+    waits for room (`waits_for_room`) and its entrant has none left for it
+    (`room`); none otherwise. Read under the task's hold, so no submit or
+    other retry takes a place meanwhile.
+    """
+    if not waits_for_room(ctx, attempts, lost):
+        return None
+    limit = await task_limit(ctx, TaskId(row.task_id))
+    if limit is None:
+        return None
+    places = await _places(ctx, row.workspace_id, row.task_id, lost)
+    number = row.submission_number
+    return None if number in room(places, limit, [number]) else limit
+
+
+async def _retry_limits(
+    ctx: Context, rows: Iterable[Grading], lost: Collection[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """For each of `rows`, latest attempts, whose retry now would end over
+    the limit, the task's `submissions.max` it would end against: read
+    without a hold, so it says what a retry would do as things stand.
+    """
+    waiting: dict[tuple[str, str], builtins.list[Grading]] = {}
+    for row in rows:
+        if GradingStatus(row.status) is not GradingStatus.DONE:
+            waiting.setdefault((row.task_id, row.workspace_id), []).append(row)
+    if not waiting:
+        return {}
+    found: dict[uuid.UUID, int] = {}
+    limits: dict[str, int | None] = {}
+    for (task, workspace), latest in waiting.items():
+        attempts: dict[int, builtins.list[Grading]] = {}
+        for row in await ctx.db.scalars(
+            select(Grading).where(Grading.workspace_id == workspace, Grading.task_id == task)
+        ):
+            attempts.setdefault(row.submission_number, []).append(row)
+        asking = [
+            row
+            for row in latest
+            if waits_for_room(ctx, attempts.get(row.submission_number, [row]), lost)
+        ]
+        if not asking:
+            continue
+        if task not in limits:
+            limits[task] = await task_limit(ctx, TaskId(task))
+        limit = limits[task]
+        if limit is None:
+            continue
+        places = {number: place_of(ctx, each, lost) for number, each in attempts.items()}
+        for row in asking:
+            if row.submission_number not in room(places, limit, [row.submission_number]):
+                found[row.id] = limit
+    return found
+
+
 async def notice(ctx: Context, rows: Iterable[Grading], lost: Collection[uuid.UUID] = ()) -> None:
     """Start, once this unit of work commits, the retry the platform makes by
     itself of each of `rows`, the latest attempts of their submissions, that
@@ -732,7 +880,10 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
     beside a staff retry, a cancel or a rejudge, make one attempt between
     them. One that reads failed only because it is overdue or lost is
     ended first, with the reason written on its row, its run cancelled at
-    the CI once this commits.
+    the CI once this commits. A submission with no result is graded again
+    only while its entrant has room under the task's `submissions.max`, and
+    otherwise its new attempt ends `over_limit` (`_over_limit`). The new
+    attempt belongs to the regrade the failed one belonged to.
     """
     found = await find(ctx, grading)
     if found is None or found.automatic:
@@ -747,10 +898,18 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
         return None
     if any(status_of(ctx, other, gone) in UNFINISHED for other in attempts):
         return None
+    over = await _over_limit(ctx, row, attempts, gone)
     _settle(ctx, row, gone)
-    made = _next_attempt(ctx, row, PublicationId(row.publication_id), attempts, automatic=True)
+    made = _next_attempt(
+        ctx, row, PublicationId(row.publication_id), attempts, automatic=True, over_limit=over
+    )
     await ctx.db.flush()
-    log.info("gradings.retried_by_itself", grading=str(row.id), attempt=made.attempt)
+    log.info(
+        "gradings.retried_by_itself",
+        grading=str(row.id),
+        attempt=made.attempt,
+        over_limit=over is not None,
+    )
     return made
 
 
@@ -931,7 +1090,12 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     staff cancelled, which that ends, and `Conflict` for one with a later
     attempt, which is the one to retry, or while another attempt of it is
     graded. The task is held alone, as by a save and a rejudge, so no
-    regrade numbers an attempt from rows read before this one landed.
+    regrade numbers an attempt from rows read before this one landed. A
+    submission with no result, delayed or over the limit, is graded again
+    only while its entrant has room under the task's `submissions.max`, and
+    otherwise the new attempt ends `over_limit` at once, as the grading's
+    `retry_limit` said it would; no one grades one past the most. The new
+    attempt belongs to the regrade the old one belonged to.
     """
     found = await _managed(ctx, organiser, grading, lock=False)
     await timelines.hold_task(ctx, TaskId(found.task_id))
@@ -955,10 +1119,13 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
         raise Conflict(
             "Another attempt of this submission is still being graded. Wait for it to finish."
         )
+    over = await _over_limit(ctx, row, attempts, gone)
     _settle(ctx, row, gone)
-    made = _next_attempt(ctx, row, PublicationId(row.publication_id), attempts)
+    made = _next_attempt(ctx, row, PublicationId(row.publication_id), attempts, over_limit=over)
     await ctx.db.flush()
-    log.info("gradings.retried", grading=str(row.id), attempt=made.attempt)
+    log.info(
+        "gradings.retried", grading=str(row.id), attempt=made.attempt, over_limit=over is not None
+    )
     good = latest_good(attempts)
     return record(ctx, made, latest=True, last_good=good.attempt if good else None)
 
@@ -1001,7 +1168,12 @@ async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
         raise NotFound(
             "The task has no publication to grade against yet. Save it so that it publishes."
         )
-    return await regrade(ctx, task, current.publication.id)
+    return await regrade(
+        ctx,
+        task,
+        current.publication.id,
+        limit=current.definition.submissions.max,
+    )
 
 
 @action
@@ -1029,11 +1201,19 @@ async def list(
     goods = await _last_goods(ctx, rows)
     gone = await lost(ctx, rows)
     await notice(ctx, [row for row in rows if row.id in last], gone)
+    limits = await _retry_limits(ctx, [row for row in rows if row.id in last], gone)
     return await _entries(
         ctx,
         contest_id_of(task_scope(task)),
         [
-            record(ctx, row, gone, latest=row.id in last, last_good=goods.get(row.id))
+            record(
+                ctx,
+                row,
+                gone,
+                latest=row.id in last,
+                last_good=goods.get(row.id),
+                retry_limit=limits.get(row.id),
+            )
             for row in rows
         ],
     )
@@ -1108,10 +1288,18 @@ async def feed(
         goods = await _last_goods(ctx, rows)
         gone = await lost(ctx, rows)
         await notice(ctx, [row for row in rows if row.id in last], gone)
+        shown = [row for row in rows if status is None or status_of(ctx, row, gone) == status]
+        limits = await _retry_limits(ctx, [row for row in shown if row.id in last], gone)
         kept.extend(
-            record(ctx, row, gone, latest=row.id in last, last_good=goods.get(row.id))
-            for row in rows
-            if status is None or status_of(ctx, row, gone) == status
+            record(
+                ctx,
+                row,
+                gone,
+                latest=row.id in last,
+                last_good=goods.get(row.id),
+                retry_limit=limits.get(row.id),
+            )
+            for row in shown
         )
         if len(rows) < size:
             break
@@ -1304,11 +1492,13 @@ def record(
     *,
     latest: bool,
     last_good: int | None = None,
+    retry_limit: int | None = None,
 ) -> GradingRecord:
     """The grading as an organiser reads it, `latest` saying whether it is
     its submission's latest attempt and `last_good` the latest earlier one
     that finished with a result, kept only on a latest attempt that has not
-    finished with one itself, since that is when it counts.
+    finished with one itself, since that is when it counts; and
+    `retry_limit` the `submissions.max` a retry of it now would end over.
     """
     late = overdue_of(ctx, row, lost)
     status = GradingStatus.SYSTEM_ERROR if late is not None else GradingStatus(row.status)
@@ -1335,6 +1525,8 @@ def record(
         cancel_reason=row.cancel_reason,
         automatic=row.automatic,
         last_good=last_good if latest and not good(row) else None,
+        limit=row.submission_limit if status is GradingStatus.OVER_LIMIT else None,
+        retry_limit=retry_limit if latest else None,
     )
 
 
@@ -1422,7 +1614,11 @@ def _next_attempt(
     attempts: Sequence[Grading],
     *,
     automatic: bool = False,
+    over_limit: int | None = None,
 ) -> Grading:
+    """The next attempt of `row`'s submission against `publication`, ended
+    at once over the limit with `over_limit`.
+    """
     return new_row(
         ctx,
         task=TaskId(row.task_id),
@@ -1436,6 +1632,7 @@ def _next_attempt(
         key=None,
         submitted_by=row.submitted_by,
         automatic=automatic,
+        over_limit=over_limit,
     )
 
 
@@ -1460,11 +1657,47 @@ def _regraded(rows: Sequence[Grading]) -> dict[str, Grading]:
     return {submission: row for submission, row in latest.items() if not staff_cancelled(row)}
 
 
-async def to_regrade(ctx: Context, task: TaskId) -> int:
+def _without_room(
+    ctx: Context,
+    regraded: Collection[str],
+    attempts: Mapping[str, Sequence[Grading]],
+    lost: Collection[uuid.UUID],
+    limit: int,
+) -> frozenset[str]:
+    """Which of the `regraded` submissions, each with its `attempts`, wait
+    for room under a `submissions.max` of `limit` (`waits_for_room`) and
+    find none: each entrant's delayed and over-the-limit submissions are
+    taken in the order they were made, after the places its others hold
+    (`room`).
+    """
+    entrants: dict[str, dict[int, str]] = {}
+    for submission, each in attempts.items():
+        entrants.setdefault(each[0].workspace_id, {})[each[0].submission_number] = submission
+    refused: set[str] = set()
+    for numbered in entrants.values():
+        asking = [
+            number
+            for number, submission in numbered.items()
+            if submission in regraded and waits_for_room(ctx, attempts[submission], lost)
+        ]
+        if not asking:
+            continue
+        places = {
+            number: place_of(ctx, attempts[submission], lost)
+            for number, submission in numbered.items()
+        }
+        admitted = room(places, limit, asking)
+        refused.update(numbered[number] for number in asking if number not in admitted)
+    return frozenset(refused)
+
+
+async def to_regrade(ctx: Context, task: TaskId, *, limit: int | None = None) -> int:
     """How many submissions `regrade` would grade again against a publication
     not made yet, chosen as it chooses them: each submission's latest
-    attempt, but one staff cancelled. What a save's confirmation says it
-    will cost.
+    attempt, but one staff cancelled, and but a delayed or over-the-limit
+    one whose entrant has no room left under a `submissions.max` of `limit`,
+    the task's latest publication's when none is given. What a save's
+    confirmation says it will cost.
     """
     rows = (
         (
@@ -1477,10 +1710,24 @@ async def to_regrade(ctx: Context, task: TaskId) -> int:
         .scalars()
         .all()
     )
-    return len(_regraded(rows))
+    regraded = _regraded(rows)
+    if limit is None:
+        limit = await task_limit(ctx, task)
+    if limit is None:
+        return len(regraded)
+    attempts: dict[str, builtins.list[Grading]] = {}
+    for row in rows:
+        attempts.setdefault(row.submission_id, []).append(row)
+    return len(regraded) - len(_without_room(ctx, regraded, attempts, (), limit))
 
 
-async def regrade(ctx: Context, task: TaskId, publication: PublicationId) -> Rejudged:
+async def regrade(
+    ctx: Context,
+    task: TaskId,
+    publication: PublicationId,
+    *,
+    limit: int,
+) -> Rejudged:
     """A new attempt of every submission's latest attempt to the task,
     against `publication`, for a rejudge and for a save that publishes a
     change to how the task grades. A latest attempt still being graded
@@ -1489,6 +1736,12 @@ async def regrade(ctx: Context, task: TaskId, publication: PublicationId) -> Rej
     because it is overdue or lost is ended first, its old run cancelled at
     the CI once this has committed. A submission staff cancelled, its latest
     attempt `cancelled` with a sentence, is left as it is.
+
+    A submission with no result, delayed or over the limit, is graded again
+    only while its entrant has room under a `submissions.max` of `limit`,
+    each entrant's taken in the order they were made: a delayed one with
+    no room gets an attempt ended `over_limit` at once, and one already
+    over the limit with none is left as it is.
     """
     # Which runs the CI has lost is asked before any row is locked, since
     # asking takes the CI's time; the task itself is held by the caller.
@@ -1512,21 +1765,34 @@ async def regrade(ctx: Context, task: TaskId, publication: PublicationId) -> Rej
     attempts: dict[str, builtins.list[Grading]] = {}
     for row in rows:
         attempts.setdefault(row.submission_id, []).append(row)
-    queued = cancelled = left_running = 0
-    for submission, row in _regraded(rows).items():
+    regraded = _regraded(rows)
+    refused = _without_room(ctx, regraded, attempts, gone, limit)
+    made: builtins.list[tuple[str, Grading]] = []
+    left_running = 0
+    for submission, row in regraded.items():
         status = status_of(ctx, row, gone)
-        if status in UNFINISHED:
-            if row.publication_id == publication:
-                left_running += 1
-                continue
+        if status in UNFINISHED and row.publication_id == publication:
+            left_running += 1
+        elif not (submission in refused and status is GradingStatus.OVER_LIMIT):
+            made.append((submission, row))
+    if not made:
+        log.info("gradings.rejudged", task=task, publication=publication, queued=0)
+        return Rejudged(task, publication, 0, 0, left_running)
+    queued = cancelled = over_limit = 0
+    for submission, row in made:
+        if status_of(ctx, row, gone) in UNFINISHED:
             _stop_quietly(ctx, row)
             cancelled += 1
         elif GradingStatus(row.status) in UNFINISHED:
             finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=overdue_of(ctx, row, gone))
             if row.run_id is not None:
                 _cancel_after_commit(ctx, RunId(row.run_id))
-        _next_attempt(ctx, row, publication, attempts[submission])
-        queued += 1
+        over = limit if submission in refused else None
+        _next_attempt(ctx, row, publication, attempts[submission], over_limit=over)
+        if over is None:
+            queued += 1
+        else:
+            over_limit += 1
     await ctx.db.flush()
     log.info(
         "gradings.rejudged",
@@ -1535,5 +1801,6 @@ async def regrade(ctx: Context, task: TaskId, publication: PublicationId) -> Rej
         queued=queued,
         cancelled=cancelled,
         left_running=left_running,
+        over_limit=over_limit,
     )
-    return Rejudged(task, publication, queued, cancelled, left_running)
+    return Rejudged(task, publication, queued, cancelled, left_running, over_limit)

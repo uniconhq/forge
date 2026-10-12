@@ -309,7 +309,16 @@ async def save(
     )
     publication = await ctx.forge.workspaces.publish(task, version, note)
     number = await _number_of(ctx, task, publication)
-    regraded = (await gradings.regrade(ctx, task, publication)).queued if changed else 0
+    regraded = 0
+    if changed:
+        regraded = (
+            await gradings.regrade(
+                ctx,
+                task,
+                publication,
+                limit=checked.definition.submissions.max,
+            )
+        ).queued
     if latest is None:
         places.ahead_at(ctx, task)
     log.info(

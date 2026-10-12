@@ -57,7 +57,7 @@ from forge.domain.uploads import pointer_text
 from forge.domain.workflows import Visibility
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
-from forge.services import entrants, identity, publications, submissions, uploads
+from forge.services import entrants, gradings, identity, publications, submissions, uploads
 from forge.testing import CLASSIC, FakeClock
 from tests.services.conftest import (
     RUNNING,
@@ -571,7 +571,7 @@ async def _stands(setup: Setup, number: int, **values: Any) -> None:
 FAILED = {"status": "system_error", "error": "The checker crashed."}
 
 
-async def test_a_delayed_submission_uses_up_none_until_graded_and_then_counts_past_the_most(
+async def test_a_delayed_submission_uses_up_none_while_it_waits_and_is_graded_only_with_room(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
     await _at_most_one(setup, acme, entered)
@@ -588,10 +588,17 @@ async def test_a_delayed_submission_uses_up_none_until_graded_and_then_counts_pa
     # Graded, the first counts again, and the second, delayed, does not.
     with pytest.raises(SubmissionLimit):
         await _submit(setup, acme, entered, key="key-0003-cccc")
-    await _stands(setup, 2, status="done", result=RESULT)
-    # Both count once graded, past the most, neither result taken away.
+    # Graded again, the second finds no room, and ends over the limit (#445).
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring", "sum"), Role.MANAGER)
+    (second,) = [row for row in await _gradings(setup) if row.submission_number == 2]
+    await gradings.retry(setup, manager, second.id)
     told = [found.grading for found in await submissions.mine(setup, entered.session, entered.task)]
-    assert [found.status if found else None for found in told] == [SubmissionState.GRADED] * 2
+    assert [(found.status, found.limit) if found else None for found in told] == [
+        (SubmissionState.OVER_LIMIT, 1),
+        (SubmissionState.GRADED, None),
+    ]
+    with pytest.raises(SubmissionLimit):
+        await _submit(setup, acme, entered, key="key-0004-dddd")
 
 
 async def test_a_run_the_ci_lost_still_counts_when_submitting(
