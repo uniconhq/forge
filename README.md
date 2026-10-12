@@ -1208,7 +1208,9 @@ none for anyone else and on a task that gives no points; and `task`, a
 visible task's statement, its
 submission caps and the inputs a contestant gives, read from its plan with
 the task's form details, the labels, options, bounds and sizes a submit
-panel shows, and nothing else of what it holds. A visitor with no session reads
+panel shows, and nothing else of what it holds. An input's label is the
+task's, else its workflow's `title`, which the publication's note keeps
+from the workflow version it was published with, else its key. A visitor with no session reads
 `landing`: the public contests, one with its released tasks, and a released
 task's statement. Both lists of contests, a signed-in person's and a
 visitor's, start from every published contest as the process read it at

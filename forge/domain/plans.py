@@ -933,7 +933,10 @@ class _Raised:
 @dataclass(frozen=True, slots=True)
 class Compiled:
     """A compiled task: its plan, its sealed steps and what they hold back
-    until the reveal, and what the save says of it beside publishing it.
+    until the reveal, what the save says of it beside publishing it, what
+    each per-test value means, and the workflow's title of each contestant
+    input that has one, which the entrant's form names it by when the task
+    gives no label.
     """
 
     plan: Plan
@@ -941,6 +944,7 @@ class Compiled:
     notes: tuple[str, ...] = ()
     held: Sealed = NOTHING_SEALED
     measures: Mapping[str, Measure] = field(default_factory=dict)
+    titles: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -1430,6 +1434,11 @@ def compile_plan(
         (*_sealed_notes(compiler), *_credit_notes(task, values)),
         held,
         measures(values, task),
+        {
+            name: declared.title
+            for name, declared in workflow.inputs.items()
+            if declared.contestant and declared.title is not None
+        },
     )
 
 

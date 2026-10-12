@@ -177,6 +177,30 @@ async def test_a_task_page_gives_the_published_statement_caps_and_form(
     ]
 
 
+async def test_an_input_the_task_gives_no_label_is_named_by_its_workflows_title(
+    setup: Setup, acme: Acme, published: list[TaskId]
+) -> None:
+    sum_task = TaskId("acme/spring/sum")
+    head = await acme.fake.content.list_files(PLATFORM, sum_task)
+    current = await acme.fake.content.read_file(PLATFORM, sum_task, "task.yaml")
+    unlabelled = current.content.replace(b"{label: Your solution}", b"{}").replace(
+        b"label: Language, ", b""
+    )
+    assert unlabelled.count(b"label") == 0
+    saved = await publications.save(
+        setup, acme.ada, sum_task, {"task.yaml": Edit(unlabelled, head.tokens["task.yaml"])}
+    )
+    assert isinstance(saved, Published), saved
+    bob = await signed_in(setup, acme.fake, 8)
+
+    page = await contest_home.task(setup, bob, sum_task)
+
+    assert [(field.id, field.label) for field in page.inputs] == [
+        ("submission", "Solution"),
+        ("language", "Language"),
+    ]
+
+
 async def test_a_task_page_reads_the_caps_its_publication_gives(
     setup: Setup, acme: Acme, published: list[TaskId]
 ) -> None:
