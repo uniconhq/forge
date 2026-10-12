@@ -719,6 +719,32 @@ comments and layout stay (`domain/contest_entries.py`); a `contest.yaml` that do
 a list written in flow style with items in it, is left alone and the task is
 made without an entry.
 
+A manager of the contest takes a task out of it with
+`tasks.take_out(organiser, task, confirmed)` (`services/taking_out.py`,
+#450). While nobody has submitted to it, it is removed: its entry leaves
+`tasks`, so the letters after it move up, and the task goes as a failed
+create is undone, its activation at the CI and then its place with its
+roles, the one step that cannot be taken back last, and its name, which may
+then be taken again; an entrant's extension naming it no longer does, and
+an invite to one of its roles still waiting is withdrawn. A leaderboard
+whose `tasks` names it refuses the removal (`take_out_refused`). Once anyone
+has submitted, it is withdrawn instead: its entry stays, marked `withdrawn:
+true`, so it keeps its place and its letter; entrants no longer see it, its
+announcements or their own submissions to it, a submit or an upload to it
+is refused as `task_withdrawn`, and no leaderboard counts it or asks
+anything of it, so the totals drop its points and no save is refused for
+it. Its submissions and gradings stay for the organisers, and
+`tasks.put_back(organiser, task)` takes the key out again, checked as a save
+of the settings is, after which it scores exactly as before. The request
+names what the organiser confirmed, `remove` or `withdraw`, and is refused as
+`take_out_changed`, with the count and what it would now do, when it would
+now do the other. The count is of every submission to the task, any
+entrant's, made with the task held as a save holds it, which a submit waits
+for, so a removal never deletes a submission that lands meanwhile. Every
+edit of `contest.yaml` is made in its text as the platform, so its comments
+and layout stay; one its layout does not allow is `take_out_refused`. A save
+that writes `withdrawn` by hand reads and is checked the same way.
+
 A workflow is made by `workflows.create`, which takes the session, an owner
 and a name, and is open to anyone signed in: under their own username, or
 under an org where they hold the manager role or above. An observer of the
@@ -827,7 +853,8 @@ valid, when an entry of `tasks` names no task of the contest, when it puts a
 `worth` or a `due` on a task whose latest publication gives no points, or
 when it moves a task's timeline behind what rows already did (C2,
 `services/timelines.py`): the release of a task that has opened moved later,
-the entry of a task that has opened or has submissions dropped, a `due`
+the entry of a task that has opened, withdrawn since or not, or has
+submissions dropped (it is taken out with `tasks.take_out` instead), a `due`
 moved earlier than a submission it would make late, a close moved earlier
 than a submission already made, or later once the task has revealed. A task
 has opened when the settings saved before released it, the contest
@@ -957,7 +984,11 @@ entry gives none: `worth` its groups' total, the sum of their rule
 weights, and none on a task whose latest publication gives no points or
 that has none, `release_at` the contest's start,
 `due` none, `late_per_day` 1 with a due and none without, and `closes` the
-contest's end. A task of the org the contest does not list is not on it. A
+contest's end; and whether it is `withdrawn`, its `submissions`, every
+entrant's, and `take_out`, what taking it out would do, `remove` while it
+has none and `withdraw` once it has, none while it is withdrawn. A
+withdrawn task keeps its place and its letter. A task of the org the
+contest does not list is not on it. A
 `contest.yaml` that does not read is `InvalidDefinition` naming the file
 with every problem and its path, as a save of it is refused, so the page
 can show what to mend; a contest that is not there is `NotFound`.
@@ -1047,8 +1078,9 @@ starter carries one test, so its first save publishes.
 task and may submit to it now: released, visible and open, and why not. It
 reads `contest.yaml`, where the task's entry is its timeline, and the
 extension of the entrant the person is in, all as the platform, and a task with no publication, or one
-the contest does not list, is not released. Nothing at the forge changes
-when a task becomes released.
+the contest does not list, is not released, and one its entry marks
+`withdrawn` is neither released nor open, `closed` saying `withdrawn`.
+Nothing at the forge changes when a task becomes released.
 
 ## Entrants
 
@@ -1476,7 +1508,8 @@ the submission's commit points at them.
 `submissions.submit(session, task, inputs, idempotency_key=)` runs in this
 order and stops at the first refusal, before anything is written, each with a
 code of its own: the task is open by the server's clock plus the
-contestant's extension (`task_closed` with its `reason`, or `archived`); they
+contestant's extension (`task_closed` with its `reason`, `task_withdrawn`
+for a task withdrawn from its contest, or `archived`); they
 are approved (`not_approved`); they have submissions left (`submission_limit`),
 counted from the submissions at the forge but for the ones staff
 cancelled; the task's rate holds
@@ -1918,6 +1951,9 @@ structured members in `extra`:
 | `WrongStatus` | `wrong_status` | `current`, the entrant's or the grading's status |
 | `InvalidMessage` | `invalid_message` | `field`, `title` or `body` |
 | `TaskClosed` | `task_closed` | `reason`, `closed` |
+| `TaskWithdrawn` | `task_withdrawn` | `reason`, `withdrawn` |
+| `TakeOutChanged` | `take_out_changed` | `submissions`, how many the task has now, and `take_out`, what taking it out would now do |
+| `TakeOutRefused` | `take_out_refused` | `boards`, each leaderboard naming the task, when one does |
 | `SubmissionLimit` | `submission_limit` | `limit`, the submissions allowed |
 | `RateLimited` | `rate_limited` | `rate`, such as `1 per 30s`, and `retry_at` |
 | `TooLarge` | `too_large` | `limit` in bytes, and `input`, or none for the task's |

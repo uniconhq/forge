@@ -231,7 +231,7 @@ async def submit(
         raise InvalidIdempotencyKey(
             "A submit carries an idempotency key of 8 to 128 letters, digits, - and _."
         )
-    person = await submitters.person(ctx, session, task)
+    person = await submitters.person(ctx, session, task, submitting=True)
     workspace = person.workspace
     opened = False
     if (
@@ -251,7 +251,7 @@ async def submit(
     # published, so a grading change's regrade never misses it
     # (TASK-FORMAT.md section 2, step 12). Another task's save never waits.
     await timelines.hold_task(ctx, task, shared=True)
-    person = await submitters.person(ctx, session, task)
+    person = await submitters.person(ctx, session, task, submitting=True)
     workspace = person.workspace
     if workspace is not None:
         await _hold(ctx, workspace, task)

@@ -35,8 +35,10 @@ forge under its key; the name is what `contest.yaml` lists it by.
 `standing` is the list an organiser works a contest's tasks from: each task
 the contest lists, in its order and under the letter of its place, with
 where its files stand (`state`) and its timeline from its entry, each time
-at its default where the entry gives none. A task of the org the contest
-does not list is not on it.
+at its default where the entry gives none, and whether it is withdrawn,
+its submissions and what taking it out would do (`taking_out`). A
+withdrawn task keeps its place and its letter. A task of the org the
+contest does not list is not on it.
 """
 
 import builtins
@@ -67,8 +69,9 @@ from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import making, names, org_accounts, publications
+from forge.services import making, names, org_accounts, publications, taking_out
 from forge.services.access import Organiser, require
+from forge.services.taking_out import TakeOut
 
 log = get_logger(__name__)
 
@@ -116,13 +119,19 @@ class Timeline:
 class TaskStanding:
     """One task of a contest as its organisers work from it: the task with
     its name, its letter by its place in the contest's `tasks`, where its
-    files stand against its latest publication, and its timeline.
+    files stand against its latest publication, and its timeline; whether
+    it is withdrawn, how many submissions it has, any entrant's, and what
+    taking it out of the contest would do (`taking_out`), none while it is
+    withdrawn, when it can only be put back.
     """
 
     task: Named
     label: str
     state: TaskState
     timeline: Timeline
+    withdrawn: bool = False
+    submissions: int = 0
+    take_out: TakeOut | None = None
 
 
 @action
@@ -252,6 +261,7 @@ async def standing(
     require(organiser, contest_scope(contest), Role.OBSERVER)
     settings = await _settings(ctx, contest)
     ids = await names.task_ids(ctx, contest, [entry.id for entry in settings.tasks])
+    counts = await taking_out.submission_counts(ctx, [*ids.values()])
     await ctx.let_go()
     found: builtins.list[TaskStanding] = []
     for index, entry in enumerate(settings.tasks):
@@ -259,12 +269,16 @@ async def standing(
         if task is None:
             continue
         where = await state(ctx, organiser, task)
+        count = counts.get(task, 0)
         found.append(
             TaskStanding(
                 task=Named(task, entry.id),
                 label=letters(index),
                 state=where,
                 timeline=await _timeline(ctx, settings, entry, task, where.latest),
+                withdrawn=entry.withdrawn,
+                submissions=count,
+                take_out=None if entry.withdrawn else taking_out.take_out_of(count),
             )
         )
     return tuple(found)

@@ -298,10 +298,12 @@ async def check_task(
     board covering it asks of it beside the other covered tasks as their
     latest publications stand, each refusal at the line of `task.yaml` that
     would mend it. A task the contest does not list yet is checked against
-    the boards that cover every task, which its appended entry joins.
+    the boards that cover every task, which its appended entry joins; a
+    withdrawn one against none, since no board counts it until it is put
+    back, which the contest's save checks.
     """
     boards = [board for board in settings.leaderboards if board.tasks is None or board.covers(name)]
-    if not boards:
+    if not boards or rules.withdrawn(settings, name):
         return []
     tasks = await _covered_tasks(ctx, contest, settings, boards)
     others = {task.name: _covered(task) for task in tasks if task.name != name}
@@ -320,9 +322,12 @@ async def check_task(
 
 def task_notes(settings: ContestDefinition, name: str, shape: Covered) -> list[str]:
     """T9's report of each board ranking `points` that counts nothing from
-    the task `name` as it is saved.
+    the task `name` as it is saved; none for a withdrawn task, which no
+    board counts.
     """
     found: list[str] = []
+    if rules.withdrawn(settings, name):
+        return found
     for board in settings.leaderboards:
         if board.tasks is not None and not board.covers(name):
             continue

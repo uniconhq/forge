@@ -293,6 +293,34 @@ class TaskClosed(SubmitRefused):
     code = "task_closed"
 
 
+class TaskWithdrawn(SubmitRefused):
+    """The task was withdrawn from its contest, so it takes no submissions;
+    its organisers may put it back.
+    """
+
+    code = "task_withdrawn"
+
+
+class TakeOutChanged(ServiceError):
+    """Taking a task out of its contest would now do the other thing than the
+    one confirmed: someone submitted to it since, so it can no longer be
+    removed, only withdrawn, or the other way. `submissions` is how many it
+    has now, and `take_out` what taking it out would now do.
+    """
+
+    code = "take_out_changed"
+
+
+class TakeOutRefused(ServiceError):
+    """A task cannot be taken out of its contest by the platform as things
+    stand, for the reason in `detail`: a leaderboard names it, or the
+    contest's settings are written in a way that cannot be edited line by
+    line.
+    """
+
+    code = "take_out_refused"
+
+
 class Archived(SubmitRefused):
     """The contest is archived: its tasks are kept for reading and take no
     submissions.

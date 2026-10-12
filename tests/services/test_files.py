@@ -507,8 +507,8 @@ async def test_an_entry_naming_no_task_of_the_contest_is_refused_at_its_id(
         ),
         (
             "tasks",
-            "sum was released on 26 September 2026 at 10:00 UTC, so entrants have seen it, and it "
-            "cannot be taken out of the contest.",
+            "sum was released on 26 September 2026 at 10:00 UTC, so entrants have seen it. Take "
+            "it out from the contest's list of tasks instead, which deletes it too.",
         ),
     ]
 
@@ -525,7 +525,13 @@ async def test_an_entry_is_dropped_only_from_a_task_that_neither_opened_nor_has_
     refused = await _refused(setup, acme, draft.replace(SUM_ENTRY.encode(), product))
     version = await _write_contest(setup, acme, draft)
 
-    assert refused == [("tasks", "sum has 1 submission, so it cannot be taken out of the contest.")]
+    assert refused == [
+        (
+            "tasks",
+            "sum has 1 submission, so it cannot be taken out of the contest. Withdraw it instead: "
+            "entrants no longer see it and no leaderboard counts it, and its submissions are kept.",
+        )
+    ]
     assert version
 
 

@@ -444,7 +444,9 @@ async def _report(
             f"{name} shows its hidden results on {in_words(reveal_of(contest, entry, extensions))}."
         )
     before = await _definition_of(ctx, task, latest) if latest is not None else None
-    for board in contest.leaderboards:
+    # No board counts a withdrawn task, so a save of one moves none.
+    counted = () if entry is not None and entry.withdrawn else contest.leaderboards
+    for board in counted:
         if board.tasks is not None and not board.covers(name):
             continue
         if before is None:

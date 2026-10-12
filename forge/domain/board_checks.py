@@ -72,8 +72,12 @@ class Breach:
 
 
 def covered_tasks(contest: ContestDefinition, board: Leaderboard) -> tuple[str, ...]:
-    """The tasks a board covers among the contest's."""
-    return tuple(entry.id for entry in contest.tasks if board.covers(entry.id))
+    """The tasks a board covers among the contest's, a withdrawn one never:
+    no board counts it, and none asks anything of it.
+    """
+    return tuple(
+        entry.id for entry in contest.tasks if board.covers(entry.id) and not entry.withdrawn
+    )
 
 
 def breaches(

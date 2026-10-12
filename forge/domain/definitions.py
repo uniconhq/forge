@@ -463,7 +463,10 @@ class ContestTask(Model):
     """A task's whole timeline in the contest: what it is worth, when it is
     released, falls due and closes, how much a late day takes off, and how
     many of its submissions a row may mark. Every time but `due` defaults to
-    the contest's own.
+    the contest's own. A `withdrawn` task stays in the list, keeping its
+    place and so its letter, but entrants no longer see it or submit to it
+    and no leaderboard counts it; its submissions stay for the organisers,
+    and taking the key out puts it back as it was (#450).
     """
 
     id: TaskHandle
@@ -473,6 +476,7 @@ class ContestTask(Model):
     late_per_day: Number | None = None
     closes: AwareTime | None = None
     marks: Annotated[int, Field(strict=True, ge=1, le=10)] | None = None
+    withdrawn: Annotated[bool, Field(strict=True)] = False
 
 
 _TIMES = {
