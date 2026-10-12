@@ -364,7 +364,9 @@ def _notes(
 
 
 def _covered(task: PublishedTask) -> Covered:
-    return covered(task.publication.measures, task.definition.test_groups)
+    return covered(
+        task.publication.measures, task.definition.test_groups, task.publication.meanings
+    )
 
 
 async def _reader(

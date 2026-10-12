@@ -746,8 +746,8 @@ async def test_a_lower_is_better_value_first_over_two_tasks_is_refused_on_the_co
     alone = "leaderboards:\n  - {name: Fastest, tasks: [sum], order: [time_ms]}\n"
 
     said = (
-        "The leaderboard Fastest ranks first by time_ms, for which lower is better, over more "
-        "than one task. Rank by time_ms on a leaderboard of one task."
+        "The leaderboard Fastest ranks first by run time, for which lower is better, over more "
+        "than one task. Rank by run time on a leaderboard of one task."
     )
     assert refused == [("leaderboards[0].order[0]", said), ("leaderboards[0].order[0]", said)]
     assert await _write(setup, acme, contest(alone, "  - id: product\n"))
@@ -768,7 +768,7 @@ async def test_a_tasks_save_is_refused_where_a_board_ranks_what_its_groups_hide(
     assert [(error["path"], error["message"]) for error in refused.errors] == [
         (
             "test_groups",
-            "The leaderboard Fast ranks by time_ms, counting the results shown during the "
+            "The leaderboard Fast ranks by run time, counting the results shown during the "
             "contest, so sum needs a test group whose results entrants see as soon as a grading "
             "ends, since a group shown as an outcome shows its tests only at the reveal.",
         )

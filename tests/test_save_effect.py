@@ -137,12 +137,35 @@ def test_credit_weights_and_show_are_each_said_and_a_show_change_moves_a_live_bo
 
     assert effect.scores == (
         "main weighs its tests differently.",
-        "What each test earns: its score from 0 to 1 (was all or nothing, as it passes or fails).",
+        "What each test earns: the fraction it reports, from 0 to 1 (was all or nothing, as it "
+        "passes or fails).",
         "Results of large shown right away (was once the task closes).",
         "Every result is scored again, and the leaderboards Standings and Live with them.",
         "A change to when entrants see results changes what the leaderboard Live counts of sum.",
     )
     assert effect.results_change is True
+
+
+def test_what_a_test_earns_names_the_value_by_its_title() -> None:
+    before = _task("  main: {each: 100}\n", extra="credit: {relative: memory_kb}\n")
+    after = _task("  main: {each: 100}\n", extra="credit: {relative: time_ms}\n")
+
+    effect = effect_of(
+        "sum",
+        parse_task(before),
+        parse_task(after),
+        CONTEST,
+        changes=(),
+        regrades=0,
+        graded=True,
+        read=NOTHING_READ,
+        titles={"time_ms": "Run time", "memory_kb": "Memory used"},
+    )
+
+    assert effect.scores[0] == (
+        "What each test earns: its run time against the best any entrant reached (was its "
+        "memory used against the best any entrant reached)."
+    )
 
 
 def test_a_removed_group_and_the_submission_limits_are_said_and_the_limits_move_no_result() -> None:

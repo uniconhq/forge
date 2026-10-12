@@ -19,7 +19,8 @@ publishes (#449), and answer a save that published (M66).
 
 Every list holds at least one line, a "nothing changes" line when nothing
 does, so a page lays the four parts out as they come. No line names a key
-of a file: a group by its name, a number to the digit.
+of a file: a group by its name, a number to the digit, a reported value by
+its title where the workflow gives one (M58).
 """
 
 from collections.abc import Mapping, Sequence
@@ -40,6 +41,7 @@ from forge.domain.definitions import (
     TaskDefinition,
     worth_of,
 )
+from forge.domain.meanings import in_sentence
 from forge.domain.scoring import ZERO, exact, rule_weight, written
 
 RESULTS_CHANGE = "Results change."
@@ -93,13 +95,15 @@ def effect_of(
     regrades: int,
     graded: bool,
     read: ReadChanges,
+    titles: Mapping[str, str] | None = None,
 ) -> SaveEffect:
     """What saving `after` over the latest publication's `before` (none for
     a first publication) does to the task named `task` in `contest`, given
     what changed how it grades, how many submissions that grades again, and
-    whether the task has a graded submission.
+    whether the task has a graded submission; `titles` are what the
+    workflow calls the values it reports, by key.
     """
-    scores, moves = _scores(task, before, after, contest, bool(changes))
+    scores, moves = _scores(task, before, after, contest, bool(changes), titles or {})
     changes_results = (bool(changes) and regrades > 0) or (graded and moves)
     return SaveEffect(
         results_change=changes_results,
@@ -160,6 +164,7 @@ def _scores(
     after: TaskDefinition,
     contest: ContestDefinition | None,
     grading_changed: bool,
+    titles: Mapping[str, str],
 ) -> tuple[list[str], bool]:
     """Each scoring change in words, then the boards it counts again, and
     whether any of it moves what a result earns or shows.
@@ -184,7 +189,7 @@ def _scores(
         if name in before.test_groups
         for line in _earning(name, before.test_groups[name], group, *scales)
     ]
-    credit = _credit(before, after)
+    credit = _credit(before, after, titles)
     shown = [
         f"Results of {name} shown {SHOWN[group.shown]} (was {SHOWN[then.shown]})."
         for name, group in after.test_groups.items()
@@ -307,18 +312,24 @@ def _earning(
     return found
 
 
-def _credit_words(credit: str | Relative | None) -> str:
+def _credit_words(credit: str | Relative | None, titles: Mapping[str, str]) -> str:
+    """What each test earns, the value it reads named by its title, "its run
+    time against the best any entrant reached", or by its key where it has
+    none.
+    """
     if credit is None:
         return "all or nothing, as it passes or fails"
+    name = credit.relative if isinstance(credit, Relative) else credit
+    said = in_sentence(titles[name]) if name in titles else name
     if isinstance(credit, Relative):
-        return "its result against the best any entrant reached"
-    return "its score from 0 to 1"
+        return f"its {said} against the best any entrant reached"
+    return f"the {said} it reports, from 0 to 1"
 
 
-def _credit(before: TaskDefinition, after: TaskDefinition) -> list[str]:
+def _credit(before: TaskDefinition, after: TaskDefinition, titles: Mapping[str, str]) -> list[str]:
     if before.credit == after.credit:
         return []
-    now, then = _credit_words(after.credit), _credit_words(before.credit)
+    now, then = _credit_words(after.credit, titles), _credit_words(before.credit, titles)
     if now == then:
         return ["What each test earns is now read from another value the workflow reports."]
     return [f"What each test earns: {now} (was {then})."]

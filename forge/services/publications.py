@@ -303,7 +303,9 @@ async def save(
             if changed
             else 0
         )
-        effect = await _effect(ctx, task, checked.definition, latest, changed, regrades, read)
+        effect = await _effect(
+            ctx, task, checked.definition, latest, changed, regrades, read, checked.compiled
+        )
         raise ConfirmationRequired(
             "The contest is running, so this save asks before it publishes. Publish it, or "
             "keep it as a draft.",
@@ -319,7 +321,9 @@ async def save(
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
     notes = checked.compiled.notes
     if latest is not None and version == latest.version:
-        effect = await _effect(ctx, task, checked.definition, latest, (), 0, ReadChanges())
+        effect = await _effect(
+            ctx, task, checked.definition, latest, (), 0, ReadChanges(), checked.compiled
+        )
         return Published(
             latest.id, latest.number, latest.grading_changed, latest.changes, notes, 0, effect
         )
@@ -347,7 +351,9 @@ async def save(
                 limit=checked.definition.submissions.max,
             )
         ).queued
-    effect = await _effect(ctx, task, checked.definition, latest, changed, regraded, read)
+    effect = await _effect(
+        ctx, task, checked.definition, latest, changed, regraded, read, checked.compiled
+    )
     if latest is None:
         places.ahead_at(ctx, task)
     log.info(
@@ -442,7 +448,7 @@ async def _boards(
     name = (await names.names_of(ctx, [task])).get(task)
     if contest is None or name is None:
         return []
-    shape = covered(compiled.measures, definition.test_groups)
+    shape = covered(compiled.measures, definition.test_groups, compiled.meanings)
     return await boards.check_task(ctx, contest_id_of(task_scope(task)), contest, name, shape)
 
 
@@ -468,7 +474,8 @@ async def _report(
         found.append(
             f"{name} shows its hidden results on {in_words(reveal_of(contest, entry, extensions))}."
         )
-    found += boards.task_notes(contest, name, covered(compiled.measures, definition.test_groups))
+    shape = covered(compiled.measures, definition.test_groups, compiled.meanings)
+    found += boards.task_notes(contest, name, shape)
     return found
 
 
@@ -480,13 +487,20 @@ async def _effect(
     changed: tuple[str, ...],
     regrades: int,
     read: ReadChanges,
+    compiled: Compiled,
 ) -> SaveEffect:
     """What saving `definition` over the latest publication does, in the
     words a running contest asks with before a save and a save that
-    published answers with.
+    published answers with, each reported value named by its title in the
+    save or, where the save no longer reports it, in the latest publication.
     """
     name = (await names.names_of(ctx, [task])).get(task)
     before = await _definition_of(ctx, task, latest) if latest is not None else None
+    titles = {
+        meaning.name: meaning.title
+        for meaning in (*(latest.meanings if latest is not None else ()), *compiled.meanings)
+        if meaning.title is not None
+    }
     return effect_of(
         name or definition.name,
         before,
@@ -496,6 +510,7 @@ async def _effect(
         regrades=regrades,
         graded=bool(await _graded_under(ctx, task)),
         read=read,
+        titles=titles,
     )
 
 

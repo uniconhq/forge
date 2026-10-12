@@ -18,10 +18,14 @@ them, and a contest's save against every covered task's latest publication.
 - A board ranking `points` counts nothing from a task that gives none, or
   that has no group with a rule weight in its scope; that is reported, not
   refused.
+
+Each sentence names a value by the title its task's workflow gives it, "run
+time", or another covered task's where that one gives none, and by its key
+only where no covered task gives a title (M58).
 """
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from fractions import Fraction
 
 from forge.domain.boards import PENALTY, POINTS, in_scope
@@ -34,6 +38,7 @@ from forge.domain.definitions import (
     Show,
     key_name,
 )
+from forge.domain.meanings import ValueMeaning, in_sentence
 from forge.domain.scoring import ZERO, Better, Measure, rule_weight, written
 from forge.domain.workflow_definition import Fold
 
@@ -41,21 +46,48 @@ from forge.domain.workflow_definition import Fold
 @dataclass(frozen=True, slots=True)
 class Covered:
     """A covered task as a board reads it: what each per-test number means,
-    and each group's `show` and whether it has a rule weight.
+    each group's `show` and whether it has a rule weight, and the title its
+    workflow gives each value that has one.
     """
 
     measures: Mapping[str, Measure]
     groups: Mapping[str, tuple[Show, bool]]
+    titles: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def gives_points(self) -> bool:
         return any(weighted for _, weighted in self.groups.values())
 
 
-def covered(measures: Mapping[str, Measure], groups: Mapping[str, Group]) -> Covered:
+def covered(
+    measures: Mapping[str, Measure],
+    groups: Mapping[str, Group],
+    meanings: Iterable[ValueMeaning] = (),
+) -> Covered:
     return Covered(
-        measures, {name: (group.shown, rule_weight(group) > 0) for name, group in groups.items()}
+        measures,
+        {name: (group.shown, rule_weight(group) > 0) for name, group in groups.items()},
+        {meaning.name: meaning.title for meaning in meanings if meaning.title},
     )
+
+
+def value_words(tasks: Mapping[str, Covered], name: str, task: str | None = None) -> str:
+    """The value `name` as a sentence names it: its title in `task`, else in
+    the first covered task that gives one, its first letter lowered unless
+    the word is an abbreviation such as "CPU" ("run time"); its key where
+    none does.
+    """
+    ordered = [tasks[task]] if task is not None and task in tasks else []
+    ordered += [of for each, of in tasks.items() if each != task]
+    title = next((of.titles[name] for of in ordered if name in of.titles), None)
+    return name if title is None else in_sentence(title)
+
+
+def _opening(said: str, name: str) -> str:
+    """A value as `value_words` names it, at the start of a sentence: a
+    title capitalised, a key as it is written.
+    """
+    return said if said == name else said[:1].upper() + said[1:]
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +137,8 @@ def breaches(
             continue
         reported = first not in (POINTS, PENALTY) and of.measures.get(first) is not None
         if reported and not _carries_value(of, board.over):
-            found.append(Breach(task, None, "test_groups", _scope_message(board, task, first)))
+            said = value_words(tasks, first, task)
+            found.append(Breach(task, None, "test_groups", _scope_message(board, task, said)))
         if board.select is Select.MARKED and not _fallback_carries(of, first):
             found.append(Breach(task, None, "test_groups", _fallback_message(board, task, first)))
     return found
@@ -144,14 +177,15 @@ def _value(
         if only is not None and task != only:
             continue
         against = given if only is not None else given[:position]
+        said = value_words(tasks, name, task)
         if measure is None or measure.fold is None:
             found.append(
                 Breach(
                     task,
                     index,
                     "workflow",
-                    f"The leaderboard {board.name} ranks by {name}, but {task}'s workflow does "
-                    f"not report {name} for each test, combined across its tests.",
+                    f"The leaderboard {board.name} ranks by {said}, but {task}'s workflow does "
+                    f"not report {said} for each test, combined across its tests.",
                 )
             )
             continue
@@ -161,19 +195,19 @@ def _value(
                     task,
                     index,
                     "workflow",
-                    f"The leaderboard {board.name} ranks by {name}, but {task}'s workflow does "
-                    f"not say whether a higher or a lower {name} is better, so it cannot be "
+                    f"The leaderboard {board.name} ranks by {said}, but {task}'s workflow does "
+                    f"not say whether a higher or a lower {said} is better, so it cannot be "
                     "ranked.",
                 )
             )
             continue
         other = _first_other(against, task, measure)
         if other is not None:
-            message = _differs(board, name, task, measure, *other)
+            message = _differs(board, said, task, measure, *other)
             found.append(Breach(task, index, "workflow", message))
             continue
         if index == 0 and many:
-            problem = _sum_problem(board, name, measure)
+            problem = _sum_problem(board, said, _opening(said, name), measure)
             if problem is not None:
                 found.append(Breach(task, index, "workflow", problem))
     return found
@@ -215,8 +249,10 @@ def _differs(
 _FOLDS = {Fold.SUM: "the sum", Fold.MEAN: "the mean", Fold.MAX: "the highest"}
 
 
-def _sum_problem(board: Leaderboard, name: str, measure: Measure) -> str | None:
-    """C4's rule for a value first over more than one task."""
+def _sum_problem(board: Leaderboard, name: str, opening: str, measure: Measure) -> str | None:
+    """C4's rule for a value first over more than one task, the value named
+    as `value_words` names it, and as `opening` at a sentence's start.
+    """
     if measure.better is Better.LOWER:
         return (
             f"The leaderboard {board.name} ranks first by {name}, for which lower is better, "
@@ -224,13 +260,13 @@ def _sum_problem(board: Leaderboard, name: str, measure: Measure) -> str | None:
         )
     if measure.at_least is None:
         return (
-            f"{name} has no lowest value, so on the leaderboard {board.name} an entrant who "
-            "skips a task would beat one who scored below 0 on it. Rank by "
+            f"{opening} has no lowest value, so on the leaderboard {board.name} an entrant "
+            "who skips a task would beat one who scored below 0 on it. Rank by "
             f"{name} on a leaderboard of one task."
         )
     if measure.at_least < ZERO:
         return (
-            f"{name} can be as low as {written(measure.at_least)}, so on the leaderboard "
+            f"{opening} can be as low as {written(measure.at_least)}, so on the leaderboard "
             f"{board.name} an entrant who skips a task would beat one who scored below 0 on it. "
             f"Rank by {name} on a leaderboard of one task."
         )
