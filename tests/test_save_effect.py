@@ -81,6 +81,20 @@ def test_a_moved_total_names_the_group_with_its_old_points_and_scores_every_boar
     )
 
 
+def test_a_mix_whose_parts_move_together_says_its_points_alone() -> None:
+    # Raising a hand-set mix's points, each part in step, changes no rule:
+    # only the points line is said, never how the group earns.
+    before = _task("  main: {each: 60, pass: 40, pass_at: 0.5}\n")
+    after = _task("  main: {each: 66, pass: 44, pass_at: 0.5}\n")
+
+    effect = _effect(after, before=before)
+
+    assert effect.scores == (
+        "Points: main is now worth up to 110 (was 100).",
+        "Every result is scored again, and the leaderboards Standings and Live with them.",
+    )
+
+
 def test_a_task_with_a_set_worth_names_each_groups_share_of_it() -> None:
     worth = parse_contest(
         """\
