@@ -1195,8 +1195,13 @@ server's clock and the tasks released to them in the contest's order, each
 with its label, its place as a letter, its worth, when it falls due and
 closes for their entrant, and, for a member of an approved entrant, its
 `points` (`boards.own_points`): the entrant's points on the task as a board
-over that task alone would count them (every group, the best submission by
-points), `shown` over the groups whose results are shown, and `pending`,
+over that task alone would count them (every group, the submissions
+counted as the board standing for the task counts them: the first in the
+contest's file that entrants see, that covers it and that ranks by points
+first, failing that the first entrants see that covers it, failing that
+the first that covers it, `best` with none), `shown` over the groups
+whose results are shown, none while no group of the task is shown yet, so
+a shown 0 reads apart from nothing shown, and `pending`,
 the most the groups not shown yet could still add, until `pending_until`,
 the task's reveal, so the home never shows a number the boards hold back;
 none for anyone else and on a task that gives no points; and `task`, a

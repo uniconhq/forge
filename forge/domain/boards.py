@@ -72,8 +72,9 @@ class State(StrEnum):
 @dataclass(frozen=True, slots=True)
 class Entry:
     """One of a row's submissions to a task: its number, when it was taken,
-    where it stands, its scored grading when it is a candidate, and whether
-    the row marked it.
+    where it stands, its scored grading when it is a candidate or an
+    attempt a sealed step stopped (which only `task_points` reads), and
+    whether the row marked it.
     """
 
     number: int
@@ -458,15 +459,20 @@ def _cell(
     )
 
 
-def task_points(column: Column, entries: Sequence[Entry]) -> Points | None:
+def task_points(
+    column: Column, entries: Sequence[Entry], select: Select = Select.BEST
+) -> Points | None:
     """A row's points on one task as a board over that task alone counts
-    them now: every group in scope, the best submission by points, the
-    earliest of equals (TASK-FORMAT.md section 3.6), so `shown` counts only
-    the groups whose verdict is shown, as every board does. `pending` is the
-    most the groups not shown yet could still add to it, until
-    `pending_until`, the task's reveal: over the row's submissions as each
-    one's own row reads it, its points shown and pending (section 1.7),
-    the best of those sums less `shown`, so the number once every group is
+    them now: every group in scope, the submissions `select` counts
+    (TASK-FORMAT.md section 3.6), so `shown` counts only the groups whose
+    verdict is shown, as every board does, and is none while no group of
+    the task is shown yet. `pending` is the most the groups not shown yet
+    could still add to it, until `pending_until`, the task's reveal: each
+    submission read as its own row reads it, a group's points once shown
+    and its most points while not (section 1.7), and of those, the best
+    sum (`best`), the best sum over the marked ones or, with none marked,
+    the one the board counts (`marked`), or each group's most added up
+    (`best_per_group`), less `shown`, so the number once every group is
     shown lies between the two. A run a sealed step stopped reads, until
     the reveal, as one whose every group is still hidden, so it counts all
     its points as pending, as its row reads it, and its stop is not told
@@ -476,19 +482,69 @@ def task_points(column: Column, entries: Sequence[Entry]) -> Points | None:
         return None
     seen = Seen(column.revealed)
     keys = (Key(POINTS, Better.HIGHER),)
-    cell = _cell(Select.BEST, keys, column.release_at, everywhere, seen, entries)
-    shown = cell.numbers.get(POINTS, ZERO)
-    reach = shown
-    for entry in entries:
-        held = entry.state is State.ATTEMPT and not column.revealed
-        if entry.scored is None or not (entry.state is State.CANDIDATE or held):
-            continue
-        at = Seen(column.revealed, held=held)
-        points, pending = entry.scored.points(everywhere, at), entry.scored.pending(at)
-        if points is not None and pending is not None:
-            reach = max(reach, points + pending)
-    pending = reach - shown
+    counted = _cell(select, keys, column.release_at, everywhere, seen, entries).numbers.get(
+        POINTS, ZERO
+    )
+    within = [
+        (entry, most) for entry in entries if (most := _most(entry, column.revealed)) is not None
+    ]
+    if select is Select.MARKED:
+        within = _marked_reach(within)
+    if select is Select.BEST_PER_GROUP:
+        groups = {name for _, most in within for name in most}
+        reach = sum((max(most.get(name, ZERO) for _, most in within) for name in groups), ZERO)
+    else:
+        reach = max((sum(most.values(), ZERO) for _, most in within), default=ZERO)
+    pending = max(reach, counted) - counted
+    shown = counted if any(seen.verdict(show) for show in column.shows.values()) else None
     return Points(shown, pending, column.reveal_at if pending else None)
+
+
+def _most(entry: Entry, revealed: bool) -> dict[str, Fraction] | None:
+    """What each group of a submission can still come to as its own row
+    reads it: its points once its verdict is shown, its most points with
+    the late factor while not; none for a submission that counts nothing.
+    """
+    held = entry.state is State.ATTEMPT and not revealed
+    scored = entry.scored
+    if scored is None or not scored.gives_points or not (entry.state is State.CANDIDATE or held):
+        return None
+    at = Seen(revealed, held=held)
+    return {
+        group.group: (group.points or ZERO)
+        if at.verdict(group.show)
+        else (group.max or ZERO) * scored.factor
+        for group in scored.groups
+    }
+
+
+def _marked_reach(
+    within: Sequence[tuple[Entry, dict[str, Fraction]]],
+) -> list[tuple[Entry, dict[str, Fraction]]]:
+    """The submissions a `marked` board can still count: the marked ones,
+    or, with none marked, the one it counts, the best on what was shown
+    before the reveal, with any run held back beside it.
+    """
+    marked = [(entry, most) for entry, most in within if entry.marked]
+    if marked:
+        return marked
+    live = in_scope(Over.LIVE)
+    candidates = [
+        entry for entry, _ in within if entry.state is State.CANDIDATE and entry.scored is not None
+    ]
+    picked = min(
+        candidates,
+        key=lambda entry: (-(_live_points(entry, live)), _when(entry)),
+        default=None,
+    )
+    return [
+        (entry, most) for entry, most in within if entry is picked or entry.state is State.ATTEMPT
+    ]
+
+
+def _live_points(entry: Entry, live: Callable[[Show], bool]) -> Fraction:
+    assert entry.scored is not None
+    return entry.scored.points(live, BEFORE_REVEAL) or ZERO
 
 
 def _per_group(

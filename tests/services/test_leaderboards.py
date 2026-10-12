@@ -218,6 +218,58 @@ async def test_the_contest_home_gives_a_task_the_points_a_board_over_it_counts(
     assert await both() == (Points(Fraction(100), Fraction(0), None), Fraction(100))
 
 
+ONLY_LARGE: dict[str, Any] = {
+    **RESULT,
+    "tests": [
+        {"test": "large/1", "outcome": "accepted", "values": {}},
+        {"test": "main/1", "outcome": "wrong_answer", "values": {}},
+        {"test": "small/1", "outcome": "wrong_answer", "values": {}},
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("boards_", "mark", "before", "after"),
+    [
+        # By group: the first's main and small, 65, and the second's large,
+        # 35, once shown.
+        ("  - {name: IOI, who: contestants, select: best_per_group}\n", None, 65, 100),
+        # Marked: the second, which passed only large.
+        ("  - {name: Final, who: contestants, select: marked}\n", 2, 0, 35),
+    ],
+    ids=["best_per_group", "marked"],
+)
+async def test_the_contest_home_counts_the_submissions_the_board_for_the_task_counts(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    clock: FakeClock,
+    boards_: str,
+    mark: int | None,
+    before: int,
+    after: int,
+) -> None:
+    # A board organisers alone see comes first, and is passed over.
+    hidden = "  - {name: Organisers, select: marked}\n"
+    await write_contest(acme.fake, contest("leaderboards:\n" + hidden + boards_))
+    await _three_groups(setup, acme, entered.task)
+    await _graded(setup, await _submit(setup, acme, entered, "key-0001-aaaa"), RESULT)
+    clock.advance(timedelta(minutes=1))
+    await _graded(setup, await _submit(setup, acme, entered, "key-0002-bbbb"), ONLY_LARGE)
+    if mark is not None:
+        await marks.mark(setup, entered.session, entered.task, mark)
+
+    async def both() -> tuple[Points | None, Fraction | None]:
+        (task,) = (await contest_home.home(setup, entered.session, SPRING)).tasks
+        (board,) = await boards.seen(setup, entered.session, SPRING)
+        return task.points, board.rows[0].keys[0]
+
+    assert await both() == (Points(Fraction(before), Fraction(35), END), Fraction(before))
+    clock.set(END)
+    await identity.current(entered.session.id, setup=setup)
+    assert await both() == (Points(Fraction(after), Fraction(0), None), Fraction(after))
+
+
 async def test_a_hidden_groups_points_stay_out_of_the_contest_home_until_shown(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:

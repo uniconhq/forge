@@ -30,7 +30,7 @@ from forge.domain.boards import (
     sees,
     task_points,
 )
-from forge.domain.definitions import Group, Leaderboard, Show
+from forge.domain.definitions import Group, Leaderboard, Select, Show
 from forge.domain.names import EntrantOwner
 from forge.domain.scoring import Better, Measure, Points, Scored, score
 from forge.domain.workflow_definition import Fold
@@ -621,9 +621,106 @@ def test_a_run_a_sealed_step_stopped_reads_as_every_group_hidden_until_the_revea
     assert task_points(column("sum", hidden), [held]) == task_points(
         column("sum", hidden), [unheld]
     )
-    assert task_points(column("sum", hidden), [held]) == Points(Fraction(0), Fraction(100), CLOSE)
+    assert task_points(column("sum", hidden), [held]) == Points(None, Fraction(100), CLOSE)
     assert task_points(column("sum", hidden, revealed=True), [held]) == Points(
         Fraction(0), Fraction(0), None
+    )
+
+
+def test_a_held_runs_group_shown_at_once_is_pending_too_not_shown_as_what_it_earned() -> None:
+    # The run failed `open`, shown at once on any other run: held, it reads
+    # as every group hidden, so `open`'s 40 is pending beside main's 60,
+    # never a 0 that tells its stop.
+    groups = {
+        "open": group(pass_=40, show=Show.ALWAYS),
+        "main": group(pass_=60, show=Show.AFTER_CLOSE),
+    }
+    failed = graded([*named("open", 1), *named("main", 1)], groups, ["open/1", "main/1"])
+    held = Entry(1, minute(1), State.ATTEMPT, failed)
+    unheld = candidate(1, minute(1), failed)
+
+    assert task_points(column("sum", groups), [held]) == Points(Fraction(0), Fraction(100), CLOSE)
+    assert task_points(column("sum", groups), [unheld]) == Points(Fraction(0), Fraction(60), CLOSE)
+
+
+def test_a_tasks_points_are_none_shown_while_no_group_is_shown_and_a_shown_0_stays_0() -> None:
+    hidden = {"main": group(pass_=100, show=Show.AFTER_CLOSE)}
+    passed = candidate(1, minute(1), graded(named("main", 1), hidden))
+    zero = candidate(1, minute(1), graded(SMALL_AND_LARGE, HIDDEN_LARGE, ["small/1", "large/1"]))
+
+    assert task_points(column("sum", hidden), [passed]) == Points(None, Fraction(100), CLOSE)
+    assert task_points(column("sum", hidden), []) == Points(None, Fraction(0), None)
+    assert task_points(column("sum", HIDDEN_LARGE), [zero]) == Points(
+        Fraction(0), Fraction(70), CLOSE
+    )
+
+
+SPLIT = {"a": group(pass_=50, show=Show.VERDICT), "b": group(pass_=50, show=Show.VERDICT)}
+
+
+def test_a_tasks_points_count_the_submissions_its_board_counts_by_group_or_marked() -> None:
+    # The first passes a, the second b and is marked: by group the row has
+    # 100, marked 50, and best 50, as each board ranks it.
+    on = column("sum", SPLIT)
+    first = candidate(1, minute(1), graded(["a/1", "b/1"], SPLIT, ["b/1"]))
+    second = candidate(2, minute(2), graded(["a/1", "b/1"], SPLIT, ["a/1"]), marked=True)
+    for select, shown in (("best_per_group", 100), ("marked", 50), ("best", 50)):
+        rows = [row(1, "ana", sum=[first, second])]
+        (ranked,) = standings(board(select=select), [on], rows).rows
+
+        points = task_points(on, [first, second], Select(select))
+
+        assert points == Points(Fraction(shown), Fraction(0), None), select
+        assert ranked.keys[0] == points.shown
+
+    # A marked submission that scored nothing counts nothing, as its board.
+    nothing = candidate(2, minute(2), graded(["a/1", "b/1"], SPLIT, ["a/1", "b/1"]), marked=True)
+    (ranked,) = standings(board(select="marked"), [on], [row(1, "ana", sum=[first, nothing])]).rows
+    assert task_points(on, [first, nothing], Select.MARKED) == Points(
+        Fraction(0), Fraction(0), None
+    )
+    assert ranked.keys[0] == 0
+
+
+def test_a_tasks_points_pending_by_group_add_each_groups_most_still_to_come() -> None:
+    # a and b are shown, c only after the close: by group, the first's a and
+    # the second's b give 80 now, and c's 20 may still come; counting one
+    # submission, 40 now and 20 to come.
+    groups = {
+        "a": group(pass_=40, show=Show.VERDICT),
+        "b": group(pass_=40, show=Show.VERDICT),
+        "c": group(pass_=20, show=Show.AFTER_CLOSE),
+    }
+    tests = ["a/1", "b/1", "c/1"]
+    first = candidate(1, minute(1), graded(tests, groups, ["b/1"]))
+    second = candidate(2, minute(2), graded(tests, groups, ["a/1", "c/1"]))
+    entries = [first, second]
+
+    assert task_points(column("sum", groups), entries, Select.BEST_PER_GROUP) == Points(
+        Fraction(80), Fraction(20), CLOSE
+    )
+    assert task_points(column("sum", groups), entries) == Points(Fraction(40), Fraction(20), CLOSE)
+    assert task_points(
+        column("sum", groups, revealed=True), entries, Select.BEST_PER_GROUP
+    ) == Points(Fraction(100), Fraction(0), None)
+
+
+def test_a_tasks_points_pending_when_marked_come_from_the_marked_or_the_one_it_counts() -> None:
+    # The first, marked, failed small; the second passed it: marked counts
+    # the first, 0 now and large's 70 to come, where best counts the
+    # second's 30. With nothing marked, the board counts the second, the
+    # best on what was shown before the reveal.
+    failed_small = graded(SMALL_AND_LARGE, HIDDEN_LARGE, ["small/1"])
+    first = candidate(1, minute(1), failed_small, marked=True)
+    second = candidate(2, minute(2), graded(SMALL_AND_LARGE, HIDDEN_LARGE))
+    on = column("sum", HIDDEN_LARGE)
+
+    assert task_points(on, [first, second], Select.MARKED) == Points(
+        Fraction(0), Fraction(70), CLOSE
+    )
+    unmarked = candidate(1, minute(1), failed_small)
+    assert task_points(on, [unmarked, second], Select.MARKED) == Points(
+        Fraction(30), Fraction(70), CLOSE
     )
 
 
