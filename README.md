@@ -1405,7 +1405,17 @@ question of one contest, answered ones included. An answer made public is
 an ordinary announcement on the question's task, or its contest, posted as
 the organiser with a line the platform adds pointing at the question
 (`answer_publicly`); readers learn that it answers a question and an
-organiser which, and the question stays private. Text a person writes
+organiser which, and the question stays private. The same action marks
+the question answered, unless asked not to, and leaves a message on it,
+as the organiser, "Answered publicly in the announcement" and its title,
+carrying a line the platform adds that names the announcement, which the
+question's readers alone see and are served as the message's
+`announcement` (its task, none for the contest's own, and its number).
+Only a message an organiser wrote naming an announcement of the
+question's own contest is read so. The message is written last: a retry
+after a failure part way finds the announcement already answering the
+question that no message names, brings its title and text to the ones
+given, and finishes, never posting a second. Text a person writes
 never carries such a line: `announcements.checked` takes any out, again
 until none is left. A title
 is at most 200 characters and a text at most 20,000, and an empty or
