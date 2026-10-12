@@ -105,17 +105,6 @@ def usable(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -
     return Usable(State.GRADING, None)
 
 
-def delayed(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -> bool:
-    """Whether a submission is delayed: none of its attempts finished with a
-    result, and its latest reads as a system error, waiting for its retry
-    or for staff.
-    """
-    row = counted(rows)
-    return not gradings.good(row) and gradings.status_of(ctx, row, lost) is (
-        GradingStatus.SYSTEM_ERROR
-    )
-
-
 def stands(row: Grading, graded: Graded) -> State:
     """A finished attempt's place on a board by what stopped its run."""
     result = row.result or {}
