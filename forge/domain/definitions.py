@@ -1193,7 +1193,8 @@ def statement_written(content: bytes | None) -> bool:
 def starter_task(name: str) -> dict[str, bytes]:
     """The files a new task is created with: a `task.yaml` titled `name` that
     grades Python with `unicon/classic@v2` on one group of tests, a
-    placeholder statement (`STARTER_STATEMENT`), an empty `public/`, and one
+    placeholder statement (`STARTER_STATEMENT`), no `public/`, which its first
+    picture makes, since git keeps no empty folder, and one
     test, `main/1`, whose input is `1 2` and whose answer is `3`, so the
     first save publishes.
     """
@@ -1212,7 +1213,6 @@ test_groups:
     return {
         TASK_FILE: task.encode(),
         STATEMENT_FILE: STARTER_STATEMENT,
-        f"{PUBLIC_FOLDER}.gitkeep": b"",
         f"{TESTS_FOLDER}main/1/input": b"1 2\n",
         f"{TESTS_FOLDER}main/1/answer": b"3\n",
     }

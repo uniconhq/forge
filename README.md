@@ -712,7 +712,8 @@ which must be there; each checks the name and makes the thing before it
 answers. A contest or task asked for with no title, or a blank one, is
 titled by its name. A contest takes two steps, its place with a starter
 `contest.yaml` that is valid as written and its roles and protection. A task
-takes four: its place with `task.yaml`, `statement.md`, an empty `public/`
+takes four: its place with `task.yaml`, `statement.md` (no `public/`, which
+its first picture makes)
 and one test in `tests/main/1/`; its roles and protection, its publications
 reserved for the platform; its activation at the CI as the org's own
 account, which takes it for grading, trusts it for `volumes` and nothing
@@ -854,7 +855,10 @@ by username as well as id (`Change.author`, which Forgejo's commits
 carry; an author given by id alone is looked up once), so
 someone who no longer holds a role at the place is still named, to those
 who may read the history alone; an account the forge does not know is left
-unnamed. Every path is checked first, and one
+unnamed. A task's `public/` is there once its first file is, since git
+keeps no empty folder and a new task has none (M60); until then `tree`
+lists it empty rather than missing, and a public file read there is no
+such file. Every path is checked first, and one
 that is not a plain path inside the place is `InvalidPath`, unread and
 unwritten. A write carries the token the file was read with, and one that has moved is `Conflict`. A write to `contest.yaml`
 is validated first and refused whole as `InvalidDefinition` when it is not

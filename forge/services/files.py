@@ -42,6 +42,7 @@ from forge.domain.content import (
 )
 from forge.domain.definitions import (
     CONTEST_FILE,
+    PUBLIC_FOLDER,
     ContestDefinition,
     admin_only_changes,
     admin_only_refusal,
@@ -121,11 +122,21 @@ async def tree(
     upload with the size and digest of what it holds. Only a file whose size
     is a pointer's is read to tell (`uploads.may_be_pointer`), so a folder of
     large files or of typed ones costs no read but the listing.
+
+    A task's `public/` lists empty while it holds nothing: git keeps no empty
+    folder, so it is there once its first file is (M60), and a listing of it
+    before that is not a missing folder but an empty one.
     """
     require(organiser, scope_of_place(place), Role.OBSERVER)
-    entries = await ctx.forge.content.list_tree(
-        organiser.identity, place, check_path(path) if path else ""
-    )
+    folder = check_path(path) if path else ""
+    try:
+        entries = await ctx.forge.content.list_tree(organiser.identity, place, folder)
+    except NotFound:
+        at_task = scope_of_place(place).kind is ScopeKind.TASK
+        public = at_task and f"{folder.rstrip('/')}/" == PUBLIC_FOLDER
+        if public and await ctx.forge.content.exists(place):
+            return ()
+        raise
     return tuple([await _with_upload(ctx, organiser, place, entry) for entry in entries])
 
 

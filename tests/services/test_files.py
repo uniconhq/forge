@@ -93,7 +93,7 @@ async def test_an_observer_reads_the_file_the_tree_and_the_history_as_themself(
     changes = await files.history(setup, bob, sum_task, "statement.md")
 
     assert found.content.startswith(b"# The task's settings")
-    assert [entry.path for entry in listed] == ["public", "statement.md", "task.yaml", "tests"]
+    assert [entry.path for entry in listed] == ["statement.md", "task.yaml", "tests"]
     assert [entry.path for entry in folder] == ["tests/main"]
     assert [change.message for change in changes] == ["Create"]
     assert {

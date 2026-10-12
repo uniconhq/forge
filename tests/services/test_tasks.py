@@ -1,5 +1,5 @@
 """Making a task is a request a manager of its contest makes, done before it
-answers: the place with the starter `task.yaml`, `statement.md`, an empty
+answers: the place with the starter `task.yaml`, `statement.md`, no
 `public/` and one test, `tests/main/1/`, then the roles of the contest and
 the task with its protection and its publications reserved, then its
 activation at the CI as the org's account, then its entry at the end of the
@@ -88,7 +88,6 @@ async def test_a_contest_manager_makes_the_task_with_its_files(
     ]
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
     assert sorted(repo.files) == [
-        "public/.gitkeep",
         "statement.md",
         "task.yaml",
         "tests/main/1/answer",

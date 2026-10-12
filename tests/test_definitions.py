@@ -1082,7 +1082,6 @@ def test_the_starter_task_is_the_formats() -> None:
     assert set(files) == {
         "task.yaml",
         "statement.md",
-        "public/.gitkeep",
         "tests/main/1/input",
         "tests/main/1/answer",
     }
