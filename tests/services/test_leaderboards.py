@@ -218,6 +218,19 @@ async def test_the_contest_home_gives_a_task_the_points_a_board_over_it_counts(
     assert await both() == (Points(Fraction(100), Fraction(0), None), Fraction(100))
 
 
+async def test_a_contest_stored_with_the_retired_on_system_error_still_reads_everywhere(
+    setup: Setup, acme: Acme, ranked: Entered
+) -> None:
+    # A form of an earlier release wrote it; nothing took its place.
+    await write_contest(acme.fake, contest(BOARDS) + "on_system_error: grading\n")
+
+    (task,) = (await contest_home.home(setup, ranked.session, SPRING)).tasks
+    standings, _ = await boards.seen(setup, ranked.session, SPRING)
+
+    assert task.points == Points(Fraction(65), Fraction(35), END)
+    assert standings.rows[0].keys == keys(65, 120)
+
+
 ONLY_LARGE: dict[str, Any] = {
     **RESULT,
     "tests": [

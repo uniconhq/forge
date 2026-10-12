@@ -212,7 +212,7 @@ async def write(
     refuse_pointer(path, content)
     notes: list[str] = []
     if path == CONTEST_FILE:
-        after = parse_contest(content)
+        after = parse_contest(content, saved=True)
         before = await _current(ctx, organiser, contest, path)
         if not holds(organiser.grants, scope, Role.ADMIN):
             keys = admin_only_changes("contest", before, content)

@@ -1759,7 +1759,9 @@ and void once staff cancel it; while its latest attempt is a
 the most. Every `GradingRecord` of a latest attempt that has not finished
 with a result carries `last_good`, the latest earlier attempt that did,
 the one its submission counts meanwhile. The contest's `on_system_error`
-is retired: a save that has it is refused at it, saying why. Migration 0019
+is retired: a save that has it is refused at it, saying why, and a stored
+file that still holds it reads with it ignored (`IGNORED_ON_READ`), since
+nothing took its place. Migration 0019
 drops the `falls_back` column and adds `automatic` (below).
 
 **Tried again once by itself.** A latest attempt that ends in
