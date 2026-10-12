@@ -304,7 +304,7 @@ class WorkflowDefinition(Model):
             if declared_input.unit is not None and declared_input.type is not Type.NUMBER:
                 problems.add(
                     ("inputs", key, "unit"),
-                    f"Only a number takes a unit, and {key} is a {declared_input.type}. "
+                    f"Only a number takes a unit, and {key}'s type is {declared_input.type}. "
                     f"Remove the unit, or make {key} a number.",
                 )
         for key in self.test:

@@ -163,8 +163,8 @@ def test_only_a_number_takes_a_unit_and_the_refusal_names_the_input(kind: str) -
     assert refused(document) == [
         {
             "path": "inputs.checker.unit",
-            "message": f"Only a number takes a unit, and checker is a {kind}. Remove the unit, "
-            "or make checker a number.",
+            "message": f"Only a number takes a unit, and checker's type is {kind}. "
+            "Remove the unit, or make checker a number.",
         }
     ]
 
