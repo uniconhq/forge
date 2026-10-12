@@ -245,6 +245,8 @@ def test_a_label_is_the_entrys_place_as_a_letter() -> None:
         ("submissions_closed: false\n", "submissions_closed", "its own closing time"),
         ("teams: {enabled: true, max_size: 3}\n", "teams", "the most people in a team"),
         ("team_size: 3\n", "team_size", "the most people in a team"),
+        ("on_system_error: last_result\n", "on_system_error", "tried again once by itself"),
+        ("on_system_error: grading\n", "on_system_error", "keeps its last result"),
         ("registration: {mode: open}\n", "registration.mode", "ways in"),
         (
             "registration: {eligibility: {email_pattern: x}}\n",

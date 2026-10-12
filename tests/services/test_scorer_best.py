@@ -23,7 +23,7 @@ def _scorer() -> Scorer:
     current: Any = SimpleNamespace(
         publications=[SimpleNamespace(id="acme/spring/sum#1")], generation=lambda _: 1
     )
-    scorer = Scorer(ctx=None, current=current, contest=None)  # type: ignore[arg-type]
+    scorer = Scorer(ctx=None, current=current)  # type: ignore[arg-type]
 
     async def candidates() -> list[Any]:
         return [SimpleNamespace(result=RESULT, publication_id="acme/spring/sum#1")]
@@ -50,7 +50,7 @@ async def test_a_grading_scored_with_its_own_groups_is_worth_their_total_by_defa
     # The task now has a third group, worth 50 more; a grading of the
     # generation before it is scored with its own two groups, worth 100.
     current: Any = SimpleNamespace(worth=150, entry=SimpleNamespace(worth=None))
-    scorer = Scorer(ctx=None, current=current, contest=None)  # type: ignore[arg-type]
+    scorer = Scorer(ctx=None, current=current)  # type: ignore[arg-type]
     groups = {
         "small": Group.model_validate({"pass": 30}),
         "large": Group.model_validate({"pass": 70}),

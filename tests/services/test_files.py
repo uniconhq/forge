@@ -258,8 +258,15 @@ async def test_a_path_that_is_not_plainly_inside_the_place_is_refused_unread(
             b"  - id: sum\n    points: 50\n",
             "This is now called worth. Give the task's worth instead, and remove this.",
         ),
+        (
+            b"visibility: everyone",
+            b"visibility: everyone\non_system_error: last_result",
+            "This setting is no longer used: a grading that fails is tried again once by "
+            "itself, and a submission keeps its last result until a newer one replaces it. "
+            "Remove this.",
+        ),
     ],
-    ids=["visibility", "points"],
+    ids=["visibility", "points", "on_system_error"],
 )
 async def test_an_old_contest_key_is_refused_with_what_replaced_it(
     setup: Setup, acme: Acme, spring: ContestId, old: bytes, new: bytes, said: str

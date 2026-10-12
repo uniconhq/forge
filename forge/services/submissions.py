@@ -6,10 +6,10 @@ first refusal, each with a code of its own, before anything is written:
    entrant is approved and has as many members as the contest asks
    (`submitters.refuse`).
 2. The entrant has submissions left (`submission_limit`), counted from the
-   submissions at the forge, leaving out one staff cancelled
-   (`gradings.staff_cancelled`) that no fallback keeps a result for, and the
-   task's rate holds (`rate_limited`), counted from the grading rows of its
-   submissions within its window.
+   submissions at the forge, leaving out one that has no result and whose
+   latest attempt staff cancelled (`gradings.staff_cancelled`) or is a
+   system error, delayed, and the task's rate holds (`rate_limited`),
+   counted from the grading rows of its submissions within its window.
 3. Every upload named is theirs, for this task (`upload_not_yours`), and a
    checked file no submission has used (`upload_not_ready`).
 4. Each file is within its input's `max_size` (`too_large`).
@@ -51,15 +51,16 @@ is refused rolls its finishing back with the rest, and the next one finishes
 it again.
 
 A contestant reads their own submissions back, newest first, each with the
-latest attempt of its grading as the task's test groups show it
-(`forge.domain.showing`), how many started days late it was, nothing of
-a run in `system_error` but that it is still being graded, and of one staff
-then cancelled, that it is `cancelled` and the sentence they gave. A
-submission staff cancelled does not count against the task's
-`submissions.max`. While a fallback is in force for a submission in
-`system_error` or staff cancelled (`scores.fallen_back`), it is read by its
-last good result instead, as the boards count it, and counts against
-`submissions.max`. A grading is
+attempt of its grading that counts as the task's test groups show it
+(`forge.domain.showing`), and how many started days late it was. The
+attempt that counts is the one the boards count (`scores.counted`): the
+latest that finished with a result, so a regrade under way, a system error
+and a staff cancel leave the result read as it was; and while none has, the
+latest, of which a run in `system_error` is read as `delayed` and nothing
+more, and one staff then cancelled as `cancelled` with the sentence they
+gave. A submission with no result whose latest attempt is delayed or staff
+cancelled does not count against the task's `submissions.max`; once it
+finishes with a result it counts, even past the most. A grading is
 shown with the publication it ran under: its sealed facts always, and
 the latest publication's `test_groups`, `credit` and value meanings when
 its own is of the same generation (no grading change published since) and
@@ -102,7 +103,7 @@ from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
 from forge.domain import exact_json
 from forge.domain import submissions as rules
-from forge.domain.definitions import ContestDefinition, OnSystemError
+from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -168,7 +169,7 @@ class Result:
     fold, folded over the tests shown; on a task that gives points, the
     points shown and those pending until the reveal, and the late factor
     they include. Where it stands is in the contestant's words
-    (`SubmissionState`): a run in `system_error` is still `grading` to its
+    (`SubmissionState`): a run in `system_error` is `delayed` to its
     contestant, with nothing else; one staff cancelled is `cancelled`, with
     `reason`, the sentence they gave. Read by organisers, everything is
     shown and where it stands is the grading's own `GradingStatus`.
@@ -264,8 +265,8 @@ async def submit(
     made = await _listed(ctx, workspace, task) or ()
     await _finish_unrecorded(ctx, person, workspace, made)
     caps = person.published.definition.submissions
-    cancelled = await _cancelled(ctx, workspace, task, person.settings.on_system_error)
-    if len([found for found in made if found.id not in cancelled]) >= caps.max:
+    uncounted = await _uncounted(ctx, workspace, task)
+    if len([found for found in made if found.id not in uncounted]) >= caps.max:
         raise SubmissionLimit(
             f"You have made all {caps.max} submissions this task allows.", limit=caps.max
         )
@@ -376,14 +377,13 @@ async def _submitted_before(ctx: Context, workspace: WorkspaceId, task: TaskId) 
     return found is not None
 
 
-async def _cancelled(
-    ctx: Context, workspace: WorkspaceId, task: TaskId, contest: OnSystemError
-) -> set[str]:
-    """The workspace's submissions of the task that staff cancelled and that
-    no fallback keeps a result for: those whose latest attempt is a cancel
-    with a sentence, with no fallback in force for it by staff or by the
-    contest's `on_system_error`, or no earlier attempt that finished with a
-    result.
+async def _uncounted(ctx: Context, workspace: WorkspaceId, task: TaskId) -> set[str]:
+    """The workspace's submissions of the task that do not count against its
+    `submissions.max`: those none of whose attempts finished with a result
+    and whose latest is a cancel with a sentence, void, or reads as a system
+    error, delayed. Whether the CI lost a run is not asked here, under the
+    submit's holds: such a run counts until a read finds it lost and its
+    retry starts.
     """
     rows = (
         await ctx.db.execute(
@@ -396,8 +396,8 @@ async def _cancelled(
     return {
         submission
         for submission, attempts in grouped.items()
-        if gradings.staff_cancelled(_latest(attempts))
-        and scores.fallen_back(ctx, attempts, (), contest) is None
+        if scores.delayed(ctx, attempts, ())
+        or (gradings.latest_good(attempts) is None and gradings.staff_cancelled(_latest(attempts)))
     }
 
 
@@ -781,8 +781,10 @@ async def _read(
     grouped: dict[int, builtins.list[Grading]] = {}
     for row in rows:
         grouped.setdefault(row.submission_number, []).append(row)
-    gone = await gradings.lost(ctx, [_latest(found) for found in grouped.values()])
-    scorer = scores.Scorer(ctx, reading.published, reading.settings.on_system_error)
+    latest = [_latest(found) for found in grouped.values()]
+    gone = await gradings.lost(ctx, latest)
+    await gradings.notice(ctx, latest, gone)
+    scorer = scores.Scorer(ctx, reading.published)
     return [
         await _submission(
             ctx,
@@ -814,10 +816,9 @@ async def _submission(
     *,
     everything: bool = False,
 ) -> Submission:
-    """The submission as its owner reads it, by the latest attempt of its
-    grading, or by its last good result while a fallback is in force for
-    it, with `lost` naming the gradings whose runs the CI has lost; with
-    `everything`, as organisers read it.
+    """The submission as its owner reads it, by the attempt of its grading
+    that counts (`scores.counted`), with `lost` naming the gradings whose
+    runs the CI has lost; with `everything`, as organisers read it.
     """
     settings = reading.settings
     task = reading.published.name
@@ -829,13 +830,13 @@ async def _submission(
     late = late_days(due_of(settings, entry, extension), at) if entry is not None else 0
     if not rows:
         return Submission(reading.task, number, at, late, None)
-    row = scores.fallen_back(ctx, rows, lost, settings.on_system_error) or _latest(rows)
+    row = scores.counted(rows)
     status = gradings.status_of(ctx, row, lost)
     reveal_at = await timelines.reveal(ctx, contest, settings, task)
     factor = scores.factor(settings, reading.published, extension, at)
     result = await _result(
         ctx,
-        scorer or scores.Scorer(ctx, reading.published, settings.on_system_error),
+        scorer or scores.Scorer(ctx, reading.published),
         row,
         status,
         reveal_at,
@@ -856,8 +857,8 @@ async def _result(
     everything: bool = False,
 ) -> Result:
     """The grading as its contestant may see it now, with the publication it
-    ran under, scored. A run in `system_error` is told as still grading,
-    with nothing of it shown, and one staff cancelled as cancelled, with the
+    ran under, scored. A run in `system_error` is told as delayed, with
+    nothing of it shown, and one staff cancelled as cancelled, with the
     sentence they gave. With `everything`, as organisers read it: where it
     stands in its own words, and shown as after the reveal, each group's
     `shown_at` kept from what its contestant is shown now.

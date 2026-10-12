@@ -47,8 +47,9 @@ PENALTY = "penalty"
 
 
 class State(StrEnum):
-    """Where one submission stands on a board: still `grading` to its row
-    (a run in `system_error` among them); `void`, no attempt, cancelled or
+    """Where one submission stands on a board: still `grading` to its row,
+    pending (a delayed one, in `system_error`, among them); `void`, no
+    attempt, cancelled or
     stopped by a step that is not sealed; an `attempt` a sealed step
     stopped; or a `candidate`, an attempt whose run was not stopped.
     """

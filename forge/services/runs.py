@@ -29,7 +29,7 @@ since the envelope's URL is a variable of the run that anyone who reads the
 task's runs at the CI can see, and the envelope hands out the callback
 token. A harness whose fetch lost its answer ends its run without a
 report, and the grading reads as a system error once its deadline passes,
-for an organiser to retry. The envelope carries the callback token, the
+and is tried again. The envelope carries the callback token, the
 callback URL, a URL the harness writes its log with, signed for the
 machine URL until the deadline, and the value of every secret the plan
 names. No org holds a secret yet, so a plan names none and the envelope's
@@ -45,8 +45,9 @@ the row, and `finished` carries the result: one that matches the runner's
 the grading is `done`, or `system_error` when the result says the run
 stopped on one, with its `error`; any other leaves the grading in
 `system_error` with the reason, and is taken, since sending it again would
-not mend it. A kept result sent again, because its answer was lost, is
-answered the same.
+not mend it. A grading the report leaves in `system_error` is tried again
+once by itself once the report is taken (`gradings.notice`). A kept result
+sent again, because its answer was lost, is answered the same.
 
 Neither the envelope's key nor a report's token is checked while the row is
 held: the grading is read, the secret checked, and only then is the row
@@ -257,6 +258,7 @@ async def callback(
             gradings.changed(ctx, row, organisers_only=True)
         case Event.FINISHED:
             _finished(ctx, row, report.result)
+            await gradings.notice(ctx, [row])
     await ctx.db.flush()
     return GradingStatus(row.status)
 

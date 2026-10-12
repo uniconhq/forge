@@ -1,9 +1,10 @@
 """The contest's boards, read by a visitor, a contestant and an organiser,
 each given what their audience sees: one ranking, the viewer's own row the
 only one with its grading count and counted submissions, organisers every
-row `now` and `final`, and a picked row as it sees `now`. A broken attempt
-counts as still grading, or void once cancelled, unless a fallback, the
-contest's or staff's, counts its last good result. A row's marks:
+row `now` and `final`, and a picked row as it sees `now`. A failed or
+cancelled attempt never takes a result away: a submission counts its latest
+attempt that finished with a result, and with none, it is still grading
+while its grading failed and void once staff cancel it. A row's marks:
 up to the task's `marks` of its own submissions, frozen at its close. What
 a board asks of its tasks, refused on a task's save (T8) and on the
 contest's (C4), with the save's report of the boards it moves (T9); and a
@@ -339,14 +340,13 @@ async def _broken_retry(setup: Setup, manager: Organiser, key: str) -> uuid.UUID
     return second
 
 
-async def test_a_fallback_counts_the_last_good_result_of_a_broken_attempt_a_cancel_included(
+async def test_a_failed_or_cancelled_retry_never_takes_a_result_off_the_board(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await write_contest(acme.fake, contest(BOARDS))
     await _submit(setup, acme, entered, "key-0001-fault")
     await _grade_waiting(setup, _main())
     manager = await _manager(setup, acme)
-    second = await _broken_retry(setup, manager, "key-0001-fault")
 
     async def cell() -> tuple[Fraction | None, bool, int | None]:
         standings, _ = await boards.seen(setup, entered.session, SPRING)
@@ -354,17 +354,27 @@ async def test_a_fallback_counts_the_last_good_result_of_a_broken_attempt_a_canc
         found = bob.cells["sum"]
         return bob.keys[0], found.counting, found.grading
 
-    assert (await cell())[1:] == (False, 1)
-    await write_contest(acme.fake, contest(BOARDS + "on_system_error: last_result\n"))
+    second = await _broken_retry(setup, manager, "key-0001-fault")
     assert await cell() == (Fraction(100), True, 0)
     await gradings.cancel(setup, manager, second, "It crashes on every try.")
     assert await cell() == (Fraction(100), True, 0)
+
+
+async def test_a_cancel_voids_on_the_board_only_a_submission_that_never_had_a_result(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
     await write_contest(acme.fake, contest(BOARDS))
-    assert (await cell())[1:] == (False, 0)
-    await gradings.fall_back(setup, manager, second)
-    assert await cell() == (Fraction(100), True, 0)
-    await gradings.clear_fallback(setup, manager, second)
-    assert (await cell())[1:] == (False, 0)
+    await _submit(setup, acme, entered, "key-0001-fault")
+    async with setup.unit_of_work() as ctx:
+        broken = await ctx.db.scalar(select(Grading.id))
+        await ctx.db.execute(update(Grading).values(status="system_error", error="It crashed."))
+    assert broken is not None
+
+    await gradings.cancel(setup, await _manager(setup, acme), broken, "It cannot be graded.")
+
+    standings, _ = await boards.seen(setup, entered.session, SPRING)
+    cell = standings.rows[0].cells["sum"]
+    assert (cell.counting, cell.attempts, cell.grading) == (False, 0, 0)
 
 
 async def test_relative_credit_is_against_the_best_of_the_rows_candidates_only(
@@ -401,8 +411,8 @@ async def test_relative_credit_is_against_the_best_of_the_rows_candidates_only(
                 submitted_at=first.submitted_at,
                 publication_id=first.publication_id,
                 attempt=2,
-                status="cancelled",
-                cancel_reason="Copied.",
+                status="done",
+                result={**RESULT, "stopped": "compile_error", "stopped_by": "compile"},
             )
         )
     (after,) = await boards.seen(setup, None, SPRING)
@@ -411,7 +421,7 @@ async def test_relative_credit_is_against_the_best_of_the_rows_candidates_only(
     assert points(after) == {"cyd": 100, "bob": 0}
 
 
-async def test_relative_credit_counts_a_fallen_back_result_while_the_fallback_holds(
+async def test_relative_credit_counts_the_last_result_of_a_submission_whose_retry_failed(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await write_contest(acme.fake, contest(BOARDS))
@@ -426,25 +436,24 @@ async def test_relative_credit_counts_a_fallen_back_result_while_the_fallback_ho
     await _submit_as(setup, acme, cyd, entered.task, "key-0001-cyd")
     await _grade_waiting(setup, _main(time_ms=20))
     manager = await _manager(setup, acme)
-    broken = await _broken_retry(setup, manager, "key-0001-bob")
 
     async def points() -> dict[str, Fraction | None]:
         (standings,) = await boards.seen(setup, None, SPRING)
         return {row.name: row.keys[0] for row in standings.rows}
 
-    assert await points() == {"cyd": 100, "bob": 0}
-    await gradings.fall_back(setup, manager, broken)
     assert await points() == {"bob": 100, "cyd": 50}
-    await gradings.clear_fallback(setup, manager, broken)
-    assert await points() == {"cyd": 100, "bob": 0}
+    broken = await _broken_retry(setup, manager, "key-0001-bob")
+    assert await points() == {"bob": 100, "cyd": 50}
+    await gradings.cancel(setup, manager, broken, "It crashes on every try.")
+    assert await points() == {"bob": 100, "cyd": 50}
 
 
-async def test_a_fallen_back_result_shows_only_what_is_shown_and_counts_its_mark_at_the_reveal(
+async def test_a_result_kept_past_a_failed_retry_shows_only_what_is_shown_and_counts_its_mark(
     setup: Setup, acme: Acme, ranked: Entered, clock: FakeClock
 ) -> None:
-    await _broken_retry(setup, await _manager(setup, acme), "key-0002-bbbb")
+    manager = await _manager(setup, acme)
+    broken = await _broken_retry(setup, manager, "key-0002-bbbb")
     await marks.mark(setup, ranked.session, ranked.task, 2)
-    await write_contest(acme.fake, contest(BOARDS + "on_system_error: last_result\n"))
 
     standings, final = await boards.seen(setup, ranked.session, SPRING)
     told = (await submissions.one(setup, ranked.session, ranked.task, 2)).grading
@@ -462,9 +471,9 @@ async def test_a_fallen_back_result_shows_only_what_is_shown_and_counts_its_mark
     await identity.current(ranked.session.id, setup=setup)
     _, final = await boards.seen(setup, ranked.session, SPRING)
     assert (final.rows[0].keys, final.rows[0].cells["sum"].submissions) == (keys(35), (2,))
-    await write_contest(acme.fake, contest(BOARDS))
+    await gradings.cancel(setup, manager, broken, "It crashes on every try.")
     _, final = await boards.seen(setup, ranked.session, SPRING)
-    assert final.rows[0].keys == keys(0)
+    assert (final.rows[0].keys, final.rows[0].cells["sum"].submissions) == (keys(35), (2,))
 
 
 async def test_a_mark_holds_up_to_the_tasks_marks_and_freezes_at_the_close(

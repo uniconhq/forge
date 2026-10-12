@@ -13,16 +13,15 @@ that grade the same test content: over the contest's rows, each
 submission's attempt a board reads (`usable`), a candidate by it, its run
 not stopped, accepted on the test.
 
-Where a submission stands on a board is its latest attempt's: finished, it
-is a candidate when its run was not stopped, an attempt when a sealed step
-stopped it, and nothing otherwise; staff cancelled, nothing; in
-`system_error`, still grading to its row; still running or queued, where
-it stood by its attempts before that one, so a regrade in progress moves no
-board until it ends, and with none before it still grading. A
-fallback, staff's on the latest attempt or the contest's
-`on_system_error: last_result`, has a submission in `system_error` or staff
-cancelled stand as its latest earlier attempt that finished with a result
-(`fallen_back`), while there is one.
+One rule says which of a submission's attempts counts, on a board, for
+relative credit, to its row and against `submissions.max`: the latest that
+finished with a result, until a newer attempt finishes with one, so a
+regrade under way, a system error and a staff cancel never take a result
+away (`counted`). Finished, that attempt is a candidate when its run was
+not stopped, an attempt when a sealed step stopped it, and nothing
+otherwise. A submission none of whose attempts finished with a result is
+still grading while its latest attempt is queued, running or a system
+error, and nothing once that attempt is cancelled.
 """
 
 import uuid
@@ -39,7 +38,6 @@ from forge.domain.boards import State
 from forge.domain.definitions import (
     TASK_FILE,
     ContestDefinition,
-    OnSystemError,
     Relative,
     parse_task,
 )
@@ -84,67 +82,38 @@ class Usable:
     row: Grading | None
 
 
-def usable(
-    ctx: Context,
-    rows: Sequence[Grading],
-    lost: Collection[uuid.UUID],
-    contest: OnSystemError,
-) -> Usable:
-    """Which of one submission's attempts a board reads, and where the
-    submission stands by it, before its run's stop is read, `contest` being
-    the contest's `on_system_error`.
+def counted(rows: Sequence[Grading]) -> Grading:
+    """The attempt of one submission that counts, the one its row reads: the
+    latest that finished with a result, or, while none has, the latest.
     """
-    latest = max(rows, key=lambda row: row.attempt)
-    status = gradings.status_of(ctx, latest, lost)
-    if status is GradingStatus.DONE and latest.result is not None:
-        return Usable(State.CANDIDATE, latest)
-    if gradings.broken(latest, status):
-        standing = _standing_in(rows, latest, contest)
-        if standing is not None:
-            return Usable(State.CANDIDATE, standing)
-        if gradings.staff_cancelled(latest):
-            return Usable(State.VOID, None)
-        return Usable(State.GRADING, None)
-    if status is not GradingStatus.CANCELLED:
-        # Still running or queued: the board holds where the submission stood
-        # before this attempt, a system error with no fallback included.
-        earlier = [row for row in rows if row.attempt < latest.attempt]
-        if earlier:
-            return usable(ctx, earlier, lost, contest)
-        return Usable(State.GRADING, None)
-    good = gradings.last_good(rows, latest)
+    return gradings.latest_good(rows) or max(rows, key=lambda row: row.attempt)
+
+
+def usable(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -> Usable:
+    """Which of one submission's attempts a board reads, and where the
+    submission stands by it, before its run's stop is read: the latest
+    attempt that finished with a result, a candidate; with none, still
+    grading while the latest attempt is queued, running or a system error,
+    and nothing once it is cancelled.
+    """
+    good = gradings.latest_good(rows)
     if good is not None:
         return Usable(State.CANDIDATE, good)
-    return Usable(State.VOID, None)
-
-
-def fallen_back(
-    ctx: Context,
-    rows: Sequence[Grading],
-    lost: Collection[uuid.UUID],
-    contest: OnSystemError,
-) -> Grading | None:
-    """The earlier attempt a fallback counts in place of a submission's
-    broken latest attempt, the one `usable` reads for it, or none while no
-    fallback is in force for it. An attempt still being graded is not
-    broken, so its contestant reads it as grading while a board holds the
-    earlier result until it ends.
-    """
     latest = max(rows, key=lambda row: row.attempt)
-    if not gradings.broken(latest, gradings.status_of(ctx, latest, lost)):
-        return None
-    return _standing_in(rows, latest, contest)
+    if gradings.status_of(ctx, latest, lost) is GradingStatus.CANCELLED:
+        return Usable(State.VOID, None)
+    return Usable(State.GRADING, None)
 
 
-def _standing_in(
-    rows: Sequence[Grading], latest: Grading, contest: OnSystemError
-) -> Grading | None:
-    """The last good result that stands in for the broken latest attempt
-    `latest` while a fallback by staff or by the contest is in force, or none.
+def delayed(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -> bool:
+    """Whether a submission is delayed: none of its attempts finished with a
+    result, and its latest reads as a system error, waiting for its retry
+    or for staff.
     """
-    if gradings.fallback_of(latest.falls_back, contest) is None:
-        return None
-    return gradings.last_good(rows, latest)
+    if gradings.latest_good(rows) is not None:
+        return False
+    latest = max(rows, key=lambda row: row.attempt)
+    return gradings.status_of(ctx, latest, lost) is GradingStatus.SYSTEM_ERROR
 
 
 def stands(row: Grading, graded: Graded) -> State:
@@ -161,13 +130,12 @@ class Scorer:
     """Scores one task's gradings for one read, `B` worked out once for
     each generation, value and direction it is asked for (two publications
     of one generation may name different values in `relative`), by the
-    attempts the contest's `on_system_error` has a board read.
+    attempt of each submission a board reads (`usable`).
     """
 
-    def __init__(self, ctx: Context, current: PublishedTask, contest: OnSystemError) -> None:
+    def __init__(self, ctx: Context, current: PublishedTask) -> None:
         self.ctx = ctx
         self.current = current
-        self.contest = contest
         self._latest: Graded | None = None
         self._bests: dict[tuple[int, str, Better | None], Mapping[str, Fraction]] = {}
 
@@ -257,14 +225,13 @@ class Scorer:
             )
         ):
             grouped.setdefault((row.workspace_id, row.submission_number), []).append(row)
-        lost = await gradings.lost(
-            ctx, [max(attempts, key=lambda row: row.attempt) for attempts in grouped.values()]
-        )
         found: list[Grading] = []
         for attempts in grouped.values():
-            read = usable(ctx, attempts, lost, self.contest)
-            if read.state is State.CANDIDATE and read.row is not None:
-                found.append(read.row)
+            # A submission is a candidate by its latest attempt that finished
+            # with a result, whatever its later ones read as.
+            good = gradings.latest_good(attempts)
+            if good is not None:
+                found.append(good)
         return found
 
     async def _own(self, publication: PublicationId) -> Graded | None:

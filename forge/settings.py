@@ -237,7 +237,11 @@ class Settings(BaseSettings):
     made once it is approved and once the task is first published, so the
     first uploads at a contest's start find them made; off, each is made at
     the entrant's first upload to the task, and an entrant that never submits
-    costs the forge no repository. `s3`, the object store's settings, is
+    costs the forge no repository. `retry_failed` says whether a grading
+    that ends in `system_error` is tried again once by itself, by whatever
+    finds it so; it is on but in tests, where a retry starting in the
+    background would race what a test checks, and a test of it turns it on.
+    `s3`, the object store's settings, is
     required with `forgejo`; the fake keeps its store in memory.
     `mail`, the mail server's settings, is optional, and without it nothing
     is mailed. `harness_image` is the harness every plan names, by digest, and
@@ -277,6 +281,7 @@ class Settings(BaseSettings):
     cookie_secure: bool | None = None
     org_creation_open: bool = True
     places_ahead: bool = True
+    retry_failed: bool = True
 
     forge: ForgeKind = "forgejo"
     ci: CiKind = "woodpecker"
@@ -494,6 +499,7 @@ TEST_VALUES: dict[str, Any] = {
     "forge": "fake",
     "forge_public_url": "http://localhost:3300",
     "places_ahead": False,
+    "retry_failed": False,
 }
 
 

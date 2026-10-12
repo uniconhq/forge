@@ -11,7 +11,7 @@ per-test input one file per test, named `<group>/<test>`, the files under an
 input within its `max_size` together. The contestant reads their own
 submissions back, each grading with its test groups as their `show` allows
 before and after the task's reveal, with the publication it ran under when
-the tests have changed since, a run in `system_error` as still running, how
+the tests have changed since, a run in `system_error` as delayed, how
 many days late each was, and nobody else's.
 """
 
@@ -1129,7 +1129,7 @@ async def test_a_stop_is_shown_as_the_outcome(setup: Setup, acme: Acme, entered:
     assert submission.grading.values == {"log": "main.py:1: SyntaxError"}
 
 
-async def test_a_system_error_is_read_by_its_contestant_as_still_running(
+async def test_a_system_error_is_read_by_its_contestant_as_delayed(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await _submit(setup, acme, entered)
@@ -1144,7 +1144,7 @@ async def test_a_system_error_is_read_by_its_contestant_as_still_running(
     [submission] = await submissions.mine(setup, entered.session, entered.task)
 
     assert submission.grading is not None
-    assert submission.grading.status == SubmissionState.GRADING
+    assert submission.grading.status == SubmissionState.DELAYED
     assert (
         submission.grading.stopped,
         submission.grading.outcome,

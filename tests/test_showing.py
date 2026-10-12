@@ -288,7 +288,7 @@ def test_a_grading_whose_tests_changed_is_shown_with_its_own_publication() -> No
         (GradingStatus.QUEUED, SubmissionState.QUEUED),
         (GradingStatus.DISPATCHED, SubmissionState.GRADING),
         (GradingStatus.RUNNING, SubmissionState.GRADING),
-        (GradingStatus.SYSTEM_ERROR, SubmissionState.GRADING),
+        (GradingStatus.SYSTEM_ERROR, SubmissionState.DELAYED),
         (GradingStatus.DONE, SubmissionState.GRADED),
         (GradingStatus.CANCELLED, SubmissionState.CANCELLED),
     ],

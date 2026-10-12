@@ -436,7 +436,8 @@ async def _entries(
             grouped.setdefault((row.workspace_id, row.submission_number), []).append(row)
         latest = [max(each, key=lambda row: row.attempt) for each in grouped.values()]
         lost = await gradings.lost(ctx, latest)
-        scorer = scores.Scorer(ctx, task, settings.on_system_error)
+        await gradings.notice(ctx, latest, lost)
+        scorer = scores.Scorer(ctx, task)
         by_owner: dict[WorkspaceOwner, list[Entry]] = {}
         for (workspace, number), attempts in grouped.items():
             owner = workspaces[WorkspaceId(workspace)]
@@ -471,7 +472,7 @@ async def _entry(
     extension: Extension,
     marked: bool,
 ) -> Entry:
-    usable = scores.usable(ctx, attempts, lost, settings.on_system_error)
+    usable = scores.usable(ctx, attempts, lost)
     if usable.state is not State.CANDIDATE or usable.row is None:
         return Entry(number, at, usable.state, marked=marked)
     graded = await scorer.graded(PublicationId(usable.row.publication_id))
