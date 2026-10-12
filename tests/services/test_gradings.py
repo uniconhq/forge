@@ -14,11 +14,11 @@ result's error, and turns any other result into a system error saying why.
 A run that has not reported by its deadline reads as a system error, and so
 does one whose run the CI has lost, found by asking the CI when the grading
 is read, a few times a minute at most, while one still waiting in its queue
-is left alone; its contestant is told it is still being graded. The
-organiser cancels, retries and rejudges, a stuck grading included, whose old
-run is cancelled, and has a broken attempt's submission fall back to its
-last good result, which a cancel then keeps; and the operator's reconcile
-gives a submission without gradings its rows.
+is left alone; its contestant is told it is delayed while it has no result,
+and is told its last result while it has one. The organiser cancels,
+retries and rejudges, a stuck grading included, whose old run is cancelled,
+and a failed or cancelled attempt never takes a result away; and the
+operator's reconcile gives a submission without gradings its rows.
 """
 
 import asyncio
@@ -66,7 +66,6 @@ from forge.domain.grading import (
     REPORT_ALLOWANCE,
     RUN_LOG_MAX,
     START_WAIT,
-    Fallback,
     GradingRun,
     GradingStatus,
     RunSpec,
@@ -77,6 +76,7 @@ from forge.domain.grading import (
 )
 from forge.domain.identity import PLATFORM, AsOrgAccount, User
 from forge.domain.ids import OrgId, RunId, TaskId
+from forge.domain.names import EntrantOwner
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.showing import SubmissionState
@@ -86,7 +86,6 @@ from forge.services import gradings, org_accounts, publications, reconcile, runs
 from forge.services.access import Organiser
 from forge.testing import FakeClock, logged
 from tests.services.conftest import (
-    RUNNING,
     Acme,
     Entered,
     organiser,
@@ -674,9 +673,9 @@ async def test_a_run_that_does_not_report_by_its_deadline_reads_as_a_system_erro
 
     (after,) = await _listed(setup, manager, entered.task)
     assert (after.status, after.error) == (GradingStatus.SYSTEM_ERROR, OVERDUE)
-    # The contestant is told it is still being graded until staff end it.
+    # The contestant is told it is delayed, and nothing more.
     result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert result is not None and result.status == SubmissionState.GRADING
+    assert result is not None and result.status == SubmissionState.DELAYED
     with pytest.raises(GradingClosed):
         await _report(setup, row, _finished(_result(envelope)))
     retried = await gradings.retry(setup, manager, row.id)
@@ -820,7 +819,7 @@ async def test_a_run_stopped_by_a_system_error_is_kept_as_one_with_its_error(
     )
     mine = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert mine is not None
-    assert (mine.status, mine.stopped, mine.groups) == (SubmissionState.GRADING, None, ())
+    assert (mine.status, mine.stopped, mine.groups) == (SubmissionState.DELAYED, None, ())
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
     (listed,) = await _listed(setup, manager, entered.task)
     assert (listed.status, listed.error) == (GradingStatus.SYSTEM_ERROR, after.error)
@@ -953,7 +952,7 @@ async def test_a_cancelled_submission_reads_as_cancelled_and_frees_its_place_und
     await _set(setup, row.id, status=GradingStatus.SYSTEM_ERROR, error="The checker crashed.")
     before = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert before is not None
-    assert (before.status, before.reason) == (SubmissionState.GRADING, None)
+    assert (before.status, before.reason) == (SubmissionState.DELAYED, None)
 
     await gradings.cancel(setup, manager, row.id, REASON)
 
@@ -1040,67 +1039,66 @@ async def _broken_after_a_result(
     return row, retried.id
 
 
-async def test_staff_fall_back_to_a_submissions_last_good_result_and_clear_it(
+async def test_a_failed_regrade_leaves_the_submission_at_its_last_result(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
-    row, broken = await _broken_after_a_result(setup, acme, entered, manager)
-    with pytest.raises(WrongStatus) as finished:
-        await gradings.fall_back(setup, manager, row.id)
-    assert finished.value.extra == {"current": "done"}
-    with pytest.raises(Forbidden):
-        await gradings.fall_back(setup, _held(acme, SUM, Role.OBSERVER), broken)
-    (before,) = [found for found in await _listed(setup, manager, entered.task) if found.latest]
-    assert (before.last_good, before.fallback, before.falls_back) == (1, None, False)
+    await _broken_after_a_result(setup, acme, entered, manager)
+
+    listed = {found.attempt: found for found in await _listed(setup, manager, entered.task)}
     told = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert told is not None and (told.attempt, told.status) == (2, SubmissionState.GRADING)
 
-    fell = await gradings.fall_back(setup, manager, broken)
+    assert (listed[2].latest, listed[2].status, listed[2].last_good) == (
+        True,
+        GradingStatus.SYSTEM_ERROR,
+        1,
+    )
+    assert (listed[1].latest, listed[1].last_good) == (False, None)
+    assert told is not None and (told.attempt, told.status) == (1, SubmissionState.GRADED)
+    assert told.points is not None
+    seen = await submissions.organised(
+        setup, manager, entered.task, EntrantOwner(entered.entrant), 1
+    )
+    assert seen.grading is not None and (seen.grading.attempt, seen.grading.status) == (
+        1,
+        GradingStatus.DONE,
+    )
 
-    assert (fell.attempt, fell.last_good, fell.fallback) == (2, 1, Fallback.STAFF)
-    assert (await gradings.fall_back(setup, manager, broken)).fallback is Fallback.STAFF
-    (listed,) = [found for found in await _listed(setup, manager, entered.task) if found.latest]
-    assert (listed.fallback, listed.falls_back) == (Fallback.STAFF, True)
-    shown = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert shown is not None and (shown.attempt, shown.status) == (1, SubmissionState.GRADED)
 
-    cleared = await gradings.clear_fallback(setup, manager, broken)
-
-    assert (cleared.last_good, cleared.fallback, cleared.falls_back) == (1, None, False)
-    again = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert again is not None and (again.attempt, again.status) == (2, SubmissionState.GRADING)
-
-
-async def test_a_fallback_needs_the_latest_attempt_and_an_earlier_result(
+async def test_a_submission_with_no_result_whose_grading_failed_is_delayed_and_nothing_more(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
     row = await _submit(setup, acme, entered)
     await _set(setup, row.id, status=GradingStatus.SYSTEM_ERROR, error="The checker crashed.")
-    with pytest.raises(Conflict) as nothing:
-        await gradings.fall_back(setup, manager, row.id)
-    assert "No earlier attempt" in nothing.value.detail
-    retried = await gradings.retry(setup, manager, row.id)
-    await _set(setup, retried.id, status=GradingStatus.SYSTEM_ERROR, error="Again.")
-    with pytest.raises(Conflict) as later:
-        await gradings.fall_back(setup, manager, row.id)
-    assert "later attempt" in later.value.detail
+
+    told = (await submissions.one(setup, entered.session, entered.task, 1)).grading
+    (listed,) = await _listed(setup, manager, entered.task)
+
+    assert told is not None
+    assert (told.attempt, told.status, told.reason, told.groups, told.points) == (
+        1,
+        SubmissionState.DELAYED,
+        None,
+        (),
+        None,
+    )
+    assert (listed.status, listed.error, listed.last_good) == (
+        GradingStatus.SYSTEM_ERROR,
+        "The checker crashed.",
+        None,
+    )
 
 
-async def test_under_a_fallback_a_cancel_keeps_the_last_good_result_and_its_place(
+async def test_a_cancel_after_a_result_keeps_the_result_and_its_place_under_the_max(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
-    await write_contest(
-        acme.fake, RUNNING.format(visibility="everyone") + "on_system_error: last_result\n"
-    )
     _, broken = await _broken_after_a_result(setup, acme, entered, manager)
-    (listed,) = [found for found in await _listed(setup, manager, entered.task) if found.latest]
-    assert (listed.last_good, listed.fallback) == (1, Fallback.CONTEST)
 
     cancelled = await gradings.cancel(setup, manager, broken, REASON)
 
-    assert (cancelled.status, cancelled.fallback) == (GradingStatus.CANCELLED, Fallback.CONTEST)
+    assert (cancelled.status, cancelled.last_good) == (GradingStatus.CANCELLED, 1)
     shown = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert shown is not None and (shown.attempt, shown.status) == (1, SubmissionState.GRADED)
     # A cancel stays final for grading: a rejudge passes the submission over.
@@ -1112,31 +1110,26 @@ async def test_under_a_fallback_a_cancel_keeps_the_last_good_result_and_its_plac
     clock.advance(timedelta(seconds=31))
     with pytest.raises(SubmissionLimit):
         await _submit(setup, acme, entered, key="key-0002-bbbb")
-    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
-    voided = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert voided is not None and (voided.attempt, voided.status) == (2, SubmissionState.CANCELLED)
-    second = await _submit(setup, acme, entered, key="key-0002-bbbb")
-    assert second.submission_number == 2
 
 
-async def test_a_retry_ends_a_staff_fallback_and_its_attempt_starts_without_one(
+async def test_a_staff_retry_after_a_failed_one_keeps_the_last_result_meanwhile(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
     _, broken = await _broken_after_a_result(setup, acme, entered, manager)
-    await gradings.fall_back(setup, manager, broken)
 
     retried = await gradings.retry(setup, manager, broken)
+    assert (retried.attempt, retried.last_good, retried.automatic) == (3, 1, False)
     await _set(setup, retried.id, status=GradingStatus.SYSTEM_ERROR, error="Again.")
 
     listed = {found.attempt: found for found in await _listed(setup, manager, entered.task)}
-    assert (listed[3].latest, listed[3].falls_back, listed[3].fallback) == (True, False, None)
-    assert (listed[2].latest, listed[2].falls_back) == (False, False)
+    assert (listed[3].latest, listed[3].last_good) == (True, 1)
+    assert (listed[2].latest, listed[2].last_good) == (False, None)
     told = (await submissions.one(setup, entered.session, entered.task, 1)).grading
-    assert told is not None and (told.attempt, told.status) == (3, SubmissionState.GRADING)
+    assert told is not None and (told.attempt, told.status) == (1, SubmissionState.GRADED)
 
 
-async def test_a_fallback_on_a_lost_grading_ends_it_saying_why_and_cancels_its_run(
+async def test_a_lost_regrade_leaves_the_last_result_and_a_retry_ends_it_saying_why(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
@@ -1147,27 +1140,28 @@ async def test_a_fallback_on_a_lost_grading_ends_it_saying_why_and_cancels_its_r
     acme.fake.ci.runs[run].ci_state = RunState.LOST
     clock.advance(LOST_CHECK_AFTER)
 
-    fell = await gradings.fall_back(setup, manager, retried.id)
+    told = (await submissions.one(setup, entered.session, entered.task, 1)).grading
+    assert told is not None and (told.attempt, told.status) == (1, SubmissionState.GRADED)
+    (latest,) = [found for found in await _listed(setup, manager, entered.task) if found.latest]
+    assert (latest.status, latest.error, latest.last_good) == (GradingStatus.SYSTEM_ERROR, LOST, 1)
 
-    assert (fell.status, fell.fallback) == (GradingStatus.SYSTEM_ERROR, Fallback.STAFF)
-    _, lost = await _rows(setup)
-    assert (lost.status, lost.error, lost.falls_back) == (GradingStatus.SYSTEM_ERROR, LOST, True)
+    await gradings.retry(setup, manager, retried.id)
+
+    _, lost, _ = await _rows(setup)
+    assert (lost.status, lost.error) == (GradingStatus.SYSTEM_ERROR, LOST)
     assert acme.fake.ci.runs[run].cancelled is True
 
 
-async def test_a_contest_whose_settings_do_not_read_counts_a_broken_attempt_as_grading(
+async def test_a_broken_attempt_keeps_its_last_result_whatever_the_contests_settings(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
-    await write_contest(
-        acme.fake, RUNNING.format(visibility="everyone") + "on_system_error: last_result\n"
-    )
     await _broken_after_a_result(setup, acme, entered, manager)
     await write_contest(acme.fake, "tasks: [\n")
 
     (listed,) = [found for found in await _listed(setup, manager, entered.task) if found.latest]
 
-    assert (listed.last_good, listed.fallback) == (1, None)
+    assert (listed.status, listed.last_good) == (GradingStatus.SYSTEM_ERROR, 1)
 
 
 async def test_a_grading_is_no_such_grading_to_an_organiser_who_does_not_observe_its_task(
@@ -1211,9 +1205,10 @@ async def test_a_retry_makes_a_new_attempt_and_keeps_the_old(
     assert new.id == retried.id and new.idempotency_key is None
     with pytest.raises(Conflict):
         await gradings.retry(setup, manager, row.id)
+    # While the new attempt is graded, the submission is read by the result it has.
     result = (await submissions.one(setup, entered.session, entered.task, 1)).grading
     assert result is not None
-    assert (result.attempt, result.status) == (2, SubmissionState.GRADING)
+    assert (result.attempt, result.status) == (1, SubmissionState.GRADED)
 
 
 async def test_a_rejudge_grades_every_submission_again_against_the_current_publication(
@@ -1440,8 +1435,8 @@ async def test_a_run_the_ci_lost_reads_as_a_system_error_saying_so_and_nothing_i
     assert result is not None
     (listed,) = await _listed(setup, manager, entered.task)
 
-    # Its contestant is told it is still being graded until staff end it.
-    assert result.status == SubmissionState.GRADING
+    # Its contestant is told it is delayed, and nothing more.
+    assert result.status == SubmissionState.DELAYED
     assert (listed.status, listed.error) == (GradingStatus.SYSTEM_ERROR, LOST)
     after = await _row(setup, row.id)
     assert (after.status, after.error) == (GradingStatus.DISPATCHED, None)

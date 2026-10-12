@@ -209,7 +209,7 @@ def test_a_held_stop_holds_back_every_group_its_points_and_its_folds_until_the_r
         GroupShown(name, group.shown, None, None, REVEAL, max=Fraction(30))
         for name, group in groups.items()
     )
-    assert held.points == Points(Fraction(0), Fraction(90), REVEAL)
+    assert held.points == Points(None, Fraction(90), REVEAL)
     assert held.folded == {}
     assert (plain.points, plain.folded) == (
         Points(Fraction(60), Fraction(30), REVEAL),
@@ -288,7 +288,7 @@ def test_a_grading_whose_tests_changed_is_shown_with_its_own_publication() -> No
         (GradingStatus.QUEUED, SubmissionState.QUEUED),
         (GradingStatus.DISPATCHED, SubmissionState.GRADING),
         (GradingStatus.RUNNING, SubmissionState.GRADING),
-        (GradingStatus.SYSTEM_ERROR, SubmissionState.GRADING),
+        (GradingStatus.SYSTEM_ERROR, SubmissionState.DELAYED),
         (GradingStatus.DONE, SubmissionState.GRADED),
         (GradingStatus.CANCELLED, SubmissionState.CANCELLED),
     ],

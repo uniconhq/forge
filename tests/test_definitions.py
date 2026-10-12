@@ -131,8 +131,9 @@ END = datetime(2026, 6, 1, 14, tzinfo=UTC)
 
 
 def contest_problems(text: str) -> list[Problem]:
+    """What a save of `text` is refused with."""
     with pytest.raises(InvalidDefinition) as refused:
-        parse_contest(text)
+        parse_contest(text, saved=True)
     return refused.value.errors
 
 
@@ -245,6 +246,8 @@ def test_a_label_is_the_entrys_place_as_a_letter() -> None:
         ("submissions_closed: false\n", "submissions_closed", "its own closing time"),
         ("teams: {enabled: true, max_size: 3}\n", "teams", "the most people in a team"),
         ("team_size: 3\n", "team_size", "the most people in a team"),
+        ("on_system_error: last_result\n", "on_system_error", "tried again once by itself"),
+        ("on_system_error: grading\n", "on_system_error", "keeps its last result"),
         ("registration: {mode: open}\n", "registration.mode", "ways in"),
         (
             "registration: {eligibility: {email_pattern: x}}\n",
@@ -308,6 +311,14 @@ def test_a_retired_contest_key_is_refused_at_its_path_with_what_replaced_it(
 
     assert paths(problems) == [path]
     assert sentence in problems[0]["message"]
+
+
+@pytest.mark.parametrize("value", ["last_result", "grading"])
+def test_a_stored_contest_still_holding_on_system_error_reads_with_it_ignored(value: str) -> None:
+    text = HEAD + f"on_system_error: {value}\n"
+
+    assert parse_contest(text) == parse_contest(HEAD)
+    assert paths(contest_problems(text)) == ["on_system_error"]
 
 
 def test_public_visibility_is_refused_naming_everyone() -> None:

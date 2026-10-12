@@ -21,6 +21,22 @@ long enough for that to mean something (`grading.worth_asking`), at most
 once every `RUN_STATE_KEPT` for each run however many people are watching
 it, and with the reader's connection let go of first.
 
+A latest attempt that ends in `system_error` is tried again once by itself
+(`notice`): whatever finds it so, the CI's report, a start that fails, or
+any read of it that finds it overdue or lost, starts the retry once its
+unit of work commits, in the background (`Context.in_background`), and
+nothing runs on a timer. The retry holds the task and the submission's
+attempts as a staff retry does, and makes a new attempt, marked
+`automatic`, only while the failed one is still the latest and was not
+itself made so; so two readers finding the failure at once make one
+retry, and a second failure waits for staff. A retry that never starts is
+started by the next read that finds the failure.
+
+Of a submission's attempts the latest that finished with a result counts,
+on the boards, for relative credit, to its row and against
+`submissions.max`, until a newer attempt finishes with one: a failure or a
+cancel never takes a result away (`scores.usable`).
+
 An organiser managing the task reads its gradings and acts on one:
 
 - `cancel` ends a submission whose latest grading reads as a system error,
@@ -28,13 +44,9 @@ An organiser managing the task reads its gradings and acts on one:
   regrade would only repeat the fault: the grading is `cancelled` with a
   sentence its contestant reads, and a run of it still at the CI is stopped
   once the cancel has committed, so it does not hold a machine. The cancel
-  is final: a retry is refused and a rejudge leaves it as it is. Without a
-  fallback the submission is void and does not count against the task's
-  `submissions.max`; under one it keeps its last good result;
-- `fall_back` has a submission whose latest attempt is a system error, or
-  staff cancelled, count as the latest earlier attempt of it that finished
-  with a result, whatever the contest's `on_system_error` says, and
-  `clear_fallback` takes that back, so the contest's word holds again;
+  is final: a retry is refused and a rejudge leaves it as it is. A
+  submission that never had a result is then void and does not count
+  against the task's `submissions.max`; one that had keeps it;
 - `retry` makes a new attempt of a submission's latest grading once it is
   finished, against the publication that attempt graded against, unless
   staff cancelled it or another attempt of it is still being graded. One
@@ -56,13 +68,18 @@ An organiser managing the task reads its gradings and acts on one:
 An organiser of a contest reads its gradings together:
 
 - `feed` lists every grading of the contest's tasks the organiser observes,
-  newest first, filtered by task, by the member who submitted, by entrant,
+  newest first by when each was queued (the package's clock, never the
+  database's), filtered by task, by the member who submitted, by entrant,
   and by status, each with whose it is, the entrant by the name it is shown
   under and the member who submitted it by username, as `list` gives a
-  task's; every attempt is a row of its own;
+  task's; every attempt is a row of its own, or, with `latest`, only each
+  submission's latest attempt, so `status=system_error` with `latest` lists
+  the failed gradings that wait for staff;
 - `queue_depth` counts the ones waiting for a machine by status, `queued`
   and `dispatched`, one that is overdue or lost not among them, since it
-  reads as a system error.
+  reads as a system error; and the ones that failed and wait for staff,
+  `failed`: the latest attempts that read as a system error, the ones
+  `feed` lists with `status=system_error` and `latest`.
 
 Both see the tasks the organiser observes: every task for an observer of
 the contest or above, and otherwise the tasks they hold a role at, the rest
@@ -78,15 +95,16 @@ import builtins
 import uuid
 from collections import Counter
 from collections.abc import Collection, Iterable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import ColumnElement, and_, func, not_, or_, select, tuple_
+from sqlalchemy import ColumnElement, and_, exists, func, not_, or_, select, tuple_
+from sqlalchemy.orm import aliased
 
 from forge.db.tables import Entrant, Grading
-from forge.domain.definitions import ContestDefinition, OnSystemError
+from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -108,7 +126,6 @@ from forge.domain.grading import (
     START_WAIT,
     UNFINISHED,
     WAITING,
-    Fallback,
     GradingRun,
     GradingStatus,
     RunSpec,
@@ -164,6 +181,15 @@ RUN_STATE_KEPT = timedelta(seconds=15)
 """How long this process keeps the CI's answer about where one run is, so a
 contestant's page polling every two seconds asks the CI a few times a
 minute at most."""
+START_RETRY_WAIT = timedelta(minutes=1)
+"""How long a grading whose run could not be started waits before a read
+may start its retry by itself, so the one retry is not spent against a CI
+that refused a moment ago; still nothing runs on a timer."""
+
+NOTICED_KEPT = timedelta(seconds=30)
+"""How long this process remembers that it started the retry of a failed
+grading, so a crowd of readers finding the failure together starts it once;
+a retry that never ran is started by the next read after this."""
 
 ACCOUNT_NOT_READY = "The org's grading account is not ready."
 NOT_ACTIVATED = "The task is not set up for grading yet."
@@ -190,14 +216,13 @@ class GradingRecord:
     against which publication, where it stands, why when it is a system
     error, the sentence staff cancelled it with, the result as it came
     back, whether its log was written, the last progress its run reported,
-    and its times.
+    its times, and whether the platform made it by itself, retrying the
+    attempt before it (`automatic`).
 
-    On a latest attempt that is a system error or staff cancelled,
-    `last_good` is the latest earlier attempt that finished with a result,
-    and `fallback` why the submission counts as that attempt now, none
-    while it does not; `falls_back` is staff having asked so on this one,
-    told only on a latest attempt, since a flag on an earlier one counts
-    for nothing.
+    On a latest attempt that has not finished with a result, still being
+    graded, a system error or staff cancelled, `last_good` is the latest
+    earlier attempt that did, the one its submission counts meanwhile; none
+    on any other, and when there is no such attempt.
     """
 
     id: uuid.UUID
@@ -220,9 +245,8 @@ class GradingRecord:
     finished_at: datetime | None
     deadline_at: datetime | None
     cancel_reason: str | None = None
-    falls_back: bool = False
+    automatic: bool = False
     last_good: int | None = None
-    fallback: Fallback | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,13 +281,15 @@ class FeedEntry:
 
 @dataclass(frozen=True, slots=True)
 class QueueDepth:
-    """How many of a contest's gradings wait for a machine: `queued`, whose
+    """How many of a contest's gradings wait: for a machine, `queued`, whose
     run is not started yet, and `dispatched`, whose run the CI holds until a
-    machine takes it.
+    machine takes it; and for staff, `failed`, the latest attempts of
+    submissions that read as a system error.
     """
 
     queued: int
     dispatched: int
+    failed: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,10 +320,12 @@ def new_row(
     attempt: int,
     key: str | None,
     submitted_by: int | None,
+    automatic: bool = False,
 ) -> Grading:
     """A new `queued` grading, added to the unit of work, with the hash of
     its run's callback token, whose run starts once the unit of work
-    commits.
+    commits; `automatic` when the platform makes it by itself, retrying the
+    attempt before it.
     """
     row = Grading(
         id=new_id(),
@@ -313,6 +341,7 @@ def new_row(
         idempotency_key=key,
         status=GradingStatus.QUEUED,
         queued_at=ctx.now,
+        automatic=automatic,
     )
     row.callback_token_hash = token_hash(callback_token_of(ctx, row))
     ctx.db.add(row)
@@ -436,7 +465,8 @@ async def _start_run(ctx: Context, account: AsOrgAccount, run: GradingRun, spec:
 
 async def _not_started(ctx: Context, grading: uuid.UUID, exc: Exception, reason: str) -> None:
     """End the grading in `system_error` with `reason`, unless it moved on
-    meanwhile.
+    meanwhile. Its retry by itself is left to the first read that finds it
+    `START_RETRY_WAIT` after (`notice`).
     """
     log.warning(
         "gradings.start_failed", grading=str(grading), error=type(exc).__name__, detail=str(exc)
@@ -600,22 +630,16 @@ def changed(ctx: Context, row: Grading, *, organisers_only: bool = False) -> Non
 def staff_cancelled(row: Grading) -> bool:
     """Whether staff ended the grading's submission by cancelling it, which,
     while it is the latest attempt, is final: a retry, a rejudge and a
-    save's regrade grade it no more, and, unless a fallback counts its last
-    good result, it is left out of what a task's `submissions.max` counts.
+    save's regrade grade it no more, and, unless an earlier attempt of it
+    finished with a result, it is left out of what a task's
+    `submissions.max` counts.
     """
     return row.status == GradingStatus.CANCELLED and row.cancel_reason is not None
 
 
-def broken(row: Grading, status: GradingStatus) -> bool:
-    """Whether an attempt reading as `status` is one a fallback stands in
-    for: a system error, or staff cancelled.
-    """
-    return status is GradingStatus.SYSTEM_ERROR or staff_cancelled(row)
-
-
 def good(row: Grading) -> bool:
-    """Whether an attempt finished with a result, one a fallback may count:
-    `GOOD` told on a row in hand.
+    """Whether an attempt finished with a result, one its submission may
+    count: `GOOD` told on a row in hand.
     """
     return row.status == GradingStatus.DONE and row.result is not None
 
@@ -624,27 +648,110 @@ GOOD = and_(Grading.status == GradingStatus.DONE, Grading.result.is_not(None))
 """`good` told in a query."""
 
 
-def last_good(attempts: Iterable[Grading], row: Grading) -> Grading | None:
-    """The latest attempt of `row`'s submission before it that finished
-    with a result, what a fallback counts in its place, or none.
+def latest_good(attempts: Iterable[Grading]) -> Grading | None:
+    """The latest of one submission's attempts that finished with a result,
+    the one the submission counts, or none while none has.
     """
     return max(
-        (other for other in attempts if other.attempt < row.attempt and good(other)),
+        (other for other in attempts if good(other)),
         key=lambda other: other.attempt,
         default=None,
     )
 
 
-def fallback_of(falls_back: bool, contest: OnSystemError) -> Fallback | None:
-    """Why a broken latest attempt has its submission count as its last good
-    result: staff asked so on it (`falls_back`), or the contest's
-    `on_system_error` says so; none when neither does.
+def last_good(attempts: Iterable[Grading], row: Grading) -> Grading | None:
+    """The latest attempt of `row`'s submission before it that finished
+    with a result, or none.
     """
-    if falls_back:
-        return Fallback.STAFF
-    if contest is OnSystemError.LAST_RESULT:
-        return Fallback.CONTEST
-    return None
+    return latest_good(other for other in attempts if other.attempt < row.attempt)
+
+
+async def notice(ctx: Context, rows: Iterable[Grading], lost: Collection[uuid.UUID] = ()) -> None:
+    """Start, once this unit of work commits, the retry the platform makes by
+    itself of each of `rows`, the latest attempts of their submissions, that
+    reads as a system error now and was not itself such a retry, and, for
+    one whose run could not be started, failed `START_RETRY_WAIT` ago or
+    more (`start_waits`). Each is started once by this process in
+    `NOTICED_KEPT` however many readers find it, and `retry_by_itself`
+    makes it once whatever any other process does. Nothing is started
+    while `retry_failed` is off.
+    """
+    if not ctx.settings.retry_failed:
+        return
+    for row in rows:
+        if row.automatic or status_of(ctx, row, lost) is not GradingStatus.SYSTEM_ERROR:
+            continue
+        if start_waits(ctx, row):
+            continue
+        if not await _first_to_notice(ctx, row.id):
+            continue
+        grading = row.id
+
+        async def retry_it(later: Context, grading: uuid.UUID = grading) -> None:
+            await retry_by_itself(later, grading)
+
+        ctx.in_background(retry_it)
+
+
+def start_waits(ctx: Context, row: Grading) -> bool:
+    """Whether a grading whose run could not be started (a system error
+    with no run) failed less than `START_RETRY_WAIT` ago, so its retry by
+    itself waits. A failure the CI reported, and an overdue or lost run,
+    wait for nothing.
+    """
+    return (
+        row.status == GradingStatus.SYSTEM_ERROR
+        and row.run_id is None
+        and row.finished_at is not None
+        and ctx.now < row.finished_at + START_RETRY_WAIT
+    )
+
+
+async def _first_to_notice(ctx: Context, grading: uuid.UUID) -> bool:
+    """Whether this reader is the first in this process, in `NOTICED_KEPT`,
+    to find the grading failed: the first one's claim is kept, and every
+    later reader is handed it and not its own.
+    """
+    mine = object()
+
+    async def claim() -> object:
+        return mine
+
+    return await ctx.memo.remembered(f"gradings.noticed.{grading}", NOTICED_KEPT, claim) is mine
+
+
+async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
+    """The retry the platform makes by itself of a grading that ended in
+    `system_error`, a new attempt marked `automatic` against the publication
+    it graded against, or none when there is nothing to retry: the grading
+    is not the latest attempt of its submission any more, does not read as
+    a system error, its run could not be started and it still waits
+    (`start_waits`), staff ended it, it was itself such a retry, or another
+    attempt is still being graded. The task and the submission's attempts
+    are held as a staff retry holds them, so two of these at once, or one
+    beside a staff retry, a cancel or a rejudge, make one attempt between
+    them. One that reads failed only because it is overdue or lost is
+    ended first, with the reason written on its row, its run cancelled at
+    the CI once this commits.
+    """
+    found = await find(ctx, grading)
+    if found is None or found.automatic:
+        return None
+    await timelines.hold_task(ctx, TaskId(found.task_id))
+    gone = await lost(ctx, [found])
+    attempts = await _attempts(ctx, [found.submission_id])
+    row = next(attempt for attempt in attempts if attempt.id == grading)
+    if row.automatic or any(other.attempt > row.attempt for other in attempts):
+        return None
+    if status_of(ctx, row, gone) is not GradingStatus.SYSTEM_ERROR or start_waits(ctx, row):
+        return None
+    if any(status_of(ctx, other, gone) in UNFINISHED for other in attempts):
+        return None
+    _settle(ctx, row, gone)
+    made = _next_attempt(ctx, row, PublicationId(row.publication_id), attempts, automatic=True)
+    await ctx.db.flush()
+    log.info("gradings.retried_by_itself", grading=str(row.id), attempt=made.attempt)
+    return made
 
 
 def overdue_of(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> str | None:
@@ -781,17 +888,19 @@ async def cancel(
     cancelling that grading, with `reason`, a sentence its contestant reads.
     One that reads so only because it is overdue or lost has that written
     on its row as its error, and its run at the CI is stopped once the
-    cancel has committed, holding nothing while the CI is called. While a
-    fallback is in force for it, the submission keeps counting as its last
-    good result; without one, or with no such result, it is void.
+    cancel has committed, holding nothing while the CI is called. A
+    submission an earlier attempt of which finished with a result keeps
+    counting as that result; one with no such attempt is void.
     `InvalidReason` for an empty sentence or one over `CANCEL_REASON_MAX`
     characters, `WrongStatus` for a grading that is not a system error, and
-    `Conflict` for one with a later attempt, which is the one to cancel.
+    `Conflict` for one with a later attempt, which is the one to cancel. The
+    task is held alone, as by a retry, so a retry by itself under way lands
+    its attempt first and the cancel finds it.
     """
     sentence = cancel_reason(reason)
     found = await _managed(ctx, organiser, grading, lock=False)
+    await timelines.hold_task(ctx, TaskId(found.task_id))
     gone = await lost(ctx, [found])
-    settings = await _settings(ctx, contest_id_of(task_scope(TaskId(found.task_id))))
     attempts = await _attempts(ctx, [found.submission_id])
     row = next(attempt for attempt in attempts if attempt.id == grading)
     status = status_of(ctx, row, gone)
@@ -810,7 +919,8 @@ async def cancel(
     row.cancel_reason = sentence
     await ctx.db.flush()
     log.info("gradings.cancelled", grading=str(row.id), user_id=organiser.user.id)
-    return _answer(ctx, row, attempts, gone, settings)
+    good = last_good(attempts, row)
+    return record(ctx, row, gone, latest=True, last_good=good.attempt if good else None)
 
 
 @action
@@ -849,91 +959,8 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     made = _next_attempt(ctx, row, PublicationId(row.publication_id), attempts)
     await ctx.db.flush()
     log.info("gradings.retried", grading=str(row.id), attempt=made.attempt)
-    return record(ctx, made, latest=True)
-
-
-@action
-async def fall_back(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> GradingRecord:
-    """Count a submission whose latest grading is a system error, or staff
-    cancelled, as the latest earlier attempt of it that finished with a
-    result, whatever the contest's `on_system_error` says, until
-    `clear_fallback`. One that reads so only because it is overdue or lost
-    is written so and its run stopped, as a retry does, so a late report
-    cannot take the fallback away.
-    Asked again, it changes nothing. `WrongStatus` for a grading that is
-    neither, and `Conflict` for one with a later attempt, which is the one
-    that counts, and for a submission with no earlier result to count.
-    """
-    found = await _managed(ctx, organiser, grading, lock=False)
-    gone = await lost(ctx, [found])
-    settings = await _settings(ctx, contest_id_of(task_scope(TaskId(found.task_id))))
-    attempts = await _attempts(ctx, [found.submission_id])
-    row = next(attempt for attempt in attempts if attempt.id == grading)
-    status = status_of(ctx, row, gone)
-    if not broken(row, status):
-        raise WrongStatus(
-            "Only a grading that failed with a system error, or one the organisers cancelled, "
-            f"can fall back to an earlier result, and this one is {status.value}.",
-            current=status.value,
-        )
-    if any(other.attempt > row.attempt for other in attempts):
-        raise Conflict("This submission has a later attempt, and that one counts.")
-    if last_good(attempts, row) is None:
-        raise Conflict(
-            "No earlier attempt of this submission finished with a result to fall back to."
-        )
-    _settle(ctx, row, gone)
-    row.falls_back = True
-    await ctx.db.flush()
-    log.info("gradings.fell_back", grading=str(row.id), user_id=organiser.user.id)
-    return _answer(ctx, row, attempts, gone, settings)
-
-
-@action
-async def clear_fallback(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> GradingRecord:
-    """Take back staff's fallback on a grading, so its submission counts as
-    the contest's `on_system_error` says. A grading with none changes
-    nothing.
-    """
-    found = await _managed(ctx, organiser, grading, lock=False)
-    gone = await lost(ctx, [found])
-    settings = await _settings(ctx, contest_id_of(task_scope(TaskId(found.task_id))))
-    attempts = await _attempts(ctx, [found.submission_id])
-    row = next(attempt for attempt in attempts if attempt.id == grading)
-    if row.falls_back:
-        row.falls_back = False
-        await ctx.db.flush()
-        log.info("gradings.fallback_cleared", grading=str(row.id), user_id=organiser.user.id)
-    latest = all(other.attempt <= row.attempt for other in attempts)
-    if not latest:
-        return record(ctx, row, gone, latest=False)
-    return _answer(ctx, row, attempts, gone, settings)
-
-
-def _answer(
-    ctx: Context,
-    row: Grading,
-    attempts: Sequence[Grading],
-    gone: Collection[uuid.UUID],
-    settings: ContestDefinition | None,
-) -> GradingRecord:
-    """A submission's latest attempt `row` as an organiser reads it once
-    changed, with what a fallback counts in its place.
-    """
-    good = last_good(attempts, row)
-    found = record(ctx, row, gone, latest=True, last_good=good.attempt if good else None)
-    return _placed(found, settings)
-
-
-def _placed(found: GradingRecord, settings: ContestDefinition | None) -> GradingRecord:
-    """The grading with why its submission counts as its last good result,
-    by staff's fallback on it or by the contest's `on_system_error`, which
-    counts as still grading when the settings do not read.
-    """
-    if found.last_good is None:
-        return found
-    contest = settings.on_system_error if settings is not None else OnSystemError.GRADING
-    return replace(found, fallback=fallback_of(found.falls_back, contest))
+    good = latest_good(attempts)
+    return record(ctx, made, latest=True, last_good=good.attempt if good else None)
 
 
 def _settle(ctx: Context, row: Grading, gone: Collection[uuid.UUID]) -> None:
@@ -991,7 +1018,7 @@ async def list(
             await ctx.db.execute(
                 select(Grading)
                 .where(Grading.task_id == task)
-                .order_by(Grading.created_at.desc(), Grading.id.desc())
+                .order_by(Grading.queued_at.desc(), Grading.id.desc())
                 .limit(max(1, min(limit, LIST_LIMIT)))
             )
         )
@@ -1001,6 +1028,7 @@ async def list(
     last = await _latest(ctx, rows)
     goods = await _last_goods(ctx, rows)
     gone = await lost(ctx, rows)
+    await notice(ctx, [row for row in rows if row.id in last], gone)
     return await _entries(
         ctx,
         contest_id_of(task_scope(task)),
@@ -1021,15 +1049,19 @@ async def feed(
     user: str | None = None,
     entrant: uuid.UUID | None = None,
     status: GradingStatus | None = None,
+    latest: bool = False,
     limit: int = 100,
 ) -> tuple[FeedEntry, ...]:
     """The gradings of the contest's tasks the organiser observes, newest
     first, at most `limit` of them and never more than 500: of one `task`,
     of the submissions the member whose username is `user` made, of the
-    entrant `entrant`, and reading as `status`, each filter when given. A
-    task, person or entrant the organiser cannot see there gives none, and
-    so does a `user` that breaks the forge's username rule (`is_username`).
-    `Forbidden` for someone holding no role in the contest.
+    entrant `entrant`, and reading as `status`, each filter when given, and
+    with `latest` only each submission's latest attempt, so `status`
+    `system_error` with `latest` gives the ones `queue_depth` counts as
+    `failed`. A task, person or entrant the organiser cannot see there
+    gives none, and so does a `user` that breaks the forge's username rule
+    (`is_username`). `Forbidden` for someone holding no role in the
+    contest.
     """
     observed = _observed(organiser, contest)
     where = [_in_contest(contest, observed)]
@@ -1051,6 +1083,8 @@ async def feed(
         where.append(Grading.workspace_id == _workspace(ctx, contest, EntrantOwner(entrant)))
     if status is not None:
         where.append(_may_read_as(status, ctx.now))
+    if latest:
+        where.append(_is_latest())
     size = max(1, min(limit, LIST_LIMIT))
     kept: builtins.list[GradingRecord] = []
     after: tuple[datetime, uuid.UUID] | None = None
@@ -1060,11 +1094,11 @@ async def feed(
     while len(kept) < size:
         query = select(Grading).where(*where)
         if after is not None:
-            query = query.where(tuple_(Grading.created_at, Grading.id) < after)
+            query = query.where(tuple_(Grading.queued_at, Grading.id) < after)
         rows = (
             (
                 await ctx.db.execute(
-                    query.order_by(Grading.created_at.desc(), Grading.id.desc()).limit(size)
+                    query.order_by(Grading.queued_at.desc(), Grading.id.desc()).limit(size)
                 )
             )
             .scalars()
@@ -1073,6 +1107,7 @@ async def feed(
         last = await _latest(ctx, rows)
         goods = await _last_goods(ctx, rows)
         gone = await lost(ctx, rows)
+        await notice(ctx, [row for row in rows if row.id in last], gone)
         kept.extend(
             record(ctx, row, gone, latest=row.id in last, last_good=goods.get(row.id))
             for row in rows
@@ -1080,30 +1115,41 @@ async def feed(
         )
         if len(rows) < size:
             break
-        after = (rows[-1].created_at, rows[-1].id)
+        after = (rows[-1].queued_at, rows[-1].id)
     return await _entries(ctx, contest, kept[:size])
 
 
 @action
 async def queue_depth(ctx: Context, organiser: Organiser, contest: ContestId) -> QueueDepth:
     """How many gradings of the contest's tasks the organiser observes wait
-    for a machine, by status, read in one go. `Forbidden` for someone
-    holding no role in the contest.
+    for a machine, by status, and how many failed and wait for staff, read
+    in one go. `Forbidden` for someone holding no role in the contest.
     """
     observed = _observed(organiser, contest)
+    failing = and_(_is_latest(), _may_read_as(GradingStatus.SYSTEM_ERROR, ctx.now))
     rows = (
         (
             await ctx.db.execute(
-                select(Grading).where(_in_contest(contest, observed), Grading.status.in_(WAITING))
+                select(Grading).where(
+                    _in_contest(contest, observed), or_(Grading.status.in_(WAITING), failing)
+                )
             )
         )
         .scalars()
         .all()
     )
+    last = await _latest(ctx, rows)
     gone = await lost(ctx, rows)
-    counted = Counter(status_of(ctx, row, gone) for row in rows)
+    await notice(ctx, [row for row in rows if row.id in last], gone)
+    read = [(row, status_of(ctx, row, gone)) for row in rows]
+    counted = Counter(status for _, status in read)
+    failed = sum(
+        1 for row, status in read if status is GradingStatus.SYSTEM_ERROR and row.id in last
+    )
     return QueueDepth(
-        queued=counted[GradingStatus.QUEUED], dispatched=counted[GradingStatus.DISPATCHED]
+        queued=counted[GradingStatus.QUEUED],
+        dispatched=counted[GradingStatus.DISPATCHED],
+        failed=failed,
     )
 
 
@@ -1130,6 +1176,18 @@ def _observed(organiser: Organiser, contest: ContestId) -> frozenset[TaskId] | N
     return tasks
 
 
+def _is_latest() -> ColumnElement[bool]:
+    """The rows that are their submission's latest attempt, told in the
+    query: no attempt of the same submission after them.
+    """
+    later = aliased(Grading)
+    return not_(
+        exists().where(
+            later.submission_id == Grading.submission_id, later.attempt > Grading.attempt
+        )
+    )
+
+
 def _in_contest(contest: ContestId, observed: frozenset[TaskId] | None) -> ColumnElement[bool]:
     if observed is None:
         return Grading.task_id.startswith(f"{contest}/", autoescape=True)
@@ -1152,7 +1210,7 @@ async def _entries(
     settings = await _settings(ctx, contest) if records else None
     return tuple(
         FeedEntry(
-            _placed(found, settings),
+            found,
             by[found.id],
             task_name=(name := tasks.get(found.task)),
             label=settings.label_of(name) if settings is not None and name is not None else None,
@@ -1249,7 +1307,8 @@ def record(
 ) -> GradingRecord:
     """The grading as an organiser reads it, `latest` saying whether it is
     its submission's latest attempt and `last_good` the latest earlier one
-    that finished with a result, kept only on a broken latest attempt.
+    that finished with a result, kept only on a latest attempt that has not
+    finished with one itself, since that is when it counts.
     """
     late = overdue_of(ctx, row, lost)
     status = GradingStatus.SYSTEM_ERROR if late is not None else GradingStatus(row.status)
@@ -1274,8 +1333,8 @@ def record(
         finished_at=row.finished_at,
         deadline_at=row.deadline_at,
         cancel_reason=row.cancel_reason,
-        falls_back=row.falls_back and latest,
-        last_good=last_good if latest and broken(row, status) else None,
+        automatic=row.automatic,
+        last_good=last_good if latest and not good(row) else None,
     )
 
 
@@ -1357,7 +1416,12 @@ async def _attempts(ctx: Context, submissions: Sequence[str]) -> builtins.list[G
 
 
 def _next_attempt(
-    ctx: Context, row: Grading, publication: PublicationId, attempts: Sequence[Grading]
+    ctx: Context,
+    row: Grading,
+    publication: PublicationId,
+    attempts: Sequence[Grading],
+    *,
+    automatic: bool = False,
 ) -> Grading:
     return new_row(
         ctx,
@@ -1371,6 +1435,7 @@ def _next_attempt(
         attempt=max(other.attempt for other in attempts) + 1,
         key=None,
         submitted_by=row.submitted_by,
+        automatic=automatic,
     )
 
 

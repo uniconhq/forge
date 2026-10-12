@@ -33,8 +33,8 @@ clock and the reporting allowance after it, so a run that waited for a
 machine loses none of its time.
 
 A grading that is past what each of its states may take reads as a system
-error, whatever its row still says, so nothing waits for ever and an
-organiser can retry it (`overdue`): one still `queued` `START_WAIT` after it
+error, whatever its row still says, so nothing waits for ever and it is
+tried again (`overdue`): one still `queued` `START_WAIT` after it
 was made, since its run is started as soon as it is committed; one
 `dispatched` `MACHINE_WAIT` after its run was started, a run no machine took
 or that never reached the harness; and one `running` past its deadline,
@@ -49,10 +49,18 @@ quarter of an hour behind others. So the CI is asked where the run is
 run the CI no longer holds reads as a system error, `LOST`, like an
 overdue one.
 
-A grading in `system_error` is ended by staff, by regrading it or, when a
-regrade would only repeat the fault, by cancelling it with a sentence its
-contestant reads (`cancel_reason`, at most `CANCEL_REASON_MAX` characters),
-which ends its submission for good: it is graded again by nothing.
+A grading that ends in `system_error` is tried again once by itself, by
+whatever finds it so: the CI's report, a start that fails, or a read that
+finds it overdue or lost. The attempt that makes is marked `automatic`, and
+one so marked is not tried again by itself, so a second failure waits for
+staff. Staff end it by retrying it, as often as they like, or, when a retry
+would only repeat the fault, by cancelling it with a sentence its contestant
+reads (`cancel_reason`, at most `CANCEL_REASON_MAX` characters), which ends
+its submission for good: it is graded again by nothing.
+
+Of a submission's attempts, the latest that finished with a result counts,
+until a newer one finishes with one: a failure or a cancel never takes a
+result away, and a cancel voids only a submission that never had one.
 """
 
 import base64
@@ -143,16 +151,6 @@ class GradingStatus(StrEnum):
     DONE = "done"
     CANCELLED = "cancelled"
     SYSTEM_ERROR = "system_error"
-
-
-class Fallback(StrEnum):
-    """Why a submission counts as its last good result in place of its
-    latest attempt, a system error or staff cancelled: staff asked so on
-    that attempt, or the contest's `on_system_error` says so.
-    """
-
-    STAFF = "staff"
-    CONTEST = "contest"
 
 
 UNFINISHED = (GradingStatus.QUEUED, GradingStatus.DISPATCHED, GradingStatus.RUNNING)

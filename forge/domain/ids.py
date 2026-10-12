@@ -10,6 +10,7 @@ org's id is its key, a contest's `<org>/<contest>` and a task's
 labels, read from the `names` table.
 """
 
+import re
 import uuid
 from typing import NewType
 
@@ -25,6 +26,14 @@ WorkflowId = NewType("WorkflowId", str)
 PrimitiveId = NewType("PrimitiveId", str)
 RunId = NewType("RunId", str)
 AgentId = NewType("AgentId", str)
+
+COMMIT = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
+"""A commit's id, as a file read gives its version: SHA-1's or SHA-256's."""
+
+
+def is_commit(text: str) -> bool:
+    """Whether `text` is a commit's id, never a branch's or a tag's name."""
+    return COMMIT.fullmatch(text) is not None
 
 
 def new_id() -> uuid.UUID:

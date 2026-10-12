@@ -14,7 +14,11 @@ contest's dates, the person's registration panel (`entrants.panel`): their
 entrant and whether and how they may register; the server's clock so a
 countdown agrees with it, and the tasks released to them, the ones visible
 now, each with its label, its worth and when it falls due and closes for
-their entrant, its extension on it included.
+their entrant, its extension on it included, and, for a member of an
+approved entrant, the entrant's points on it as a board over that task alone
+counts them, from the same scoring every board reads (`boards.own_points`):
+a group whose results are not shown yet counts only as pending, with the
+time it is shown, so the home never shows a number the boards hold back.
 A task's page gives its statement, its submission caps and the form of the
 inputs a contestant gives, and nothing else of what the task holds, only
 once the task is visible. A task that is not, or a contest the person may
@@ -37,15 +41,16 @@ from forge.domain import release as rules
 from forge.domain.definitions import ContestDefinition, ContestVisibility, State, Submissions
 from forge.domain.errors import NotFound
 from forge.domain.ids import ContestId, TaskId
-from forge.domain.names import ScopeNames
+from forge.domain.names import EntrantOwner, ScopeNames
 from forge.domain.registration import Status
 from forge.domain.release import Closed, Extension, close_of, due_of
 from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_scope
+from forge.domain.scoring import Points
 from forge.domain.sessions import Session
 from forge.domain.submissions import Field
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import entrants, invites, names, published, release
+from forge.services import boards, entrants, invites, names, published, release
 from forge.services.entrants import Mine
 from forge.services.published import PublicFile, PublishedTask
 from forge.services.release import TaskRelease
@@ -71,8 +76,11 @@ class ContestSummary:
 class TaskEntry:
     """A task released to the person, as the contest's home lists it: its
     name, the label its place in the contest gives it, its title, its worth,
-    whether they may submit to it now, and when it falls due, if it does,
-    and closes for their row.
+    whether they may submit to it now, when it falls due, if it does, and
+    closes for their row, and, for a member of an approved entrant, their
+    row's points on it (`boards.own_points`): shown now, as a board over
+    the task alone counts them, and pending until the task's reveal; none
+    for anyone else and on a task that gives no points.
     """
 
     task: TaskId
@@ -83,6 +91,7 @@ class TaskEntry:
     release: TaskRelease
     due: datetime | None
     closes: datetime | None
+    points: Points | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +183,15 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
     extension = release.row_extension(person)
     await ctx.let_go()
     now = ctx.now
+    shown = [
+        task
+        for task in await published.tasks(ctx, contest, settings)
+        if rules.visible(settings, task.name, now)
+    ]
+    points: dict[str, Points | None] = {}
+    if person.entrant is not None and _approved(person.entrant):
+        owner = EntrantOwner(person.entrant.id)
+        points = await boards.own_points(ctx, contest, settings, shown, owner)
     tasks = tuple(
         TaskEntry(
             task=task.id,
@@ -184,9 +202,9 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
             release=_to(person, release.of(settings, task.name, now, extension)),
             due=_due(settings, task, extension),
             closes=_closes(settings, task, extension),
+            points=points.get(task.name),
         )
-        for task in await published.tasks(ctx, contest, settings)
-        if rules.visible(settings, task.name, now)
+        for task in shown
     )
     panel = await entrants.panel(ctx, session, contest, settings, person)
     return ContestHome(

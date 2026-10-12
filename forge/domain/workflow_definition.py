@@ -179,7 +179,12 @@ class WorkflowInput(Model):
     `options` on an enum; `per_test` on a contestant file given once per
     test; `optional` on an input a task may leave out; and, for the task's
     form only, `title`, `help` and `unit`, which name it to the organiser
-    ("Time limit", "seconds") and change no plan.
+    ("Time limit", "seconds") and change no plan. Only a `number` takes a
+    `unit`, since the form reads it after the title ("Time limit
+    (seconds)"): making or checking a version refuses it on any other type,
+    naming the input (`plans.stray_units`), and a version made before that
+    reads with it dropped (`shown_unit`), since a version cannot be mended
+    and a unit changes no plan.
     """
 
     type: ValueType
@@ -190,6 +195,13 @@ class WorkflowInput(Model):
     title: Line | None = None
     help: Line | None = None
     unit: Line | None = None
+
+    @property
+    def shown_unit(self) -> str | None:
+        """Its unit, on a number only: a stray one on another type, which an
+        older version may hold, is dropped.
+        """
+        return self.unit if self.type is Type.NUMBER else None
 
     @model_validator(mode="after")
     def _check(self) -> WorkflowInput:

@@ -25,6 +25,7 @@ from forge.domain.content import Change, ConflictToken, File, Files, FileSet, Tr
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
 from forge.domain.roles import Scope
+from forge.domain.uploads import Door
 from forge.port.content import ContentPlace
 
 
@@ -96,6 +97,12 @@ class ForgejoContent:
     ) -> bytes:
         owner, name = location(place)
         return await self._repos.read_raw(as_, owner, name, path, at=at, max_size=max_size)
+
+    async def media_door(
+        self, as_: Identity, place: ContentPlace, path: str, *, at: VersionId
+    ) -> Door:
+        owner, name = location(place)
+        return await self._repos.media_door(as_, owner, name, path, at=at)
 
     async def write_file(
         self,

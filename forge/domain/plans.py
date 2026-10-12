@@ -611,6 +611,53 @@ class Kind:
     optional: bool = False
 
 
+def stray_units(workflow: WorkflowDefinition) -> list[Problem]:
+    """A unit on an input that is not a number, refused where a version is
+    made or checked, naming the input and its type in words. A version
+    made with one before is read with it dropped (`shown_unit`), and a task
+    on it saves, since a version cannot be mended and a unit changes no
+    plan.
+    """
+    problems: list[Problem] = []
+    for key, declared in workflow.inputs.items():
+        if declared.unit is not None and declared.type is not Type.NUMBER:
+            kind = "one of a list" if declared.type is Type.ENUM else _a(declared.type)
+            problems.append(
+                Problem(
+                    path=path_text(("inputs", key, "unit")),
+                    message=f"Only a number takes a unit, and {key} is {kind}. Remove the "
+                    f"unit, or make {key} a number.",
+                )
+            )
+    return problems
+
+
+RESERVED_FOLDERS = {
+    "tests": "its tests",
+    "public": "the files every contestant is served",
+    "plans": "the plan Unicon compiles",
+}
+"""The folders of a task the format gives a meaning of its own, each with
+what it holds."""
+
+
+def reserved_inputs(workflow: WorkflowDefinition) -> list[Problem]:
+    """An input whose id is a folder the task format gives meaning to,
+    refused where a version is made or checked, naming it: a setting's own
+    files go in a folder named by its id, which would then be mixed with
+    the task's tests, the files served to contestants or the plan.
+    """
+    return [
+        Problem(
+            path=path_text(("inputs", key)),
+            message=f"An input cannot be called {key}: a task's {key}/ folder already holds "
+            f"{RESERVED_FOLDERS[key]}. Choose another name.",
+        )
+        for key in workflow.inputs
+        if key in RESERVED_FOLDERS
+    ]
+
+
 def check_workflow(
     workflow: WorkflowDefinition, primitives: Mapping[str, PrimitiveDeclaration]
 ) -> list[Problem]:
@@ -933,7 +980,10 @@ class _Raised:
 @dataclass(frozen=True, slots=True)
 class Compiled:
     """A compiled task: its plan, its sealed steps and what they hold back
-    until the reveal, and what the save says of it beside publishing it.
+    until the reveal, what the save says of it beside publishing it, what
+    each per-test value means, and the workflow's title of each contestant
+    input that has one, which the entrant's form names it by when the task
+    gives no label.
     """
 
     plan: Plan
@@ -941,6 +991,7 @@ class Compiled:
     notes: tuple[str, ...] = ()
     held: Sealed = NOTHING_SEALED
     measures: Mapping[str, Measure] = field(default_factory=dict)
+    titles: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -1430,6 +1481,11 @@ def compile_plan(
         (*_sealed_notes(compiler), *_credit_notes(task, values)),
         held,
         measures(values, task),
+        {
+            name: declared.title
+            for name, declared in workflow.inputs.items()
+            if declared.contestant and declared.title is not None
+        },
     )
 
 

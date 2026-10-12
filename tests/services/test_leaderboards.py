@@ -1,9 +1,10 @@
 """The contest's boards, read by a visitor, a contestant and an organiser,
 each given what their audience sees: one ranking, the viewer's own row the
 only one with its grading count and counted submissions, organisers every
-row `now` and `final`, and a picked row as it sees `now`. A broken attempt
-counts as still grading, or void once cancelled, unless a fallback, the
-contest's or staff's, counts its last good result. A row's marks:
+row `now` and `final`, and a picked row as it sees `now`. A failed or
+cancelled attempt never takes a result away: a submission counts its latest
+attempt that finished with a result, and with none, it is still grading
+while its grading failed and void once staff cancel it. A row's marks:
 up to the task's `marks` of its own submissions, frozen at its close. What
 a board asks of its tasks, refused on a task's save (T8) and on the
 contest's (C4), with the save's report of the boards it moves (T9); and a
@@ -36,6 +37,7 @@ from forge.domain.identity import PLATFORM, User
 from forge.domain.ids import TaskId
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, RoleGrant, Scope
+from forge.domain.scoring import Points
 from forge.domain.sessions import Session
 from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
@@ -198,6 +200,128 @@ async def test_a_visitor_reads_only_the_board_for_everyone_with_no_counts_of_any
     assert [(each.task, each.groups) for each in standings.not_in_view] == [("sum", ("large",))]
 
 
+async def test_the_contest_home_gives_a_task_the_points_a_board_over_it_counts(
+    setup: Setup, acme: Acme, ranked: Entered, clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, contest(BOARDS + "  - {name: Sum, who: contestants}\n"))
+
+    async def both() -> tuple[Points | None, Fraction | None]:
+        (task,) = (await contest_home.home(setup, ranked.session, SPRING)).tasks
+        (board,) = await boards.seen(setup, ranked.session, SPRING, "Sum")
+        return task.points, board.rows[0].keys[0]
+
+    # Before the reveal large's results are held back, as the board holds
+    # them: 65 shown, and large's 35 pending until the end.
+    assert await both() == (Points(Fraction(65), Fraction(35), END), Fraction(65))
+    clock.set(END)
+    await identity.current(ranked.session.id, setup=setup)
+    assert await both() == (Points(Fraction(100), Fraction(0), None), Fraction(100))
+
+
+async def test_a_contest_stored_with_the_retired_on_system_error_still_reads_everywhere(
+    setup: Setup, acme: Acme, ranked: Entered
+) -> None:
+    # A form of an earlier release wrote it; nothing took its place.
+    await write_contest(acme.fake, contest(BOARDS) + "on_system_error: grading\n")
+
+    (task,) = (await contest_home.home(setup, ranked.session, SPRING)).tasks
+    standings, _ = await boards.seen(setup, ranked.session, SPRING)
+
+    assert task.points == Points(Fraction(65), Fraction(35), END)
+    assert standings.rows[0].keys == keys(65, 120)
+
+
+ONLY_LARGE: dict[str, Any] = {
+    **RESULT,
+    "tests": [
+        {"test": "large/1", "outcome": "accepted", "values": {}},
+        {"test": "main/1", "outcome": "wrong_answer", "values": {}},
+        {"test": "small/1", "outcome": "wrong_answer", "values": {}},
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("boards_", "mark", "before", "after"),
+    [
+        # By group: the first's main and small, 65, and the second's large,
+        # 35, once shown.
+        ("  - {name: IOI, who: contestants, select: best_per_group}\n", None, 65, 100),
+        # Marked: the second, which passed only large.
+        ("  - {name: Final, who: contestants, select: marked}\n", 2, 0, 35),
+    ],
+    ids=["best_per_group", "marked"],
+)
+async def test_the_contest_home_counts_the_submissions_the_board_for_the_task_counts(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    clock: FakeClock,
+    boards_: str,
+    mark: int | None,
+    before: int,
+    after: int,
+) -> None:
+    # A board organisers alone see comes first, and is passed over.
+    hidden = "  - {name: Organisers, select: marked}\n"
+    await write_contest(acme.fake, contest("leaderboards:\n" + hidden + boards_))
+    await _three_groups(setup, acme, entered.task)
+    await _graded(setup, await _submit(setup, acme, entered, "key-0001-aaaa"), RESULT)
+    clock.advance(timedelta(minutes=1))
+    await _graded(setup, await _submit(setup, acme, entered, "key-0002-bbbb"), ONLY_LARGE)
+    if mark is not None:
+        await marks.mark(setup, entered.session, entered.task, mark)
+
+    async def both() -> tuple[Points | None, Fraction | None]:
+        (task,) = (await contest_home.home(setup, entered.session, SPRING)).tasks
+        (board,) = await boards.seen(setup, entered.session, SPRING)
+        return task.points, board.rows[0].keys[0]
+
+    assert await both() == (Points(Fraction(before), Fraction(35), END), Fraction(before))
+    clock.set(END)
+    await identity.current(entered.session.id, setup=setup)
+    assert await both() == (Points(Fraction(after), Fraction(0), None), Fraction(after))
+
+
+async def test_a_hidden_groups_points_stay_out_of_the_contest_home_until_shown(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, contest(BOARDS))
+    await _three_groups(setup, acme, entered.task)
+    only_large = {
+        **RESULT,
+        "tests": [
+            {"test": "large/1", "outcome": "accepted", "values": {}},
+            {"test": "main/1", "outcome": "wrong_answer", "values": {}},
+            {"test": "small/1", "outcome": "wrong_answer", "values": {}},
+        ],
+    }
+    await _graded(setup, await _submit(setup, acme, entered, "key-0001-large"), only_large)
+
+    (before,) = (await contest_home.home(setup, entered.session, SPRING)).tasks
+    clock.set(END)
+    await identity.current(entered.session.id, setup=setup)
+    (after,) = (await contest_home.home(setup, entered.session, SPRING)).tasks
+
+    assert before.points == Points(Fraction(0), Fraction(35), END)
+    assert after.points == Points(Fraction(35), Fraction(0), None)
+
+
+async def test_only_a_member_of_an_approved_entrant_is_given_points_on_the_contest_home(
+    setup: Setup, acme: Acme, ranked: Entered
+) -> None:
+    ada = await signed_in(setup, acme.fake, 7)
+    acme.fake.add_user(30, "cyd")
+    cyd = await signed_in(setup, acme.fake, 30)
+    await entrants.register(setup, cyd, SPRING)
+
+    for reader in (ada, cyd):
+        (task,) = (await contest_home.home(setup, reader, SPRING)).tasks
+        assert task.points is None
+    (mine,) = (await contest_home.home(setup, ranked.session, SPRING)).tasks
+    assert mine.points is not None
+
+
 async def test_a_contestant_reads_their_own_row_with_its_counts_and_the_hidden_board_waits(
     setup: Setup, ranked: Entered
 ) -> None:
@@ -339,14 +463,13 @@ async def _broken_retry(setup: Setup, manager: Organiser, key: str) -> uuid.UUID
     return second
 
 
-async def test_a_fallback_counts_the_last_good_result_of_a_broken_attempt_a_cancel_included(
+async def test_a_failed_or_cancelled_retry_never_takes_a_result_off_the_board(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await write_contest(acme.fake, contest(BOARDS))
     await _submit(setup, acme, entered, "key-0001-fault")
     await _grade_waiting(setup, _main())
     manager = await _manager(setup, acme)
-    second = await _broken_retry(setup, manager, "key-0001-fault")
 
     async def cell() -> tuple[Fraction | None, bool, int | None]:
         standings, _ = await boards.seen(setup, entered.session, SPRING)
@@ -354,17 +477,27 @@ async def test_a_fallback_counts_the_last_good_result_of_a_broken_attempt_a_canc
         found = bob.cells["sum"]
         return bob.keys[0], found.counting, found.grading
 
-    assert (await cell())[1:] == (False, 1)
-    await write_contest(acme.fake, contest(BOARDS + "on_system_error: last_result\n"))
+    second = await _broken_retry(setup, manager, "key-0001-fault")
     assert await cell() == (Fraction(100), True, 0)
     await gradings.cancel(setup, manager, second, "It crashes on every try.")
     assert await cell() == (Fraction(100), True, 0)
+
+
+async def test_a_cancel_voids_on_the_board_only_a_submission_that_never_had_a_result(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
     await write_contest(acme.fake, contest(BOARDS))
-    assert (await cell())[1:] == (False, 0)
-    await gradings.fall_back(setup, manager, second)
-    assert await cell() == (Fraction(100), True, 0)
-    await gradings.clear_fallback(setup, manager, second)
-    assert (await cell())[1:] == (False, 0)
+    await _submit(setup, acme, entered, "key-0001-fault")
+    async with setup.unit_of_work() as ctx:
+        broken = await ctx.db.scalar(select(Grading.id))
+        await ctx.db.execute(update(Grading).values(status="system_error", error="It crashed."))
+    assert broken is not None
+
+    await gradings.cancel(setup, await _manager(setup, acme), broken, "It cannot be graded.")
+
+    standings, _ = await boards.seen(setup, entered.session, SPRING)
+    cell = standings.rows[0].cells["sum"]
+    assert (cell.counting, cell.attempts, cell.grading) == (False, 0, 0)
 
 
 async def test_relative_credit_is_against_the_best_of_the_rows_candidates_only(
@@ -401,8 +534,8 @@ async def test_relative_credit_is_against_the_best_of_the_rows_candidates_only(
                 submitted_at=first.submitted_at,
                 publication_id=first.publication_id,
                 attempt=2,
-                status="cancelled",
-                cancel_reason="Copied.",
+                status="done",
+                result={**RESULT, "stopped": "compile_error", "stopped_by": "compile"},
             )
         )
     (after,) = await boards.seen(setup, None, SPRING)
@@ -411,7 +544,7 @@ async def test_relative_credit_is_against_the_best_of_the_rows_candidates_only(
     assert points(after) == {"cyd": 100, "bob": 0}
 
 
-async def test_relative_credit_counts_a_fallen_back_result_while_the_fallback_holds(
+async def test_relative_credit_counts_the_last_result_of_a_submission_whose_retry_failed(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await write_contest(acme.fake, contest(BOARDS))
@@ -426,25 +559,24 @@ async def test_relative_credit_counts_a_fallen_back_result_while_the_fallback_ho
     await _submit_as(setup, acme, cyd, entered.task, "key-0001-cyd")
     await _grade_waiting(setup, _main(time_ms=20))
     manager = await _manager(setup, acme)
-    broken = await _broken_retry(setup, manager, "key-0001-bob")
 
     async def points() -> dict[str, Fraction | None]:
         (standings,) = await boards.seen(setup, None, SPRING)
         return {row.name: row.keys[0] for row in standings.rows}
 
-    assert await points() == {"cyd": 100, "bob": 0}
-    await gradings.fall_back(setup, manager, broken)
     assert await points() == {"bob": 100, "cyd": 50}
-    await gradings.clear_fallback(setup, manager, broken)
-    assert await points() == {"cyd": 100, "bob": 0}
+    broken = await _broken_retry(setup, manager, "key-0001-bob")
+    assert await points() == {"bob": 100, "cyd": 50}
+    await gradings.cancel(setup, manager, broken, "It crashes on every try.")
+    assert await points() == {"bob": 100, "cyd": 50}
 
 
-async def test_a_fallen_back_result_shows_only_what_is_shown_and_counts_its_mark_at_the_reveal(
+async def test_a_result_kept_past_a_failed_retry_shows_only_what_is_shown_and_counts_its_mark(
     setup: Setup, acme: Acme, ranked: Entered, clock: FakeClock
 ) -> None:
-    await _broken_retry(setup, await _manager(setup, acme), "key-0002-bbbb")
+    manager = await _manager(setup, acme)
+    broken = await _broken_retry(setup, manager, "key-0002-bbbb")
     await marks.mark(setup, ranked.session, ranked.task, 2)
-    await write_contest(acme.fake, contest(BOARDS + "on_system_error: last_result\n"))
 
     standings, final = await boards.seen(setup, ranked.session, SPRING)
     told = (await submissions.one(setup, ranked.session, ranked.task, 2)).grading
@@ -462,9 +594,9 @@ async def test_a_fallen_back_result_shows_only_what_is_shown_and_counts_its_mark
     await identity.current(ranked.session.id, setup=setup)
     _, final = await boards.seen(setup, ranked.session, SPRING)
     assert (final.rows[0].keys, final.rows[0].cells["sum"].submissions) == (keys(35), (2,))
-    await write_contest(acme.fake, contest(BOARDS))
+    await gradings.cancel(setup, manager, broken, "It crashes on every try.")
     _, final = await boards.seen(setup, ranked.session, SPRING)
-    assert final.rows[0].keys == keys(0)
+    assert (final.rows[0].keys, final.rows[0].cells["sum"].submissions) == (keys(35), (2,))
 
 
 async def test_a_mark_holds_up_to_the_tasks_marks_and_freezes_at_the_close(

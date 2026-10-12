@@ -1,11 +1,21 @@
 """A contest's or a task's files, read and written as the organiser: a file,
 a folder's entries, the history, a write with its conflict check, a
 rollback as a new change, and a file the organiser uploaded put into a task
-by a save, and what they return.
+by a save, the door a download of a task's file streams through, and what
+they return.
 """
 
 from forge.domain.content import Change, EntryKind, File, TreeEntry, UploadInfo
-from forge.services.files import Written, history, read, rollback, tree, write, write_upload
+from forge.services.files import (
+    Written,
+    download,
+    history,
+    read,
+    rollback,
+    tree,
+    write,
+    write_upload,
+)
 
 __all__ = [
     "Change",
@@ -14,6 +24,7 @@ __all__ = [
     "TreeEntry",
     "UploadInfo",
     "Written",
+    "download",
     "history",
     "read",
     "rollback",

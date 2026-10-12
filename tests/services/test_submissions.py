@@ -11,7 +11,7 @@ per-test input one file per test, named `<group>/<test>`, the files under an
 input within its `max_size` together. The contestant reads their own
 submissions back, each grading with its test groups as their `show` allows
 before and after the task's reveal, with the publication it ran under when
-the tests have changed since, a run in `system_error` as still running, how
+the tests have changed since, a run in `system_error` as delayed, how
 many days late each was, and nobody else's.
 """
 
@@ -45,9 +45,9 @@ from forge.domain.errors import (
     UploadNotReady,
     UploadNotYours,
 )
-from forge.domain.grading import callback_token, token_hash
+from forge.domain.grading import LOST_CHECK_AFTER, RunState, callback_token, token_hash
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import ContestId, TaskId
+from forge.domain.ids import ContestId, RunId, TaskId
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.scoring import Points
@@ -390,6 +390,29 @@ async def test_of_two_uploads_of_one_file_a_recovered_submission_consumes_the_ol
     assert later.number == 2
 
 
+async def test_the_oldest_upload_is_told_by_the_packages_clock_not_the_databases(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    first = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
+    await _lost(setup, acme, entered, first.id)
+    clock.advance(timedelta(seconds=1))
+    second = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
+    # The database's clock stepped back between the two.
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(UploadRow)
+            .where(UploadRow.id == second.id)
+            .values(created_at=UploadRow.created_at - timedelta(minutes=5))
+        )
+
+    await submissions.submit(setup, entered.session, entered.task, code(), idempotency_key=KEY)
+
+    assert await _statuses(setup) == {
+        str(first.id): ("consumed", f"acme/spring/@{segment(entered.entrant)}/sum#1"),
+        str(second.id): ("verified", None),
+    }
+
+
 async def test_a_later_submit_cannot_name_an_upload_an_unrecorded_submission_used(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
@@ -529,6 +552,74 @@ async def test_the_count_and_rate_limits_hold(
     with pytest.raises(SubmissionLimit) as spent:
         await _submit(setup, acme, entered, key="key-0004-dddd")
     assert spent.value.extra["limit"] == 2
+    assert len(acme.fake.calls_to("record_submission")) == 2
+
+
+async def _at_most_one(setup: Setup, acme: Acme, entered: Entered) -> None:
+    current = await _task_yaml(acme, entered.task)
+    await _save(setup, acme, entered.task, {"task.yaml": current + b"submissions:\n  max: 1\n"})
+
+
+async def _stands(setup: Setup, number: int, **values: Any) -> None:
+    """Submission `number`'s only attempt written as `values`."""
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Grading).where(Grading.submission_number == number).values(**values)
+        )
+
+
+FAILED = {"status": "system_error", "error": "The checker crashed."}
+
+
+async def test_a_delayed_submission_uses_up_none_until_graded_and_then_counts_past_the_most(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await _at_most_one(setup, acme, entered)
+    await _submit(setup, acme, entered)
+    await _stands(setup, 1, **FAILED)
+    clock.advance(timedelta(minutes=1))
+
+    # The first is delayed, so it leaves the one place free.
+    await _submit(setup, acme, entered, key="key-0002-bbbb")
+    await _stands(setup, 2, **FAILED)
+    await _stands(setup, 1, status="done", result=RESULT)
+    clock.advance(timedelta(minutes=1))
+
+    # Graded, the first counts again, and the second, delayed, does not.
+    with pytest.raises(SubmissionLimit):
+        await _submit(setup, acme, entered, key="key-0003-cccc")
+    await _stands(setup, 2, status="done", result=RESULT)
+    # Both count once graded, past the most, neither result taken away.
+    told = [found.grading for found in await submissions.mine(setup, entered.session, entered.task)]
+    assert [found.status if found else None for found in told] == [SubmissionState.GRADED] * 2
+
+
+async def test_a_run_the_ci_lost_still_counts_when_submitting(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await _at_most_one(setup, acme, entered)
+    await _submit(setup, acme, entered)
+    (row,) = await _gradings(setup)
+    acme.fake.ci.runs[RunId(str(row.run_id))].ci_state = RunState.LOST
+    clock.advance(LOST_CHECK_AFTER)
+
+    # The CI is not asked under the submit's holds: the run counts until a
+    # read finds it lost.
+    with pytest.raises(SubmissionLimit):
+        await _submit(setup, acme, entered, key="key-0002-bbbb")
+
+
+async def test_a_submission_whose_only_attempt_is_cancelled_frees_its_place_reason_or_not(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await _at_most_one(setup, acme, entered)
+    await _submit(setup, acme, entered)
+    # A cancel with no sentence, as a rejudge writes, voids it as any cancel.
+    await _stands(setup, 1, status="cancelled", cancel_reason=None)
+    clock.advance(timedelta(minutes=1))
+
+    await _submit(setup, acme, entered, key="key-0002-bbbb")
+
     assert len(acme.fake.calls_to("record_submission")) == 2
 
 
@@ -1129,7 +1220,7 @@ async def test_a_stop_is_shown_as_the_outcome(setup: Setup, acme: Acme, entered:
     assert submission.grading.values == {"log": "main.py:1: SyntaxError"}
 
 
-async def test_a_system_error_is_read_by_its_contestant_as_still_running(
+async def test_a_system_error_is_read_by_its_contestant_as_delayed(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await _submit(setup, acme, entered)
@@ -1144,7 +1235,7 @@ async def test_a_system_error_is_read_by_its_contestant_as_still_running(
     [submission] = await submissions.mine(setup, entered.session, entered.task)
 
     assert submission.grading is not None
-    assert submission.grading.status == SubmissionState.GRADING
+    assert submission.grading.status == SubmissionState.DELAYED
     assert (
         submission.grading.stopped,
         submission.grading.outcome,

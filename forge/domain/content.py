@@ -81,12 +81,16 @@ class UploadInfo:
 class File:
     """One file as it was read, with the token a write presents back, and
     `upload` when it is an upload, whose `content` is then the pointer.
+    `version` is a version holding the file as it was read, the one it was
+    read at or the latest change to it, so the same bytes can be read again
+    whole, such as by a download; none when the forge did not say.
     """
 
     path: str
     content: bytes
     token: ConflictToken
     upload: UploadInfo | None = None
+    version: VersionId | None = None
 
 
 class EntryKind(StrEnum):
@@ -97,13 +101,16 @@ class EntryKind(StrEnum):
 @dataclass(frozen=True, slots=True)
 class TreeEntry:
     """One entry of a folder: a file, with the size of what its commit
-    holds, or a folder. `upload` tells an uploaded file from a typed one.
+    holds and that commit, the one that last changed it, which holds it as
+    listed whatever the head has moved to since (none when the forge does
+    not say), or a folder. `upload` tells an uploaded file from a typed one.
     """
 
     path: str
     kind: EntryKind
     size: int | None = None
     upload: UploadInfo | None = None
+    version: VersionId | None = None
 
 
 @dataclass(frozen=True, slots=True)

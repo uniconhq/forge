@@ -95,8 +95,9 @@ forge/api/
                 primitives, and the NewWorkflow, WorkflowSummary,
                 WorkflowView, Draft, PrimitiveVersion and Problem they
                 return
-  files.py      read, tree, history, write, rollback, write_upload, and the
-                File, TreeEntry, UploadInfo, EntryKind and Change they return
+  files.py      read, tree, history, write, rollback, write_upload, download,
+                and the File, TreeEntry, UploadInfo, EntryKind and Change
+                they return
   publications.py  save, list, workflow_form, and the Published, Draft,
                 Publication, WorkflowForm, DeclaredInput and DeclaredField
                 they return
@@ -134,10 +135,9 @@ forge/api/
   boards.py     seen, organised, held, mark, unmark, written, and the
                 Standings, Key, Column, NotInView, Ranked, Cell,
                 OrganisedBoard, Marks, Points and EntrantOwner they return
-  gradings.py   cancel, retry, fall_back, clear_fallback, rejudge, list,
-                run_log, task_of, feed, queue_depth, and the GradingRecord,
-                Rejudged, FeedEntry, Submitter, QueueDepth, GradingStatus and
-                Fallback they return; list
+  gradings.py   cancel, retry, rejudge, list, run_log, task_of, feed,
+                queue_depth, and the GradingRecord, Rejudged, FeedEntry,
+                Submitter, QueueDepth and GradingStatus they return; list
                 and feed both give FeedEntry
   runs.py       config, envelope, callback, the InboundRequest config takes
                 and the InboundAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
@@ -183,9 +183,17 @@ the format does not know, refuses a key it no longer has at that key with the se
 form shows beside that field. What a file says of itself is checked there: a
 contest's times and each task entry's timeline in order (C1), each board's
 own rules (C3), a task's test groups, rule weights, test weights and `show`
-words (T1, T2, T6), a workflow's report (W1 to W5) and a primitive's `runs`
-marks (P1). `admin_only_changes` names the admin-only keys a save changes,
-a time compared as the moment it names,
+words (T1, T2, T6), a workflow's report (W1 to W5), and a primitive's
+`runs` marks (P1). An input's `unit`, which only a `number` takes, is
+refused on any other type where a version is made or checked
+(`plans.stray_units`), at the input's `unit`, naming the input and its
+type in words; a version made with one before reads with it dropped
+(`shown_unit`), so a task on it still saves. An input named as a folder
+the task format gives meaning to, `tests`, `public` or `plans`, is refused
+there too (`plans.reserved_inputs`), since a setting's own files go in a
+folder named by its id.
+`admin_only_changes` names the admin-only keys a save changes, a time
+compared as the moment it names,
 `starter_contest` and `starter_task` are the files a new contest or task is
 created with, and `starter_workflow` the `workflow.yaml` a new workflow is.
 `plans.py` is the compiler (below) and names what changed how a task grades
@@ -493,6 +501,8 @@ org's event push points there, since the forge is allowed to call only that
 host. `UNICON_ORG_CREATION_OPEN`, on by default, lets any signed-in user
 create an org; a deployment that opens sign-up to strangers turns it off,
 because every org mints a service account and a login at the CI.
+`UNICON_RETRY_FAILED`, on by default, has a grading that fails tried again
+once by itself (below); only tests turn it off.
 `UNICON_COOKIE_SECURE` defaults to on exactly when `UNICON_PUBLIC_URL` is
 https, and the package refuses to start when the URL is https and the flag
 is set off. The Forgejo settings travel together as
@@ -553,7 +563,7 @@ hosting process calls are actions, marked `@action` from
 | `orgs` | `create`, `create_by_operator`, `update`, `read` |
 | `contests` | `create`, `list` |
 | `tasks` | `create`, `list`, `state`, `standing` |
-| `files` | `read`, `tree`, `history`, `write`, `rollback`, `write_upload` |
+| `files` | `read`, `tree`, `history`, `write`, `rollback`, `write_upload`, `download` |
 | `publications` | `save`, `list`, `workflow_form` |
 | `release` | `of_task` |
 | `entrants` | `register`, `mine`, `invite`, `withdraw_invite`, `leave`, `rename`, `list`, `approve`, `reject`, `reopen`, `remove`, `extend`, `organise_rename`, `remove_member`, `move_member`, `delete` |
@@ -567,7 +577,7 @@ hosting process calls are actions, marked `@action` from
 | `submissions` | `submit`, `mine`, `one`, `organised`, `files`, `download` |
 | `boards` | `seen`, `organised` |
 | `marks` | `held`, `mark`, `unmark` |
-| `gradings` | `cancel`, `retry`, `fall_back`, `clear_fallback`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
+| `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
 | `runs` | `config`, `envelope`, `callback` |
 | `workflows` | `create`, `listing`, `view`, `read_version`, `save`, `create_version`, `check`, `set_visibility`, `share`, `unshare`, `copy`, `combine` |
 | `primitives` | `listing` |
@@ -854,6 +864,24 @@ size a pointer the platform writes could have, 126 to 144 bytes, is read
 to tell, and its content checked as such a pointer
 (`uploads.may_be_pointer`, `upload_info`); a folder of large or of
 ordinary files costs the listing alone.
+
+Every `read` names a `version` holding the file as read: the commit that
+last changed it, which is what Forgejo's contents API names, or, when it
+names none, the version it was read at if that is a commit's id; none
+otherwise, since a branch's or a tag's name moves. A `tree` names each
+file's `version` the same way, the commit holding it as listed, so a file
+listed and not read is downloaded as it was listed. `download(organiser, task, path, at)` opens the download
+door to one file of a task at such a version, for whoever holds a role
+reaching the task, observer or above: the media endpoint for that file at
+that commit and the organiser's own credential, for the proxy to stream it
+from, a typed file and an upload alike, an upload as the bytes its pointer
+names, whatever its size (the content port's `media_door`). Any file of the
+task is one, `plans/` included, since an observer reads it anyway. A path
+that is not plain is `InvalidPath`, and a version that is not a commit's id
+(40 or 64 lowercase hex) is `NotFound`, since Forgejo's `ref` would read a
+name as a branch or a tag first; nothing is read to open the door, so a file
+or a version the task does not have is Forgejo's refusal when the proxy
+asks, and the proxy turns that into its own.
 
 ## The save
 
@@ -1173,11 +1201,25 @@ What a signed-in person reads of a contest is `contest_home`: `contests`,
 every contest they see with the status of their entrant; `home`, a
 contest's dates, their registration panel as `entrants.mine` gives it, the
 server's clock and the tasks released to them in the contest's order, each
-with its label, its place as a letter, its worth, and when it falls due and
-closes for their entrant; and `task`, a visible task's statement, its
+with its label, its place as a letter, its worth, when it falls due and
+closes for their entrant, and, for a member of an approved entrant, its
+`points` (`boards.own_points`): the entrant's points on the task as a board
+over that task alone would count them (every group, the submissions
+counted as the board standing for the task counts them: the first in the
+contest's file that entrants see, that covers it and that ranks by points
+first, failing that the first entrants see that covers it, failing that
+the first that covers it, `best` with none), `shown` over the groups
+whose results are shown, none while no group of the task is shown yet, so
+a shown 0 reads apart from nothing shown, and `pending`,
+the most the groups not shown yet could still add, until `pending_until`,
+the task's reveal, so the home never shows a number the boards hold back;
+none for anyone else and on a task that gives no points; and `task`, a
+visible task's statement, its
 submission caps and the inputs a contestant gives, read from its plan with
 the task's form details, the labels, options, bounds and sizes a submit
-panel shows, and nothing else of what it holds. A visitor with no session reads
+panel shows, and nothing else of what it holds. An input's label is the
+task's, else its workflow's `title`, which the publication's note keeps
+from the workflow version it was published with, else its key. A visitor with no session reads
 `landing`: the public contests, one with its released tasks, and a released
 task's statement. Both lists of contests, a signed-in person's and a
 visitor's, start from every published contest as the process read it at
@@ -1498,12 +1540,15 @@ nothing to the outcome. A past publication's `task.yaml` and plan are read
 once per process. A contestant is told where a submission stands in
 TASK-FORMAT.md section 1.7's words (`SubmissionState`): `queued` until its
 run is started, `grading` while the CI holds or runs it, `graded` once it
-has a result and `cancelled` once staff end it; organisers read the
-grading's own status. A run in `system_error` is told to its contestant as
-still `grading`, with nothing of it shown, and one staff then cancelled as
-`cancelled` with the sentence they gave (`Result.reason`); while a fallback
-is in force for either (below), the submission is told by its last good
-result instead, the attempt the boards count. `files` gives
+has a result, `delayed` while it has none and its latest attempt failed,
+and `cancelled` once staff end it; organisers read the grading's own
+status. A submission is told by the attempt the boards count
+(`scores.counted`): the latest that finished with a result, so a regrade
+under way, a failure or a cancel leaves its result as it was; and while
+none has, its latest. A run in `system_error` is told as `delayed`, with
+nothing of it shown, neither its cause nor what it reached, and one staff
+then cancelled as `cancelled` with the sentence they gave
+(`Result.reason`). `files` gives
 the inputs one was made with, as its `submission.json` names them, and
 `download` a door to one of those files, which the proxy streams from the
 forge. A run's log
@@ -1632,7 +1677,7 @@ the envelope's URL is one of the run's variables, which anyone who can read
 the task's runs at the CI sees, and the envelope hands out the callback
 token. The harness fetches it once and does not try again: one whose fetch
 lost its answer ends its run without a report, and the grading reads as
-`system_error` once its deadline passes, for an organiser to retry. The
+`system_error` once its deadline passes, and is tried again. The
 envelope carries
 the grading and attempt, the submission as the forge names it, the
 two checkouts, the callback URL and token, a URL the harness writes its log with
@@ -1695,31 +1740,57 @@ cancelled once the cancel has committed. Anything else is `WrongStatus`
 with the status it reads as, and an earlier attempt of a submission
 attempted again is `Conflict`, since the latest is the one to cancel. The
 cancel is final: a submission whose latest attempt staff cancelled is
-served to its contestant as `cancelled` with the sentence, does not count
-against the task's `submissions.max`, and is graded again by nothing: a
-`retry` of it is `WrongStatus` saying staff cancelled it, and a rejudge and
-a save's regrade leave it as it is. Staff who want it graded after all tell
-the contestant, who submits again. Migration 0014 gives each submission
-cancelled before cancels carried a sentence a stock one, "The organisers
-cancelled this grading.", so it reads and counts the same.
+graded again by nothing: a `retry` of it is `WrongStatus` saying staff
+cancelled it, and a rejudge and a save's regrade leave it as it is. A
+submission that never had a result is then void: served to its contestant
+as `cancelled` with the sentence, and left out of the task's
+`submissions.max`; one that had keeps it (below). Staff who want it graded
+after all tell the contestant, who submits again. Migration 0014 gives each
+submission cancelled before cancels carried a sentence a stock one, "The
+organisers cancelled this grading.", so it reads and counts the same.
 
-**Falling back.** A submission whose latest attempt is a `system_error`, or
-staff cancelled, counts as still grading, or void once cancelled, while the
-contest's `on_system_error` is `grading`, the default. A **fallback** has it
-count as its last good result instead, the latest earlier attempt that
-finished with a result, while there is one: on the boards, to its
-contestant, and under `submissions.max`, a cancel included. It is in force
-by the contest's `on_system_error: last_result`, or by staff on the one
-attempt: `gradings.fall_back(grading)` sets `falls_back` on a latest
-attempt that reads as `system_error` or staff cancelled (`WrongStatus`
-otherwise, `Conflict` for an earlier attempt or a submission with no
-earlier result), and `gradings.clear_fallback(grading)` takes it back, so
-the contest's word holds; both answer the grading as it then stands and
-need what a cancel needs. Migration 0016 adds the column, false on every
-grading so far. Every `GradingRecord` of a broken latest attempt carries
-`last_good`, the attempt a fallback counts, and `fallback`, `staff` or
-`contest` while one is in force and none otherwise; a contest whose
-settings do not read counts as `grading`.
+**A result stays until a newer one replaces it.** Of a submission's
+attempts the latest that finished with a result counts (`scores.counted`,
+`scores.usable`): on every board, for relative credit, to its contestant
+and against `submissions.max`, until a newer attempt finishes with one. A
+regrade under way, a `system_error` and a staff cancel never take a result
+away. A submission none of whose attempts has a result is still grading on
+a board while its latest attempt is queued, running or a `system_error`,
+and void once staff cancel it; while its latest attempt is a
+`system_error` it is `delayed` to its contestant and is left out of
+`submissions.max`, and once it finishes with a result it counts, even past
+the most. Every `GradingRecord` of a latest attempt that has not finished
+with a result carries `last_good`, the latest earlier attempt that did,
+the one its submission counts meanwhile. The contest's `on_system_error`
+is retired: a save that has it is refused at it, saying why, and a stored
+file that still holds it reads with it ignored (`IGNORED_ON_READ`), since
+nothing took its place. Migration 0019
+drops the `falls_back` column and adds `automatic` (below).
+
+**Tried again once by itself.** A latest attempt that ends in
+`system_error` is retried once without staff (`gradings.notice`,
+`gradings.retry_by_itself`), started by whatever finds it so: the CI's
+report, and every read that reads its status (a contestant's submissions,
+the boards, the contest home, the task's gradings, the feed and the queue
+depth), which finds it overdue or lost too. A start that fails waits
+`START_RETRY_WAIT`, a minute, for its retry, which the first read after
+starts (`gradings.start_waits`), so the one retry is not spent against a
+CI that refused a moment ago; a failure the CI reports and an overdue or
+lost run are retried at once. Nothing runs on a timer: the reader starts the retry once its unit of
+work commits, in the background (`ctx.in_background`), and does not wait
+for it, and a process remembers for `NOTICED_KEPT`, 30 seconds, that it
+started one, so a crowd of readers starts it once. The retry holds the task
+and the submission's attempts as a staff retry does, ends a grading that
+only read as failed with its reason, cancels its run at the CI, and makes
+a new attempt against the same publication, marked `automatic`, only while
+the failed one is still the latest, was not itself made so, and no other
+attempt is being graded; so two readers at once, or one beside a staff
+retry or cancel, make one attempt between them, and a retry that never ran
+is started by the next read. A failure of an `automatic` attempt waits for
+staff, who retry as often as they like; each staff attempt that fails is
+retried once by itself in turn. `UNICON_RETRY_FAILED`, on unless set, turns
+it off, which only tests do. `GradingRecord.automatic` tells an organiser
+which attempts the platform made.
 `gradings.retry` makes a new attempt of a submission's latest attempt once
 it is finished, against the publication it graded against, while no other
 attempt of it is being graded (`Conflict`). An earlier attempt is
@@ -1746,7 +1817,7 @@ words, with what it said in the log. A route that names only the grading
 checks the organiser at the task `gradings.task_of(grading)` gives.
 
 **A contest's gradings.** `gradings.feed(contest, task=, user=, entrant=,
-status=, limit=)` lists the gradings of the contest's tasks as one feed,
+status=, latest=, limit=)` lists the gradings of the contest's tasks as one feed,
 newest first, at most `limit` (100 unless given) and never more than 500,
 each a `FeedEntry`: the `GradingRecord`, with the overdue and lost reading
 and its reason and `latest`, with `submitted_by`, the member who submitted
@@ -1759,8 +1830,10 @@ label none once the contest no longer lists the task or its settings do not
 read, so a page needs no second read for them. Every attempt is a row of
 its own, so the attempts of one submission group by its workspace and
 number. `task` narrows to one task; `user` to what a member submitted, by
-username; `entrant` to an entrant's; and `status` to the gradings that
-read as it. A
+username; `entrant` to an entrant's; `status` to the gradings that read as
+it; and `latest` to each submission's latest attempt, so `status=
+system_error` with `latest` lists the failed gradings that wait, the ones
+`queue_depth` counts as `failed`. A
 `user` that breaks the forge's username rule (`names.is_username`:
 letters, digits, `-`, `_` and `.`, beginning and ending with a letter or a
 digit, none of the three twice in a row, at most 40 characters) matches
@@ -1777,9 +1850,11 @@ refused, and someone holding none of either is `Forbidden`. The usernames
 cost one read of the forge per member on the page, kept a minute by
 `CachedForge`, and the entrants one query. `gradings.queue_depth(contest)`
 counts, in one read over the same gradings, the ones waiting for a machine,
-as a `QueueDepth` of `queued` and `dispatched`, by the status they read as:
-one overdue or lost reads as `system_error` and is not counted. Nothing
-stores the count.
+as a `QueueDepth` of `queued` and `dispatched`, by the status they read as,
+one overdue or lost reading as `system_error` and not counted there; and
+`failed`, the latest attempts that read as `system_error`, which wait for
+their retry or for staff, so the contest's page can say how many gradings
+failed and link to the feed filtered to them. Nothing stores the count.
 
 ## Scores and boards
 
@@ -1805,8 +1880,9 @@ ranked on read (`domain/boards.py`) over the contest's rows, each approved
 entrant, named as it is shown, read once a request: which submission counts per row and task (`best`,
 `best_per_group`, `marked`), its keys in turn, ties sharing a rank. A
 submission still grading, stopped by a step that is not sealed, or
-cancelled is no attempt; a regrade in progress leaves the earlier attempt
-counting. `marks.mark`, `unmark` and `held` keep a row's marks for the
+cancelled is no attempt; a submission counts its latest attempt that
+finished with a result, so a regrade in progress, a failure or a cancel
+leaves its result counting. `marks.mark`, `unmark` and `held` keep a row's marks for the
 `marked` boards in `marks`, at most the task's `marks`, frozen at the row's
 close; the task page says how many (`TaskPage.marks`) to an approved
 contestant alone, and to anyone else an open task reads closed as
@@ -1906,7 +1982,8 @@ deadline, `progress` the last progress reported, `result` and `log_key`
 what came back, `error` a line for staff, and `cancel_reason` the sentence
 staff cancelled it with, which its contestant reads, on every submission
 staff cancelled (a stock one on those cancelled before 0013) and on no
-attempt a rejudge replaced. An `uploads` row is one
+attempt a rejudge replaced, and `automatic` marks the attempt the platform
+made by itself when the one before it failed (0019). An `uploads` row is one
 browser upload: its owner, its purpose, task and input (or, for a task's
 own file, the path it goes in the task), name, type, size, digest, status,
 the submission that consumed it, and when its lifetime ends. An `invites` row is one

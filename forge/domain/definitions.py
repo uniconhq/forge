@@ -78,7 +78,6 @@ __all__ = [
     "InviteWay",
     "Leaderboard",
     "Locks",
-    "OnSystemError",
     "Over",
     "Penalty",
     "Rate",
@@ -154,17 +153,6 @@ class Who(StrEnum):
     ORGANISERS = "organisers"
     CONTESTANTS = "contestants"
     EVERYONE = "everyone"
-
-
-class OnSystemError(StrEnum):
-    """What a submission whose latest attempt is a `system_error`, or one
-    staff cancelled after one, counts as: still grading, or void once
-    cancelled, until staff end it; or the latest earlier attempt of it that
-    finished with a result, while there is one.
-    """
-
-    GRADING = "grading"
-    LAST_RESULT = "last_result"
 
 
 class Show(StrEnum):
@@ -503,9 +491,8 @@ DEFAULT_LATE_PER_DAY = 1
 
 class ContestDefinition(Model):
     """A `contest.yaml`. `registration` defaults to open, anyone signing up
-    and an organiser approving each, `entrants` to one person each,
-    `on_system_error` to still grading, and `leaderboards` and `tasks` to
-    none.
+    and an organiser approving each, `entrants` to one person each, and
+    `leaderboards` and `tasks` to none.
     """
 
     name: Line
@@ -516,7 +503,6 @@ class ContestDefinition(Model):
     visibility: ContestVisibility
     registration: Registration = Registration()
     entrants: Entrants = Entrants()
-    on_system_error: OnSystemError = OnSystemError.GRADING
     leaderboards: tuple[Leaderboard, ...] = ()
     tasks: tuple[ContestTask, ...] = ()
 
@@ -961,6 +947,11 @@ CONTEST_RETIRED = (
     ),
     Retired(("visibility",), 'This is now called "everyone". Choose that instead.', _is_public),
     Retired(
+        ("on_system_error",),
+        "This setting is no longer used: a grading that fails is tried again once by itself, "
+        "and a submission keeps its last result until a newer one replaces it. Remove this.",
+    ),
+    Retired(
         ("tasks", ANY, "label"),
         "A task's label is now its place in the contest's list of tasks, A, B and so on. "
         "Remove this.",
@@ -1047,13 +1038,22 @@ TASK_RETIRED = (
 )
 
 
-def parse_contest(text: bytes | str) -> ContestDefinition:
-    """The `contest.yaml` in `text`. Raises `InvalidDefinition` listing every
-    problem with its YAML path.
+IGNORED_ON_READ = ("on_system_error",)
+"""Retired contest keys that nothing took the place of, so a stored file that
+still holds one reads with it ignored, and only a save that has it is
+refused, naming it."""
+
+
+def parse_contest(text: bytes | str, *, saved: bool = False) -> ContestDefinition:
+    """The `contest.yaml` in `text`, read, or, `saved`, as a save of it is
+    checked: a key of `IGNORED_ON_READ` is ignored on read and refused in a
+    save. Raises `InvalidDefinition` listing every problem with its YAML
+    path.
     """
-    return validate(
-        ContestDefinition, CONTEST_FILE, load_mapping(CONTEST_FILE, text), CONTEST_RETIRED
-    )
+    document = load_mapping(CONTEST_FILE, text)
+    if not saved:
+        document = {key: value for key, value in document.items() if key not in IGNORED_ON_READ}
+    return validate(ContestDefinition, CONTEST_FILE, document, CONTEST_RETIRED)
 
 
 def parse_task(text: bytes | str) -> TaskDefinition:
