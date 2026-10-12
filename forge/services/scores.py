@@ -96,11 +96,10 @@ def usable(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -
     grading while the latest attempt is queued, running or a system error,
     and nothing once it is cancelled.
     """
-    good = gradings.latest_good(rows)
-    if good is not None:
-        return Usable(State.CANDIDATE, good)
-    latest = max(rows, key=lambda row: row.attempt)
-    if gradings.status_of(ctx, latest, lost) is GradingStatus.CANCELLED:
+    row = counted(rows)
+    if gradings.good(row):
+        return Usable(State.CANDIDATE, row)
+    if gradings.status_of(ctx, row, lost) is GradingStatus.CANCELLED:
         return Usable(State.VOID, None)
     return Usable(State.GRADING, None)
 
@@ -110,10 +109,10 @@ def delayed(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) 
     result, and its latest reads as a system error, waiting for its retry
     or for staff.
     """
-    if gradings.latest_good(rows) is not None:
-        return False
-    latest = max(rows, key=lambda row: row.attempt)
-    return gradings.status_of(ctx, latest, lost) is GradingStatus.SYSTEM_ERROR
+    row = counted(rows)
+    return not gradings.good(row) and gradings.status_of(ctx, row, lost) is (
+        GradingStatus.SYSTEM_ERROR
+    )
 
 
 def stands(row: Grading, graded: Graded) -> State:

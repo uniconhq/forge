@@ -7,8 +7,8 @@ first refusal, each with a code of its own, before anything is written:
    (`submitters.refuse`).
 2. The entrant has submissions left (`submission_limit`), counted from the
    submissions at the forge, leaving out one that has no result and whose
-   latest attempt staff cancelled (`gradings.staff_cancelled`) or is a
-   system error, delayed, and the task's rate holds (`rate_limited`),
+   latest attempt is cancelled, void (`scores.usable`), or is a system
+   error, delayed (`scores.delayed`), and the task's rate holds (`rate_limited`),
    counted from the grading rows of its submissions within its window.
 3. Every upload named is theirs, for this task (`upload_not_yours`), and a
    checked file no submission has used (`upload_not_ready`).
@@ -103,6 +103,7 @@ from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
 from forge.domain import exact_json
 from forge.domain import submissions as rules
+from forge.domain.boards import State
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Conflict,
@@ -380,10 +381,10 @@ async def _submitted_before(ctx: Context, workspace: WorkspaceId, task: TaskId) 
 async def _uncounted(ctx: Context, workspace: WorkspaceId, task: TaskId) -> set[str]:
     """The workspace's submissions of the task that do not count against its
     `submissions.max`: those none of whose attempts finished with a result
-    and whose latest is a cancel with a sentence, void, or reads as a system
-    error, delayed. Whether the CI lost a run is not asked here, under the
-    submit's holds: such a run counts until a read finds it lost and its
-    retry starts.
+    and whose latest is a cancel, void as on the boards (`scores.usable`),
+    or reads as a system error, delayed (`scores.delayed`). Whether the CI
+    lost a run is not asked here, under the submit's holds: such a run
+    counts until a read finds it lost and its retry starts.
     """
     rows = (
         await ctx.db.execute(
@@ -396,8 +397,7 @@ async def _uncounted(ctx: Context, workspace: WorkspaceId, task: TaskId) -> set[
     return {
         submission
         for submission, attempts in grouped.items()
-        if scores.delayed(ctx, attempts, ())
-        or (gradings.latest_good(attempts) is None and gradings.staff_cancelled(_latest(attempts)))
+        if scores.usable(ctx, attempts, ()).state is State.VOID or scores.delayed(ctx, attempts, ())
     }
 
 

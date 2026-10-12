@@ -45,9 +45,9 @@ from forge.domain.errors import (
     UploadNotReady,
     UploadNotYours,
 )
-from forge.domain.grading import callback_token, token_hash
+from forge.domain.grading import LOST_CHECK_AFTER, RunState, callback_token, token_hash
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import ContestId, TaskId
+from forge.domain.ids import ContestId, RunId, TaskId
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.scoring import Points
@@ -529,6 +529,74 @@ async def test_the_count_and_rate_limits_hold(
     with pytest.raises(SubmissionLimit) as spent:
         await _submit(setup, acme, entered, key="key-0004-dddd")
     assert spent.value.extra["limit"] == 2
+    assert len(acme.fake.calls_to("record_submission")) == 2
+
+
+async def _at_most_one(setup: Setup, acme: Acme, entered: Entered) -> None:
+    current = await _task_yaml(acme, entered.task)
+    await _save(setup, acme, entered.task, {"task.yaml": current + b"submissions:\n  max: 1\n"})
+
+
+async def _stands(setup: Setup, number: int, **values: Any) -> None:
+    """Submission `number`'s only attempt written as `values`."""
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Grading).where(Grading.submission_number == number).values(**values)
+        )
+
+
+FAILED = {"status": "system_error", "error": "The checker crashed."}
+
+
+async def test_a_delayed_submission_uses_up_none_until_graded_and_then_counts_past_the_most(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await _at_most_one(setup, acme, entered)
+    await _submit(setup, acme, entered)
+    await _stands(setup, 1, **FAILED)
+    clock.advance(timedelta(minutes=1))
+
+    # The first is delayed, so it leaves the one place free.
+    await _submit(setup, acme, entered, key="key-0002-bbbb")
+    await _stands(setup, 2, **FAILED)
+    await _stands(setup, 1, status="done", result=RESULT)
+    clock.advance(timedelta(minutes=1))
+
+    # Graded, the first counts again, and the second, delayed, does not.
+    with pytest.raises(SubmissionLimit):
+        await _submit(setup, acme, entered, key="key-0003-cccc")
+    await _stands(setup, 2, status="done", result=RESULT)
+    # Both count once graded, past the most, neither result taken away.
+    told = [found.grading for found in await submissions.mine(setup, entered.session, entered.task)]
+    assert [found.status if found else None for found in told] == [SubmissionState.GRADED] * 2
+
+
+async def test_a_run_the_ci_lost_still_counts_when_submitting(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await _at_most_one(setup, acme, entered)
+    await _submit(setup, acme, entered)
+    (row,) = await _gradings(setup)
+    acme.fake.ci.runs[RunId(str(row.run_id))].ci_state = RunState.LOST
+    clock.advance(LOST_CHECK_AFTER)
+
+    # The CI is not asked under the submit's holds: the run counts until a
+    # read finds it lost.
+    with pytest.raises(SubmissionLimit):
+        await _submit(setup, acme, entered, key="key-0002-bbbb")
+
+
+async def test_a_submission_whose_only_attempt_is_cancelled_frees_its_place_reason_or_not(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await _at_most_one(setup, acme, entered)
+    await _submit(setup, acme, entered)
+    # A cancel with no sentence, as a rejudge writes, voids it as any cancel.
+    await _stands(setup, 1, status="cancelled", cancel_reason=None)
+    clock.advance(timedelta(minutes=1))
+
+    await _submit(setup, acme, entered, key="key-0002-bbbb")
+
     assert len(acme.fake.calls_to("record_submission")) == 2
 
 
