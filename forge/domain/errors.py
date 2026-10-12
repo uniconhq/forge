@@ -178,10 +178,12 @@ class AdminOnly(ServiceError):
 
 
 class ConfirmationRequired(ServiceError):
-    """A save during a running contest would change how the task grades.
-    `changes` lists what would change, in words a person reads, and
-    `regrades` how many submissions the save would grade again; the same save
-    sent again with the confirmation publishes it.
+    """A save during a running contest would publish. `changes` lists what
+    would change how the task grades, in words a person reads, `regrades`
+    how many submissions the save would grade again, and `results_change`,
+    `summary`, `runs_again`, `scores` and `reading` what it does
+    (`domain.save_effect`); the same save sent again with the confirmation
+    publishes it.
     """
 
     code = "confirmation_required"

@@ -42,13 +42,16 @@ DATA = b"a dataset, pretend it is large\n" * 32
 
 
 async def _save(setup: Setup, acme: Acme, task: TaskId, files: dict[str, bytes]) -> None:
-    """ada's save of `files` over the task, published."""
+    """ada's save of `files` over the task, published, confirmed, since a
+    save asks first once the contest has started.
+    """
     head = await acme.fake.content.list_files(PLATFORM, task)
     result = await publications.save(
         setup,
         acme.ada,
         task,
         {path: Edit(content, head.tokens.get(path)) for path, content in files.items()},
+        confirm=True,
     )
     assert isinstance(result, publications.Published), result
 
@@ -270,6 +273,7 @@ async def test_an_upload_under_public_is_served_by_its_bytes(
         acme.ada,
         public,
         {"public/data.bin": Edit(Uploaded(slot.id), head.tokens.get("public/data.bin"))},
+        confirm=True,
     )
     assert isinstance(result, publications.Published), result
     stored = await acme.fake.content.read_file(PLATFORM, public, "public/data.bin")

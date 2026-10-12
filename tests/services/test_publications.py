@@ -39,6 +39,7 @@ from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.roles import Role, RoleGrant, Scope, contest_id_of, task_scope
+from forge.domain.save_effect import SaveEffect
 from forge.domain.submissions import SubmittedInput
 from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
@@ -136,8 +137,10 @@ def _written(acme: Acme) -> list[str]:
 
 
 async def _published(setup: Setup, acme: Acme, task: TaskId) -> Published:
-    """The task's first publication, a save of the starter as it is."""
-    result = await _save(setup, acme, task, {"statement.md": b"Add two numbers.\n"})
+    """The task's first publication, a save of the starter as it is,
+    confirmed, since a save asks first once the contest has started.
+    """
+    result = await _save(setup, acme, task, {"statement.md": b"Add two numbers.\n"}, confirm=True)
     assert isinstance(result, Published), result
     acme.fake.reset_calls()
     return result
@@ -158,10 +161,14 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
 
     assert isinstance(result, Published)
     assert (result.number, result.grading_changed, result.changes) == (1, False, ())
-    # The save reports what each board will read of the task (T9).
-    assert result.notes == (
-        "The most points each test group gives: main 100.",
-        "sum now counts on the leaderboard Standings.",
+    # The save says what it did, in the words a running contest asks with.
+    assert result.notes == ()
+    assert result.effect == SaveEffect(
+        results_change=False,
+        summary="Nobody's result changes.",
+        runs_again=("No submission runs again: this is the task's first publication.",),
+        scores=("Points: main is worth up to 100.", "sum now counts on the leaderboard Standings."),
+        reading=("Entrants read the task from its release.",),
     )
     (saved,) = acme.fake.calls_to("save_files")
     assert saved.identity == acme.ada.identity
@@ -229,6 +236,13 @@ async def test_a_save_that_changes_nothing_since_the_publication_publishes_nothi
     assert isinstance(again, Published)
     assert (again.publication, again.number) == (first.publication, 1)
     assert _written(acme) == []
+    assert again.effect == SaveEffect(
+        results_change=False,
+        summary="Nobody's result changes.",
+        runs_again=("No submission runs again: the tests and how they run are the same.",),
+        scores=("No score changes.",),
+        reading=("Nothing entrants read changes.",),
+    )
 
 
 async def test_a_stale_token_is_a_conflict_and_nothing_is_written(
@@ -996,7 +1010,15 @@ async def test_a_grading_change_once_the_contest_has_started_asks_first_and_writ
         await _save(setup, acme, running, files)
 
     assert asked.value.code == "confirmation_required"
-    assert asked.value.extra == {"changes": listed, "regrades": 0}
+    assert asked.value.extra == {
+        "changes": listed,
+        "regrades": 0,
+        "results_change": False,
+        "summary": "Nobody's result changes.",
+        "runs_again": ["No submission runs again: there are none yet.", *listed],
+        "scores": ["No score changes."],
+        "reading": ["Nothing entrants read changes."],
+    }
     assert _written(acme) == []
     confirmed = await _save(setup, acme, running, files, confirm=True)
     assert isinstance(confirmed, Published)
@@ -1007,18 +1029,81 @@ async def test_a_grading_change_once_the_contest_has_started_asks_first_and_writ
     )
 
 
-async def test_a_scoring_change_once_the_contest_has_started_publishes_without_asking(
+@pytest.mark.parametrize(
+    ("files", "scores", "reading"),
+    [
+        (
+            (b"{each: 100}", b"{each: 60, pass: 50}"),
+            [
+                "Points: main is now worth up to 110 (was 100).",
+                "How main earns its points: 60 shared over its tests and 50 when every test "
+                "passes (was 100 shared over its tests).",
+                "Every result is scored again.",
+            ],
+            ["Nothing entrants read changes."],
+        ),
+        (
+            (b"test_groups:", b"submissions: {max: 3, rate: {count: 2, per: 600}}\ntest_groups:"),
+            [
+                "Submission limit: 3 per entrant (was 50).",
+                "Submission rate: 2 every 10 minutes (was 1 every 30 seconds).",
+            ],
+            ["Nothing entrants read changes."],
+        ),
+        (
+            {"statement.md": b"Typo fixed.\n", "public/figure.png": b"\x89PNG"},
+            ["No score changes."],
+            [
+                "The statement changes.",
+                "The pictures and files beside the statement change.",
+            ],
+        ),
+    ],
+    ids=["points", "limits", "statement"],
+)
+async def test_every_save_that_publishes_once_the_contest_has_started_asks_first(
+    setup: Setup,
+    acme: Acme,
+    running: TaskId,
+    files: tuple[bytes, bytes] | dict[str, bytes],
+    scores: list[str],
+    reading: list[str],
+) -> None:
+    saved = files if isinstance(files, dict) else _with(acme, *files)
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _save(setup, acme, running, saved)
+
+    assert asked.value.extra == {
+        "changes": [],
+        "regrades": 0,
+        "results_change": False,
+        "summary": "Nobody's result changes.",
+        "runs_again": ["No submission runs again: the tests and how they run are the same."],
+        "scores": scores,
+        "reading": reading,
+    }
+    assert _written(acme) == []
+    confirmed = await _save(setup, acme, running, saved, confirm=True)
+    assert isinstance(confirmed, Published), confirmed
+    assert (confirmed.grading_changed, confirmed.changes) == (False, ())
+    assert (list(confirmed.effect.scores), list(confirmed.effect.reading)) == (scores, reading)
+
+
+async def test_a_save_of_what_is_published_asks_nothing_and_a_draft_save_asks_nothing(
     setup: Setup, acme: Acme, running: TaskId
 ) -> None:
-    rules = await _save(setup, acme, running, _with(acme, b"{each: 100}", b"{each: 60, pass: 40}"))
-    caps = await _save(
-        setup, acme, running, _with(acme, b"test_groups:", b"submissions: {max: 3}\ntest_groups:")
-    )
-    text = await _save(setup, acme, running, {"statement.md": b"Typo fixed.\n"})
+    same = await _save(setup, acme, running, {"statement.md": b"Add two numbers.\n"})
+    kept = await _save(setup, acme, running, {"statement.md": b"Later.\n"}, keep_as_draft=True)
+    back = await _save(setup, acme, running, {"statement.md": b"Add two numbers.\n"})
 
-    for result in (rules, caps, text):
-        assert isinstance(result, Published), result
-        assert (result.grading_changed, result.changes) == (False, ())
+    assert isinstance(same, Published), same
+    assert same.effect.reading == ("Nothing entrants read changes.",)
+    assert isinstance(kept, Draft)
+    # Saved back to what the latest publication holds: nothing new, so
+    # nothing asks, and what it publishes changes nothing.
+    assert isinstance(back, Published), back
+    assert back.effect.reading == ("Nothing entrants read changes.",)
 
 
 async def test_a_grading_change_kept_as_a_draft_is_written_and_not_published(
@@ -1133,11 +1218,13 @@ async def test_once_graded_what_was_shown_is_not_hidden_again_and_the_other_way_
     refused: str | None,
 ) -> None:
     if before != b"{each: 100}":
-        first = await _save(setup, acme, entered.task, _with(acme, b"{each: 100}", before))
+        first = await _save(
+            setup, acme, entered.task, _with(acme, b"{each: 100}", before), confirm=True
+        )
         assert isinstance(first, Published), first
     await _graded(setup, acme, entered)
 
-    result = await _save(setup, acme, entered.task, _with(acme, before, after))
+    result = await _save(setup, acme, entered.task, _with(acme, before, after), confirm=True)
 
     if refused is None:
         assert isinstance(result, Published), result
@@ -1157,7 +1244,11 @@ async def test_before_any_grading_is_done_a_group_may_be_hidden(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     result = await _save(
-        setup, acme, entered.task, _with(acme, b"{each: 100}", b"{each: 100, show: after_close}")
+        setup,
+        acme,
+        entered.task,
+        _with(acme, b"{each: 100}", b"{each: 100, show: after_close}"),
+        confirm=True,
     )
 
     assert isinstance(result, Published), result
@@ -1297,9 +1388,20 @@ async def test_the_confirmation_counts_the_submissions_the_save_regrades_and_no_
         await _save(setup, acme, entered.task, change)
     confirmed = await _save(setup, acme, entered.task, change, confirm=True)
 
-    assert asked.value.extra == {"changes": ["The way the task grades changed."], "regrades": 2}
+    assert asked.value.extra == {
+        "changes": ["The way the task grades changed."],
+        "regrades": 2,
+        "results_change": True,
+        "summary": "Results change.",
+        "runs_again": ["2 submissions are graded again: the way the task grades changed."],
+        "scores": ["No score changes."],
+        "reading": ["Nothing entrants read changes."],
+    }
     assert isinstance(confirmed, Published)
     assert confirmed.regraded == 2
+    assert confirmed.effect.runs_again == (
+        "2 submissions are graded again: the way the task grades changed.",
+    )
 
 
 async def test_a_save_that_picks_up_a_moved_image_names_it_beside_the_regrade_count(
@@ -1323,6 +1425,15 @@ async def test_a_save_that_picks_up_a_moved_image_names_it_beside_the_regrade_co
             "A release updated sandbox-run@v2 in place.",
         ],
         "regrades": 1,
+        "results_change": True,
+        "summary": "Results change.",
+        "runs_again": [
+            "1 submission is graded again, for these changes:",
+            "The way the task grades changed.",
+            "A release updated sandbox-run@v2 in place.",
+        ],
+        "scores": ["No score changes."],
+        "reading": ["The statement changes."],
     }
 
 
@@ -1332,7 +1443,9 @@ async def test_a_published_grading_change_regrades_every_submission_and_a_scorin
     await _graded(setup, acme, entered)
     (graded,) = await _attempts(setup)
 
-    scoring = await _save(setup, acme, entered.task, _with(acme, b"{each: 100}", b"{pass: 100}"))
+    scoring = await _save(
+        setup, acme, entered.task, _with(acme, b"{each: 100}", b"{pass: 100}"), confirm=True
+    )
     unchanged = await _attempts(setup)
     grading = await _save(
         setup, acme, entered.task, _with(acme, b"time_limit: 2", b"time_limit: 1"), confirm=True
@@ -1340,6 +1453,11 @@ async def test_a_published_grading_change_regrades_every_submission_and_a_scorin
 
     assert isinstance(scoring, Published) and isinstance(grading, Published)
     assert (scoring.regraded, unchanged) == (0, [graded])
+    # Nothing runs again, but the graded submission's points move.
+    assert (scoring.effect.results_change, scoring.effect.runs_again) == (
+        True,
+        ("No submission runs again: the tests and how they run are the same.",),
+    )
     assert grading.regraded == 1
     first, again = await _attempts(setup)
     assert first == graded

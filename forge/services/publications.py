@@ -41,20 +41,28 @@ steps in order, and refuses before anything is written.
    scoring, read on every read, and change nothing that grades. A save asked
    to be kept as a draft is written as one here, saying what it held back,
    and publishes nothing, whatever else holds. Once the contest has started,
-   and until it is archived, a save that changes how the task grades is
-   refused with `ConfirmationRequired`, listing the changes and saying how
-   many submissions it would grade again, counted as the regrade (6)
-   chooses them, unless the caller confirms it.
+   and until it is archived (`release.has_started`), every save that would
+   publish something new, files other than the latest publication's or
+   another plan, is refused with `ConfirmationRequired` unless the caller
+   confirms it (#449): a first publication too, and a change to scoring or
+   the statement as much as one to how the task grades. The refusal lists
+   the changes to how it grades, how many submissions it would grade again,
+   counted as the regrade (6) chooses them, and what the save does
+   (`domain.save_effect`): whether anyone's result changes, what runs
+   again, each scoring change, old and new, with the boards counted again,
+   and what entrants read that changes.
 4. The organiser's files and `plans/plan.json` are written as one change, as
    the organiser, so the history is theirs and a publication never catches a
    task half saved.
 5. That change is named as the next publication, as the platform, with a
    note saying whether it changed how the task grades and what, which
    workflow each workflow name was, what the task's sealed steps hold back
-   until its reveal, and what each value it reports means. The save reports
-   each group's most points, the task's reveal, the boards it joins or
-   moves, those whose scope a `show` change moves, and each board ranking
-   `points` that counts nothing from it (T9). When another
+   until its reveal, and what each value it reports means. The save answers
+   with what it did, in the same words a running contest asks with (M66):
+   each group's most points where they moved, the boards it joins or counts
+   again, and those whose scope a `show` change moves; and notes the task's
+   reveal and each board ranking `points` that counts nothing from it (T9).
+   When another
    save landed between the check and the write, the change holds files this
    save never checked, so it is kept as a draft instead, saying so, and the
    next save checks and publishes the task as it then stands.
@@ -75,8 +83,7 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from forge.db.tables import Grading
-from forge.domain.board_checks import covered, group_max
-from forge.domain.boards import in_scope
+from forge.domain.board_checks import covered
 from forge.domain.content import (
     ConflictToken,
     Edit,
@@ -89,18 +96,17 @@ from forge.domain.content import (
 from forge.domain.definitions import (
     ADMIN_ONLY_FILES,
     CONTEST_FILE,
+    PUBLIC_FOLDER,
+    STATEMENT_FILE,
     TASK_FILE,
     ContestDefinition,
     Group,
-    Leaderboard,
-    Over,
     Show,
     TaskDefinition,
     admin_only_changes,
     admin_only_refusal,
     parse_contest,
     parse_task,
-    worth_of,
 )
 from forge.domain.errors import (
     AdminOnly,
@@ -139,7 +145,7 @@ from forge.domain.roles import (
     holds,
     task_scope,
 )
-from forge.domain.scoring import ZERO, exact, written
+from forge.domain.save_effect import ReadChanges, SaveEffect, as_extra, effect_of
 from forge.domain.uploads import (
     ATTRIBUTES_FILE,
     UploadStatus,
@@ -196,15 +202,17 @@ class Published:
     """A save that published: the publication and its number, whether it
     changed how the task grades and what, what the save says of the task
     beside publishing it, its sealed steps and a bounded value its `credit`
-    does not name, and how many submissions it queued to be graded again.
+    does not name, how many submissions it queued to be graded again, and
+    what it did, in the words a running contest asks with before a save.
     """
 
     publication: PublicationId
     number: int
     grading_changed: bool
     changes: tuple[str, ...]
-    notes: tuple[str, ...] = ()
-    regraded: int = 0
+    notes: tuple[str, ...]
+    regraded: int
+    effect: SaveEffect
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,19 +280,35 @@ async def save(
     publications = await ctx.forge.workspaces.list_publications(task)
     latest = publications[-1] if publications else None
     changed: tuple[str, ...] = ()
+    read = ReadChanges()
+    anew = True
     if latest is not None:
         before, published_files = await _published_snapshot(ctx, as_, task, latest)
         after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
         changed = grading_changes(before, after)
+        differ = await _differing(ctx, as_, task, head, written, published_files)
+        read = ReadChanges(
+            statement=STATEMENT_FILE in differ,
+            public=any(path.startswith(PUBLIC_FOLDER) for path in differ),
+        )
+        anew = bool(differ) or before.plans.get(PLAN_PATH) != after.plans[PLAN_PATH]
     if keep_as_draft:
         version = await _write(ctx, as_, task, head, written, {}, said)
         return _draft(organiser, task, version, (), changed)
-    if changed and not confirm and await _contest_running(ctx, task):
+    assert checked.compiled is not None and checked.definition is not None
+    if anew and not confirm and await _contest_running(ctx, task):
+        regrades = (
+            await gradings.to_regrade(ctx, task, limit=checked.definition.submissions.max)
+            if changed
+            else 0
+        )
+        effect = await _effect(ctx, task, checked.definition, latest, changed, regrades, read)
         raise ConfirmationRequired(
-            "The contest is running, and this save changes how the task grades. Confirm to "
-            "publish it, or keep it as a draft.",
+            "The contest is running, so this save asks before it publishes. Publish it, or "
+            "keep it as a draft.",
             changes=[*changed],
-            regrades=await gradings.to_regrade(ctx, task),
+            regrades=regrades,
+            **as_extra(effect),
         )
 
     plans = await _plan_files(ctx, as_, task, head, checked)
@@ -292,14 +316,13 @@ async def save(
     touched = {*written, *plans}
     if version != head.version and await _landed_under(ctx, as_, task, head, version, touched):
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
-    assert checked.compiled is not None and checked.definition is not None
     notes = checked.compiled.notes
     if latest is not None and version == latest.version:
-        return Published(latest.id, latest.number, latest.grading_changed, latest.changes, notes)
-    notes = (
-        *notes,
-        *await _report(ctx, task, checked.definition, checked.compiled, latest, bool(changed)),
-    )
+        effect = await _effect(ctx, task, checked.definition, latest, (), 0, ReadChanges())
+        return Published(
+            latest.id, latest.number, latest.grading_changed, latest.changes, notes, 0, effect
+        )
+    notes = (*notes, *await _report(ctx, task, checked.definition, checked.compiled))
     note = write_note(
         bool(changed),
         changed,
@@ -323,6 +346,7 @@ async def save(
                 limit=checked.definition.submissions.max,
             )
         ).queued
+    effect = await _effect(ctx, task, checked.definition, latest, changed, regraded, read)
     if latest is None:
         places.ahead_at(ctx, task)
     log.info(
@@ -335,7 +359,7 @@ async def save(
         regraded=regraded,
         user_id=organiser.user.id,
     )
-    return Published(publication, number, bool(changed), changed, notes, regraded)
+    return Published(publication, number, bool(changed), changed, notes, regraded, effect)
 
 
 async def check(
@@ -422,17 +446,12 @@ async def _boards(
 
 
 async def _report(
-    ctx: Context,
-    task: TaskId,
-    definition: TaskDefinition,
-    compiled: Compiled,
-    latest: Publication | None,
-    changed: bool,
+    ctx: Context, task: TaskId, definition: TaskDefinition, compiled: Compiled
 ) -> builtins.list[str]:
-    """T9: each group's most points, the task's reveal in words when it
-    hides anything (a group not shown at once, or a sealed step), which
-    boards the save moves and whose scope a `show` change moves, and each
-    board ranking `points` that counts nothing from the task.
+    """T9 beside what the save's effect says: the task's reveal in words
+    when it hides anything (a group not shown at once, or a sealed step),
+    and each board ranking `points` that counts nothing from the task. Each
+    group's most points, and the boards the save moves, are the effect's.
     """
     contest = await _contest(ctx, task)
     name = (await names.names_of(ctx, [task])).get(task)
@@ -440,14 +459,6 @@ async def _report(
         return []
     entry = contest.entry(name)
     found: builtins.list[str] = []
-    worth = worth_of(entry, definition) if entry is not None else None
-    if worth is not None:
-        most = group_max(definition.test_groups, exact(worth) or ZERO)
-        found.append(
-            "The most points each test group gives: "
-            + ", ".join(f"{group} {written(points)}" for group, points in most.items())
-            + "."
-        )
     hides = bool(compiled.sealed) or any(
         group.shown is not Show.ALWAYS for group in definition.test_groups.values()
     )
@@ -456,37 +467,62 @@ async def _report(
         found.append(
             f"{name} shows its hidden results on {in_words(reveal_of(contest, entry, extensions))}."
         )
-    before = await _definition_of(ctx, task, latest) if latest is not None else None
-    # No board counts a withdrawn task, so a save of one moves none.
-    counted = () if entry is not None and entry.withdrawn else contest.leaderboards
-    for board in counted:
-        if board.tasks is not None and not board.covers(name):
-            continue
-        if before is None:
-            found.append(f"{name} now counts on the leaderboard {board.name}.")
-            continue
-        if (
-            changed
-            or before.test_groups != definition.test_groups
-            or before.credit != definition.credit
-        ):
-            found.append(f"This save changes the leaderboard {board.name}.")
-        if board.over is not Over.ALL and _scope_moved(board, before, definition):
-            found.append(
-                f"A change to when entrants see results changes what the leaderboard "
-                f"{board.name} counts of {name}."
-            )
     found += boards.task_notes(contest, name, covered(compiled.measures, definition.test_groups))
     return found
 
 
-def _scope_moved(board: Leaderboard, before: TaskDefinition, after: TaskDefinition) -> bool:
-    """Whether a group of the task moved into or out of the board's scope."""
-    scope = in_scope(board.over)
-    return any(
-        name in before.test_groups and scope(before.test_groups[name].shown) != scope(group.shown)
-        for name, group in after.test_groups.items()
+async def _effect(
+    ctx: Context,
+    task: TaskId,
+    definition: TaskDefinition,
+    latest: Publication | None,
+    changed: tuple[str, ...],
+    regrades: int,
+    read: ReadChanges,
+) -> SaveEffect:
+    """What saving `definition` over the latest publication does, in the
+    words a running contest asks with before a save and a save that
+    published answers with.
+    """
+    name = (await names.names_of(ctx, [task])).get(task)
+    before = await _definition_of(ctx, task, latest) if latest is not None else None
+    return effect_of(
+        name or definition.name,
+        before,
+        definition,
+        await _contest(ctx, task),
+        changes=changed,
+        regrades=regrades,
+        graded=bool(await _graded_under(ctx, task)),
+        read=read,
     )
+
+
+async def _differing(
+    ctx: Context,
+    as_: Identity,
+    task: TaskId,
+    head: FileSet,
+    written: Mapping[str, WrittenEdit],
+    published: FileSet,
+) -> set[str]:
+    """Every file outside `plans/` that differs between the state a save
+    leaves and the latest publication: one only in either, and one in both
+    with other content. A file the save writes is compared by its content,
+    any other by its token, which is the same for the same content.
+    """
+    state = {path for path in _present(head, written) if not is_reserved(path)}
+    then = {path for path in published.tokens if not is_reserved(path)}
+    differ = state ^ then
+    for path in state & then:
+        if path in written:
+            content = written[path].content
+            before = await ctx.forge.content.read_file(as_, task, path, at=published.version)
+            if before.content != content:
+                differ.add(path)
+        elif head.tokens[path] != published.tokens[path]:
+            differ.add(path)
+    return differ
 
 
 async def _graded_under(ctx: Context, task: TaskId) -> set[str]:

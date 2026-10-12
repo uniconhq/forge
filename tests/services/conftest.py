@@ -120,7 +120,7 @@ async def make_task(setup: Setup, acme: Acme, name: str) -> TaskId:
 
 async def publish(setup: Setup, acme: Acme, task: TaskId, extra: bytes = b"") -> Published:
     """The task published by ada's save of its `task.yaml` with `extra` after
-    it.
+    it, confirmed, since a save asks first once the contest has started.
     """
     head = await acme.fake.content.list_files(PLATFORM, task)
     current = await acme.fake.content.read_file(PLATFORM, task, "task.yaml")
@@ -129,6 +129,7 @@ async def publish(setup: Setup, acme: Acme, task: TaskId, extra: bytes = b"") ->
         acme.ada,
         task,
         {"task.yaml": Edit(current.content + extra, head.tokens["task.yaml"])},
+        confirm=True,
     )
     assert isinstance(result, Published), result
     return result

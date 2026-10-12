@@ -985,7 +985,11 @@ async def _limit_to_one(setup: Setup, acme: Acme, entered: Entered) -> None:
     limited = current.content.replace(b"test_groups:", b"submissions: {max: 1}\ntest_groups:")
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
     await publications.save(
-        setup, acme.ada, entered.task, {"task.yaml": Edit(limited, head.tokens["task.yaml"])}
+        setup,
+        acme.ada,
+        entered.task,
+        {"task.yaml": Edit(limited, head.tokens["task.yaml"])},
+        confirm=True,
     )
 
 

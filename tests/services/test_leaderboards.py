@@ -792,11 +792,12 @@ async def test_a_tasks_save_reports_each_groups_most_its_reveal_and_the_boards_i
         },
     )
 
-    assert saved.notes[-4:] == (
-        "The most points each test group gives: main 100, small 30, large 70.",
-        "sum shows its hidden results on 26 September 2026 at 15:00 UTC.",
-        "This save changes the leaderboard Standings.",
-        "This save changes the leaderboard Final.",
+    assert saved.notes[-1:] == ("sum shows its hidden results on 26 September 2026 at 15:00 UTC.",)
+    # Only the groups whose most points moved are named, here the new ones.
+    assert saved.effect.scores == (
+        "Points: small is new, worth up to 30.",
+        "Points: large is new, worth up to 70.",
+        "Every result is scored again, and the leaderboards Standings and Final with them.",
     )
     assert isinstance(pointless, Published), pointless
     assert "The leaderboard Standings counts nothing from sum." in pointless.notes

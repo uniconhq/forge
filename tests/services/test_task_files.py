@@ -52,7 +52,9 @@ async def test_an_organisers_file_reaches_the_task_as_a_pointer(
     slot = await _slot(setup, acme, entered.task)
     await _send(setup, acme, slot, entered.task)
 
-    saved = await files.write_upload(setup, acme.ada, entered.task, PATH, slot.id, None)
+    saved = await files.write_upload(
+        setup, acme.ada, entered.task, PATH, slot.id, None, confirm=True
+    )
 
     assert isinstance(saved, publications.Published | publications.Draft), saved
     written = await acme.fake.content.read_file(acme.ada.identity, entered.task, PATH)
@@ -69,10 +71,14 @@ async def test_an_uploaded_file_is_listed_and_read_as_an_upload_and_a_typed_one_
 ) -> None:
     slot = await _slot(setup, acme, entered.task)
     await _send(setup, acme, slot, entered.task)
-    await files.write_upload(setup, acme.ada, entered.task, PATH, slot.id, None)
+    await files.write_upload(setup, acme.ada, entered.task, PATH, slot.id, None, confirm=True)
     # Typed, and as long as a pointer: read to tell, and told apart.
-    await files.write(setup, acme.ada, entered.task, "data/notes.txt", b"n" * 130, None)
-    await files.write(setup, acme.ada, entered.task, "data/big.txt", b"b" * 4096, None)
+    await files.write(
+        setup, acme.ada, entered.task, "data/notes.txt", b"n" * 130, None, confirm=True
+    )
+    await files.write(
+        setup, acme.ada, entered.task, "data/big.txt", b"b" * 4096, None, confirm=True
+    )
     acme.fake.reset_calls()
 
     listed = {
@@ -95,8 +101,10 @@ async def test_an_uploaded_file_is_listed_and_read_as_an_upload_and_a_typed_one_
 async def test_a_listing_names_the_version_holding_each_file_as_listed_and_it_downloads_there(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    await files.write(setup, acme.ada, entered.task, "data/big.txt", b"b" * 4096, None)
-    await files.write(setup, acme.ada, entered.task, "data/notes.txt", b"n", None)
+    await files.write(
+        setup, acme.ada, entered.task, "data/big.txt", b"b" * 4096, None, confirm=True
+    )
+    await files.write(setup, acme.ada, entered.task, "data/notes.txt", b"n", None, confirm=True)
     big = await files.read(setup, acme.ada, entered.task, "data/big.txt")
     notes = await files.read(setup, acme.ada, entered.task, "data/notes.txt")
 
@@ -122,14 +130,14 @@ async def test_a_save_marks_the_upload_it_took(setup: Setup, acme: Acme, entered
     slot = await _slot(setup, acme, entered.task)
     await _send(setup, acme, slot, entered.task)
 
-    await files.write_upload(setup, acme.ada, entered.task, PATH, slot.id, None)
+    await files.write_upload(setup, acme.ada, entered.task, PATH, slot.id, None, confirm=True)
 
     session = await signed_in(setup, acme.fake, 7)
     taken = await uploads.complete(setup, session, entered.task, slot.id)
     assert taken.status is UploadStatus.CONSUMED
     # Taken once: the same upload cannot be written a second time.
     with pytest.raises(InvalidInputs):
-        await files.write_upload(setup, acme.ada, entered.task, PATH, slot.id, None)
+        await files.write_upload(setup, acme.ada, entered.task, PATH, slot.id, None, confirm=True)
 
 
 async def test_an_upload_is_written_only_where_it_was_asked_for(
@@ -150,7 +158,7 @@ async def test_an_upload_that_has_not_arrived_cannot_be_saved(
     slot = await _slot(setup, acme, entered.task)
 
     with pytest.raises(UploadNotReady):
-        await files.write_upload(setup, acme.ada, entered.task, PATH, slot.id, None)
+        await files.write_upload(setup, acme.ada, entered.task, PATH, slot.id, None, confirm=True)
 
     # Nothing of the save landed.
     listed = await acme.fake.content.list_files(acme.ada.identity, entered.task)
@@ -240,10 +248,10 @@ async def test_a_pointer_to_an_object_the_task_holds_may_be_written_back(
     # the task's history already has; the object behind it is the task's own.
     slot = await _slot(setup, acme, entered.task)
     await _send(setup, acme, slot, entered.task)
-    await files.write_upload(setup, acme.ada, entered.task, PATH, slot.id, None)
+    await files.write_upload(setup, acme.ada, entered.task, PATH, slot.id, None, confirm=True)
     pointer = pointer_text(_digest(DATA), len(DATA))
 
-    await files.write(setup, acme.ada, entered.task, "data/again.bin", pointer, None)
+    await files.write(setup, acme.ada, entered.task, "data/again.bin", pointer, None, confirm=True)
 
     written = await acme.fake.content.read_file(acme.ada.identity, entered.task, "data/again.bin")
     assert written.content == pointer

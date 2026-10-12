@@ -325,7 +325,11 @@ async def test_a_worth_or_a_due_on_a_task_that_gives_no_points_is_refused_at_its
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
     pointless = current.content.replace(b"main: {each: 100}", b"main: {}")
     saved = await publications.save(
-        setup, acme.ada, entered.task, {"task.yaml": Edit(pointless, head.tokens["task.yaml"])}
+        setup,
+        acme.ada,
+        entered.task,
+        {"task.yaml": Edit(pointless, head.tokens["task.yaml"])},
+        confirm=True,
     )
     assert isinstance(saved, Published), saved
 

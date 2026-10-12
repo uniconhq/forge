@@ -960,13 +960,34 @@ each file under it, named one by one.
    place, also names it: `sandbox-run@v2's image moved with a release`, so a
    save that changed only the statement says why it asks. Groups, rule weights, `show`, `credit` and `submissions` are
    read on every read and change nothing that grades. Once the contest has
-   started, until it is archived, a save that changes how the task grades is
-   refused with `ConfirmationRequired`, listing the changes and how many
+   started, until it is archived (its `state` is `published` and its
+   `start` has passed), every save that would publish something new, files
+   other than the latest publication's or another plan, is refused with
+   `ConfirmationRequired`, a first publication and a change to scoring or
+   the statement as much as one to how the task grades, and nothing is
+   written; the same save with `confirm=True` publishes. A save that
+   publishes nothing new, and a draft, ask nothing. The refusal carries
+   `changes`, what changes how the task grades, `regrades`, how many
    submissions it would grade again (`gradings.to_regrade`, counted as the
    regrade chooses them: each submission's latest attempt, but one staff
    cancelled and a delayed or over-the-limit one whose entrant has no room
-   left under `submissions.max`), and nothing is written; the same save with `confirm=True`
-   publishes. A save with
+   left under `submissions.max`), and what the save does, laid out as the page shows it
+   (`domain.save_effect`): `results_change` and `summary`, "Results
+   change." or "Nobody's result changes."; `runs_again`, "12 submissions
+   are graded again: the input of test 1 in the group main changed." or
+   "No submission runs again: the tests and how they run are the same.";
+   `scores`, each scoring change with its old value ("Points: main is now
+   worth up to 110 (was 100).", "Results of main shown once the task
+   closes (was right away).", "Submission limit: 10 per entrant (was
+   50).") and the boards counted again ("Every result is scored again, and
+   the leaderboard Standings with it.", "The leaderboard Standings is
+   counted again."), or "No score changes."; and `reading`, the task's
+   title, "The statement changes." and the pictures and files under
+   `public/`, or "Nothing entrants read changes.". Results change when the
+   save grades a submission again, or when the task has a graded
+   submission and the save moves a group's points or how it earns them, a
+   test's weight, `credit`, a group's `show` or `submissions.max`; the
+   submission rate alone, and what entrants read, move no result. A save with
    `keep_as_draft=True` is written as a draft that says what it held back
    and publishes nothing, on any save, valid or not, started contest or not.
 4. The organiser's files and `plans/plan.json` are written as one change,
@@ -1008,9 +1029,13 @@ of its head when that is a draft, and the `task.yaml` of its latest
 publication once per process, for whether it gives points.
 
 A valid save comes back as `Published`, with the publication, its number,
-whether it changed how the task grades and what, its notes, the sealed
-steps and a bounded value the task's `credit` does not name, and how many
-submissions it queued to be graded again. `publications.list`
+whether it changed how the task grades and what, its notes (the task's
+reveal, the sealed steps, a bounded value the task's `credit` does not
+name, a board that counts nothing from the task), how many submissions it
+queued to be graded again, and its `effect`: what it did, in the same
+words and parts as the question a running contest asks before it, so a
+group's most points are named only where they moved, with the old number.
+`publications.list`
 gives every publication with its flag and its changes, for the task's
 history.
 
@@ -2032,7 +2057,7 @@ structured members in `extra`:
 | `InvalidPath` | `invalid_path` | `path`, the path refused |
 | `AdminOnly` | `admin_only` | `keys`, each admin-only key or file |
 | `ReservedPath` | `reserved_path` | `paths` inside `plans/` |
-| `ConfirmationRequired` | `confirmation_required` | `changes`, what would change; `regrades`, how many submissions it would grade again |
+| `ConfirmationRequired` | `confirmation_required` | `changes`, what would change how the task grades; `regrades`, how many submissions it would grade again; `results_change`, `summary`, `runs_again`, `scores` and `reading`, what the save does (the save, step 3) |
 | `SoleAdmin` | `sole_admin` | `scopes`, each `{"kind", "name"}` |
 | `ContestantConflict` | `contestant_conflict` | `contests` |
 | `SharedWorkflowOwner` | `shared_workflow_owner` | `workflows` |
