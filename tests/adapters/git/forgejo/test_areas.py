@@ -939,10 +939,88 @@ async def test_a_task_is_made_bare_and_secured_with_what_is_missing(
         f"PUT /api/v1/teams/{team}/repos/acme/spring.sum.task" for team in (1, 2, 4, 5, 6)
     ]
     assert f"POST {repo}/branch_protections" not in recorder.calls()
+    # A protection that lets any writer push is put right: the platform's
+    # account alone pushes or merges, repository admins included (#443).
+    assert recorder.sent("PATCH", f"{repo}/branch_protections/main") == [PLATFORM_ONLY]
     assert recorder.sent("PATCH", f"{repo}/tag_protections/7") == [
         {"name_pattern": "published/*", "whitelist_usernames": ["platform-account"]}
     ]
-    assert put_back == 6
+    assert put_back == 7
+
+
+PLATFORM_ONLY = {
+    "enable_push": True,
+    "enable_push_whitelist": True,
+    "push_whitelist_usernames": ["platform-account"],
+    "push_whitelist_deploy_keys": False,
+    "enable_merge_whitelist": True,
+    "merge_whitelist_usernames": ["platform-account"],
+    "apply_to_admins": True,
+    "block_on_rejected_reviews": False,
+}
+"""A contest's or a task's default branch, which the platform alone writes."""
+
+
+def _contest_teams_attached(recorder: Recorder) -> None:
+    """acme/spring's three role teams, each attached to its repository."""
+    teams = [{"id": team, "name": f"acme.spring-{role}"} for team, role in enumerate(Role, 1)]
+    recorder.on("GET", "/api/v1/orgs/acme/teams/search", ok({"data": teams}))
+    for team in range(1, len(teams) + 1):
+        recorder.on("GET", f"/api/v1/teams/{team}/repos/acme/spring.contest", ok({"id": 9}))
+
+
+async def test_a_place_already_written_by_the_platform_alone_is_left_as_it_is(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/spring.contest"
+    _contest_teams_attached(recorder)
+    recorder.on(
+        "GET", f"{repo}/branch_protections/main", ok({"branch_name": "main", **PLATFORM_ONLY})
+    )
+
+    await forgejo.content.secure(ContestId("acme/spring"))
+
+    assert f"PATCH {repo}/branch_protections/main" not in recorder.calls()
+
+
+async def test_a_new_place_is_protected_for_the_platform_alone(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/spring.contest"
+    _contest_teams_attached(recorder)
+    recorder.on("GET", f"{repo}/branch_protections/main", ok({}, 404))
+
+    await forgejo.content.secure(ContestId("acme/spring"))
+
+    assert recorder.sent("POST", f"{repo}/branch_protections") == [
+        {"branch_name": "main", **PLATFORM_ONLY}
+    ]
+
+
+async def test_a_save_the_platform_writes_for_someone_names_them_its_author(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/spring.sum.task"
+    recorder.on("POST", f"{repo}/contents", ok({"commit": {"sha": "c-3"}}))
+    recorder.on(
+        "GET",
+        "/api/v1/users/search",
+        ok({"data": [{"id": 7, "login": "ada", "full_name": "Ada L", "email": "ada@acme.test"}]}),
+    )
+
+    await forgejo.content.save_files(
+        PLATFORM,
+        TaskId("acme/spring/sum"),
+        {"task.yaml": b"a"},
+        expected={"task.yaml": ConflictToken("blob-1")},
+        message="Save",
+        author=7,
+    )
+
+    (sent,) = recorder.sent("POST", f"{repo}/contents")
+    person = {"name": "Ada L", "email": "ada@acme.test"}
+    assert (sent["author"], sent["committer"]) == (person, person)
+    assert recorder.headers("POST", f"{repo}/contents") == ["token admin"]
 
 
 async def test_a_save_is_one_commit_carrying_each_files_blob(

@@ -77,6 +77,9 @@ class FakeContent:
         if not repo.rewrites_refused:
             repo.rewrites_refused = True
             put_back += 1
+        if not repo.platform_only:
+            repo.platform_only = True
+            put_back += 1
         if repo.scope.task is not None and PUBLISHED_PREFIX not in repo.reserved:
             repo.reserved.add(PUBLISHED_PREFIX)
             put_back += 1
@@ -188,14 +191,17 @@ class FakeContent:
         *,
         message: str,
         expected: ConflictToken | None,
+        author: int | None = None,
     ) -> VersionId:
-        self._state.record("write_file", as_, place=place, path=path, expected=expected)
+        self._state.record(
+            "write_file", as_, place=place, path=path, expected=expected, author=author
+        )
         self._state.check_up()
         repo = self._state.repo(*location(place))
         self._state.require_write(as_, repo)
         _check(repo, {path: expected})
         return VersionId(
-            self._state.commit(repo, {path: content}, message, self._state.author(as_))
+            self._state.commit(repo, {path: content}, message, self._author(as_, author))
         )
 
     async def save_files(
@@ -206,9 +212,15 @@ class FakeContent:
         *,
         expected: Mapping[str, ConflictToken | None],
         message: str,
+        author: int | None = None,
     ) -> VersionId:
         self._state.record(
-            "save_files", as_, place=place, paths=sorted(files), expected=dict(expected)
+            "save_files",
+            as_,
+            place=place,
+            paths=sorted(files),
+            expected=dict(expected),
+            author=author,
         )
         self._state.check_up()
         repo = self._state.repo(*location(place))
@@ -217,7 +229,14 @@ class FakeContent:
         for path, content in files.items():
             if content is None and path not in repo.files:
                 raise NotFound(f"{path} is not in {place}")
-        return VersionId(self._state.commit(repo, files, message, self._state.author(as_)))
+        return VersionId(self._state.commit(repo, files, message, self._author(as_, author)))
+
+    def _author(self, as_: Identity, author: int | None) -> int | None:
+        """Who a change is recorded as made by: `author` when the platform
+        writes it for them, otherwise whoever makes it.
+        """
+        made_by = self._state.author(as_)
+        return author if made_by is None and author is not None else made_by
 
     async def list_files(
         self, as_: Identity, place: ContentPlace, *, at: VersionId | None = None

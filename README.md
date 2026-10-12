@@ -256,11 +256,27 @@ without a request, since a path would resolve it away.
 Operations done for a person take the identity the call is made under, so the
 host records the change as theirs and enforces their permissions underneath
 the platform's own: a submission is committed by the contestant, a person's
-roles are read with their own credential, and the platform's token never makes
-a change in anyone's name. The host's permission for a role is `write` for
+roles are read with their own credential, and everything an organiser reads
+is read as them. A contest's and a task's files are the exception (#443):
+the platform alone writes them at the forge, so a change there goes through
+the package's save and its checks and no role at the forge can push past
+them, admins included. Each such change is written by the platform's
+account with the organiser as its author and committer, by their name and
+the address their account has, by which the host knows the commit for
+theirs, so the history stays theirs; the package's role checks are the
+only gate for those writes, and each refuses before anything is written.
+The host's permission for a role is `write` for
 admin and manager alike and `read` for observer, never a repository admin,
 since a repository admin may delete a tag's protection; the package holds the
-difference between admin and manager. Making orgs, contests, tasks and
+difference between admin and manager. `write` is still what a team needs at
+a contest and its tasks: for an organiser's upload into a task's large-file
+store (below, Uploads), and for the threads, which are the repository's
+issues; a contest's and a task's default branch then refuses a push or a
+merge from anyone but the platform's account, repository admins included
+(`content.secure`; Forgejo: the branch protection's push and merge
+allow-lists name the platform's account alone, applied to admins). Another
+branch or a tag other than a publication's someone pushes there is never
+read. Making orgs, contests, tasks and
 workspaces, which includes creating every repository since the host lets no
 one else create one, and naming protected versions are done as the platform
 account, the account
@@ -848,9 +864,10 @@ package enforces deadlines with.
 ## Files
 
 `files.read`, `tree` and `history` need the observer role at the contest or
-task, and `write` and `rollback` the manager role; each goes through the
+task, and `write` and `rollback` the manager role; a read goes through the
 port as the organiser's own identity, so the forge's own check stays
-underneath and the history is theirs. `history` names each change's author
+underneath it, and a write is made by the platform with the organiser as
+its author (#443), so the history is theirs. `history` names each change's author
 by username as well as id (`Change.author`, which Forgejo's commits
 carry; an author given by id alone is looked up once), so
 someone who no longer holds a role at the place is still named, to those
@@ -1004,8 +1021,9 @@ each file under it, named one by one.
    `keep_as_draft=True` is written as a draft that says what it held back
    and publishes nothing, on any save, valid or not, started contest or not.
 4. The organiser's files and `plans/plan.json` are written as one change,
-   as the organiser; any other file under `plans/` is removed in the same
-   change.
+   by the platform with the organiser as its author, since the platform
+   alone writes a task's files at the forge (#443); any other file under
+   `plans/` is removed in the same change.
 5. That change is named as the next publication, as the platform, with a
    note saying whether it changed how the task grades and what, which
    workflow each workflow name was, by the forge's own id for it, and what
@@ -1827,8 +1845,16 @@ the CI as the org's account, signing it in again once if the CI refuses it,
 since the CI's database restored from a dump taken at another moment, or
 alone, may not know a task made since; a task the CI knows is unchanged,
 and one it cannot activate is logged as `reconcile.activation_failed` and
-its gradings are still inserted. It logs what it did as `reconcile.done`,
-with how many tasks it activated that the CI did not know.
+its gradings are still inserted. First of all, it secures every contest
+and task of every org again (`content.secure`), putting back what keeps
+each right where it is missing or wrong: the roles that reach it, its
+history kept from being rewritten, its files written by the platform alone
+(#443), and a task's publications reserved for the platform; so the
+operator runs it once after an upgrade too, which brings places made
+before a change to those up to it, and a place the forge fails on is
+logged as `reconcile.secure_failed` and the rest still run. It logs what it
+did as `reconcile.done`, with how many tasks it activated that the CI did
+not know and how many places it secured again.
 
 **The organiser's controls.** Each takes the `Organiser` from
 `access.organiser` and needs manager at the grading's task; a grading whose
@@ -2170,9 +2196,10 @@ submission's number, and who marked it.
 under `forge/db/alembic/` and exits. A deployment runs it before the host
 starts, from the host's image, which has the package and its command
 installed; the host has no migrate command of its own. `unicon-forge
-reconcile` activates every published task at the CI and gives every
-submission at the forge without gradings its gradings (above), and the
-operator runs it once after a restore.
+reconcile` secures every contest and task again, activates every
+published task at the CI and gives every submission at the forge without
+gradings its gradings (above), and the operator runs it once after a
+restore, and once after an upgrade.
 
 There is no jobs table, and nothing in the package runs on a timer. Each
 piece of upkeep is done by a request that already touches what it keeps:

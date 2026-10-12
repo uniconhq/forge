@@ -148,5 +148,5 @@ class FakeThreads:
         self._state.check_up()
         found = self._thread(as_, thread)
         owner, name, _ = parse_thread(thread)
-        self._state.require_write(as_, self._state.repo(owner, name))
+        self._state.require_write(as_, self._state.repo(owner, name), code=False)
         return found

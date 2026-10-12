@@ -442,14 +442,14 @@ async def test_a_contest_role_reaches_a_task_only_once_it_is_secured(fake: FakeF
 
     with pytest.raises(Forbidden):
         await fake.content.read_file(bob, task, "task.yaml")
-    assert await fake.content.secure(contest) == 4
-    assert await fake.content.secure(task) == 8
+    assert await fake.content.secure(contest) == 5
+    assert await fake.content.secure(task) == 9
     assert await fake.content.secure(task) == 0
 
     assert (await fake.content.read_file(bob, task, "task.yaml")).content == b"t"
     repo = fake.state.repos[("acme", "spring.sum.task")]
     assert repo.teams == {Scope("acme", "spring"), Scope("acme", "spring", "sum")}
-    assert repo.rewrites_refused is True
+    assert (repo.rewrites_refused, repo.platform_only) == (True, True)
     assert repo.reserved == {"published/"}
     assert fake.state.repos[("acme", "spring.contest")].reserved == set()
     repo.teams.discard(Scope("acme", "spring"))

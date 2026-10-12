@@ -36,7 +36,7 @@ from forge.domain.names import Named
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import making, names, org_accounts, publications, tasks
+from forge.services import making, names, org_accounts, publications, reconcile, tasks
 from forge.services.access import Organiser
 from forge.testing import logged
 from tests.services.conftest import (
@@ -493,3 +493,42 @@ def _held_at_task(acme: Acme) -> Organiser:
         role=Role.OBSERVER,
         identity=acme.ada.identity,
     )
+
+
+async def test_the_reconcile_makes_a_place_made_before_written_by_the_platform_alone(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    # A contest and a task made before the platform wrote their files alone
+    # (#443): their organisers could still push to them.
+    places = [
+        acme.fake.state.repos[("acme", name)] for name in ("spring.contest", "spring.sum.task")
+    ]
+    for repo in places:
+        repo.platform_only = False
+    statement = await acme.fake.content.read_file(PLATFORM, sum_task, "statement.md")
+    await acme.fake.content.write_file(
+        acme.ada.identity,
+        sum_task,
+        "statement.md",
+        b"Pushed.\n",
+        message="Push",
+        expected=statement.token,
+    )
+
+    async with setup.unit_of_work() as ctx:
+        done = await reconcile.reconcile(ctx)
+    async with setup.unit_of_work() as ctx:
+        again = await reconcile.reconcile(ctx)
+
+    assert (done.secured, again.secured) == (2, 0)
+    assert all(repo.platform_only for repo in places)
+    pushed = await acme.fake.content.read_file(PLATFORM, sum_task, "statement.md")
+    with pytest.raises(Forbidden, match="protected branch"):
+        await acme.fake.content.write_file(
+            acme.ada.identity,
+            sum_task,
+            "statement.md",
+            b"Again.\n",
+            message="Push",
+            expected=pushed.token,
+        )

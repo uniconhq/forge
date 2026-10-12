@@ -1,9 +1,20 @@
-"""Mending the platform's records and the CI's after a restore. A database
+"""Mending the platform's records, the forge's and the CI's, after a restore
+or an upgrade. A database
 restored from a backup lacks the gradings of every submission made since
 the backup, and the forge is where submissions are kept, so `unicon-forge
 reconcile` reads them there, once, when the operator runs it. The CI's own
 database, restored from a dump taken at another moment or alone, may not
-know a task made since, and nothing else would activate it again.
+know a task made since, and nothing else would activate it again. And a
+contest or task made before a change to what keeps a place right at the
+forge, such as the platform writing its files alone (#443), is not made
+again, so this puts that right too.
+
+First, every contest and every task of every org the platform made is
+secured again (`content.secure`): the roles that reach it, its history kept
+from being rewritten, its files written by the platform alone, and a task's
+publications reserved for the platform, each put back only where it is
+missing or wrong. A place the forge fails on is logged and the rest still
+run.
 
 For each contest of every org the platform made and each task with a
 publication, it first activates the task at the CI as the org's account,
@@ -27,7 +38,8 @@ from sqlalchemy.exc import IntegrityError
 
 from forge.db.tables import Grading
 from forge.domain.errors import Forbidden, NotFound, PortError
-from forge.domain.ids import OrgId, WorkspaceId
+from forge.domain.identity import PLATFORM
+from forge.domain.ids import ContestId, OrgId, TaskId, WorkspaceId
 from forge.domain.roles import task_scope
 from forge.log import get_logger
 from forge.runtime.context import Context
@@ -41,20 +53,23 @@ log = get_logger(__name__)
 class Reconciled:
     """What a run did: how many contests it read, how many submissions it
     found at the forge, how many gradings it inserted for the ones that had
-    none, and how many published tasks it activated that the CI did not
-    know.
+    none, how many published tasks it activated that the CI did not
+    know, and how many contests and tasks it had to secure again.
     """
 
     contests: int
     submissions: int
     inserted: int
     activated: int
+    secured: int = 0
 
 
 async def reconcile(ctx: Context) -> Reconciled:
-    """Activate every published task at the CI and give every submission
-    without gradings its gradings, over every contest.
+    """Secure every contest and task again, activate every published task
+    at the CI and give every submission without gradings its gradings, over
+    every contest.
     """
+    secured = await _secure_every_place(ctx)
     contests = seen = inserted = activated = 0
     for contest, settings in await published.every_contest(ctx):
         contests += 1
@@ -75,8 +90,43 @@ async def reconcile(ctx: Context) -> Reconciled:
         submissions=seen,
         inserted=inserted,
         activated=activated,
+        secured=secured,
     )
-    return Reconciled(contests, seen, inserted, activated)
+    return Reconciled(contests, seen, inserted, activated, secured)
+
+
+async def _secure_every_place(ctx: Context) -> int:
+    """How many contests and tasks had something put back when each was
+    secured again, read as the platform.
+    """
+    secured = 0
+    orgs = await org_accounts.org_ids(ctx)
+    await ctx.let_go()
+    for org in orgs:
+        try:
+            contests = await ctx.forge.content.list_contests(PLATFORM, org)
+        except PortError as exc:
+            log.warning("reconcile.org_unreadable", org=org, error=type(exc).__name__)
+            continue
+        for contest in contests:
+            try:
+                tasks = await ctx.forge.content.list_tasks(PLATFORM, contest)
+            except PortError as exc:
+                log.warning(
+                    "reconcile.contest_unreadable", contest=contest, error=type(exc).__name__
+                )
+                continue
+            places: list[ContestId | TaskId] = [contest, *tasks]
+            for place in places:
+                try:
+                    put_back = await ctx.forge.content.secure(place)
+                except PortError as exc:
+                    log.warning("reconcile.secure_failed", place=place, error=type(exc).__name__)
+                    continue
+                if put_back:
+                    secured += 1
+                    log.info("reconcile.secured", place=place, put_back=put_back)
+    return secured
 
 
 async def _activate(ctx: Context, task: PublishedTask) -> int:

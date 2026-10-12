@@ -1,7 +1,11 @@
-"""A contest's or a task's files, read and written through the port as the
-organiser doing it, so the history of each file is theirs and the forge's own
-permission check stays underneath the platform's. Reading needs the observer
-role at the place and writing the manager role.
+"""A contest's or a task's files, read through the port as the organiser
+doing it, so the forge's own permission check stays underneath the
+platform's for every read, and written by the platform with the organiser as
+the change's author, so the history of each file is theirs. A contest's and
+a task's files are written by the platform alone at the forge (#443): no
+role there writes them, so everything that changes them comes through here
+and `publications.save`, and the checks here are the only gate. Reading
+needs the observer role at the place and writing the manager role.
 
 Every write carries the token the file was read with, and a file that has
 moved since is `Conflict`, with nothing written. A write to a contest's
@@ -51,6 +55,7 @@ from forge.domain.definitions import (
     parse_contest,
 )
 from forge.domain.errors import AdminOnly, NotFound, PortError
+from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, VersionId, is_commit
 from forge.domain.roles import Role, ScopeKind, holds, scope_of_place, task_scope
 from forge.domain.uploads import Door, may_be_pointer, refuse_pointer, upload_info
@@ -267,12 +272,13 @@ async def write(
         if problems:
             raise InvalidDefinition(CONTEST_FILE, problems)
     version = await ctx.forge.content.write_file(
-        organiser.identity,
+        PLATFORM,
         contest,
         path,
         content,
         message=message or f"Update {path}",
         expected=expected,
+        author=organiser.user.id,
     )
     if path == CONTEST_FILE:
         published.forget_contests(ctx)

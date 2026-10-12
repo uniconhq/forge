@@ -51,9 +51,10 @@ steps in order, and refuses before anything is written.
    (`domain.save_effect`): whether anyone's result changes, what runs
    again, each scoring change, old and new, with the boards counted again,
    and what entrants read that changes.
-4. The organiser's files and `plans/plan.json` are written as one change, as
-   the organiser, so the history is theirs and a publication never catches a
-   task half saved.
+4. The organiser's files and `plans/plan.json` are written as one change, by
+   the platform, which alone writes a task's files at the forge (#443), with
+   the organiser as its author, so the history is theirs, and a publication
+   never catches a task half saved.
 5. That change is named as the next publication, as the platform, with a
    note saying whether it changed how the task grades and what, which
    workflow each workflow name was, what the task's sealed steps hold back
@@ -274,7 +275,7 @@ async def save(
     await timelines.hold_task(ctx, task)
     checked = await check(ctx, as_, task, head, written)
     if checked.errors:
-        version = await _write(ctx, as_, task, head, written, {}, said)
+        version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, checked.errors, ())
 
     publications = await ctx.forge.workspaces.list_publications(task)
@@ -293,7 +294,7 @@ async def save(
         )
         anew = bool(differ) or before.plans.get(PLAN_PATH) != after.plans[PLAN_PATH]
     if keep_as_draft:
-        version = await _write(ctx, as_, task, head, written, {}, said)
+        version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, (), changed)
     assert checked.compiled is not None and checked.definition is not None
     if anew and not confirm and await _contest_running(ctx, task):
@@ -312,7 +313,7 @@ async def save(
         )
 
     plans = await _plan_files(ctx, as_, task, head, checked)
-    version = await _write(ctx, as_, task, head, written, plans, said)
+    version = await _write(ctx, organiser, task, head, written, plans, said)
     touched = {*written, *plans}
     if version != head.version and await _landed_under(ctx, as_, task, head, version, touched):
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
@@ -919,15 +920,18 @@ async def _plan_files(
 
 async def _write(
     ctx: Context,
-    as_: Identity,
+    organiser: Organiser,
     task: TaskId,
     head: FileSet,
     written: Mapping[str, WrittenEdit],
     plans: Mapping[str, bytes | None],
     message: str,
 ) -> VersionId:
-    """Write the organiser's files and the plans as one change as `as_`, and
-    return its version; with nothing to write, the head is the version.
+    """Write the organiser's files and the plans as one change, and return
+    its version; with nothing to write, the head is the version. The
+    platform writes it, the only account a task's files are written by at
+    the forge (#443), with the organiser as its author, so the history is
+    theirs; `save` has checked they may.
     """
     files: dict[str, bytes | None] = {path: edit.content for path, edit in written.items()}
     files.update(plans)
@@ -935,7 +939,9 @@ async def _write(
         return head.version
     expected: dict[str, ConflictToken | None] = {path: head.tokens.get(path) for path in plans}
     expected.update({path: edit.token for path, edit in written.items()})
-    return await ctx.forge.content.save_files(as_, task, files, expected=expected, message=message)
+    return await ctx.forge.content.save_files(
+        PLATFORM, task, files, expected=expected, message=message, author=organiser.user.id
+    )
 
 
 async def _landed_under(

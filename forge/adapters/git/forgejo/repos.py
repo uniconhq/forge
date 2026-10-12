@@ -37,7 +37,7 @@ from forge.domain.content import (
     TreeEntry,
 )
 from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
-from forge.domain.identity import PLATFORM, Identity, Platform
+from forge.domain.identity import PLATFORM, Identity, Platform, User
 from forge.domain.ids import VersionId, is_commit
 from forge.domain.uploads import Door
 
@@ -123,33 +123,57 @@ class Repos:
         except NotFound:
             return
 
-    async def protect_branch(self, owner: str, name: str) -> bool:
+    async def protect_branch(self, owner: str, name: str, *, platform_only: bool = False) -> bool:
         """Protect the default branch, which is what refuses a force-push to
         it, so nothing written can be rewritten, and say whether that had to
         be put back. Forgejo has no switch for force-pushes: a protected
         branch refuses them all. Forgejo refuses a second protection of the
         branch, so one another maker put there meanwhile counts as there.
+
+        `platform_only` lets the platform's account alone push or merge to
+        the branch, repository admins included (#443): whoever else may write
+        the repository, through its git, its pages or its API, is refused
+        there. A protection found that lets anyone else is put back.
         """
         path = f"/api/v1/repos/{segment(owner)}/{segment(name)}/branch_protections"
+        wanted = self._branch_rules(platform_only)
         try:
-            await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}")
+            found = json_of(await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}"))
         except NotFound:
             try:
                 await self._http.call(
                     PLATFORM,
                     "POST",
                     path,
-                    json={
-                        "branch_name": DEFAULT_BRANCH,
-                        "enable_push": True,
-                        "block_on_rejected_reviews": False,
-                    },
+                    json={"branch_name": DEFAULT_BRANCH, **wanted},
                 )
             except Forbidden, Conflict:
                 await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}")
                 return False
             return True
-        return False
+        if not platform_only or all(found.get(key) == value for key, value in wanted.items()):
+            return False
+        await self._http.call(PLATFORM, "PATCH", f"{path}/{DEFAULT_BRANCH}", json=wanted)
+        return True
+
+    def _branch_rules(self, platform_only: bool) -> dict[str, Any]:
+        """What the default branch's protection says: pushes refused to
+        nobody with write, or, `platform_only`, to everyone but the
+        platform's account, merges and repository admins included.
+        """
+        if not platform_only:
+            return {"enable_push": True, "block_on_rejected_reviews": False}
+        allowed = [self._platform_account]
+        return {
+            "enable_push": True,
+            "enable_push_whitelist": True,
+            "push_whitelist_usernames": allowed,
+            "push_whitelist_deploy_keys": False,
+            "enable_merge_whitelist": True,
+            "merge_whitelist_usernames": allowed,
+            "apply_to_admins": True,
+            "block_on_rejected_reviews": False,
+        }
 
     async def write_files(
         self, as_: Identity, owner: str, name: str, files: Files, *, message: str
@@ -222,8 +246,10 @@ class Repos:
         *,
         expected: Mapping[str, ConflictToken | None],
         message: str,
+        author: User | None = None,
     ) -> VersionId:
-        """Create, update and remove the files in one commit as `as_`. Each
+        """Create, update and remove the files in one commit as `as_`, its
+        author and committer `author` when given (`_identity`). Each
         update and removal carries the blob it was read at, and the host
         refuses the whole commit when any has moved since, or when a file to
         create is there already; both are `Conflict`, and neither is tried
@@ -257,7 +283,12 @@ class Repos:
             as_,
             "POST",
             f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents",
-            json={"branch": DEFAULT_BRANCH, "message": message, "files": operations},
+            json={
+                "branch": DEFAULT_BRANCH,
+                "message": message,
+                "files": operations,
+                **_identity(author),
+            },
         )
         return VersionId(str(json_of(written)["commit"]["sha"]))
 
@@ -358,11 +389,13 @@ class Repos:
         *,
         message: str,
         expected: ConflictToken | None,
+        author: User | None = None,
     ) -> VersionId:
         body: dict[str, Any] = {
             "content": _encoded(content),
             "message": message,
             "branch": DEFAULT_BRANCH,
+            **_identity(author),
         }
         target = f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents/{file_path(path)}"
         if expected is None:
@@ -739,6 +772,18 @@ class Repos:
 
 def _encoded(content: bytes) -> str:
     return base64.b64encode(content).decode()
+
+
+def _identity(author: User | None) -> dict[str, Any]:
+    """The author and committer a change the platform writes for `author`
+    names, by which Forgejo knows the commit for theirs: their name and the
+    address their account has, which it matches to them. None for a change
+    of the caller's own, or for a person with no address to name.
+    """
+    if author is None or not author.email:
+        return {}
+    person = {"name": author.name or author.username, "email": author.email}
+    return {"author": person, "committer": person}
 
 
 def _batches(shas: Sequence[str], budget: int) -> list[list[str]]:

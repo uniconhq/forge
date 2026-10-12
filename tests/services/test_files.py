@@ -10,12 +10,13 @@ nothing written either way; a task's write is its save; and a rollback
 writes the old content as a new change.
 """
 
+import uuid
 from datetime import timedelta
 
 import pytest
 
 from forge.domain.clock import FakeClock
-from forge.domain.content import Edit, start_of
+from forge.domain.content import ConflictToken, Edit, start_of
 from forge.domain.definitions import parse_contest
 from forge.domain.errors import AdminOnly, Conflict, Forbidden, InvalidPath, NotFound
 from forge.domain.identity import PLATFORM
@@ -24,7 +25,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import files, publications, submissions, timelines
+from forge.services import files, publications, submissions, timelines, uploads
 from forge.services.access import Organiser
 from forge.services.publications import Published
 from tests.services.conftest import (
@@ -130,7 +131,7 @@ async def test_a_manager_writes_a_manager_key_and_a_stale_token_is_a_conflict(
     assert isinstance(written, files.Written)
     assert isinstance(written.version, str)
     (call,) = acme.fake.calls_to("write_file")
-    assert call.identity == manager.identity
+    assert (call.identity, call.arguments["author"]) == (PLATFORM, manager.user.id)
     after = await files.read(setup, manager, spring, "contest.yaml")
     assert parse_contest(after.content).end.hour == 18
     assert (await files.history(setup, manager, spring, "contest.yaml"))[0].author_id == 8
@@ -654,3 +655,87 @@ async def test_a_listing_gives_each_small_text_files_start_in_one_read_of_them_a
     assert acme.fake.calls_to("read_file") == []
     assert start_of(b"") == "" and start_of(b"a\x00b") is None
     assert all(entry.token is not None for entry in listed.values())
+
+
+WRITES = (
+    "save",
+    "task write",
+    "task rollback",
+    "task upload",
+    "task upload slot",
+    "contest write",
+    "contest rollback",
+)
+"""Every way a contest's or a task's files are written."""
+MINE = b"Mine.\n"
+
+
+async def _write(
+    setup: Setup, write: str, who: Organiser, task: TaskId, token: ConflictToken
+) -> object:
+    if write == "save":
+        return await publications.save(setup, who, task, {"statement.md": Edit(MINE, token)})
+    if write == "task write":
+        return await files.write(setup, who, task, "statement.md", MINE, token)
+    if write == "task rollback":
+        return await files.rollback(setup, who, task, "statement.md", VersionId("v"), token)
+    if write == "task upload":
+        return await files.write_upload(setup, who, task, "data/big.bin", uuid.uuid4(), None)
+    if write == "task upload slot":
+        return await uploads.task_file_slot(
+            setup, who, task, path="data/big.bin", size=4, sha256="0" * 64
+        )
+    if write == "contest write":
+        return await files.write(setup, who, SPRING, "notes.md", MINE, None)
+    return await files.rollback(setup, who, SPRING, "contest.yaml", VersionId("v"), None)
+
+
+@pytest.mark.parametrize("write", WRITES)
+@pytest.mark.parametrize("who", ["observer", "nobody"])
+async def test_every_write_refuses_an_observer_and_someone_with_no_role_writing_nothing(
+    setup: Setup, acme: Acme, sum_task: TaskId, write: str, who: str
+) -> None:
+    # The platform writes a contest's and a task's files at the forge for
+    # whoever saves (#443), so the forge's own check is no backstop: the
+    # package's is the only gate, and it refuses before anything is written.
+    scope = Scope("acme", "spring") if who == "observer" else Scope("acme", "autumn")
+    await acme.fake.orgs.grant_role(8, scope, Role.OBSERVER if who == "observer" else Role.ADMIN)
+    bob = await organiser(setup, acme.fake, 8, scope)
+    head = await acme.fake.content.list_files(PLATFORM, sum_task)
+    acme.fake.reset_calls()
+
+    with pytest.raises(Forbidden, match="manager role at acme/spring"):
+        await _write(setup, write, bob, sum_task, head.tokens["statement.md"])
+
+    written = {"save_files", "write_file", "publish", "read_file"}
+    assert [call for call in acme.fake.calls if call.operation in written] == []
+
+
+async def test_a_manager_is_refused_an_admin_only_key_of_a_task_and_of_a_contest(
+    setup: Setup, acme: Acme, sum_task: TaskId, manager: Organiser
+) -> None:
+    task_yaml = await acme.fake.content.read_file(PLATFORM, sum_task, "task.yaml")
+    contest_yaml = await acme.fake.content.read_file(PLATFORM, SPRING, "contest.yaml")
+    acme.fake.reset_calls()
+
+    with pytest.raises(AdminOnly):
+        await files.write(
+            setup,
+            manager,
+            sum_task,
+            "task.yaml",
+            task_yaml.content.replace(b"test_groups:", b"submissions: {max: 3}\ntest_groups:"),
+            task_yaml.token,
+        )
+    with pytest.raises(AdminOnly):
+        await files.write(
+            setup,
+            manager,
+            SPRING,
+            "contest.yaml",
+            contest_yaml.content.replace(b"state: draft", b"state: published"),
+            contest_yaml.token,
+        )
+    assert [
+        call for call in acme.fake.calls if call.operation in {"save_files", "write_file"}
+    ] == []
