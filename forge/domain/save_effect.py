@@ -5,10 +5,11 @@ publishes (#449), and answer a save that published (M66).
 - The first line says whether anyone's result changes. Results change when
   the save grades a submission again, or when the task has a graded
   submission and the save moves what one earns or shows: a group's points,
-  how a group earns them, a test's weight, what a test earns (`credit`),
-  when a group's results are shown, or the most submissions an entrant may
-  make. A change to the submission rate alone moves no result, and nor
-  does anything said under what entrants read.
+  how a group earns them, a test's weight, what a test earns (`credit`), or
+  when a group's results are shown. A change to the submission limits
+  moves no result: a lowered `max` takes no result away and a raised one
+  grades nothing by itself (#445), so they change only what entrants may
+  still submit; nor does anything said under what entrants read.
 - **Runs again:** how many submissions are graded again, and why, from what
   changed how the task grades.
 - **Scores:** each scoring change, new and old, and each leaderboard counted
@@ -193,7 +194,7 @@ def _scores(
     rescored = bool(points or earning or credit)
     found = [*points, *earning, *credit, *shown, *limit, *rate]
     found += _boards(task, boards, before, after, rescored=rescored, regraded=grading_changed)
-    return found, bool(rescored or shown or limit)
+    return found, bool(rescored or shown)
 
 
 def _worth(entry: ContestTask | None, definition: TaskDefinition) -> Fraction | None:

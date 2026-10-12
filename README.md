@@ -986,8 +986,10 @@ each file under it, named one by one.
    `public/`, or "Nothing entrants read changes.". Results change when the
    save grades a submission again, or when the task has a graded
    submission and the save moves a group's points or how it earns them, a
-   test's weight, `credit`, a group's `show` or `submissions.max`; the
-   submission rate alone, and what entrants read, move no result. A save with
+   test's weight, `credit` or a group's `show`; the submission limits
+   change only what entrants may still submit (a lowered `max` takes no
+   result away, a raised one grades nothing by itself), and they and what
+   entrants read move no result. A save with
    `keep_as_draft=True` is written as a draft that says what it held back
    and publishes nothing, on any save, valid or not, started contest or not.
 4. The organiser's files and `plans/plan.json` are written as one change,

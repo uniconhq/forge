@@ -145,9 +145,7 @@ def test_credit_weights_and_show_are_each_said_and_a_show_change_moves_a_live_bo
     assert effect.results_change is True
 
 
-def test_a_removed_group_and_the_submission_limits_are_said_and_the_rate_alone_moves_nothing() -> (
-    None
-):
+def test_a_removed_group_and_the_submission_limits_are_said_and_the_limits_move_no_result() -> None:
     gone = _effect(_task("  main: {each: 100}\n"), changes=("The tests of large were removed.",))
     rate = _effect(
         _task(
@@ -170,7 +168,7 @@ def test_a_removed_group_and_the_submission_limits_are_said_and_the_rate_alone_m
     assert rate.scores == ("Submission rate: 2 every hour (was 1 every 30 seconds).",)
     assert rate.results_change is False
     assert limit.scores == ("Submission limit: 10 per entrant (was 50).",)
-    assert limit.results_change is True
+    assert limit.results_change is False
 
 
 @pytest.mark.parametrize(
