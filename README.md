@@ -185,8 +185,9 @@ contest's times and each task entry's timeline in order (C1), each board's
 own rules (C3), a task's test groups, rule weights, test weights and `show`
 words (T1, T2, T6), a workflow's report (W1 to W5) and its inputs' `unit`,
 which only a `number` takes, refused on any other type at the input's
-`unit`, naming the input, and a primitive's `runs` marks (P1). `admin_only_changes` names the admin-only keys a save changes,
-a time compared as the moment it names,
+`unit`, naming the input, and a primitive's `runs` marks (P1).
+`admin_only_changes` names the admin-only keys a save changes, a time
+compared as the moment it names,
 `starter_contest` and `starter_task` are the files a new contest or task is
 created with, and `starter_workflow` the `workflow.yaml` a new workflow is.
 `plans.py` is the compiler (below) and names what changed how a task grades
@@ -1744,9 +1745,9 @@ and void once staff cancel it; while its latest attempt is a
 `submissions.max`, and once it finishes with a result it counts, even past
 the most. Every `GradingRecord` of a latest attempt that has not finished
 with a result carries `last_good`, the latest earlier attempt that did,
-the one its submission counts meanwhile. Migration 0019 drops the
-`falls_back` column of the fallback this replaced, and the contest's
-`on_system_error` is retired: a save that has it is refused at it.
+the one its submission counts meanwhile. The contest's `on_system_error`
+is retired: a save that has it is refused at it, saying why. Migration 0019
+drops the `falls_back` column and adds `automatic` (below).
 
 **Tried again once by itself.** A latest attempt that ends in
 `system_error` is retried once without staff (`gradings.notice`,
