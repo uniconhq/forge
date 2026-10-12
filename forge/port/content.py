@@ -1,6 +1,7 @@
 """Contest and task content: the places that hold the files defining them,
-made and kept protected as the platform, and the files themselves, read and
-written as the calling organiser, with a conflict check on every write.
+made and kept protected as the platform, and the files themselves, read as
+the caller and written by the platform alone, with the organiser who saved
+named as each change's author (#443), and a conflict check on every write.
 """
 
 from collections.abc import Collection, Mapping

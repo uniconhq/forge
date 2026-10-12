@@ -18,7 +18,7 @@ what changed.
   broken checker from an organiser who was away;
 - `dismiss` takes a task's regrade off the contest's page, for a manager of
   the task;
-- `gradings` gives a regrade's gradings, one per submission, its latest
+- `gradings_of` gives a regrade's gradings, one per submission, its latest
   attempt of the regrade, as the feed gives gradings, each with what the
   regrade did to it (`GradingRecord.change`), narrowed to one change and
   to a member's or an entrant's submissions when asked.

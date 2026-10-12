@@ -91,8 +91,9 @@ class TaskState:
     at its YAML path; a draft with none was held back, or not saved since it
     was made. `statement_written` says whether the latest publication holds
     a statement, `statement.md` there, not blank and not the starter's
-    placeholder (false when nothing is published), which opening the
-    contest needs (M57); `head_statement_written` says the same of the head.
+    placeholder (false when nothing is published), which the contest's
+    opening checklist asks of each task (M57); `head_statement_written`
+    says the same of the head.
     """
 
     head: VersionId

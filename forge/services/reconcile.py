@@ -16,8 +16,8 @@ publications reserved for the platform, each put back only where it is
 missing or wrong. A place the forge fails on is logged and the rest still
 run.
 
-For each contest of every org the platform made and each task with a
-publication, it first activates the task at the CI as the org's account,
+After that, for each contest of every org the platform made and each task
+with a publication, it activates the task at the CI as the org's account,
 which changes nothing for a task the CI knows. Then, for each entrant of
 the contest, whatever became of it, it lists its submissions of the task
 and inserts, for any that has no grading at all, one queued grading against

@@ -1,9 +1,12 @@
 """The content area over Forgejo: contest and task repositories under their
-org, made bare and then secured, read and written through the contents API as
-the calling identity. Securing a repository attaches the role teams of its
-contest and, for a task, of the task itself, refuses force-pushes to its
-default branch, and for a task reserves the `published/` tags for the
-platform account; each is checked first and only what is missing is made.
+org, made bare and then secured, read through the contents API as the
+calling identity and written through it as the platform, with the organiser
+who saved as the commit's author and committer. Securing a repository
+attaches the role teams of its contest and, for a task, of the task itself,
+protects its default branch so only the platform's account may push or merge
+to it and nobody may force-push, and for a task reserves the `published/`
+tags for the platform account; each is checked first and only what is
+missing is made or put back.
 Deleting one removes its own role teams and then the repository.
 """
 

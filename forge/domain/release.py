@@ -186,7 +186,8 @@ def is_running(contest: ContestDefinition, now: datetime) -> bool:
 
 
 def has_started(contest: ContestDefinition, now: datetime) -> bool:
-    """Whether the contest has started and is not archived: from then on a
-    change to how a task grades asks for confirmation.
+    """Whether the contest has started and is not archived: from then on
+    every save of a task that would publish something new asks for
+    confirmation (#449).
     """
     return contest.state is State.PUBLISHED and now >= contest.start

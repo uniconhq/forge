@@ -87,9 +87,10 @@ forge/api/
                 OrgProfile read returns
   contests.py   create, list, and contest_id_of, the id of the contest a scope
                 is in
-  tasks.py      create, list, state, standing, the TaskState state returns,
-                the TaskStanding and Timeline standing returns, and
-                task_id_of, the id of the task a scope names
+  tasks.py      create, list, state, standing, take_out, put_back, the
+                TaskState state returns, the TaskStanding and Timeline
+                standing returns, the TakeOut and PutBack the last two
+                return, and task_id_of, the id of the task a scope names
   workflows.py  create, listing, view, read_version, save, create_version,
                 check, set_visibility, share, unshare, copy, combine,
                 primitives, and the NewWorkflow, WorkflowSummary,
@@ -98,9 +99,9 @@ forge/api/
   files.py      read, tree, history, write, rollback, write_upload, download,
                 and the File, TreeEntry, UploadInfo, EntryKind and Change
                 they return
-  publications.py  save, list, workflow_form, and the Published, Draft,
-                Publication, WorkflowForm, DeclaredInput and DeclaredField
-                they return
+  publications.py  save, list, workflow_form, and the Published, SaveEffect,
+                Draft, Publication, WorkflowForm, DeclaredInput and
+                DeclaredField they return
   release.py    of_task, and the TaskRelease it returns with its Closed reason
   entrants.py   register, mine, invite, withdraw_invite, leave, rename, list,
                 approve, reject, reopen, remove, extend, organise_rename,
@@ -109,6 +110,7 @@ forge/api/
                 they return, with its Status, WayKind and Locks
   contest_home.py  contests, home, task, public_file, and the ContestSummary,
                 ContestHome, TaskEntry, TaskPage and PublicFile they return,
+                the BoardPoints and Points a task's points per board are,
                 PUBLIC_MOST, the most of a public file served, with the Limits and Rate a
                 page carries, the ContestantInput entries and their InputType
                 a submit panel is built from, and the State and
@@ -122,15 +124,16 @@ forge/api/
   announcements.py  post, edit, close, reopen, manage, contest, task, and the
                 Announcement and AnsweredQuestion they return
   clarifications.py  ask, mine, follow_up, inbox, of_contest, reply, mark,
-                unmark, answer_publicly, and the Clarification and Message
-                they return
+                unmark, answer_publicly, and the Clarification, Message,
+                AnnouncementLink and PublicAnswer they return
   live.py       stream, the nudges one session hears, and the Nudge and
                 NudgeKind it yields
   uploads.py    slot, task_file_slot, complete, door, the Slot a slot is, the
                 Upload complete returns with its UploadStatus, and the Door
                 the proxy is answered with
-  submissions.py  submit, mine, one, files, download, the SubmittedInput
-                submit takes, and the Submission, Result, GroupShown, Points,
+  submissions.py  submit, mine, one, organised, files, download, the
+                SubmittedInput submit takes, and the Submission, Result,
+                SubmissionState, GroupShown, Points, ValueMeaning, Fold,
                 SubmittedFiles, GradingStatus and Show they return
   boards.py     seen, organised, held, mark, unmark, written, and the
                 Standings, Key, Column, NotInView, Ranked, Cell,
@@ -139,7 +142,7 @@ forge/api/
                 queue_depth, and the GradingRecord, Rejudged, FeedEntry,
                 Submitter, QueueDepth and GradingStatus they return; list
                 and feed both give FeedEntry
-  regrades.py   latest, dismiss, gradings_of, and the Summary, Change,
+  regrades.py   latest, dismiss, gradings_of, and the Summary, ChangeKind,
                 Compared, Side and RegradeCause they return
   runs.py       config, envelope, callback, the InboundRequest config takes
                 and the InboundAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
@@ -290,12 +293,14 @@ A contest or a task is made bare, with its starter files, by
 gives it the rest: the roles of its contest and, for a task, of the task
 itself reach it (Forgejo: the contest's three teams and the task's three
 attached to the repository, so a contest's roles reach its tasks), its
-history cannot be rewritten (a protected `main`, which Forgejo keeps from
-every force-push), and for a task its publications are reserved for the
+files are written by the platform alone and its history cannot be rewritten
+(a protected `main` that only the platform's account may push or merge to,
+and which Forgejo keeps from every force-push), and for a task its publications are reserved for the
 platform account (the `published/*` tag protection). `secure` checks each
 first and puts back only what is missing, so it can be run again, and says
 how many it put back. `content.save_files` writes several files as one
-change as the person saving, a file given as none removed, each carrying the token it was read with, and refuses the
+change, as the platform with the organiser who saved named as its `author`,
+a file given as none removed, each carrying the token it was read with, and refuses the
 whole change as `Conflict` when any has moved; `content.list_files` gives
 every file of a place at a version with its token, the same for the same
 content, which is how a save compares data files without reading them.
@@ -586,7 +591,7 @@ hosting process calls are actions, marked `@action` from
 | `sign_in` | `complete` |
 | `orgs` | `create`, `create_by_operator`, `update`, `read` |
 | `contests` | `create`, `list` |
-| `tasks` | `create`, `list`, `state`, `standing` |
+| `tasks` | `create`, `list`, `state`, `standing`, `take_out`, `put_back` |
 | `files` | `read`, `tree`, `history`, `write`, `rollback`, `write_upload`, `download` |
 | `publications` | `save`, `list`, `workflow_form` |
 | `release` | `of_task` |
@@ -1471,7 +1476,8 @@ as the organiser, "Answered publicly in the announcement" and its title,
 carrying a line the platform adds that names the announcement, which the
 question's readers alone see and are served as the message's
 `announcement` (its task, none for the contest's own, and its number).
-Only a message an organiser wrote naming an announcement of the
+It answers with both, the announcement and the question as it now stands
+with that message (`PublicAnswer`). Only a message an organiser wrote naming an announcement of the
 question's own contest is read so. The message is written last: a retry
 after a failure part way finds the announcement already answering the
 question that no message names, brings its title and text to the ones
@@ -1595,8 +1601,9 @@ code of its own: the task is open by the server's clock plus the
 contestant's extension (`task_closed` with its `reason`, `task_withdrawn`
 for a task withdrawn from its contest, or `archived`); they
 are approved (`not_approved`); they have submissions left (`submission_limit`),
-counted from the submissions at the forge but for the ones staff
-cancelled; the task's rate holds
+counted from the submissions at the forge but for the ones with no result
+whose latest attempt staff cancelled, ended over the limit or reads as a
+system error (`gradings.place_of`); the task's rate holds
 (`rate_limited`, with `retry_at`), counted from the grading rows within its
 window; every upload named is theirs for this task (`upload_not_yours`), a
 checked file no submission used (`upload_not_ready`), and each and all of
@@ -2146,10 +2153,10 @@ passed), carry nothing beyond the detail. The refusals of an upload or a submit 
 
 ## The tables
 
-Nine tables, keyed by UUID v7 but for `names`, keyed by the id it names,
+Ten tables, keyed by UUID v7 but for `names`, keyed by the id it names,
 with every enumeration as `text` under a `CHECK`: `sessions`,
-`entrants`, `entrant_members`, `gradings`, `uploads`, `org_accounts`,
-`names`, `invites` and `marks`. They
+`entrants`, `entrant_members`, `gradings`, `regrades`, `uploads`,
+`org_accounts`, `names`, `invites` and `marks`. They
 hold what a forge cannot: of users, orgs, contests and tasks only the names
 people gave the last three (above), the rest read live. `org_accounts` is
 one row per org, by the org's id, its service account's
@@ -2174,7 +2181,8 @@ workspace, the member who submitted, the submission with
 its number and the exact version its files went in with, when it was
 submitted, the publication, the attempt, and the idempotency key
 of the submit that made it; its status is one of `queued`, `dispatched`,
-`running`, `done`, `cancelled` and `system_error`. `queued_at` is when it
+`running`, `done`, `cancelled`, `system_error` and `over_limit` (0020).
+`queued_at` is when it
 was queued, `run_id`, `dispatched_at`, `started_at` and `deadline_at` are
 its run, when it was started, when its harness fetched the envelope and its
 deadline, `progress` the last progress reported, `result` and `log_key`
@@ -2182,7 +2190,14 @@ what came back, `error` a line for staff, and `cancel_reason` the sentence
 staff cancelled it with, which its contestant reads, on every submission
 staff cancelled (a stock one on those cancelled before 0013) and on no
 attempt a rejudge replaced, and `automatic` marks the attempt the platform
-made by itself when the one before it failed (0019). An `uploads` row is one
+made by itself when the one before it failed (0019).
+`submission_limit` is the task's `submissions.max` an `over_limit` attempt
+ended against (0020), and `regrade_id` the regrade of many the attempt
+belongs to, one it made or a retry of one of those (0021). A `regrades`
+row is one rejudge of a task, or one regrade a save started (0021): the
+task, the publication its attempts grade against, its `cause`, `rejudge`
+or `save`, who started it and when, and who took its summary off the
+contest's page and when. An `uploads` row is one
 browser upload: its owner, its purpose, task and input (or, for a task's
 own file, the path it goes in the task), name, type, size, digest, status,
 the submission that consumed it, and when its lifetime ends. An `invites` row is one

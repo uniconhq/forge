@@ -69,7 +69,9 @@ steps in order, and refuses before anything is written.
    next save checks and publishes the task as it then stands.
 6. A publication that changed how the task grades regrades every
    submission to the task: a new attempt of each one's latest attempt
-   against it, as a rejudge makes (`gradings.regrade`).
+   against it, as a rejudge makes (`gradings.regrade`), the delayed ones
+   held to their entrants' room under the `submissions.max` the save
+   published (#445), all kept as one regrade the save started (#448).
 7. A task's first publication starts making its place to submit for every
    approved entrant, once the save has committed and without the save
    waiting for it (`places`).
@@ -257,7 +259,7 @@ async def save(
     remove it, and the token it was read with, and publish the result when
     it is valid. Needs the manager role at the task. `keep_as_draft` writes
     the files and publishes nothing, on any save; otherwise `confirm`
-    publishes a change to how the task grades while its contest runs. A
+    publishes anything new while its contest runs (#449). A
     token that has moved is `Conflict`, with nothing written.
     """
     scope = task_scope(task)

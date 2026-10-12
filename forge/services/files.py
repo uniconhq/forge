@@ -3,8 +3,9 @@ doing it, so the forge's own permission check stays underneath the
 platform's for every read, and written by the platform with the organiser as
 the change's author, so the history of each file is theirs. A contest's and
 a task's files are written by the platform alone at the forge (#443): no
-role there writes them, so everything that changes them comes through here
-and `publications.save`, and the checks here are the only gate. Reading
+role there writes them, so everything that changes them comes through the
+package, an organiser's edits through here and `publications.save`, and the
+checks here are the only gate for those. Reading
 needs the observer role at the place and writing the manager role.
 
 Every write carries the token the file was read with, and a file that has
