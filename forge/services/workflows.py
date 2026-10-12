@@ -50,7 +50,13 @@ from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, Port
 from forge.domain.identity import AsUser, Identity, User
 from forge.domain.ids import OrgId, WorkflowId
 from forge.domain.names import validate_name
-from forge.domain.plans import check_workflow, natural, reserved_inputs, stray_units
+from forge.domain.plans import (
+    check_workflow,
+    natural,
+    reserved_inputs,
+    stray_report_units,
+    stray_units,
+)
 from forge.domain.primitives import PrimitiveDeclaration
 from forge.domain.roles import Role, Scope, holds
 from forge.domain.sessions import Session
@@ -461,9 +467,10 @@ async def newer_version(ctx: Context, as_: Identity, ref: WorkflowRef) -> str | 
 async def _problems(ctx: Context, as_: Identity, definition: WorkflowDefinition) -> list[Problem]:
     """Every problem a version of the definition would be refused for: an
     input named as a folder the task format reserves (`reserved_inputs`), a
-    unit on an input that is not a number (`stray_units`), each `use:` that
-    cannot be read as a primitive at its own path, then what
-    `check_workflow` finds against the ones that can.
+    unit on an input or a reported value that is not a number
+    (`stray_units`, `stray_report_units`), each `use:` that cannot be read
+    as a primitive at its own path, then what `check_workflow` finds
+    against the ones that can.
     """
     found: dict[str, PrimitiveDeclaration] = {}
     read: dict[str, str | None] = {}
@@ -482,7 +489,13 @@ async def _problems(ctx: Context, as_: Identity, definition: WorkflowDefinition)
     checked = [
         problem for problem in check_workflow(definition, found) if problem["path"] not in said
     ]
-    return [*reserved_inputs(definition), *stray_units(definition), *unread, *checked]
+    return [
+        *reserved_inputs(definition),
+        *stray_units(definition),
+        *stray_report_units(definition, found),
+        *unread,
+        *checked,
+    ]
 
 
 async def _make(ctx: Context, writer: _Writer, name: str, files: dict[str, bytes]) -> WorkflowId:

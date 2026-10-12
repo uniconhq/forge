@@ -952,3 +952,18 @@ async def test_a_mark_in_flight_and_a_save_lowering_marks_never_leave_a_row_over
     held = len((await marks.held(setup, ranked.session, ranked.task)).numbers)
     allowed = 1 if not isinstance(saved[0], BaseException) else 3
     assert held <= allowed, (held, saved)
+
+
+async def test_a_value_ranked_on_is_named_by_the_title_and_unit_its_task_gives(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    fastest = "leaderboards:\n  - {name: Fast, who: everyone, order: [points, time_ms]}\n"
+    await write_contest(acme.fake, contest(fastest))
+    await _three_groups(setup, acme, entered.task)
+
+    (standings,) = await boards.seen(setup, None, SPRING)
+
+    assert [(key.by, key.title, key.unit) for key in standings.keys] == [
+        ("points", None, None),
+        ("time_ms", "Run time", "ms"),
+    ]

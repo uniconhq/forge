@@ -45,6 +45,7 @@ from typing import Any
 
 from forge.domain.definitions import Group, Relative, Show
 from forge.domain.grading import GradingStatus
+from forge.domain.meanings import ValueMeaning
 from forge.domain.scoring import (
     Measure,
     Points,
@@ -81,7 +82,8 @@ class Graded:
     back, its `credit`, what each per-test number its workflow reports
     means, and its generation, the number of the latest publication up to
     it that changed how the task grades, which publications grading the
-    same test content share.
+    same test content share; and every value its workflow reports, with
+    the words a page names it by.
     """
 
     tests: tuple[str, ...]
@@ -90,17 +92,25 @@ class Graded:
     credit: str | Relative | None = None
     measures: Mapping[str, Measure] = field(default_factory=dict)
     generation: int = 0
+    meanings: tuple[ValueMeaning, ...] = ()
 
 
 def under(own: Graded, latest: Graded) -> Graded:
     """What a grading made under `own` is shown with while `latest` is the
     task's latest publication: `own`'s tests and sealed facts, and
-    `latest`'s `test_groups`, `credit` and meanings while no grading change
-    came between them, `own`'s otherwise.
+    `latest`'s `test_groups`, `credit` and meanings, the values' words
+    among them, while no grading change came between them, `own`'s
+    otherwise.
     """
     if own.generation != latest.generation or own.tests != latest.tests:
         return own
-    return replace(own, groups=latest.groups, credit=latest.credit, measures=latest.measures)
+    return replace(
+        own,
+        groups=latest.groups,
+        credit=latest.credit,
+        measures=latest.measures,
+        meanings=latest.meanings,
+    )
 
 
 def generation_of(changed: Sequence[tuple[int, bool]], number: int) -> int:

@@ -200,6 +200,12 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
     assert (listed.id, listed.number, listed.version) == (result.publication, 1, head.version)
     assert (listed.grading_changed, listed.changes) == (False, ())
     assert set(listed.workflows) == {"unicon/classic"}
+    # Each reported value's words are frozen with it, in the report's order.
+    assert [(each.name, each.title, each.unit) for each in listed.meanings] == [
+        ("time_ms", "Run time", "ms"),
+        ("memory_kb", "Memory used", "KB"),
+        ("log", "Compile log", None),
+    ]
 
 
 async def test_each_publication_is_numbered_after_the_last_and_none_touches_the_ci(

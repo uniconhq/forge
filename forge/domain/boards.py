@@ -39,6 +39,7 @@ from enum import IntEnum, StrEnum
 from fractions import Fraction
 
 from forge.domain.definitions import Leaderboard, Over, Penalty, Select, Show, Who
+from forge.domain.meanings import ValueMeaning
 from forge.domain.names import WorkspaceOwner
 from forge.domain.scoring import (
     BEFORE_REVEAL,
@@ -114,13 +115,16 @@ class Row:
 @dataclass(frozen=True, slots=True)
 class Key:
     """One key rows are compared on: what it ranks by, which way is better,
-    none for a value no covered task gives a direction, and the minutes a
-    `penalty` charges per attempt.
+    none for a value no covered task gives a direction, the minutes a
+    `penalty` charges per attempt, and, on a value, the title and unit its
+    column is named by, none where no covered task gives them.
     """
 
     by: str
     better: Better | None
     per_attempt: int | None = None
+    title: str | None = None
+    unit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,8 +211,14 @@ def in_scope(over: Over) -> Callable[[Show], bool]:
     return lambda show: True
 
 
-def keys_of(board: Leaderboard, directions: Mapping[str, Better | None]) -> tuple[Key, ...]:
-    """The board's keys, each value's direction as its covered tasks give it."""
+def keys_of(
+    board: Leaderboard,
+    directions: Mapping[str, Better | None],
+    words: Mapping[str, ValueMeaning] | None = None,
+) -> tuple[Key, ...]:
+    """The board's keys, each value's direction as its covered tasks give it,
+    and its title and unit as `words` give them.
+    """
     found: list[Key] = []
     for key in board.order:
         if isinstance(key, Penalty):
@@ -218,7 +228,15 @@ def keys_of(board: Leaderboard, directions: Mapping[str, Better | None]) -> tupl
         elif key == POINTS:
             found.append(Key(POINTS, Better.HIGHER))
         else:
-            found.append(Key(key, directions.get(key)))
+            named = (words or {}).get(key)
+            found.append(
+                Key(
+                    key,
+                    directions.get(key),
+                    title=named.title if named is not None else None,
+                    unit=named.unit if named is not None else None,
+                )
+            )
     return tuple(found)
 
 

@@ -66,6 +66,7 @@ from forge.domain.definitions import State as ContestState
 from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, PublicationId, TaskId, WorkspaceId
+from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
 from forge.domain.release import Extension, reveal_of
@@ -449,7 +450,8 @@ def _ranked(
             read.columns[name] for name in covered_tasks(settings, board) if name in read.columns
         ]
         shown = {column.name for column in covering}
-        keys = keys_of(board, _directions([task for task in read.tasks if task.name in shown]))
+        covered = [task for task in read.tasks if task.name in shown]
+        keys = keys_of(board, _directions(covered), _words(covered))
         found.append(rank(board, keys, settings.start, covering, read.rows, final=final))
     return found
 
@@ -463,6 +465,20 @@ def _directions(tasks: Sequence[PublishedTask]) -> dict[str, Better | None]:
         for name, measure in task.publication.measures.items():
             if found.get(name) is None and measure.better is not None:
                 found[name] = measure.better
+    return found
+
+
+def _words(tasks: Sequence[PublishedTask]) -> dict[str, ValueMeaning]:
+    """Each value's title and unit, as the first covered task naming it
+    with either says.
+    """
+    found: dict[str, ValueMeaning] = {}
+    for task in tasks:
+        for meaning in task.publication.meanings:
+            if meaning.name not in found and (
+                meaning.title is not None or meaning.unit is not None
+            ):
+                found[meaning.name] = meaning
     return found
 
 

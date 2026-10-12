@@ -126,6 +126,7 @@ from forge.domain.errors import (
 from forge.domain.grading import GradingStatus, Place
 from forge.domain.identity import AsUser
 from forge.domain.ids import PublicationId, SubmissionId, TaskId, WorkspaceId
+from forge.domain.meanings import ValueMeaning, shown_meanings
 from forge.domain.names import WorkspaceOwner
 from forge.domain.release import due_of, late_days
 from forge.domain.roles import Role, contest_id_of, task_scope
@@ -178,7 +179,10 @@ class Result:
     `reason`, the sentence they gave; and one ended over the limit is
     `over_limit`, with `limit`, the `submissions.max` its entrant had
     reached. Read by organisers, everything is shown and where it stands is
-    the grading's own `GradingStatus`.
+    the grading's own `GradingStatus`. Once done, `meanings` lists every
+    value the workflow reports, in its order, with the title and unit a
+    page names it by and how it folds, a value a sealed step holds back
+    left out until the reveal.
     """
 
     id: uuid.UUID
@@ -193,6 +197,7 @@ class Result:
     factor: Fraction | None = None
     folded: Mapping[str, Fraction] = field(default_factory=dict)
     limit: int | None = None
+    meanings: tuple[ValueMeaning, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -914,6 +919,9 @@ async def _result(
         points=seen.points,
         factor=factor if scored.gives_points else None,
         folded=seen.folded,
+        meanings=shown_meanings(
+            graded.meanings, graded.sealed.values, revealed=revealed or everything
+        ),
     )
 
 

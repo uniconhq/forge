@@ -48,12 +48,14 @@ from forge.domain.errors import (
 from forge.domain.grading import LOST_CHECK_AFTER, RunState, callback_token, token_hash
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, RunId, TaskId
+from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
-from forge.domain.scoring import Points
+from forge.domain.scoring import Better, Points
 from forge.domain.showing import GroupShown, SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import pointer_text
+from forge.domain.workflow_definition import Fold
 from forge.domain.workflows import Visibility
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
@@ -1063,6 +1065,12 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
     # The groups whose verdict is shown passed; large's verdict waits.
     assert before.grading.outcome == "accepted"
     assert before.grading.values == {"log": "compiled"}
+    # Each value with the words its publication froze, in the report's order.
+    assert before.grading.meanings == (
+        ValueMeaning("time_ms", "Run time", "ms", Fold.MAX, Better.LOWER),
+        ValueMeaning("memory_kb", "Memory used", "KB", Fold.MAX, Better.LOWER),
+        ValueMeaning("log", "Compile log"),
+    )
     # No worth in the contest, so the task is worth its groups' total, 200:
     # main 100, small 30 and large's 70 decided at the reveal.
     assert before.grading.groups == (

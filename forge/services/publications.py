@@ -307,6 +307,7 @@ async def save(
         checked.compiled.held,
         checked.compiled.measures,
         checked.compiled.titles,
+        checked.compiled.meanings,
     )
     publication = await ctx.forge.workspaces.publish(task, version, note)
     number = await _number_of(ctx, task, publication)

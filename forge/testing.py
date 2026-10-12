@@ -142,9 +142,23 @@ steps:
       actual: ${{ steps.run.output }}
       expected: ${{ test.answer }}
 report:
-  time_ms: {from: "${{ steps.run.time_ms }}", fold: max, better: lower, at_least: 0}
-  memory_kb: {from: "${{ steps.run.memory_kb }}", fold: max, better: lower, at_least: 0}
-  log: ${{ steps.compile.compile_log }}
+  time_ms:
+    from: ${{ steps.run.time_ms }}
+    title: Run time
+    unit: ms
+    fold: max
+    better: lower
+    at_least: 0
+  memory_kb:
+    from: ${{ steps.run.memory_kb }}
+    title: Memory used
+    unit: KB
+    fold: max
+    better: lower
+    at_least: 0
+  log:
+    from: ${{ steps.compile.compile_log }}
+    title: Compile log
 """
 
 PLACEHOLDER_DIGEST = "sha256:" + "0" * 64

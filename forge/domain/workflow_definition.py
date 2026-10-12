@@ -263,10 +263,17 @@ class Fold(StrEnum):
 
 class Meaning(Model):
     """A reported value with what it means: `from` the step output it reads,
-    how it folds over tests, which way is better, and its bounds.
+    the `title` and `unit` a page names it by ("Run time", "ms"), how it
+    folds over tests, which way is better, and its bounds. The title and
+    the unit change no plan. Only a number takes a unit: making or checking
+    a version refuses one on text, naming the entry
+    (`plans.stray_report_units`), and a version made before reads with it
+    dropped.
     """
 
     from_: str = Field(alias="from")
+    title: Line | None = None
+    unit: Line | None = None
     fold: Fold | None = None
     better: str | None = None
     at_least: Number | None = None
@@ -286,7 +293,7 @@ def _report_entry(value: object) -> str | Meaning:
     if not isinstance(value, str):
         raise ValueError(
             "Give the step output this reports, as ${{ steps.<id>.<output> }}, or that "
-            "output with what it means: from, fold, better, at_least and at_most."
+            "output with what it means: from, title, unit, fold, better, at_least and at_most."
         )
     return value
 
@@ -563,9 +570,23 @@ steps:
       expected: ${{{{ test.answer }}}}
 
 report:
-  time_ms: {{from: "${{{{ steps.run.time_ms }}}}", fold: max, better: lower, at_least: 0}}
-  memory_kb: {{from: "${{{{ steps.run.memory_kb }}}}", fold: max, better: lower, at_least: 0}}
-  log: ${{{{ steps.compile.compile_log }}}}
+  time_ms:
+    from: ${{{{ steps.run.time_ms }}}}
+    title: Run time
+    unit: ms
+    fold: max
+    better: lower
+    at_least: 0
+  memory_kb:
+    from: ${{{{ steps.run.memory_kb }}}}
+    title: Memory used
+    unit: KB
+    fold: max
+    better: lower
+    at_least: 0
+  log:
+    from: ${{{{ steps.compile.compile_log }}}}
+    title: Compile log
 """
     return {WORKFLOW_FILE: workflow.encode()}
 

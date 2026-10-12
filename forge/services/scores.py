@@ -139,6 +139,7 @@ class Scorer:
                 current.definition.credit,
                 current.publication.measures,
                 current.generation(current.publication),
+                current.publication.meanings,
             )
         return self._latest
 
@@ -255,6 +256,7 @@ class Scorer:
                 definition.credit,
                 found.measures,
                 generation,
+                found.meanings,
             )
 
         key = f"scores.graded.{current.id}.{publication}"

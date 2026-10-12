@@ -190,7 +190,11 @@ words (T1, T2, T6), a workflow's report (W1 to W5), and a primitive's
 refused on any other type where a version is made or checked
 (`plans.stray_units`), at the input's `unit`, naming the input and its
 type in words; a version made with one before reads with it dropped
-(`shown_unit`), so a task on it still saves. An input named as a folder
+(`shown_unit`), so a task on it still saves. A reported value's `unit` is
+held to the same rule (`plans.stray_report_units`), at the entry's
+`unit`, naming the value, its type read from the step's output port; a
+version made with one before reads with it dropped (`value_meanings`).
+An input named as a folder
 the task format gives meaning to, `tests`, `public` or `plans`, is refused
 there too (`plans.reserved_inputs`), since a setting's own files go in a
 folder named by its id.
@@ -1968,7 +1972,13 @@ leaves the fold with none, the same on a submission's page and on every
 board: a wrong answer has no time, so it never ranks as fast. Each test's
 row still shows what it reported. A grading is scored with the latest publication's groups,
 credit and value meanings while no grading change came between them, and
-with its own otherwise. Relative credit's best is taken over the
+with its own otherwise. The value meanings carry each reported value's
+`title` and `unit` (`domain/meanings.py`), which the publication's note
+keeps in the workflow's order: a result is served them (`meanings`, a
+value a sealed step holds back left out until the reveal), a board's key
+on a value takes them from the first covered task that gives them, and
+a listed publication carries them, so no page reads the workflow to name
+a value. Relative credit's best is taken over the
 candidates the boards count, each row's of the task graded under the same
 plan. A submission is read with its points shown and those still decided
 at the reveal.
