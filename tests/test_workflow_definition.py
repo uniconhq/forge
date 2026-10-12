@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from forge.domain.errors import InvalidName
-from forge.domain.plans import check_workflow
+from forge.domain.plans import check_workflow, stray_units
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.types import Type
 from forge.domain.workflow_definition import (
@@ -155,15 +155,26 @@ def test_an_input_names_itself_to_the_organisers_form_and_no_plan_reads_it() -> 
     assert plain.steps == workflow.steps and plain.report == workflow.report
 
 
-@pytest.mark.parametrize("kind", ["text", "boolean", "file", "folder"])
-def test_only_a_number_takes_a_unit_and_the_refusal_names_the_input(kind: str) -> None:
+@pytest.mark.parametrize(
+    ("kind", "words"),
+    [
+        ("text", "text"),
+        ("boolean", "true or false"),
+        ("file", "a file"),
+        ("folder", "a folder"),
+        ("enum", "one of a list"),
+    ],
+)
+def test_only_a_number_takes_a_unit_and_the_refusal_names_the_input(kind: str, words: str) -> None:
     document = classic()
     document["inputs"]["checker"] = {"type": kind, "title": "Checker", "unit": "seconds"}
+    if kind == "enum":
+        document["inputs"]["checker"]["options"] = ["exact", "tokens"]
 
-    assert refused(document) == [
+    assert stray_units(parse_workflow(one_line(document))) == [
         {
             "path": "inputs.checker.unit",
-            "message": f"Only a number takes a unit, and checker's type is {kind}. "
+            "message": f"Only a number takes a unit, and checker is {words}. "
             "Remove the unit, or make checker a number.",
         }
     ]
@@ -174,9 +185,19 @@ def test_an_enum_with_a_unit_is_refused_and_a_number_with_one_is_taken() -> None
     document["inputs"]["level"] = {"type": "enum", "options": ["low", "high"], "unit": "dB"}
     document["inputs"]["threshold"] = {"type": "number", "unit": "dB"}
 
-    assert paths(refused(document)) == ["inputs.level.unit"]
+    assert paths(stray_units(parse_workflow(one_line(document)))) == ["inputs.level.unit"]
     del document["inputs"]["level"]
     assert parse_workflow(one_line(document)).inputs["threshold"].unit == "dB"
+
+
+def test_a_version_made_with_a_stray_unit_still_reads_with_the_unit_dropped() -> None:
+    document = classic()
+    document["inputs"]["checker"] = {"type": "file", "title": "Checker", "unit": "seconds"}
+
+    workflow = parse_workflow(one_line(document))
+
+    assert workflow.inputs["checker"].shown_unit is None
+    assert workflow.inputs["time_limit"].shown_unit == "seconds"
 
 
 def test_the_seeded_classic_workflow_is_the_one_tested_here() -> None:
@@ -191,8 +212,7 @@ def test_every_seeded_workflow_puts_a_unit_only_on_a_number() -> None:
     for path in seeded:
         workflow = parse_workflow(path.read_bytes())
         with_unit = {key for key, declared in workflow.inputs.items() if declared.unit}
-        assert with_unit == {"time_limit", "memory_limit"}, path
-        assert {workflow.inputs[key].type for key in with_unit} == {Type.NUMBER}, path
+        assert {workflow.inputs[key].type for key in with_unit} <= {Type.NUMBER}, path
 
 
 def test_a_new_workflow_starts_as_classic() -> None:

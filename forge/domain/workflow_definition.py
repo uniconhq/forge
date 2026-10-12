@@ -181,8 +181,10 @@ class WorkflowInput(Model):
     form only, `title`, `help` and `unit`, which name it to the organiser
     ("Time limit", "seconds") and change no plan. Only a `number` takes a
     `unit`, since the form reads it after the title ("Time limit
-    (seconds)"); the workflow's check refuses it on any other type, naming
-    the input.
+    (seconds)"): making or checking a version refuses it on any other type,
+    naming the input (`plans.stray_units`), and a version made before that
+    reads with it dropped (`shown_unit`), since a version cannot be mended
+    and a unit changes no plan.
     """
 
     type: ValueType
@@ -193,6 +195,13 @@ class WorkflowInput(Model):
     title: Line | None = None
     help: Line | None = None
     unit: Line | None = None
+
+    @property
+    def shown_unit(self) -> str | None:
+        """Its unit, on a number only: a stray one on another type, which an
+        older version may hold, is dropped.
+        """
+        return self.unit if self.type is Type.NUMBER else None
 
     @model_validator(mode="after")
     def _check(self) -> WorkflowInput:
@@ -298,15 +307,9 @@ class WorkflowDefinition(Model):
     @model_validator(mode="after")
     def _check(self) -> WorkflowDefinition:
         problems = Problems()
-        for key, declared_input in self.inputs.items():
+        for key in self.inputs:
             if not HANDLE.match(key):
                 problems.add(("inputs", key), _NOT_A_HANDLE)
-            if declared_input.unit is not None and declared_input.type is not Type.NUMBER:
-                problems.add(
-                    ("inputs", key, "unit"),
-                    f"Only a number takes a unit, and {key}'s type is {declared_input.type}. "
-                    f"Remove the unit, or make {key} a number.",
-                )
         for key in self.test:
             if not HANDLE.match(key):
                 problems.add(("test", key), _NOT_A_HANDLE)

@@ -1035,7 +1035,7 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
                 optional=declared.optional,
                 title=declared.title,
                 help=declared.help,
-                unit=declared.unit,
+                unit=declared.shown_unit,
             )
             for name, declared in workflow.inputs.items()
         ),

@@ -183,9 +183,12 @@ the format does not know, refuses a key it no longer has at that key with the se
 form shows beside that field. What a file says of itself is checked there: a
 contest's times and each task entry's timeline in order (C1), each board's
 own rules (C3), a task's test groups, rule weights, test weights and `show`
-words (T1, T2, T6), a workflow's report (W1 to W5) and its inputs' `unit`,
-which only a `number` takes, refused on any other type at the input's
-`unit`, naming the input, and a primitive's `runs` marks (P1).
+words (T1, T2, T6), a workflow's report (W1 to W5), and a primitive's
+`runs` marks (P1). An input's `unit`, which only a `number` takes, is
+refused on any other type where a version is made or checked
+(`plans.stray_units`), at the input's `unit`, naming the input and its
+type in words; a version made with one before reads with it dropped
+(`shown_unit`), so a task on it still saves.
 `admin_only_changes` names the admin-only keys a save changes, a time
 compared as the moment it names,
 `starter_contest` and `starter_task` are the files a new contest or task is

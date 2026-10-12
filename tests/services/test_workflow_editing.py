@@ -178,6 +178,29 @@ async def test_a_bad_step_reference_is_named_at_its_path(setup: Setup, acme: Acm
     assert acme.fake.calls_to("write_workflow_file") == []
 
 
+async def test_a_unit_on_an_input_that_is_no_number_is_refused_by_a_check_and_a_version(
+    setup: Setup, acme: Acme
+) -> None:
+    bob = await _own(setup, acme)
+    page = await workflows.view(setup, bob, "bob", "tuned")
+    assert page.draft is not None
+    stray = CLASSIC.replace(b"    title: Language\n", b"    title: Language\n    unit: words\n")
+    assert stray != CLASSIC
+    refusal = {
+        "path": "inputs.language.unit",
+        "message": "Only a number takes a unit, and language is one of a list. Remove the "
+        "unit, or make language a number.",
+    }
+
+    found = await workflows.check(setup, bob, stray.decode())
+    await workflows.save(setup, bob, "bob", "tuned", stray.decode(), page.draft.token)
+    with pytest.raises(InvalidDefinition) as refused:
+        await workflows.create_version(setup, bob, "bob", "tuned", "v1")
+
+    assert found == (refusal,)
+    assert refused.value.errors == [refusal]
+
+
 async def test_a_step_that_uses_a_workflow_is_not_a_primitive(setup: Setup, acme: Acme) -> None:
     bob = await signed_in(setup, acme.fake, 8)
     uses_workflow = CLASSIC.replace(b"unicon/diff-check@v2", b"unicon/classic@v2").decode()
