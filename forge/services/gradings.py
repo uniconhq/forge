@@ -68,7 +68,8 @@ An organiser managing the task reads its gradings and acts on one:
 An organiser of a contest reads its gradings together:
 
 - `feed` lists every grading of the contest's tasks the organiser observes,
-  newest first, filtered by task, by the member who submitted, by entrant,
+  newest first by when each was queued (the package's clock, never the
+  database's), filtered by task, by the member who submitted, by entrant,
   and by status, each with whose it is, the entrant by the name it is shown
   under and the member who submitted it by username, as `list` gives a
   task's; every attempt is a row of its own, or, with `latest`, only each
@@ -990,7 +991,7 @@ async def list(
             await ctx.db.execute(
                 select(Grading)
                 .where(Grading.task_id == task)
-                .order_by(Grading.created_at.desc(), Grading.id.desc())
+                .order_by(Grading.queued_at.desc(), Grading.id.desc())
                 .limit(max(1, min(limit, LIST_LIMIT)))
             )
         )
@@ -1066,11 +1067,11 @@ async def feed(
     while len(kept) < size:
         query = select(Grading).where(*where)
         if after is not None:
-            query = query.where(tuple_(Grading.created_at, Grading.id) < after)
+            query = query.where(tuple_(Grading.queued_at, Grading.id) < after)
         rows = (
             (
                 await ctx.db.execute(
-                    query.order_by(Grading.created_at.desc(), Grading.id.desc()).limit(size)
+                    query.order_by(Grading.queued_at.desc(), Grading.id.desc()).limit(size)
                 )
             )
             .scalars()
@@ -1087,7 +1088,7 @@ async def feed(
         )
         if len(rows) < size:
             break
-        after = (rows[-1].created_at, rows[-1].id)
+        after = (rows[-1].queued_at, rows[-1].id)
     return await _entries(ctx, contest, kept[:size])
 
 

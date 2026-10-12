@@ -205,6 +205,39 @@ async def test_the_feed_narrows_by_task_by_who_submitted_and_by_status(
     assert await ids(status=GradingStatus.DISPATCHED) == []
 
 
+async def test_the_feed_and_a_tasks_gradings_go_by_the_packages_clock_not_the_databases(
+    setup: Setup, acme: Acme, entered: Entered, busy: dict[str, uuid.UUID]
+) -> None:
+    # The database's clock stepped back: each row it stamped reads older
+    # than the one before it.
+    async with setup.unit_of_work() as ctx:
+        for back, name in enumerate(("first", "retried", "on_max", "by_carol")):
+            await ctx.db.execute(
+                update(Grading)
+                .where(Grading.id == busy[name])
+                .values(created_at=Grading.created_at - timedelta(minutes=back))
+            )
+    observer = await organiser(setup, acme.fake, 7, CONTEST, Role.OBSERVER)
+
+    fed = await gradings.feed(setup, observer, SPRING)
+    # One row a page, so the page after one starts where it ended.
+    paged = await gradings.feed(setup, observer, SPRING, status=GradingStatus.SYSTEM_ERROR, limit=1)
+    listed = await gradings.list(setup, observer, entered.task)
+
+    assert [entry.grading.id for entry in fed] == [
+        busy["by_carol"],
+        busy["on_max"],
+        busy["retried"],
+        busy["first"],
+    ]
+    assert [entry.grading.id for entry in paged] == [busy["first"]]
+    assert [entry.grading.id for entry in listed] == [
+        busy["by_carol"],
+        busy["retried"],
+        busy["first"],
+    ]
+
+
 async def test_an_organiser_of_one_task_sees_its_gradings_alone(
     setup: Setup, acme: Acme, busy: dict[str, uuid.UUID]
 ) -> None:
