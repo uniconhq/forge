@@ -27,11 +27,11 @@ from forge.domain.roles import Role, Scope
 from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import gradings, runs, submissions
+from forge.services import boards, contest_home, gradings, runs, submissions
 from forge.services.gradings import NO_ANSWER, NO_RUN, START_RETRY_WAIT
 from forge.settings import Settings
 from forge.testing import APP_URL, FORGE_URL, FakeClock
-from tests.services.conftest import SPRING, Acme, Entered, organiser, upload
+from tests.services.conftest import RUNNING, SPRING, Acme, Entered, organiser, upload, write_contest
 
 SOURCE = b"print(sum(map(int, input().split())))\n"
 SUM = Scope("acme", "spring", "sum")
@@ -300,15 +300,67 @@ async def test_two_noticing_one_failure_at_once_make_one_retry(
 
 
 async def test_many_readers_finding_one_failure_together_start_one_retry(
-    setup: Setup, acme: Acme, entered: Entered
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _submit(setup, acme, entered)
     (first,) = await _rows(setup)
     await _broken(setup, first)
 
+    started: list[object] = []
+    real = gradings.retry_by_itself
+
+    async def counted(ctx: Any, grading: Any) -> Grading | None:
+        started.append(grading)
+        return await real(ctx, grading)
+
+    monkeypatch.setattr(gradings, "retry_by_itself", counted)
+
     await asyncio.gather(
         *(submissions.one(setup, entered.session, entered.task, 1) for _ in range(5))
     )
+    await setup.settle()
+
+    # One start among them, not one each that finds nothing left to do.
+    assert started == [first.id]
+    assert [(row.attempt, row.automatic) for row in await _rows(setup)] == [
+        (1, False),
+        (2, True),
+    ]
+
+
+READERS = ["boards", "contest home", "task's gradings", "queue depth"]
+
+
+async def _read(setup: Setup, acme: Acme, entered: Entered, reader: str) -> None:
+    """The contest read the way `reader` reads it."""
+    observer = await organiser(setup, acme.fake, 7, SUM, Role.OBSERVER)
+    match reader:
+        case "boards":
+            assert await boards.seen(setup, entered.session, SPRING)
+        case "contest home":
+            (task,) = (await contest_home.home(setup, entered.session, SPRING)).tasks
+            assert task.points is not None
+        case "task's gradings":
+            assert await gradings.list(setup, observer, entered.task)
+        case "queue depth":
+            contest = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.OBSERVER)
+            await gradings.queue_depth(setup, contest, SPRING)
+
+
+@pytest.mark.parametrize("reader", READERS)
+async def test_each_reader_of_a_failure_starts_its_retry_by_itself(
+    setup: Setup, acme: Acme, entered: Entered, reader: str
+) -> None:
+    await write_contest(
+        acme.fake,
+        RUNNING.format(visibility="everyone")
+        + "    worth: 100\nleaderboards:\n  - {name: All, who: contestants}\n",
+    )
+    await _submit(setup, acme, entered)
+    (first,) = await _rows(setup)
+    await _broken(setup, first)
+
+    await _read(setup, acme, entered, reader)
     await setup.settle()
 
     assert [(row.attempt, row.automatic) for row in await _rows(setup)] == [
