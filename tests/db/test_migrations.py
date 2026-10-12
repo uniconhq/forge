@@ -53,6 +53,7 @@ TABLES = {
     "names",
     "invites",
     "marks",
+    "regrades",
 }
 
 

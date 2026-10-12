@@ -76,7 +76,10 @@ An organiser managing the task reads its gradings and acts on one:
   cancelled first; one being graded against the current one is left to
   finish, a submission staff cancelled stays cancelled, and delayed and
   over-the-limit ones are held to their entrant's room, the earliest
-  first;
+  first. A rejudge or a save's regrade that makes an attempt is kept as one
+  `Regrade`, what started it, who and when, and every attempt it makes,
+  and each retry of one of those, names it (`regrade_id`), so what it
+  changed can be read (`forge.services.regrades`);
 - `run_log` reads a grading's run log, for an organiser observing the
   task: it names every test, hidden ones too, so it is the organisers'
   alone. It is read whole up to `RUN_LOG_MAX` bytes and refused above
@@ -120,7 +123,7 @@ from pydantic import ValidationError
 from sqlalchemy import ColumnElement, and_, exists, func, not_, or_, select, tuple_
 from sqlalchemy.orm import aliased
 
-from forge.db.tables import Entrant, Grading
+from forge.db.tables import Entrant, Grading, Regrade
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Conflict,
@@ -173,6 +176,7 @@ from forge.domain.live import Nudge, NudgeKind
 from forge.domain.names import EntrantOwner, is_username
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.publications import Publication
+from forge.domain.regrades import Compared, RegradeCause
 from forge.domain.roles import (
     Role,
     ScopeKind,
@@ -248,6 +252,9 @@ class GradingRecord:
     as a system error or over the limit, `retry_limit` is the task's
     `submissions.max` when a retry of it now would end over the limit, so
     the retry's confirmation can say so before it runs; none otherwise.
+    `regrade` names the regrade of many the attempt belongs to, and
+    `change`, given only where the gradings are read by regrade, what that
+    regrade did to the submission.
     """
 
     id: uuid.UUID
@@ -274,6 +281,8 @@ class GradingRecord:
     last_good: int | None = None
     limit: int | None = None
     retry_limit: int | None = None
+    regrade: uuid.UUID | None = None
+    change: Compared | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,8 +333,9 @@ class Rejudged:
     """What a rejudge did: the publication the new attempts grade against,
     how many it queued, how many unfinished attempts against an older
     publication it cancelled first, how many it left to finish against
-    the current one, and how many delayed submissions it ended over the
-    limit, their entrants having no room left under `submissions.max`.
+    the current one, how many delayed submissions it ended over the limit,
+    their entrants having no room left under `submissions.max`, and the
+    regrade it is recorded as, none when it made no attempt.
     """
 
     task: TaskId
@@ -334,6 +344,7 @@ class Rejudged:
     cancelled: int
     left_running: int
     over_limit: int = 0
+    regrade: uuid.UUID | None = None
 
 
 def new_row(
@@ -350,12 +361,14 @@ def new_row(
     key: str | None,
     submitted_by: int | None,
     automatic: bool = False,
+    regrade: uuid.UUID | None = None,
     over_limit: int | None = None,
 ) -> Grading:
     """A new `queued` grading, added to the unit of work, with the hash of
     its run's callback token, whose run starts once the unit of work
     commits; `automatic` when the platform makes it by itself, retrying the
-    attempt before it. With `over_limit`, the task's `submissions.max` its entrant has no
+    attempt before it, and `regrade` naming the regrade of many it belongs
+    to. With `over_limit`, the task's `submissions.max` its entrant has no
     room left under, it is ended `over_limit` at once instead, and nothing
     runs.
     """
@@ -374,6 +387,7 @@ def new_row(
         status=GradingStatus.QUEUED,
         queued_at=ctx.now,
         automatic=automatic,
+        regrade_id=regrade,
     )
     row.callback_token_hash = token_hash(callback_token_of(ctx, row))
     ctx.db.add(row)
@@ -774,7 +788,7 @@ async def _over_limit(
     return None if number in room(places, limit, [number]) else limit
 
 
-async def _retry_limits(
+async def retry_limits(
     ctx: Context, rows: Iterable[Grading], lost: Collection[uuid.UUID]
 ) -> dict[uuid.UUID, int]:
     """For each of `rows`, latest attempts, whose retry now would end over
@@ -1159,7 +1173,8 @@ async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
     """A new attempt of every submission's latest attempt, against the
     task's current publication. `NotFound` for a task with no publication.
     The task is held alone, as a save holds it, so a save's regrade and
-    this one each start from every attempt the other made.
+    this one each start from every attempt the other made. It is recorded
+    as a regrade of many, a `rejudge` by the organiser.
     """
     require(organiser, task_scope(task), Role.MANAGER)
     await timelines.hold_task(ctx, task)
@@ -1172,6 +1187,8 @@ async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
         ctx,
         task,
         current.publication.id,
+        cause=RegradeCause.REJUDGE,
+        by=organiser.user.id,
         limit=current.definition.submissions.max,
     )
 
@@ -1197,12 +1214,12 @@ async def list(
         .scalars()
         .all()
     )
-    last = await _latest(ctx, rows)
-    goods = await _last_goods(ctx, rows)
+    last = await latest_of(ctx, rows)
+    goods = await last_goods(ctx, rows)
     gone = await lost(ctx, rows)
     await notice(ctx, [row for row in rows if row.id in last], gone)
-    limits = await _retry_limits(ctx, [row for row in rows if row.id in last], gone)
-    return await _entries(
+    limits = await retry_limits(ctx, [row for row in rows if row.id in last], gone)
+    return await entries(
         ctx,
         contest_id_of(task_scope(task)),
         [
@@ -1243,24 +1260,16 @@ async def feed(
     (`is_username`). `Forbidden` for someone holding no role in the
     contest.
     """
-    observed = _observed(organiser, contest)
-    where = [_in_contest(contest, observed)]
+    observed = observed_tasks(organiser, contest)
+    where = [in_contest(contest, observed)]
     if task is not None:
         if observed is not None and task not in observed:
             return ()
         where.append(Grading.task_id == task)
-    if user is not None:
-        # A name no one can hold at the forge matches nobody, and is never
-        # sent there.
-        if not is_username(user):
-            return ()
-        try:
-            found = await ctx.forge.identity.find_user_by_username(user)
-        except NotFound:
-            return ()
-        where.append(Grading.submitted_by == found.id)
-    if entrant is not None:
-        where.append(Grading.workspace_id == _workspace(ctx, contest, EntrantOwner(entrant)))
+    whose = await narrowed(ctx, contest, user=user, entrant=entrant)
+    if whose is None:
+        return ()
+    where.extend(whose)
     if status is not None:
         where.append(_may_read_as(status, ctx.now))
     if latest:
@@ -1284,12 +1293,12 @@ async def feed(
             .scalars()
             .all()
         )
-        last = await _latest(ctx, rows)
-        goods = await _last_goods(ctx, rows)
+        last = await latest_of(ctx, rows)
+        goods = await last_goods(ctx, rows)
         gone = await lost(ctx, rows)
         await notice(ctx, [row for row in rows if row.id in last], gone)
         shown = [row for row in rows if status is None or status_of(ctx, row, gone) == status]
-        limits = await _retry_limits(ctx, [row for row in shown if row.id in last], gone)
+        limits = await retry_limits(ctx, [row for row in shown if row.id in last], gone)
         kept.extend(
             record(
                 ctx,
@@ -1304,7 +1313,7 @@ async def feed(
         if len(rows) < size:
             break
         after = (rows[-1].queued_at, rows[-1].id)
-    return await _entries(ctx, contest, kept[:size])
+    return await entries(ctx, contest, kept[:size])
 
 
 @action
@@ -1313,20 +1322,20 @@ async def queue_depth(ctx: Context, organiser: Organiser, contest: ContestId) ->
     for a machine, by status, and how many failed and wait for staff, read
     in one go. `Forbidden` for someone holding no role in the contest.
     """
-    observed = _observed(organiser, contest)
+    observed = observed_tasks(organiser, contest)
     failing = and_(_is_latest(), _may_read_as(GradingStatus.SYSTEM_ERROR, ctx.now))
     rows = (
         (
             await ctx.db.execute(
                 select(Grading).where(
-                    _in_contest(contest, observed), or_(Grading.status.in_(WAITING), failing)
+                    in_contest(contest, observed), or_(Grading.status.in_(WAITING), failing)
                 )
             )
         )
         .scalars()
         .all()
     )
-    last = await _latest(ctx, rows)
+    last = await latest_of(ctx, rows)
     gone = await lost(ctx, rows)
     await notice(ctx, [row for row in rows if row.id in last], gone)
     read = [(row, status_of(ctx, row, gone)) for row in rows]
@@ -1341,7 +1350,7 @@ async def queue_depth(ctx: Context, organiser: Organiser, contest: ContestId) ->
     )
 
 
-def _observed(organiser: Organiser, contest: ContestId) -> frozenset[TaskId] | None:
+def observed_tasks(organiser: Organiser, contest: ContestId) -> frozenset[TaskId] | None:
     """The contest's tasks the organiser observes: none to mean every one,
     for an observer of the contest or above, and otherwise the tasks they
     hold a role at. `Forbidden` when that is no task at all.
@@ -1364,6 +1373,30 @@ def _observed(organiser: Organiser, contest: ContestId) -> frozenset[TaskId] | N
     return tasks
 
 
+async def narrowed(
+    ctx: Context, contest: ContestId, *, user: str | None, entrant: uuid.UUID | None
+) -> builtins.list[ColumnElement[bool]] | None:
+    """What narrows a contest's gradings to the submissions the member whose
+    username is `user` made and to the entrant `entrant`, each when given;
+    none when no grading can match, a `user` that breaks the forge's
+    username rule (`is_username`) or that no one holds among them.
+    """
+    where: builtins.list[ColumnElement[bool]] = []
+    if user is not None:
+        # A name no one can hold at the forge matches nobody, and is never
+        # sent there.
+        if not is_username(user):
+            return None
+        try:
+            found = await ctx.forge.identity.find_user_by_username(user)
+        except NotFound:
+            return None
+        where.append(Grading.submitted_by == found.id)
+    if entrant is not None:
+        where.append(Grading.workspace_id == _workspace(ctx, contest, EntrantOwner(entrant)))
+    return where
+
+
 def _is_latest() -> ColumnElement[bool]:
     """The rows that are their submission's latest attempt, told in the
     query: no attempt of the same submission after them.
@@ -1376,7 +1409,7 @@ def _is_latest() -> ColumnElement[bool]:
     )
 
 
-def _in_contest(contest: ContestId, observed: frozenset[TaskId] | None) -> ColumnElement[bool]:
+def in_contest(contest: ContestId, observed: frozenset[TaskId] | None) -> ColumnElement[bool]:
     if observed is None:
         return Grading.task_id.startswith(f"{contest}/", autoescape=True)
     return Grading.task_id.in_(sorted(observed))
@@ -1386,7 +1419,7 @@ def _workspace(ctx: Context, contest: ContestId, owner: EntrantOwner) -> Workspa
     return ctx.forge.workspaces.workspace_of(contest, owner)
 
 
-async def _entries(
+async def entries(
     ctx: Context, contest: ContestId, records: Sequence[GradingRecord]
 ) -> tuple[FeedEntry, ...]:
     """Each grading with whose it is and its task's name and label: the
@@ -1527,10 +1560,11 @@ def record(
         last_good=last_good if latest and not good(row) else None,
         limit=row.submission_limit if status is GradingStatus.OVER_LIMIT else None,
         retry_limit=retry_limit if latest else None,
+        regrade=row.regrade_id,
     )
 
 
-async def _latest(ctx: Context, rows: Iterable[Grading]) -> frozenset[uuid.UUID]:
+async def latest_of(ctx: Context, rows: Iterable[Grading]) -> frozenset[uuid.UUID]:
     """The gradings among `rows` that are the latest attempt of their
     submission, worked out over every attempt of it, read or not.
     """
@@ -1547,7 +1581,7 @@ async def _latest(ctx: Context, rows: Iterable[Grading]) -> frozenset[uuid.UUID]
     return frozenset(row.id for row in listed if row.attempt == last.get(row.submission_id))
 
 
-async def _last_goods(ctx: Context, rows: Iterable[Grading]) -> dict[uuid.UUID, int]:
+async def last_goods(ctx: Context, rows: Iterable[Grading]) -> dict[uuid.UUID, int]:
     """For each grading among `rows`, the latest earlier attempt of its
     submission that finished with a result, worked out over every attempt
     of it, read or not; a grading with none is left out.
@@ -1614,10 +1648,12 @@ def _next_attempt(
     attempts: Sequence[Grading],
     *,
     automatic: bool = False,
+    regrade: uuid.UUID | None = None,
     over_limit: int | None = None,
 ) -> Grading:
-    """The next attempt of `row`'s submission against `publication`, ended
-    at once over the limit with `over_limit`.
+    """The next attempt of `row`'s submission against `publication`, in the
+    regrade `regrade` when given and otherwise in the one `row` belongs to,
+    ended at once over the limit with `over_limit`.
     """
     return new_row(
         ctx,
@@ -1632,6 +1668,7 @@ def _next_attempt(
         key=None,
         submitted_by=row.submitted_by,
         automatic=automatic,
+        regrade=regrade or row.regrade_id,
         over_limit=over_limit,
     )
 
@@ -1726,11 +1763,14 @@ async def regrade(
     task: TaskId,
     publication: PublicationId,
     *,
+    cause: RegradeCause,
+    by: int | None,
     limit: int,
 ) -> Rejudged:
     """A new attempt of every submission's latest attempt to the task,
     against `publication`, for a rejudge and for a save that publishes a
-    change to how the task grades. A latest attempt still being graded
+    change to how the task grades, `cause` saying which and `by` naming the
+    organiser who asked. A latest attempt still being graded
     against another publication is cancelled first, and one being graded
     against `publication` is left to finish; one that reads as finished only
     because it is overdue or lost is ended first, its old run cancelled at
@@ -1741,7 +1781,8 @@ async def regrade(
     only while its entrant has room under a `submissions.max` of `limit`,
     each entrant's taken in the order they were made: a delayed one with
     no room gets an attempt ended `over_limit` at once, and one already
-    over the limit with none is left as it is.
+    over the limit with none is left as it is. Every attempt made belongs to
+    one regrade of many recorded for it, none when it makes none.
     """
     # Which runs the CI has lost is asked before any row is locked, since
     # asking takes the CI's time; the task itself is held by the caller.
@@ -1778,6 +1819,15 @@ async def regrade(
     if not made:
         log.info("gradings.rejudged", task=task, publication=publication, queued=0)
         return Rejudged(task, publication, 0, 0, left_running)
+    recorded = Regrade(
+        id=new_id(),
+        task_id=task,
+        publication_id=publication,
+        cause=cause,
+        started_by=by,
+        started_at=ctx.now,
+    )
+    ctx.db.add(recorded)
     queued = cancelled = over_limit = 0
     for submission, row in made:
         if status_of(ctx, row, gone) in UNFINISHED:
@@ -1788,7 +1838,9 @@ async def regrade(
             if row.run_id is not None:
                 _cancel_after_commit(ctx, RunId(row.run_id))
         over = limit if submission in refused else None
-        _next_attempt(ctx, row, publication, attempts[submission], over_limit=over)
+        _next_attempt(
+            ctx, row, publication, attempts[submission], regrade=recorded.id, over_limit=over
+        )
         if over is None:
             queued += 1
         else:
@@ -1798,9 +1850,13 @@ async def regrade(
         "gradings.rejudged",
         task=task,
         publication=publication,
+        regrade=str(recorded.id),
+        cause=cause.value,
         queued=queued,
         cancelled=cancelled,
         left_running=left_running,
         over_limit=over_limit,
     )
-    return Rejudged(task, publication, queued, cancelled, left_running, over_limit)
+    return Rejudged(
+        task, publication, queued, cancelled, left_running, over_limit, regrade=recorded.id
+    )

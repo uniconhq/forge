@@ -139,6 +139,8 @@ forge/api/
                 queue_depth, and the GradingRecord, Rejudged, FeedEntry,
                 Submitter, QueueDepth and GradingStatus they return; list
                 and feed both give FeedEntry
+  regrades.py   latest, dismiss, gradings_of, and the Summary, Change,
+                Compared, Side and RegradeCause they return
   runs.py       config, envelope, callback, the InboundRequest config takes
                 and the InboundAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
                 ENVELOPE_PATH and CALLBACK_PATH, where each is served
@@ -578,6 +580,7 @@ hosting process calls are actions, marked `@action` from
 | `boards` | `seen`, `organised` |
 | `marks` | `held`, `mark`, `unmark` |
 | `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
+| `regrades` | `latest`, `dismiss`, `gradings_of` |
 | `runs` | `config`, `envelope`, `callback` |
 | `workflows` | `create`, `listing`, `view`, `read_version`, `save`, `create_version`, `check`, `set_visibility`, `share`, `unshare`, `copy`, `combine` |
 | `primitives` | `listing` |
@@ -1918,6 +1921,39 @@ one overdue or lost reading as `system_error` and not counted there; and
 `failed`, the latest attempts that read as `system_error`, which wait for
 their retry or for staff, so the contest's page can say how many gradings
 failed and link to the feed filtered to them. Nothing stores the count.
+
+**What a regrade changed.** A rejudge and the regrade a save that changes
+how a task grades starts are each kept as one `regrades` row (#448): its
+task, the publication it grades against, its `cause` (`rejudge` or
+`save`), who started it and when by the package's clock. It is made only
+when the regrade makes an attempt, and every attempt it makes, and each
+retry of one of those, by itself or by staff, names it in
+`gradings.regrade_id`, so a regrade's result for a submission is its latest
+attempt of it (`GradingRecord.regrade`, `Rejudged.regrade`). Each is
+compared with the result that counted for the submission when the regrade
+began, the latest earlier attempt that finished with one, both scored as
+organisers see results, every group, nothing held back, the late factor
+applied, by the boards' scoring (`forge.domain.regrades.change_of`): `up`
+or `down` in points; `stopped`, now stopped before its tests where that
+result was not (a compile error, on the classic workflow); `unchanged`;
+`new`, no earlier result, or one of the two not scored since its
+publication no longer reads; `running`; `failed`, no result yet, its latest
+attempt a system error or cancelled; and `over_limit`. On a task that gives
+no points, the share of its tests accepted decides, then the values with a
+direction: down when any got worse, so a regrade that makes anything worse
+is never read as an improvement. `regrades.latest(contest)` gives each task's
+latest regrade the organiser observes as a `Summary`, newest first, with its
+counts by change (every change named, 0 where none), how many it `graded`
+(finished with a result), its `total` and whether it is `running`, until a
+newer regrade of the task replaces it or a manager of the task dismisses it
+(`regrades.dismiss(task, regrade)`, for everyone): a summary on a timer
+would hide a broken checker from an organiser who was away.
+`regrades.gradings_of(contest, regrade, change=, user=, entrant=, limit=)`
+gives its gradings as the feed does, one per submission, each with
+`change`, a `Compared` holding the change and both results as `Side`s:
+attempt, points, tests accepted of how many, what stopped it, and the
+values with a direction. Nothing stores a comparison: each read scores
+again. Migration 0021 adds the table and the column.
 
 ## Scores and boards
 

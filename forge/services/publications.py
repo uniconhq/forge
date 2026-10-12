@@ -131,6 +131,7 @@ from forge.domain.plans import (
 )
 from forge.domain.primitives import PrimitiveDeclaration
 from forge.domain.publications import Publication, write_note
+from forge.domain.regrades import RegradeCause
 from forge.domain.release import has_started, in_words, reveal_of
 from forge.domain.roles import (
     Role,
@@ -316,6 +317,8 @@ async def save(
                 ctx,
                 task,
                 publication,
+                cause=RegradeCause.SAVE,
+                by=organiser.user.id,
                 limit=checked.definition.submissions.max,
             )
         ).queued
