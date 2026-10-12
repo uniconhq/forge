@@ -1863,7 +1863,11 @@ scores it again (`services/scores.py`, `domain/scoring.py`, TASK-FORMAT.md
 sections 3.1 to 3.5): each test's credit, each group's points
 `worth * late * E_g / W` and most `worth * R_g / W`, and each reported value
 folded over the tests, all as exact rationals, a value written `0.1` read
-as one tenth. A grading is scored with the latest publication's groups,
+as one tenth. A test that was not accepted has no value for a fold,
+whatever it reported, and counts as the value's worst declared bound or
+leaves the fold with none, the same on a submission's page and on every
+board: a wrong answer has no time, so it never ranks as fast. Each test's
+row still shows what it reported. A grading is scored with the latest publication's groups,
 credit and value meanings while no grading change came between them, and
 with its own otherwise. Relative credit's best is taken over the
 candidates the boards count, each row's of the task graded under the same

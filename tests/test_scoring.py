@@ -241,7 +241,7 @@ TIME = {"time_ms": Measure(Fold.MAX, Better.LOWER, Fraction(0))}
 CAPPED = {"time_ms": Measure(Fold.MAX, Better.LOWER, Fraction(0), Fraction(2000))}
 
 
-def test_a_value_folds_over_every_tests_value_whatever_its_outcome() -> None:
+def test_a_test_not_accepted_has_no_value_for_a_fold_and_counts_as_the_worst_bound() -> None:
     ids = named("main", 2)
     groups = {"main": group(pass_=100)}
     wrong = result(
@@ -256,9 +256,28 @@ def test_a_value_folds_over_every_tests_value_whatever_its_outcome() -> None:
             "main/2": ("time_limit", {"time_ms": Decimal("2400")}),
         }
     )
-    assert score(wrong, ids, groups, None, TIME, worth=100).values(EVERYTHING) == {"time_ms": 50}
+    scored = score(wrong, ids, groups, None, TIME, worth=100)
+    assert scored.values(EVERYTHING) == {}
+    assert scored.value("time_ms", everywhere, EVERYTHING) is None
+    # Each test still shows what it reported.
+    assert [test.values for test in scored.groups[0].tests] == [
+        {"time_ms": Decimal("50")},
+        {"time_ms": Decimal("1")},
+    ]
     assert score(timed_out, ids, groups, None, CAPPED, worth=100).values(EVERYTHING) == {
-        "time_ms": 2400
+        "time_ms": 2000
+    }
+    accepted = result({test: ("accepted", {"time_ms": Decimal("50")}) for test in ids})
+    assert score(accepted, ids, groups, None, TIME, worth=100).values(EVERYTHING) == {"time_ms": 50}
+    fraction = {"fraction": Measure(Fold.MEAN, Better.HIGHER, Fraction(0), Fraction(1))}
+    near_miss = result(
+        {
+            "main/1": ("accepted", {"fraction": Decimal("1")}),
+            "main/2": ("wrong_answer", {"fraction": Decimal("0.9")}),
+        }
+    )
+    assert score(near_miss, ids, groups, None, fraction, worth=100).values(EVERYTHING) == {
+        "fraction": Fraction(1, 2)
     }
 
 

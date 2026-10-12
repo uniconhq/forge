@@ -827,7 +827,14 @@ async def test_an_organiser_reads_a_hidden_groups_points_and_tests_before_the_re
     assert seen.grading.outcome == "wrong_answer"
     assert seen.grading.points is not None
     assert (seen.grading.points.shown, seen.grading.points.pending) == (Fraction(65), Fraction(0))
-    assert seen.grading.folded["time_ms"] == Fraction(30)
+    # Its large test was not accepted, so it has no time at all; the second,
+    # which passed every test, has large's 30 among its own.
+    assert "time_ms" not in seen.grading.folded
+    every = await submissions.organised(
+        setup, observer, ranked.task, EntrantOwner(ranked.entrant), 2
+    )
+    assert every.grading is not None
+    assert every.grading.folded["time_ms"] == Fraction(30)
     assert (seen.number, seen.submitted_at, seen.late_days) == (
         own.number,
         own.submitted_at,

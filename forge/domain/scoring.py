@@ -11,9 +11,10 @@ section 3), so changing how a task scores regrades nothing.
   `worth * R_g / W`. Nothing is divided by the rule weight of a subset.
 - The **late factor**: `max(0, 1 - late_per_day * d)` for `d` started days
   after the row's due, 1 on time.
-- A **value**'s fold over a set of tests (3.4), a test without the value
-  counting as its worst declared bound, and the fold having no value when
-  that bound is not declared or the set is empty.
+- A **value**'s fold over a set of tests (3.4), a test that was not
+  accepted or did not report the value counting as its worst declared
+  bound, and the fold having no value when that bound is not declared or
+  the set is empty. Each test still shows the value it reported.
 - What is **shown** at a moment (3.5): a group's verdict, its outcome and
   points, unless it is `after_close` and the task has not revealed; its
   tests when it is `always` or the task has revealed. Everything is shown
@@ -323,7 +324,9 @@ class Scored:
 
     def value(self, name: str, scope: Callable[[Show], bool], seen: Seen) -> Fraction | None:
         """The value folded over the tests of the groups in `scope` whose
-        tests are shown; none without a fold or a value.
+        tests are shown, a test that was not accepted counting as having no
+        value, whatever it reported (so a wrong answer is never fast); none
+        without a fold or a value.
         """
         measure = self.measures.get(name)
         if measure is None:
@@ -331,7 +334,7 @@ class Scored:
         return fold(
             measure,
             [
-                exact(test.values.get(name))
+                exact(test.values.get(name)) if test.outcome == ACCEPTED else None
                 for group in self.groups
                 if scope(group.show) and seen.tests(group.show)
                 for test in group.tests

@@ -372,7 +372,10 @@ def test_a_points_tie_is_broken_on_the_sum_of_each_tasks_slowest_time() -> None:
     ]
 
 
-def test_a_fast_wrong_answer_on_a_board_ranked_by_time_tops_it() -> None:
+def test_a_fast_wrong_answer_has_no_time_and_ranks_after_every_row_with_one() -> None:
+    # A test that was not accepted has no time, and a time declares no worst
+    # bound, so the wrong submission has no time: its cell does not count on a
+    # board ranked by time first, and its row ranks after every row with one.
     groups = {"main": group(pass_=100)}
     ids = named("main", 2)
     values = {"time_ms": {"main/1": "1", "main/2": "1"}}
@@ -383,9 +386,10 @@ def test_a_fast_wrong_answer_on_a_board_ranked_by_time_tops_it() -> None:
     rows.append(row(2, "right", a=[candidate(2, at(10, 0), right)]))
     found = standings(on, [column("a", groups)], rows, directions={"time_ms": Better.LOWER})
     assert [(r.name, r.rank, r.keys) for r in found.rows] == [
-        ("garbage", 1, (1,)),
-        ("right", 2, (40,)),
+        ("right", 1, (40,)),
+        ("garbage", 2, (None,)),
     ]
+    assert not found.rows[1].cells["a"].counting
 
 
 def test_a_course_board_counts_the_public_30_and_shows_only_ones_own_row() -> None:
