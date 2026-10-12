@@ -54,6 +54,7 @@ class Publication:
     workflows: Mapping[str, str] = field(default_factory=dict)
     sealed: Sealed = NOTHING_SEALED
     measures: Mapping[str, Measure] = field(default_factory=dict)
+    titles: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +64,7 @@ class Note:
     workflows: Mapping[str, str] = field(default_factory=dict)
     sealed: Sealed = NOTHING_SEALED
     measures: Mapping[str, Measure] = field(default_factory=dict)
+    titles: Mapping[str, str] = field(default_factory=dict)
 
 
 def write_note(
@@ -71,6 +73,7 @@ def write_note(
     workflows: Mapping[str, str] | None = None,
     sealed: Sealed = NOTHING_SEALED,
     measures: Mapping[str, Measure] | None = None,
+    titles: Mapping[str, str] | None = None,
 ) -> str:
     """The note a publication is made with."""
     document: dict[str, object] = {"grading_changed": grading_changed, "changes": list(changes)}
@@ -82,6 +85,8 @@ def write_note(
         document["sealed_values"] = sorted(sealed.values)
     if measures:
         document["values"] = {name: measures[name].noted() for name in sorted(measures)}
+    if titles:
+        document["titles"] = dict(sorted(titles.items()))
     return yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
 
 
@@ -127,4 +132,11 @@ def read_note(text: str | None) -> Note:
         pinned,
         sealed,
         _measures(document.get("values")),
+        _titles(document.get("titles")),
     )
+
+
+def _titles(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(name): str(title) for name, title in value.items() if isinstance(title, str)}

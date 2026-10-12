@@ -282,14 +282,15 @@ class Entered:
 @dataclass(frozen=True, slots=True)
 class Standing:
     """The entrant a person is in: its row, the workspace it owns, every
-    member, and when the person joined it, by the database's clock, which
-    tells a first upload whether its place was made with them on it.
+    member, and when the person joined it, by the package's clock and then
+    their member row's id, which is made in order, which tells a first
+    upload whether its place was made with them on it.
     """
 
     entrant: EntrantRow
     owner: EntrantOwner
     members: tuple[int, ...]
-    since: datetime
+    since: tuple[datetime, uuid.UUID]
 
 
 # The contestant's actions.
@@ -952,7 +953,10 @@ async def standing(ctx: Context, contest: ContestId, user_id: int) -> Standing |
     if row is None:
         return None
     return Standing(
-        row, EntrantOwner(row.id), tuple(await member_ids(ctx, row.id)), member.created_at
+        row,
+        EntrantOwner(row.id),
+        tuple(await member_ids(ctx, row.id)),
+        (member.joined_at, member.id),
     )
 
 
@@ -961,7 +965,7 @@ async def member_ids(ctx: Context, entrant: uuid.UUID) -> builtins.list[int]:
     found = await ctx.db.scalars(
         select(EntrantMember.user_id)
         .where(EntrantMember.entrant_id == entrant, EntrantMember.status == MemberStatus.MEMBER)
-        .order_by(EntrantMember.joined_at, EntrantMember.created_at, EntrantMember.user_id)
+        .order_by(EntrantMember.joined_at, EntrantMember.id)
     )
     return builtins.list(found)
 
@@ -1097,6 +1101,7 @@ async def display_names(ctx: Context, rows: Collection[EntrantRow]) -> dict[uuid
                 (EntrantMember.status == MemberStatus.MEMBER).desc(),
                 EntrantMember.left_at.desc().nulls_first(),
                 EntrantMember.joined_at,
+                EntrantMember.id,
             )
         )
         for entrant, member in members:
@@ -1666,7 +1671,7 @@ async def _views(
     for member in await ctx.db.scalars(
         select(EntrantMember)
         .where(EntrantMember.entrant_id.in_(ids), EntrantMember.status == MemberStatus.MEMBER)
-        .order_by(EntrantMember.joined_at, EntrantMember.created_at, EntrantMember.user_id)
+        .order_by(EntrantMember.joined_at, EntrantMember.id)
     ):
         members.setdefault(member.entrant_id, []).append(member)
     waiting: dict[uuid.UUID, builtins.list[Invited]] = {}

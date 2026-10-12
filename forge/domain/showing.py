@@ -16,10 +16,12 @@ contestant sees is the run's `stopped` when a step that is not sealed
 stopped it; otherwise the first group outcome other than `accepted` among
 the groups whose verdict is shown, in `test_groups` order; otherwise
 `accepted`; and none when no group is shown. Once the task has revealed,
-everything is shown. A run in `system_error` shows nothing of itself: its
-row is told it is still being graded, until staff regrade it or end it by
-cancelling it, when its row is told it is `cancelled`, with the sentence
-staff gave (`told`).
+everything is shown. A run in `system_error` shows nothing of itself: a
+submission with no result whose latest attempt is one is told it is
+`delayed`, until its retry runs or staff end it by cancelling it, when its
+row is told it is `cancelled`, with the sentence staff gave (`told`). A
+submission that has a result is told that result, whatever its later
+attempts read as.
 
 A grading is shown with the publication it ran under (`under`, TASK-FORMAT.md
 section 2, check 12): its sealed facts always, since they say what that
@@ -154,12 +156,15 @@ class SubmissionState(StrEnum):
     """Where a submission stands as its contestant is told, in TASK-FORMAT.md
     section 1.7's words, which say nothing of the CI's stages: `queued`
     until its run is started, `grading` while the CI holds it or runs it,
-    `graded` once it has a result, and `cancelled` once staff ended it.
+    `graded` once it has a result, `delayed` while it has none and its
+    latest attempt failed for a reason of the platform's, and `cancelled`
+    once staff ended it.
     """
 
     QUEUED = "queued"
     GRADING = "grading"
     GRADED = "graded"
+    DELAYED = "delayed"
     CANCELLED = "cancelled"
 
 
@@ -167,17 +172,20 @@ _TOLD = {
     GradingStatus.QUEUED: SubmissionState.QUEUED,
     GradingStatus.DISPATCHED: SubmissionState.GRADING,
     GradingStatus.RUNNING: SubmissionState.GRADING,
-    GradingStatus.SYSTEM_ERROR: SubmissionState.GRADING,
+    GradingStatus.SYSTEM_ERROR: SubmissionState.DELAYED,
     GradingStatus.DONE: SubmissionState.GRADED,
     GradingStatus.CANCELLED: SubmissionState.CANCELLED,
 }
 
 
 def told(status: GradingStatus) -> SubmissionState:
-    """Where a grading stands as its own row is told. A run in
-    `system_error` is still `grading` to its row until staff end it, a
-    fault of the platform's or of setter code and never of the
-    contestant's; organisers read the grading's own status.
+    """Where the attempt a submission counts stands as its own row is told:
+    the latest that finished with a result, `graded`, or, while none has,
+    the latest. A run in `system_error` is `delayed`, with nothing else of
+    it, neither its cause nor what it reached: it is a fault of the
+    platform's or of setter code and never of the contestant's, and the
+    word tells no more of a sealed step than the wait it stands for does.
+    Organisers read the grading's own status.
     """
     return _TOLD[status]
 

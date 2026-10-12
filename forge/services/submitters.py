@@ -18,6 +18,7 @@ it, who read their own submissions there and are told it is archived when
 they submit.
 """
 
+import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime
 
@@ -57,7 +58,7 @@ class Person:
     the contest's settings, the task as its latest publication froze it, the
     entrant they are in, if any, the workspace it owns, whose parts are made
     when they are first needed, every member of it, and when the person
-    joined it, by the database's clock.
+    joined it, by the package's clock.
     """
 
     session: Session
@@ -67,7 +68,7 @@ class Person:
     entrant: EntrantRow | None
     workspace: WorkspaceId | None
     members: tuple[int, ...] = ()
-    since: datetime | None = None
+    since: tuple[datetime, uuid.UUID] | None = None
 
 
 async def person(ctx: Context, session: Session, task: TaskId) -> Person:

@@ -16,7 +16,8 @@ the forge's list does not say; its run starts once it commits. A submit
 of the same submission sent again meanwhile cannot make a second row: the
 key is unique for a workspace and task. A task the
 CI cannot activate is logged and its gradings are still inserted, since a
-grading whose run cannot start ends as a system error staff can retry.
+grading whose run cannot start ends as a system error, which the first
+read a minute later retries once by itself and staff after that.
 """
 
 from dataclasses import dataclass

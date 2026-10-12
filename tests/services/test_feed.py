@@ -2,9 +2,11 @@
 The feed lists every grading of the contest's tasks the organiser observes,
 newest first, each attempt a row of its own with whose it is, the entrant
 by the name it is shown under and the member who submitted it by username,
-and narrows by task, by the member who submitted, by entrant and by status,
-an overdue or lost grading reading as a system error there as everywhere.
-The queue depth counts the waiting ones by status in one read. An organiser
+and narrows by task, by the member who submitted, by entrant, by status and
+to each submission's latest attempt, an overdue or lost grading reading as a
+system error there as everywhere. The queue depth counts the waiting ones by
+status in one read, and the failed ones that wait for staff, the ones the
+feed gives filtered to the latest attempts in system error. An organiser
 of one task sees that task's alone, and someone with no role in the contest
 is refused.
 """
@@ -203,6 +205,39 @@ async def test_the_feed_narrows_by_task_by_who_submitted_and_by_status(
     assert await ids(status=GradingStatus.DISPATCHED) == []
 
 
+async def test_the_feed_and_a_tasks_gradings_go_by_the_packages_clock_not_the_databases(
+    setup: Setup, acme: Acme, entered: Entered, busy: dict[str, uuid.UUID]
+) -> None:
+    # The database's clock stepped back: each row it stamped reads older
+    # than the one before it.
+    async with setup.unit_of_work() as ctx:
+        for back, name in enumerate(("first", "retried", "on_max", "by_carol")):
+            await ctx.db.execute(
+                update(Grading)
+                .where(Grading.id == busy[name])
+                .values(created_at=Grading.created_at - timedelta(minutes=back))
+            )
+    observer = await organiser(setup, acme.fake, 7, CONTEST, Role.OBSERVER)
+
+    fed = await gradings.feed(setup, observer, SPRING)
+    # One row a page, so the page after one starts where it ended.
+    paged = await gradings.feed(setup, observer, SPRING, status=GradingStatus.SYSTEM_ERROR, limit=1)
+    listed = await gradings.list(setup, observer, entered.task)
+
+    assert [entry.grading.id for entry in fed] == [
+        busy["by_carol"],
+        busy["on_max"],
+        busy["retried"],
+        busy["first"],
+    ]
+    assert [entry.grading.id for entry in paged] == [busy["first"]]
+    assert [entry.grading.id for entry in listed] == [
+        busy["by_carol"],
+        busy["retried"],
+        busy["first"],
+    ]
+
+
 async def test_an_organiser_of_one_task_sees_its_gradings_alone(
     setup: Setup, acme: Acme, busy: dict[str, uuid.UUID]
 ) -> None:
@@ -212,7 +247,7 @@ async def test_an_organiser_of_one_task_sees_its_gradings_alone(
 
     assert [entry.grading.id for entry in listed] == [busy["on_max"]]
     assert await gradings.feed(setup, of_max, SPRING, task=TaskId("acme/spring/sum")) == ()
-    assert await gradings.queue_depth(setup, of_max, SPRING) == gradings.QueueDepth(0, 1)
+    assert await gradings.queue_depth(setup, of_max, SPRING) == gradings.QueueDepth(0, 1, 0)
     elsewhere = _held(acme, Scope("acme", "autumn"))
     with pytest.raises(Forbidden):
         await gradings.feed(setup, elsewhere, SPRING)
@@ -226,10 +261,46 @@ async def test_the_queue_depth_counts_the_waiting_gradings_by_status(
     observer = await organiser(setup, acme.fake, 7, CONTEST, Role.OBSERVER)
     await _set(setup, busy["by_carol"], status=GradingStatus.QUEUED, run_id=None)
 
-    assert await gradings.queue_depth(setup, observer, SPRING) == gradings.QueueDepth(1, 2)
+    assert await gradings.queue_depth(setup, observer, SPRING) == gradings.QueueDepth(1, 2, 0)
     clock.advance(START_WAIT)
-    # The one never started is overdue, and reads as a system error.
-    assert await gradings.queue_depth(setup, observer, SPRING) == gradings.QueueDepth(0, 2)
+    # The one never started is overdue, and reads as a system error: it
+    # failed, and waits.
+    assert await gradings.queue_depth(setup, observer, SPRING) == gradings.QueueDepth(0, 2, 1)
+
+
+async def test_the_failed_count_and_the_feed_filtered_to_failed_agree(
+    setup: Setup, acme: Acme, busy: dict[str, uuid.UUID], clock: FakeClock
+) -> None:
+    observer = await organiser(setup, acme.fake, 7, CONTEST, Role.OBSERVER)
+    manager = await organiser(setup, acme.fake, 7, CONTEST, Role.MANAGER)
+
+    async def failed() -> tuple[int, list[uuid.UUID]]:
+        depth = await gradings.queue_depth(setup, observer, SPRING)
+        listed = await gradings.feed(
+            setup, observer, SPRING, status=GradingStatus.SYSTEM_ERROR, latest=True
+        )
+        return depth.failed, [entry.grading.id for entry in listed]
+
+    # The first attempt failed, but a retry replaced it, so nothing waits.
+    assert await failed() == (0, [])
+    await _set(setup, busy["retried"], status=GradingStatus.SYSTEM_ERROR, error="Again.")
+    assert await failed() == (1, [busy["retried"]])
+    every = await gradings.feed(setup, observer, SPRING, status=GradingStatus.SYSTEM_ERROR)
+    assert [entry.grading.id for entry in every] == [busy["retried"], busy["first"]]
+    latest = await gradings.feed(setup, observer, SPRING, latest=True)
+    assert [entry.grading.id for entry in latest] == [
+        busy["by_carol"],
+        busy["on_max"],
+        busy["retried"],
+    ]
+    # Ended by staff, it waits no more.
+    await gradings.cancel(setup, manager, busy["retried"], "It cannot be graded.")
+    assert await failed() == (0, [])
+    # Overdue, the two still dispatched fail too, each where it is observed.
+    clock.advance(MACHINE_WAIT)
+    assert await failed() == (2, [busy["by_carol"], busy["on_max"]])
+    of_max = _held(acme, Scope("acme", "spring", "max"))
+    assert (await gradings.queue_depth(setup, of_max, SPRING)).failed == 1
 
 
 ENTRANTS_OF_TWO = RUNNING + "entrants: {{most: 2}}\n"

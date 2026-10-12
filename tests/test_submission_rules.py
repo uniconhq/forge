@@ -164,6 +164,18 @@ def test_the_form_is_the_plans_inputs_with_the_tasks_details_in_its_order() -> N
     assert workflows[0].options == ("c", "cpp", "java", "python")
 
 
+def test_an_input_is_labelled_by_the_task_else_the_workflows_title_else_its_key() -> None:
+    titles = {"submission": "Solution", "note": "A note"}
+
+    labels = {field.id: field.label for field in fields_of(CONTESTANT, INPUTS, titles)}
+
+    assert (labels["submission"], labels["note"], labels["answers"]) == (
+        "Your solution",
+        "A note",
+        "answers",
+    )
+
+
 FIELDS = fields_of(CONTESTANT, INPUTS)
 SOURCE, W1, W2, A1, A2, S1 = (uuid.uuid4() for _ in range(6))
 UPLOADS = {

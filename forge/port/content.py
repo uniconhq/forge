@@ -9,6 +9,7 @@ from typing import Protocol
 from forge.domain.content import Change, ConflictToken, File, Files, FileSet, TreeEntry
 from forge.domain.identity import Identity
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
+from forge.domain.uploads import Door
 
 ContentPlace = ContestId | TaskId
 
@@ -72,6 +73,17 @@ class ContentPort(Protocol):
         kept in the large-file store, the bytes its pointer names and never
         the pointer. `NotFound` when there is no such file; `Rejected` when
         it is larger than `max_size` bytes, read no further.
+        """
+        ...
+
+    async def media_door(
+        self, as_: Identity, place: ContentPlace, path: str, *, at: VersionId
+    ) -> Door:
+        """Where one file's bytes at a version are read whole, an upload's
+        as the bytes its pointer names, and what to present there as `as_`,
+        for the proxy to fetch them from and stream to the person. Nothing is
+        read here: the forge checks `as_` may read the file, and that it is
+        there, when the proxy asks.
         """
         ...
 

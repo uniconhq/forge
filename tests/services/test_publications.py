@@ -1401,6 +1401,28 @@ async def test_the_task_form_reads_the_inputs_and_test_fields_its_workflow_decla
     assert {call.identity for call in reads} == {acme.ada.identity}
 
 
+async def test_a_task_on_a_version_made_with_a_unit_on_a_file_saves_and_reads_without_it(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    # A version made before a unit was refused on anything but a number.
+    stray = CLASSIC.replace(b"    title: Solution\n", b"    title: Solution\n    unit: seconds\n")
+    assert stray != CLASSIC
+    await _workflow(acme, "united", stray)
+    current = acme.fake.state.repos[("acme", "spring.sum.task")].files["task.yaml"]
+
+    saved = await _save(
+        setup,
+        acme,
+        sum_task,
+        {"task.yaml": current.replace(b"unicon/classic@v2", b"unicon/united@v1")},
+    )
+    form = await publications.workflow_form(setup, acme.ada, sum_task)
+
+    assert isinstance(saved, Published), saved
+    assert form.problem is None
+    assert [(field.id, field.unit) for field in form.inputs][:1] == [("submission", None)]
+
+
 async def test_the_task_form_names_a_newer_version_and_the_task_keeps_its_own(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:

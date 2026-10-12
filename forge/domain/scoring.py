@@ -362,23 +362,28 @@ def everywhere(show: Show) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class Points:
-    """A submission's points as a viewer sees them: those shown, those still
-    pending and when they are shown.
+    """A submission's points as a viewer sees them, or an entrant's on a
+    task: those shown, none while no group's verdict is shown yet, so a
+    shown 0 reads apart from nothing shown; those still pending; and when
+    they are shown.
     """
 
-    shown: Fraction
+    shown: Fraction | None
     pending: Fraction
     pending_until: datetime | None
 
 
 def points_seen(scored: Scored, seen: Seen, reveal_at: datetime | None) -> Points | None:
-    """The submission's points shown and pending at a moment, none on a task
-    that gives no points.
+    """The submission's points shown and pending at a moment, `shown` none
+    while no group's verdict is shown, the whole none on a task that gives
+    no points.
     """
     shown = scored.points(everywhere, seen)
     pending = scored.pending(seen)
     if shown is None or pending is None:
         return None
+    if not any(seen.verdict(group.show) for group in scored.groups):
+        shown = None
     return Points(shown, pending, reveal_at if pending else None)
 
 
