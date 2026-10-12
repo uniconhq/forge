@@ -6,9 +6,19 @@ any value worse reading as down; with nothing to compare, it is newly
 graded.
 """
 
+from datetime import UTC, datetime
 from fractions import Fraction
 
-from forge.domain.regrades import ChangeKind, Side, change_of, counted
+from forge.domain.ids import PublicationId, VersionId
+from forge.domain.publications import Publication
+from forge.domain.regrades import (
+    ChangeKind,
+    RegradeCause,
+    Side,
+    change_of,
+    counted,
+    counted_under,
+)
 from forge.domain.scoring import Better
 
 
@@ -74,3 +84,27 @@ def test_every_change_is_counted_zero_where_none() -> None:
 
     assert found[ChangeKind.UP] == 2 and found[ChangeKind.FAILED] == 1
     assert set(found) == set(ChangeKind) and found[ChangeKind.DOWN] == 0
+
+
+def _publication(number: int) -> Publication:
+    return Publication(
+        PublicationId(f"acme/spring/sum#{number}"),
+        number,
+        VersionId(f"v{number}"),
+        False,
+        (),
+        datetime(2026, 10, 13, tzinfo=UTC),
+    )
+
+
+def test_a_result_counted_under_the_latest_publication_before_the_regrade() -> None:
+    every = [_publication(1), _publication(2), _publication(3)]
+    third = PublicationId("acme/spring/sum#3")
+
+    # A save's regrade grades against the publication the save made; a
+    # rejudge against the one that was already the latest.
+    assert counted_under(RegradeCause.SAVE, third, every) == "acme/spring/sum#2"
+    assert counted_under(RegradeCause.REJUDGE, third, every) == third
+    assert counted_under(RegradeCause.SAVE, PublicationId("acme/spring/sum#1"), every) == (
+        "acme/spring/sum#1"
+    )

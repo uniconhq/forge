@@ -115,16 +115,31 @@ def stands(row: Grading, graded: Graded) -> State:
     return State.VOID
 
 
+@dataclass(frozen=True, slots=True)
+class Before:
+    """The moment just before a regrade began, as a result that counted then
+    is scored: `publication` was then the task's latest, the regrade began
+    `at`, and none of the attempts of `regrade` counted yet.
+    """
+
+    publication: PublicationId
+    at: datetime
+    regrade: uuid.UUID
+
+
 class Scorer:
     """Scores one task's gradings for one read, `B` worked out once for
     each generation, value and direction it is asked for (two publications
     of one generation may name different values in `relative`), by the
-    attempt of each submission a board reads (`usable`).
+    attempt of each submission a board reads (`usable`). Given `before`, it
+    scores as things stood then: its publication standing for the task's
+    latest, and `B` read from the attempts made before the regrade.
     """
 
-    def __init__(self, ctx: Context, current: PublishedTask) -> None:
+    def __init__(self, ctx: Context, current: PublishedTask, before: Before | None = None) -> None:
         self.ctx = ctx
         self.current = current
+        self.before = before
         self._latest: Graded | None = None
         self._bests: dict[tuple[int, str, Better | None], Mapping[str, Fraction]] = {}
 
@@ -145,13 +160,19 @@ class Scorer:
 
     async def graded(self, publication: PublicationId) -> Graded | None:
         """What a grading made under `publication` is scored with, or none
-        when that publication does not read.
+        when that publication does not read. Scoring as things stood before a
+        regrade, the publication then the latest stands for the latest.
         """
-        latest = await self.latest()
-        if publication == self.current.publication.id:
+        stood = self.current.publication.id if self.before is None else self.before.publication
+        latest = await self.latest() if stood == self.current.publication.id else None
+        if latest is None:
+            latest = await self._own(stood)
+        if publication == stood and latest is not None:
             return latest
         own = await self._own(publication)
-        return under(own, latest) if own is not None else None
+        if own is None:
+            return None
+        return under(own, latest) if latest is not None else own
 
     async def scored(self, row: Grading, graded: Graded, late: Fraction) -> Scored:
         """The finished grading `row` scored under `graded` with its late
@@ -198,8 +219,10 @@ class Scorer:
 
     async def _candidates(self) -> list[Grading]:
         """The attempt a board reads of every submission of the contest's
-        rows to the task, for each that is a candidate by it.
+        rows to the task, for each that is a candidate by it; scoring as
+        things stood before a regrade, of the attempts made before it.
         """
+        before = self.before
         ctx = self.ctx
         contest = contest_id_of(task_scope(self.current.id))
         workspaces = sorted(
@@ -214,6 +237,10 @@ class Scorer:
                 Grading.task_id == self.current.id, Grading.workspace_id.in_(workspaces)
             )
         ):
+            if before is not None and (
+                row.regrade_id == before.regrade or row.queued_at > before.at
+            ):
+                continue
             grouped.setdefault((row.workspace_id, row.submission_number), []).append(row)
         found: list[Grading] = []
         for attempts in grouped.values():

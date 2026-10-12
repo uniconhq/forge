@@ -8,8 +8,9 @@ submission by its latest attempt of it, compared with the result that
 counted for the submission when the regrade began: the latest earlier
 attempt that finished with one. Both are scored as organisers see them,
 every group, nothing held back, the late factor applied, by the scoring the
-boards use (`scores.Scorer`), and `forge.domain.regrades.change_of` says
-what changed.
+boards use (`scores.Scorer`), the earlier one as it counted just before the
+regrade began (`scores.Before`, `forge.domain.regrades.counted_under`), and
+`forge.domain.regrades.change_of` says what changed.
 
 - `latest` gives, for each task of the contest the organiser observes, its
   latest regrade with its counts by change, how many it graded, and whether
@@ -49,6 +50,7 @@ from forge.domain.regrades import (
     Side,
     change_of,
     counted,
+    counted_under,
 )
 from forge.domain.roles import Role, contest_id_of, task_scope
 from forge.domain.scoring import ACCEPTED, EVERYTHING, everywhere
@@ -280,6 +282,23 @@ async def _read(
     task = TaskId(regrade.task_id)
     current = await published.task(ctx, task, settings) if settings is not None else None
     scorer = scores.Scorer(ctx, current) if current is not None else None
+    stood = (
+        scores.Scorer(
+            ctx,
+            current,
+            scores.Before(
+                counted_under(
+                    RegradeCause(regrade.cause),
+                    PublicationId(regrade.publication_id),
+                    current.publications,
+                ),
+                regrade.started_at,
+                regrade.id,
+            ),
+        )
+        if current is not None
+        else None
+    )
     factors = await _factors(ctx, current, settings, builtins.list(newest.values()))
     found: builtins.list[_Read] = []
     for submission, row in newest.items():
@@ -288,7 +307,7 @@ async def _read(
             each for each in attempts[submission] if each.attempt < first
         )
         status = gradings.status_of(ctx, row, gone)
-        before = await _side(scorer, earlier, factors) if earlier is not None else None
+        before = await _side(stood, earlier, factors) if earlier is not None else None
         if status in UNFINISHED:
             compared = Compared(ChangeKind.RUNNING, before, None)
         elif status is GradingStatus.OVER_LIMIT:

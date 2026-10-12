@@ -2027,7 +2027,12 @@ attempt of it (`GradingRecord.regrade`, `Rejudged.regrade`). Each is
 compared with the result that counted for the submission when the regrade
 began, the latest earlier attempt that finished with one, both scored as
 organisers see results, every group, nothing held back, the late factor
-applied, by the boards' scoring (`forge.domain.regrades.change_of`): `up`
+applied, by the boards' scoring, the earlier one as it counted just before
+the regrade began: under the scoring of the publication then the latest
+(the regrade's own for a rejudge, the one before the save's for a save's,
+`counted_under`), and under relative credit against the best among the
+results that counted then (`scores.Before`). What changed
+(`forge.domain.regrades.change_of`) is `up`
 or `down` in points; `stopped`, now stopped before its tests where that
 result was not (a compile error, on the classic workflow); `unchanged`;
 `new`, no earlier result, or one of the two not scored since its

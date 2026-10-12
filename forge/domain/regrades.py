@@ -6,7 +6,10 @@ it (`RegradeCause`). Each submission's latest attempt of it is compared with
 the result that counted for that submission when the regrade began, the
 latest earlier attempt that finished with one, both as organisers see
 results: every group, nothing held back, the late factor applied
-(`Side`). What it changed is one `ChangeKind`:
+(`Side`). The earlier one is scored as it counted just before the regrade
+began: with the scoring of the publication then the task's latest
+(`counted_under`), and under relative credit against the best among the
+results that counted then. What it changed is one `ChangeKind`:
 
 - `up` and `down`, its points went up or down; on a task that gives no
   points, a larger or smaller share of its tests accepted, or with the same
@@ -27,11 +30,13 @@ that finished with a result.
 """
 
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from fractions import Fraction
 
+from forge.domain.ids import PublicationId
+from forge.domain.publications import Publication
 from forge.domain.scoring import Better
 
 
@@ -94,6 +99,23 @@ class Compared:
     change: ChangeKind
     earlier: Side | None
     now: Side | None
+
+
+def counted_under(
+    cause: RegradeCause, against: PublicationId, publications: Sequence[Publication]
+) -> PublicationId:
+    """The publication that was the task's latest just before a regrade
+    against `against` began, of the task's `publications`: `against` itself
+    for a rejudge, which publishes nothing; for a save's regrade, the latest
+    publication before the one the save made, or `against` when there is
+    none. A result that counted then is scored as that publication scored it
+    (`showing.under`).
+    """
+    if cause is RegradeCause.REJUDGE:
+        return against
+    own = next((each for each in publications if each.id == against), None)
+    before = [each for each in publications if own is not None and each.number < own.number]
+    return max(before, key=lambda each: each.number).id if before else against
 
 
 def change_of(earlier: Side | None, now: Side | None) -> ChangeKind:
