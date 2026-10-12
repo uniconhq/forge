@@ -66,12 +66,18 @@ async def _submit(setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, 
 
 
 async def _most(setup: Setup, acme: Acme, entered: Entered, most: int) -> None:
-    """The task's `submissions.max` set to `most` by ada's save."""
+    """The task's `submissions.max` set to `most` by ada's save, which she
+    confirms, as every publishing save asks while the contest runs.
+    """
     current = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
     content = current.content.split(b"submissions:")[0] + f"submissions: {{max: {most}}}\n".encode()
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
     saved = await publications.save(
-        setup, acme.ada, entered.task, {"task.yaml": Edit(content, head.tokens["task.yaml"])}
+        setup,
+        acme.ada,
+        entered.task,
+        {"task.yaml": Edit(content, head.tokens["task.yaml"])},
+        confirm=True,
     )
     assert isinstance(saved, publications.Published), saved
 
