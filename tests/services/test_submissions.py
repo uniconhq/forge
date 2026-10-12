@@ -390,6 +390,29 @@ async def test_of_two_uploads_of_one_file_a_recovered_submission_consumes_the_ol
     assert later.number == 2
 
 
+async def test_the_oldest_upload_is_told_by_the_packages_clock_not_the_databases(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    first = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
+    await _lost(setup, acme, entered, first.id)
+    clock.advance(timedelta(seconds=1))
+    second = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
+    # The database's clock stepped back between the two.
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(UploadRow)
+            .where(UploadRow.id == second.id)
+            .values(created_at=UploadRow.created_at - timedelta(minutes=5))
+        )
+
+    await submissions.submit(setup, entered.session, entered.task, code(), idempotency_key=KEY)
+
+    assert await _statuses(setup) == {
+        str(first.id): ("consumed", f"acme/spring/@{segment(entered.entrant)}/sum#1"),
+        str(second.id): ("verified", None),
+    }
+
+
 async def test_a_later_submit_cannot_name_an_upload_an_unrecorded_submission_used(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:

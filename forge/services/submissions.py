@@ -495,7 +495,8 @@ async def _recover(
 
 async def _consume_used(ctx: Context, person: Person, found: Submitted) -> None:
     """Mark consumed, by `found`, the uploads its files point at: for each
-    pointer, the oldest checked upload for the task with its digest of
+    pointer, the oldest checked upload, by when it was kept on the
+    package's clock (`expires_at` less one `LIFETIME`), for the task with its digest of
     whoever works in the workspace, the entrant's members. A
     submission whose `submission.json` does not read marks nothing, and its
     uploads lapse as any unused one does.
@@ -531,7 +532,7 @@ async def _consume_used(ctx: Context, person: Person, found: Submitted) -> None:
                 UploadRow.status == UploadStatus.VERIFIED,
                 UploadRow.digest.in_(set(digests)),
             )
-            .order_by(UploadRow.created_at, UploadRow.id)
+            .order_by(UploadRow.expires_at, UploadRow.id)
             .with_for_update()
             .execution_options(populate_existing=True)
         )
