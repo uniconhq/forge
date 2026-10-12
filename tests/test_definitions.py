@@ -482,6 +482,10 @@ def test_rows_is_all_own_or_a_count_of_at_least_one(rows: str) -> None:
             "registration: {ways: [{signup: {domains: [u.nus.edu, u.nus.edu]}}]}\n",
             "registration.ways[0].signup.domains[1]",
         ),
+        (
+            "registration: {ways: [{signup: {domains: ['*.nus.edu.sg', '*.nus.edu.sg']}}]}\n",
+            "registration.ways[0].signup.domains[1]",
+        ),
         ("registration: {ways: [{signup: {name: ''}}]}\n", "registration.ways[0].signup.name"),
         ("registration: {ways: [{}]}\n", "registration.ways[0]"),
         ("registration: {ways: [{invite: {}, signup: {}}]}\n", "registration.ways[0]"),
@@ -501,6 +505,32 @@ def test_rows_is_all_own_or_a_count_of_at_least_one(rows: str) -> None:
 )
 def test_a_malformed_contest_is_refused_at_the_path_that_is_wrong(extra: str, path: str) -> None:
     assert path in paths(contest_problems(HEAD + extra))
+
+
+@pytest.mark.parametrize(
+    "domain", ["'*nus.edu.sg'", "'a.*.nus.edu.sg'", "'*.*.nus.edu.sg'", "'*.sg'", "'*'", "'*.'"]
+)
+def test_star_stands_only_as_a_domains_whole_first_label(domain: str) -> None:
+    problems = contest_problems(
+        HEAD + f"registration: {{ways: [{{signup: {{domains: [{domain}]}}}}]}}\n"
+    )
+
+    assert at(problems, "registration.ways[0].signup.domains[0]") == (
+        "Give a domain such as u.nus.edu, or *.nus.edu.sg to take nus.edu.sg and every domain "
+        "under it: lower case letters, digits, hyphens and dots, with at least one dot, no dot "
+        "or hyphen at either end, and * only as the whole first part."
+    )
+
+
+def test_a_domain_and_every_domain_under_it_is_written_with_star() -> None:
+    contest = parse_contest(
+        HEAD + "registration: {ways: [{signup: {domains: ['*.nus.edu.sg', u.nus.edu]}}]}\n",
+        saved=True,
+    )
+
+    (way,) = contest.registration.ways
+    assert way.signup is not None
+    assert way.signup.domains == ("*.nus.edu.sg", "u.nus.edu")
 
 
 def test_a_contest_ends_after_it_starts_and_its_times_carry_a_timezone() -> None:

@@ -1137,7 +1137,10 @@ approves, the first listed among equals. None admitting them is refused
 with what would help: `wrong_invite_code` when a sign-up would take them
 with its code, `domain_not_allowed` when the sign-ups turn their addresses
 away, `invite_required` when only an invite would. A domain is the whole
-part of an address after its last `@`, whatever its case, and a pattern
+part of an address after its last `@`, whatever its case; one written
+`*.nus.edu.sg` takes that domain and every domain under it, a whole label
+at a time (`comp.nus.edu.sg`, not `xnus.edu.sg`), the `*.` standing only
+as the first label (#439); and a pattern
 must match the whole address, within a time limit, since it is an
 organiser's. Only addresses the forge confirms count: with Forgejo, the
 entries of `GET /api/v1/user/emails` read with `sudo` as the person whose

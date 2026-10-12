@@ -195,13 +195,18 @@ DOMAIN = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9
 """A domain a sign-up takes addresses at: labels of lower-case letters,
 digits and hyphens, two or more, joined by dots, no label starting or ending
 with a hyphen."""
+UNDER = "*."
+"""What a sign-up's domain starts with to take the domain after it and every
+domain under it: `*.nus.edu.sg` takes `nus.edu.sg` and `comp.nus.edu.sg`
+(#439). It stands only as the whole first label; nothing else is wild."""
 
 
 def _domain(value: object) -> str:
-    if not isinstance(value, str) or not DOMAIN.fullmatch(value):
+    if not isinstance(value, str) or not DOMAIN.fullmatch(value.removeprefix(UNDER)):
         raise ValueError(
-            "Give a domain such as u.nus.edu: lower case letters, digits, hyphens and "
-            "dots, with at least one dot, and no dot or hyphen at either end."
+            "Give a domain such as u.nus.edu, or *.nus.edu.sg to take nus.edu.sg and every "
+            "domain under it: lower case letters, digits, hyphens and dots, with at least one "
+            "dot, no dot or hyphen at either end, and * only as the whole first part."
         )
     return value
 
