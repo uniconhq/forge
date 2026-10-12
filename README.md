@@ -95,8 +95,9 @@ forge/api/
                 primitives, and the NewWorkflow, WorkflowSummary,
                 WorkflowView, Draft, PrimitiveVersion and Problem they
                 return
-  files.py      read, tree, history, write, rollback, write_upload, and the
-                File, TreeEntry, UploadInfo, EntryKind and Change they return
+  files.py      read, tree, history, write, rollback, write_upload, download,
+                and the File, TreeEntry, UploadInfo, EntryKind and Change
+                they return
   publications.py  save, list, workflow_form, and the Published, Draft,
                 Publication, WorkflowForm, DeclaredInput and DeclaredField
                 they return
@@ -555,7 +556,7 @@ hosting process calls are actions, marked `@action` from
 | `orgs` | `create`, `create_by_operator`, `update`, `read` |
 | `contests` | `create`, `list` |
 | `tasks` | `create`, `list`, `state`, `standing` |
-| `files` | `read`, `tree`, `history`, `write`, `rollback`, `write_upload` |
+| `files` | `read`, `tree`, `history`, `write`, `rollback`, `write_upload`, `download` |
 | `publications` | `save`, `list`, `workflow_form` |
 | `release` | `of_task` |
 | `entrants` | `register`, `mine`, `invite`, `withdraw_invite`, `leave`, `rename`, `list`, `approve`, `reject`, `reopen`, `remove`, `extend`, `organise_rename`, `remove_member`, `move_member`, `delete` |
@@ -856,6 +857,21 @@ size a pointer the platform writes could have, 126 to 144 bytes, is read
 to tell, and its content checked as such a pointer
 (`uploads.may_be_pointer`, `upload_info`); a folder of large or of
 ordinary files costs the listing alone.
+
+Every `read` names a `version` holding the file as read: the version it was
+read at, or the commit that last changed it, which is what Forgejo's
+contents API names. `download(organiser, task, path, at)` opens the download
+door to one file of a task at such a version, for whoever holds a role
+reaching the task, observer or above: the media endpoint for that file at
+that commit and the organiser's own credential, for the proxy to stream it
+from, a typed file and an upload alike, an upload as the bytes its pointer
+names, whatever its size (the content port's `media_door`). Any file of the
+task is one, `plans/` included, since an observer reads it anyway. A path
+that is not plain is `InvalidPath`, and a version that is not a commit's id
+(40 or 64 lowercase hex) is `NotFound`, since Forgejo's `ref` would read a
+name as a branch or a tag first; nothing is read to open the door, so a file
+or a version the task does not have is Forgejo's refusal when the proxy
+asks, and the proxy turns that into its own.
 
 ## The save
 
