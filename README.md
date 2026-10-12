@@ -188,7 +188,10 @@ words (T1, T2, T6), a workflow's report (W1 to W5), and a primitive's
 refused on any other type where a version is made or checked
 (`plans.stray_units`), at the input's `unit`, naming the input and its
 type in words; a version made with one before reads with it dropped
-(`shown_unit`), so a task on it still saves.
+(`shown_unit`), so a task on it still saves. An input named as a folder
+the task format gives meaning to, `tests`, `public` or `plans`, is refused
+there too (`plans.reserved_inputs`), since a setting's own files go in a
+folder named by its id.
 `admin_only_changes` names the admin-only keys a save changes, a time
 compared as the moment it names,
 `starter_contest` and `starter_task` are the files a new contest or task is

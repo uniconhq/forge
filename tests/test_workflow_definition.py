@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from forge.domain.errors import InvalidName
-from forge.domain.plans import check_workflow, stray_units
+from forge.domain.plans import check_workflow, reserved_inputs, stray_units
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.types import Type
 from forge.domain.workflow_definition import (
@@ -188,6 +188,30 @@ def test_an_enum_with_a_unit_is_refused_and_a_number_with_one_is_taken() -> None
     assert paths(stray_units(parse_workflow(one_line(document)))) == ["inputs.level.unit"]
     del document["inputs"]["level"]
     assert parse_workflow(one_line(document)).inputs["threshold"].unit == "dB"
+
+
+@pytest.mark.parametrize(
+    ("key", "holds"),
+    [
+        ("tests", "its tests"),
+        ("public", "the files every contestant is served"),
+        ("plans", "the plan Unicon compiles"),
+    ],
+)
+def test_an_input_named_as_a_folder_the_format_gives_meaning_to_is_refused(
+    key: str, holds: str
+) -> None:
+    document = classic()
+    document["inputs"][key] = {"type": "folder"}
+
+    assert reserved_inputs(parse_workflow(one_line(document))) == [
+        {
+            "path": f"inputs.{key}",
+            "message": f"An input cannot be called {key}: a task's {key}/ folder already "
+            f"holds {holds}. Choose another name.",
+        }
+    ]
+    assert reserved_inputs(parse_workflow(CLASSIC)) == []
 
 
 def test_a_version_made_with_a_stray_unit_still_reads_with_the_unit_dropped() -> None:

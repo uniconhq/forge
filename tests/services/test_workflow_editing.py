@@ -201,6 +201,16 @@ async def test_a_unit_on_an_input_that_is_no_number_is_refused_by_a_check_and_a_
     assert refused.value.errors == [refusal]
 
 
+async def test_an_input_called_tests_is_refused_by_a_check(setup: Setup, acme: Acme) -> None:
+    bob = await signed_in(setup, acme.fake, 8)
+    named = CLASSIC.replace(b"inputs:\n", b"inputs:\n  tests: {type: folder}\n", 1)
+    assert named != CLASSIC
+
+    found = await workflows.check(setup, bob, named.decode())
+
+    assert [problem["path"] for problem in found] == ["inputs.tests"]
+
+
 async def test_a_step_that_uses_a_workflow_is_not_a_primitive(setup: Setup, acme: Acme) -> None:
     bob = await signed_in(setup, acme.fake, 8)
     uses_workflow = CLASSIC.replace(b"unicon/diff-check@v2", b"unicon/classic@v2").decode()

@@ -632,6 +632,32 @@ def stray_units(workflow: WorkflowDefinition) -> list[Problem]:
     return problems
 
 
+RESERVED_FOLDERS = {
+    "tests": "its tests",
+    "public": "the files every contestant is served",
+    "plans": "the plan Unicon compiles",
+}
+"""The folders of a task the format gives a meaning of its own, each with
+what it holds."""
+
+
+def reserved_inputs(workflow: WorkflowDefinition) -> list[Problem]:
+    """An input whose id is a folder the task format gives meaning to,
+    refused where a version is made or checked, naming it: a setting's own
+    files go in a folder named by its id, which would then be mixed with
+    the task's tests, the files served to contestants or the plan.
+    """
+    return [
+        Problem(
+            path=path_text(("inputs", key)),
+            message=f"An input cannot be called {key}: a task's {key}/ folder already holds "
+            f"{RESERVED_FOLDERS[key]}. Choose another name.",
+        )
+        for key in workflow.inputs
+        if key in RESERVED_FOLDERS
+    ]
+
+
 def check_workflow(
     workflow: WorkflowDefinition, primitives: Mapping[str, PrimitiveDeclaration]
 ) -> list[Problem]:
