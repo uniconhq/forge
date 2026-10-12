@@ -316,15 +316,15 @@ def _dropped(
     if made:
         count = f"{len(made)} submission" + ("s" if len(made) > 1 else "")
         return (
-            f"{entry.id} has {count}, so it cannot be taken out of the contest. Withdraw it "
+            f"{entry.id} has {count}, so it cannot be removed from the contest. Withdraw it "
             "instead: entrants no longer see it and no leaderboard counts it, and its "
             "submissions are kept."
         )
     if reached(before, entry.id, now):
         opened = before.release_of(entry)
         return (
-            f"{entry.id} was released on {in_words(opened)}, so entrants have seen it. Take it "
-            "out from the contest's list of tasks instead, which deletes it too."
+            f"{entry.id} was released on {in_words(opened)}, so entrants have seen it. Remove "
+            "it from the contest's Tasks card instead, which deletes the task too."
         )
     return None
 
