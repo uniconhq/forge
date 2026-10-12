@@ -204,7 +204,10 @@ outputs:
     description: Everything the compiler printed.
   outcome:
     type: outcome
-    description: Accepted when the source compiled, compile error when it did not.
+    description: Whether the source compiled.
+    outcomes:
+      accepted: the source compiles
+      compile_error: it does not compile, or the compiler goes over a limit
 """,
     ),
     "sandbox-run": _declared(
@@ -250,7 +253,13 @@ outputs:
     description: The most memory the program used, in kilobytes.
   outcome:
     type: outcome
-    description: Accepted, or the limit the program went over, or a runtime error.
+    description: How the program's run ended.
+    outcomes:
+      accepted: the program finishes within its limits
+      time_limit: it runs out of time
+      memory_limit: it uses more memory than allowed
+      output_limit: it prints more than allowed
+      runtime_error: it crashes or exits with an error
 """,
     ),
     "diff-check": _declared(
@@ -273,7 +282,10 @@ inputs:
 outputs:
   outcome:
     type: outcome
-    description: Accepted when the two match, wrong answer when they do not.
+    description: Whether the output matches the answer.
+    outcomes:
+      accepted: the output matches the answer, ignoring trailing whitespace
+      wrong_answer: it does not
 """,
     ),
 }

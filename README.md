@@ -186,7 +186,9 @@ form shows beside that field. What a file says of itself is checked there: a
 contest's times and each task entry's timeline in order (C1), each board's
 own rules (C3), a task's test groups, rule weights, test weights and `show`
 words (T1, T2, T6), a workflow's report (W1 to W5), and a primitive's
-`runs` marks (P1). An input's `unit`, which only a `number` takes, is
+`runs` marks (P1) and the `outcomes` its outcome port says the meaning of,
+each an outcome a step can report with one line saying when, on that port
+alone (P2), for the workflow editor's drawer. An input's `unit`, which only a `number` takes, is
 refused on any other type where a version is made or checked
 (`plans.stray_units`), at the input's `unit`, naming the input and its
 type in words; a version made with one before reads with it dropped

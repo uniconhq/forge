@@ -97,7 +97,8 @@ def test_a_primitive_and_its_ports_say_what_they_are_for_and_no_plan_reads_it() 
     def wordless(found: PrimitiveDeclaration) -> PrimitiveDeclaration:
         def ports(given: Mapping[str, Port]) -> dict[str, Port]:
             return {
-                name: port.model_copy(update={"description": None}) for name, port in given.items()
+                name: port.model_copy(update={"description": None, "outcomes": None})
+                for name, port in given.items()
             }
 
         return found.model_copy(
@@ -111,6 +112,7 @@ def test_a_primitive_and_its_ports_say_what_they_are_for_and_no_plan_reads_it() 
 
     worded = {f"unicon/{name}@v2": parse_primitive(text) for name, text in PRIMITIVES.items()}
     assert any(found.title is not None for found in worded.values())
+    assert all(found.outputs["outcome"].outcomes for found in worded.values())
     paths = classic_tests("main/1")
     tests = cases_of(CLASSIC_WORKFLOW, paths, {})
 
@@ -140,6 +142,86 @@ def test_a_primitive_and_its_ports_say_what_they_are_for_and_no_plan_reads_it() 
 )
 def test_a_title_or_description_is_one_line_of_text(extra: str, path: str) -> None:
     assert path in [problem["path"] for problem in refused(BASE + OUTCOME + extra)]
+
+
+def test_each_seeded_primitive_says_what_each_outcome_it_reports_means() -> None:
+    said = {
+        name: parse_primitive(text).outputs["outcome"].outcomes for name, text in PRIMITIVES.items()
+    }
+
+    assert {name: list(outcomes or {}) for name, outcomes in said.items()} == {
+        "compile": ["accepted", "compile_error"],
+        "sandbox-run": ["accepted", "time_limit", "memory_limit", "output_limit", "runtime_error"],
+        "diff-check": ["accepted", "wrong_answer"],
+    }
+    assert (said["compile"] or {})["accepted"] == "the source compiles"
+
+
+def test_outcomes_name_what_a_step_can_report_each_with_a_line() -> None:
+    declared = parse_primitive(
+        BASE
+        + "outputs:\n  outcome:\n    type: outcome\n    outcomes:\n"
+        + "      wrong_answer: the output differs\n      accepted: it matches\n"
+    )
+
+    # In the order the file gives them.
+    assert declared.outputs["outcome"].outcomes == {
+        "wrong_answer": "the output differs",
+        "accepted": "it matches",
+    }
+    assert parse_primitive(BASE + OUTCOME).outputs["outcome"].outcomes is None
+
+
+@pytest.mark.parametrize(
+    ("outcomes", "path", "message"),
+    [
+        (
+            "{skipped: it did not run}",
+            "outputs.outcome.outcomes.skipped",
+            "skipped is not an outcome a step can report. Use accepted, wrong_answer, "
+            "time_limit, memory_limit, output_limit, runtime_error or compile_error.",
+        ),
+        (
+            "{system_error: it broke}",
+            "outputs.outcome.outcomes.system_error",
+            "system_error is not an outcome a step can report.",
+        ),
+        (
+            "{}",
+            "outputs.outcome.outcomes",
+            "Give each outcome the step can report with a line saying when, such as "
+            "accepted: the source compiles.",
+        ),
+        ('{accepted: "two\\nlines"}', "outputs.outcome.outcomes.accepted", "one line"),
+    ],
+)
+def test_outcomes_that_are_not_a_steps_each_with_a_line_are_refused(
+    outcomes: str, path: str, message: str
+) -> None:
+    problems = refused(BASE + f"outputs:\n  outcome: {{type: outcome, outcomes: {outcomes}}}\n")
+
+    assert [problem["path"] for problem in problems] == [path]
+    assert message in problems[0]["message"]
+
+
+@pytest.mark.parametrize(
+    ("ports", "path"),
+    [
+        (
+            "outputs:\n  log: {type: text, outcomes: {accepted: ok}}\n  outcome: outcome\n",
+            "outputs",
+        ),
+        ("inputs:\n  n: {type: number, outcomes: {accepted: ok}}\n" + OUTCOME, "inputs"),
+    ],
+)
+def test_outcomes_on_any_port_but_the_outcome_are_refused(ports: str, path: str) -> None:
+    problems = refused(BASE + ports)
+
+    assert len(problems) == 1
+    assert problems[0]["path"].startswith(path) and problems[0]["path"].endswith(".outcomes")
+    assert problems[0]["message"] == (
+        "Only the outcome port says what each outcome means. Remove this."
+    )
 
 
 def test_the_smallest_declaration_is_an_image_limits_and_an_outcome() -> None:
