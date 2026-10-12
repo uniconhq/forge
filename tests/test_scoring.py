@@ -237,6 +237,31 @@ def test_raw_scores_of_ten_to_the_eighth_sum_exactly_and_a_failure_counts_at_lea
     assert first.points(everywhere, EVERYTHING) is None
 
 
+TIME = {"time_ms": Measure(Fold.MAX, Better.LOWER, Fraction(0))}
+CAPPED = {"time_ms": Measure(Fold.MAX, Better.LOWER, Fraction(0), Fraction(2000))}
+
+
+def test_a_value_folds_over_every_tests_value_whatever_its_outcome() -> None:
+    ids = named("main", 2)
+    groups = {"main": group(pass_=100)}
+    wrong = result(
+        {
+            "main/1": ("accepted", {"time_ms": Decimal("50")}),
+            "main/2": ("wrong_answer", {"time_ms": Decimal("1")}),
+        }
+    )
+    timed_out = result(
+        {
+            "main/1": ("accepted", {"time_ms": Decimal("50")}),
+            "main/2": ("time_limit", {"time_ms": Decimal("2400")}),
+        }
+    )
+    assert score(wrong, ids, groups, None, TIME, worth=100).values(EVERYTHING) == {"time_ms": 50}
+    assert score(timed_out, ids, groups, None, CAPPED, worth=100).values(EVERYTHING) == {
+        "time_ms": 2400
+    }
+
+
 def test_a_lower_is_better_value_with_no_worst_bound_has_no_value_when_a_test_lacks_it() -> None:
     measure = Measure(Fold.MEAN, Better.LOWER)
     assert fold(measure, [Fraction(3), None]) is None

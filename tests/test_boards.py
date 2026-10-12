@@ -372,6 +372,22 @@ def test_a_points_tie_is_broken_on_the_sum_of_each_tasks_slowest_time() -> None:
     ]
 
 
+def test_a_fast_wrong_answer_on_a_board_ranked_by_time_tops_it() -> None:
+    groups = {"main": group(pass_=100)}
+    ids = named("main", 2)
+    values = {"time_ms": {"main/1": "1", "main/2": "1"}}
+    garbage = graded(ids, groups, ids, values=values, measures=TIME)
+    right = graded(ids, groups, values={"time_ms": {"main/1": "40", "main/2": "30"}}, measures=TIME)
+    on = board(order=["time_ms"])
+    rows = [row(1, "garbage", a=[candidate(1, at(10, 0), garbage)])]
+    rows.append(row(2, "right", a=[candidate(2, at(10, 0), right)]))
+    found = standings(on, [column("a", groups)], rows, directions={"time_ms": Better.LOWER})
+    assert [(r.name, r.rank, r.keys) for r in found.rows] == [
+        ("garbage", 1, (1,)),
+        ("right", 2, (40,)),
+    ]
+
+
 def test_a_course_board_counts_the_public_30_and_shows_only_ones_own_row() -> None:
     groups = {"public": group(each=30), "hidden": group(each=70, show=Show.AFTER_CLOSE)}
     ids = [*named("public", 5), *named("hidden", 14)]
