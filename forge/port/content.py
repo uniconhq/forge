@@ -3,7 +3,7 @@ made and kept protected as the platform, and the files themselves, read and
 written as the calling organiser, with a conflict check on every write.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Protocol
 
 from forge.domain.content import Change, ConflictToken, File, Files, FileSet, TreeEntry
@@ -131,7 +131,17 @@ class ContentPort(Protocol):
     async def list_tree(
         self, as_: Identity, place: ContentPlace, path: str = ""
     ) -> tuple[TreeEntry, ...]:
-        """The entries directly under `path`."""
+        """The entries directly under `path`, each file with its token."""
+        ...
+
+    async def read_blobs(
+        self, as_: Identity, place: ContentPlace, tokens: Collection[ConflictToken]
+    ) -> Mapping[ConflictToken, bytes]:
+        """The content of each file the place holds, by its token, as its
+        commit holds it, an upload as its pointer, in as few calls as the
+        forge allows; a token the place does not hold is left out. Meant for
+        small files: each is read whole.
+        """
         ...
 
     async def history(

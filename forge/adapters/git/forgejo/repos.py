@@ -13,7 +13,7 @@ is done as the platform too, since no organiser's team is one.
 """
 
 import base64
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -45,6 +45,9 @@ DEFAULT_BRANCH = "main"
 CREATE_MESSAGE = "Create"
 TREE_PAGE = 1000
 MAX_TREE_PAGES = 100
+BLOBS_URL_BUDGET = 1900
+"""The most characters of blob shas, commas included, one read of several
+blobs names: Forgejo asks a `GetBlobs` URL to stay within about 2,083."""
 WRITE_ATTEMPTS = 4
 
 
@@ -390,9 +393,37 @@ class Repos:
                 kind=EntryKind.DIRECTORY if entry["type"] == "dir" else EntryKind.FILE,
                 size=int(entry["size"]) if entry.get("size") is not None else None,
                 version=_version(entry) if entry["type"] != "dir" else None,
+                token=ConflictToken(str(entry["sha"]))
+                if entry["type"] != "dir" and entry.get("sha")
+                else None,
             )
             for entry in entries
         )
+
+    async def blobs(
+        self, as_: Identity, owner: str, name: str, tokens: Collection[ConflictToken]
+    ) -> dict[ConflictToken, bytes]:
+        """Each blob's content by its sha, the file's token, through the
+        endpoint that reads several at once (Forgejo's `GetBlobs`), as many
+        to a call as fit its URL, about 2,000 characters: 46 SHA-1s, or 29
+        SHA-256s. A sha the repository does not hold is left out.
+        """
+        found: dict[ConflictToken, bytes] = {}
+        for batch in _batches(sorted(set(tokens)), BLOBS_URL_BUDGET):
+            answered: object = (
+                await self._http.call(
+                    as_,
+                    "GET",
+                    f"/api/v1/repos/{segment(owner)}/{segment(name)}/git/blobs",
+                    params={"shas": ",".join(batch)},
+                )
+            ).json()
+            for blob in answered if isinstance(answered, list) else []:
+                if isinstance(blob, dict) and blob.get("sha") in batch:
+                    content = base64.b64decode(blob.get("content") or "")
+                    if blob.get("size") in (None, len(content)):
+                        found[ConflictToken(str(blob["sha"]))] = content
+        return found
 
     async def history(
         self, as_: Identity, owner: str, name: str, path: str | None = None
@@ -708,6 +739,21 @@ class Repos:
 
 def _encoded(content: bytes) -> str:
     return base64.b64encode(content).decode()
+
+
+def _batches(shas: Sequence[str], budget: int) -> list[list[str]]:
+    """`shas` in order, cut into runs whose comma-joined length is at most
+    `budget`, at least one sha to a run.
+    """
+    runs: list[list[str]] = []
+    length = budget + 1
+    for sha in shas:
+        if length + 1 + len(sha) > budget:
+            runs.append([])
+            length = -1
+        runs[-1].append(sha)
+        length += 1 + len(sha)
+    return runs
 
 
 def _version(entry: dict[str, Any], at: str | None = None) -> VersionId | None:

@@ -1721,6 +1721,58 @@ async def test_a_listing_names_the_commit_holding_each_file_as_listed(
     ]
 
 
+async def test_a_listing_gives_each_files_blob_as_its_token_and_a_folder_none(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.sum.task/contents/tests/main/1",
+        ok(
+            [
+                {"type": "file", "path": "tests/main/1/input", "size": 4, "sha": "a" * 40},
+                {"type": "dir", "path": "tests/main/1/more", "sha": "b" * 40},
+            ]
+        ),
+    )
+
+    listed = await forgejo.content.list_tree(PLATFORM, TaskId("acme/spring/sum"), "tests/main/1")
+
+    assert [entry.token for entry in listed] == [ConflictToken("a" * 40), None]
+
+
+async def test_blobs_are_read_many_to_a_call_within_the_urls_length(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    path = "/api/v1/repos/acme/spring.sum.task/git/blobs"
+    shas = [f"{index:040x}" for index in range(100)]
+
+    # Every call answers every blob but one; each takes those it asked for.
+    blobs = [
+        {
+            "sha": sha,
+            "size": 3,
+            "encoding": "base64",
+            "content": base64.b64encode(sha[-3:].encode()).decode(),
+        }
+        for sha in shas
+        if sha != shas[7]
+    ]
+    recorder.on("GET", path, ok(blobs))
+
+    found = await forgejo.content.read_blobs(
+        PLATFORM, TaskId("acme/spring/sum"), [ConflictToken(sha) for sha in shas]
+    )
+
+    # 45 SHA-1s fit one URL, so 100 take three calls; one the forge did not
+    # answer for is left out.
+    asked = [request.url.params["shas"] for request in recorder.seen]
+    assert len(asked) == 3
+    assert all(len(shas_) <= 1900 for shas_ in asked)
+    assert len(found) == 99 and ConflictToken(shas[7]) not in found
+    assert found[ConflictToken(shas[0])] == shas[0][-3:].encode()
+    assert {request.url.path for request in recorder.seen} == {path}
+
+
 async def test_an_account_whose_email_is_taken_is_a_conflict_as_a_taken_name_is(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:

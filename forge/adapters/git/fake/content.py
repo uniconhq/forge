@@ -4,7 +4,7 @@ it through an org role, or through a contest or task role once attached. A
 scope's three roles are attached together, and `secure` counts each.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import replace
 from urllib.parse import quote
 
@@ -254,10 +254,25 @@ class FakeContent:
                     EntryKind.FILE,
                     len(repo.files[file_path]),
                     version=_last_change(repo, file_path),
+                    token=token_of(repo.files[file_path]),
                 )
         if path and not seen:
             raise NotFound(f"{path} is not in {place}")
         return tuple(seen.values())
+
+    async def read_blobs(
+        self, as_: Identity, place: ContentPlace, tokens: Collection[ConflictToken]
+    ) -> Mapping[ConflictToken, bytes]:
+        self._state.record("read_blobs", as_, place=place, tokens=sorted(tokens))
+        self._state.check_up()
+        repo = self._state.repo(*location(place))
+        self._state.require_read(as_, repo)
+        held = {
+            token_of(content): content
+            for files in (*repo.snapshots.values(), repo.files)
+            for content in files.values()
+        }
+        return {token: held[token] for token in tokens if token in held}
 
     async def history(
         self, as_: Identity, place: ContentPlace, path: str | None = None

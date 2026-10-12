@@ -152,7 +152,13 @@ async def test_an_org_with_its_roles_and_a_contest_with_its_files(
     assert [change.message for change in history] == ["Rename", "Create"]
     older = await forge.content.read_file(PLATFORM, contest, "contest.yaml", at=history[1].version)
     assert older.content == b"name: Spring\n"
-    assert [entry.path for entry in await forge.content.list_tree(PLATFORM, task)] == ["task.yaml"]
+    (listed,) = await forge.content.list_tree(PLATFORM, task)
+    assert listed.path == "task.yaml" and listed.token is not None
+    # The listing's token names the blob, which one batched read gives back.
+    blobs = await forge.content.read_blobs(PLATFORM, task, [listed.token])
+    assert blobs == {
+        listed.token: (await forge.content.read_file(PLATFORM, task, "task.yaml")).content
+    }
 
     await forge.orgs.grant_role(user_id, Scope(org, "spring"), Role.MANAGER)
     assert RoleGrant(Scope(org, "spring"), Role.MANAGER) in await forge.orgs.roles_of(person)

@@ -7,7 +7,7 @@ platform account; each is checked first and only what is missing is made.
 Deleting one removes its own role teams and then the repository.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 
 from forge.adapters.git.forgejo.repos import Repos
 from forge.adapters.git.forgejo.teams import Teams
@@ -144,6 +144,12 @@ class ForgejoContent:
     ) -> tuple[TreeEntry, ...]:
         owner, name = location(place)
         return await self._repos.tree(as_, owner, name, path)
+
+    async def read_blobs(
+        self, as_: Identity, place: ContentPlace, tokens: Collection[ConflictToken]
+    ) -> Mapping[ConflictToken, bytes]:
+        owner, name = location(place)
+        return await self._repos.blobs(as_, owner, name, tokens)
 
     async def history(
         self, as_: Identity, place: ContentPlace, path: str | None = None

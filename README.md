@@ -899,11 +899,18 @@ whose commit holds the pointer to it (below, Uploads). `tree` lists such a
 file with `upload`, the size and SHA-256 of what it holds, and `read` gives
 it with the same `upload` beside its content, the pointer, so an editor
 never opens one as text; a typed file has none. Forgejo's contents API
-gives a file's blob size and nothing about git-lfs, so only a file whose
-size a pointer the platform writes could have, 126 to 144 bytes, is read
-to tell, and its content checked as such a pointer
-(`uploads.may_be_pointer`, `upload_info`); a folder of large or of
-ordinary files costs the listing alone.
+gives a file's blob size and nothing about git-lfs, so every file of at
+most 1 KB (`SMALL_FILE`, which covers every pointer the platform writes,
+126 to 144 bytes) is read to tell, all of a folder's in one batch through
+Forgejo's `GetBlobs` (`GET /repos/{owner}/{repo}/git/blobs?shas=`, as
+many shas to a call as fit its URL, 46 SHA-1s), and its content checked
+as such a pointer (`upload_info`). The same read gives each small typed
+file's `start` (M67): its first 80 characters (`START_CHARS`) when it is
+text, valid UTF-8 with no NUL, an empty start for an empty file, and none
+for anything else, an upload and a file over 1 KB included, so a row can
+show what a test holds and a group of a hundred tests is one listing and
+one batch per test, not one read per file. Each file also carries its
+`token`. A larger file is never read.
 
 Every `read` names a `version` holding the file as read: the commit that
 last changed it, which is what Forgejo's contents API names, or, when it

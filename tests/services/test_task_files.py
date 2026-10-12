@@ -93,9 +93,14 @@ async def test_an_uploaded_file_is_listed_and_read_as_an_upload_and_a_typed_one_
     assert (listed["data/notes.txt"].upload, listed["data/big.txt"].upload) == (None, None)
     assert (read.upload, read.content) == (upload, pointer_text(_digest(DATA), len(DATA)))
     assert typed.upload is None
-    # Only the files whose size a pointer could have were read to list them.
-    tree_reads = sorted(call.arguments["path"] for call in acme.fake.calls_to("read_file"))
-    assert tree_reads == sorted([PATH, "data/notes.txt", PATH, "data/notes.txt"])
+    # The small files were read in one batch to list them, and an upload's
+    # pointer is never its start; a large file is not read.
+    (batch,) = acme.fake.calls_to("read_blobs")
+    assert len(batch.arguments["tokens"]) == 2
+    file_reads = sorted(call.arguments["path"] for call in acme.fake.calls_to("read_file"))
+    assert file_reads == sorted([PATH, "data/notes.txt"])
+    assert (listed[PATH].start, listed["data/big.txt"].start) == (None, None)
+    assert listed["data/notes.txt"].start == "n" * 80
 
 
 async def test_a_listing_names_the_version_holding_each_file_as_listed_and_it_downloads_there(

@@ -104,6 +104,9 @@ class TreeEntry:
     holds and that commit, the one that last changed it, which holds it as
     listed whatever the head has moved to since (none when the forge does
     not say), or a folder. `upload` tells an uploaded file from a typed one.
+    `token` is the file's, as a read gives it; `start` is how a small text
+    file begins (`start_of`), none for any other file and for an upload,
+    whose commit holds only the pointer to its bytes.
     """
 
     path: str
@@ -111,6 +114,31 @@ class TreeEntry:
     size: int | None = None
     upload: UploadInfo | None = None
     version: VersionId | None = None
+    token: ConflictToken | None = None
+    start: str | None = None
+
+
+SMALL_FILE = 1024
+"""The most bytes a file has for a listing to give its start: a row shows one
+line or about 40 characters of it, and a larger file shows its size."""
+START_CHARS = 80
+"""The most characters of a small file's start a listing gives, enough for a
+row's line with room to say whether more follows."""
+
+
+def start_of(content: bytes) -> str | None:
+    """How a file begins, as a listing gives it: its first `START_CHARS`
+    characters when it is text, valid UTF-8 with no NUL, an empty file
+    giving an empty start; none when it is not text. The whole file when
+    the start, encoded, is as long as the file.
+    """
+    if b"\x00" in content:
+        return None
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return text[:START_CHARS]
 
 
 @dataclass(frozen=True, slots=True)

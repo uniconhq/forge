@@ -15,7 +15,7 @@ from datetime import timedelta
 import pytest
 
 from forge.domain.clock import FakeClock
-from forge.domain.content import Edit
+from forge.domain.content import Edit, start_of
 from forge.domain.definitions import parse_contest
 from forge.domain.errors import AdminOnly, Conflict, Forbidden, InvalidPath, NotFound
 from forge.domain.identity import PLATFORM
@@ -614,3 +614,43 @@ async def test_a_contest_that_was_never_published_moves_its_passed_dates_freely(
 
     assert version
     assert parse_contest(moved).start.month == 10
+
+
+async def test_a_listing_gives_each_small_text_files_start_in_one_read_of_them_all(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    head = await acme.fake.content.list_files(PLATFORM, sum_task)
+    saved = await publications.save(
+        setup,
+        acme.ada,
+        sum_task,
+        {
+            "tests/main/1/input": Edit(b"1 2\n" + b"9 " * 600, head.tokens["tests/main/1/input"]),
+            "tests/main/1/answer": Edit(b"", head.tokens["tests/main/1/answer"]),
+            "tests/main/1/picture.bin": Edit(b"\x89PNG\x00\x01", None),
+            "tests/main/1/latin.txt": Edit("café".encode("latin-1"), None),
+            "tests/main/1/long.txt": Edit("ü".encode() * 100, None),
+        },
+    )
+    assert isinstance(saved, (Published, publications.Draft))
+    acme.fake.reset_calls()
+
+    listed = {
+        entry.path: entry for entry in await files.tree(setup, acme.ada, sum_task, "tests/main/1")
+    }
+
+    starts = {path.rsplit("/", 1)[1]: entry.start for path, entry in listed.items()}
+    # Over a kilobyte, not text, or not UTF-8: no start; empty: an empty one.
+    assert starts == {
+        "answer": "",
+        "input": None,
+        "latin.txt": None,
+        "long.txt": "ü" * 80,
+        "picture.bin": None,
+    }
+    assert listed["tests/main/1/input"].size == 4 + 1200
+    (batch,) = acme.fake.calls_to("read_blobs")
+    assert len(batch.arguments["tokens"]) == 4
+    assert acme.fake.calls_to("read_file") == []
+    assert start_of(b"") == "" and start_of(b"a\x00b") is None
+    assert all(entry.token is not None for entry in listed.values())

@@ -31,6 +31,7 @@ import uuid
 from dataclasses import dataclass, replace
 
 from forge.domain.content import (
+    SMALL_FILE,
     Change,
     ConflictToken,
     Edit,
@@ -39,6 +40,7 @@ from forge.domain.content import (
     TreeEntry,
     Uploaded,
     check_path,
+    start_of,
 )
 from forge.domain.definitions import (
     CONTEST_FILE,
@@ -119,9 +121,14 @@ async def tree(
     ctx: Context, organiser: Organiser, place: Place, path: str = ""
 ) -> tuple[TreeEntry, ...]:
     """The files and folders directly under `path`, each file that is an
-    upload with the size and digest of what it holds. Only a file whose size
-    is a pointer's is read to tell (`uploads.may_be_pointer`), so a folder of
-    large files or of typed ones costs no read but the listing.
+    upload with the size and digest of what it holds, and each small text
+    file with its `start` (M67), so a folder of a hundred tests is one
+    listing per test and not one read per file. Every file of at most
+    `SMALL_FILE` bytes is read, all of them in one batch (`read_blobs`):
+    that tells a typed file from an upload, whose pointer is never shown as
+    its start, and gives a typed one's start when it is text. A larger file
+    is never read, and nor is a pointer-sized one the batch did not answer
+    for, which is read alone to tell (`uploads.may_be_pointer`).
 
     A task's `public/` lists empty while it holds nothing: git keeps no empty
     folder, so it is there once its first file is (M60), and a listing of it
@@ -137,7 +144,28 @@ async def tree(
         if public and await ctx.forge.content.exists(place):
             return ()
         raise
-    return tuple([await _with_upload(ctx, organiser, place, entry) for entry in entries])
+    small = {
+        entry.token
+        for entry in entries
+        if entry.kind is EntryKind.FILE
+        and entry.token is not None
+        and entry.size is not None
+        and entry.size <= SMALL_FILE
+    }
+    blobs = await ctx.forge.content.read_blobs(organiser.identity, place, small) if small else {}
+    found: list[TreeEntry] = []
+    for entry in entries:
+        content = blobs.get(entry.token) if entry.token is not None else None
+        if content is None:
+            found.append(await _with_upload(ctx, organiser, place, entry))
+            continue
+        upload = upload_info(content)
+        found.append(
+            replace(entry, upload=upload)
+            if upload is not None
+            else replace(entry, start=start_of(content))
+        )
+    return tuple(found)
 
 
 async def _with_upload(
