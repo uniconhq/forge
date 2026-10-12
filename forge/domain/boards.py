@@ -40,7 +40,16 @@ from fractions import Fraction
 
 from forge.domain.definitions import Leaderboard, Over, Penalty, Select, Show, Who
 from forge.domain.names import WorkspaceOwner
-from forge.domain.scoring import BEFORE_REVEAL, EVERYTHING, ZERO, Better, Scored, Seen
+from forge.domain.scoring import (
+    BEFORE_REVEAL,
+    EVERYTHING,
+    ZERO,
+    Better,
+    Points,
+    Scored,
+    Seen,
+    everywhere,
+)
 
 POINTS = "points"
 PENALTY = "penalty"
@@ -251,7 +260,12 @@ def rank(
             row,
             {
                 column.name: _cell(
-                    board, keys, start, scope, seen[column.name], row.entries.get(column.name, ())
+                    board.select,
+                    keys,
+                    start,
+                    scope,
+                    seen[column.name],
+                    row.entries.get(column.name, ()),
                 )
                 for column in view
             },
@@ -382,7 +396,7 @@ def _counts(first: Key, number: Fraction | None) -> bool:
 
 
 def _cell(
-    board: Leaderboard,
+    select: Select,
     keys: Sequence[Key],
     start: datetime,
     scope: Callable[[Show], bool],
@@ -395,7 +409,7 @@ def _cell(
         entry for entry in ordered if entry.state is State.CANDIDATE and entry.scored is not None
     ]
     grading = sum(1 for entry in ordered if entry.state is State.GRADING)
-    if board.select is Select.BEST_PER_GROUP:
+    if select is Select.BEST_PER_GROUP:
         return _per_group(keys, start, scope, seen, candidates, attempts, grading)
 
     def numbers(
@@ -420,7 +434,7 @@ def _cell(
             pool, key=lambda entry: (_order(keys, numbers(entry, reading, at)), _when(entry))
         )
 
-    if board.select is Select.MARKED:
+    if select is Select.MARKED:
         marked = [entry for entry in candidates if entry.marked]
         picked = (
             best(marked, scope, seen)
@@ -442,6 +456,39 @@ def _cell(
         grading,
         (picked.number,),
     )
+
+
+def task_points(column: Column, entries: Sequence[Entry]) -> Points | None:
+    """A row's points on one task as a board over that task alone counts
+    them now: every group in scope, the best submission by points, the
+    earliest of equals (TASK-FORMAT.md section 3.6), so `shown` counts only
+    the groups whose verdict is shown, as every board does. `pending` is the
+    most the groups not shown yet could still add to it, until
+    `pending_until`, the task's reveal: over the row's submissions as each
+    one's own row reads it, its points shown and pending (section 1.7),
+    the best of those sums less `shown`, so the number once every group is
+    shown lies between the two. A run a sealed step stopped reads, until
+    the reveal, as one whose every group is still hidden, so it counts all
+    its points as pending, as its row reads it, and its stop is not told
+    by this number either. None on a task that gives no points.
+    """
+    if column.worth is None:
+        return None
+    seen = Seen(column.revealed)
+    keys = (Key(POINTS, Better.HIGHER),)
+    cell = _cell(Select.BEST, keys, column.release_at, everywhere, seen, entries)
+    shown = cell.numbers.get(POINTS, ZERO)
+    reach = shown
+    for entry in entries:
+        held = entry.state is State.ATTEMPT and not column.revealed
+        if entry.scored is None or not (entry.state is State.CANDIDATE or held):
+            continue
+        at = Seen(column.revealed, held=held)
+        points, pending = entry.scored.points(everywhere, at), entry.scored.pending(at)
+        if points is not None and pending is not None:
+            reach = max(reach, points + pending)
+    pending = reach - shown
+    return Points(shown, pending, column.reveal_at if pending else None)
 
 
 def _per_group(

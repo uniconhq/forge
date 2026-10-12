@@ -28,10 +28,11 @@ from forge.domain.boards import (
     keys_of,
     rank,
     sees,
+    task_points,
 )
 from forge.domain.definitions import Group, Leaderboard, Show
 from forge.domain.names import EntrantOwner
-from forge.domain.scoring import Better, Measure, Scored, score
+from forge.domain.scoring import Better, Measure, Points, Scored, score
 from forge.domain.workflow_definition import Fold
 
 START = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
@@ -575,3 +576,57 @@ def test_each_groups_most_is_worth_times_its_rule_weight_over_the_total() -> Non
     assert group_max(ioi(), Fraction(100)) == {"samples": 0, "small": 30, "large": 70}
     assert group_max({"main": group(each=80, pass_=20)}, Fraction(100)) == {"main": 100}
     assert group_max({"main": group()}, Fraction(100)) == {}
+
+
+HIDDEN_LARGE = {
+    "small": group(pass_=30, show=Show.VERDICT),
+    "large": group(pass_=70, show=Show.AFTER_CLOSE),
+}
+SMALL_AND_LARGE = [*named("small", 2), *named("large", 2)]
+
+
+def test_a_tasks_points_are_what_a_board_over_it_counts_a_hidden_group_pending() -> None:
+    # The first passes small and fails large, the second the other way: before
+    # the reveal only small is shown, so the first's 30 counts, and large's 70
+    # may still come, by the second; after it the second's 70 counts.
+    first = candidate(1, minute(1), graded(SMALL_AND_LARGE, HIDDEN_LARGE, ["large/1"]))
+    second = candidate(2, minute(2), graded(SMALL_AND_LARGE, HIDDEN_LARGE, ["small/1"]))
+    entries = [first, second]
+    for revealed, shown, pending in ((False, 30, 70), (True, 70, 0)):
+        on = column("sum", HIDDEN_LARGE, revealed=revealed)
+        (ranked,) = standings(board(), [on], [row(1, "ana", sum=entries)]).rows
+
+        points = task_points(on, entries)
+
+        assert points == Points(Fraction(shown), Fraction(pending), CLOSE if pending else None)
+        assert ranked.keys[0] == points.shown
+
+
+def test_a_tasks_points_hold_back_a_hidden_groups_points_until_the_reveal() -> None:
+    passed_large = candidate(1, minute(1), graded(SMALL_AND_LARGE, HIDDEN_LARGE, ["small/1"]))
+
+    before = task_points(column("sum", HIDDEN_LARGE), [passed_large])
+    after = task_points(column("sum", HIDDEN_LARGE, revealed=True), [passed_large])
+
+    assert before == Points(Fraction(0), Fraction(70), CLOSE)
+    assert after == Points(Fraction(70), Fraction(0), None)
+
+
+def test_a_run_a_sealed_step_stopped_reads_as_every_group_hidden_until_the_reveal() -> None:
+    hidden = {"main": group(pass_=100, show=Show.AFTER_CLOSE)}
+    failed = graded(named("main", 1), hidden, ["main/1"])
+    held = Entry(1, minute(1), State.ATTEMPT, failed)
+    unheld = candidate(1, minute(1), failed)
+
+    assert task_points(column("sum", hidden), [held]) == task_points(
+        column("sum", hidden), [unheld]
+    )
+    assert task_points(column("sum", hidden), [held]) == Points(Fraction(0), Fraction(100), CLOSE)
+    assert task_points(column("sum", hidden, revealed=True), [held]) == Points(
+        Fraction(0), Fraction(0), None
+    )
+
+
+def test_a_task_with_nothing_submitted_has_nothing_pending_and_one_giving_no_points_none() -> None:
+    assert task_points(column("sum", HIDDEN_LARGE), []) == Points(Fraction(0), Fraction(0), None)
+    assert task_points(column("sum", HIDDEN_LARGE, worth=None), []) is None

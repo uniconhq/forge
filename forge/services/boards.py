@@ -56,6 +56,7 @@ from forge.domain.boards import (
     keys_of,
     rank,
     sees,
+    task_points,
 )
 from forge.domain.definitions import ContestDefinition, Leaderboard, Select
 from forge.domain.definitions import State as ContestState
@@ -66,7 +67,7 @@ from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
 from forge.domain.release import Extension, reveal_of
 from forge.domain.roles import Role, contest_scope, holds
-from forge.domain.scoring import Better, exact
+from forge.domain.scoring import Better, Points, exact
 from forge.domain.sessions import Session
 from forge.domain.yaml_models import Problem
 from forge.log import get_logger
@@ -154,6 +155,62 @@ async def organised(
             current = for_viewer(current, board.rows, row)
         found.append(OrganisedBoard(current, last, tuple(_notes(settings, board, shapes))))
     return tuple(found)
+
+
+async def own_points(
+    ctx: Context,
+    contest: ContestId,
+    settings: ContestDefinition,
+    tasks: Sequence[PublishedTask],
+    owner: WorkspaceOwner,
+) -> dict[str, Points | None]:
+    """Each of `tasks`' points for the row `owner`, by task name, as a board
+    over that task alone counts them now (`task_points`): from the same
+    attempts, scores and times every board reads, so the number agrees with
+    them and holds back what they hold back, a group not shown yet counting
+    only as pending until the task's reveal. None for a task that gives no
+    points or that the contest does not list.
+    """
+    extensions = await timelines.of_owners(ctx, contest, await timelines.rows(ctx, contest))
+    extension = (
+        extensions[owner] if owner in extensions else await timelines.of_owner(ctx, contest, owner)
+    )
+    workspace = ctx.forge.workspaces.workspace_of(contest, owner)
+    found: dict[str, Points | None] = {}
+    for task in tasks:
+        if task.entry is None:
+            found[task.name] = None
+            continue
+        column = _column(ctx, settings, task, list(extensions.values()))
+        rows = (
+            await ctx.db.scalars(
+                select(Grading).where(Grading.task_id == task.id, Grading.workspace_id == workspace)
+            )
+        ).all()
+        grouped: dict[int, list[Grading]] = {}
+        for row in rows:
+            grouped.setdefault(row.submission_number, []).append(row)
+        latest = [max(each, key=lambda row: row.attempt) for each in grouped.values()]
+        lost = await gradings.lost(ctx, latest)
+        await gradings.notice(ctx, latest, lost)
+        scorer = scores.Scorer(ctx, task)
+        entries = [
+            await _entry(
+                ctx,
+                scorer,
+                settings,
+                task,
+                number,
+                min(row.submitted_at for row in attempts),
+                attempts,
+                lost,
+                extension,
+                False,
+            )
+            for number, attempts in grouped.items()
+        ]
+        found[task.name] = task_points(column, entries)
+    return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -479,7 +536,9 @@ async def _entry(
     if graded is None:
         return Entry(number, at, State.VOID, marked=marked)
     state = scores.stands(usable.row, graded)
-    if state is not State.CANDIDATE:
+    if state is State.VOID:
         return Entry(number, at, state, marked=marked)
+    # An attempt a sealed step stopped is scored too, for what its row reads
+    # of it before the reveal (`task_points`); no board ranks by it.
     late = scores.factor(settings, task, extension, at)
     return Entry(number, at, state, await scorer.scored(usable.row, graded, late), marked)

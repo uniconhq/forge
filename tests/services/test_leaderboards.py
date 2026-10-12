@@ -37,6 +37,7 @@ from forge.domain.identity import PLATFORM, User
 from forge.domain.ids import TaskId
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, RoleGrant, Scope
+from forge.domain.scoring import Points
 from forge.domain.sessions import Session
 from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
@@ -197,6 +198,63 @@ async def test_a_visitor_reads_only_the_board_for_everyone_with_no_counts_of_any
     assert (bob.name, bob.rank, bob.keys) == ("bob", 1, keys(65, 120))
     assert (bob.cells["sum"].grading, bob.cells["sum"].submissions) == (None, None)
     assert [(each.task, each.groups) for each in standings.not_in_view] == [("sum", ("large",))]
+
+
+async def test_the_contest_home_gives_a_task_the_points_a_board_over_it_counts(
+    setup: Setup, acme: Acme, ranked: Entered, clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, contest(BOARDS + "  - {name: Sum, who: contestants}\n"))
+
+    async def both() -> tuple[Points | None, Fraction | None]:
+        (task,) = (await contest_home.home(setup, ranked.session, SPRING)).tasks
+        (board,) = await boards.seen(setup, ranked.session, SPRING, "Sum")
+        return task.points, board.rows[0].keys[0]
+
+    # Before the reveal large's results are held back, as the board holds
+    # them: 65 shown, and large's 35 pending until the end.
+    assert await both() == (Points(Fraction(65), Fraction(35), END), Fraction(65))
+    clock.set(END)
+    await identity.current(ranked.session.id, setup=setup)
+    assert await both() == (Points(Fraction(100), Fraction(0), None), Fraction(100))
+
+
+async def test_a_hidden_groups_points_stay_out_of_the_contest_home_until_shown(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    await write_contest(acme.fake, contest(BOARDS))
+    await _three_groups(setup, acme, entered.task)
+    only_large = {
+        **RESULT,
+        "tests": [
+            {"test": "large/1", "outcome": "accepted", "values": {}},
+            {"test": "main/1", "outcome": "wrong_answer", "values": {}},
+            {"test": "small/1", "outcome": "wrong_answer", "values": {}},
+        ],
+    }
+    await _graded(setup, await _submit(setup, acme, entered, "key-0001-large"), only_large)
+
+    (before,) = (await contest_home.home(setup, entered.session, SPRING)).tasks
+    clock.set(END)
+    await identity.current(entered.session.id, setup=setup)
+    (after,) = (await contest_home.home(setup, entered.session, SPRING)).tasks
+
+    assert before.points == Points(Fraction(0), Fraction(35), END)
+    assert after.points == Points(Fraction(35), Fraction(0), None)
+
+
+async def test_only_a_member_of_an_approved_entrant_is_given_points_on_the_contest_home(
+    setup: Setup, acme: Acme, ranked: Entered
+) -> None:
+    ada = await signed_in(setup, acme.fake, 7)
+    acme.fake.add_user(30, "cyd")
+    cyd = await signed_in(setup, acme.fake, 30)
+    await entrants.register(setup, cyd, SPRING)
+
+    for reader in (ada, cyd):
+        (task,) = (await contest_home.home(setup, reader, SPRING)).tasks
+        assert task.points is None
+    (mine,) = (await contest_home.home(setup, ranked.session, SPRING)).tasks
+    assert mine.points is not None
 
 
 async def test_a_contestant_reads_their_own_row_with_its_counts_and_the_hidden_board_waits(
