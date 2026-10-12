@@ -81,12 +81,16 @@ class UploadInfo:
 class File:
     """One file as it was read, with the token a write presents back, and
     `upload` when it is an upload, whose `content` is then the pointer.
+    `version` is a version holding the file as it was read, the one it was
+    read at or the latest change to it, so the same bytes can be read again
+    whole, such as by a download; none when the forge did not say.
     """
 
     path: str
     content: bytes
     token: ConflictToken
     upload: UploadInfo | None = None
+    version: VersionId | None = None
 
 
 class EntryKind(StrEnum):

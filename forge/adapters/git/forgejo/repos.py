@@ -296,7 +296,15 @@ class Repos:
             content = await self.read_blob(as_, owner, name, path, at=str(commit), max_size=size)
             if len(content) != size:
                 raise Unavailable(f"{path} came back as {len(content)} of its {size} bytes")
-        return File(path=path, content=content, token=ConflictToken(str(entry["sha"])))
+        # The commit that last changed the file holds it as read, whatever
+        # the head has moved to since.
+        version = entry.get("last_commit_sha") or at
+        return File(
+            path=path,
+            content=content,
+            token=ConflictToken(str(entry["sha"])),
+            version=VersionId(str(version)) if version else None,
+        )
 
     async def media_door(self, as_: Identity, owner: str, name: str, path: str, *, at: str) -> Door:
         """Where one file's bytes at a version are read whole, big files

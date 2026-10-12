@@ -21,9 +21,13 @@ task's rollback is a save too and the history stays whole.
 A file the organiser uploaded is held in the commit as a pointer to its
 bytes in the forge's large-file store, and is read and listed as an upload,
 with the size and digest of what it holds, so it is never opened as text;
-it is changed by uploading it again (`write_upload`).
+it is changed by uploading it again (`write_upload`). Every read names a
+version holding the file as read, and `download` opens the door to any file
+of a task at such a version, typed or uploaded, for the proxy to stream it
+to the organiser from the forge's store whatever its size.
 """
 
+import re
 import uuid
 from dataclasses import dataclass, replace
 
@@ -47,7 +51,7 @@ from forge.domain.definitions import (
 from forge.domain.errors import AdminOnly, NotFound, PortError
 from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.roles import Role, ScopeKind, holds, scope_of_place, task_scope
-from forge.domain.uploads import may_be_pointer, refuse_pointer, upload_info
+from forge.domain.uploads import Door, may_be_pointer, refuse_pointer, upload_info
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
@@ -59,6 +63,10 @@ from forge.services.publications import Draft, Published
 log = get_logger(__name__)
 
 Place = ContestId | TaskId
+
+COMMIT = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
+"""A commit's id, as a file read gives its version: SHA-1's or SHA-256's."""
+NO_SUCH_VERSION = "The task has no such version."
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +92,28 @@ async def read(
     require(organiser, scope_of_place(place), Role.OBSERVER)
     found = await ctx.forge.content.read_file(organiser.identity, place, check_path(path), at=at)
     return replace(found, upload=upload_info(found.content))
+
+
+@action
+async def download(
+    ctx: Context, organiser: Organiser, task: TaskId, path: str, at: VersionId
+) -> Door:
+    """Where one file of the task is read whole at the version `at`, a
+    commit's id as a file read gives it, and what to present there as the
+    organiser, for the proxy to fetch it and stream it to them: a typed file
+    and an upload alike, an upload as the bytes its pointer names, whatever
+    its size. Any file of the task, `plans/` included, which an observer
+    reads anyway. Needs the observer role reaching the task; `InvalidPath`
+    for a path that is not plain and `NotFound` for a version that is not a
+    commit's id, which the forge would read as a name. Whether the file is
+    there at that version is the forge's to answer when the proxy asks.
+    """
+    require(organiser, task_scope(task), Role.OBSERVER)
+    if COMMIT.fullmatch(at) is None:
+        raise NotFound(NO_SUCH_VERSION)
+    door = await ctx.forge.content.media_door(organiser.identity, task, check_path(path), at=at)
+    log.info("files.download_opened", task=task, user_id=organiser.user.id)
+    return door
 
 
 @action

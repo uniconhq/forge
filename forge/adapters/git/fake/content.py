@@ -6,6 +6,7 @@ scope's three roles are attached together, and `secure` counts each.
 
 from collections.abc import Mapping
 from dataclasses import replace
+from urllib.parse import quote
 
 from forge.adapters.git.fake.state import Repo, State, token_of
 from forge.adapters.git.fake.uploads import FakeUploads, repo_of
@@ -27,10 +28,11 @@ from forge.domain.content import (
     FileSet,
     TreeEntry,
 )
-from forge.domain.errors import Conflict, NotFound, Rejected
+from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
 from forge.domain.roles import Role, Scope
+from forge.domain.uploads import Door
 from forge.port.content import ContentPlace
 from forge.port.uploads import TaskPlace
 
@@ -42,6 +44,7 @@ class FakeContent:
     def __init__(self, state: State, uploads: FakeUploads) -> None:
         self._state = state
         self._uploads = uploads
+        self._doors: dict[str, tuple[Identity, ContentPlace, str, VersionId]] = {}
 
     async def create_contest(self, org: OrgId, key: str, files: Files) -> ContestId:
         self._state.record("create_contest", PLATFORM, org=org, key=key)
@@ -130,7 +133,32 @@ class FakeContent:
         files = self._state.files_at(repo, at)
         if path not in files:
             raise NotFound(f"{path} is not in {place}")
-        return File(path=path, content=files[path], token=token_of(files[path]))
+        return File(
+            path=path,
+            content=files[path],
+            token=token_of(files[path]),
+            version=VersionId(at) if at is not None else _last_change(repo, path),
+        )
+
+    async def media_door(
+        self, as_: Identity, place: ContentPlace, path: str, *, at: VersionId
+    ) -> Door:
+        self._state.record("media_door", as_, place=place, path=path, at=at)
+        self._state.check_up()
+        owner, name = location(place)
+        address = f"/api/v1/repos/{owner}/{name}/media/{quote(path)}?ref={at}"
+        self._doors[address] = (as_, place, path, at)
+        return Door(path=address, authorization=f"fake {address}")
+
+    async def fetch(self, door: Door) -> bytes:
+        """What the proxy gets for a door `media_door` opened: the file's
+        bytes at the version, an upload's as the bytes its pointer names,
+        read as the person the door was opened for, as Forgejo checks it.
+        """
+        as_, place, path, at = self._doors[door.path]
+        if door.authorization != f"fake {door.path}":
+            raise Forbidden("not the credential this door was opened with")
+        return await self.read_media(as_, place, path, at=at, max_size=2**63)
 
     async def read_media(
         self, as_: Identity, place: ContentPlace, path: str, *, at: VersionId, max_size: int
@@ -268,3 +296,16 @@ def _check(repo: Repo, expected: Mapping[str, ConflictToken | None]) -> None:
             raise Conflict(f"{path} already exists")
         if token is not None and token != current:
             raise Conflict(f"{path} has changed since it was read")
+
+
+def _last_change(repo: Repo, path: str) -> VersionId:
+    """The latest version that changed `path`, as Forgejo names the commit
+    a file was last changed in; the head for a file a test put in place
+    without a change.
+    """
+    changed = (
+        change.version
+        for change in reversed(repo.history)
+        if path in repo.touched.get(change.version, set())
+    )
+    return next(changed, VersionId(repo.head))
