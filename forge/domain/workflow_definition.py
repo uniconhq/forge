@@ -179,7 +179,10 @@ class WorkflowInput(Model):
     `options` on an enum; `per_test` on a contestant file given once per
     test; `optional` on an input a task may leave out; and, for the task's
     form only, `title`, `help` and `unit`, which name it to the organiser
-    ("Time limit", "seconds") and change no plan.
+    ("Time limit", "seconds") and change no plan. Only a `number` takes a
+    `unit`, since the form reads it after the title ("Time limit
+    (seconds)"); the workflow's check refuses it on any other type, naming
+    the input.
     """
 
     type: ValueType
@@ -295,9 +298,15 @@ class WorkflowDefinition(Model):
     @model_validator(mode="after")
     def _check(self) -> WorkflowDefinition:
         problems = Problems()
-        for key in self.inputs:
+        for key, declared_input in self.inputs.items():
             if not HANDLE.match(key):
                 problems.add(("inputs", key), _NOT_A_HANDLE)
+            if declared_input.unit is not None and declared_input.type is not Type.NUMBER:
+                problems.add(
+                    ("inputs", key, "unit"),
+                    f"Only a number takes a unit, and {key} is a {declared_input.type}. "
+                    f"Remove the unit, or make {key} a number.",
+                )
         for key in self.test:
             if not HANDLE.match(key):
                 problems.add(("test", key), _NOT_A_HANDLE)

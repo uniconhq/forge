@@ -155,9 +155,44 @@ def test_an_input_names_itself_to_the_organisers_form_and_no_plan_reads_it() -> 
     assert plain.steps == workflow.steps and plain.report == workflow.report
 
 
+@pytest.mark.parametrize("kind", ["text", "boolean", "file", "folder"])
+def test_only_a_number_takes_a_unit_and_the_refusal_names_the_input(kind: str) -> None:
+    document = classic()
+    document["inputs"]["checker"] = {"type": kind, "title": "Checker", "unit": "seconds"}
+
+    assert refused(document) == [
+        {
+            "path": "inputs.checker.unit",
+            "message": f"Only a number takes a unit, and checker is a {kind}. Remove the unit, "
+            "or make checker a number.",
+        }
+    ]
+
+
+def test_an_enum_with_a_unit_is_refused_and_a_number_with_one_is_taken() -> None:
+    document = classic()
+    document["inputs"]["level"] = {"type": "enum", "options": ["low", "high"], "unit": "dB"}
+    document["inputs"]["threshold"] = {"type": "number", "unit": "dB"}
+
+    assert paths(refused(document)) == ["inputs.level.unit"]
+    del document["inputs"]["level"]
+    assert parse_workflow(one_line(document)).inputs["threshold"].unit == "dB"
+
+
 def test_the_seeded_classic_workflow_is_the_one_tested_here() -> None:
     seeded = sibling("deploy", "workflows", "classic", "v2", "workflow.yaml")
     assert parse_workflow(seeded.read_bytes()) == parse_workflow(CLASSIC)
+
+
+def test_every_seeded_workflow_puts_a_unit_only_on_a_number() -> None:
+    seeded = sorted(sibling("deploy", "workflows").glob("*/*/workflow.yaml"))
+
+    assert len(seeded) >= 2
+    for path in seeded:
+        workflow = parse_workflow(path.read_bytes())
+        with_unit = {key for key, declared in workflow.inputs.items() if declared.unit}
+        assert with_unit == {"time_limit", "memory_limit"}, path
+        assert {workflow.inputs[key].type for key in with_unit} == {Type.NUMBER}, path
 
 
 def test_a_new_workflow_starts_as_classic() -> None:
