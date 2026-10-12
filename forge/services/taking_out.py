@@ -128,10 +128,10 @@ async def take_out(ctx: Context, organiser: Organiser, task: TaskId, confirmed: 
         raise TakeOutChanged(_changed(name, count, would), submissions=count, take_out=would.value)
     found = await _settings_file(ctx, contest)
     if would is TakeOut.WITHDRAW:
-        await _withdraw(ctx, contest, found, name)
+        await _withdraw(ctx, contest, found, name, organiser.user.id)
         log.info("tasks.withdrawn", task=task, user_id=organiser.user.id)
         return would
-    await _remove(ctx, contest, found, task, name)
+    await _remove(ctx, contest, found, task, name, organiser.user.id)
     log.info("tasks.removed", task=task, user_id=organiser.user.id)
     return would
 
@@ -159,7 +159,7 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
     problems += checked.problems
     if problems:
         raise InvalidDefinition(CONTEST_FILE, problems)
-    await _write(ctx, contest, found, updated, f"Put {name} back in the contest")
+    await _write(ctx, contest, found, updated, f"Put {name} back in the contest", organiser.user.id)
     places.ahead_at(ctx, task)
     log.info("tasks.put_back", task=task, user_id=organiser.user.id)
     return PutBack(tuple(checked.notes))
@@ -209,22 +209,33 @@ def _edited(name: str, edit: Callable[[], bytes | None]) -> bytes | None:
 
 
 async def _write(
-    ctx: Context, contest: ContestId, found: File, updated: bytes, message: str
+    ctx: Context, contest: ContestId, found: File, updated: bytes, message: str, author: int
 ) -> None:
+    """`updated` written over `contest.yaml` by the platform, the manager
+    who asked named as the change's author, as every organiser's change is.
+    """
     await ctx.forge.content.write_file(
-        PLATFORM, contest, CONTEST_FILE, updated, message=message, expected=found.token
+        PLATFORM,
+        contest,
+        CONTEST_FILE,
+        updated,
+        message=message,
+        expected=found.token,
+        author=author,
     )
     published.forget_contests(ctx)
     places.forget_tasks(ctx, contest)
 
 
-async def _withdraw(ctx: Context, contest: ContestId, found: File, name: str) -> None:
+async def _withdraw(ctx: Context, contest: ContestId, found: File, name: str, author: int) -> None:
     updated = _edited(name, lambda: with_withdrawn(found.content, name, True))
     if updated is not None:
-        await _write(ctx, contest, found, updated, f"Withdraw {name} from the contest")
+        await _write(ctx, contest, found, updated, f"Withdraw {name} from the contest", author)
 
 
-async def _remove(ctx: Context, contest: ContestId, found: File, task: TaskId, name: str) -> None:
+async def _remove(
+    ctx: Context, contest: ContestId, found: File, task: TaskId, name: str, author: int
+) -> None:
     """The task's entry out of `tasks`, then the task at the CI and the
     forge, the one step that cannot be taken back last; what was done
     before a step that fails is put back, as `create` undoes a try.
@@ -245,7 +256,7 @@ async def _remove(ctx: Context, contest: ContestId, found: File, task: TaskId, n
     try:
         updated = _edited(name, lambda: without_entry(found.content, name))
         if updated is not None:
-            await _write(ctx, contest, found, updated, f"Remove {name} from the contest")
+            await _write(ctx, contest, found, updated, f"Remove {name} from the contest", author)
             made.add("contest_entry", contest, _restore(ctx, contest, found, updated))
         account = await org_accounts.identity(ctx, OrgId(contest_scope(contest).org))
         account = await _deactivate(ctx, account, task)

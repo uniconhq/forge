@@ -139,6 +139,18 @@ async def test_a_task_nobody_submitted_to_is_removed_and_the_letters_after_it_mo
     await make_task(setup, acme, "product")
 
 
+async def test_the_change_to_the_settings_names_the_manager_who_took_the_task_out(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await three(setup, acme)
+    manager = await _manager(setup, acme)
+
+    await take_out(setup, manager, PRODUCT, TakeOut.REMOVE)
+
+    latest, *_ = await files.history(setup, acme.ada, SPRING, "contest.yaml")
+    assert latest.author_id == 7
+
+
 async def test_a_task_with_a_submission_is_withdrawn_and_hidden_from_entrants_until_put_back(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
