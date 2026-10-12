@@ -38,7 +38,7 @@ from forge.domain.content import (
 )
 from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
 from forge.domain.identity import PLATFORM, Identity, Platform
-from forge.domain.ids import VersionId
+from forge.domain.ids import VersionId, is_commit
 from forge.domain.uploads import Door
 
 DEFAULT_BRANCH = "main"
@@ -296,14 +296,11 @@ class Repos:
             content = await self.read_blob(as_, owner, name, path, at=str(commit), max_size=size)
             if len(content) != size:
                 raise Unavailable(f"{path} came back as {len(content)} of its {size} bytes")
-        # The commit that last changed the file holds it as read, whatever
-        # the head has moved to since.
-        version = entry.get("last_commit_sha") or at
         return File(
             path=path,
             content=content,
             token=ConflictToken(str(entry["sha"])),
-            version=VersionId(str(version)) if version else None,
+            version=_version(entry, at),
         )
 
     async def media_door(self, as_: Identity, owner: str, name: str, path: str, *, at: str) -> Door:
@@ -392,6 +389,7 @@ class Repos:
                 path=str(entry["path"]),
                 kind=EntryKind.DIRECTORY if entry["type"] == "dir" else EntryKind.FILE,
                 size=int(entry["size"]) if entry.get("size") is not None else None,
+                version=_version(entry) if entry["type"] != "dir" else None,
             )
             for entry in entries
         )
@@ -710,6 +708,18 @@ class Repos:
 
 def _encoded(content: bytes) -> str:
     return base64.b64encode(content).decode()
+
+
+def _version(entry: dict[str, Any], at: str | None = None) -> VersionId | None:
+    """The commit holding a file as it was read or listed, whatever the head
+    has moved to since: the one that last changed it, or the version it was
+    read at when the forge names none and that is a commit's id; none
+    otherwise, since a branch's or a tag's name moves.
+    """
+    found = entry.get("last_commit_sha")
+    if isinstance(found, str) and found:
+        return VersionId(found)
+    return VersionId(at) if at is not None and is_commit(at) else None
 
 
 def _change(commit: dict[str, Any], platform_account: str) -> Change:

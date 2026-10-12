@@ -27,7 +27,6 @@ of a task at such a version, typed or uploaded, for the proxy to stream it
 to the organiser from the forge's store whatever its size.
 """
 
-import re
 import uuid
 from dataclasses import dataclass, replace
 
@@ -49,7 +48,7 @@ from forge.domain.definitions import (
     parse_contest,
 )
 from forge.domain.errors import AdminOnly, NotFound, PortError
-from forge.domain.ids import ContestId, TaskId, VersionId
+from forge.domain.ids import ContestId, TaskId, VersionId, is_commit
 from forge.domain.roles import Role, ScopeKind, holds, scope_of_place, task_scope
 from forge.domain.uploads import Door, may_be_pointer, refuse_pointer, upload_info
 from forge.domain.yaml_models import InvalidDefinition
@@ -64,8 +63,6 @@ log = get_logger(__name__)
 
 Place = ContestId | TaskId
 
-COMMIT = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
-"""A commit's id, as a file read gives its version: SHA-1's or SHA-256's."""
 NO_SUCH_VERSION = "The task has no such version."
 
 
@@ -109,7 +106,7 @@ async def download(
     there at that version is the forge's to answer when the proxy asks.
     """
     require(organiser, task_scope(task), Role.OBSERVER)
-    if COMMIT.fullmatch(at) is None:
+    if not is_commit(at):
         raise NotFound(NO_SUCH_VERSION)
     door = await ctx.forge.content.media_door(organiser.identity, task, check_path(path), at=at)
     log.info("files.download_opened", task=task, user_id=organiser.user.id)

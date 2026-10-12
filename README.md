@@ -859,9 +859,12 @@ to tell, and its content checked as such a pointer
 (`uploads.may_be_pointer`, `upload_info`); a folder of large or of
 ordinary files costs the listing alone.
 
-Every `read` names a `version` holding the file as read: the version it was
-read at, or the commit that last changed it, which is what Forgejo's
-contents API names. `download(organiser, task, path, at)` opens the download
+Every `read` names a `version` holding the file as read: the commit that
+last changed it, which is what Forgejo's contents API names, or, when it
+names none, the version it was read at if that is a commit's id; none
+otherwise, since a branch's or a tag's name moves. A `tree` names each
+file's `version` the same way, the commit holding it as listed, so a file
+listed and not read is downloaded as it was listed. `download(organiser, task, path, at)` opens the download
 door to one file of a task at such a version, for whoever holds a role
 reaching the task, observer or above: the media endpoint for that file at
 that commit and the organiser's own credential, for the proxy to stream it

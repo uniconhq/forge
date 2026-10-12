@@ -1678,6 +1678,49 @@ async def test_a_read_names_the_commit_holding_the_file_and_a_door_reads_it_ther
     assert len(recorder.seen) == seen
 
 
+async def test_a_read_at_a_name_the_forge_names_no_commit_for_names_no_version(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    """A branch's or a tag's name moves, so a read at one with no commit
+    from the forge gives no version a download could be refused at."""
+    repo = "/api/v1/repos/acme/spring.sum.task"
+    recorder.on(
+        "GET", f"{repo}/contents/data/a.txt", ok({"type": "file", "sha": "b-1", "content": "eA=="})
+    )
+
+    read = await forgejo.content.read_file(
+        PLATFORM, TaskId("acme/spring/sum"), "data/a.txt", at=VersionId("published/1")
+    )
+
+    assert read.version is None
+
+
+async def test_a_listing_names_the_commit_holding_each_file_as_listed(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/spring.sum.task"
+    commit = "e" * 40
+    recorder.on(
+        "GET",
+        f"{repo}/contents/data",
+        ok(
+            [
+                {"type": "file", "path": "data/a.bin", "size": 9, "last_commit_sha": commit},
+                {"type": "dir", "path": "data/more", "last_commit_sha": commit},
+                {"type": "file", "path": "data/b.bin", "size": 1},
+            ]
+        ),
+    )
+
+    listed = await forgejo.content.list_tree(PLATFORM, TaskId("acme/spring/sum"), "data")
+
+    assert [(entry.path, entry.version) for entry in listed] == [
+        ("data/a.bin", commit),
+        ("data/more", None),
+        ("data/b.bin", None),
+    ]
+
+
 async def test_an_account_whose_email_is_taken_is_a_conflict_as_a_taken_name_is(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:

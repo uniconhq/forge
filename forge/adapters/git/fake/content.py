@@ -249,7 +249,12 @@ class FakeContent:
                 directory = prefix + rest.split("/", 1)[0]
                 seen.setdefault(directory, TreeEntry(directory, EntryKind.DIRECTORY))
             else:
-                seen[file_path] = TreeEntry(file_path, EntryKind.FILE, len(repo.files[file_path]))
+                seen[file_path] = TreeEntry(
+                    file_path,
+                    EntryKind.FILE,
+                    len(repo.files[file_path]),
+                    version=_last_change(repo, file_path),
+                )
         if path and not seen:
             raise NotFound(f"{path} is not in {place}")
         return tuple(seen.values())
