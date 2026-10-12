@@ -23,7 +23,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.adapters.ci.fake import token_in
 from forge.domain.content import Edit
-from forge.domain.definitions import parse_contest, parse_task
+from forge.domain.definitions import (
+    STARTER_STATEMENT,
+    parse_contest,
+    parse_task,
+    statement_written,
+)
 from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import PLATFORM, AsOrgAccount, User
 from forge.domain.ids import ContestId, OrgId, TaskId
@@ -354,6 +359,46 @@ async def test_a_new_task_is_a_draft_with_nothing_wrong_and_no_publication(
 
     assert (state.draft, state.errors, state.latest) == (True, (), None)
     assert state.head == acme.fake.state.repos[("acme", "spring.sum.task")].head
+    # The starter's placeholder is no statement, and nothing is published.
+    assert (state.statement_written, state.head_statement_written) == (False, False)
+
+
+async def test_a_task_says_whether_its_published_statement_is_written_and_its_heads(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    placeholder = await publish(setup, acme, sum_task)
+    published = await tasks.state(setup, acme.ada, sum_task)
+    head = await acme.fake.content.list_files(PLATFORM, sum_task)
+    kept = await publications.save(
+        setup,
+        acme.ada,
+        sum_task,
+        {"statement.md": Edit(b"Add two numbers.\r\n", head.tokens["statement.md"])},
+        keep_as_draft=True,
+    )
+    drafted = await tasks.state(setup, acme.ada, sum_task)
+    written = await publications.save(setup, acme.ada, sum_task, {})
+    both = await tasks.state(setup, acme.ada, sum_task)
+    blank = await acme.fake.content.list_files(PLATFORM, sum_task)
+    emptied = await publications.save(
+        setup, acme.ada, sum_task, {"statement.md": Edit(b"  \n", blank.tokens["statement.md"])}
+    )
+
+    assert placeholder.number == 1 and isinstance(kept, publications.Draft)
+    assert (published.statement_written, published.head_statement_written) == (False, False)
+    # Written in a draft: the published statement is still the placeholder.
+    assert (drafted.statement_written, drafted.head_statement_written) == (False, True)
+    assert isinstance(written, publications.Published) and isinstance(
+        emptied, publications.Published
+    )
+    assert (both.statement_written, both.head_statement_written) == (True, True)
+    # A blank statement is no statement either.
+    after = await tasks.state(setup, acme.ada, sum_task)
+    assert (after.statement_written, after.head_statement_written) == (False, False)
+    # A placeholder written over the starter's, spaced otherwise, is still it.
+    assert statement_written(b"\nWrite the statement entrants read here.  \r\n") is False
+    assert statement_written(None) is False
+    assert statement_written(STARTER_STATEMENT + b"Add two numbers.\n") is True
 
 
 async def test_a_task_whose_activation_the_ci_refuses_signs_the_org_account_in_again(

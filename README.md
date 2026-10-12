@@ -1010,8 +1010,12 @@ each file under it, named one by one.
 its tasks from: every task the contest's `tasks` lists, in that order,
 each a `TaskStanding` with its name, its letter by its place, its
 `TaskState` as `tasks.state` gives it, the latest publication with its
-number, time and `grading_changed`, and whether a draft with errors sits on
-it, and its `Timeline` from its entry, each time at its default where the
+number, time and `grading_changed`, whether a draft with errors sits on
+it, and whether the statement the latest publication holds is written,
+`statement_written`, and the head's, `head_statement_written`: there, not
+blank, and not the starter's placeholder, `STARTER_STATEMENT` in
+`forge.domain.definitions`, the one copy of it (M57; false when nothing is
+published), each read once per process for each publication or file, and its `Timeline` from its entry, each time at its default where the
 entry gives none: `worth` its groups' total, the sum of their rule
 weights, and none on a task whose latest publication gives no points or
 that has none, `release_at` the contest's start,

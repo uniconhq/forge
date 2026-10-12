@@ -1174,11 +1174,28 @@ leaderboards:
 """.encode()
 
 
+STARTER_STATEMENT = b"Write the statement entrants read here.\n"
+"""The placeholder statement a new task is created with: the one copy of it,
+which `statement_written` compares against."""
+
+
+def statement_written(content: bytes | None) -> bool:
+    """Whether a task's `statement.md` holds a statement: it is there, it is
+    not blank, and it is not the starter's placeholder, compared with its
+    spaces and line endings at either end left out.
+    """
+    if content is None:
+        return False
+    text = content.decode("utf-8", errors="replace").strip()
+    return bool(text) and text != STARTER_STATEMENT.decode().strip()
+
+
 def starter_task(name: str) -> dict[str, bytes]:
     """The files a new task is created with: a `task.yaml` titled `name` that
     grades Python with `unicon/classic@v2` on one group of tests, a
-    placeholder statement, an empty `public/`, and one test, `main/1`, whose
-    input is `1 2` and whose answer is `3`, so the first save publishes.
+    placeholder statement (`STARTER_STATEMENT`), an empty `public/`, and one
+    test, `main/1`, whose input is `1 2` and whose answer is `3`, so the
+    first save publishes.
     """
     task = f"""\
 # The task's settings. The format is TASK-FORMAT.md, section 1.2.
@@ -1194,7 +1211,7 @@ test_groups:
 """
     return {
         TASK_FILE: task.encode(),
-        STATEMENT_FILE: b"Write the statement entrants read here.\n",
+        STATEMENT_FILE: STARTER_STATEMENT,
         f"{PUBLIC_FOLDER}.gitkeep": b"",
         f"{TESTS_FOLDER}main/1/input": b"1 2\n",
         f"{TESTS_FOLDER}main/1/answer": b"3\n",

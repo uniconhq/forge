@@ -49,6 +49,7 @@ from decimal import Decimal
 from forge.domain.contest_entries import Unlisted, with_entry
 from forge.domain.definitions import (
     CONTEST_FILE,
+    STATEMENT_FILE,
     TASK_FILE,
     ContestDefinition,
     ContestTask,
@@ -56,6 +57,7 @@ from forge.domain.definitions import (
     parse_contest,
     parse_task,
     starter_task,
+    statement_written,
     title_of,
 )
 from forge.domain.errors import Conflict, Forbidden, NotFound, PortError
@@ -87,13 +89,18 @@ class TaskState:
     publication, and whether the head is a draft, a state no publication
     froze. A draft carries the errors that keep it from being published, each
     at its YAML path; a draft with none was held back, or not saved since it
-    was made.
+    was made. `statement_written` says whether the latest publication holds
+    a statement, `statement.md` there, not blank and not the starter's
+    placeholder (false when nothing is published), which opening the
+    contest needs (M57); `head_statement_written` says the same of the head.
     """
 
     head: VersionId
     latest: Publication | None
     draft: bool
     errors: tuple[Problem, ...]
+    statement_written: bool
+    head_statement_written: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,10 +244,31 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
     head = await ctx.forge.content.list_files(organiser.identity, task)
     published = await ctx.forge.workspaces.list_publications(task)
     latest = published[-1] if published else None
+    token = head.tokens.get(STATEMENT_FILE)
+    written = token is not None and await _statement_written(ctx, task, head.version, token)
     if latest is not None and latest.version == head.version:
-        return TaskState(head=head.version, latest=latest, draft=False, errors=())
+        return TaskState(head.version, latest, False, (), written, written)
     checked = await publications.check(ctx, organiser.identity, task, head, {})
-    return TaskState(head=head.version, latest=latest, draft=True, errors=checked.errors)
+    published_written = latest is not None and await _statement_written(
+        ctx, task, latest.version, latest.id
+    )
+    return TaskState(head.version, latest, True, checked.errors, published_written, written)
+
+
+async def _statement_written(ctx: Context, task: TaskId, version: VersionId, key: str) -> bool:
+    """Whether the task's `statement.md` at `version` holds a statement,
+    read as the platform once per process for each `key`, the file's token
+    or the publication's id, neither of which ever names other content.
+    """
+
+    async def read() -> bool:
+        try:
+            found = await ctx.forge.content.read_file(PLATFORM, task, STATEMENT_FILE, at=version)
+        except NotFound:
+            return False
+        return statement_written(found.content)
+
+    return await ctx.memo.remembered(f"tasks.statement.{task}.{key}", POINTS_KEPT, read)
 
 
 @action
