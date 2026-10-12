@@ -19,7 +19,7 @@ from sqlalchemy import select, update
 
 from forge.db.tables import Grading
 from forge.domain import exact_json
-from forge.domain.errors import Unavailable
+from forge.domain.errors import Conflict, Unavailable
 from forge.domain.grading import NEVER_BEGAN, OVERDUE, GradingStatus, callback_token, envelope_key
 from forge.domain.ids import RunId
 from forge.domain.roles import Role, Scope
@@ -335,3 +335,45 @@ async def test_a_staff_cancel_or_retry_first_leaves_the_retry_by_itself_nothing_
         (2, 2, False),
     ]
     assert rows[-1].id == retried.id
+
+
+async def test_a_staff_cancel_beside_the_retry_by_itself_waits_for_it_and_finds_the_new_attempt(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    await _submit(setup, acme, entered)
+    (first,) = await _rows(setup)
+    await _broken(setup, first)
+    made = asyncio.Event()
+    go_on = asyncio.Event()
+    real = gradings._next_attempt
+
+    def next_attempt(*args: Any, **kwargs: Any) -> Grading:
+        found = real(*args, **kwargs)
+        made.set()
+        return found
+
+    monkeypatch.setattr(gradings, "_next_attempt", next_attempt)
+
+    async def retry() -> Grading | None:
+        async with setup.unit_of_work() as ctx:
+            found = await gradings.retry_by_itself(ctx, first.id)
+            await go_on.wait()
+            return found
+
+    async def cancel() -> None:
+        await made.wait()
+        cancelling = asyncio.create_task(gradings.cancel(setup, manager, first.id, "Ended."))
+        await asyncio.sleep(0.2)
+        go_on.set()
+        with pytest.raises(Conflict):
+            await cancelling
+
+    retried, _ = await asyncio.gather(retry(), cancel())
+    await setup.settle()
+
+    assert retried is not None
+    assert [(row.attempt, row.status, row.cancel_reason) for row in await _rows(setup)] == [
+        (1, GradingStatus.SYSTEM_ERROR, None),
+        (2, GradingStatus.DISPATCHED, None),
+    ]

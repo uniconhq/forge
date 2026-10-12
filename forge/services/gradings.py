@@ -869,10 +869,13 @@ async def cancel(
     counting as that result; one with no such attempt is void.
     `InvalidReason` for an empty sentence or one over `CANCEL_REASON_MAX`
     characters, `WrongStatus` for a grading that is not a system error, and
-    `Conflict` for one with a later attempt, which is the one to cancel.
+    `Conflict` for one with a later attempt, which is the one to cancel. The
+    task is held alone, as by a retry, so a retry by itself under way lands
+    its attempt first and the cancel finds it.
     """
     sentence = cancel_reason(reason)
     found = await _managed(ctx, organiser, grading, lock=False)
+    await timelines.hold_task(ctx, TaskId(found.task_id))
     gone = await lost(ctx, [found])
     attempts = await _attempts(ctx, [found.submission_id])
     row = next(attempt for attempt in attempts if attempt.id == grading)
