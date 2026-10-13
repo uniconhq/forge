@@ -1027,6 +1027,28 @@ async def test_a_new_place_is_protected_for_the_platform_alone(
     ]
 
 
+@pytest.mark.parametrize(
+    ("found", "put_back"),
+    [({"branch_name": "main"}, 1), ({"branch_name": "main", **PLATFORM_ONLY}, 0)],
+)
+async def test_a_protection_another_maker_put_on_a_new_place_meanwhile_is_put_right(
+    forgejo: ForgejoForge, recorder: Recorder, found: dict[str, object], put_back: int
+) -> None:
+    repo = "/api/v1/repos/acme/spring.contest"
+    _contest_teams_attached(recorder)
+    recorder.on("GET", f"{repo}/branch_protections/main", ok({}, 404), ok(found))
+    recorder.on(
+        "POST",
+        f"{repo}/branch_protections",
+        ok({"message": "Branch protection already exist"}, 403),
+    )
+
+    made = await forgejo.content.secure(ContestId("acme/spring"))
+
+    patched = recorder.sent("PATCH", f"{repo}/branch_protections/main")
+    assert (made, patched) == (put_back, [PLATFORM_ONLY] * put_back)
+
+
 async def test_a_save_the_platform_writes_for_someone_names_them_its_author(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:

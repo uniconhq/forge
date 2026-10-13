@@ -130,7 +130,8 @@ class Repos:
         it, so nothing written can be rewritten, and say whether that had to
         be put back. Forgejo has no switch for force-pushes: a protected
         branch refuses them all. Forgejo refuses a second protection of the
-        branch, so one another maker put there meanwhile counts as there.
+        branch, so one another maker put there meanwhile counts as there, and
+        is read as one found.
 
         `platform_only` lets the platform's account alone push or merge to
         the branch, repository admins included (#443): whoever else may write
@@ -150,9 +151,9 @@ class Repos:
                     json={"branch_name": DEFAULT_BRANCH, **wanted},
                 )
             except Forbidden, Conflict:
-                await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}")
-                return False
-            return True
+                found = json_of(await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}"))
+            else:
+                return True
         if not platform_only or all(found.get(key) == value for key, value in wanted.items()):
             return False
         await self._http.call(PLATFORM, "PATCH", f"{path}/{DEFAULT_BRANCH}", json=wanted)
