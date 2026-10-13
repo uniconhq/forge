@@ -195,13 +195,18 @@ DOMAIN = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9
 """A domain a sign-up takes addresses at: labels of lower-case letters,
 digits and hyphens, two or more, joined by dots, no label starting or ending
 with a hyphen."""
+UNDER = "*."
+"""What a sign-up's domain starts with to take the domain after it and every
+domain under it: `*.nus.edu.sg` takes `nus.edu.sg` and `comp.nus.edu.sg`
+(#439). It stands only as the whole first label; nothing else is wild."""
 
 
 def _domain(value: object) -> str:
-    if not isinstance(value, str) or not DOMAIN.fullmatch(value):
+    if not isinstance(value, str) or not DOMAIN.fullmatch(value.removeprefix(UNDER)):
         raise ValueError(
-            "Give a domain such as u.nus.edu: lower case letters, digits, hyphens and "
-            "dots, with at least one dot, and no dot or hyphen at either end."
+            "Give a domain such as u.nus.edu, or *.nus.edu.sg to take nus.edu.sg and every "
+            "domain under it: lower case letters, digits, hyphens and dots, with at least one "
+            "dot, no dot or hyphen at either end, and * only as the whole first part."
         )
     return value
 
@@ -463,7 +468,10 @@ class ContestTask(Model):
     """A task's whole timeline in the contest: what it is worth, when it is
     released, falls due and closes, how much a late day takes off, and how
     many of its submissions a row may mark. Every time but `due` defaults to
-    the contest's own.
+    the contest's own. A `withdrawn` task stays in the list, keeping its
+    place and so its letter, but entrants no longer see it or submit to it
+    and no leaderboard counts it; its submissions stay for the organisers,
+    and taking the key out puts it back as it was (#450).
     """
 
     id: TaskHandle
@@ -473,6 +481,7 @@ class ContestTask(Model):
     late_per_day: Number | None = None
     closes: AwareTime | None = None
     marks: Annotated[int, Field(strict=True, ge=1, le=10)] | None = None
+    withdrawn: Annotated[bool, Field(strict=True)] = False
 
 
 _TIMES = {
@@ -1165,11 +1174,29 @@ leaderboards:
 """.encode()
 
 
+STARTER_STATEMENT = b"Write the statement entrants read here.\n"
+"""The placeholder statement a new task is created with: the one copy of it,
+which `statement_written` compares against."""
+
+
+def statement_written(content: bytes | None) -> bool:
+    """Whether a task's `statement.md` holds a statement: it is there, it is
+    not blank, and it is not the starter's placeholder, compared with its
+    spaces and line endings at either end left out.
+    """
+    if content is None:
+        return False
+    text = content.decode("utf-8", errors="replace").strip()
+    return bool(text) and text != STARTER_STATEMENT.decode().strip()
+
+
 def starter_task(name: str) -> dict[str, bytes]:
     """The files a new task is created with: a `task.yaml` titled `name` that
     grades Python with `unicon/classic@v2` on one group of tests, a
-    placeholder statement, an empty `public/`, and one test, `main/1`, whose
-    input is `1 2` and whose answer is `3`, so the first save publishes.
+    placeholder statement (`STARTER_STATEMENT`), no `public/`, which its first
+    picture makes, since git keeps no empty folder, and one
+    test, `main/1`, whose input is `1 2` and whose answer is `3`, so the
+    first save publishes.
     """
     task = f"""\
 # The task's settings. The format is TASK-FORMAT.md, section 1.2.
@@ -1185,8 +1212,7 @@ test_groups:
 """
     return {
         TASK_FILE: task.encode(),
-        STATEMENT_FILE: b"Write the statement entrants read here.\n",
-        f"{PUBLIC_FOLDER}.gitkeep": b"",
+        STATEMENT_FILE: STARTER_STATEMENT,
         f"{TESTS_FOLDER}main/1/input": b"1 2\n",
         f"{TESTS_FOLDER}main/1/answer": b"3\n",
     }

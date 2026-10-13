@@ -21,10 +21,13 @@ from forge.domain.release import (
     is_running,
     late_days,
     openness,
+    reached,
     released,
     reveal_of,
     visible,
+    withdrawn,
 )
+from forge.domain.yaml_models import InvalidDefinition
 
 START = datetime(2026, 6, 1, 9, tzinfo=UTC)
 END = START + timedelta(hours=5)
@@ -76,6 +79,20 @@ def test_a_task_is_not_released_before_its_contest_is_published_and_started(
     assert not released(the_contest, "a", now)
     assert not visible(the_contest, "a", now)
     assert openness(the_contest, "a", now) == Openness(False, Closed.NOT_RELEASED)
+
+
+def test_a_withdrawn_task_is_neither_released_nor_open_though_its_timeline_reached_it() -> None:
+    out = contest(tasks="[{id: a, withdrawn: true}, {id: b}]")
+
+    assert (released(out, "a", DURING), visible(out, "a", DURING)) == (False, False)
+    assert reached(out, "a", DURING)
+    assert withdrawn(out, "a") and not withdrawn(out, "b")
+    assert openness(out, "a", DURING) == Openness(False, Closed.WITHDRAWN)
+    assert openness(out, "a", START - SECOND) == Openness(False, Closed.WITHDRAWN)
+    assert released(out, "b", DURING)
+    assert out.label_of("b") == "B"
+    with pytest.raises(InvalidDefinition):
+        contest(tasks="[{id: a, withdrawn: yes}]")
 
 
 def test_a_released_task_stays_visible_after_the_end_until_archived() -> None:

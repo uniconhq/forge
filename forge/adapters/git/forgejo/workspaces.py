@@ -88,6 +88,17 @@ class ForgejoWorkspaces:
             raise NotFound(f"{task} is not a task of the contest {workspace} is in")
         await self._open(ref, ref.submission_repo(task_ref.task), member_ids, reserve=True)
 
+    async def delete_submission_place(self, workspace: WorkspaceId, task: TaskId) -> None:
+        ref = parse_workspace(workspace)
+        repo = ref.submission_repo(parse_task(task).task)
+        try:
+            held = await self.list_submissions(workspace, task)
+        except NotFound:
+            return
+        if held:
+            raise Conflict(f"{repo} holds {len(held)} submissions")
+        await self._repos.delete(ref.org, repo)
+
     async def _open(
         self,
         ref: WorkspaceRef,
@@ -269,6 +280,7 @@ class ForgejoWorkspaces:
                     sealed=note.sealed,
                     measures=note.measures,
                     titles=note.titles,
+                    meanings=note.meanings,
                     at=datetime.fromisoformat(str(commit["created"])),
                 )
             )

@@ -49,7 +49,7 @@ class ForgejoForge:
         self._client = http
 
         users = Users(http)
-        repos = Repos(http, platform_account=config.platform_account)
+        repos = Repos(http, platform_account=config.platform_account, public_url=config.public_url)
         teams = Teams(http)
         oauth = OAuth(
             http,
@@ -63,7 +63,7 @@ class ForgejoForge:
             oauth, users, public_url=config.public_url, sign_ups_open=config.sign_ups_open
         )
         self.orgs = ForgejoOrgs(http, teams, users, platform_account=config.platform_account)
-        self.content = ForgejoContent(repos, teams)
+        self.content = ForgejoContent(repos, teams, users)
         self.workspaces = ForgejoWorkspaces(repos, users, teams)
         self.threads = ForgejoThreads(http)
         self.uploads = ForgejoUploads(http)

@@ -20,6 +20,12 @@ without it is refused (P1): a default of `false` would fail open, a
 forgotten mark silently unsealing every task that uses the primitive.
 `secret: true` on an input port says the image keeps what arrives there from
 any program it runs from another port.
+
+The `outcome` port may say, under `outcomes`, what each outcome the step can
+report means, for the workflow editor's drawer: `accepted: the source
+compiles`, `compile_error: it does not compile` (P2). The keys are the words
+a step may report, and the port is the only one that takes it. Like a title
+or a description, it changes nothing a plan holds.
 """
 
 import re
@@ -46,6 +52,18 @@ DECLARATION_FILE = "primitive.yaml"
 IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$")
 PORT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 LIMIT_NAMES = ("time_ms", "cpu_ms", "memory_mb", "pids", "output_mb", "gpus")
+STEP_OUTCOMES = (
+    "accepted",
+    "wrong_answer",
+    "time_limit",
+    "memory_limit",
+    "output_limit",
+    "runtime_error",
+    "compile_error",
+)
+"""The outcomes a step may report, in the runner's order: `skipped` is the
+harness's word for a test it did not run, and a primitive that could not
+work says so with `error`, which becomes a `system_error`."""
 BATCH_SCALED = ("time_ms", "cpu_ms")
 """The limits a batch step sums over its items; the others hold for each
 item as they are."""
@@ -67,11 +85,26 @@ Image = Annotated[str, PlainValidator(_image)]
 Limit = Annotated[int, Field(strict=True, ge=1)]
 
 
+def _outcome_word(value: object) -> str:
+    if not isinstance(value, str) or value not in STEP_OUTCOMES:
+        raise ValueError(
+            f"{value} is not an outcome a step can report. Use "
+            f"{', '.join(STEP_OUTCOMES[:-1])} or {STEP_OUTCOMES[-1]}."
+        )
+    return value
+
+
+OutcomeWord = Annotated[str, PlainValidator(_outcome_word)]
+"""An outcome a step may report, one of `STEP_OUTCOMES`."""
+
+
 class Port(Model):
     """One input or output: its type, the options an enum allows, whether
     it may be left out, on an input whether the primitive runs what arrives
-    there and whether it keeps it secret from the program it runs, and a
-    sentence for the workflow editor saying what it takes or gives back.
+    there and whether it keeps it secret from the program it runs, a
+    sentence for the workflow editor saying what it takes or gives back,
+    and, on the `outcome` port, what each outcome the step can report
+    means, in the order the file gives them.
     """
 
     type: Type
@@ -80,10 +113,17 @@ class Port(Model):
     runs: Flag | None = None
     secret: Flag = False
     description: Line | None = None
+    outcomes: dict[OutcomeWord, Line] | None = None
 
     @model_validator(mode="after")
     def _check(self) -> Port:
         problems = Problems()
+        if self.outcomes is not None and not self.outcomes:
+            problems.add(
+                ("outcomes",),
+                "Give each outcome the step can report with a line saying when, such as "
+                "accepted: the source compiles.",
+            )
         if self.type is Type.ENUM and self.options is None:
             problems.add(("options",), "List the options to choose from.")
         if self.type is not Type.ENUM and self.options is not None:
@@ -174,6 +214,13 @@ class PrimitiveDeclaration(Model):
                 problems.add(
                     ("inputs", name, "runs"), "This applies only to a file or folder port."
                 )
+        for side, ports in (("inputs", self.inputs), ("outputs", self.outputs)):
+            for name, port in ports.items():
+                if port.outcomes is not None and port.type is not Type.OUTCOME:
+                    problems.add(
+                        (side, name, "outcomes"),
+                        "Only the outcome port says what each outcome means. Remove this.",
+                    )
         for name, port in self.outputs.items():
             if port.runs is not None:
                 problems.add(("outputs", name, "runs"), "This applies only to an input.")

@@ -86,9 +86,11 @@ async def test_a_contest_manager_reads_and_writes_it_and_a_stranger_does_not(
     eve_credential = acme.fake.mint(30)
 
     found = await acme.fake.content.read_file(bob.identity, spring, "contest.yaml")
-    await acme.fake.content.write_file(
-        bob.identity, spring, "notes.md", b"x", message="Notes", expected=None
-    )
+    # The platform alone writes a contest's files at the forge (#443).
+    with pytest.raises(Forbidden, match="protected branch"):
+        await acme.fake.content.write_file(
+            bob.identity, spring, "notes.md", b"x", message="Notes", expected=None
+        )
 
     assert found.content.startswith(b"# The contest's settings")
     with pytest.raises(Forbidden):

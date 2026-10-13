@@ -12,7 +12,15 @@ from typing import Any
 import pytest
 
 from forge.domain.errors import InvalidName
-from forge.domain.plans import check_workflow, reserved_inputs, stray_units
+from forge.domain.meanings import ValueMeaning
+from forge.domain.plans import (
+    check_workflow,
+    reported,
+    reserved_inputs,
+    stray_report_units,
+    stray_units,
+    value_meanings,
+)
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.types import Type
 from forge.domain.workflow_definition import (
@@ -126,7 +134,14 @@ def test_the_classic_workflow_parses() -> None:
     )
     assert (run.per_test, check.per_test) == (True, True)
     assert run.with_["time_limit"] == "${{ inputs.time_limit }}"
-    assert workflow.report["log"] == "${{ steps.compile.compile_log }}"
+    log = workflow.report["log"]
+    assert isinstance(log, Meaning)
+    assert (log.from_, log.title, log.unit, log.fold) == (
+        "${{ steps.compile.compile_log }}",
+        "Compile log",
+        None,
+        None,
+    )
     time_ms = workflow.report["time_ms"]
     assert isinstance(time_ms, Meaning)
     assert (time_ms.from_, time_ms.fold, time_ms.better, time_ms.at_least, time_ms.at_most) == (
@@ -136,6 +151,7 @@ def test_the_classic_workflow_parses() -> None:
         0,
         None,
     )
+    assert (time_ms.title, time_ms.unit) == ("Run time", "ms")
     assert check_workflow(workflow, SEEDED) == []
 
 
@@ -224,6 +240,93 @@ def test_a_version_made_with_a_stray_unit_still_reads_with_the_unit_dropped() ->
     assert workflow.inputs["time_limit"].shown_unit == "seconds"
 
 
+def test_a_reported_value_names_itself_to_pages_and_no_plan_reads_it() -> None:
+    workflow = parse_workflow(CLASSIC)
+    document = classic()
+    for entry in document["report"].values():
+        entry.pop("title", None)
+        entry.pop("unit", None)
+    plain = parse_workflow(one_line(document))
+
+    assert value_meanings(workflow, reported(workflow, SEEDED)) == (
+        ValueMeaning("time_ms", "Run time", "ms"),
+        ValueMeaning("memory_kb", "Memory used", "KB"),
+        ValueMeaning("log", "Compile log"),
+    )
+    assert value_meanings(plain, reported(plain, SEEDED)) == (
+        ValueMeaning("time_ms"),
+        ValueMeaning("memory_kb"),
+        ValueMeaning("log"),
+    )
+    assert check_workflow(plain, SEEDED) == check_workflow(workflow, SEEDED) == []
+    assert plain.steps == workflow.steps
+    assert plain.report == {
+        name: entry.model_copy(update={"title": None, "unit": None})
+        for name, entry in workflow.report.items()
+        if isinstance(entry, Meaning)
+    }
+
+
+def test_a_text_value_takes_a_title_with_from_alone_and_the_short_form_has_none() -> None:
+    document = classic()
+    document["report"]["log"] = {"from": "${{ steps.compile.compile_log }}", "title": "Log"}
+    document["report"]["raw"] = "${{ steps.compile.compile_log }}"
+    workflow = parse_workflow(one_line(document))
+
+    assert checked(document) == []
+    assert stray_report_units(workflow, SEEDED) == []
+    assert value_meanings(workflow, reported(workflow, SEEDED))[-2:] == (
+        ValueMeaning("log", "Log"),
+        ValueMeaning("raw"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("entry", "path"),
+    [
+        ({"from": "${{ steps.compile.compile_log }}", "unit": "lines"}, "report.log.unit"),
+        (
+            {"from": "${{ steps.compile.compile_log }}", "title": "Log", "unit": "B"},
+            "report.log.unit",
+        ),
+    ],
+)
+def test_only_a_reported_number_takes_a_unit_and_the_refusal_names_the_value(
+    entry: dict[str, str], path: str
+) -> None:
+    document = classic()
+    document["report"]["log"] = entry
+    workflow = parse_workflow(one_line(document))
+
+    assert stray_report_units(workflow, SEEDED) == [
+        {"path": path, "message": "Only a number takes a unit, and log is text. Remove the unit."}
+    ]
+    assert stray_report_units(parse_workflow(CLASSIC), SEEDED) == []
+
+
+def test_a_version_made_with_a_unit_on_a_reported_text_reads_with_it_dropped() -> None:
+    document = classic()
+    document["report"]["log"] = {
+        "from": "${{ steps.compile.compile_log }}",
+        "title": "Compile log",
+        "unit": "lines",
+    }
+    workflow = parse_workflow(one_line(document))
+
+    assert check_workflow(workflow, SEEDED) == []
+    assert value_meanings(workflow, reported(workflow, SEEDED))[-1] == ValueMeaning(
+        "log", "Compile log"
+    )
+
+
+@pytest.mark.parametrize("key", ["title", "unit"])
+def test_a_reported_values_title_and_unit_are_each_one_line(key: str) -> None:
+    document = classic()
+    document["report"]["time_ms"][key] = "Run\ntime"
+
+    assert paths(refused(document)) == [f"report.time_ms.{key}"]
+
+
 def test_the_seeded_classic_workflow_is_the_one_tested_here() -> None:
     seeded = sibling("deploy", "workflows", "classic", "v2", "workflow.yaml")
     assert parse_workflow(seeded.read_bytes()) == parse_workflow(CLASSIC)
@@ -237,6 +340,16 @@ def test_every_seeded_workflow_puts_a_unit_only_on_a_number() -> None:
         workflow = parse_workflow(path.read_bytes())
         with_unit = {key for key, declared in workflow.inputs.items() if declared.unit}
         assert {workflow.inputs[key].type for key in with_unit} <= {Type.NUMBER}, path
+        assert stray_report_units(workflow, SEEDED) == [], path
+
+
+def test_every_seeded_workflow_names_each_value_it_reports() -> None:
+    seeded = sorted(sibling("deploy", "workflows").glob("*/*/workflow.yaml"))
+
+    for path in seeded:
+        workflow = parse_workflow(path.read_bytes())
+        meanings = value_meanings(workflow, reported(workflow, SEEDED))
+        assert meanings and all(meaning.title for meaning in meanings), path
 
 
 def test_a_new_workflow_starts_as_classic() -> None:
@@ -898,8 +1011,8 @@ def test_an_optional_input_never_says_which_way_is_better() -> None:
             "\n  dir: {type: enum, options: [higher, lower], optional: true}\ntest:\n",
         )
         .replace(
-            "better: lower, at_least: 0}\n  log:",
-            'better: "${{ inputs.dir }}", at_least: 0}\n  log:',
+            "    better: lower\n    at_least: 0\n  log:",
+            '    better: "${{ inputs.dir }}"\n    at_least: 0\n  log:',
         )
     )
 

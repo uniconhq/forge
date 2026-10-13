@@ -22,6 +22,7 @@ import pytest
 from forge.adapters.ci.woodpecker import WoodpeckerCi
 from forge.adapters.ci.woodpecker.ci_state import read_state
 from forge.adapters.git.forgejo import ForgejoForge
+from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, AsUser, OrgAccountRef
 from forge.domain.ids import OrgId, ThreadId
@@ -152,7 +153,31 @@ async def test_an_org_with_its_roles_and_a_contest_with_its_files(
     assert [change.message for change in history] == ["Rename", "Create"]
     older = await forge.content.read_file(PLATFORM, contest, "contest.yaml", at=history[1].version)
     assert older.content == b"name: Spring\n"
-    assert [entry.path for entry in await forge.content.list_tree(PLATFORM, task)] == ["task.yaml"]
+    (listed,) = await forge.content.list_tree(PLATFORM, task)
+    assert listed.path == "task.yaml" and listed.token is not None
+    # The listing's token names the blob, which one batched read gives back.
+    blobs = await forge.content.read_blobs(PLATFORM, task, [ConflictToken(listed.token)])
+    assert blobs == {
+        listed.token: (await forge.content.read_file(PLATFORM, task, "task.yaml")).content
+    }
+    # The person is an admin of the org, and still the platform alone writes
+    # the task's files (#443); one it writes for them names them its author.
+    held = await forge.content.read_file(person, task, "task.yaml")
+    with pytest.raises(Forbidden):
+        await forge.content.write_file(
+            person, task, "task.yaml", b"name: Pushed\n", message="Push", expected=held.token
+        )
+    await forge.content.write_file(
+        PLATFORM,
+        task,
+        "task.yaml",
+        b"name: Saved\n",
+        message="Save",
+        expected=held.token,
+        author=user_id,
+    )
+    (saved, _) = await forge.content.history(PLATFORM, task)
+    assert (saved.message, saved.author_id) == ("Save", user_id)
 
     await forge.orgs.grant_role(user_id, Scope(org, "spring"), Role.MANAGER)
     assert RoleGrant(Scope(org, "spring"), Role.MANAGER) in await forge.orgs.roles_of(person)

@@ -110,6 +110,9 @@ def test_two_workflows_share_what_they_declare_alike_and_rename_the_rest() -> No
     meaning = combined.report["time_ms_2"]
     assert not isinstance(meaning, str)
     assert meaning.from_ == "${{ steps.run-2.time_ms }}"
+    titled = combined.report["time_ms"]
+    assert not isinstance(titled, str)
+    assert (titled.title, titled.unit, meaning.title) == ("Run time", "ms", None)
 
 
 def test_inputs_that_differ_only_in_their_form_text_are_shared_with_the_text_kept() -> None:

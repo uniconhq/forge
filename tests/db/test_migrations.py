@@ -53,6 +53,7 @@ TABLES = {
     "names",
     "invites",
     "marks",
+    "regrades",
 }
 
 
@@ -538,6 +539,38 @@ def test_a_submission_staff_cancelled_before_reasons_is_given_the_stock_one(
         (1, 2, None),
         (2, 1, None),
         (3, 1, "The checker broke on this one."),
+    ]
+    upgrade_to_head(migrated_database_url)
+
+
+def test_going_back_from_over_the_limit_cancels_saying_why(migrated_database_url: str) -> None:
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        for attempt, status, limit in ((1, "system_error", None), (2, "over_limit", 10)):
+            connection.execute(
+                text(
+                    "INSERT INTO gradings (id, task_id, workspace_id, submission_id, "
+                    "submission_number, submission_version, submitted_at, publication_id, "
+                    "attempt, status, submission_limit) VALUES (gen_random_uuid(), "
+                    "'acme/spring/sum', 'acme/spring/@u7', 'acme/spring/@u7/sum#1', 1, 'c', "
+                    "now(), 'acme/spring/sum#1', :attempt, :status, :limit)"
+                ),
+                {"attempt": attempt, "status": status, "limit": limit},
+            )
+    engine.dispose()
+
+    command.downgrade(alembic_config(migrated_database_url), "0019")
+
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        found = connection.execute(
+            text("SELECT attempt, status, cancel_reason FROM gradings ORDER BY attempt")
+        ).all()
+    engine.dispose()
+    # Void as it was: a cancel with a sentence its contestant reads.
+    assert [tuple(row) for row in found] == [
+        (1, "system_error", None),
+        (2, "cancelled", "Not graded: you had reached the limit of 10 submissions for this task."),
     ]
     upgrade_to_head(migrated_database_url)
 

@@ -35,6 +35,7 @@ from forge.domain.definitions import (
     TaskDefinition,
     parse_contest,
     parse_task,
+    statement_written,
     worth_of,
 )
 from forge.domain.errors import InvalidPath, NotFound, PortError, PublicFileTooLarge, Rejected
@@ -213,6 +214,23 @@ async def statement(ctx: Context, published: PublishedTask) -> str:
     except NotFound:
         return ""
     return found.content.decode("utf-8", errors="replace")
+
+
+async def statement_written_at(ctx: Context, task: TaskId, version: VersionId, key: str) -> bool:
+    """Whether the task's `statement.md` at `version` holds a statement, not
+    blank and not the starter's placeholder (`statement_written`, M57), read
+    as the platform once per process for each `key`, the file's token or a
+    publication's id, neither of which ever names other content.
+    """
+
+    async def read() -> bool:
+        try:
+            found = await ctx.forge.content.read_file(PLATFORM, task, STATEMENT_FILE, at=version)
+        except NotFound:
+            return False
+        return statement_written(found.content)
+
+    return await ctx.memo.remembered(f"published.statement.{task}.{key}", FORM_KEPT, read)
 
 
 @dataclass(frozen=True, slots=True)

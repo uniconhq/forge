@@ -21,7 +21,7 @@ from forge.domain.ids import TaskId
 from forge.domain.roles import Role, Scope
 from forge.domain.uploads import pointer_text
 from forge.runtime.setup import Setup
-from forge.services import contest_home, contests, landing, publications, uploads
+from forge.services import contest_home, contests, files, landing, publications, uploads
 from forge.services.published import PUBLIC_MOST
 from forge.testing import register_entrant
 from tests.services.conftest import (
@@ -42,13 +42,16 @@ DATA = b"a dataset, pretend it is large\n" * 32
 
 
 async def _save(setup: Setup, acme: Acme, task: TaskId, files: dict[str, bytes]) -> None:
-    """ada's save of `files` over the task, published."""
+    """ada's save of `files` over the task, published, confirmed, since a
+    save asks first once the contest has started.
+    """
     head = await acme.fake.content.list_files(PLATFORM, task)
     result = await publications.save(
         setup,
         acme.ada,
         task,
         {path: Edit(content, head.tokens.get(path)) for path, content in files.items()},
+        confirm=True,
     )
     assert isinstance(result, publications.Published), result
 
@@ -270,6 +273,7 @@ async def test_an_upload_under_public_is_served_by_its_bytes(
         acme.ada,
         public,
         {"public/data.bin": Edit(Uploaded(slot.id), head.tokens.get("public/data.bin"))},
+        confirm=True,
     )
     assert isinstance(result, publications.Published), result
     stored = await acme.fake.content.read_file(PLATFORM, public, "public/data.bin")
@@ -311,3 +315,30 @@ async def test_another_orgs_contest_is_no_such_task(
             await landing.public_file(setup, task, "public/figure.png")
         with pytest.raises(NotFound):
             await contest_home.public_file(setup, bob, task, "public/figure.png")
+
+
+async def test_a_task_with_nothing_under_public_lists_it_empty_and_serves_nothing_there(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    # The starter holds no public/: git keeps no empty folder, and the first
+    # picture makes it.
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
+    await _save(setup, acme, sum_task, {"statement.md": NOTES})
+    held = acme.fake.state.repos[("acme", "spring.sum.task")].files
+    assert not any(path.startswith("public/") for path in held)
+    ada = await signed_in(setup, acme.fake, 7)
+
+    listed = await files.tree(setup, acme.ada, sum_task, "public")
+
+    assert listed == ()
+    with pytest.raises(NotFound):
+        await files.tree(setup, acme.ada, sum_task, "data")
+    with pytest.raises(NotFound):
+        await landing.public_file(setup, sum_task, "public/figure.png")
+    with pytest.raises(NotFound):
+        await contest_home.public_file(setup, ada, sum_task, "public/figure.png")
+    # The first picture makes the folder, published with the save.
+    await _save(setup, acme, sum_task, {"public/figure.png": FIGURE})
+    (entry,) = await files.tree(setup, acme.ada, sum_task, "public")
+    assert entry.path == "public/figure.png"
+    assert (await landing.public_file(setup, sum_task, "public/figure.png")).content == FIGURE

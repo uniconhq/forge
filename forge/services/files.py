@@ -1,13 +1,20 @@
-"""A contest's or a task's files, read and written through the port as the
-organiser doing it, so the history of each file is theirs and the forge's own
-permission check stays underneath the platform's. Reading needs the observer
-role at the place and writing the manager role.
+"""A contest's or a task's files, read through the port as the organiser
+doing it, so the forge's own permission check stays underneath the
+platform's for every read, and written by the platform with the organiser as
+the change's author, so the history of each file is theirs. A contest's and
+a task's files are written by the platform alone at the forge (#443): no
+role there writes them, so everything that changes them comes through the
+package, an organiser's edits through here and `publications.save`, and the
+checks here are the only gate for those. Reading
+needs the observer role at the place and writing the manager role.
 
 Every write carries the token the file was read with, and a file that has
 moved since is `Conflict`, with nothing written. A write to a contest's
 `contest.yaml` is validated first and refused whole when it is not valid,
-or when it moves a task's timeline behind what rows already did or puts a
-worth or a due on a task that gives no points (`timelines.check_contest`),
+or when it moves a task's timeline behind what rows already did, puts a
+worth or a due on a task that gives no points, or opens the contest while a
+task it lists is not published or its statement is not written
+(`timelines.check_contest`),
 or when a board asks what a covered task's latest publication does not give
 or a task's marks fall below what a row holds (`boards.check_contest`),
 and a manager's change to one of its admin-only keys is refused naming each.
@@ -31,6 +38,7 @@ import uuid
 from dataclasses import dataclass, replace
 
 from forge.domain.content import (
+    SMALL_FILE,
     Change,
     ConflictToken,
     Edit,
@@ -39,15 +47,18 @@ from forge.domain.content import (
     TreeEntry,
     Uploaded,
     check_path,
+    start_of,
 )
 from forge.domain.definitions import (
     CONTEST_FILE,
+    PUBLIC_FOLDER,
     ContestDefinition,
     admin_only_changes,
     admin_only_refusal,
     parse_contest,
 )
 from forge.domain.errors import AdminOnly, NotFound, PortError
+from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, VersionId, is_commit
 from forge.domain.roles import Role, ScopeKind, holds, scope_of_place, task_scope
 from forge.domain.uploads import Door, may_be_pointer, refuse_pointer, upload_info
@@ -55,7 +66,7 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, publications, published, timelines
+from forge.services import boards, places, publications, published, timelines
 from forge.services.access import Organiser, require
 from forge.services.publications import Draft, Published
 
@@ -118,15 +129,51 @@ async def tree(
     ctx: Context, organiser: Organiser, place: Place, path: str = ""
 ) -> tuple[TreeEntry, ...]:
     """The files and folders directly under `path`, each file that is an
-    upload with the size and digest of what it holds. Only a file whose size
-    is a pointer's is read to tell (`uploads.may_be_pointer`), so a folder of
-    large files or of typed ones costs no read but the listing.
+    upload with the size and digest of what it holds, and each small text
+    file with its `start` (M67), so a folder of a hundred tests is one
+    listing per test and not one read per file. Every file of at most
+    `SMALL_FILE` bytes is read, all of them in one batch (`read_blobs`):
+    that tells a typed file from an upload, whose pointer is never shown as
+    its start, and gives a typed one's start when it is text. A larger file
+    is never read, and nor is a pointer-sized one the batch did not answer
+    for, which is read alone to tell (`uploads.may_be_pointer`).
+
+    A task's `public/` lists empty while it holds nothing: git keeps no empty
+    folder, so it is there once its first file is (M60), and a listing of it
+    before that is not a missing folder but an empty one.
     """
     require(organiser, scope_of_place(place), Role.OBSERVER)
-    entries = await ctx.forge.content.list_tree(
-        organiser.identity, place, check_path(path) if path else ""
-    )
-    return tuple([await _with_upload(ctx, organiser, place, entry) for entry in entries])
+    folder = check_path(path) if path else ""
+    try:
+        entries = await ctx.forge.content.list_tree(organiser.identity, place, folder)
+    except NotFound:
+        at_task = scope_of_place(place).kind is ScopeKind.TASK
+        public = at_task and f"{folder.rstrip('/')}/" == PUBLIC_FOLDER
+        if public and await ctx.forge.content.exists(place):
+            return ()
+        raise
+    small = {
+        ConflictToken(entry.token)
+        for entry in entries
+        if entry.kind is EntryKind.FILE
+        and entry.token is not None
+        and entry.size is not None
+        and entry.size <= SMALL_FILE
+    }
+    blobs = await ctx.forge.content.read_blobs(organiser.identity, place, small) if small else {}
+    found: list[TreeEntry] = []
+    for entry in entries:
+        content = blobs.get(ConflictToken(entry.token)) if entry.token is not None else None
+        if content is None:
+            found.append(await _with_upload(ctx, organiser, place, entry))
+            continue
+        upload = upload_info(content)
+        found.append(
+            replace(entry, upload=upload)
+            if upload is not None
+            else replace(entry, start=start_of(content))
+        )
+    return tuple(found)
 
 
 async def _with_upload(
@@ -188,12 +235,13 @@ async def write(
     *,
     message: str | None = None,
     confirm: bool = False,
+    asked: str | None = None,
     keep_as_draft: bool = False,
 ) -> Written | Published | Draft:
     """Write one file, `expected` being the token it was read with or none
     for a new file. A contest's file comes back as the version written, with
-    its boards' notes; a task's as the save's publication or draft, `confirm` and `keep_as_draft`
-    doing what they do for a save.
+    its boards' notes; a task's as the save's publication or draft,
+    `confirm`, `asked` and `keep_as_draft` doing what they do for a save.
     """
     scope = scope_of_place(place)
     require(organiser, scope, Role.MANAGER)
@@ -205,6 +253,7 @@ async def write(
             TaskId(place),
             {path: Edit(content, expected)},
             confirm=confirm,
+            asked=asked,
             keep_as_draft=keep_as_draft,
             message=message,
         )
@@ -228,15 +277,21 @@ async def write(
         if problems:
             raise InvalidDefinition(CONTEST_FILE, problems)
     version = await ctx.forge.content.write_file(
-        organiser.identity,
+        PLATFORM,
         contest,
         path,
         content,
         message=message or f"Update {path}",
         expected=expected,
+        author=organiser.user.id,
     )
     if path == CONTEST_FILE:
         published.forget_contests(ctx)
+        # A task put back by hand gets its places as `put_back` makes them.
+        for entry in after.tasks:
+            old = standing.entry(entry.id) if standing is not None else None
+            if old is not None and old.withdrawn and not entry.withdrawn:
+                places.ahead_at(ctx, TaskId(f"{contest}/{entry.id}"))
     log.info("files.written", place=place, path=path, version=version, user_id=organiser.user.id)
     return Written(version, tuple(notes))
 
@@ -252,6 +307,7 @@ async def rollback(
     *,
     message: str | None = None,
     confirm: bool = False,
+    asked: str | None = None,
     keep_as_draft: bool = False,
 ) -> Written | Published | Draft:
     """Write the file as it was at `version` back as a new change, through
@@ -269,6 +325,7 @@ async def rollback(
         expected,
         message=message or f"Roll back {path} to {version}",
         confirm=confirm,
+        asked=asked,
         keep_as_draft=keep_as_draft,
     )
     log.info("files.rolled_back", place=place, path=path, to=version, user_id=organiser.user.id)
@@ -334,6 +391,7 @@ async def write_upload(
     *,
     message: str | None = None,
     confirm: bool = False,
+    asked: str | None = None,
     keep_as_draft: bool = False,
 ) -> Published | Draft:
     """Put a file the organiser uploaded into the task at `path`, as a save
@@ -353,6 +411,7 @@ async def write_upload(
         task,
         {path: Edit(Uploaded(upload), expected)},
         confirm=confirm,
+        asked=asked,
         keep_as_draft=keep_as_draft,
         message=message,
     )

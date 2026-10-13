@@ -31,6 +31,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from fractions import Fraction
 
 from sqlalchemy import select
 
@@ -44,9 +45,9 @@ from forge.domain.board_checks import (
     counts_nothing_message,
     covered,
     covered_tasks,
+    group_max,
 )
 from forge.domain.boards import (
-    POINTS,
     Audience,
     Column,
     Entry,
@@ -54,21 +55,23 @@ from forge.domain.boards import (
     Standings,
     State,
     for_viewer,
+    in_scope,
     keys_of,
     rank,
     sees,
     task_points,
 )
-from forge.domain.definitions import ContestDefinition, Leaderboard, Select, key_name
+from forge.domain.definitions import ContestDefinition, Leaderboard, Select
 from forge.domain.definitions import State as ContestState
 from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, PublicationId, TaskId, WorkspaceId
+from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
 from forge.domain.release import Extension, reveal_of
 from forge.domain.roles import Role, contest_scope, holds
-from forge.domain.scoring import Better, Points, exact
+from forge.domain.scoring import ZERO, Better, Points, exact
 from forge.domain.sessions import Session
 from forge.domain.yaml_models import Problem
 from forge.log import get_logger
@@ -158,21 +161,42 @@ async def organised(
     return tuple(found)
 
 
+@dataclass(frozen=True, slots=True)
+class BoardPoints:
+    """A row's points on a task as one board counts them: the board's name,
+    whether it covers the task, and, when it does and the task gives
+    points, the points now (`task_points`) and the most the board can
+    count from the task, its scope's groups' most points; none otherwise.
+    """
+
+    board: str
+    covers: bool
+    points: Points | None = None
+    most: Fraction | None = None
+
+
+def entrants_boards(settings: ContestDefinition) -> tuple[Leaderboard, ...]:
+    """The boards a member of an approved entrant sees, in the file's order."""
+    return tuple(board for board in settings.leaderboards if sees(board, Audience.CONTESTANTS))
+
+
 async def own_points(
     ctx: Context,
     contest: ContestId,
     settings: ContestDefinition,
     tasks: Sequence[PublishedTask],
     owner: WorkspaceOwner,
-) -> dict[str, Points | None]:
-    """Each of `tasks`' points for the row `owner`, by task name, as a board
-    over that task alone counts them now (`task_points`), counting the
-    submissions the board that stands for the task counts (`_standing_for`):
-    read as every board reads them (`_entries`), so the number agrees with
-    them and holds back what they hold back, a group not shown yet counting
-    only as pending until the task's reveal. None for a task that gives no
-    points or that the contest does not list.
+) -> dict[str, tuple[BoardPoints, ...]]:
+    """Each of `tasks`' points for the row `owner`, by task name, one for
+    each board an entrant sees (`entrants_boards`), in its order, as that
+    board counts the task now (`task_points`): its scope, the submissions
+    its `select` counts under its `order`, read as every board reads them
+    (`_entries`), so each number agrees with its board and holds back what
+    it holds back, a group not shown yet counting only as pending until
+    the task's reveal. A board that does not cover the task says so; a
+    task the contest does not list has no points on any board.
     """
+    seen = entrants_boards(settings)
     extensions = await timelines.of_owners(ctx, contest, await timelines.rows(ctx, contest))
     extension = (
         extensions[owner] if owner in extensions else await timelines.of_owner(ctx, contest, owner)
@@ -181,29 +205,37 @@ async def own_points(
     entries = (await _entries(ctx, contest, settings, listed, [owner], {owner: extension})).get(
         owner, {}
     )
-    found: dict[str, Points | None] = {task.name: None for task in tasks}
+    found: dict[str, tuple[BoardPoints, ...]] = {
+        task.name: tuple(BoardPoints(board.name, board.covers(task.name)) for board in seen)
+        for task in tasks
+    }
     for task in listed:
         column = _column(ctx, settings, task, list(extensions.values()))
-        found[task.name] = task_points(
-            column, entries.get(task.name, ()), _standing_for(settings, task.name)
+        mosts = (
+            group_max(task.definition.test_groups, column.worth) if column.worth is not None else {}
         )
+        counted: list[BoardPoints] = []
+        for board in seen:
+            if not board.covers(task.name):
+                counted.append(BoardPoints(board.name, False))
+                continue
+            covering = [each for each in listed if board.covers(each.name)]
+            keys = keys_of(board, _directions(covering))
+            points = task_points(board, keys, settings.start, column, entries.get(task.name, ()))
+            scope = in_scope(board.over)
+            most = sum(
+                (
+                    most
+                    for name, most in mosts.items()
+                    if scope(task.definition.test_groups[name].shown)
+                ),
+                ZERO,
+            )
+            counted.append(
+                BoardPoints(board.name, True, points, most if points is not None else None)
+            )
+        found[task.name] = tuple(counted)
     return found
-
-
-def _standing_for(settings: ContestDefinition, task: str) -> Select:
-    """Which submissions a task's points count: the `select` of the board
-    that stands for the task, the first in the contest's file that
-    entrants see, that covers it and that ranks by points first; failing
-    that, the first entrants see that covers it; failing that, the first
-    that covers it; `best` with none.
-    """
-    covering = [board for board in settings.leaderboards if board.covers(task)]
-    seen = [board for board in covering if sees(board, Audience.CONTESTANTS)]
-    on_points = [board for board in seen if key_name(board.order[0]) == POINTS]
-    for boards in (on_points, seen, covering):
-        if boards:
-            return boards[0].select
-    return Select.BEST
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,10 +299,12 @@ async def check_task(
     board covering it asks of it beside the other covered tasks as their
     latest publications stand, each refusal at the line of `task.yaml` that
     would mend it. A task the contest does not list yet is checked against
-    the boards that cover every task, which its appended entry joins.
+    the boards that cover every task, which its appended entry joins; a
+    withdrawn one against none, since no board counts it until it is put
+    back, which the contest's save checks.
     """
     boards = [board for board in settings.leaderboards if board.tasks is None or board.covers(name)]
-    if not boards:
+    if not boards or rules.withdrawn(settings, name):
         return []
     tasks = await _covered_tasks(ctx, contest, settings, boards)
     others = {task.name: _covered(task) for task in tasks if task.name != name}
@@ -289,9 +323,12 @@ async def check_task(
 
 def task_notes(settings: ContestDefinition, name: str, shape: Covered) -> list[str]:
     """T9's report of each board ranking `points` that counts nothing from
-    the task `name` as it is saved.
+    the task `name` as it is saved; none for a withdrawn task, which no
+    board counts.
     """
     found: list[str] = []
+    if rules.withdrawn(settings, name):
+        return found
     for board in settings.leaderboards:
         if board.tasks is not None and not board.covers(name):
             continue
@@ -327,7 +364,9 @@ def _notes(
 
 
 def _covered(task: PublishedTask) -> Covered:
-    return covered(task.publication.measures, task.definition.test_groups)
+    return covered(
+        task.publication.measures, task.definition.test_groups, task.publication.meanings
+    )
 
 
 async def _reader(
@@ -413,7 +452,8 @@ def _ranked(
             read.columns[name] for name in covered_tasks(settings, board) if name in read.columns
         ]
         shown = {column.name for column in covering}
-        keys = keys_of(board, _directions([task for task in read.tasks if task.name in shown]))
+        covered = [task for task in read.tasks if task.name in shown]
+        keys = keys_of(board, _directions(covered), _words(covered))
         found.append(rank(board, keys, settings.start, covering, read.rows, final=final))
     return found
 
@@ -427,6 +467,20 @@ def _directions(tasks: Sequence[PublishedTask]) -> dict[str, Better | None]:
         for name, measure in task.publication.measures.items():
             if found.get(name) is None and measure.better is not None:
                 found[name] = measure.better
+    return found
+
+
+def _words(tasks: Sequence[PublishedTask]) -> dict[str, ValueMeaning]:
+    """Each value's title and unit, as the first covered task naming it
+    with either says.
+    """
+    found: dict[str, ValueMeaning] = {}
+    for task in tasks:
+        for meaning in task.publication.meanings:
+            if meaning.name not in found and (
+                meaning.title is not None or meaning.unit is not None
+            ):
+                found[meaning.name] = meaning
     return found
 
 

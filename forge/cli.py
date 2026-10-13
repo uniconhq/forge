@@ -7,12 +7,16 @@ the host's image:
   credentials to move. Migrating is the package's job and
   not the hosting process's, so the command is the package's own; a
   deployment runs it once, before the host starts.
-- `reconcile` activates every published task at the CI and gives every
-  submission at the forge that has no grading its gradings, over every
-  contest of every org the platform made, and starts their runs, which is
-  what a restore runs once the databases are back, whatever moment each
-  dump was taken at. It reads every `UNICON_*` setting, as the host does,
-  and writes what it did as the log record `reconcile.done`.
+- `reconcile` secures every contest and task again at the forge, putting
+  back what keeps each right where it is missing or wrong, such as its files
+  being written by the platform alone (#443), activates every published
+  task at the CI and gives every submission at the forge that has no
+  grading its gradings, over every contest of every org the platform made,
+  and starts their runs, which is what a restore runs once the databases
+  are back, whatever moment each dump was taken at, and what an upgrade
+  runs once to bring places made before it up to it. It reads every
+  `UNICON_*` setting, as the host does, and writes what it did as the log
+  record `reconcile.done`.
 """
 
 import argparse
@@ -35,8 +39,8 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("migrate", help="bring the database up to the latest migration")
     commands.add_parser(
         "reconcile",
-        help="activate every published task at the CI and give every submission at the "
-        "forge without gradings its gradings",
+        help="secure every contest and task again, activate every published task at the CI "
+        "and give every submission at the forge without gradings its gradings",
     )
     arguments = parser.parse_args(argv)
     if arguments.command == "reconcile":

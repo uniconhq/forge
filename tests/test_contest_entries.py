@@ -5,13 +5,17 @@ list of one, a block list gets one more item at its own indent with the
 comments and the keys after it kept, a file without the key gets one, and a
 list in flow style is refused. A name YAML would read as something else is
 quoted, and a task the list holds already leaves the file as it is.
+
+Taking a task out edits the same text: a removed entry takes its own lines
+and nothing else, and a withdrawn one gets `withdrawn: true`, as its last
+line or inside its braces, which putting it back takes out again.
 """
 
 from datetime import UTC, datetime
 
 import pytest
 
-from forge.domain.contest_entries import Unlisted, with_entry
+from forge.domain.contest_entries import Unlisted, with_entry, with_withdrawn, without_entry
 from forge.domain.definitions import parse_contest
 from forge.domain.yaml_models import InvalidDefinition
 
@@ -126,3 +130,86 @@ def test_a_file_that_is_not_a_contest_yaml_is_refused() -> None:
         with_entry(b"name: [\n", "sum")
     with pytest.raises(InvalidDefinition):
         with_entry((HEAD + "submissions_closed: false\n").encode(), "sum")
+
+
+THREE = (
+    HEAD + "tasks:  # In the order entrants see them.\n"
+    "  - id: product\n"
+    "    worth: 50\n"
+    "  # The hard one.\n"
+    "  - id: sum\n"
+    "    # Due before the rest.\n"
+    "    due: 2026-10-01T12:00:00Z\n"
+    "  - {id: max, worth: 20}  # Last.\n"
+    "\n"
+    "leaderboards:\n"
+    "  - {name: Standings, who: everyone}\n"
+)
+
+
+def test_a_removed_entry_takes_its_own_lines_and_the_letters_after_it_move_up() -> None:
+    updated = without_entry(THREE.encode(), "sum")
+
+    assert updated is not None
+    text = updated.decode()
+    assert text == THREE.replace(
+        "  - id: sum\n    # Due before the rest.\n    due: 2026-10-01T12:00:00Z\n", ""
+    )
+    contest = parse_contest(updated)
+    assert ids(updated) == ["product", "max"]
+    assert contest.label_of("max") == "B"
+    assert without_entry(updated, "sum") is None
+
+
+def test_removing_the_only_entry_leaves_an_empty_list_with_its_comment() -> None:
+    content = (HEAD + "tasks:  # none yet\n  - id: sum\n\nleaderboards: []\n").encode()
+
+    assert (
+        without_entry(content, "sum")
+        == (HEAD + "tasks: [] # none yet\n\nleaderboards: []\n").encode()
+    )
+
+
+def test_an_entry_a_leaderboard_names_cannot_be_removed_alone() -> None:
+    content = THREE.replace("{name: Standings, who: everyone}", "{name: Sum, tasks: [sum]}")
+
+    with pytest.raises(InvalidDefinition):
+        without_entry(content.encode(), "sum")
+
+
+def test_a_withdrawn_entry_gets_the_key_as_its_last_line_and_keeps_its_letter() -> None:
+    withdrawn = with_withdrawn(THREE.encode(), "sum", True)
+
+    assert withdrawn is not None
+    assert "    due: 2026-10-01T12:00:00Z\n    withdrawn: true\n  - {id: max" in withdrawn.decode()
+    contest = parse_contest(withdrawn)
+    assert [entry.withdrawn for entry in contest.tasks] == [False, True, False]
+    assert contest.label_of("max") == "C"
+    assert with_withdrawn(withdrawn, "sum", True) is None
+
+    assert with_withdrawn(withdrawn, "sum", False) == THREE.encode()
+
+
+def test_an_entry_on_one_line_is_withdrawn_inside_its_braces() -> None:
+    withdrawn = with_withdrawn(THREE.encode(), "max", True)
+
+    assert withdrawn is not None
+    assert "  - {id: max, worth: 20, withdrawn: true}  # Last.\n" in withdrawn.decode()
+    assert with_withdrawn(withdrawn, "max", False) == THREE.encode()
+
+
+def test_windows_line_endings_stay_when_an_entry_is_withdrawn_or_removed() -> None:
+    content = THREE.replace("\n", "\r\n").encode()
+
+    for updated in (with_withdrawn(content, "sum", True), without_entry(content, "product")):
+        assert updated is not None
+        assert b"\n" not in updated.replace(b"\r\n", b"")
+
+
+def test_a_flow_list_cannot_be_withdrawn_from_or_removed_from() -> None:
+    content = (HEAD + "tasks: [{id: product, worth: 50}]\n").encode()
+
+    with pytest.raises(Unlisted):
+        with_withdrawn(content, "product", True)
+    with pytest.raises(Unlisted):
+        without_entry(content, "product")

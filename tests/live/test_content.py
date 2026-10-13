@@ -2,10 +2,11 @@
 against a real Forgejo. A contest and a task are made bare and secured: the
 roles of their contest, and of the task itself, attached; force-pushes to
 `main` refused, even to an admin of the repository over git; and for a
-task, `published/` tags refused to anyone but the platform account. A save
-of several files as a person lands as one commit of theirs, a stale token
-is a conflict with nothing written, and a publication tags the commit it is
-given with its note, numbered after the last.
+task, `published/` tags refused to anyone but the platform account, and
+every push to `main` but the platform's refused. A save of several files,
+written by the platform for a person, lands as one commit naming them its
+author, a stale token is a conflict with nothing written, and a publication
+tags the commit it is given with its note, numbered after the last.
 """
 
 import os
@@ -102,7 +103,6 @@ async def test_a_contest_and_a_task_are_made_bare_then_secured(
     assert _team_names(admin, org, "spring.contest") & contest_teams == set()
     listed = admin.get(f"/api/v1/repos/{org}/spring.sum.task/contents").json()
     assert sorted(entry["name"] for entry in listed) == [
-        "public",
         "statement.md",
         "task.yaml",
         "tests",
@@ -159,11 +159,12 @@ async def test_publications_are_the_platforms_alone_and_history_is_not_rewritten
     as_admin = as_person(admin, task_admin)
     head = await forge.content.list_files(as_admin, task)
     await forge.content.save_files(
-        as_admin,
+        PLATFORM,
         task,
         {"statement.md": b"Add two numbers.\n"},
         expected={"statement.md": head.tokens["statement.md"]},
         message="Statement",
+        author=int(task_admin["id"]),
     )
     permission = admin.get(
         f"/api/v1/repos/{org}/{repo}/collaborators/{task_admin['login']}/permission"
@@ -217,6 +218,13 @@ async def test_publications_are_the_platforms_alone_and_history_is_not_rewritten
     assert tag_pushed.returncode == 0
     pushed_tag = _git("push", "origin", "published/98", cwd=clone)
     assert pushed_tag.returncode != 0
+    # Nor does a plain push land: only the platform writes the branch (#443).
+    assert _git("reset", "--hard", "origin/main", cwd=clone).returncode == 0
+    (clone / "statement.md").write_text("Pushed.\n")
+    who = ("-c", "user.name=Pusher", "-c", "user.email=pusher@example.com")
+    assert _git(*who, "commit", "-am", "Pushed", cwd=clone).returncode == 0
+    plain = _git("push", "origin", "main", cwd=clone)
+    assert plain.returncode != 0, plain.stdout
     after = await forge.content.list_files(PLATFORM, task)
     assert after.version != head.version
     commits = admin.get(f"/api/v1/repos/{org}/{repo}/commits", params={"sha": "main"}).json()
@@ -240,7 +248,7 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
     assert head.has("tests/main/1/") and "task.yaml" in head.tokens
 
     version = await forge.content.save_files(
-        as_manager,
+        PLATFORM,
         task,
         {
             "task.yaml": b"name: Sum\n",
@@ -253,6 +261,7 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
             "tests/main/1/answer": head.tokens["tests/main/1/answer"],
         },
         message="Save",
+        author=int(manager["id"]),
     )
 
     commit = admin.get(f"/api/v1/repos/{org}/{repo}/git/commits/{version}").json()
@@ -274,7 +283,7 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
 
     with pytest.raises(Conflict):
         await forge.content.save_files(
-            as_manager,
+            PLATFORM,
             task,
             {"task.yaml": b"name: Stale\n", "statement.md": b"x\n"},
             expected={
@@ -285,7 +294,7 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
         )
     with pytest.raises(Conflict):
         await forge.content.save_files(
-            as_manager, task, {"task.yaml": b"name: New\n"}, expected={}, message="Exists"
+            PLATFORM, task, {"task.yaml": b"name: New\n"}, expected={}, message="Exists"
         )
     assert (await forge.content.list_files(PLATFORM, task)).version == version
 
