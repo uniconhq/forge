@@ -521,7 +521,9 @@ def task_points(
     else:
         reach = max((sum(most.values(), ZERO) for _, most in within), default=ZERO)
     # With nothing of the scope left to show, nothing is to come, though a
-    # board ranking a value may count a submission that earned fewer points.
+    # board ranking a value may count a submission that earned fewer points;
+    # but a run held back until the reveal is still to come, even on a board
+    # whose own groups are all shown.
     waiting = _not_in_view([column], scope, {column.name: seen}, keys) or any(
         entry.state is State.ATTEMPT and not column.revealed for entry in entries
     )

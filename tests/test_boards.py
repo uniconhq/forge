@@ -711,6 +711,14 @@ def test_a_held_runs_group_shown_at_once_is_pending_too_not_shown_as_what_it_ear
 
     assert points_on(column("sum", groups), [held]) == Points(Fraction(0), Fraction(100), CLOSE)
     assert points_on(column("sum", groups), [unheld]) == Points(Fraction(0), Fraction(60), CLOSE)
+    # On a board over the live groups, all shown, the held run's 40 is still
+    # to come until the reveal; the unheld one's 0 is final.
+    assert points_on(column("sum", groups), [held], over="live") == Points(
+        Fraction(0), Fraction(40), CLOSE
+    )
+    assert points_on(column("sum", groups), [unheld], over="live") == Points(
+        Fraction(0), Fraction(0), None
+    )
 
 
 def test_a_tasks_points_are_none_shown_while_no_group_is_shown_and_a_shown_0_stays_0() -> None:
