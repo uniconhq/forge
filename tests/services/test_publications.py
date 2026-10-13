@@ -19,6 +19,7 @@ import json
 from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
+from unittest.mock import ANY
 
 import pytest
 from sqlalchemy import select, update
@@ -1013,6 +1014,7 @@ async def test_a_grading_change_once_the_contest_has_started_asks_first_and_writ
 
     assert asked.value.code == "confirmation_required"
     assert asked.value.extra == {
+        "asked": ANY,
         "changes": listed,
         "regrades": 0,
         "results_change": False,
@@ -1029,6 +1031,28 @@ async def test_a_grading_change_once_the_contest_has_started_asks_first_and_writ
         True,
         listed,
     )
+
+
+async def test_a_confirmation_stands_only_for_the_files_and_publication_it_was_asked_about(
+    setup: Setup, acme: Acme, running: TaskId
+) -> None:
+    files = {"statement.md": b"Typo fixed.\n"}
+    with pytest.raises(ConfirmationRequired) as first:
+        await _save(setup, acme, running, files)
+    await _save(setup, acme, running, {"tests/main/1/input": b"5 5\n"}, keep_as_draft=True)
+    acme.fake.reset_calls()
+
+    with pytest.raises(ConfirmationRequired) as again:
+        await _save(setup, acme, running, files, confirm=True, asked=first.value.extra["asked"])
+
+    assert again.value.extra["changes"] == ["The input of test 1 in the group main changed."]
+    assert again.value.extra["asked"] != first.value.extra["asked"]
+    assert _written(acme) == []
+    confirmed = await _save(
+        setup, acme, running, files, confirm=True, asked=again.value.extra["asked"]
+    )
+    assert isinstance(confirmed, Published)
+    assert (confirmed.number, confirmed.grading_changed) == (2, True)
 
 
 @pytest.mark.parametrize(
@@ -1077,6 +1101,7 @@ async def test_every_save_that_publishes_once_the_contest_has_started_asks_first
         await _save(setup, acme, running, saved)
 
     assert asked.value.extra == {
+        "asked": ANY,
         "changes": [],
         "regrades": 0,
         "results_change": False,
@@ -1411,6 +1436,7 @@ async def test_the_confirmation_counts_the_submissions_the_save_regrades_and_no_
     confirmed = await _save(setup, acme, entered.task, change, confirm=True)
 
     assert asked.value.extra == {
+        "asked": ANY,
         "changes": ["The way the task grades changed."],
         "regrades": 2,
         "results_change": True,
@@ -1482,6 +1508,7 @@ async def test_a_save_that_picks_up_a_moved_image_names_it_beside_the_regrade_co
         await _save(setup, acme, entered.task, statement)
 
     assert asked.value.extra == {
+        "asked": ANY,
         "changes": [
             "The way the task grades changed.",
             "A release updated sandbox-run@v2 in place.",

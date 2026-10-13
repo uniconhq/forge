@@ -252,6 +252,7 @@ async def save(
     changes: Mapping[str, Edit],
     *,
     confirm: bool = False,
+    asked: str | None = None,
     keep_as_draft: bool = False,
     message: str | None = None,
 ) -> Published | Draft:
@@ -259,8 +260,11 @@ async def save(
     remove it, and the token it was read with, and publish the result when
     it is valid. Needs the manager role at the task. `keep_as_draft` writes
     the files and publishes nothing, on any save; otherwise `confirm`
-    publishes anything new while its contest runs (#449). A
-    token that has moved is `Conflict`, with nothing written.
+    publishes anything new while its contest runs (#449). `asked` is the
+    question's own `asked`: a confirmation of a question asked about another
+    head or another latest publication than now is asked again, so nobody
+    publishes a change the question did not describe. A token that has
+    moved is `Conflict`, with nothing written.
     """
     scope = task_scope(task)
     require(organiser, scope, Role.MANAGER)
@@ -304,7 +308,9 @@ async def save(
         version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, (), changed)
     assert checked.compiled is not None and checked.definition is not None
-    if anew and not confirm and await _contest_running(ctx, task):
+    basis = f"{head.version}:{latest.id if latest is not None else ''}"
+    confirmed = confirm and asked in (None, basis)
+    if anew and not confirmed and await _contest_running(ctx, task):
         regrades = (
             await gradings.to_regrade(ctx, task, limit=checked.definition.submissions.max)
             if changed
@@ -319,6 +325,7 @@ async def save(
             changes=[*changed],
             regrades=regrades,
             **as_extra(effect),
+            asked=basis,
         )
 
     plans = await _plan_files(ctx, as_, task, head, checked)

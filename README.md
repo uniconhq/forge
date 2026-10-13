@@ -1005,7 +1005,11 @@ each file under it, named one by one.
    other than the latest publication's or another plan, is refused with
    `ConfirmationRequired`, a first publication and a change to scoring or
    the statement as much as one to how the task grades, and nothing is
-   written; the same save with `confirm=True` publishes. A save that
+   written; the same save with `confirm=True` publishes. The refusal's
+   `asked` names the head and the latest publication it was worked out
+   from: sent back as `asked` beside `confirm`, a confirmation is asked
+   again when either has moved since, so another organiser's change made
+   after the question is never published unread. A save that
    publishes nothing new, and a draft, ask nothing. The refusal carries
    `changes`, what changes how the task grades, `regrades`, how many
    submissions it would grade again (`gradings.to_regrade`, counted as the
@@ -2119,7 +2123,7 @@ structured members in `extra`:
 | `InvalidPath` | `invalid_path` | `path`, the path refused |
 | `AdminOnly` | `admin_only` | `keys`, each admin-only key or file |
 | `ReservedPath` | `reserved_path` | `paths` inside `plans/` |
-| `ConfirmationRequired` | `confirmation_required` | `changes`, what would change how the task grades; `regrades`, how many submissions it would grade again; `results_change`, `summary`, `runs_again`, `scores` and `reading`, what the save does (the save, step 3) |
+| `ConfirmationRequired` | `confirmation_required` | `changes`, what would change how the task grades; `regrades`, how many submissions it would grade again; `results_change`, `summary`, `runs_again`, `scores` and `reading`, what the save does (the save, step 3); `asked`, the head and publication it was worked out from |
 | `SoleAdmin` | `sole_admin` | `scopes`, each `{"kind", "name"}` |
 | `ContestantConflict` | `contestant_conflict` | `contests` |
 | `SharedWorkflowOwner` | `shared_workflow_owner` | `workflows` |
