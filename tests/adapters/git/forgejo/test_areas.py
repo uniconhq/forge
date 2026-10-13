@@ -1503,6 +1503,46 @@ async def test_a_place_is_deleted_with_its_own_teams_and_no_others(
     ]
 
 
+async def test_a_place_whose_repository_stays_gets_its_teams_back_with_their_members(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    contest = [
+        {"id": 1, "name": "acme.spring-admin"},
+        {"id": 2, "name": "acme.spring-manager"},
+        {"id": 3, "name": "acme.spring-observer"},
+    ]
+    task = [
+        {"id": 4, "name": "acme.spring.sum-admin"},
+        {"id": 5, "name": "acme.spring.sum-manager"},
+        {"id": 6, "name": "acme.spring.sum-observer"},
+    ]
+    made = [
+        {"id": 14, "name": "acme.spring.sum-admin"},
+        {"id": 15, "name": "acme.spring.sum-manager"},
+        {"id": 16, "name": "acme.spring.sum-observer"},
+    ]
+    # Read for the members and to delete; then, at each step of making the
+    # teams again, without the task's until they are made.
+    searches = [ok({"data": contest + task})] * 6 + [ok({"data": contest})] * 6
+    recorder.on("GET", "/api/v1/orgs/acme/teams/search", *searches, ok({"data": contest + made}))
+    recorder.on("GET", "/api/v1/teams/5/members", ok([USER]))
+    recorder.on("DELETE", "/api/v1/repos/acme/spring.sum.task", ok({"message": "no"}, 422))
+    recorder.on("POST", "/api/v1/orgs/acme/teams", *(ok(team, 201) for team in made))
+    for team in made:
+        recorder.on("GET", f"/api/v1/teams/{team['id']}/repos/acme/spring.sum.task", ok({}, 404))
+
+    with pytest.raises(Rejected):
+        await forgejo.content.delete_place(TaskId("acme/spring/sum"))
+
+    calls = recorder.calls()
+    assert [call for call in calls if call.startswith("PUT")] == [
+        "PUT /api/v1/teams/14/repos/acme/spring.sum.task",
+        "PUT /api/v1/teams/15/repos/acme/spring.sum.task",
+        "PUT /api/v1/teams/16/repos/acme/spring.sum.task",
+        "PUT /api/v1/teams/15/members/ada",
+    ]
+
+
 async def test_a_place_not_there_is_no_error(forgejo: ForgejoForge, recorder: Recorder) -> None:
     recorder.on("GET", "/api/v1/orgs/acme/teams/search", ok({"data": []}))
     recorder.on("DELETE", "/api/v1/repos/acme/spring.contest", ok({}, 404))

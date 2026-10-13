@@ -7,7 +7,8 @@ protects its default branch so only the platform's account may push or merge
 to it and nobody may force-push, and for a task reserves the `published/`
 tags for the platform account; each is checked first and only what is
 missing is made or put back.
-Deleting one removes its own role teams and then the repository.
+Deleting one removes its own role teams and then the repository, and makes
+the teams again when the repository stays.
 """
 
 from collections.abc import Collection, Mapping
@@ -26,6 +27,7 @@ from forge.adapters.ids import (
     parse_task,
 )
 from forge.domain.content import Change, ConflictToken, File, Files, FileSet, TreeEntry
+from forge.domain.errors import PortError
 from forge.domain.identity import PLATFORM, Identity, User
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
 from forge.domain.roles import Scope
@@ -62,11 +64,20 @@ class ForgejoContent:
     async def delete_place(self, place: ContentPlace) -> None:
         """The place's own role teams first, the reverse of the order they
         were made in, then its repository, which takes its protections and
-        its attachment to the teams of the contest above it.
+        its attachment to the teams of the contest above it. When the
+        repository is not deleted, its teams are made again with the members
+        they had, so a removal that fails gives the place back with its role
+        holders.
         """
         owner, name = location(place)
-        await self._teams.delete_scope(_scope(place))
-        await self._repos.delete(owner, name)
+        scope = _scope(place)
+        held = await self._teams.scope_members(scope)
+        await self._teams.delete_scope(scope)
+        try:
+            await self._repos.delete(owner, name)
+        except PortError:
+            await self._teams.restore_scope(scope, name, held)
+            raise
 
     async def exists(self, place: ContentPlace) -> bool:
         return await self._repos.exists(*location(place))

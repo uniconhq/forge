@@ -45,7 +45,8 @@ class ContentPort(Protocol):
         """Remove the contest or task, as the platform: its files and history
         and the roles of its own that `secure` made. A contest's roles reach
         its tasks too, so this is for a contest with no tasks. A place not
-        there changes nothing.
+        there changes nothing, and a deletion that fails leaves the place
+        with the roles it had.
         """
         ...
 

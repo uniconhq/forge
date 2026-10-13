@@ -24,6 +24,7 @@ default branch refuses every push and merge but the platform's account's,
 repository admins included (`Repos.protect_branch`, `platform_only`).
 """
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from forge.adapters.git.forgejo.http import Http, json_of, segment
@@ -142,6 +143,30 @@ class Teams:
                 await self._http.call(PLATFORM, "DELETE", f"/api/v1/teams/{team['id']}")
             except NotFound:
                 continue
+
+    async def scope_members(self, scope: Scope) -> dict[Role, list[str]]:
+        """The login of each member of the scope's role teams, by role, for
+        each team that is there.
+        """
+        held: dict[Role, list[str]] = {}
+        for role in Role:
+            team = await self.find(scope.org, team_name(scope, role))
+            if team is not None:
+                members = await self.members(int(team["id"]))
+                held[role] = [str(member["login"]) for member in members]
+        return held
+
+    async def restore_scope(
+        self, scope: Scope, repo: str, held: Mapping[Role, Sequence[str]]
+    ) -> None:
+        """The scope's role teams made again and attached as `attach_scope`
+        attaches them, each with the members `held` lists for its role.
+        """
+        await self.attach_scope(scope, repo)
+        for role, logins in held.items():
+            team = await self.ensure(scope, role)
+            for login in logins:
+                await self.add_member(int(team["id"]), login)
 
     async def attach_scope(self, scope: Scope, repo: str) -> int:
         """Put a repository under the role teams of its scope and of every
