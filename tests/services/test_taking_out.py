@@ -16,7 +16,7 @@ from fractions import Fraction
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 
 from forge.db.tables import Entrant, Grading, Upload
 from forge.domain.errors import (
@@ -287,10 +287,23 @@ async def test_a_removal_waits_for_a_submit_in_flight_and_then_withdraws_nothing
     record = submissions._record
     removing: list[asyncio.Task[TakeOut]] = []
 
+    async def waiting_for_a_lock() -> bool:
+        async with setup.unit_of_work() as ctx:
+            return bool(
+                await ctx.db.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+                        " AND database = (SELECT oid FROM pg_database"
+                        " WHERE datname = current_database())"
+                    )
+                )
+            )
+
     async def record_then_remove(*args: Any, **kwargs: Any) -> Any:
         recorded = await record(*args, **kwargs)
         removing.append(asyncio.create_task(take_out(setup, manager, entered.task, TakeOut.REMOVE)))
-        await asyncio.wait(removing, timeout=1)
+        while not removing[0].done() and not await waiting_for_a_lock():
+            await asyncio.sleep(0.01)
         return recorded
 
     monkeypatch.setattr(submissions, "_record", record_then_remove)
@@ -299,6 +312,7 @@ async def test_a_removal_waits_for_a_submit_in_flight_and_then_withdraws_nothing
     with pytest.raises(TakeOutChanged):
         await removing[0]
     assert ("acme", "spring.sum.task") in acme.fake.state.repos
+    assert b"withdrawn" not in await _settings(acme)
     assert len(await submissions.mine(setup, entered.session, entered.task)) == 1
 
 
