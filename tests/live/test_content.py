@@ -2,11 +2,11 @@
 against a real Forgejo. A contest and a task are made bare and secured: the
 roles of their contest, and of the task itself, attached; force-pushes to
 `main` refused, even to an admin of the repository over git; and for a
-task, `published/` tags refused to anyone but the platform account. A save
-of several files, written by the platform for a person, lands as one commit
-naming them its author, a stale token is a conflict with nothing written,
-and a publication tags the commit it is given with its note, numbered after
-the last.
+task, `published/` tags refused to anyone but the platform account, and
+every push to `main` but the platform's refused. A save of several files,
+written by the platform for a person, lands as one commit naming them its
+author, a stale token is a conflict with nothing written, and a publication
+tags the commit it is given with its note, numbered after the last.
 """
 
 import os
@@ -218,6 +218,13 @@ async def test_publications_are_the_platforms_alone_and_history_is_not_rewritten
     assert tag_pushed.returncode == 0
     pushed_tag = _git("push", "origin", "published/98", cwd=clone)
     assert pushed_tag.returncode != 0
+    # Nor does a plain push land: only the platform writes the branch (#443).
+    assert _git("reset", "--hard", "origin/main", cwd=clone).returncode == 0
+    (clone / "statement.md").write_text("Pushed.\n")
+    who = ("-c", "user.name=Pusher", "-c", "user.email=pusher@example.com")
+    assert _git(*who, "commit", "-am", "Pushed", cwd=clone).returncode == 0
+    plain = _git("push", "origin", "main", cwd=clone)
+    assert plain.returncode != 0, plain.stdout
     after = await forge.content.list_files(PLATFORM, task)
     assert after.version != head.version
     commits = admin.get(f"/api/v1/repos/{org}/{repo}/commits", params={"sha": "main"}).json()
