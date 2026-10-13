@@ -30,6 +30,7 @@ from tests.services.conftest import (
     organiser,
     segment,
     signed_in,
+    write_contest,
 )
 
 
@@ -172,6 +173,33 @@ async def test_an_answer_made_public_points_at_the_question_which_stays_private(
     [read] = await announcements.task(setup, entered.session, entered.task)
     assert (read.title, read.answers_question, read.answers) == ("On n", True, None)
     assert len(await clarifications.mine(setup, entered.session, SPRING)) == 1
+
+
+async def test_a_public_answer_about_a_withdrawn_task_goes_on_the_contest_where_entrants_read_it(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    number = await _ask(setup, entered)
+    settings = await acme.fake.content.read_file(PLATFORM, SPRING, "contest.yaml")
+    withdrawn = settings.content.replace(b"  - id: sum\n", b"  - id: sum\n    withdrawn: true\n")
+    assert withdrawn != settings.content
+    await write_contest(acme.fake, withdrawn.decode())
+
+    public = await clarifications.answer_publicly(
+        setup,
+        acme.ada,
+        SPRING,
+        segment(entered.entrant),
+        number,
+        title="On sum",
+        body="sum was withdrawn: its tests were wrong.",
+    )
+
+    assert public.announcement.where.path == "acme/spring"
+    [read] = await announcements.contest(setup, entered.session, SPRING)
+    assert (read.title, read.answers_question) == ("On sum", True)
+    assert [message.announcement for message in public.question.messages] == [
+        clarifications.AnnouncementLink(None, public.announcement.number)
+    ]
 
 
 async def test_a_public_answer_leaves_a_message_naming_it_and_marks_the_question_answered(

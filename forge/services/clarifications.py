@@ -338,7 +338,8 @@ async def answer_publicly(
     mark: bool = True,
 ) -> PublicAnswer:
     """Turn an answer into an announcement every contestant reads, on the
-    task the question names or else on the contest, pointing back at the
+    task the question names or else on the contest, and on the contest too
+    for a task withdrawn, which no contestant reads, pointing back at the
     question, which stays where it is; mark the question answered, unless
     `mark` is false, as a reply's "Mark it answered" is; and leave a message
     on it, as the organiser, naming the announcement, which only those who
@@ -351,6 +352,8 @@ async def answer_publicly(
     """
     thread = await _managed(ctx, organiser, contest, asker, number)
     about = _about(thread, contest)
+    if about is not None and await _withdrawn(ctx, contest, about):
+        about = None
     scope = task_scope(about) if about is not None else contest_scope(contest)
     place = announcements.place_of(scope)
     question = AnsweredQuestion(_asker(_owner(asker)), number)
@@ -473,6 +476,13 @@ def _about(thread: Thread, contest: ContestId) -> TaskId | None:
     if len(parts) != 3 or not all(parts) or f"{parts[0]}/{parts[1]}" != contest:
         return None
     return TaskId(found.group(1))
+
+
+async def _withdrawn(ctx: Context, contest: ContestId, task: TaskId) -> bool:
+    """Whether the contest's settings mark the task withdrawn."""
+    name = (await names.names_of(ctx, [task])).get(task)
+    entry = (await published.contest(ctx, contest)).entry(name) if name is not None else None
+    return entry is not None and entry.withdrawn
 
 
 async def _shown(
