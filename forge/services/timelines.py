@@ -250,6 +250,14 @@ async def check_contest(
                 problems.append(Problem(path="tasks", message=message))
     for index, entry in enumerate(after.tasks):
         old = before.entry(entry.id)
+        if entry.withdrawn and not (old is not None and old.withdrawn) and not made.get(entry.id):
+            problems.append(
+                Problem(
+                    path=f"tasks[{index}].withdrawn",
+                    message=f"Nobody has submitted to {entry.id}, so it is removed, not "
+                    "withdrawn. Remove it from the contest's Tasks card instead.",
+                )
+            )
         for path, message in _moved(
             before, old, after, entry, made.get(entry.id, []), extensions, ctx.now
         ):

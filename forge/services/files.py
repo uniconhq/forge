@@ -66,7 +66,7 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, publications, published, timelines
+from forge.services import boards, places, publications, published, timelines
 from forge.services.access import Organiser, require
 from forge.services.publications import Draft, Published
 
@@ -285,6 +285,11 @@ async def write(
     )
     if path == CONTEST_FILE:
         published.forget_contests(ctx)
+        # A task put back by hand gets its places as `put_back` makes them.
+        for entry in after.tasks:
+            old = standing.entry(entry.id) if standing is not None else None
+            if old is not None and old.withdrawn and not entry.withdrawn:
+                places.ahead_at(ctx, TaskId(f"{contest}/{entry.id}"))
     log.info("files.written", place=place, path=path, version=version, user_id=organiser.user.id)
     return Written(version, tuple(notes))
 

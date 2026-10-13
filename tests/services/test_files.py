@@ -571,6 +571,24 @@ async def test_a_withdrawn_tasks_entry_is_not_dropped_and_says_it_is_withdrawn(
     ]
 
 
+async def test_withdrawn_is_written_by_hand_only_on_a_task_with_submissions(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    # A task nobody submitted to is removed, not withdrawn (#450).
+    await write_contest(acme.fake, _running(SUM_ENTRY).decode())
+    withdrawn = SUM_ENTRY.rstrip("\n") + "\n    withdrawn: true\n"
+
+    refused = await _refused(setup, acme, _running(withdrawn))
+
+    assert refused == [
+        (
+            "tasks[0].withdrawn",
+            "Nobody has submitted to sum, so it is removed, not withdrawn. Remove it from the "
+            "contest's Tasks card instead.",
+        )
+    ]
+
+
 async def test_a_contest_opens_only_once_each_task_is_published_with_its_statement_written(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
@@ -605,6 +623,8 @@ async def test_a_withdrawn_task_does_not_keep_a_contest_from_opening_nor_does_a_
     draft = (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content
     withdrawn = draft.replace(b"- id: product", b"- {id: product, withdrawn: true}")
     assert withdrawn != draft
+    # Withdrawn as the action leaves it, which no draft's save may write.
+    await write_contest(acme.fake, withdrawn.decode())
 
     assert await _write_contest(
         setup, acme, withdrawn.replace(b"state: draft", b"state: published")
