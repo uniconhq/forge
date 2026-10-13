@@ -1488,7 +1488,9 @@ the question answered, unless asked not to, and leaves a message on it,
 as the organiser, "Answered publicly in the announcement" and its title,
 carrying a line the platform adds that names the announcement, which the
 question's readers alone see and are served as the message's
-`announcement` (its task, none for the contest's own, and its number).
+`announcement` (its task, none for the contest's own, its number, and
+the title the message names, so a page writes the message with the title
+as the link; none once the message is edited at the forge).
 It answers with both, the announcement and the question as it now stands
 with that message (`PublicAnswer`). Only a message an organiser wrote naming an announcement of the
 question's own contest is read so. The message is written last: a retry

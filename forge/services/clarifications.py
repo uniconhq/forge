@@ -83,6 +83,8 @@ ANNOUNCED = re.compile(r"\n*<!-- unicon:announcement (\S+)#(\d+) -->\s*$")
 ANSWERED_PUBLICLY = "Answered publicly in the announcement ‘{title}’"  # noqa: RUF001
 """The message a public answer leaves on its question, naming the
 announcement by its title in curly single quotes."""
+ANSWERED_TITLE = re.compile(r"Answered publicly in the announcement ‘(.*)’", re.DOTALL)  # noqa: RUF001
+"""`ANSWERED_PUBLICLY` read back, its title the one group."""
 ANSWER_LOCK = 0x414E5357
 """The first key of every lock on one question's public answers, the second
 being the contest, the asker and the number hashed by Postgres."""
@@ -91,11 +93,15 @@ being the contest, the asker and the number hashed by Postgres."""
 @dataclass(frozen=True, slots=True)
 class AnnouncementLink:
     """The announcement a message names: on the question's contest, or on
-    the task of it named `task`, by its number there.
+    the task of it named `task`, by its number there, and its `title` as
+    the message names it, so a page writes the message with the title as
+    the link; none when the message no longer reads as the platform wrote
+    it, edited at the forge.
     """
 
     task: str | None
     number: int
+    title: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -570,15 +576,18 @@ def _message(
     found = ANNOUNCED.search(comment.body)
     if found is None:
         return Message(from_asker=from_asker, body=comment.body, at=comment.at)
+    body = ANNOUNCED.sub("", comment.body).rstrip()
+    said = ANSWERED_TITLE.fullmatch(body)
+    title = said.group(1) if said is not None else None
     link: AnnouncementLink | None = None
     kind = _in_contest(found.group(1), contest)
     if not from_asker and kind == "contest":
-        link = AnnouncementLink(None, int(found.group(2)))
+        link = AnnouncementLink(None, int(found.group(2)), title)
     elif not from_asker and kind == "task" and found.group(1) in places:
-        link = AnnouncementLink(places[found.group(1)].task, int(found.group(2)))
+        link = AnnouncementLink(places[found.group(1)].task, int(found.group(2)), title)
     return Message(
         from_asker=from_asker,
-        body=ANNOUNCED.sub("", comment.body).rstrip(),
+        body=body,
         at=comment.at,
         announcement=link,
     )
