@@ -96,7 +96,7 @@ refused the submission, in fixed words.
 import builtins
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
 from typing import Any
@@ -107,6 +107,7 @@ from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
 from forge.domain import exact_json
 from forge.domain import submissions as rules
+from forge.domain.boards import Audience, OnBoard, on_board
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Conflict,
@@ -130,9 +131,9 @@ from forge.domain.meanings import ValueMeaning, shown_meanings
 from forge.domain.names import WorkspaceOwner
 from forge.domain.release import due_of, late_days
 from forge.domain.roles import Role, contest_id_of, task_scope
-from forge.domain.scoring import Points
+from forge.domain.scoring import EVERYTHING, Points
 from forge.domain.sessions import Session
-from forge.domain.showing import GroupShown, SubmissionState, filled_in, shown, told
+from forge.domain.showing import GroupShown, SubmissionState, filled_in, seen_of, shown, told
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
 from forge.domain.uploads import (
     POINTER_MAX,
@@ -146,7 +147,16 @@ from forge.log import get_logger
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import gradings, published, scores, sessions, submitters, timelines, uploads
+from forge.services import (
+    boards,
+    gradings,
+    published,
+    scores,
+    sessions,
+    submitters,
+    timelines,
+    uploads,
+)
 from forge.services.access import Organiser, require
 from forge.services.published import PublishedTask
 from forge.services.submitters import Person
@@ -181,7 +191,10 @@ class Result:
     the grading's own `GradingStatus`. Once done, `meanings` lists every
     value the workflow reports, in its order, with the title and unit a
     page names it by and which way is better, a value a sealed step holds
-    back left out until the reveal.
+    back left out until the reveal; and `boards` its line on each board
+    the reader sees that covers the task, in the file's order (`on_board`):
+    its numbers as that board reads them, shown as the rest of the result
+    is, and whether the row's cell on that board counts it now.
     """
 
     id: uuid.UUID
@@ -196,6 +209,7 @@ class Result:
     factor: Fraction | None = None
     limit: int | None = None
     meanings: tuple[ValueMeaning, ...] = ()
+    boards: tuple[OnBoard, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -796,6 +810,18 @@ async def _read(
     gone = await gradings.lost(ctx, latest)
     await gradings.notice(ctx, latest, gone)
     scorer = scores.Scorer(ctx, reading.published)
+    counting = (
+        await boards.counting(
+            ctx,
+            contest_id_of(task_scope(reading.task)),
+            reading.settings,
+            reading.published,
+            ctx.forge.workspaces.owner_of(reading.workspace),
+            Audience.ORGANISERS if everything else Audience.CONTESTANTS,
+        )
+        if grouped
+        else ()
+    )
     return [
         await _submission(
             ctx,
@@ -806,6 +832,7 @@ async def _read(
             gone,
             scorer,
             everything=everything,
+            counting=counting,
         )
         for found in sorted(grouped, reverse=True)
     ]
@@ -826,10 +853,12 @@ async def _submission(
     scorer: scores.Scorer | None = None,
     *,
     everything: bool = False,
+    counting: Sequence[boards.Counting] = (),
 ) -> Submission:
     """The submission as its owner reads it, by the attempt of its grading
     that counts (`scores.counted`), with `lost` naming the gradings whose
-    runs the CI has lost; with `everything`, as organisers read it.
+    runs the CI has lost, and a line on each board of `counting`; with
+    `everything`, as organisers read it.
     """
     settings = reading.settings
     task = reading.published.name
@@ -853,6 +882,8 @@ async def _submission(
         reveal_at,
         factor,
         everything=everything,
+        counting=counting,
+        number=number,
     )
     return Submission(reading.task, number, at, late, result)
 
@@ -866,6 +897,8 @@ async def _result(
     factor: Fraction,
     *,
     everything: bool = False,
+    counting: Sequence[boards.Counting] = (),
+    number: int = 0,
 ) -> Result:
     """The grading as its contestant may see it now, with the publication it
     ran under, scored. A run in `system_error` is told as delayed, with
@@ -918,6 +951,17 @@ async def _result(
         factor=factor if scored.gives_points else None,
         meanings=shown_meanings(
             graded.meanings, graded.sealed.values, revealed=revealed or everything
+        ),
+        boards=tuple(
+            on_board(
+                each.board,
+                each.keys,
+                scored,
+                EVERYTHING if everything else seen_of(row.result, graded.sealed, revealed=revealed),
+                reveal_at,
+                counted=number in each.counted,
+            )
+            for each in counting
         ),
     )
 

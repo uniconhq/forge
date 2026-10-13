@@ -30,7 +30,8 @@ are given, and between moments only what is shown.
 A task not yet released is not on the board's view; organisers' `final`
 counts every task as revealed. A board whose scope shows nothing yet is
 given as the time it is shown from. `rows` and the viewer's own row only
-cut what is handed over (`for_viewer`).
+cut what is handed over (`for_viewer`). A submission's page reads its own
+line on each board covering its task the same way (`on_board`).
 """
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -194,6 +195,23 @@ class Standings:
     rows: tuple[Ranked, ...]
     shown_at: datetime | None = None
     nothing_shown: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class OnBoard:
+    """One submission as one board covering its task reads it: the board's
+    name and scope, its number on each key but `penalty`, none where it has
+    none, the most the scope's groups not shown yet could still add to its
+    points, when the scope first shows something while it shows nothing
+    yet, and whether the row's cell on the task counts it.
+    """
+
+    board: str
+    over: Over
+    numbers: tuple[tuple[Key, Fraction | None], ...]
+    pending: Fraction | None
+    shown_at: datetime | None
+    counted: bool
 
 
 class Audience(IntEnum):
@@ -552,6 +570,52 @@ def task_points(
     pending = max(reach, counted) - counted if waiting else ZERO
     shown = counted if _shows_some(column, scope, seen, keys[0]) else None
     return Points(shown, pending, column.reveal_at if pending else None)
+
+
+def counted_by(
+    board: Leaderboard,
+    keys: Sequence[Key],
+    start: datetime,
+    column: Column,
+    entries: Sequence[Entry],
+) -> frozenset[int]:
+    """The submissions a row's cell on the task counts now, read by the same
+    cell as the board's own row (`_cell`); none while it does not count.
+    """
+    cell = _cell(board.select, keys, start, in_scope(board.over), Seen(column.revealed), entries)
+    return frozenset(cell.submissions or ()) if cell.counting else frozenset()
+
+
+def on_board(
+    board: Leaderboard,
+    keys: Sequence[Key],
+    scored: Scored,
+    seen: Seen,
+    reveal_at: datetime | None,
+    *,
+    counted: bool,
+) -> OnBoard:
+    """One submission's line on `board`: its points on the board's scope,
+    each value folded as its key says over the scope's shown tests, both as
+    `seen` shows them, and the scope's pending points; given the task's
+    reveal as `shown_at` while the scope shows nothing the first key reads.
+    """
+    scope = in_scope(board.over)
+    numbers = tuple(
+        (key, scored.points(scope, seen) if key.by == POINTS else _value(scored, key, scope, seen))
+        for key in keys
+        if key.by != PENALTY
+    )
+    reads = seen.verdict if keys[0].by == POINTS else seen.tests
+    shows = any(scope(group.show) and reads(group.show) for group in scored.groups)
+    return OnBoard(
+        board.name,
+        board.over,
+        numbers,
+        scored.pending(seen, scope),
+        None if shows else reveal_at,
+        counted,
+    )
 
 
 def _cell_points(

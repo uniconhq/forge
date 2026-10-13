@@ -51,9 +51,11 @@ from forge.domain.boards import (
     Audience,
     Column,
     Entry,
+    Key,
     Row,
     Standings,
     State,
+    counted_by,
     for_viewer,
     in_scope,
     keys_of,
@@ -236,6 +238,58 @@ async def own_points(
             )
         found[task.name] = tuple(counted)
     return found
+
+
+@dataclass(frozen=True, slots=True)
+class Counting:
+    """A board covering a task, as a submission's page reads it: the board,
+    its keys, and the submissions the row's cell on the task counts now.
+    """
+
+    board: Leaderboard
+    keys: tuple[Key, ...]
+    counted: frozenset[int]
+
+
+async def counting(
+    ctx: Context,
+    contest: ContestId,
+    settings: ContestDefinition,
+    task: PublishedTask,
+    owner: WorkspaceOwner,
+    audience: Audience,
+) -> tuple[Counting, ...]:
+    """Each board `audience` sees that covers `task`, in the file's order,
+    with the submissions the row `owner`'s cell on it counts now, read as
+    every board reads them (`_entries`, `counted_by`); none for a task the
+    contest does not list.
+    """
+    if task.entry is None:
+        return ()
+    shown = [
+        board
+        for board in settings.leaderboards
+        if sees(board, audience) and task.name in covered_tasks(settings, board)
+    ]
+    if not shown:
+        return ()
+    extensions = await timelines.of_owners(ctx, contest, await timelines.rows(ctx, contest))
+    extension = (
+        extensions[owner] if owner in extensions else await timelines.of_owner(ctx, contest, owner)
+    )
+    entries = (
+        (await _entries(ctx, contest, settings, [task], [owner], {owner: extension}))
+        .get(owner, {})
+        .get(task.name, ())
+    )
+    column = _column(ctx, settings, task, list(extensions.values()))
+    found: list[Counting] = []
+    for board in shown:
+        keys = keys_of(board, _directions([task]), _words([task]))
+        found.append(
+            Counting(board, keys, counted_by(board, keys, settings.start, column, entries))
+        )
+    return tuple(found)
 
 
 @dataclass(frozen=True, slots=True)
