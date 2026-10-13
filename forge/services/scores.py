@@ -117,14 +117,14 @@ def stands(row: Grading, graded: Graded) -> State:
 
 @dataclass(frozen=True, slots=True)
 class Before:
-    """The moment just before a regrade began, as a result that counted then
-    is scored: `publication` was then the task's latest, the regrade began
-    `at`, and none of the attempts of `regrade` counted yet.
+    """A moment a result is scored as it stood: `publication` was then the
+    task's latest, only attempts queued by `at` counted, and none of the
+    attempts of `regrade` when one is given: just before that regrade began.
     """
 
     publication: PublicationId
     at: datetime
-    regrade: uuid.UUID
+    regrade: uuid.UUID | None = None
 
 
 class Scorer:
@@ -133,7 +133,7 @@ class Scorer:
     of one generation may name different values in `relative`), by the
     attempt of each submission a board reads (`usable`). Given `before`, it
     scores as things stood then: its publication standing for the task's
-    latest, and `B` read from the attempts made before the regrade.
+    latest, and `B` read from the attempts that counted then.
     """
 
     def __init__(self, ctx: Context, current: PublishedTask, before: Before | None = None) -> None:
@@ -220,7 +220,7 @@ class Scorer:
     async def _candidates(self) -> list[Grading]:
         """The attempt a board reads of every submission of the contest's
         rows to the task, for each that is a candidate by it; scoring as
-        things stood before a regrade, of the attempts made before it.
+        things stood at a moment, of the attempts that counted then.
         """
         before = self.before
         ctx = self.ctx
@@ -238,7 +238,8 @@ class Scorer:
             )
         ):
             if before is not None and (
-                row.regrade_id == before.regrade or row.queued_at > before.at
+                (before.regrade is not None and row.regrade_id == before.regrade)
+                or row.queued_at > before.at
             ):
                 continue
             grouped.setdefault((row.workspace_id, row.submission_number), []).append(row)

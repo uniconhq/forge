@@ -9,7 +9,10 @@ counted for the submission when the regrade began: the latest earlier
 attempt that finished with one. Both are scored as organisers see them,
 every group, nothing held back, the late factor applied, by the scoring the
 boards use (`scores.Scorer`), the earlier one as it counted just before the
-regrade began (`scores.Before`, `forge.domain.regrades.counted_under`), and
+regrade began (`scores.Before`, `forge.domain.regrades.counted_under`), the
+new one under the publication the regrade grades against, against the
+results that counted by its last attempt, so a later save of points or a
+later better best leaves a finished regrade reading as it did; and
 `forge.domain.regrades.change_of` says what changed.
 
 - `latest` gives, for each task of the contest the organiser observes, its
@@ -281,7 +284,17 @@ async def _read(
     )
     task = TaskId(regrade.task_id)
     current = await published.task(ctx, task, settings) if settings is not None else None
-    scorer = scores.Scorer(ctx, current) if current is not None else None
+    scorer = (
+        scores.Scorer(
+            ctx,
+            current,
+            scores.Before(
+                PublicationId(regrade.publication_id), max(row.queued_at for row in mine)
+            ),
+        )
+        if current is not None
+        else None
+    )
     stood = (
         scores.Scorer(
             ctx,

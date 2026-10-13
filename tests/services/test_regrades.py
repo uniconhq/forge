@@ -365,6 +365,71 @@ async def test_the_earlier_side_is_measured_against_the_best_reached_when_the_re
     )
 
 
+async def test_a_finished_regrade_reads_the_same_after_a_later_save_of_its_points(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    # The rejudge changed no verdict; a save that raises main to 110
+    # afterwards regrades nothing, and the rejudge's summary still reads
+    # what the rejudge did, scored as it graded.
+    await _submit(setup, acme, entered, clock, 1)
+    await _stands(setup, 1, **ACCEPTED)
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    rejudged = await gradings.rejudge(setup, manager, entered.task)
+    assert rejudged.regrade is not None
+    await _stands(setup, 1, **ACCEPTED)
+    task_file = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
+
+    raised = await _save(
+        setup,
+        acme,
+        entered.task,
+        {"task.yaml": task_file.content.replace(b"{each: 100}", b"{each: 110}")},
+    )
+
+    assert raised.regraded == 0
+    (summary,) = await regrades.latest(setup, manager, SPRING)
+    assert (summary.id, _counts(summary)) == (rejudged.regrade, {ChangeKind.UNCHANGED: 1})
+    (entry,) = await regrades.gradings_of(setup, manager, SPRING, rejudged.regrade)
+    change = entry.grading.change
+    assert change is not None and change.earlier is not None and change.now is not None
+    assert (change.earlier.points, change.now.points) == (Fraction(100), Fraction(100))
+
+
+async def test_a_finished_regrade_reads_the_same_after_a_later_better_best(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    # Under relative credit, submission 2 earned half against 1's 10 ms
+    # before and after the rejudge; a third, faster submission made once the
+    # rejudge is done does not turn 2's into "went down".
+    task_file = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
+    await _save(
+        setup,
+        acme,
+        entered.task,
+        {"task.yaml": task_file.content + b"credit: {relative: time_ms}\n"},
+    )
+    await _submit(setup, acme, entered, clock, 1)
+    await _stands(setup, 1, **_timed("accepted", 10))
+    await _submit(setup, acme, entered, clock, 2)
+    await _stands(setup, 2, **_timed("accepted", 20))
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    rejudged = await gradings.rejudge(setup, manager, entered.task)
+    assert rejudged.regrade is not None
+    await _stands(setup, 1, **_timed("accepted", 10))
+    await _stands(setup, 2, **_timed("accepted", 20))
+
+    await _submit(setup, acme, entered, clock, 3)
+    await _stands(setup, 3, **_timed("accepted", 5))
+
+    (summary,) = await regrades.latest(setup, manager, SPRING)
+    assert _counts(summary) == {ChangeKind.UNCHANGED: 2}
+    read = await regrades.gradings_of(setup, manager, SPRING, rejudged.regrade)
+    second = next(entry for entry in read if entry.grading.submission_number == 2)
+    change = second.grading.change
+    assert change is not None and change.earlier is not None and change.now is not None
+    assert (change.earlier.points, change.now.points) == (Fraction(50), Fraction(50))
+
+
 async def test_a_manager_dismisses_a_regrade_for_everyone(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
