@@ -44,7 +44,7 @@ from sqlalchemy import delete, func, select, update
 from forge.db.tables import Entrant, Grading, Name
 from forge.db.tables import Invite as InviteRow
 from forge.domain.content import File
-from forge.domain.contest_entries import Unlisted, with_withdrawn, without_entry
+from forge.domain.contest_entries import NoEntry, Unlisted, with_withdrawn, without_entry
 from forge.domain.definitions import CONTEST_FILE, parse_contest
 from forge.domain.errors import (
     Conflict,
@@ -200,6 +200,11 @@ def _edited(name: str, edit: Callable[[], bytes | None]) -> bytes | None:
     """
     try:
         return edit()
+    except NoEntry:
+        raise TakeOutRefused(
+            f"The contest's settings do not list {name}. Add an entry for it to their tasks by "
+            "hand first."
+        ) from None
     except Unlisted as exc:
         log.warning("tasks.not_edited", task=name, reason=str(exc))
         raise TakeOutRefused(

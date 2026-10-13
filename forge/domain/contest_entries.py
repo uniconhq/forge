@@ -39,6 +39,10 @@ class Unlisted(Exception):
     """
 
 
+class NoEntry(Unlisted):
+    """The file's `tasks` has no entry for the task to edit."""
+
+
 def with_entry(content: bytes, task: str) -> bytes | None:
     """`contest.yaml` with an entry for `task`, or none when it has one
     already. `InvalidDefinition` when the file is not a valid `contest.yaml`;
@@ -155,7 +159,7 @@ def with_withdrawn(content: bytes, task: str, withdrawn: bool) -> bytes | None:
     contest = parse_contest(content)
     index = _index(contest.tasks, task)
     if index is None:
-        raise Unlisted("The contest has no entry for the task.")
+        raise NoEntry("The contest has no entry for the task.")
     if contest.tasks[index].withdrawn == withdrawn:
         return None
     text = content.decode()

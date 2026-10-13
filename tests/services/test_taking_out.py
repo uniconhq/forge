@@ -246,6 +246,22 @@ async def test_a_withdrawal_confirmed_for_a_task_nobody_submitted_to_is_refused(
     assert ("acme", "spring.sum.task") in acme.fake.state.repos
 
 
+async def test_a_task_the_settings_do_not_list_is_not_withdrawn_and_says_why(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await three(setup, acme)
+    manager = await _manager(setup, acme)
+    await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
+    await write_contest(acme.fake, contest().replace("  - id: sum\n", ""))
+
+    with pytest.raises(TakeOutRefused) as refused:
+        await take_out(setup, manager, entered.task, TakeOut.WITHDRAW)
+
+    assert refused.value.detail == (
+        "The contest's settings do not list sum. Add an entry for it to their tasks by hand first."
+    )
+
+
 async def test_a_task_a_leaderboard_names_is_not_removed_but_may_be_withdrawn(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
