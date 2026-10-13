@@ -30,7 +30,7 @@ from forge.domain.boards import (
     sees,
     task_points,
 )
-from forge.domain.definitions import Group, Leaderboard, Select, Show
+from forge.domain.definitions import Group, Leaderboard, Relative, Select, Show
 from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner
 from forge.domain.scoring import Better, Measure, Points, Scored, score
@@ -601,6 +601,36 @@ def test_a_value_title_opens_a_sentence_capitalised_and_keeps_an_abbreviation() 
     final = board(name="Final", over="after_close", order=["time_ms"])
     found = breaches(final, {"hw1": covered(TIME, {"main": group(pass_=1)}, cpu)}, many=False)
     assert found[0].message.startswith("The leaderboard Final ranks by CPU time, counting")
+
+
+def test_a_board_cannot_rank_by_the_value_a_task_uses_as_its_credit() -> None:
+    on = board(order=["points", "fraction"])
+    groups = {"main": group(each=1)}
+    islands = covered(REWARD, groups, credit="fraction")
+    found = breaches(on, {"islands": islands}, many=False)
+    assert [(b.task, b.key, b.mended_in, b.message) for b in found] == [
+        (
+            "islands",
+            1,
+            "credit",
+            "The leaderboard Standings ranks by fraction, but islands already turns fraction "
+            "into points through its test groups. Rank by points instead.",
+        )
+    ]
+    found = breaches(on, {"islands": islands}, many=False, only="islands")
+    assert [b.message for b in found] == [
+        "Standings ranks by fraction, so islands cannot also use fraction as its credit: the "
+        "board would rank a plain average that ignores test weights and groups. Change the "
+        "board, or remove credit."
+    ]
+
+
+def test_a_board_may_rank_the_value_behind_relative_credit_or_with_no_credit() -> None:
+    on = board(order=["points", "reward"])
+    groups = {"main": group(each=1)}
+    relative = covered(REWARD, groups, credit=Relative(relative="reward"))
+    assert breaches(on, {"tour": relative}, many=False) == []
+    assert breaches(on, {"tour": covered(REWARD, groups)}, many=False) == []
 
 
 def test_a_value_first_needs_a_group_whose_tests_its_scope_reads() -> None:

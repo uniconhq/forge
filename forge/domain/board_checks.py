@@ -3,6 +3,9 @@ T9 and C4), checked from either side: a task's save against every board
 covering it, with the other covered tasks as their latest publications give
 them, and a contest's save against every covered task's latest publication.
 
+- No value a board ranks is the one a covered task's `credit` names: that
+  task already turns it into points, through its groups and weights. The
+  value behind relative credit may be ranked.
 - Every value a board ranks is a number each covered task reports per test
   with a `fold`, whose `better` resolves, the same direction and fold in
   every covered task.
@@ -34,6 +37,7 @@ from forge.domain.definitions import (
     Group,
     Leaderboard,
     Over,
+    Relative,
     Select,
     Show,
     key_name,
@@ -46,13 +50,15 @@ from forge.domain.workflow_definition import Fold
 @dataclass(frozen=True, slots=True)
 class Covered:
     """A covered task as a board reads it: what each per-test number means,
-    each group's `show` and whether it has a rule weight, and the title its
-    workflow gives each value that has one.
+    each group's `show` and whether it has a rule weight, the title its
+    workflow gives each value that has one, and the value its `credit`
+    names, none for no credit or relative credit.
     """
 
     measures: Mapping[str, Measure]
     groups: Mapping[str, tuple[Show, bool]]
     titles: Mapping[str, str] = field(default_factory=dict)
+    credit: str | None = None
 
     @property
     def gives_points(self) -> bool:
@@ -63,11 +69,13 @@ def covered(
     measures: Mapping[str, Measure],
     groups: Mapping[str, Group],
     meanings: Iterable[ValueMeaning] = (),
+    credit: str | Relative | None = None,
 ) -> Covered:
     return Covered(
         measures,
         {name: (group.shown, rule_weight(group) > 0) for name, group in groups.items()},
         {meaning.name: meaning.title for meaning in meanings if meaning.title},
+        credit if isinstance(credit, str) else None,
     )
 
 
@@ -93,8 +101,8 @@ def _opening(said: str, name: str) -> str:
 @dataclass(frozen=True, slots=True)
 class Breach:
     """What a board refuses of one covered task: which `order` key, none
-    for its scope or its `select`, whether it is the task's `workflow` or
-    its `test_groups` that would mend it, and why.
+    for its scope or its `select`, whether it is the task's `workflow`, its
+    `test_groups` or its `credit` that would mend it, and why.
     """
 
     task: str
@@ -178,6 +186,9 @@ def _value(
             continue
         against = given if only is not None else given[:position]
         said = value_words(tasks, name, task)
+        if tasks[task].credit == name:
+            found.append(Breach(task, index, "credit", _credit_message(board, said, task, only)))
+            continue
         if measure is None or measure.fold is None:
             found.append(
                 Breach(
@@ -211,6 +222,22 @@ def _value(
             if problem is not None:
                 found.append(Breach(task, index, "workflow", problem))
     return found
+
+
+def _credit_message(board: Leaderboard, name: str, task: str, only: str | None) -> str:
+    """Why a board cannot rank by the value a task's `credit` names, said
+    to the task's save (`only`) or to the contest's.
+    """
+    if only is not None:
+        return (
+            f"{board.name} ranks by {name}, so {task} cannot also use {name} as its credit: "
+            "the board would rank a plain average that ignores test weights and groups. "
+            "Change the board, or remove credit."
+        )
+    return (
+        f"The leaderboard {board.name} ranks by {name}, but {task} already turns {name} into "
+        "points through its test groups. Rank by points instead."
+    )
 
 
 def _first_other(

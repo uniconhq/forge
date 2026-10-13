@@ -365,7 +365,10 @@ def _notes(
 
 def _covered(task: PublishedTask) -> Covered:
     return covered(
-        task.publication.measures, task.definition.test_groups, task.publication.meanings
+        task.publication.measures,
+        task.definition.test_groups,
+        task.publication.meanings,
+        task.definition.credit,
     )
 
 

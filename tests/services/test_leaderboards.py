@@ -13,6 +13,7 @@ task's `marks` never lowered below what a row holds (C1).
 
 import asyncio
 import contextlib
+import re
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -41,6 +42,7 @@ from forge.domain.scoring import Points
 from forge.domain.sessions import Session
 from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
+from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import (
@@ -56,7 +58,7 @@ from forge.services import (
 )
 from forge.services.access import Organiser
 from forge.services.publications import Draft, Published
-from forge.testing import FakeClock
+from forge.testing import CLASSIC, FakeClock
 from tests.services.conftest import (
     RUNNING,
     SPRING,
@@ -751,6 +753,74 @@ async def test_a_lower_is_better_value_first_over_two_tasks_is_refused_on_the_co
     )
     assert refused == [("leaderboards[0].order[0]", said), ("leaderboards[0].order[0]", said)]
     assert await _write(setup, acme, contest(alone, "  - id: product\n"))
+
+
+SCORED = CLASSIC.replace(
+    CLASSIC[CLASSIC.index(b"report:") :],
+    b"report:\n  fraction:\n    from: ${{ steps.run.memory_kb }}\n"
+    b"    better: higher\n    at_least: 0\n    at_most: 1\n",
+)
+"""classic, reporting a per-test fraction a task can use as its credit."""
+
+
+async def _scored(acme: Acme) -> None:
+    made = await acme.fake.workflows.create_workflow(
+        PLATFORM, "acme", "scored", {"workflow.yaml": SCORED}, Visibility.PUBLIC
+    )
+    await acme.fake.workflows.create_workflow_version(PLATFORM, made, "v1")
+
+
+async def _credited(
+    setup: Setup, acme: Acme, task: TaskId, credit: bytes, *, base: bytes | None = None
+) -> Published | Draft:
+    """The task saved on acme/scored@v1 with `credit`, over `base` or the current file."""
+    current = base if base is not None else await _task_yaml(acme, task)
+    scored = re.sub(rb"workflow: \S+", b"workflow: acme/scored@v1", current)
+    return await _save(setup, acme, task, {"task.yaml": scored + credit})
+
+
+async def test_a_board_ranking_a_tasks_credit_value_is_refused_on_the_contests_save(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await write_contest(acme.fake, contest())
+    await _scored(acme)
+    assert isinstance(await _credited(setup, acme, entered.task, b"credit: fraction\n"), Published)
+    ranked = "leaderboards:\n  - {name: Standings, order: [points, fraction]}\n"
+
+    refused = await _refused(setup, acme, contest(ranked))
+
+    assert refused == [
+        (
+            "leaderboards[0].order[1]",
+            "The leaderboard Standings ranks by fraction, but sum already turns fraction into "
+            "points through its test groups. Rank by points instead.",
+        )
+    ]
+
+
+async def test_a_tasks_save_with_the_credit_a_board_ranks_is_refused_at_credit(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await write_contest(
+        acme.fake, contest("leaderboards:\n  - {name: Standings, order: [points, fraction]}\n")
+    )
+    await _scored(acme)
+
+    base = await _task_yaml(acme, entered.task)
+
+    refused = await _credited(setup, acme, entered.task, b"credit: fraction\n", base=base)
+    plain = await _credited(setup, acme, entered.task, b"", base=base)
+
+    assert isinstance(refused, Draft)
+    assert [(error["path"], error["message"]) for error in refused.errors] == [
+        (
+            "credit",
+            "Standings ranks by fraction, so sum cannot also use fraction as its credit: the "
+            "board would rank a plain average that ignores test weights and groups. Change the "
+            "board, or remove credit.",
+        )
+    ]
+    assert isinstance(plain, Published), plain
 
 
 async def test_a_tasks_save_is_refused_where_a_board_ranks_what_its_groups_hide(
