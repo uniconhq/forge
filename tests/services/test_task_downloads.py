@@ -37,7 +37,7 @@ async def _uploaded(setup: Setup, acme: Acme, task: TaskId, path: str = PATH) ->
     door = await uploads.door(setup, session, slot.id, length=len(DATA))
     acme.fake.uploads.send(door.path, door.authorization, DATA)
     await uploads.complete(setup, session, task, slot.id)
-    await files.write_upload(setup, acme.ada, task, path, slot.id, None)
+    await files.write_upload(setup, acme.ada, task, path, slot.id, None, confirm=True)
 
 
 async def _version(setup: Setup, acme: Acme, task: TaskId, path: str) -> VersionId:
@@ -90,10 +90,12 @@ async def test_whoever_holds_a_role_reaching_the_task_downloads_its_files(
 async def test_a_download_reads_the_file_as_it_was_at_the_version_named(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    await files.write(setup, acme.ada, entered.task, "notes.txt", b"first\n", None)
+    await files.write(setup, acme.ada, entered.task, "notes.txt", b"first\n", None, confirm=True)
     first = await _version(setup, acme, entered.task, "notes.txt")
     current = await files.read(setup, acme.ada, entered.task, "notes.txt")
-    await files.write(setup, acme.ada, entered.task, "notes.txt", b"second\n", current.token)
+    await files.write(
+        setup, acme.ada, entered.task, "notes.txt", b"second\n", current.token, confirm=True
+    )
     second = await _version(setup, acme, entered.task, "notes.txt")
 
     then = await files.download(setup, acme.ada, entered.task, "notes.txt", first)

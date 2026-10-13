@@ -708,6 +708,36 @@ async def test_roles_and_labels_that_exist_are_kept_on_a_rerun(
     assert labels == ["clarification", "answered"]
 
 
+async def test_a_place_to_submit_is_deleted_only_while_it_holds_no_submission(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = f"/api/v1/repos/acme/spring.sum.{U8}.sub"
+    workspace, task = WorkspaceId(f"acme/spring/@{U8}"), TaskId("acme/spring/sum")
+    held = {"name": "submission/1", "commit": {"sha": "c-1", "created": "2026-09-30T10:00:00Z"}}
+    recorder.on("GET", f"{repo}/tags", ok([held]), ok([{"name": "v-other"}]))
+    recorder.on("DELETE", repo, httpx.Response(204))
+
+    with pytest.raises(Conflict):
+        await forgejo.workspaces.delete_submission_place(workspace, task)
+    assert f"DELETE {repo}" not in recorder.calls()
+    await forgejo.workspaces.delete_submission_place(workspace, task)
+
+    assert recorder.calls().count(f"DELETE {repo}") == 1
+
+
+async def test_a_place_to_submit_not_there_is_no_error(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = f"/api/v1/repos/acme/spring.sum.{U8}.sub"
+    recorder.on("GET", f"{repo}/tags", ok({"message": "not found"}, 404))
+
+    await forgejo.workspaces.delete_submission_place(
+        WorkspaceId(f"acme/spring/@{U8}"), TaskId("acme/spring/sum")
+    )
+
+    assert f"DELETE {repo}" not in recorder.calls()
+
+
 async def test_a_submission_is_written_as_the_contestant_and_named_at_that_commit(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
@@ -939,10 +969,114 @@ async def test_a_task_is_made_bare_and_secured_with_what_is_missing(
         f"PUT /api/v1/teams/{team}/repos/acme/spring.sum.task" for team in (1, 2, 4, 5, 6)
     ]
     assert f"POST {repo}/branch_protections" not in recorder.calls()
+    # A protection that lets any writer push is put right: the platform's
+    # account alone pushes or merges, repository admins included (#443).
+    assert recorder.sent("PATCH", f"{repo}/branch_protections/main") == [PLATFORM_ONLY]
     assert recorder.sent("PATCH", f"{repo}/tag_protections/7") == [
         {"name_pattern": "published/*", "whitelist_usernames": ["platform-account"]}
     ]
-    assert put_back == 6
+    assert put_back == 7
+
+
+PLATFORM_ONLY = {
+    "enable_push": True,
+    "enable_push_whitelist": True,
+    "push_whitelist_usernames": ["platform-account"],
+    "push_whitelist_deploy_keys": False,
+    "enable_merge_whitelist": True,
+    "merge_whitelist_usernames": ["platform-account"],
+    "apply_to_admins": True,
+    "block_on_rejected_reviews": False,
+}
+"""A contest's or a task's default branch, which the platform alone writes."""
+
+
+def _contest_teams_attached(recorder: Recorder) -> None:
+    """acme/spring's three role teams, each attached to its repository."""
+    teams = [{"id": team, "name": f"acme.spring-{role}"} for team, role in enumerate(Role, 1)]
+    recorder.on("GET", "/api/v1/orgs/acme/teams/search", ok({"data": teams}))
+    for team in range(1, len(teams) + 1):
+        recorder.on("GET", f"/api/v1/teams/{team}/repos/acme/spring.contest", ok({"id": 9}))
+
+
+async def test_a_place_already_written_by_the_platform_alone_is_left_as_it_is(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/spring.contest"
+    _contest_teams_attached(recorder)
+    recorder.on(
+        "GET", f"{repo}/branch_protections/main", ok({"branch_name": "main", **PLATFORM_ONLY})
+    )
+
+    await forgejo.content.secure(ContestId("acme/spring"))
+
+    assert f"PATCH {repo}/branch_protections/main" not in recorder.calls()
+
+
+async def test_a_new_place_is_protected_for_the_platform_alone(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/spring.contest"
+    _contest_teams_attached(recorder)
+    recorder.on("GET", f"{repo}/branch_protections/main", ok({}, 404))
+
+    await forgejo.content.secure(ContestId("acme/spring"))
+
+    assert recorder.sent("POST", f"{repo}/branch_protections") == [
+        {"branch_name": "main", **PLATFORM_ONLY}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("found", "put_back"),
+    [({"branch_name": "main"}, 1), ({"branch_name": "main", **PLATFORM_ONLY}, 0)],
+)
+async def test_a_protection_another_maker_put_on_a_new_place_meanwhile_is_put_right(
+    forgejo: ForgejoForge, recorder: Recorder, found: dict[str, object], put_back: int
+) -> None:
+    repo = "/api/v1/repos/acme/spring.contest"
+    _contest_teams_attached(recorder)
+    recorder.on("GET", f"{repo}/branch_protections/main", ok({}, 404), ok(found))
+    recorder.on(
+        "POST",
+        f"{repo}/branch_protections",
+        ok({"message": "Branch protection already exist"}, 403),
+    )
+
+    made = await forgejo.content.secure(ContestId("acme/spring"))
+
+    patched = recorder.sent("PATCH", f"{repo}/branch_protections/main")
+    assert (made, patched) == (put_back, [PLATFORM_ONLY] * put_back)
+
+
+@pytest.mark.parametrize("email", ["ada@acme.test", None])
+async def test_a_save_the_platform_writes_for_someone_names_them_by_their_private_address(
+    forgejo: ForgejoForge, recorder: Recorder, email: str | None
+) -> None:
+    """Forgejo's own address for an account that keeps its address private,
+    which it knows for theirs as well, so a commit never shows the address
+    they signed up with."""
+    repo = "/api/v1/repos/acme/spring.sum.task"
+    recorder.on("POST", f"{repo}/contents", ok({"commit": {"sha": "c-3"}}))
+    recorder.on(
+        "GET",
+        "/api/v1/users/search",
+        ok({"data": [{"id": 7, "login": "Ada", "full_name": "Ada L", "email": email}]}),
+    )
+
+    await forgejo.content.save_files(
+        PLATFORM,
+        TaskId("acme/spring/sum"),
+        {"task.yaml": b"a"},
+        expected={"task.yaml": ConflictToken("blob-1")},
+        message="Save",
+        author=7,
+    )
+
+    (sent,) = recorder.sent("POST", f"{repo}/contents")
+    person = {"name": "Ada L", "email": "ada@noreply.forge.test"}
+    assert (sent["author"], sent["committer"]) == (person, person)
+    assert recorder.headers("POST", f"{repo}/contents") == ["token admin"]
 
 
 async def test_a_save_is_one_commit_carrying_each_files_blob(
@@ -1425,6 +1559,46 @@ async def test_a_place_is_deleted_with_its_own_teams_and_no_others(
     ]
 
 
+async def test_a_place_whose_repository_stays_gets_its_teams_back_with_their_members(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    contest = [
+        {"id": 1, "name": "acme.spring-admin"},
+        {"id": 2, "name": "acme.spring-manager"},
+        {"id": 3, "name": "acme.spring-observer"},
+    ]
+    task = [
+        {"id": 4, "name": "acme.spring.sum-admin"},
+        {"id": 5, "name": "acme.spring.sum-manager"},
+        {"id": 6, "name": "acme.spring.sum-observer"},
+    ]
+    made = [
+        {"id": 14, "name": "acme.spring.sum-admin"},
+        {"id": 15, "name": "acme.spring.sum-manager"},
+        {"id": 16, "name": "acme.spring.sum-observer"},
+    ]
+    # Read for the members and to delete; then, at each step of making the
+    # teams again, without the task's until they are made.
+    searches = [ok({"data": contest + task})] * 6 + [ok({"data": contest})] * 6
+    recorder.on("GET", "/api/v1/orgs/acme/teams/search", *searches, ok({"data": contest + made}))
+    recorder.on("GET", "/api/v1/teams/5/members", ok([USER]))
+    recorder.on("DELETE", "/api/v1/repos/acme/spring.sum.task", ok({"message": "no"}, 422))
+    recorder.on("POST", "/api/v1/orgs/acme/teams", *(ok(team, 201) for team in made))
+    for team in made:
+        recorder.on("GET", f"/api/v1/teams/{team['id']}/repos/acme/spring.sum.task", ok({}, 404))
+
+    with pytest.raises(Rejected):
+        await forgejo.content.delete_place(TaskId("acme/spring/sum"))
+
+    calls = recorder.calls()
+    assert [call for call in calls if call.startswith("PUT")] == [
+        "PUT /api/v1/teams/14/repos/acme/spring.sum.task",
+        "PUT /api/v1/teams/15/repos/acme/spring.sum.task",
+        "PUT /api/v1/teams/16/repos/acme/spring.sum.task",
+        "PUT /api/v1/teams/15/members/ada",
+    ]
+
+
 async def test_a_place_not_there_is_no_error(forgejo: ForgejoForge, recorder: Recorder) -> None:
     recorder.on("GET", "/api/v1/orgs/acme/teams/search", ok({"data": []}))
     recorder.on("DELETE", "/api/v1/repos/acme/spring.contest", ok({}, 404))
@@ -1719,6 +1893,58 @@ async def test_a_listing_names_the_commit_holding_each_file_as_listed(
         ("data/more", None),
         ("data/b.bin", None),
     ]
+
+
+async def test_a_listing_gives_each_files_blob_as_its_token_and_a_folder_none(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on(
+        "GET",
+        "/api/v1/repos/acme/spring.sum.task/contents/tests/main/1",
+        ok(
+            [
+                {"type": "file", "path": "tests/main/1/input", "size": 4, "sha": "a" * 40},
+                {"type": "dir", "path": "tests/main/1/more", "sha": "b" * 40},
+            ]
+        ),
+    )
+
+    listed = await forgejo.content.list_tree(PLATFORM, TaskId("acme/spring/sum"), "tests/main/1")
+
+    assert [entry.token for entry in listed] == [ConflictToken("a" * 40), None]
+
+
+async def test_blobs_are_read_many_to_a_call_within_the_urls_length(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    path = "/api/v1/repos/acme/spring.sum.task/git/blobs"
+    shas = [f"{index:040x}" for index in range(100)]
+
+    # Every call answers every blob but one; each takes those it asked for.
+    blobs = [
+        {
+            "sha": sha,
+            "size": 3,
+            "encoding": "base64",
+            "content": base64.b64encode(sha[-3:].encode()).decode(),
+        }
+        for sha in shas
+        if sha != shas[7]
+    ]
+    recorder.on("GET", path, ok(blobs))
+
+    found = await forgejo.content.read_blobs(
+        PLATFORM, TaskId("acme/spring/sum"), [ConflictToken(sha) for sha in shas]
+    )
+
+    # 45 SHA-1s fit one URL, so 100 take three calls; one the forge did not
+    # answer for is left out.
+    asked = [request.url.params["shas"] for request in recorder.seen]
+    assert len(asked) == 3
+    assert all(len(shas_) <= 1900 for shas_ in asked)
+    assert len(found) == 99 and ConflictToken(shas[7]) not in found
+    assert found[ConflictToken(shas[0])] == shas[0][-3:].encode()
+    assert {request.url.path for request in recorder.seen} == {path}
 
 
 async def test_an_account_whose_email_is_taken_is_a_conflict_as_a_taken_name_is(

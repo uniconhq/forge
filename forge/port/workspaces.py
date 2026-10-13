@@ -65,6 +65,13 @@ class WorkspacePort(Protocol):
         """
         ...
 
+    async def delete_submission_place(self, workspace: WorkspaceId, task: TaskId) -> None:
+        """Remove the workspace's place to submit the task, with any upload
+        waiting in it, as the platform. `Conflict`, with nothing removed,
+        when it holds a submission. A place not there changes nothing.
+        """
+        ...
+
     async def share_workspace(self, workspace: WorkspaceId, member_ids: Sequence[int]) -> None:
         """Make the members exactly the people who reach the workspace, on
         every part of it already made: read on the desk and write on each

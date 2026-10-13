@@ -2,7 +2,8 @@
 the runner's contract files is the runner's own and checks what it should,
 a report reads as one or is refused, a result is kept only when it matches
 its schema, its numbers read exactly, and the run's clock agrees with the
-CI's.
+CI's; and which delayed submissions an entrant still has room for under a
+task's `submissions.max`, the earliest first.
 """
 
 import json
@@ -21,7 +22,9 @@ from forge.domain.grading import (
     RUN_TIMEOUT,
     STEP_OVERHEAD,
     WALL_CEILING,
+    Place,
     log_key,
+    room,
     run_deadline,
     wall_seconds,
 )
@@ -189,3 +192,32 @@ def test_a_runs_deadline_is_its_wall_clock_and_the_time_kept_for_reporting() -> 
 
 def test_a_log_is_kept_by_grading_and_attempt() -> None:
     assert log_key(GRADING, 2) == f"logs/{GRADING}/2.log"
+
+
+HOLDS, DELAYED, NONE = Place.HOLDS, Place.DELAYED, Place.NONE
+
+
+def test_a_delayed_submission_is_graded_again_while_the_places_held_leave_room() -> None:
+    places = {1: HOLDS, 2: DELAYED, 3: NONE}
+
+    assert room(places, 2, [2]) == {2}
+    assert room(places, 1, [2]) == set()
+    # Over the limit, it is taken again once there is room.
+    assert room({1: HOLDS, 2: NONE}, 2, [2]) == {2}
+
+
+def test_the_earliest_delayed_submissions_take_the_room_left() -> None:
+    places = {1: HOLDS, 2: DELAYED, 3: DELAYED, 4: DELAYED}
+
+    # One place left: the later one asked for alone is refused, its place
+    # kept for the earlier delayed one's own retry.
+    assert room(places, 2, [3]) == set()
+    assert room(places, 2, [2]) == {2}
+    # Two left, asked for together: the two made first.
+    assert room(places, 3, [2, 3, 4]) == {2, 3}
+    # One over the limit made before a delayed one comes first too.
+    assert room({1: NONE, 2: DELAYED}, 1, [1, 2]) == {1}
+
+
+def test_a_submission_waiting_for_its_result_holds_its_place() -> None:
+    assert room({1: HOLDS, 2: HOLDS, 3: DELAYED}, 2, [3]) == set()

@@ -7,16 +7,18 @@ The forge lets nobody but the platform create a repository: people have no
 personal quota and no team may create under an org. So every repository is
 made by the platform account, under an org it owns or, through the
 administrator's endpoint, under the person who asked for it, who owns it
-from then on. What goes into it is written as the caller. What needs a
+from then on. What goes into it is written as the caller the service
+names: the platform, with the organiser as author, for a contest's and a
+task's files, and the contestant for a submission. What needs a
 repository admin, the protection, the mark, visibility and collaborators,
 is done as the platform too, since no organiser's team is one.
 """
 
 import base64
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from forge.adapters.git.forgejo.http import (
     MAX_PAGES,
@@ -37,7 +39,7 @@ from forge.domain.content import (
     TreeEntry,
 )
 from forge.domain.errors import Conflict, Forbidden, NotFound, Unavailable
-from forge.domain.identity import PLATFORM, Identity, Platform
+from forge.domain.identity import PLATFORM, Identity, Platform, User
 from forge.domain.ids import VersionId, is_commit
 from forge.domain.uploads import Door
 
@@ -45,6 +47,9 @@ DEFAULT_BRANCH = "main"
 CREATE_MESSAGE = "Create"
 TREE_PAGE = 1000
 MAX_TREE_PAGES = 100
+BLOBS_URL_BUDGET = 1900
+"""The most characters of blob shas, commas included, one read of several
+blobs names: Forgejo asks a `GetBlobs` URL to stay within about 2,083."""
 WRITE_ATTEMPTS = 4
 
 
@@ -52,9 +57,13 @@ SEARCH_PATH = "/api/v1/repos/search"
 
 
 class Repos:
-    def __init__(self, http: Http, *, platform_account: str) -> None:
+    def __init__(self, http: Http, *, platform_account: str, public_url: str) -> None:
+        """`public_url` is Forgejo's own, whose host is its `DOMAIN` and so
+        names its `NO_REPLY_ADDRESS`, `noreply.<host>`, unless set apart.
+        """
         self._http = http
         self._platform_account = platform_account
+        self._no_reply = f"noreply.{urlparse(public_url).hostname}"
         self._org_ids: dict[str, int] = {}
 
     async def create(
@@ -120,33 +129,58 @@ class Repos:
         except NotFound:
             return
 
-    async def protect_branch(self, owner: str, name: str) -> bool:
+    async def protect_branch(self, owner: str, name: str, *, platform_only: bool = False) -> bool:
         """Protect the default branch, which is what refuses a force-push to
         it, so nothing written can be rewritten, and say whether that had to
         be put back. Forgejo has no switch for force-pushes: a protected
         branch refuses them all. Forgejo refuses a second protection of the
-        branch, so one another maker put there meanwhile counts as there.
+        branch, so one another maker put there meanwhile counts as there, and
+        is read as one found.
+
+        `platform_only` lets the platform's account alone push or merge to
+        the branch, repository admins included (#443): whoever else may write
+        the repository, through its git, its pages or its API, is refused
+        there. A protection found that lets anyone else is put back.
         """
         path = f"/api/v1/repos/{segment(owner)}/{segment(name)}/branch_protections"
+        wanted = self._branch_rules(platform_only)
         try:
-            await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}")
+            found = json_of(await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}"))
         except NotFound:
             try:
                 await self._http.call(
                     PLATFORM,
                     "POST",
                     path,
-                    json={
-                        "branch_name": DEFAULT_BRANCH,
-                        "enable_push": True,
-                        "block_on_rejected_reviews": False,
-                    },
+                    json={"branch_name": DEFAULT_BRANCH, **wanted},
                 )
             except Forbidden, Conflict:
-                await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}")
-                return False
-            return True
-        return False
+                found = json_of(await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}"))
+            else:
+                return True
+        if not platform_only or all(found.get(key) == value for key, value in wanted.items()):
+            return False
+        await self._http.call(PLATFORM, "PATCH", f"{path}/{DEFAULT_BRANCH}", json=wanted)
+        return True
+
+    def _branch_rules(self, platform_only: bool) -> dict[str, Any]:
+        """What the default branch's protection says: pushes refused to
+        nobody with write, or, `platform_only`, to everyone but the
+        platform's account, merges and repository admins included.
+        """
+        if not platform_only:
+            return {"enable_push": True, "block_on_rejected_reviews": False}
+        allowed = [self._platform_account]
+        return {
+            "enable_push": True,
+            "enable_push_whitelist": True,
+            "push_whitelist_usernames": allowed,
+            "push_whitelist_deploy_keys": False,
+            "enable_merge_whitelist": True,
+            "merge_whitelist_usernames": allowed,
+            "apply_to_admins": True,
+            "block_on_rejected_reviews": False,
+        }
 
     async def write_files(
         self, as_: Identity, owner: str, name: str, files: Files, *, message: str
@@ -219,8 +253,10 @@ class Repos:
         *,
         expected: Mapping[str, ConflictToken | None],
         message: str,
+        author: User | None = None,
     ) -> VersionId:
-        """Create, update and remove the files in one commit as `as_`. Each
+        """Create, update and remove the files in one commit as `as_`, its
+        author and committer `author` when given (`_identity`). Each
         update and removal carries the blob it was read at, and the host
         refuses the whole commit when any has moved since, or when a file to
         create is there already; both are `Conflict`, and neither is tried
@@ -254,7 +290,12 @@ class Repos:
             as_,
             "POST",
             f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents",
-            json={"branch": DEFAULT_BRANCH, "message": message, "files": operations},
+            json={
+                "branch": DEFAULT_BRANCH,
+                "message": message,
+                "files": operations,
+                **_identity(author, self._no_reply),
+            },
         )
         return VersionId(str(json_of(written)["commit"]["sha"]))
 
@@ -355,11 +396,13 @@ class Repos:
         *,
         message: str,
         expected: ConflictToken | None,
+        author: User | None = None,
     ) -> VersionId:
         body: dict[str, Any] = {
             "content": _encoded(content),
             "message": message,
             "branch": DEFAULT_BRANCH,
+            **_identity(author, self._no_reply),
         }
         target = f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents/{file_path(path)}"
         if expected is None:
@@ -390,9 +433,37 @@ class Repos:
                 kind=EntryKind.DIRECTORY if entry["type"] == "dir" else EntryKind.FILE,
                 size=int(entry["size"]) if entry.get("size") is not None else None,
                 version=_version(entry) if entry["type"] != "dir" else None,
+                token=ConflictToken(str(entry["sha"]))
+                if entry["type"] != "dir" and entry.get("sha")
+                else None,
             )
             for entry in entries
         )
+
+    async def blobs(
+        self, as_: Identity, owner: str, name: str, tokens: Collection[ConflictToken]
+    ) -> dict[ConflictToken, bytes]:
+        """Each blob's content by its sha, the file's token, through the
+        endpoint that reads several at once (Forgejo's `GetBlobs`), as many
+        to a call as fit its URL, about 2,000 characters: 46 SHA-1s, or 29
+        SHA-256s. A sha the repository does not hold is left out.
+        """
+        found: dict[ConflictToken, bytes] = {}
+        for batch in _batches(sorted(set(tokens)), BLOBS_URL_BUDGET):
+            answered: object = (
+                await self._http.call(
+                    as_,
+                    "GET",
+                    f"/api/v1/repos/{segment(owner)}/{segment(name)}/git/blobs",
+                    params={"shas": ",".join(batch)},
+                )
+            ).json()
+            for blob in answered if isinstance(answered, list) else []:
+                if isinstance(blob, dict) and blob.get("sha") in batch:
+                    content = base64.b64decode(blob.get("content") or "")
+                    if blob.get("size") in (None, len(content)):
+                        found[ConflictToken(str(blob["sha"]))] = content
+        return found
 
     async def history(
         self, as_: Identity, owner: str, name: str, path: str | None = None
@@ -708,6 +779,38 @@ class Repos:
 
 def _encoded(content: bytes) -> str:
     return base64.b64encode(content).decode()
+
+
+def _identity(author: User | None, no_reply: str) -> dict[str, Any]:
+    """The author and committer a change the platform writes for `author`
+    names, by which Forgejo knows the commit for theirs: their name and the
+    address Forgejo gives an account that keeps its own private, their
+    username at `no_reply`, which it matches to them as it does their own,
+    so the commit never shows the address they signed up with. None for a
+    change of the caller's own.
+    """
+    if author is None:
+        return {}
+    person = {
+        "name": author.name or author.username,
+        "email": f"{author.username.lower()}@{no_reply}",
+    }
+    return {"author": person, "committer": person}
+
+
+def _batches(shas: Sequence[str], budget: int) -> list[list[str]]:
+    """`shas` in order, cut into runs whose comma-joined length is at most
+    `budget`, at least one sha to a run.
+    """
+    runs: list[list[str]] = []
+    length = budget + 1
+    for sha in shas:
+        if length + 1 + len(sha) > budget:
+            runs.append([])
+            length = -1
+        runs[-1].append(sha)
+        length += 1 + len(sha)
+    return runs
 
 
 def _version(entry: dict[str, Any], at: str | None = None) -> VersionId | None:

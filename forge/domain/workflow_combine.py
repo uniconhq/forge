@@ -169,6 +169,10 @@ def _entry(entry: str | Meaning, rename: Callable[[str], str]) -> str | dict[str
     if isinstance(entry, str):
         return rename(entry)
     written: dict[str, Any] = {"from": rename(entry.from_)}
+    if entry.title is not None:
+        written["title"] = entry.title
+    if entry.unit is not None:
+        written["unit"] = entry.unit
     if entry.fold is not None:
         written["fold"] = entry.fold.value
     if entry.better is not None:

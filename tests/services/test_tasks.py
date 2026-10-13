@@ -1,5 +1,5 @@
 """Making a task is a request a manager of its contest makes, done before it
-answers: the place with the starter `task.yaml`, `statement.md`, an empty
+answers: the place with the starter `task.yaml`, `statement.md`, no
 `public/` and one test, `tests/main/1/`, then the roles of the contest and
 the task with its protection and its publications reserved, then its
 activation at the CI as the org's account, then its entry at the end of the
@@ -23,7 +23,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.adapters.ci.fake import token_in
 from forge.domain.content import Edit
-from forge.domain.definitions import parse_contest, parse_task
+from forge.domain.definitions import (
+    STARTER_STATEMENT,
+    parse_contest,
+    parse_task,
+    statement_written,
+)
 from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
 from forge.domain.identity import PLATFORM, AsOrgAccount, User
 from forge.domain.ids import ContestId, OrgId, TaskId
@@ -31,7 +36,7 @@ from forge.domain.names import Named
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import making, names, org_accounts, publications, tasks
+from forge.services import making, names, org_accounts, publications, reconcile, tasks
 from forge.services.access import Organiser
 from forge.testing import logged
 from tests.services.conftest import (
@@ -83,7 +88,6 @@ async def test_a_contest_manager_makes_the_task_with_its_files(
     ]
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
     assert sorted(repo.files) == [
-        "public/.gitkeep",
         "statement.md",
         "task.yaml",
         "tests/main/1/answer",
@@ -254,9 +258,9 @@ async def test_a_commit_that_fails_after_every_step_removes_the_task_and_its_ent
     ]
     assert forge_state(acme.fake) == before
     history = acme.fake.state.repos[("acme", "spring.contest")].history
-    assert [change.message for change in history[-2:]] == [
-        "Add sum to the contest's tasks",
-        "Take sum out of the contest's tasks",
+    assert [(change.message, change.author_id) for change in history[-2:]] == [
+        ("Add sum to the contest's tasks", 7),
+        ("Take sum out of the contest's tasks", 7),
     ]
 
 
@@ -354,6 +358,46 @@ async def test_a_new_task_is_a_draft_with_nothing_wrong_and_no_publication(
 
     assert (state.draft, state.errors, state.latest) == (True, (), None)
     assert state.head == acme.fake.state.repos[("acme", "spring.sum.task")].head
+    # The starter's placeholder is no statement, and nothing is published.
+    assert (state.statement_written, state.head_statement_written) == (False, False)
+
+
+async def test_a_task_says_whether_its_published_statement_is_written_and_its_heads(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    placeholder = await publish(setup, acme, sum_task)
+    published = await tasks.state(setup, acme.ada, sum_task)
+    head = await acme.fake.content.list_files(PLATFORM, sum_task)
+    kept = await publications.save(
+        setup,
+        acme.ada,
+        sum_task,
+        {"statement.md": Edit(b"Add two numbers.\r\n", head.tokens["statement.md"])},
+        keep_as_draft=True,
+    )
+    drafted = await tasks.state(setup, acme.ada, sum_task)
+    written = await publications.save(setup, acme.ada, sum_task, {})
+    both = await tasks.state(setup, acme.ada, sum_task)
+    blank = await acme.fake.content.list_files(PLATFORM, sum_task)
+    emptied = await publications.save(
+        setup, acme.ada, sum_task, {"statement.md": Edit(b"  \n", blank.tokens["statement.md"])}
+    )
+
+    assert placeholder.number == 1 and isinstance(kept, publications.Draft)
+    assert (published.statement_written, published.head_statement_written) == (False, False)
+    # Written in a draft: the published statement is still the placeholder.
+    assert (drafted.statement_written, drafted.head_statement_written) == (False, True)
+    assert isinstance(written, publications.Published) and isinstance(
+        emptied, publications.Published
+    )
+    assert (both.statement_written, both.head_statement_written) == (True, True)
+    # A blank statement is no statement either.
+    after = await tasks.state(setup, acme.ada, sum_task)
+    assert (after.statement_written, after.head_statement_written) == (False, False)
+    # A placeholder written over the starter's, spaced otherwise, is still it.
+    assert statement_written(b"\nWrite the statement entrants read here.  \r\n") is False
+    assert statement_written(None) is False
+    assert statement_written(STARTER_STATEMENT + b"Add two numbers.\n") is True
 
 
 async def test_a_task_whose_activation_the_ci_refuses_signs_the_org_account_in_again(
@@ -449,3 +493,42 @@ def _held_at_task(acme: Acme) -> Organiser:
         role=Role.OBSERVER,
         identity=acme.ada.identity,
     )
+
+
+async def test_the_reconcile_makes_a_place_made_before_written_by_the_platform_alone(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    # A contest and a task made before the platform wrote their files alone
+    # (#443): their organisers could still push to them.
+    places = [
+        acme.fake.state.repos[("acme", name)] for name in ("spring.contest", "spring.sum.task")
+    ]
+    for repo in places:
+        repo.platform_only = False
+    statement = await acme.fake.content.read_file(PLATFORM, sum_task, "statement.md")
+    await acme.fake.content.write_file(
+        acme.ada.identity,
+        sum_task,
+        "statement.md",
+        b"Pushed.\n",
+        message="Push",
+        expected=statement.token,
+    )
+
+    async with setup.unit_of_work() as ctx:
+        done = await reconcile.reconcile(ctx)
+    async with setup.unit_of_work() as ctx:
+        again = await reconcile.reconcile(ctx)
+
+    assert (done.secured, again.secured) == (2, 0)
+    assert all(repo.platform_only for repo in places)
+    pushed = await acme.fake.content.read_file(PLATFORM, sum_task, "statement.md")
+    with pytest.raises(Forbidden, match="protected branch"):
+        await acme.fake.content.write_file(
+            acme.ada.identity,
+            sum_task,
+            "statement.md",
+            b"Again.\n",
+            message="Push",
+            expected=pushed.token,
+        )

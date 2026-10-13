@@ -87,6 +87,18 @@ class FakeWorkspaces:
             raise NotFound(f"{task} is not a task of the contest {workspace} is in")
         self._open(ref, ref.submission_repo(task_ref.task), member_ids, reserve=True)
 
+    async def delete_submission_place(self, workspace: WorkspaceId, task: TaskId) -> None:
+        self._state.record("delete_submission_place", PLATFORM, workspace=workspace, task=task)
+        self._state.check_up()
+        ref = parse_workspace(workspace)
+        key = (ref.org, ref.submission_repo(parse_task(task).task))
+        repo = self._state.repos.get(key)
+        if repo is None:
+            return
+        if held := _numbers(repo, SUBMISSION_PREFIX):
+            raise Conflict(f"{key[1]} holds {len(held)} submissions")
+        del self._state.repos[key]
+
     def _open(
         self,
         ref: WorkspaceRef,
@@ -281,6 +293,7 @@ class FakeWorkspaces:
                     sealed=note.sealed,
                     measures=note.measures,
                     titles=note.titles,
+                    meanings=note.meanings,
                     at=self._state.published_at.get((task, number), self._state.clock.now()),
                 )
             )

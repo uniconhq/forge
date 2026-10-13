@@ -45,6 +45,7 @@ from typing import Any
 
 from forge.domain.definitions import Group, Relative, Show
 from forge.domain.grading import GradingStatus
+from forge.domain.meanings import ValueMeaning
 from forge.domain.scoring import (
     Measure,
     Points,
@@ -81,7 +82,8 @@ class Graded:
     back, its `credit`, what each per-test number its workflow reports
     means, and its generation, the number of the latest publication up to
     it that changed how the task grades, which publications grading the
-    same test content share.
+    same test content share; and every value its workflow reports, with
+    the words a page names it by.
     """
 
     tests: tuple[str, ...]
@@ -90,17 +92,25 @@ class Graded:
     credit: str | Relative | None = None
     measures: Mapping[str, Measure] = field(default_factory=dict)
     generation: int = 0
+    meanings: tuple[ValueMeaning, ...] = ()
 
 
 def under(own: Graded, latest: Graded) -> Graded:
     """What a grading made under `own` is shown with while `latest` is the
     task's latest publication: `own`'s tests and sealed facts, and
-    `latest`'s `test_groups`, `credit` and meanings while no grading change
-    came between them, `own`'s otherwise.
+    `latest`'s `test_groups`, `credit` and meanings, the values' words
+    among them, while no grading change came between them, `own`'s
+    otherwise.
     """
     if own.generation != latest.generation or own.tests != latest.tests:
         return own
-    return replace(own, groups=latest.groups, credit=latest.credit, measures=latest.measures)
+    return replace(
+        own,
+        groups=latest.groups,
+        credit=latest.credit,
+        measures=latest.measures,
+        meanings=latest.meanings,
+    )
 
 
 def generation_of(changed: Sequence[tuple[int, bool]], number: int) -> int:
@@ -157,14 +167,16 @@ class SubmissionState(StrEnum):
     section 1.7's words, which say nothing of the CI's stages: `queued`
     until its run is started, `grading` while the CI holds it or runs it,
     `graded` once it has a result, `delayed` while it has none and its
-    latest attempt failed for a reason of the platform's, and `cancelled`
-    once staff ended it.
+    latest attempt failed for a reason of the platform's, `over_limit` once
+    it was to be graded again and its entrant had no room left under the
+    task's `submissions.max`, and `cancelled` once staff ended it.
     """
 
     QUEUED = "queued"
     GRADING = "grading"
     GRADED = "graded"
     DELAYED = "delayed"
+    OVER_LIMIT = "over_limit"
     CANCELLED = "cancelled"
 
 
@@ -175,6 +187,7 @@ _TOLD = {
     GradingStatus.SYSTEM_ERROR: SubmissionState.DELAYED,
     GradingStatus.DONE: SubmissionState.GRADED,
     GradingStatus.CANCELLED: SubmissionState.CANCELLED,
+    GradingStatus.OVER_LIMIT: SubmissionState.OVER_LIMIT,
 }
 
 

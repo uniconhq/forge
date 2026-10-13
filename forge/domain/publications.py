@@ -12,7 +12,10 @@ reported from sealed steps; and what each per-test number the workflow
 reports means for the task (`forge.domain.scoring.Measure`), its fold, its
 direction with the task's values in and its bounds, as the workflow at its
 pinned version said when the task published, so a grading is scored and a
-board is checked without reading the workflow again.
+board is checked without reading the workflow again; and every value the
+workflow reports, in its order, with the title and unit a page names it by
+(`forge.domain.meanings.ValueMeaning`), so no page reads the workflow for
+those either.
 
     grading_changed: true
     changes:
@@ -23,18 +26,24 @@ board is checked without reading the workflow again.
     sealed_values: [accuracy]
     values:
       time_ms: {fold: max, better: lower, at_least: "0"}
+    reported:
+      time_ms: {title: Run time, unit: ms}
+      log: {title: Compile log}
 
 A publication made before values were noted has none: its numbers are shown
-on their tests and fold into nothing until the task publishes again.
+on their tests and fold into nothing until the task publishes again. One
+made before the reported values' words were noted lists its per-test
+numbers by name alone, and a page names each by its key.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
 import yaml
 
 from forge.domain.ids import PublicationId, VersionId
+from forge.domain.meanings import ValueMeaning, meanings_noted, with_measures
 from forge.domain.scoring import Measure, measure_noted
 from forge.domain.showing import NOTHING_SEALED, Sealed
 
@@ -55,6 +64,7 @@ class Publication:
     sealed: Sealed = NOTHING_SEALED
     measures: Mapping[str, Measure] = field(default_factory=dict)
     titles: Mapping[str, str] = field(default_factory=dict)
+    meanings: tuple[ValueMeaning, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +75,7 @@ class Note:
     sealed: Sealed = NOTHING_SEALED
     measures: Mapping[str, Measure] = field(default_factory=dict)
     titles: Mapping[str, str] = field(default_factory=dict)
+    meanings: tuple[ValueMeaning, ...] = ()
 
 
 def write_note(
@@ -74,6 +85,7 @@ def write_note(
     sealed: Sealed = NOTHING_SEALED,
     measures: Mapping[str, Measure] | None = None,
     titles: Mapping[str, str] | None = None,
+    meanings: Sequence[ValueMeaning] = (),
 ) -> str:
     """The note a publication is made with."""
     document: dict[str, object] = {"grading_changed": grading_changed, "changes": list(changes)}
@@ -87,6 +99,8 @@ def write_note(
         document["values"] = {name: measures[name].noted() for name in sorted(measures)}
     if titles:
         document["titles"] = dict(sorted(titles.items()))
+    if meanings:
+        document["reported"] = {meaning.name: meaning.noted() for meaning in meanings}
     return yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
 
 
@@ -126,13 +140,15 @@ def read_note(text: str | None) -> Note:
     sealed = Sealed(
         steps=_names(document.get("sealed_steps")), values=_names(document.get("sealed_values"))
     )
+    measures = _measures(document.get("values"))
     return Note(
         document.get("grading_changed") is True,
         listed,
         pinned,
         sealed,
-        _measures(document.get("values")),
+        measures,
         _titles(document.get("titles")),
+        with_measures(meanings_noted(document.get("reported")), measures),
     )
 
 

@@ -1,16 +1,21 @@
 """The content area over Forgejo: contest and task repositories under their
-org, made bare and then secured, read and written through the contents API as
-the calling identity. Securing a repository attaches the role teams of its
-contest and, for a task, of the task itself, refuses force-pushes to its
-default branch, and for a task reserves the `published/` tags for the
-platform account; each is checked first and only what is missing is made.
-Deleting one removes its own role teams and then the repository.
+org, made bare and then secured, read through the contents API as the
+calling identity and written through it as the platform, with the organiser
+who saved as the commit's author and committer. Securing a repository
+attaches the role teams of its contest and, for a task, of the task itself,
+protects its default branch so only the platform's account may push or merge
+to it and nobody may force-push, and for a task reserves the `published/`
+tags for the platform account; each is checked first and only what is
+missing is made or put back.
+Deleting one removes its own role teams and then the repository, and makes
+the teams again when the repository stays.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 
 from forge.adapters.git.forgejo.repos import Repos
 from forge.adapters.git.forgejo.teams import Teams
+from forge.adapters.git.forgejo.users import Users
 from forge.adapters.ids import (
     CONTEST,
     PUBLISHED_PREFIX,
@@ -22,7 +27,8 @@ from forge.adapters.ids import (
     parse_task,
 )
 from forge.domain.content import Change, ConflictToken, File, Files, FileSet, TreeEntry
-from forge.domain.identity import PLATFORM, Identity
+from forge.domain.errors import PortError
+from forge.domain.identity import PLATFORM, Identity, User
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
 from forge.domain.roles import Scope
 from forge.domain.uploads import Door
@@ -30,9 +36,10 @@ from forge.port.content import ContentPlace
 
 
 class ForgejoContent:
-    def __init__(self, repos: Repos, teams: Teams) -> None:
+    def __init__(self, repos: Repos, teams: Teams, users: Users) -> None:
         self._repos = repos
         self._teams = teams
+        self._users = users
 
     async def create_contest(self, org: OrgId, key: str, files: Files) -> ContestId:
         ref = ContestRef(org, key)
@@ -49,7 +56,7 @@ class ForgejoContent:
         owner, name = location(place)
         scope = _scope(place)
         put_back = await self._teams.attach_scope(scope, name)
-        put_back += await self._repos.protect_branch(owner, name)
+        put_back += await self._repos.protect_branch(owner, name, platform_only=True)
         if scope.task is not None:
             put_back += await self._repos.reserve_versions(owner, name, PUBLISHED_PREFIX)
         return put_back
@@ -57,11 +64,20 @@ class ForgejoContent:
     async def delete_place(self, place: ContentPlace) -> None:
         """The place's own role teams first, the reverse of the order they
         were made in, then its repository, which takes its protections and
-        its attachment to the teams of the contest above it.
+        its attachment to the teams of the contest above it. When the
+        repository is not deleted, its teams are made again with the members
+        they had, so a removal that fails gives the place back with its role
+        holders.
         """
         owner, name = location(place)
-        await self._teams.delete_scope(_scope(place))
-        await self._repos.delete(owner, name)
+        scope = _scope(place)
+        held = await self._teams.scope_members(scope)
+        await self._teams.delete_scope(scope)
+        try:
+            await self._repos.delete(owner, name)
+        except PortError:
+            await self._teams.restore_scope(scope, name, held)
+            raise
 
     async def exists(self, place: ContentPlace) -> bool:
         return await self._repos.exists(*location(place))
@@ -113,10 +129,18 @@ class ForgejoContent:
         *,
         message: str,
         expected: ConflictToken | None,
+        author: int | None = None,
     ) -> VersionId:
         owner, name = location(place)
         return await self._repos.write_file(
-            as_, owner, name, path, content, message=message, expected=expected
+            as_,
+            owner,
+            name,
+            path,
+            content,
+            message=message,
+            expected=expected,
+            author=await self._author(author),
         )
 
     async def save_files(
@@ -127,11 +151,24 @@ class ForgejoContent:
         *,
         expected: Mapping[str, ConflictToken | None],
         message: str,
+        author: int | None = None,
     ) -> VersionId:
         owner, name = location(place)
         return await self._repos.commit_files(
-            as_, owner, name, files, expected=expected, message=message
+            as_,
+            owner,
+            name,
+            files,
+            expected=expected,
+            message=message,
+            author=await self._author(author),
         )
+
+    async def _author(self, user_id: int | None) -> User | None:
+        """The person a change the platform writes names as its author, read
+        as the platform.
+        """
+        return await self._users.find(user_id) if user_id is not None else None
 
     async def list_files(
         self, as_: Identity, place: ContentPlace, *, at: VersionId | None = None
@@ -144,6 +181,12 @@ class ForgejoContent:
     ) -> tuple[TreeEntry, ...]:
         owner, name = location(place)
         return await self._repos.tree(as_, owner, name, path)
+
+    async def read_blobs(
+        self, as_: Identity, place: ContentPlace, tokens: Collection[ConflictToken]
+    ) -> Mapping[ConflictToken, bytes]:
+        owner, name = location(place)
+        return await self._repos.blobs(as_, owner, name, tokens)
 
     async def history(
         self, as_: Identity, place: ContentPlace, path: str | None = None

@@ -1,6 +1,6 @@
 """A task's timeline against what rows did: each row's extension, when a task
 reveals, and the checks that keep a timeline from moving behind a row
-(TASK-FORMAT.md sections 1.1 and 2, C1 and C2).
+(TASK-FORMAT.md sections 1.1 and 2, C1, C2 and C5).
 
 A row is an entrant. Its extension sits on its `entrants` row: a length
 and the tasks it is for, by name, every task when it names none, and it
@@ -17,8 +17,10 @@ gradings, one per submission, at the moment it was taken:
   judged, since its first save says what it gives.
 - C2, for what happened: a task released under the settings saved before,
   its contest published and past its start and its `release_at` passed,
-  does not move its release later, nor lose its entry; a task with
-  submissions does not lose its entry either. A `due` does not move earlier
+  withdrawn since or not, does not move its release later, nor lose its
+  entry; a task with submissions does not lose its entry either, and is
+  withdrawn instead. Taking a task out of its contest is its own action
+  (`forge.services.taking_out`). A `due` does not move earlier
   past a submission it would make late. A close, the task's `closes` or the
   contest's `end`, does not move earlier than a submission already made,
   nor later once the task has revealed under the settings saved before. A
@@ -31,6 +33,13 @@ gradings, one per submission, at the moment it was taken:
 - From the start on, `entrants` no longer asks more of a team than it did,
   nor allows fewer, nor moves between everyone entering alone and in teams:
   a team's roster is locked by then, so it could not mend what that breaks.
+- C5, the save that opens the contest, from `draft` (or settings that never
+  read) to `published`: every task it lists but a withdrawn one has a
+  publication whose statement is written, not blank and not the starter's
+  placeholder (M57), as the organisers' opening checklist asks; each one
+  that has not is refused at the `state` line, "A · sum: its statement is
+  not written yet". Only that save: a task added to an open contest, or
+  saved since, does not keep a later save of its settings from being made.
 
 Changing an extension is checked the same way (`refuse_extension`): it may
 not let a row submit to a task whose reveal has passed, nor, shortened or
@@ -45,13 +54,13 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select, text
 
 from forge.db.tables import Entrant, Grading
-from forge.domain.definitions import ContestDefinition, ContestTask, State
-from forge.domain.errors import InvalidExtension
+from forge.domain.definitions import ContestDefinition, ContestTask, State, letters
+from forge.domain.errors import InvalidExtension, NotFound
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
-from forge.domain.release import Extension, close_of, due_of, in_words, released, reveal_of
+from forge.domain.release import Extension, close_of, due_of, in_words, reached, reveal_of
 from forge.domain.yaml_models import Problem
 from forge.runtime.context import Context
 from forge.services import names, published
@@ -225,6 +234,8 @@ async def check_contest(
         if entry.id not in tasks
     ]
     problems += await _points(ctx, after, tasks)
+    if after.state is State.PUBLISHED and (before is None or before.state is State.DRAFT):
+        problems += await _not_ready(ctx, after, tasks)
     if before is None:
         return problems
     if _drafted_after_start(before, after, ctx.now):
@@ -234,16 +245,51 @@ async def check_contest(
     extensions = await every_extension(ctx, contest)
     for entry in before.tasks:
         if after.entry(entry.id) is None:
-            message = _dropped(before, entry, made.get(entry.id, []), ctx.now)
+            message = _dropped(before, entry, made.get(entry.id, []), entry.id in tasks, ctx.now)
             if message is not None:
                 problems.append(Problem(path="tasks", message=message))
     for index, entry in enumerate(after.tasks):
         old = before.entry(entry.id)
+        if entry.withdrawn and not (old is not None and old.withdrawn) and not made.get(entry.id):
+            problems.append(
+                Problem(
+                    path=f"tasks[{index}].withdrawn",
+                    message=f"Nobody has submitted to {entry.id}, so it is removed, not "
+                    "withdrawn. Remove it from the contest's Tasks card instead.",
+                )
+            )
         for path, message in _moved(
             before, old, after, entry, made.get(entry.id, []), extensions, ctx.now
         ):
             at = path if path in ("start", "end") else f"tasks[{index}].{path}"
             problems.append(Problem(path=at, message=message))
+    return problems
+
+
+async def _not_ready(
+    ctx: Context, after: ContestDefinition, tasks: Mapping[str, TaskId]
+) -> list[Problem]:
+    """C5, for the save that opens the contest: each task it lists, but a
+    withdrawn one, that has no publication, or whose latest publication's
+    statement is not written (M57), at the `state` line, named by its letter
+    and name as the opening checklist names it.
+    """
+    problems: list[Problem] = []
+    for index, entry in enumerate(after.tasks):
+        task = tasks.get(entry.id)
+        if task is None or entry.withdrawn:
+            continue
+        named = f"{letters(index)} · {entry.id}"
+        try:
+            made = await ctx.forge.workspaces.list_publications(task)
+        except NotFound:
+            made = ()
+        if not made:
+            problems.append(Problem(path="state", message=f"{named}: it is not published yet."))
+        elif not await published.statement_written_at(ctx, task, made[-1].version, made[-1].id):
+            problems.append(
+                Problem(path="state", message=f"{named}: its statement is not written yet.")
+            )
     return problems
 
 
@@ -304,20 +350,42 @@ def _sizes_moved(
 
 
 def _dropped(
-    before: ContestDefinition, entry: ContestTask, made: Collection[Made], now: datetime
+    before: ContestDefinition,
+    entry: ContestTask,
+    made: Collection[Made],
+    at_forge: bool,
+    now: datetime,
 ) -> str | None:
-    """Why the task's entry may not leave `tasks`, or none: a task released
-    under `before`, or with submissions, would be hidden by it.
+    """Why the task's entry may not leave `tasks`, or none: a task with
+    submissions, or released under `before`, would be hidden by it, and any
+    task still `at_forge` would stay there with nothing listing it. Taking
+    it out of the contest is its own action, which deletes the task with its
+    entry, or withdraws one with submissions. An entry naming no task left
+    at the forge goes.
     """
-    if released(before, entry.id, now):
-        opened = before.release_of(entry)
-        return (
-            f"{entry.id} was released on {in_words(opened)}, so entrants have seen it, and it "
-            "cannot be taken out of the contest."
-        )
     if made:
         count = f"{len(made)} submission" + ("s" if len(made) > 1 else "")
-        return f"{entry.id} has {count}, so it cannot be taken out of the contest."
+        if entry.withdrawn:
+            return (
+                f"{entry.id} is withdrawn and has {count}, so its entry stays: its submissions "
+                "are kept. Put it back from the contest's Tasks card, or leave it withdrawn."
+            )
+        return (
+            f"{entry.id} has {count}, so it cannot be removed from the contest. Withdraw it "
+            "instead: entrants no longer see it and no leaderboard counts it, and its "
+            "submissions are kept."
+        )
+    if reached(before, entry.id, now):
+        opened = before.release_of(entry)
+        return (
+            f"{entry.id} was released on {in_words(opened)}, so entrants have seen it. Remove "
+            "it from the contest's Tasks card instead, which deletes the task too."
+        )
+    if at_forge:
+        return (
+            f"{entry.id} is one of this contest's tasks. Remove it from the contest's Tasks "
+            "card instead, which deletes the task too."
+        )
     return None
 
 
@@ -373,7 +441,7 @@ def _moved(
     found: list[tuple[str, str]] = []
     task = new.id
     old = listed if listed is not None else ContestTask(id=task)
-    opened = released(before, task, now)
+    opened = reached(before, task, now)
     release_key = "release_at" if new.release_at is not None else "start"
     closes_key = "closes" if new.closes is not None else "end"
     old_release, new_release = before.release_of(old), after.release_of(new)

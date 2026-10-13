@@ -142,9 +142,23 @@ steps:
       actual: ${{ steps.run.output }}
       expected: ${{ test.answer }}
 report:
-  time_ms: {from: "${{ steps.run.time_ms }}", fold: max, better: lower, at_least: 0}
-  memory_kb: {from: "${{ steps.run.memory_kb }}", fold: max, better: lower, at_least: 0}
-  log: ${{ steps.compile.compile_log }}
+  time_ms:
+    from: ${{ steps.run.time_ms }}
+    title: Run time
+    unit: ms
+    fold: max
+    better: lower
+    at_least: 0
+  memory_kb:
+    from: ${{ steps.run.memory_kb }}
+    title: Memory used
+    unit: KB
+    fold: max
+    better: lower
+    at_least: 0
+  log:
+    from: ${{ steps.compile.compile_log }}
+    title: Compile log
 """
 
 PLACEHOLDER_DIGEST = "sha256:" + "0" * 64
@@ -190,7 +204,10 @@ outputs:
     description: Everything the compiler printed.
   outcome:
     type: outcome
-    description: Accepted when the source compiled, compile error when it did not.
+    description: Whether the source compiled.
+    outcomes:
+      accepted: the source compiles
+      compile_error: it does not compile, or the compiler goes over a limit
 """,
     ),
     "sandbox-run": _declared(
@@ -236,7 +253,13 @@ outputs:
     description: The most memory the program used, in kilobytes.
   outcome:
     type: outcome
-    description: Accepted, or the limit the program went over, or a runtime error.
+    description: How the program's run ended.
+    outcomes:
+      accepted: the program finishes within its limits
+      time_limit: it runs out of time
+      memory_limit: it uses more memory than allowed
+      output_limit: it prints more than allowed
+      runtime_error: it crashes or exits with an error
 """,
     ),
     "diff-check": _declared(
@@ -259,7 +282,10 @@ inputs:
 outputs:
   outcome:
     type: outcome
-    description: Accepted when the two match, wrong answer when they do not.
+    description: Whether the output matches the answer.
+    outcomes:
+      accepted: the output matches the answer, ignoring trailing whitespace
+      wrong_answer: it does not
 """,
     ),
 }

@@ -42,7 +42,8 @@ async def test_the_owner_reads_the_draft_saves_it_and_versions_it(setup: Setup, 
     assert page.summary.visibility is Visibility.PRIVATE
     assert page.summary.versions == ()
     assert page.draft is not None
-    edited = page.draft.text.replace("fold: max, better: lower", "fold: sum, better: lower", 1)
+    edited = page.draft.text.replace("fold: max\n", "fold: sum\n", 1)
+    assert edited != page.draft.text
     saved = await workflows.save(setup, bob, "bob", "tuned", edited, page.draft.token)
 
     assert saved.text == edited
@@ -190,6 +191,30 @@ async def test_a_unit_on_an_input_that_is_no_number_is_refused_by_a_check_and_a_
         "path": "inputs.language.unit",
         "message": "Only a number takes a unit, and language is one of a list. Remove the "
         "unit, or make language a number.",
+    }
+
+    found = await workflows.check(setup, bob, stray.decode())
+    await workflows.save(setup, bob, "bob", "tuned", stray.decode(), page.draft.token)
+    with pytest.raises(InvalidDefinition) as refused:
+        await workflows.create_version(setup, bob, "bob", "tuned", "v1")
+
+    assert found == (refusal,)
+    assert refused.value.errors == [refusal]
+
+
+async def test_a_unit_on_a_reported_text_is_refused_by_a_check_and_a_version(
+    setup: Setup, acme: Acme
+) -> None:
+    bob = await _own(setup, acme)
+    page = await workflows.view(setup, bob, "bob", "tuned")
+    assert page.draft is not None
+    stray = CLASSIC.replace(
+        b"    title: Compile log\n", b"    title: Compile log\n    unit: lines\n"
+    )
+    assert stray != CLASSIC
+    refusal = {
+        "path": "report.log.unit",
+        "message": "Only a number takes a unit, and log is text. Remove the unit.",
     }
 
     found = await workflows.check(setup, bob, stray.decode())

@@ -1,4 +1,5 @@
-"""A contest's or a task's files, read and written as the organiser: a file,
+"""A contest's or a task's files, read as the organiser and written as the
+platform with the organiser as the change's author: a file,
 a folder's entries, the history, a write with its conflict check, a
 rollback as a new change, and a file the organiser uploaded put into a task
 by a save, the door a download of a task's file streams through, and what

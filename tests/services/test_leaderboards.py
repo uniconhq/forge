@@ -200,22 +200,64 @@ async def test_a_visitor_reads_only_the_board_for_everyone_with_no_counts_of_any
     assert [(each.task, each.groups) for each in standings.not_in_view] == [("sum", ("large",))]
 
 
-async def test_the_contest_home_gives_a_task_the_points_a_board_over_it_counts(
+async def test_the_contest_home_gives_a_task_the_points_each_board_an_entrant_sees_counts(
     setup: Setup, acme: Acme, ranked: Entered, clock: FakeClock
 ) -> None:
-    await write_contest(acme.fake, contest(BOARDS + "  - {name: Sum, who: contestants}\n"))
+    hidden = "  - {name: Organisers}\n"
+    await write_contest(acme.fake, contest(BOARDS + hidden + "  - {name: Sum, who: contestants}\n"))
 
-    async def both() -> tuple[Points | None, Fraction | None]:
-        (task,) = (await contest_home.home(setup, ranked.session, SPRING)).tasks
-        (board,) = await boards.seen(setup, ranked.session, SPRING, "Sum")
-        return task.points, board.rows[0].keys[0]
+    async def read() -> tuple[tuple[str, ...], dict[str, Any], dict[str, Any]]:
+        home = await contest_home.home(setup, ranked.session, SPRING)
+        (task,) = home.tasks
+        assert [each.board for each in task.points] == list(home.boards)
+        assert all(each.covers for each in task.points)
+        ranked_ = {
+            board.board.name: board.rows[0].keys[0] if board.rows else None
+            for board in await boards.seen(setup, ranked.session, SPRING)
+        }
+        counted = {each.board: (each.points, each.most) for each in task.points}
+        return home.boards, counted, ranked_
 
-    # Before the reveal large's results are held back, as the board holds
-    # them: 65 shown, and large's 35 pending until the end.
-    assert await both() == (Points(Fraction(65), Fraction(35), END), Fraction(65))
+    # Before the reveal large's results are held back, as every board holds
+    # them: Standings and Sum show 65, with large's 35 pending until the end;
+    # Final, over large alone, shows nothing yet. The organisers' board is
+    # not the entrant's.
+    names, counted, ranked_ = await read()
+    assert names == ("Standings", "Final", "Sum")
+    assert counted == {
+        "Standings": (Points(Fraction(65), Fraction(35), END), Fraction(100)),
+        "Final": (Points(None, Fraction(35), END), Fraction(35)),
+        "Sum": (Points(Fraction(65), Fraction(35), END), Fraction(100)),
+    }
+    assert ranked_ == {"Standings": Fraction(65), "Final": None, "Sum": Fraction(65)}
+
     clock.set(END)
     await identity.current(ranked.session.id, setup=setup)
-    assert await both() == (Points(Fraction(100), Fraction(0), None), Fraction(100))
+    # Final counts the submission best on what was shown before the reveal:
+    # the first, which failed large.
+    names, counted, ranked_ = await read()
+    assert counted == {
+        "Standings": (Points(Fraction(100), Fraction(0), None), Fraction(100)),
+        "Final": (Points(Fraction(0), Fraction(0), None), Fraction(35)),
+        "Sum": (Points(Fraction(100), Fraction(0), None), Fraction(100)),
+    }
+    assert ranked_ == {"Standings": Fraction(100), "Final": Fraction(0), "Sum": Fraction(100)}
+
+
+async def test_the_contest_home_marks_a_board_that_does_not_cover_a_task(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    product = await make_task(setup, acme, "product")
+    await publish(setup, acme, product)
+    only_sum = "leaderboards:\n  - {name: Sum, who: contestants, tasks: [sum]}\n"
+    await write_contest(acme.fake, contest(only_sum, "  - id: product\n"))
+
+    home = await contest_home.home(setup, entered.session, SPRING)
+
+    assert home.boards == ("Sum",)
+    by_task = {task.name: task.points for task in home.tasks}
+    assert [(each.board, each.covers) for each in by_task["sum"]] == [("Sum", True)]
+    assert by_task["product"] == (boards.BoardPoints("Sum", False),)
 
 
 async def test_a_contest_stored_with_the_retired_on_system_error_still_reads_everywhere(
@@ -227,7 +269,7 @@ async def test_a_contest_stored_with_the_retired_on_system_error_still_reads_eve
     (task,) = (await contest_home.home(setup, ranked.session, SPRING)).tasks
     standings, _ = await boards.seen(setup, ranked.session, SPRING)
 
-    assert task.points == Points(Fraction(65), Fraction(35), END)
+    assert task.points[0].points == Points(Fraction(65), Fraction(35), END)
     assert standings.rows[0].keys == keys(65, 120)
 
 
@@ -275,7 +317,7 @@ async def test_the_contest_home_counts_the_submissions_the_board_for_the_task_co
     async def both() -> tuple[Points | None, Fraction | None]:
         (task,) = (await contest_home.home(setup, entered.session, SPRING)).tasks
         (board,) = await boards.seen(setup, entered.session, SPRING)
-        return task.points, board.rows[0].keys[0]
+        return task.points[0].points, board.rows[0].keys[0]
 
     assert await both() == (Points(Fraction(before), Fraction(35), END), Fraction(before))
     clock.set(END)
@@ -303,8 +345,8 @@ async def test_a_hidden_groups_points_stay_out_of_the_contest_home_until_shown(
     await identity.current(entered.session.id, setup=setup)
     (after,) = (await contest_home.home(setup, entered.session, SPRING)).tasks
 
-    assert before.points == Points(Fraction(0), Fraction(35), END)
-    assert after.points == Points(Fraction(35), Fraction(0), None)
+    assert before.points[0].points == Points(Fraction(0), Fraction(35), END)
+    assert after.points[0].points == Points(Fraction(35), Fraction(0), None)
 
 
 async def test_only_a_member_of_an_approved_entrant_is_given_points_on_the_contest_home(
@@ -317,9 +359,9 @@ async def test_only_a_member_of_an_approved_entrant_is_given_points_on_the_conte
 
     for reader in (ada, cyd):
         (task,) = (await contest_home.home(setup, reader, SPRING)).tasks
-        assert task.points is None
+        assert task.points == ()
     (mine,) = (await contest_home.home(setup, ranked.session, SPRING)).tasks
-    assert mine.points is not None
+    assert [each.board for each in mine.points] == ["Standings", "Final"]
 
 
 async def test_a_contestant_reads_their_own_row_with_its_counts_and_the_hidden_board_waits(
@@ -704,8 +746,8 @@ async def test_a_lower_is_better_value_first_over_two_tasks_is_refused_on_the_co
     alone = "leaderboards:\n  - {name: Fastest, tasks: [sum], order: [time_ms]}\n"
 
     said = (
-        "The leaderboard Fastest ranks first by time_ms, for which lower is better, over more "
-        "than one task. Rank by time_ms on a leaderboard of one task."
+        "The leaderboard Fastest ranks first by run time, for which lower is better, over more "
+        "than one task. Rank by run time on a leaderboard of one task."
     )
     assert refused == [("leaderboards[0].order[0]", said), ("leaderboards[0].order[0]", said)]
     assert await _write(setup, acme, contest(alone, "  - id: product\n"))
@@ -726,7 +768,7 @@ async def test_a_tasks_save_is_refused_where_a_board_ranks_what_its_groups_hide(
     assert [(error["path"], error["message"]) for error in refused.errors] == [
         (
             "test_groups",
-            "The leaderboard Fast ranks by time_ms, counting the results shown during the "
+            "The leaderboard Fast ranks by run time, counting the results shown during the "
             "contest, so sum needs a test group whose results entrants see as soon as a grading "
             "ends, since a group shown as an outcome shows its tests only at the reveal.",
         )
@@ -750,11 +792,12 @@ async def test_a_tasks_save_reports_each_groups_most_its_reveal_and_the_boards_i
         },
     )
 
-    assert saved.notes[-4:] == (
-        "The most points each test group gives: main 100, small 30, large 70.",
-        "sum shows its hidden results on 26 September 2026 at 15:00 UTC.",
-        "This save changes the leaderboard Standings.",
-        "This save changes the leaderboard Final.",
+    assert saved.notes[-1:] == ("sum shows its hidden results on 26 September 2026 at 15:00 UTC.",)
+    # Only the groups whose most points moved are named, here the new ones.
+    assert saved.effect.scores == (
+        "Points: small is new, worth up to 30.",
+        "Points: large is new, worth up to 70.",
+        "Every result is scored again, and the leaderboards Standings and Final with them.",
     )
     assert isinstance(pointless, Published), pointless
     assert "The leaderboard Standings counts nothing from sum." in pointless.notes
@@ -827,7 +870,14 @@ async def test_an_organiser_reads_a_hidden_groups_points_and_tests_before_the_re
     assert seen.grading.outcome == "wrong_answer"
     assert seen.grading.points is not None
     assert (seen.grading.points.shown, seen.grading.points.pending) == (Fraction(65), Fraction(0))
-    assert seen.grading.folded["time_ms"] == Fraction(30)
+    # Its large test was not accepted, so it has no time at all; the second,
+    # which passed every test, has large's 30 among its own.
+    assert "time_ms" not in seen.grading.folded
+    every = await submissions.organised(
+        setup, observer, ranked.task, EntrantOwner(ranked.entrant), 2
+    )
+    assert every.grading is not None
+    assert every.grading.folded["time_ms"] == Fraction(30)
     assert (seen.number, seen.submitted_at, seen.late_days) == (
         own.number,
         own.submitted_at,
@@ -903,3 +953,18 @@ async def test_a_mark_in_flight_and_a_save_lowering_marks_never_leave_a_row_over
     held = len((await marks.held(setup, ranked.session, ranked.task)).numbers)
     allowed = 1 if not isinstance(saved[0], BaseException) else 3
     assert held <= allowed, (held, saved)
+
+
+async def test_a_value_ranked_on_is_named_by_the_title_and_unit_its_task_gives(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    fastest = "leaderboards:\n  - {name: Fast, who: everyone, order: [points, time_ms]}\n"
+    await write_contest(acme.fake, contest(fastest))
+    await _three_groups(setup, acme, entered.task)
+
+    (standings,) = await boards.seen(setup, None, SPRING)
+
+    assert [(key.by, key.title, key.unit) for key in standings.keys] == [
+        ("points", None, None),
+        ("time_ms", "Run time", "ms"),
+    ]

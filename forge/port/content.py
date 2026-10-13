@@ -1,9 +1,10 @@
 """Contest and task content: the places that hold the files defining them,
-made and kept protected as the platform, and the files themselves, read and
-written as the calling organiser, with a conflict check on every write.
+made and kept protected as the platform, and the files themselves, read as
+the caller and written by the platform alone, with the organiser who saved
+named as each change's author (#443), and a conflict check on every write.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Protocol
 
 from forge.domain.content import Change, ConflictToken, File, Files, FileSet, TreeEntry
@@ -31,10 +32,12 @@ class ContentPort(Protocol):
 
     async def secure(self, place: ContentPlace) -> int:
         """Give the place what keeps it right, as the platform: the roles of
-        its contest and, for a task, of the task itself reach it; its history
-        cannot be rewritten; and for a task, publications are reserved for
-        the platform. Each is checked first and only what is missing is put
-        back, so this can be run again. Returns how many it had to put back.
+        its contest and, for a task, of the task itself reach it; its files
+        are written by the platform alone, so no role at the forge changes
+        them there (#443), and its history cannot be rewritten; and for a
+        task, publications are reserved for the platform. Each is checked
+        first and only what is missing is put back, so this can be run
+        again. Returns how many it had to put back.
         """
         ...
 
@@ -42,7 +45,8 @@ class ContentPort(Protocol):
         """Remove the contest or task, as the platform: its files and history
         and the roles of its own that `secure` made. A contest's roles reach
         its tasks too, so this is for a contest with no tasks. A place not
-        there changes nothing.
+        there changes nothing, and a deletion that fails leaves the place
+        with the roles it had.
         """
         ...
 
@@ -96,10 +100,13 @@ class ContentPort(Protocol):
         *,
         message: str,
         expected: ConflictToken | None,
+        author: int | None = None,
     ) -> VersionId:
         """Write one file and return the version it made. `expected` is the
         token the file was read with, or none to create it; `Conflict` when
         the file has changed since, or exists when none was expected.
+        `author`, a person by the forge's id for them, is who the change is
+        recorded as made by when the platform writes it for them.
         """
         ...
 
@@ -111,12 +118,14 @@ class ContentPort(Protocol):
         *,
         expected: Mapping[str, ConflictToken | None],
         message: str,
+        author: int | None = None,
     ) -> VersionId:
         """Write every file in `files` as one change, as `as_`, and return the
         version it made; a file given as none is removed. `expected` holds
         the token each file was read with, and none, or no entry, for a file
         the change creates. `Conflict`, with nothing written, when any of
-        them has changed since or exists when none was expected.
+        them has changed since or exists when none was expected. `author`
+        is who the change is recorded as made by, as for `write_file`.
         """
         ...
 
@@ -131,7 +140,17 @@ class ContentPort(Protocol):
     async def list_tree(
         self, as_: Identity, place: ContentPlace, path: str = ""
     ) -> tuple[TreeEntry, ...]:
-        """The entries directly under `path`."""
+        """The entries directly under `path`, each file with its token."""
+        ...
+
+    async def read_blobs(
+        self, as_: Identity, place: ContentPlace, tokens: Collection[ConflictToken]
+    ) -> Mapping[ConflictToken, bytes]:
+        """The content of each file the place holds, by its token, as its
+        commit holds it, an upload as its pointer, in as few calls as the
+        forge allows; a token the place does not hold is left out. Meant for
+        small files: each is read whole.
+        """
         ...
 
     async def history(

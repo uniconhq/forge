@@ -19,6 +19,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from typing import Any
@@ -48,16 +49,19 @@ from forge.domain.errors import (
 from forge.domain.grading import LOST_CHECK_AFTER, RunState, callback_token, token_hash
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, RunId, TaskId
+from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner
+from forge.domain.publications import write_note
 from forge.domain.roles import Role, Scope
-from forge.domain.scoring import Points
-from forge.domain.showing import GroupShown, SubmissionState
+from forge.domain.scoring import Better, Points
+from forge.domain.showing import GroupShown, Sealed, SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import pointer_text
+from forge.domain.workflow_definition import Fold
 from forge.domain.workflows import Visibility
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
-from forge.services import entrants, identity, publications, submissions, uploads
+from forge.services import entrants, gradings, identity, publications, submissions, uploads
 from forge.testing import CLASSIC, FakeClock
 from tests.services.conftest import (
     RUNNING,
@@ -571,7 +575,7 @@ async def _stands(setup: Setup, number: int, **values: Any) -> None:
 FAILED = {"status": "system_error", "error": "The checker crashed."}
 
 
-async def test_a_delayed_submission_uses_up_none_until_graded_and_then_counts_past_the_most(
+async def test_a_delayed_submission_uses_up_none_while_it_waits_and_is_graded_only_with_room(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
     await _at_most_one(setup, acme, entered)
@@ -588,10 +592,17 @@ async def test_a_delayed_submission_uses_up_none_until_graded_and_then_counts_pa
     # Graded, the first counts again, and the second, delayed, does not.
     with pytest.raises(SubmissionLimit):
         await _submit(setup, acme, entered, key="key-0003-cccc")
-    await _stands(setup, 2, status="done", result=RESULT)
-    # Both count once graded, past the most, neither result taken away.
+    # Graded again, the second finds no room, and ends over the limit (#445).
+    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring", "sum"), Role.MANAGER)
+    (second,) = [row for row in await _gradings(setup) if row.submission_number == 2]
+    await gradings.retry(setup, manager, second.id)
     told = [found.grading for found in await submissions.mine(setup, entered.session, entered.task)]
-    assert [found.status if found else None for found in told] == [SubmissionState.GRADED] * 2
+    assert [(found.status, found.limit) if found else None for found in told] == [
+        (SubmissionState.OVER_LIMIT, 1),
+        (SubmissionState.GRADED, None),
+    ]
+    with pytest.raises(SubmissionLimit):
+        await _submit(setup, acme, entered, key="key-0004-dddd")
 
 
 async def test_a_run_the_ci_lost_still_counts_when_submitting(
@@ -1056,6 +1067,12 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
     # The groups whose verdict is shown passed; large's verdict waits.
     assert before.grading.outcome == "accepted"
     assert before.grading.values == {"log": "compiled"}
+    # Each value with the words its publication froze, in the report's order.
+    assert before.grading.meanings == (
+        ValueMeaning("time_ms", "Run time", "ms", Fold.MAX, Better.LOWER),
+        ValueMeaning("memory_kb", "Memory used", "KB", Fold.MAX, Better.LOWER),
+        ValueMeaning("log", "Compile log"),
+    )
     # No worth in the contest, so the task is worth its groups' total, 200:
     # main 100, small 30 and large's 70 decided at the reveal.
     assert before.grading.groups == (
@@ -1114,6 +1131,70 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
         shown=Fraction(130), pending=Fraction(0), pending_until=None
     )
     assert after.grading.groups[2].points == 0
+
+
+MAIN_ONLY: dict[str, Any] = {**RESULT, "tests": [RESULT["tests"][1]]}
+
+
+async def _published_again(acme: Acme, task: TaskId, **note: Any) -> None:
+    """The latest publication's version published again with nothing that
+    grades changed, its note as the latest's but for `note`.
+    """
+    *_, latest = await acme.fake.workspaces.list_publications(task)
+    kept: dict[str, Any] = {
+        "workflows": latest.workflows,
+        "sealed": latest.sealed,
+        "measures": latest.measures,
+        "titles": latest.titles,
+        "meanings": latest.meanings,
+    }
+    await acme.fake.workspaces.publish(
+        task, latest.version, write_note(False, (), **{**kept, **note})
+    )
+
+
+async def test_a_result_reads_the_words_of_a_later_publication_that_changed_nothing_it_grades(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _submit(setup, acme, entered)
+    await _graded(setup, MAIN_ONLY)
+    *_, latest = await acme.fake.workspaces.list_publications(entered.task)
+    renamed = tuple(
+        replace(meaning, title="Time taken") if meaning.name == "time_ms" else meaning
+        for meaning in latest.meanings
+    )
+
+    await _published_again(acme, entered.task, meanings=renamed)
+    [mine] = await submissions.mine(setup, entered.session, entered.task)
+
+    assert mine.grading is not None
+    assert mine.grading.meanings[0] == ValueMeaning(
+        "time_ms", "Time taken", "ms", Fold.MAX, Better.LOWER
+    )
+
+
+async def test_a_sealed_values_words_are_served_to_organisers_and_to_entrants_at_the_reveal(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    sealed = Sealed(steps=frozenset({"run"}), values=frozenset({"time_ms"}))
+    await _published_again(acme, entered.task, sealed=sealed)
+    await _submit(setup, acme, entered)
+    await _graded(setup, MAIN_ONLY)
+
+    [before] = await submissions.mine(setup, entered.session, entered.task)
+    organised = await submissions.organised(
+        setup, acme.ada, entered.task, EntrantOwner(entered.entrant), 1
+    )
+    clock.set(END)
+    await identity.current(entered.session.id, setup=setup)
+    [after] = await submissions.mine(setup, entered.session, entered.task)
+
+    assert before.grading is not None and organised.grading is not None
+    assert after.grading is not None
+    assert [meaning.name for meaning in before.grading.meanings] == ["memory_kb", "log"]
+    every = ["time_ms", "memory_kb", "log"]
+    assert [meaning.name for meaning in organised.grading.meanings] == every
+    assert [meaning.name for meaning in after.grading.meanings] == every
 
 
 async def _first_attempts_only(setup: Setup) -> None:

@@ -37,7 +37,10 @@ verified when its owner follows the confirmation mail, and marks every one
 verified where `REGISTER_EMAIL_CONFIRM` is off, so a deployment that signs
 people up itself turns it on. A domain matches an address whose part after
 its last `@` is that domain, ignoring case, and nothing below it:
-`u.nus.edu` does not match `comp.u.nus.edu`. A pattern must match the whole
+`u.nus.edu` does not match `comp.u.nus.edu`. A domain written with `*.`
+before it matches that domain and every domain under it, a whole label at a
+time: `*.nus.edu.sg` matches `nus.edu.sg` and `comp.nus.edu.sg`, not
+`xnus.edu.sg` (#439). A pattern must match the whole
 address, ignoring case; it is an organiser's, so it is matched under a time
 limit, and one that runs past it lets nobody through rather than holding up
 everyone else.
@@ -52,7 +55,7 @@ from typing import Any
 
 import regex
 
-from forge.domain.definitions import Approval, Registration, SignupWay
+from forge.domain.definitions import UNDER, Approval, Registration, SignupWay
 from forge.domain.errors import (
     DomainNotAllowed,
     InvalidExtension,
@@ -243,11 +246,17 @@ def _address(signup: SignupWay, emails: Sequence[str]) -> str | None:
 
 def domain_matches(domain: str, email: str) -> bool:
     """Whether the address is at the domain: its part after the last `@` is
-    the domain, ignoring case.
+    the domain, ignoring case, or, for a domain written `*.<domain>`, that
+    domain or one under it, ending in `.<domain>`.
     """
     if len(email) > EMAIL_MAX or "@" not in email:
         return False
-    return email.rpartition("@")[2].lower() == domain.lower()
+    host = email.rpartition("@")[2].lower()
+    named = domain.lower()
+    if named.startswith(UNDER):
+        base = named.removeprefix(UNDER)
+        return host == base or host.endswith("." + base)
+    return host == named
 
 
 def matches(pattern: str, email: str) -> bool:

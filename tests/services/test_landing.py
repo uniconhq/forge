@@ -116,7 +116,7 @@ async def test_settings_saved_through_the_platform_show_at_once(
         acme.ada,
         SPRING,
         "contest.yaml",
-        RUNNING.format(visibility="signed-in").encode(),
+        LATER.format(visibility="signed-in").encode(),
         current.token,
     )
 

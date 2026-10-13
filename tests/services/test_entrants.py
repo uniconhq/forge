@@ -264,6 +264,20 @@ async def test_the_most_lenient_way_that_admits_the_person_is_the_one_kept(
     assert (dee.status, dee.members[0].way_name) == (Status.PENDING, "Anyone")
 
 
+async def test_a_domain_written_under_star_lets_in_an_address_at_any_domain_below_it(
+    setup: Setup, people: Acme, spring: str
+) -> None:
+    await write_contest(people.fake, settings(ways="[{signup: {domains: ['*.nus.edu']}}]"))
+
+    registered = await _register(setup, people, 20)
+
+    assert registered.status is Status.PENDING
+    (member,) = await _members(setup)
+    assert member.eligibility == {"email": "cyd@u.nus.edu"}
+    with pytest.raises(DomainNotAllowed):
+        await _register(setup, people, 21)
+
+
 async def test_an_address_the_forge_never_confirmed_does_not_let_anyone_in(
     setup: Setup, people: Acme, spring: str
 ) -> None:
