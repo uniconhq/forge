@@ -79,6 +79,16 @@ def test_with_the_same_share_any_value_worse_is_down() -> None:
     )
 
 
+def test_a_value_on_one_side_only_reads_as_worst_where_it_is_missing() -> None:
+    # A board reads a missing value as the worst (#441): losing one is
+    # worse, even beside one that improved; gaining one is better.
+    lower, higher = Better.LOWER, Better.HIGHER
+    both = _valued(2, 2, time_ms=("100", lower), score=("7", higher))
+
+    assert change_of(both, _valued(2, 2, score=("8", higher))) is ChangeKind.DOWN
+    assert change_of(_valued(2, 2, score=("7", higher)), both) is ChangeKind.UP
+
+
 def test_every_change_is_counted_zero_where_none() -> None:
     found = counted([ChangeKind.UP, ChangeKind.UP, ChangeKind.FAILED])
 

@@ -15,7 +15,8 @@ results that counted then. What it changed is one `ChangeKind`:
   points, a larger or smaller share of its tests accepted, or with the same
   share, its values with a declared direction: down when any got worse, up
   when none did and one got better, so a regrade that makes anything worse
-  is never read as an improvement;
+  is never read as an improvement; a value one side has and the other has
+  not is the worst where it is missing, as a board reads it;
 - `stopped`, it now stops before its tests where the result it replaced did
   not: in the classic workflow, it now fails to compile;
 - `unchanged`, all of that the same;
@@ -132,12 +133,16 @@ def change_of(earlier: Side | None, now: Side | None) -> ChangeKind:
     if now.share is not None and earlier.share is not None and now.share != earlier.share:
         return _by(now.share - earlier.share)
     worse = better = False
-    for name, value in now.values.items():
-        before = earlier.values.get(name)
-        direction = now.better.get(name)
-        if before is None or direction is None or before == value:
+    for name in now.values.keys() | earlier.values.keys():
+        before, value = earlier.values.get(name), now.values.get(name)
+        direction = now.better.get(name) or earlier.better.get(name)
+        if direction is None or before == value:
             continue
-        improved = value > before if direction is Better.HIGHER else value < before
+        if before is None or value is None:
+            # A missing value is the worst, as a board reads it.
+            improved = before is None
+        else:
+            improved = value > before if direction is Better.HIGHER else value < before
         better |= improved
         worse |= not improved
     if worse:
