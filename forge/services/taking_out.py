@@ -262,7 +262,7 @@ async def _remove(
         updated = _edited(name, lambda: without_entry(found.content, name))
         if updated is not None:
             await _write(ctx, contest, found, updated, f"Remove {name} from the contest", author)
-            made.add("contest_entry", contest, _restore(ctx, contest, found, updated))
+            made.add("contest_entry", contest, _restore(ctx, contest, found, updated, author))
         account = await org_accounts.identity(ctx, OrgId(contest_scope(contest).org))
         account = await _deactivate(ctx, account, task)
 
@@ -285,8 +285,12 @@ async def _deactivate(ctx: Context, account: AsOrgAccount, task: TaskId) -> AsOr
     return account
 
 
-def _restore(ctx: Context, contest: ContestId, found: File, updated: bytes) -> making.Removal:
-    """Put the entry back while the file still says what the removal wrote."""
+def _restore(
+    ctx: Context, contest: ContestId, found: File, updated: bytes, author: int
+) -> making.Removal:
+    """Put the entry back while the file still says what the removal wrote,
+    `author` named as the change's author as on the removal.
+    """
 
     async def restore() -> None:
         now = await ctx.forge.content.read_file(PLATFORM, contest, CONTEST_FILE)
@@ -299,6 +303,7 @@ def _restore(ctx: Context, contest: ContestId, found: File, updated: bytes) -> m
             found.content,
             message="Put the removed task back",
             expected=now.token,
+            author=author,
         )
         published.forget_contests(ctx)
 

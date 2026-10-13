@@ -25,6 +25,7 @@ from forge.domain.errors import (
     TakeOutChanged,
     TakeOutRefused,
     TaskWithdrawn,
+    Unavailable,
 )
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
@@ -149,6 +150,28 @@ async def test_the_change_to_the_settings_names_the_manager_who_took_the_task_ou
 
     latest, *_ = await files.history(setup, acme.ada, SPRING, "contest.yaml")
     assert latest.author_id == 7
+
+
+async def test_a_removal_that_fails_puts_the_entry_back_naming_the_same_manager(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await three(setup, acme)
+    manager = await _manager(setup, acme)
+    before = await _settings(acme)
+
+    async def broken(*_: Any, **__: Any) -> None:
+        raise Unavailable("the forge went away")
+
+    monkeypatch.setattr(acme.fake.content, "delete_place", broken)
+    with pytest.raises(Unavailable):
+        await take_out(setup, manager, PRODUCT, TakeOut.REMOVE)
+
+    assert await _settings(acme) == before
+    history = acme.fake.state.repos[("acme", "spring.contest")].history
+    assert [(change.message, change.author_id) for change in history[-2:]] == [
+        ("Remove product from the contest", 7),
+        ("Put the removed task back", 7),
+    ]
 
 
 async def test_a_task_with_a_submission_is_withdrawn_and_hidden_from_entrants_until_put_back(

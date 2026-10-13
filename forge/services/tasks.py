@@ -175,16 +175,19 @@ async def create(
         except Forbidden:
             account = await org_accounts.renew(ctx, account)
             await ctx.forge.grading.activate(account, task)
-        await _list_in_contest(ctx, task, name, made)
+        await _list_in_contest(ctx, task, name, made, organiser.user.id)
     except PortError as exc:
         raise making.failure(exc, "tasks.step_failed", task=task) from None
     log.info("tasks.created", task=task, user_id=organiser.user.id)
     return Named(task, name)
 
 
-async def _list_in_contest(ctx: Context, task: TaskId, name: str, made: making.Made) -> None:
+async def _list_in_contest(
+    ctx: Context, task: TaskId, name: str, made: making.Made, author: int
+) -> None:
     """Add the task to the end of its contest's `tasks` list, as the
-    platform, unless it is there already or the list cannot be added to.
+    platform with `author` named as the change's author, unless it is
+    there already or the list cannot be added to.
     The entry is noted in `made`, and taken out again only while the file
     still says exactly what this wrote, so an organiser's change since is
     never undone. Two tasks made in one contest at once both write the
@@ -209,6 +212,7 @@ async def _list_in_contest(ctx: Context, task: TaskId, name: str, made: making.M
                 updated,
                 message=f"Add {name} to the contest's tasks",
                 expected=found.token,
+                author=author,
             )
         except Conflict:
             if tried == LIST_TRIES:
@@ -227,6 +231,7 @@ async def _list_in_contest(ctx: Context, task: TaskId, name: str, made: making.M
             found.content,
             message=f"Take {name} out of the contest's tasks",
             expected=now.token,
+            author=author,
         )
 
     made.add("contest_entry", contest, unlist)

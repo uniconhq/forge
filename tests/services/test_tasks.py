@@ -258,9 +258,9 @@ async def test_a_commit_that_fails_after_every_step_removes_the_task_and_its_ent
     ]
     assert forge_state(acme.fake) == before
     history = acme.fake.state.repos[("acme", "spring.contest")].history
-    assert [change.message for change in history[-2:]] == [
-        "Add sum to the contest's tasks",
-        "Take sum out of the contest's tasks",
+    assert [(change.message, change.author_id) for change in history[-2:]] == [
+        ("Add sum to the contest's tasks", 7),
+        ("Take sum out of the contest's tasks", 7),
     ]
 
 
