@@ -170,10 +170,9 @@ class Result:
     """The latest attempt of a submission's grading as its contestant sees
     it: its id and attempt, where it stands, and once it is done, what
     stopped the run, the outcome over the groups shown, each test group as
-    its `show` allows, the values reported once, and each value with a
-    fold, folded over the tests shown; on a task that gives points, the
-    points shown and those pending until the reveal, and the late factor
-    they include. Where it stands is in the contestant's words
+    its `show` allows, and the values reported once; on a task that gives
+    points, the points shown and those pending until the reveal, and the
+    late factor they include. Where it stands is in the contestant's words
     (`SubmissionState`): a run in `system_error` is `delayed` to its
     contestant, with nothing else; one staff cancelled is `cancelled`, with
     `reason`, the sentence they gave; and one ended over the limit is
@@ -181,8 +180,8 @@ class Result:
     reached. Read by organisers, everything is shown and where it stands is
     the grading's own `GradingStatus`. Once done, `meanings` lists every
     value the workflow reports, in its order, with the title and unit a
-    page names it by and how it folds, a value a sealed step holds back
-    left out until the reveal.
+    page names it by and which way is better, a value a sealed step holds
+    back left out until the reveal.
     """
 
     id: uuid.UUID
@@ -195,7 +194,6 @@ class Result:
     reason: str | None = None
     points: Points | None = None
     factor: Fraction | None = None
-    folded: Mapping[str, Fraction] = field(default_factory=dict)
     limit: int | None = None
     meanings: tuple[ValueMeaning, ...] = ()
 
@@ -918,7 +916,6 @@ async def _result(
         dict(seen.values),
         points=seen.points,
         factor=factor if scored.gives_points else None,
-        folded=seen.folded,
         meanings=shown_meanings(
             graded.meanings, graded.sealed.values, revealed=revealed or everything
         ),

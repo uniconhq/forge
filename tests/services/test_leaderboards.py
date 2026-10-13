@@ -742,10 +742,10 @@ async def test_a_lower_is_better_value_first_over_two_tasks_is_refused_on_the_co
     product = await make_task(setup, acme, "product")
     await write_contest(acme.fake, contest(entry="  - id: product\n"))
     await publish(setup, acme, product)
-    fastest = "leaderboards:\n  - {name: Fastest, order: [time_ms]}\n"
+    fastest = "leaderboards:\n  - {name: Fastest, order: [{by: time_ms, fold: max}]}\n"
 
     refused = await _refused(setup, acme, contest(fastest, "  - id: product\n"))
-    alone = "leaderboards:\n  - {name: Fastest, tasks: [sum], order: [time_ms]}\n"
+    alone = "leaderboards:\n  - {name: Fastest, tasks: [sum], order: [{by: time_ms, fold: max}]}\n"
 
     said = (
         "The leaderboard Fastest ranks first by run time, for which lower is better, over more "
@@ -785,7 +785,7 @@ async def test_a_board_ranking_a_tasks_credit_value_is_refused_on_the_contests_s
     await write_contest(acme.fake, contest())
     await _scored(acme)
     assert isinstance(await _credited(setup, acme, entered.task, b"credit: fraction\n"), Published)
-    ranked = "leaderboards:\n  - {name: Standings, order: [points, fraction]}\n"
+    ranked = "leaderboards:\n  - {name: Standings, order: [points, {by: fraction, fold: mean}]}\n"
 
     refused = await _refused(setup, acme, contest(ranked))
 
@@ -802,7 +802,10 @@ async def test_a_tasks_save_with_the_credit_a_board_ranks_is_refused_at_credit(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await write_contest(
-        acme.fake, contest("leaderboards:\n  - {name: Standings, order: [points, fraction]}\n")
+        acme.fake,
+        contest(
+            "leaderboards:\n  - {name: Standings, order: [points, {by: fraction, fold: mean}]}\n"
+        ),
     )
     await _scored(acme)
 
@@ -827,7 +830,8 @@ async def test_a_tasks_save_is_refused_where_a_board_ranks_what_its_groups_hide(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await write_contest(
-        acme.fake, contest("leaderboards:\n  - {name: Fast, over: live, order: [time_ms]}\n")
+        acme.fake,
+        contest("leaderboards:\n  - {name: Fast, over: live, order: [{by: time_ms, fold: max}]}\n"),
     )
     current = await _task_yaml(acme, entered.task)
     hidden = current.replace(b"main: {each: 100}", b"main: {pass: 100, show: verdict}")
@@ -940,14 +944,6 @@ async def test_an_organiser_reads_a_hidden_groups_points_and_tests_before_the_re
     assert seen.grading.outcome == "wrong_answer"
     assert seen.grading.points is not None
     assert (seen.grading.points.shown, seen.grading.points.pending) == (Fraction(65), Fraction(0))
-    # Its large test was not accepted, so it has no time at all; the second,
-    # which passed every test, has large's 30 among its own.
-    assert "time_ms" not in seen.grading.folded
-    every = await submissions.organised(
-        setup, observer, ranked.task, EntrantOwner(ranked.entrant), 2
-    )
-    assert every.grading is not None
-    assert every.grading.folded["time_ms"] == Fraction(30)
     assert (seen.number, seen.submitted_at, seen.late_days) == (
         own.number,
         own.submitted_at,
@@ -1028,13 +1024,15 @@ async def test_a_mark_in_flight_and_a_save_lowering_marks_never_leave_a_row_over
 async def test_a_value_ranked_on_is_named_by_the_title_and_unit_its_task_gives(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    fastest = "leaderboards:\n  - {name: Fast, who: everyone, order: [points, time_ms]}\n"
+    fastest = (
+        "leaderboards:\n  - {name: Fast, who: everyone, order: [points, {by: time_ms, fold: max}]}\n"
+    )
     await write_contest(acme.fake, contest(fastest))
     await _three_groups(setup, acme, entered.task)
 
     (standings,) = await boards.seen(setup, None, SPRING)
 
-    assert [(key.by, key.title, key.unit) for key in standings.keys] == [
-        ("points", None, None),
-        ("time_ms", "Run time", "ms"),
+    assert [(key.by, key.title, key.unit, key.fold) for key in standings.keys] == [
+        ("points", None, None, None),
+        ("time_ms", "Run time", "ms", "max"),
     ]

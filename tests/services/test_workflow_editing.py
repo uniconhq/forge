@@ -42,7 +42,7 @@ async def test_the_owner_reads_the_draft_saves_it_and_versions_it(setup: Setup, 
     assert page.summary.visibility is Visibility.PRIVATE
     assert page.summary.versions == ()
     assert page.draft is not None
-    edited = page.draft.text.replace("fold: max\n", "fold: sum\n", 1)
+    edited = page.draft.text.replace("at_least: 0\n", "at_least: 1\n", 1)
     assert edited != page.draft.text
     saved = await workflows.save(setup, bob, "bob", "tuned", edited, page.draft.token)
 
@@ -52,7 +52,7 @@ async def test_the_owner_reads_the_draft_saves_it_and_versions_it(setup: Setup, 
     assert repo.files["workflow.yaml"] == edited.encode()
     assert repo.history[-1].author_id == 8
     assert await workflows.create_version(setup, bob, "bob", "tuned", "v1") == "v1"
-    later = edited.replace("fold: sum", "fold: mean", 1)
+    later = edited.replace("at_least: 1", "at_least: 2", 1)
     await workflows.save(setup, bob, "bob", "tuned", later, saved.token)
 
     assert await workflows.read_version(setup, bob, "bob/tuned@v1") == edited

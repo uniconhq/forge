@@ -14,7 +14,8 @@ are given, and between moments only what is shown.
   `marked`, the best of the marked candidates, or, with none, the one
   `best` picks over what the `live` scope showed before the reveal.
 - **Keys** (`order`): `points`, higher is better; a value, its own
-  direction; `penalty`, whole minutes from the contest's start to the
+  direction, folded over each task's tests as the key says (`sum`, `mean`
+  or `max`); `penalty`, whole minutes from the contest's start to the
   counted submission (the latest of them under `best_per_group`), plus
   `per_attempt` for each earlier attempt that is not itself counted.
 - **Rows**: a cell counts when its counted submission earned something on
@@ -38,7 +39,16 @@ from datetime import datetime
 from enum import IntEnum, StrEnum
 from fractions import Fraction
 
-from forge.domain.definitions import Leaderboard, Over, Penalty, Select, Show, Who
+from forge.domain.definitions import (
+    Fold,
+    Leaderboard,
+    Over,
+    Penalty,
+    Select,
+    Show,
+    ValueKey,
+    Who,
+)
 from forge.domain.meanings import ValueMeaning
 from forge.domain.names import WorkspaceOwner
 from forge.domain.scoring import (
@@ -117,7 +127,8 @@ class Key:
     """One key rows are compared on: what it ranks by, which way is better,
     none for a value no covered task gives a direction, the minutes a
     `penalty` charges per attempt, and, on a value, the title and unit its
-    column is named by, none where no covered task gives them.
+    column is named by, none where no covered task gives them, and how it
+    combines across each task's tests.
     """
 
     by: str
@@ -125,6 +136,7 @@ class Key:
     per_attempt: int | None = None
     title: str | None = None
     unit: str | None = None
+    fold: Fold | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,20 +235,21 @@ def keys_of(
     for key in board.order:
         if isinstance(key, Penalty):
             found.append(Key(PENALTY, Better.LOWER, key.per_attempt))
-        elif key == PENALTY:
-            found.append(Key(PENALTY, Better.LOWER, 0))
-        elif key == POINTS:
-            found.append(Key(POINTS, Better.HIGHER))
-        else:
-            named = (words or {}).get(key)
+        elif isinstance(key, ValueKey):
+            named = (words or {}).get(key.by)
             found.append(
                 Key(
-                    key,
-                    directions.get(key),
+                    key.by,
+                    directions.get(key.by),
                     title=named.title if named is not None else None,
                     unit=named.unit if named is not None else None,
+                    fold=key.fold,
                 )
             )
+        elif key == PENALTY:
+            found.append(Key(PENALTY, Better.LOWER, 0))
+        else:
+            found.append(Key(POINTS, Better.HIGHER))
     return tuple(found)
 
 
@@ -406,6 +419,15 @@ def _order(
     return tuple(found)
 
 
+def _value(scored: Scored, key: Key, scope: Callable[[Show], bool], seen: Seen) -> Fraction | None:
+    """A submission's number on a value key: the value folded as the key
+    says over the scope's shown tests.
+    """
+    if key.fold is None:
+        return None
+    return scored.value(key.by, scope, seen, key.fold)
+
+
 def _counts(first: Key, number: Fraction | None) -> bool:
     """Whether a cell earned something on the first key."""
     if number is None:
@@ -442,7 +464,7 @@ def _cell(
             elif key.by == PENALTY:
                 found.append(_minutes(start, entry.at) + (key.per_attempt or 0) * earlier)
             else:
-                found.append(entry.scored.value(key.by, reading, at))
+                found.append(_value(entry.scored, key, reading, at))
         return tuple(found)
 
     def best(pool: Sequence[Entry], reading: Callable[[Show], bool], at: Seen) -> Entry | None:

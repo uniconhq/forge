@@ -42,7 +42,7 @@ steps:
       time_limit: ${{ inputs.time_limit }}
       memory_limit: ${{ inputs.memory_limit }}
 report:
-  time_ms: {from: "${{ steps.run.time_ms }}", fold: sum, better: lower, at_least: 0}
+  time_ms: {from: "${{ steps.run.time_ms }}", better: lower, at_least: 1}
 """
 
 

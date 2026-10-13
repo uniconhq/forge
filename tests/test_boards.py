@@ -30,11 +30,10 @@ from forge.domain.boards import (
     sees,
     task_points,
 )
-from forge.domain.definitions import Group, Leaderboard, Relative, Select, Show
+from forge.domain.definitions import Fold, Group, Leaderboard, Relative, Select, Show
 from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner
 from forge.domain.scoring import Better, Measure, Points, Scored, score
-from forge.domain.workflow_definition import Fold
 
 START = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
 CLOSE = datetime(2026, 10, 8, 14, 0, tzinfo=UTC)
@@ -60,6 +59,14 @@ def named(name: str, count: int) -> list[str]:
 
 def board(**fields: Any) -> Leaderboard:
     return Leaderboard.model_validate({"name": "Standings", **fields})
+
+
+def by(name: str, fold: str) -> dict[str, str]:
+    """A value key, ranking `name` folded by `fold`."""
+    return {"by": name, "fold": fold}
+
+
+SLOWEST = by("time_ms", "max")
 
 
 def column(
@@ -218,7 +225,7 @@ def test_a_submission_still_grading_shows_only_in_its_own_rows_count() -> None:
     assert organiser.rows[0].cells["a"].submissions == (1,)
 
 
-METRIC = {"metric": Measure(Fold.MEAN, Better.LOWER)}
+METRIC = {"metric": Measure(Better.LOWER)}
 KAGGLE = {"public_split": group(), "private_split": group(show=Show.AFTER_CLOSE)}
 KAGGLE_TESTS = ["public_split/1", "private_split/1"]
 
@@ -249,7 +256,7 @@ def kaggle_rows() -> list[Row]:
     return [broken, unmarked, marked]
 
 
-KAGGLE_ORDER = ["metric", "penalty"]
+KAGGLE_ORDER = [by("metric", "mean"), "penalty"]
 
 
 def test_kaggle_public_reads_only_the_public_split_and_the_earlier_wins_ties() -> None:
@@ -311,7 +318,7 @@ def test_kaggle_private_is_shown_from_the_reveal_then_counts_marks_or_the_public
     assert [r.keys for r in final.rows] == [r.keys for r in after.rows]
 
 
-SCORE = {"score": Measure(Fold.SUM, Better.HIGHER, Fraction(0))}
+SCORE = {"score": Measure(Better.HIGHER, Fraction(0))}
 
 
 def test_raw_scores_of_ten_to_the_eighth_that_differ_by_1_rank_apart() -> None:
@@ -323,7 +330,7 @@ def test_raw_scores_of_ten_to_the_eighth_that_differ_by_1_rank_apart() -> None:
 
     one = sums({"main/1": "100000000", "main/2": "100000001", "main/3": "100000000"})
     two = sums({"main/1": "100000000", "main/2": "100000000", "main/3": "100000000"})
-    on = board(order=["score", "penalty"])
+    on = board(order=[by("score", "sum"), "penalty"])
     found = standings(
         on,
         [column("opt", groups, worth=None)],
@@ -339,7 +346,7 @@ def test_raw_scores_of_ten_to_the_eighth_that_differ_by_1_rank_apart() -> None:
     ]
 
 
-TIME = {"time_ms": Measure(Fold.MAX, Better.LOWER, Fraction(0))}
+TIME = {"time_ms": Measure(Better.LOWER, Fraction(0))}
 
 
 def test_a_points_tie_is_broken_on_the_sum_of_each_tasks_slowest_time() -> None:
@@ -363,7 +370,7 @@ def test_a_points_tie_is_broken_on_the_sum_of_each_tasks_slowest_time() -> None:
         b=[candidate(4, at(10, 0), timed("1", "2"))],
     )
     lone = row(3, "lone", a=[candidate(5, at(10, 0), timed("100", "100"))])
-    on = board(order=["points", "time_ms"])
+    on = board(order=["points", SLOWEST])
     columns = [column("a", groups), column("b", groups)]
     found = standings(on, columns, [slow, lone, fast], directions={"time_ms": Better.LOWER})
     assert [(r.name, r.rank, r.keys) for r in found.rows] == [
@@ -371,6 +378,30 @@ def test_a_points_tie_is_broken_on_the_sum_of_each_tasks_slowest_time() -> None:
         ("slow", 2, (200, 42)),
         ("lone", 3, (100, 100)),
     ]
+
+
+def test_the_boards_fold_ranks_by_the_slowest_test_or_by_the_total() -> None:
+    groups = {"main": group(pass_=100)}
+    ids = named("main", 2)
+
+    def timed(first: str, second: str) -> Scored:
+        values = {"time_ms": {"main/1": first, "main/2": second}}
+        return graded(ids, groups, values=values, measures=TIME)
+
+    rows = [
+        row(1, "spiky", a=[candidate(1, at(10, 0), timed("10", "50"))]),
+        row(2, "steady", a=[candidate(2, at(10, 0), timed("40", "40"))]),
+    ]
+    directions = {"time_ms": Better.LOWER}
+
+    def ranked(fold: str) -> list[tuple[str, Any]]:
+        on = board(order=["points", by("time_ms", fold)])
+        found = standings(on, [column("a", groups)], rows, directions=directions)
+        return [(r.name, r.keys[1]) for r in found.rows]
+
+    assert ranked("max") == [("steady", 40), ("spiky", 50)]
+    assert ranked("sum") == [("spiky", 60), ("steady", 80)]
+    assert ranked("mean") == [("spiky", 30), ("steady", 40)]
 
 
 def test_a_fast_wrong_answer_has_no_time_and_ranks_after_every_row_with_one() -> None:
@@ -382,7 +413,7 @@ def test_a_fast_wrong_answer_has_no_time_and_ranks_after_every_row_with_one() ->
     values = {"time_ms": {"main/1": "1", "main/2": "1"}}
     garbage = graded(ids, groups, ids, values=values, measures=TIME)
     right = graded(ids, groups, values={"time_ms": {"main/1": "40", "main/2": "30"}}, measures=TIME)
-    on = board(order=["time_ms"])
+    on = board(order=[SLOWEST])
     rows = [row(1, "garbage", a=[candidate(1, at(10, 0), garbage)])]
     rows.append(row(2, "right", a=[candidate(2, at(10, 0), right)]))
     found = standings(on, [column("a", groups)], rows, directions={"time_ms": Better.LOWER})
@@ -482,25 +513,25 @@ def test_rows_n_keeps_every_row_tied_with_the_nth_and_the_viewers_own_below() ->
 
 
 def test_keys_read_penalty_and_values_with_their_direction() -> None:
-    on = board(order=["points", "time_ms", {"by": "penalty", "per_attempt": 20}])
+    on = board(order=["points", SLOWEST, {"by": "penalty", "per_attempt": 20}])
     assert keys_of(on, {"time_ms": Better.LOWER}) == (
         Key("points", Better.HIGHER),
-        Key("time_ms", Better.LOWER),
+        Key("time_ms", Better.LOWER, fold=Fold.MAX),
         Key("penalty", Better.LOWER, 20),
     )
 
 
 REWARD = {
-    "fraction": Measure(Fold.MEAN, Better.HIGHER, Fraction(0), Fraction(1)),
-    "reward": Measure(Fold.MEAN, Better.HIGHER),
+    "fraction": Measure(Better.HIGHER, Fraction(0), Fraction(1)),
+    "reward": Measure(Better.HIGHER),
 }
 RL = {"easy": group(each=40), "hard": group(each=60, show=Show.AFTER_CLOSE)}
 
 
 def test_raw_reward_is_ranked_on_one_task_and_refused_across_several() -> None:
-    one = board(name="Reward", tasks=["lander"], order=["reward"])
+    one = board(name="Reward", tasks=["lander"], order=[by("reward", "mean")])
     assert breaches(one, {"lander": covered(REWARD, RL)}, many=False) == []
-    across = board(name="Reward", order=["reward"])
+    across = board(name="Reward", order=[by("reward", "mean")])
     found = breaches(
         across, {"lander": covered(REWARD, RL), "walker": covered(REWARD, RL)}, many=True
     )
@@ -515,7 +546,7 @@ def test_raw_reward_is_ranked_on_one_task_and_refused_across_several() -> None:
 
 
 def test_a_lower_is_better_value_first_over_several_tasks_is_refused() -> None:
-    public = board(name="Public", over="live", order=["metric", "penalty"])
+    public = board(name="Public", over="live", order=KAGGLE_ORDER)
     tasks = {"house-prices": covered(METRIC, KAGGLE), "rents": covered(METRIC, KAGGLE)}
     found = breaches(public, tasks, many=True, only="rents")
     assert [b.message for b in found] == [
@@ -526,7 +557,7 @@ def test_a_lower_is_better_value_first_over_several_tasks_is_refused() -> None:
 
 
 def test_a_board_counting_what_is_shown_at_the_reveal_says_so_of_each_task() -> None:
-    final = board(name="Final", over="after_close", order=["time_ms"])
+    final = board(name="Final", over="after_close", order=[SLOWEST])
 
     found = breaches(final, {"hw1": covered(TIME, {"main": group(pass_=1)})}, many=False)
 
@@ -536,13 +567,13 @@ def test_a_board_counting_what_is_shown_at_the_reveal_says_so_of_each_task() -> 
     ]
 
 
-def test_a_value_ranked_is_reported_with_a_fold_and_the_same_direction_everywhere() -> None:
-    on = board(order=["points", "time_ms"])
+def test_a_value_ranked_is_reported_per_test_with_the_same_direction_everywhere() -> None:
+    on = board(order=["points", SLOWEST])
     groups = {"main": group(pass_=1)}
     lower = covered(TIME, groups)
-    higher = covered({"time_ms": Measure(Fold.MAX, Better.HIGHER, Fraction(0))}, groups)
+    higher = covered({"time_ms": Measure(Better.HIGHER, Fraction(0))}, groups)
     plain = covered({}, groups)
-    unsure = covered({"time_ms": Measure(Fold.MAX, None, Fraction(0))}, groups)
+    unsure = covered({"time_ms": Measure(None, Fraction(0))}, groups)
     found = breaches(on, {"a": lower, "b": higher, "c": plain, "d": unsure}, many=True)
     assert [(b.task, b.key, b.message) for b in found] == [
         (
@@ -555,7 +586,7 @@ def test_a_value_ranked_is_reported_with_a_fold_and_the_same_direction_everywher
             "c",
             1,
             "The leaderboard Standings ranks by time_ms, but c's workflow does not report time_ms "
-            "for each test, combined across its tests.",
+            "as a number for each test.",
         ),
         (
             "d",
@@ -570,22 +601,22 @@ RUN_TIME = (ValueMeaning("time_ms", "Run time", "ms"),)
 
 
 def test_a_value_is_named_by_its_title_where_a_covered_task_gives_one() -> None:
-    on = board(order=["points", "time_ms"])
+    on = board(order=["points", SLOWEST])
     groups = {"main": group(pass_=1)}
     titled = covered(TIME, groups, RUN_TIME)
-    higher = covered({"time_ms": Measure(Fold.MAX, Better.HIGHER, Fraction(0))}, groups)
+    higher = covered({"time_ms": Measure(Better.HIGHER, Fraction(0))}, groups)
     plain = covered({}, groups)
     found = breaches(on, {"a": titled, "b": higher, "c": plain}, many=True)
     assert [b.message for b in found] == [
         "The leaderboard Standings ranks by run time, but a higher run time is better in b and "
         "a lower one in a.",
         "The leaderboard Standings ranks by run time, but c's workflow does not report run time "
-        "for each test, combined across its tests.",
+        "as a number for each test.",
     ]
 
 
 def test_a_value_title_opens_a_sentence_capitalised_and_keeps_an_abbreviation() -> None:
-    across = board(name="Reward", order=["reward"])
+    across = board(name="Reward", order=[by("reward", "mean")])
     meanings = (ValueMeaning("reward", "Episode reward"),)
     found = breaches(
         across,
@@ -598,13 +629,13 @@ def test_a_value_title_opens_a_sentence_capitalised_and_keeps_an_abbreviation() 
         "leaderboard of one task."
     )
     cpu = (ValueMeaning("time_ms", "CPU time", "ms"),)
-    final = board(name="Final", over="after_close", order=["time_ms"])
+    final = board(name="Final", over="after_close", order=[SLOWEST])
     found = breaches(final, {"hw1": covered(TIME, {"main": group(pass_=1)}, cpu)}, many=False)
     assert found[0].message.startswith("The leaderboard Final ranks by CPU time, counting")
 
 
 def test_a_board_cannot_rank_by_the_value_a_task_uses_as_its_credit() -> None:
-    on = board(order=["points", "fraction"])
+    on = board(order=["points", by("fraction", "mean")])
     groups = {"main": group(each=1)}
     islands = covered(REWARD, groups, credit="fraction")
     found = breaches(on, {"islands": islands}, many=False)
@@ -626,7 +657,7 @@ def test_a_board_cannot_rank_by_the_value_a_task_uses_as_its_credit() -> None:
 
 
 def test_a_board_may_rank_the_value_behind_relative_credit_or_with_no_credit() -> None:
-    on = board(order=["points", "reward"])
+    on = board(order=["points", by("reward", "sum")])
     groups = {"main": group(each=1)}
     relative = covered(REWARD, groups, credit=Relative(relative="reward"))
     assert breaches(on, {"tour": relative}, many=False) == []
@@ -634,7 +665,7 @@ def test_a_board_may_rank_the_value_behind_relative_credit_or_with_no_credit() -
 
 
 def test_a_value_first_needs_a_group_whose_tests_its_scope_reads() -> None:
-    public = board(name="Public", over="live", tasks=["opt"], order=["score"])
+    public = board(name="Public", over="live", tasks=["opt"], order=[by("score", "sum")])
     verdict_only = covered(SCORE, {"main": group(show=Show.VERDICT)})
     found = breaches(public, {"opt": verdict_only}, many=False)
     assert [(b.mended_in, b.message) for b in found] == [
@@ -846,7 +877,11 @@ def test_with_nothing_marked_pending_comes_from_the_one_a_value_led_board_counts
     on = column("opt", groups)
 
     found = points_on(
-        on, [first, second], Select.MARKED, order=["score"], directions={"score": Better.HIGHER}
+        on,
+        [first, second],
+        Select.MARKED,
+        order=[by("score", "sum")],
+        directions={"score": Better.HIGHER},
     )
 
     assert found == Points(Fraction(15), Fraction(70), CLOSE)
@@ -890,8 +925,8 @@ def test_a_tasks_points_on_a_board_ranked_by_a_value_are_its_counted_submissions
     on = column("opt", groups)
     directions = {"score": Better.HIGHER}
 
-    by_points = points_on(on, entries, order=["points", "score"], directions=directions)
-    by_score = points_on(on, entries, order=["score"], directions=directions)
+    by_points = points_on(on, entries, order=["points", by("score", "sum")], directions=directions)
+    by_score = points_on(on, entries, order=[by("score", "sum")], directions=directions)
 
     assert by_points == Points(Fraction(100), Fraction(0), None)
     assert by_score == Points(Fraction(50), Fraction(0), None)
@@ -907,6 +942,6 @@ def test_a_tasks_points_are_0_on_a_board_whose_cell_does_not_count() -> None:
     on = column("a", groups)
 
     assert points_on(on, entries) == Points(Fraction(50), Fraction(0), None)
-    assert points_on(
-        on, entries, order=["time_ms"], directions={"time_ms": Better.LOWER}
-    ) == Points(Fraction(0), Fraction(0), None)
+    assert points_on(on, entries, order=[SLOWEST], directions={"time_ms": Better.LOWER}) == Points(
+        Fraction(0), Fraction(0), None
+    )
