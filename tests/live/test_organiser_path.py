@@ -3,7 +3,8 @@ and Woodpecker, over a `Setup` built on `ForgejoForge` and the test Postgres.
 A person asks for an org and the poller makes it, its service account and
 that account's sign-in at the CI included; as the org's admin they ask for a
 contest and a task and the poller makes those; they save the starter
-`task.yaml` with one change and it is published, its plan committed in the
+`task.yaml` with one change and the statement written, and it is
+published, its plan committed in the
 same commit, and the task is activated at the CI trusted for `volumes` and
 nothing else with no webhook left on its repository; a bad save is a draft
 with its errors and no new tag. Then the contest is published and running,
@@ -22,6 +23,7 @@ from typing import Any
 import httpx
 import pytest
 
+from forge.domain.content import Edit
 from forge.domain.errors import NotFound
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.names import EntrantOwner, Named
@@ -37,6 +39,7 @@ from forge.services import (
     files,
     landing,
     orgs,
+    publications,
     sessions,
     tasks,
 )
@@ -136,13 +139,18 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     assert await tasks.list(live_setup, organiser, contest) == (Named(task, "sum"),)
 
     starter = await files.read(live_setup, organiser, task, "task.yaml")
-    saved = await files.write(
+    statement = await files.read(live_setup, organiser, task, "statement.md")
+    # A contest opens only with every task's statement written (C5).
+    saved = await publications.save(
         live_setup,
         organiser,
         task,
-        "task.yaml",
-        starter.content.replace(b"time_limit: 2", b"time_limit: 3"),
-        starter.token,
+        {
+            "task.yaml": Edit(
+                starter.content.replace(b"time_limit: 2", b"time_limit: 3"), starter.token
+            ),
+            "statement.md": Edit(b"Add two numbers.\n", statement.token),
+        },
     )
 
     assert isinstance(saved, Published)
@@ -154,6 +162,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     assert commit["author"]["login"] == person["login"]
     assert sorted(entry["filename"] for entry in commit["files"]) == [
         "plans/plan.json",
+        "statement.md",
         "task.yaml",
     ]
     plan = admin.get(f"{repo}/contents/plans/plan.json").json()
