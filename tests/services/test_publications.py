@@ -38,6 +38,7 @@ from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.plans import PLAN_PATH, Plan
+from forge.domain.publications import write_note
 from forge.domain.roles import Role, RoleGrant, Scope, contest_id_of, task_scope
 from forge.domain.save_effect import SaveEffect
 from forge.domain.submissions import SubmittedInput
@@ -1105,6 +1106,26 @@ async def test_a_save_of_what_is_published_asks_nothing_and_a_draft_save_asks_no
     # nothing asks, and what it publishes changes nothing.
     assert isinstance(back, Published), back
     assert back.effect.reading == ("Nothing entrants read changes.",)
+
+
+async def test_a_save_that_changes_only_the_words_of_the_values_publishes_with_no_regrade(
+    setup: Setup, acme: Acme, running: TaskId
+) -> None:
+    # A publication made before the words were frozen notes none.
+    (latest,) = await acme.fake.workspaces.list_publications(running)
+    await acme.fake.workspaces.publish(running, latest.version, write_note(False, ()))
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _save(setup, acme, running, {})
+    saved = await _save(setup, acme, running, {}, confirm=True)
+
+    assert (asked.value.extra["changes"], asked.value.extra["regrades"]) == ([], 0)
+    assert asked.value.extra["reading"] == ["The names and units results give their values change."]
+    assert isinstance(saved, Published)
+    assert (saved.number, saved.grading_changed, saved.regraded) == (3, False, 0)
+    *_, newest = await acme.fake.workspaces.list_publications(running)
+    assert newest.meanings == latest.meanings
+    assert isinstance(await _save(setup, acme, running, {}), Published)
 
 
 async def test_a_grading_change_kept_as_a_draft_is_written_and_not_published(

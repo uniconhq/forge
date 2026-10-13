@@ -58,6 +58,7 @@ NO_SCORE_CHANGES = "No score changes."
 NOTHING_READ_CHANGES = "Nothing entrants read changes."
 STATEMENT_CHANGES = "The statement changes."
 PUBLIC_CHANGES = "The pictures and files beside the statement change."
+WORDS_CHANGE = "The names and units results give their values change."
 FIRST_READ = "Entrants read the task from its release."
 
 SHOWN = {
@@ -84,10 +85,13 @@ class SaveEffect:
 
 @dataclass(frozen=True, slots=True)
 class ReadChanges:
-    """Which of what entrants read a save changes."""
+    """Which of what entrants read a save changes: the statement, the files
+    beside it, and the words the task's results give their values.
+    """
 
     statement: bool = False
     public: bool = False
+    words: bool = False
 
 
 def effect_of(
@@ -164,6 +168,8 @@ def _reading(
         found.append(STATEMENT_CHANGES)
     if read.public:
         found.append(PUBLIC_CHANGES)
+    if read.words:
+        found.append(WORDS_CHANGE)
     return tuple(found) or (NOTHING_READ_CHANGES,)
 
 

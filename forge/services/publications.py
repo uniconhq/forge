@@ -285,16 +285,21 @@ async def save(
     changed: tuple[str, ...] = ()
     read = ReadChanges()
     anew = True
+    worded = False
     if latest is not None:
         before, published_files = await _published_snapshot(ctx, as_, task, latest)
         after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
         changed = grading_changes(before, after)
         differ = await _differing(ctx, as_, task, head, written, published_files)
+        # A workflow moved in place can change a value's words alone, which
+        # only a new publication's note carries.
+        worded = checked.compiled is not None and latest.meanings != checked.compiled.meanings
         read = ReadChanges(
             statement=STATEMENT_FILE in differ,
             public=any(path.startswith(PUBLIC_FOLDER) for path in differ),
+            words=worded,
         )
-        anew = bool(differ) or before.plans.get(PLAN_PATH) != after.plans[PLAN_PATH]
+        anew = bool(differ) or before.plans.get(PLAN_PATH) != after.plans[PLAN_PATH] or worded
     if keep_as_draft:
         version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, (), changed)
@@ -322,7 +327,7 @@ async def save(
     if version != head.version and await _landed_under(ctx, as_, task, head, version, touched):
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
     notes = checked.compiled.notes
-    if latest is not None and version == latest.version:
+    if latest is not None and version == latest.version and not worded:
         effect = await _effect(
             ctx, task, checked.definition, latest, (), 0, ReadChanges(), checked.compiled
         )
