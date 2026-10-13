@@ -32,8 +32,9 @@ class Repo:
     every place in the org, a contest's or a task's only the places they are
     attached to. `snapshots` holds every file at every version, and
     `touched` the paths each version wrote or removed. `reserved` is the
-    protected versions' prefixes only the platform may create here, and
-    `rewrites_refused` whether its history is kept from being rewritten.
+    protected versions' prefixes only the platform may create here,
+    `rewrites_refused` whether its history is kept from being rewritten, and
+    `platform_only` whether the platform alone writes its files (#443).
     """
 
     owner: str
@@ -56,6 +57,7 @@ class Repo:
     teams: set[Scope] = field(default_factory=set)
     reserved: set[str] = field(default_factory=set)
     rewrites_refused: bool = False
+    platform_only: bool = False
 
     @property
     def head(self) -> str:
@@ -267,9 +269,20 @@ class State:
             return
         raise Forbidden(f"{self.username(user_id)} may not read {repo.owner}/{repo.name}")
 
-    def require_write(self, as_: Identity, repo: Repo) -> None:
+    def require_write(self, as_: Identity, repo: Repo, *, code: bool = True) -> None:
+        """Refuse a write the user may not make: to the repository's files
+        (`code`), which a place the platform alone writes refuses to anyone
+        but the platform, or to its threads, which it does not.
+        """
         user_id = self.author(as_)
-        if user_id is None or self.may_write(user_id, repo):
+        if user_id is None:
+            return
+        if code and repo.platform_only and self.may_write(user_id, repo):
+            raise Forbidden(
+                f"{self.username(user_id)} is not allowed to push to the protected branch of "
+                f"{repo.owner}/{repo.name}"
+            )
+        if self.may_write(user_id, repo):
             return
         raise Forbidden(f"{self.username(user_id)} may not write {repo.owner}/{repo.name}")
 

@@ -1429,6 +1429,31 @@ def test_a_bounded_number_credit_does_not_name_is_reported_not_refused() -> None
     )
 
 
+TITLED = parse_workflow(
+    CHECKED_TEXT.replace(
+        "fold: mean, better: lower,", "title: Share missed, fold: mean, better: lower,"
+    ).replace("fold: sum, at_least: 0}", "title: Raw steps, fold: sum, at_least: 0}")
+)
+"""Checked, with a title on `miss` and on `raw`."""
+
+
+def test_a_credit_note_and_refusal_name_a_value_by_its_title() -> None:
+    plain = compiled(CHECKED_TASK, classic_tests("main/1"), TITLED)
+    assert plain.notes[1] == (
+        "The workflow reports share missed, a score from 0 to 1 for each test, but the task "
+        "does not use it: an accepted test earns 1."
+    )
+
+    text = task_with(CHECKED_TASK, workflow="acme/checked@v1", credit="raw")
+    assert refused(text, classic_tests("main/1"), TITLED) == [
+        {
+            "path": "credit",
+            "message": "The workflow does not keep raw steps between 0 and 1, so it cannot be "
+            "what a test earns. Choose another value.",
+        }
+    ]
+
+
 def test_a_compiled_report_carries_each_numbers_bounds() -> None:
     report = document(compiled(CHECKED_TASK, classic_tests("main/1"), CHECKED).plan)["report"]
 

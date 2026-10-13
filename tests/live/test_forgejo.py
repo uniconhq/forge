@@ -160,6 +160,24 @@ async def test_an_org_with_its_roles_and_a_contest_with_its_files(
     assert blobs == {
         listed.token: (await forge.content.read_file(PLATFORM, task, "task.yaml")).content
     }
+    # The person is an admin of the org, and still the platform alone writes
+    # the task's files (#443); one it writes for them names them its author.
+    held = await forge.content.read_file(person, task, "task.yaml")
+    with pytest.raises(Forbidden):
+        await forge.content.write_file(
+            person, task, "task.yaml", b"name: Pushed\n", message="Push", expected=held.token
+        )
+    await forge.content.write_file(
+        PLATFORM,
+        task,
+        "task.yaml",
+        b"name: Saved\n",
+        message="Save",
+        expected=held.token,
+        author=user_id,
+    )
+    (saved, _) = await forge.content.history(PLATFORM, task)
+    assert (saved.message, saved.author_id) == ("Save", user_id)
 
     await forge.orgs.grant_role(user_id, Scope(org, "spring"), Role.MANAGER)
     assert RoleGrant(Scope(org, "spring"), Role.MANAGER) in await forge.orgs.roles_of(person)

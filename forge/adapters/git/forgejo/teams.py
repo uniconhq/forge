@@ -12,6 +12,16 @@ history, so the admin and manager roles are both `write` there and the
 platform holds the difference between them. Only the org account's team is
 an admin, because the CI accepts nothing less from whoever activates a
 repository. A team found with any other permission is put back.
+
+`write` is not what lets an organiser change a contest's or a task's files:
+the platform alone writes those (#443). A team's one permission covers
+every repository it reaches, a contest's and its tasks', and at the org
+every repository there, workflows included, so it cannot be `read` on a
+task alone; and the teams need `write` at a task for its uploads, which go
+straight to its large-file store as the organiser, and for its threads,
+which are issues. So the teams stay `write`, and a contest's and a task's
+default branch refuses every push and merge but the platform's account's,
+repository admins included (`Repos.protect_branch`, `platform_only`).
 """
 
 from typing import Any

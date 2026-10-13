@@ -10,12 +10,13 @@ nothing written either way; a task's write is its save; and a rollback
 writes the old content as a new change.
 """
 
+import uuid
 from datetime import timedelta
 
 import pytest
 
 from forge.domain.clock import FakeClock
-from forge.domain.content import Edit, start_of
+from forge.domain.content import ConflictToken, Edit, start_of
 from forge.domain.definitions import parse_contest
 from forge.domain.errors import AdminOnly, Conflict, Forbidden, InvalidPath, NotFound
 from forge.domain.identity import PLATFORM
@@ -24,7 +25,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import files, publications, submissions, timelines
+from forge.services import files, publications, submissions, timelines, uploads
 from forge.services.access import Organiser
 from forge.services.publications import Published
 from tests.services.conftest import (
@@ -34,6 +35,7 @@ from tests.services.conftest import (
     Entered,
     make_task,
     organiser,
+    publish,
     upload,
     write_contest,
 )
@@ -130,7 +132,7 @@ async def test_a_manager_writes_a_manager_key_and_a_stale_token_is_a_conflict(
     assert isinstance(written, files.Written)
     assert isinstance(written.version, str)
     (call,) = acme.fake.calls_to("write_file")
-    assert call.identity == manager.identity
+    assert (call.identity, call.arguments["author"]) == (PLATFORM, manager.user.id)
     after = await files.read(setup, manager, spring, "contest.yaml")
     assert parse_contest(after.content).end.hour == 18
     assert (await files.history(setup, manager, spring, "contest.yaml"))[0].author_id == 8
@@ -511,15 +513,18 @@ async def test_an_entry_naming_no_task_of_the_contest_is_refused_at_its_id(
         ),
         (
             "tasks",
-            "sum was released on 26 September 2026 at 10:00 UTC, so entrants have seen it. Take "
-            "it out from the contest's list of tasks instead, which deletes it too.",
+            "sum was released on 26 September 2026 at 10:00 UTC, so entrants have seen it. "
+            "Remove it from the contest's Tasks card instead, which deletes the task too.",
         ),
     ]
 
 
-async def test_an_entry_is_dropped_only_from_a_task_that_neither_opened_nor_has_submissions(
+async def test_an_entry_of_a_task_still_at_the_forge_is_never_dropped_by_hand(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
+    # Dropped by hand, a task never released and with no submissions would
+    # stay at the forge with its name taken and no row to take it out from
+    # (#452); one with submissions is withdrawn, not removed.
     await make_task(setup, acme, "product")
     await _submitted(setup, acme, entered)
     product = b"  - id: product\n"
@@ -527,16 +532,108 @@ async def test_an_entry_is_dropped_only_from_a_task_that_neither_opened_nor_has_
     await write_contest(acme.fake, (draft + product).decode())
 
     refused = await _refused(setup, acme, draft.replace(SUM_ENTRY.encode(), product))
-    version = await _write_contest(setup, acme, draft)
+    unreached = await _refused(setup, acme, draft)
 
     assert refused == [
         (
             "tasks",
-            "sum has 1 submission, so it cannot be taken out of the contest. Withdraw it instead: "
-            "entrants no longer see it and no leaderboard counts it, and its submissions are kept.",
+            "sum has 1 submission, so it cannot be removed from the contest. Withdraw it "
+            "instead: entrants no longer see it and no leaderboard counts it, and its "
+            "submissions are kept.",
         )
     ]
-    assert version
+    assert unreached == [
+        (
+            "tasks",
+            "product is one of this contest's tasks. Remove it from the contest's Tasks card "
+            "instead, which deletes the task too.",
+        )
+    ]
+
+
+async def test_a_withdrawn_tasks_entry_is_not_dropped_and_says_it_is_withdrawn(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await make_task(setup, acme, "product")
+    await _submitted(setup, acme, entered)
+    product = "  - id: product\n"
+    withdrawn = SUM_ENTRY.rstrip("\n") + "\n    withdrawn: true\n"
+    await write_contest(acme.fake, _running(withdrawn + product).decode())
+
+    refused = await _refused(setup, acme, _running(product))
+
+    assert refused == [
+        (
+            "tasks",
+            "sum is withdrawn and has 1 submission, so its entry stays: its submissions are "
+            "kept. Put it back from the contest's Tasks card, or leave it withdrawn.",
+        )
+    ]
+
+
+async def test_withdrawn_is_written_by_hand_only_on_a_task_with_submissions(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    # A task nobody submitted to is removed, not withdrawn (#450).
+    await write_contest(acme.fake, _running(SUM_ENTRY).decode())
+    withdrawn = SUM_ENTRY.rstrip("\n") + "\n    withdrawn: true\n"
+
+    refused = await _refused(setup, acme, _running(withdrawn))
+
+    assert refused == [
+        (
+            "tasks[0].withdrawn",
+            "Nobody has submitted to sum, so it is removed, not withdrawn. Remove it from the "
+            "contest's Tasks card instead.",
+        )
+    ]
+
+
+async def test_a_contest_opens_only_once_each_task_is_published_with_its_statement_written(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    # The same grounds the opening checklist blocks on (M57), for a save
+    # through the API: a task not published, or published with its
+    # statement still the starter's, keeps the contest from opening.
+    draft = (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content
+    opened = draft.replace(b"state: draft", b"state: published")
+
+    unpublished = await _refused(setup, acme, opened)
+    await publish(setup, acme, sum_task)
+    placeholder = await _refused(setup, acme, opened)
+    statement = await files.read(setup, acme.ada, sum_task, "statement.md")
+    await files.write(
+        setup, acme.ada, sum_task, "statement.md", b"Add two numbers.\n", statement.token
+    )
+
+    assert unpublished == [("state", "A · sum: it is not published yet.")]
+    assert placeholder == [("state", "A · sum: its statement is not written yet.")]
+    assert await _write_contest(setup, acme, opened)
+
+
+async def test_a_withdrawn_task_does_not_keep_a_contest_from_opening_nor_does_a_later_one(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await publish(setup, acme, sum_task)
+    statement = await files.read(setup, acme.ada, sum_task, "statement.md")
+    await files.write(
+        setup, acme.ada, sum_task, "statement.md", b"Add two numbers.\n", statement.token
+    )
+    await make_task(setup, acme, "product")
+    draft = (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content
+    withdrawn = draft.replace(b"- id: product", b"- {id: product, withdrawn: true}")
+    assert withdrawn != draft
+    # Withdrawn as the action leaves it, which no draft's save may write.
+    await write_contest(acme.fake, withdrawn.decode())
+
+    assert await _write_contest(
+        setup, acme, withdrawn.replace(b"state: draft", b"state: published")
+    )
+    # Open, a task made since and not published yet stops no save.
+    await make_task(setup, acme, "quotient")
+    current = (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content
+    assert b"- id: quotient" in current
+    assert await _write_contest(setup, acme, current.replace(b"name: ", b"name: Late ", 1))
 
 
 async def test_an_open_contest_goes_back_to_draft_until_its_start_and_is_only_archived_after(
@@ -654,3 +751,87 @@ async def test_a_listing_gives_each_small_text_files_start_in_one_read_of_them_a
     assert acme.fake.calls_to("read_file") == []
     assert start_of(b"") == "" and start_of(b"a\x00b") is None
     assert all(entry.token is not None for entry in listed.values())
+
+
+WRITES = (
+    "save",
+    "task write",
+    "task rollback",
+    "task upload",
+    "task upload slot",
+    "contest write",
+    "contest rollback",
+)
+"""Every way a contest's or a task's files are written."""
+MINE = b"Mine.\n"
+
+
+async def _write(
+    setup: Setup, write: str, who: Organiser, task: TaskId, token: ConflictToken
+) -> object:
+    if write == "save":
+        return await publications.save(setup, who, task, {"statement.md": Edit(MINE, token)})
+    if write == "task write":
+        return await files.write(setup, who, task, "statement.md", MINE, token)
+    if write == "task rollback":
+        return await files.rollback(setup, who, task, "statement.md", VersionId("v"), token)
+    if write == "task upload":
+        return await files.write_upload(setup, who, task, "data/big.bin", uuid.uuid4(), None)
+    if write == "task upload slot":
+        return await uploads.task_file_slot(
+            setup, who, task, path="data/big.bin", size=4, sha256="0" * 64
+        )
+    if write == "contest write":
+        return await files.write(setup, who, SPRING, "notes.md", MINE, None)
+    return await files.rollback(setup, who, SPRING, "contest.yaml", VersionId("v"), None)
+
+
+@pytest.mark.parametrize("write", WRITES)
+@pytest.mark.parametrize("who", ["observer", "nobody"])
+async def test_every_write_refuses_an_observer_and_someone_with_no_role_writing_nothing(
+    setup: Setup, acme: Acme, sum_task: TaskId, write: str, who: str
+) -> None:
+    # The platform writes a contest's and a task's files at the forge for
+    # whoever saves (#443), so the forge's own check is no backstop: the
+    # package's is the only gate, and it refuses before anything is written.
+    scope = Scope("acme", "spring") if who == "observer" else Scope("acme", "autumn")
+    await acme.fake.orgs.grant_role(8, scope, Role.OBSERVER if who == "observer" else Role.ADMIN)
+    bob = await organiser(setup, acme.fake, 8, scope)
+    head = await acme.fake.content.list_files(PLATFORM, sum_task)
+    acme.fake.reset_calls()
+
+    with pytest.raises(Forbidden, match="manager role at acme/spring"):
+        await _write(setup, write, bob, sum_task, head.tokens["statement.md"])
+
+    written = {"save_files", "write_file", "publish", "read_file"}
+    assert [call for call in acme.fake.calls if call.operation in written] == []
+
+
+async def test_a_manager_is_refused_an_admin_only_key_of_a_task_and_of_a_contest(
+    setup: Setup, acme: Acme, sum_task: TaskId, manager: Organiser
+) -> None:
+    task_yaml = await acme.fake.content.read_file(PLATFORM, sum_task, "task.yaml")
+    contest_yaml = await acme.fake.content.read_file(PLATFORM, SPRING, "contest.yaml")
+    acme.fake.reset_calls()
+
+    with pytest.raises(AdminOnly):
+        await files.write(
+            setup,
+            manager,
+            sum_task,
+            "task.yaml",
+            task_yaml.content.replace(b"test_groups:", b"submissions: {max: 3}\ntest_groups:"),
+            task_yaml.token,
+        )
+    with pytest.raises(AdminOnly):
+        await files.write(
+            setup,
+            manager,
+            SPRING,
+            "contest.yaml",
+            contest_yaml.content.replace(b"state: draft", b"state: published"),
+            contest_yaml.token,
+        )
+    assert [
+        call for call in acme.fake.calls if call.operation in {"save_files", "write_file"}
+    ] == []

@@ -31,6 +31,7 @@ from forge.domain.boards import (
     task_points,
 )
 from forge.domain.definitions import Group, Leaderboard, Select, Show
+from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner
 from forge.domain.scoring import Better, Measure, Points, Scored, score
 from forge.domain.workflow_definition import Fold
@@ -565,6 +566,43 @@ def test_a_value_ranked_is_reported_with_a_fold_and_the_same_direction_everywher
     ]
 
 
+RUN_TIME = (ValueMeaning("time_ms", "Run time", "ms"),)
+
+
+def test_a_value_is_named_by_its_title_where_a_covered_task_gives_one() -> None:
+    on = board(order=["points", "time_ms"])
+    groups = {"main": group(pass_=1)}
+    titled = covered(TIME, groups, RUN_TIME)
+    higher = covered({"time_ms": Measure(Fold.MAX, Better.HIGHER, Fraction(0))}, groups)
+    plain = covered({}, groups)
+    found = breaches(on, {"a": titled, "b": higher, "c": plain}, many=True)
+    assert [b.message for b in found] == [
+        "The leaderboard Standings ranks by run time, but a higher run time is better in b and "
+        "a lower one in a.",
+        "The leaderboard Standings ranks by run time, but c's workflow does not report run time "
+        "for each test, combined across its tests.",
+    ]
+
+
+def test_a_value_title_opens_a_sentence_capitalised_and_keeps_an_abbreviation() -> None:
+    across = board(name="Reward", order=["reward"])
+    meanings = (ValueMeaning("reward", "Episode reward"),)
+    found = breaches(
+        across,
+        {"lander": covered(REWARD, RL, meanings), "walker": covered(REWARD, RL)},
+        many=True,
+    )
+    assert found[0].message == (
+        "Episode reward has no lowest value, so on the leaderboard Reward an entrant who skips "
+        "a task would beat one who scored below 0 on it. Rank by episode reward on a "
+        "leaderboard of one task."
+    )
+    cpu = (ValueMeaning("time_ms", "CPU time", "ms"),)
+    final = board(name="Final", over="after_close", order=["time_ms"])
+    found = breaches(final, {"hw1": covered(TIME, {"main": group(pass_=1)}, cpu)}, many=False)
+    assert found[0].message.startswith("The leaderboard Final ranks by CPU time, counting")
+
+
 def test_a_value_first_needs_a_group_whose_tests_its_scope_reads() -> None:
     public = board(name="Public", over="live", tasks=["opt"], order=["score"])
     verdict_only = covered(SCORE, {"main": group(show=Show.VERDICT)})
@@ -673,6 +711,14 @@ def test_a_held_runs_group_shown_at_once_is_pending_too_not_shown_as_what_it_ear
 
     assert points_on(column("sum", groups), [held]) == Points(Fraction(0), Fraction(100), CLOSE)
     assert points_on(column("sum", groups), [unheld]) == Points(Fraction(0), Fraction(60), CLOSE)
+    # On a board over the live groups, all shown, the held run's 40 is still
+    # to come until the reveal; the unheld one's 0 is final.
+    assert points_on(column("sum", groups), [held], over="live") == Points(
+        Fraction(0), Fraction(40), CLOSE
+    )
+    assert points_on(column("sum", groups), [unheld], over="live") == Points(
+        Fraction(0), Fraction(0), None
+    )
 
 
 def test_a_tasks_points_are_none_shown_while_no_group_is_shown_and_a_shown_0_stays_0() -> None:
@@ -750,6 +796,30 @@ def test_a_tasks_points_pending_when_marked_come_from_the_marked_or_the_one_it_c
     assert points_on(on, [unmarked, second], Select.MARKED) == Points(
         Fraction(30), Fraction(70), CLOSE
     )
+
+
+def test_with_nothing_marked_pending_comes_from_the_one_a_value_led_board_counts() -> None:
+    # Ranked by score, nothing marked: the board counts the first (score 9,
+    # 15 of small's 30), not the second, which shows more points (30) but
+    # scores less; what may still come is the first's large, 70.
+    groups = {
+        "small": group(each=30, show=Show.ALWAYS),
+        "large": group(pass_=70, show=Show.AFTER_CLOSE),
+    }
+    ids = [*named("small", 2), "large/1"]
+    nine = dict.fromkeys(ids, "9")
+    first = candidate(
+        1, minute(1), graded(ids, groups, ["small/2"], values={"score": nine}, measures=SCORE)
+    )
+    one = dict.fromkeys(ids, "1")
+    second = candidate(2, minute(2), graded(ids, groups, values={"score": one}, measures=SCORE))
+    on = column("opt", groups)
+
+    found = points_on(
+        on, [first, second], Select.MARKED, order=["score"], directions={"score": Better.HIGHER}
+    )
+
+    assert found == Points(Fraction(15), Fraction(70), CLOSE)
 
 
 def test_a_task_with_nothing_submitted_has_nothing_pending_and_one_giving_no_points_none() -> None:

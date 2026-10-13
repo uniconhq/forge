@@ -171,7 +171,8 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
         reading=("Entrants read the task from its release.",),
     )
     (saved,) = acme.fake.calls_to("save_files")
-    assert saved.identity == acme.ada.identity
+    # The platform writes it, with ada as its author (#443).
+    assert (saved.identity, saved.arguments["author"]) == (PLATFORM, acme.ada.user.id)
     assert saved.arguments["paths"] == ["plans/plan.json", "statement.md"]
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
     head = repo.history[-1]
@@ -382,7 +383,7 @@ async def test_a_managers_save_of_everything_else_publishes(
 
     assert isinstance(result, Published), result
     (saved,) = acme.fake.calls_to("save_files")
-    assert saved.identity == manager.identity
+    assert (saved.identity, saved.arguments["author"]) == (PLATFORM, manager.user.id)
 
 
 async def test_a_save_needs_the_manager_role_at_the_task(
@@ -721,7 +722,7 @@ async def test_a_manager_removes_tests_and_public_files(
 
     assert isinstance(result, Published), result
     (saved,) = acme.fake.calls_to("save_files")
-    assert saved.identity == manager.identity
+    assert (saved.identity, saved.arguments["author"]) == (PLATFORM, manager.user.id)
     files = acme.fake.state.repos[("acme", "spring.sum.task")].files
     assert "public/hint.txt" not in files and "tests/main/2/input" not in files
 

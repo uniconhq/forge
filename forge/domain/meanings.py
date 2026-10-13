@@ -42,6 +42,15 @@ class ValueMeaning:
         return found
 
 
+def in_sentence(title: str) -> str:
+    """A value's title inside a sentence, "run time": its first letter
+    lowered, unless its first word is an abbreviation such as "CPU".
+    """
+    if len(title) > 1 and title[1].islower():
+        return title[0].lower() + title[1:]
+    return title
+
+
 def with_measures(
     words: Iterable[ValueMeaning], measures: Mapping[str, Measure]
 ) -> tuple[ValueMeaning, ...]:
@@ -96,4 +105,4 @@ def meanings_noted(value: object) -> tuple[ValueMeaning, ...]:
     return tuple(found)
 
 
-__all__ = ["ValueMeaning", "meanings_noted", "shown_meanings", "with_measures"]
+__all__ = ["ValueMeaning", "in_sentence", "meanings_noted", "shown_meanings", "with_measures"]

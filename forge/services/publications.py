@@ -51,9 +51,10 @@ steps in order, and refuses before anything is written.
    (`domain.save_effect`): whether anyone's result changes, what runs
    again, each scoring change, old and new, with the boards counted again,
    and what entrants read that changes.
-4. The organiser's files and `plans/plan.json` are written as one change, as
-   the organiser, so the history is theirs and a publication never catches a
-   task half saved.
+4. The organiser's files and `plans/plan.json` are written as one change, by
+   the platform, which alone writes a task's files at the forge (#443), with
+   the organiser as its author, so the history is theirs, and a publication
+   never catches a task half saved.
 5. That change is named as the next publication, as the platform, with a
    note saying whether it changed how the task grades and what, which
    workflow each workflow name was, what the task's sealed steps hold back
@@ -68,7 +69,9 @@ steps in order, and refuses before anything is written.
    next save checks and publishes the task as it then stands.
 6. A publication that changed how the task grades regrades every
    submission to the task: a new attempt of each one's latest attempt
-   against it, as a rejudge makes (`gradings.regrade`).
+   against it, as a rejudge makes (`gradings.regrade`), the delayed ones
+   held to their entrants' room under the `submissions.max` the save
+   published (#445), all kept as one regrade the save started (#448).
 7. A task's first publication starts making its place to submit for every
    approved entrant, once the save has committed and without the save
    waiting for it (`places`).
@@ -256,7 +259,7 @@ async def save(
     remove it, and the token it was read with, and publish the result when
     it is valid. Needs the manager role at the task. `keep_as_draft` writes
     the files and publishes nothing, on any save; otherwise `confirm`
-    publishes a change to how the task grades while its contest runs. A
+    publishes anything new while its contest runs (#449). A
     token that has moved is `Conflict`, with nothing written.
     """
     scope = task_scope(task)
@@ -274,7 +277,7 @@ async def save(
     await timelines.hold_task(ctx, task)
     checked = await check(ctx, as_, task, head, written)
     if checked.errors:
-        version = await _write(ctx, as_, task, head, written, {}, said)
+        version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, checked.errors, ())
 
     publications = await ctx.forge.workspaces.list_publications(task)
@@ -293,7 +296,7 @@ async def save(
         )
         anew = bool(differ) or before.plans.get(PLAN_PATH) != after.plans[PLAN_PATH]
     if keep_as_draft:
-        version = await _write(ctx, as_, task, head, written, {}, said)
+        version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, (), changed)
     assert checked.compiled is not None and checked.definition is not None
     if anew and not confirm and await _contest_running(ctx, task):
@@ -302,7 +305,9 @@ async def save(
             if changed
             else 0
         )
-        effect = await _effect(ctx, task, checked.definition, latest, changed, regrades, read)
+        effect = await _effect(
+            ctx, task, checked.definition, latest, changed, regrades, read, checked.compiled
+        )
         raise ConfirmationRequired(
             "The contest is running, so this save asks before it publishes. Publish it, or "
             "keep it as a draft.",
@@ -312,13 +317,15 @@ async def save(
         )
 
     plans = await _plan_files(ctx, as_, task, head, checked)
-    version = await _write(ctx, as_, task, head, written, plans, said)
+    version = await _write(ctx, organiser, task, head, written, plans, said)
     touched = {*written, *plans}
     if version != head.version and await _landed_under(ctx, as_, task, head, version, touched):
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
     notes = checked.compiled.notes
     if latest is not None and version == latest.version:
-        effect = await _effect(ctx, task, checked.definition, latest, (), 0, ReadChanges())
+        effect = await _effect(
+            ctx, task, checked.definition, latest, (), 0, ReadChanges(), checked.compiled
+        )
         return Published(
             latest.id, latest.number, latest.grading_changed, latest.changes, notes, 0, effect
         )
@@ -346,7 +353,9 @@ async def save(
                 limit=checked.definition.submissions.max,
             )
         ).queued
-    effect = await _effect(ctx, task, checked.definition, latest, changed, regraded, read)
+    effect = await _effect(
+        ctx, task, checked.definition, latest, changed, regraded, read, checked.compiled
+    )
     if latest is None:
         places.ahead_at(ctx, task)
     log.info(
@@ -441,7 +450,7 @@ async def _boards(
     name = (await names.names_of(ctx, [task])).get(task)
     if contest is None or name is None:
         return []
-    shape = covered(compiled.measures, definition.test_groups)
+    shape = covered(compiled.measures, definition.test_groups, compiled.meanings)
     return await boards.check_task(ctx, contest_id_of(task_scope(task)), contest, name, shape)
 
 
@@ -467,7 +476,8 @@ async def _report(
         found.append(
             f"{name} shows its hidden results on {in_words(reveal_of(contest, entry, extensions))}."
         )
-    found += boards.task_notes(contest, name, covered(compiled.measures, definition.test_groups))
+    shape = covered(compiled.measures, definition.test_groups, compiled.meanings)
+    found += boards.task_notes(contest, name, shape)
     return found
 
 
@@ -479,13 +489,20 @@ async def _effect(
     changed: tuple[str, ...],
     regrades: int,
     read: ReadChanges,
+    compiled: Compiled,
 ) -> SaveEffect:
     """What saving `definition` over the latest publication does, in the
     words a running contest asks with before a save and a save that
-    published answers with.
+    published answers with, each reported value named by its title in the
+    save or, where the save no longer reports it, in the latest publication.
     """
     name = (await names.names_of(ctx, [task])).get(task)
     before = await _definition_of(ctx, task, latest) if latest is not None else None
+    titles = {
+        meaning.name: meaning.title
+        for meaning in (*(latest.meanings if latest is not None else ()), *compiled.meanings)
+        if meaning.title is not None
+    }
     return effect_of(
         name or definition.name,
         before,
@@ -495,6 +512,7 @@ async def _effect(
         regrades=regrades,
         graded=bool(await _graded_under(ctx, task)),
         read=read,
+        titles=titles,
     )
 
 
@@ -919,15 +937,18 @@ async def _plan_files(
 
 async def _write(
     ctx: Context,
-    as_: Identity,
+    organiser: Organiser,
     task: TaskId,
     head: FileSet,
     written: Mapping[str, WrittenEdit],
     plans: Mapping[str, bytes | None],
     message: str,
 ) -> VersionId:
-    """Write the organiser's files and the plans as one change as `as_`, and
-    return its version; with nothing to write, the head is the version.
+    """Write the organiser's files and the plans as one change, and return
+    its version; with nothing to write, the head is the version. The
+    platform writes it, the only account a task's files are written by at
+    the forge (#443), with the organiser as its author, so the history is
+    theirs; `save` has checked they may.
     """
     files: dict[str, bytes | None] = {path: edit.content for path, edit in written.items()}
     files.update(plans)
@@ -935,7 +956,9 @@ async def _write(
         return head.version
     expected: dict[str, ConflictToken | None] = {path: head.tokens.get(path) for path in plans}
     expected.update({path: edit.token for path, edit in written.items()})
-    return await ctx.forge.content.save_files(as_, task, files, expected=expected, message=message)
+    return await ctx.forge.content.save_files(
+        PLATFORM, task, files, expected=expected, message=message, author=organiser.user.id
+    )
 
 
 async def _landed_under(

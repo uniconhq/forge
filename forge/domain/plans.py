@@ -61,7 +61,7 @@ from forge.domain.definitions import (
     form_problems,
 )
 from forge.domain.grading import WALL_CEILING, Machine, wall_seconds
-from forge.domain.meanings import ValueMeaning, with_measures
+from forge.domain.meanings import ValueMeaning, in_sentence, with_measures
 from forge.domain.primitives import BATCH_SCALED, IMAGE, LIMIT_NAMES, Port, PrimitiveDeclaration
 from forge.domain.scoring import Better, Measure, exact
 from forge.domain.showing import NOTHING_SEALED, Sealed
@@ -1752,13 +1752,14 @@ def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[P
     if isinstance(task.credit, Relative):
         name = task.credit.relative
         value = values.get(name)
+        said = _said(name, value)
         meaning = value.meaning if value is not None else None
         if value is None or not _per_test_number(value) or meaning is None:
             return [
                 Problem(
                     path="credit.relative",
                     message=(
-                        f"The workflow does not report {name} as a number for each test with a "
+                        f"The workflow does not report {said} as a number for each test with a "
                         "direction, higher or lower, that is better. Choose another value."
                     ),
                 )
@@ -1767,7 +1768,7 @@ def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[P
             return [
                 Problem(
                     path="credit.relative",
-                    message=f"The workflow does not say whether a higher or a lower {name} "
+                    message=f"The workflow does not say whether a higher or a lower {said} "
                     "is better, so it cannot be measured against the best. Choose another value.",
                 )
             ]
@@ -1776,7 +1777,7 @@ def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[P
                 Problem(
                     path="credit.relative",
                     message=(
-                        f"The workflow does not say that {name} is never below 0. Choose "
+                        f"The workflow does not say that {said} is never below 0. Choose "
                         "another value."
                     ),
                 )
@@ -1784,11 +1785,12 @@ def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[P
         return []
     name = task.credit
     value = values.get(name)
+    said = _said(name, value)
     if value is None or not _per_test_number(value):
         return [
             Problem(
                 path="credit",
-                message=f"The workflow does not report {name} as a number for each test. "
+                message=f"The workflow does not report {said} as a number for each test. "
                 "Choose another value.",
             )
         ]
@@ -1803,7 +1805,7 @@ def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[P
         return [
             Problem(
                 path="credit",
-                message=f"The workflow does not keep {name} between 0 and 1, so it cannot be "
+                message=f"The workflow does not keep {said} between 0 and 1, so it cannot be "
                 "what a test earns. Choose another value.",
             )
         ]
@@ -1811,7 +1813,7 @@ def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[P
         return [
             Problem(
                 path="credit",
-                message=f"For {name}, lower is better, so it cannot be what a test earns. Choose "
+                message=f"For {said}, lower is better, so it cannot be what a test earns. Choose "
                 "another value.",
             )
         ]
@@ -1820,6 +1822,14 @@ def _credit(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[P
 
 def _per_test_number(value: ReportedValue) -> bool:
     return value.per_test and value.type is Type.NUMBER
+
+
+def _said(name: str, value: ReportedValue | None) -> str:
+    """A reported value as a sentence names it: by the title the workflow's
+    report gives it, "run time", or by its key where it gives none (M58).
+    """
+    title = value.meaning.title if value is not None and value.meaning is not None else None
+    return name if title is None else in_sentence(title)
 
 
 def _credit_notes(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> list[str]:
@@ -1840,13 +1850,13 @@ def _credit_notes(task: TaskDefinition, values: Mapping[str, ReportedValue]) -> 
         ):
             if task.credit is None:
                 notes.append(
-                    f"The workflow reports {name}, a score from 0 to 1 for each test, but the "
-                    "task does not use it: an accepted test earns 1."
+                    f"The workflow reports {_said(name, value)}, a score from 0 to 1 for each "
+                    "test, but the task does not use it: an accepted test earns 1."
                 )
             else:
                 notes.append(
-                    f"The workflow reports {name}, a score from 0 to 1 for each test, but the "
-                    "task counts another value instead."
+                    f"The workflow reports {_said(name, value)}, a score from 0 to 1 for each "
+                    "test, but the task counts another value instead."
                 )
     return notes
 

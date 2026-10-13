@@ -1,13 +1,20 @@
-"""A contest's or a task's files, read and written through the port as the
-organiser doing it, so the history of each file is theirs and the forge's own
-permission check stays underneath the platform's. Reading needs the observer
-role at the place and writing the manager role.
+"""A contest's or a task's files, read through the port as the organiser
+doing it, so the forge's own permission check stays underneath the
+platform's for every read, and written by the platform with the organiser as
+the change's author, so the history of each file is theirs. A contest's and
+a task's files are written by the platform alone at the forge (#443): no
+role there writes them, so everything that changes them comes through the
+package, an organiser's edits through here and `publications.save`, and the
+checks here are the only gate for those. Reading
+needs the observer role at the place and writing the manager role.
 
 Every write carries the token the file was read with, and a file that has
 moved since is `Conflict`, with nothing written. A write to a contest's
 `contest.yaml` is validated first and refused whole when it is not valid,
-or when it moves a task's timeline behind what rows already did or puts a
-worth or a due on a task that gives no points (`timelines.check_contest`),
+or when it moves a task's timeline behind what rows already did, puts a
+worth or a due on a task that gives no points, or opens the contest while a
+task it lists is not published or its statement is not written
+(`timelines.check_contest`),
 or when a board asks what a covered task's latest publication does not give
 or a task's marks fall below what a row holds (`boards.check_contest`),
 and a manager's change to one of its admin-only keys is refused naming each.
@@ -51,6 +58,7 @@ from forge.domain.definitions import (
     parse_contest,
 )
 from forge.domain.errors import AdminOnly, NotFound, PortError
+from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, VersionId, is_commit
 from forge.domain.roles import Role, ScopeKind, holds, scope_of_place, task_scope
 from forge.domain.uploads import Door, may_be_pointer, refuse_pointer, upload_info
@@ -58,7 +66,7 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, publications, published, timelines
+from forge.services import boards, places, publications, published, timelines
 from forge.services.access import Organiser, require
 from forge.services.publications import Draft, Published
 
@@ -267,15 +275,21 @@ async def write(
         if problems:
             raise InvalidDefinition(CONTEST_FILE, problems)
     version = await ctx.forge.content.write_file(
-        organiser.identity,
+        PLATFORM,
         contest,
         path,
         content,
         message=message or f"Update {path}",
         expected=expected,
+        author=organiser.user.id,
     )
     if path == CONTEST_FILE:
         published.forget_contests(ctx)
+        # A task put back by hand gets its places as `put_back` makes them.
+        for entry in after.tasks:
+            old = standing.entry(entry.id) if standing is not None else None
+            if old is not None and old.withdrawn and not entry.withdrawn:
+                places.ahead_at(ctx, TaskId(f"{contest}/{entry.id}"))
     log.info("files.written", place=place, path=path, version=version, user_id=organiser.user.id)
     return Written(version, tuple(notes))
 

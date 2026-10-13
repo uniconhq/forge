@@ -25,7 +25,7 @@ from forge.domain.ids import TaskId
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.runtime.setup import Setup
-from forge.services import entrants, places, uploads
+from forge.services import entrants, files, places, uploads
 from forge.services.turns import Turns
 from forge.settings import Settings
 from forge.testing import APP_URL, FORGE_URL, logged
@@ -219,6 +219,24 @@ async def test_a_task_released_later_gets_its_places_ahead_once_it_is_released(
     await setup.settle()
 
     assert await _writers(setup, acme.fake, sum_task, 20) == {20}
+
+
+async def test_a_task_put_back_by_hand_gets_its_places_ahead_as_put_back_does(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    running = RUNNING.format(visibility="everyone")
+    withdrawn = running.replace("  - id: sum\n", "  - {id: sum, withdrawn: true}\n")
+    await write_contest(acme.fake, withdrawn)
+    await publish(setup, acme, sum_task)
+    await _approve(setup, acme, 8)
+    await setup.settle()
+    assert _made(acme.fake) == []
+    current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
+
+    await files.write(setup, acme.ada, SPRING, "contest.yaml", running.encode(), current.token)
+    await setup.settle()
+
+    assert await _writers(setup, acme.fake, sum_task, 8) == {8}
 
 
 async def test_a_draft_contest_gets_no_places_ahead(

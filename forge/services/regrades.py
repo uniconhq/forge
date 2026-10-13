@@ -8,8 +8,12 @@ submission by its latest attempt of it, compared with the result that
 counted for the submission when the regrade began: the latest earlier
 attempt that finished with one. Both are scored as organisers see them,
 every group, nothing held back, the late factor applied, by the scoring the
-boards use (`scores.Scorer`), and `forge.domain.regrades.change_of` says
-what changed.
+boards use (`scores.Scorer`), the earlier one as it counted just before the
+regrade began (`scores.Before`, `forge.domain.regrades.counted_under`), the
+new one under the publication the regrade grades against, against the
+results that counted by its last attempt, so a later save of points or a
+later better best leaves a finished regrade reading as it did; and
+`forge.domain.regrades.change_of` says what changed.
 
 - `latest` gives, for each task of the contest the organiser observes, its
   latest regrade with its counts by change, how many it graded, and whether
@@ -18,7 +22,7 @@ what changed.
   broken checker from an organiser who was away;
 - `dismiss` takes a task's regrade off the contest's page, for a manager of
   the task;
-- `gradings` gives a regrade's gradings, one per submission, its latest
+- `gradings_of` gives a regrade's gradings, one per submission, its latest
   attempt of the regrade, as the feed gives gradings, each with what the
   regrade did to it (`GradingRecord.change`), narrowed to one change and
   to a member's or an entrant's submissions when asked.
@@ -43,12 +47,13 @@ from forge.domain.grading import UNFINISHED, GradingStatus
 from forge.domain.ids import ContestId, PublicationId, TaskId, WorkspaceId
 from forge.domain.regrades import (
     GRADED,
-    Change,
+    ChangeKind,
     Compared,
     RegradeCause,
     Side,
     change_of,
     counted,
+    counted_under,
 )
 from forge.domain.roles import Role, contest_id_of, task_scope
 from forge.domain.scoring import ACCEPTED, EVERYTHING, everywhere
@@ -87,7 +92,7 @@ class Summary:
     total: int
     graded: int
     running: bool
-    counts: Mapping[Change, int]
+    counts: Mapping[ChangeKind, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,7 +147,7 @@ async def latest(ctx: Context, organiser: Organiser, contest: ContestId) -> tupl
                 ),
                 total=len(read),
                 graded=sum(1 for change in changes if change in GRADED),
-                running=Change.RUNNING in changes,
+                running=ChangeKind.RUNNING in changes,
                 counts=counted(changes),
             )
         )
@@ -173,7 +178,7 @@ async def gradings_of(
     contest: ContestId,
     regrade: uuid.UUID,
     *,
-    change: Change | None = None,
+    change: ChangeKind | None = None,
     user: str | None = None,
     entrant: uuid.UUID | None = None,
     limit: int = 100,
@@ -279,7 +284,34 @@ async def _read(
     )
     task = TaskId(regrade.task_id)
     current = await published.task(ctx, task, settings) if settings is not None else None
-    scorer = scores.Scorer(ctx, current) if current is not None else None
+    scorer = (
+        scores.Scorer(
+            ctx,
+            current,
+            scores.Before(
+                PublicationId(regrade.publication_id), max(row.queued_at for row in mine)
+            ),
+        )
+        if current is not None
+        else None
+    )
+    stood = (
+        scores.Scorer(
+            ctx,
+            current,
+            scores.Before(
+                counted_under(
+                    RegradeCause(regrade.cause),
+                    PublicationId(regrade.publication_id),
+                    current.publications,
+                ),
+                regrade.started_at,
+                regrade.id,
+            ),
+        )
+        if current is not None
+        else None
+    )
     factors = await _factors(ctx, current, settings, builtins.list(newest.values()))
     found: builtins.list[_Read] = []
     for submission, row in newest.items():
@@ -288,13 +320,13 @@ async def _read(
             each for each in attempts[submission] if each.attempt < first
         )
         status = gradings.status_of(ctx, row, gone)
-        before = await _side(scorer, earlier, factors) if earlier is not None else None
+        before = await _side(stood, earlier, factors) if earlier is not None else None
         if status in UNFINISHED:
-            compared = Compared(Change.RUNNING, before, None)
+            compared = Compared(ChangeKind.RUNNING, before, None)
         elif status is GradingStatus.OVER_LIMIT:
-            compared = Compared(Change.OVER_LIMIT, before, None)
+            compared = Compared(ChangeKind.OVER_LIMIT, before, None)
         elif not gradings.good(row):
-            compared = Compared(Change.FAILED, before, None)
+            compared = Compared(ChangeKind.FAILED, before, None)
         else:
             now = await _side(scorer, row, factors)
             compared = Compared(change_of(before, now), before, now)

@@ -139,6 +139,18 @@ async def test_a_task_nobody_submitted_to_is_removed_and_the_letters_after_it_mo
     await make_task(setup, acme, "product")
 
 
+async def test_the_change_to_the_settings_names_the_manager_who_took_the_task_out(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await three(setup, acme)
+    manager = await _manager(setup, acme)
+
+    await take_out(setup, manager, PRODUCT, TakeOut.REMOVE)
+
+    latest, *_ = await files.history(setup, acme.ada, SPRING, "contest.yaml")
+    assert latest.author_id == 7
+
+
 async def test_a_task_with_a_submission_is_withdrawn_and_hidden_from_entrants_until_put_back(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
@@ -234,6 +246,22 @@ async def test_a_withdrawal_confirmed_for_a_task_nobody_submitted_to_is_refused(
     assert ("acme", "spring.sum.task") in acme.fake.state.repos
 
 
+async def test_a_task_the_settings_do_not_list_is_not_withdrawn_and_says_why(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await three(setup, acme)
+    manager = await _manager(setup, acme)
+    await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
+    await write_contest(acme.fake, contest().replace("  - id: sum\n", ""))
+
+    with pytest.raises(TakeOutRefused) as refused:
+        await take_out(setup, manager, entered.task, TakeOut.WITHDRAW)
+
+    assert refused.value.detail == (
+        "The contest's settings do not list sum. Add an entry for it to their tasks by hand first."
+    )
+
+
 async def test_a_task_a_leaderboard_names_is_not_removed_but_may_be_withdrawn(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
@@ -300,6 +328,7 @@ async def test_a_save_that_writes_withdrawn_by_hand_reads_as_the_action_does(
     withdrawn, and putting sum back by hand is refused there."""
     await three(setup, acme)
     manager = await _manager(setup, acme)
+    await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
     by_time = "leaderboards:\n  - {name: Fastest, who: everyone, tasks: [sum], order: [speed]}\n"
     withdrawn = contest(by_time).replace("  - id: sum\n", "  - id: sum\n    withdrawn: true\n")
     current = await acme.fake.content.read_file(PLATFORM, SPRING, "contest.yaml")

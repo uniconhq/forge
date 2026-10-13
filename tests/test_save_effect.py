@@ -81,6 +81,20 @@ def test_a_moved_total_names_the_group_with_its_old_points_and_scores_every_boar
     )
 
 
+def test_a_mix_whose_parts_move_together_says_its_points_alone() -> None:
+    # Raising a hand-set mix's points, each part in step, changes no rule:
+    # only the points line is said, never how the group earns.
+    before = _task("  main: {each: 60, pass: 40, pass_at: 0.5}\n")
+    after = _task("  main: {each: 66, pass: 44, pass_at: 0.5}\n")
+
+    effect = _effect(after, before=before)
+
+    assert effect.scores == (
+        "Points: main is now worth up to 110 (was 100).",
+        "Every result is scored again, and the leaderboards Standings and Live with them.",
+    )
+
+
 def test_a_task_with_a_set_worth_names_each_groups_share_of_it() -> None:
     worth = parse_contest(
         """\
@@ -137,12 +151,35 @@ def test_credit_weights_and_show_are_each_said_and_a_show_change_moves_a_live_bo
 
     assert effect.scores == (
         "main weighs its tests differently.",
-        "What each test earns: its score from 0 to 1 (was all or nothing, as it passes or fails).",
+        "What each test earns: the fraction it reports, from 0 to 1 (was all or nothing, as it "
+        "passes or fails).",
         "Results of large shown right away (was once the task closes).",
         "Every result is scored again, and the leaderboards Standings and Live with them.",
         "A change to when entrants see results changes what the leaderboard Live counts of sum.",
     )
     assert effect.results_change is True
+
+
+def test_what_a_test_earns_names_the_value_by_its_title() -> None:
+    before = _task("  main: {each: 100}\n", extra="credit: {relative: memory_kb}\n")
+    after = _task("  main: {each: 100}\n", extra="credit: {relative: time_ms}\n")
+
+    effect = effect_of(
+        "sum",
+        parse_task(before),
+        parse_task(after),
+        CONTEST,
+        changes=(),
+        regrades=0,
+        graded=True,
+        read=NOTHING_READ,
+        titles={"time_ms": "Run time", "memory_kb": "Memory used"},
+    )
+
+    assert effect.scores[0] == (
+        "What each test earns: its run time against the best any entrant reached (was its "
+        "memory used against the best any entrant reached)."
+    )
 
 
 def test_a_removed_group_and_the_submission_limits_are_said_and_the_limits_move_no_result() -> None:

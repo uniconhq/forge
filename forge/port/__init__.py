@@ -13,7 +13,9 @@ one of five typed errors: `NotFound`, `Forbidden`, `Conflict`, `Rejected` and
 reaches the package only as `Unavailable` once they are used up. Operations
 done for a person take the identity the call is made under, so the host
 records the change as theirs and enforces their permissions underneath the
-platform's own.
+platform's own. A contest's and a task's files are the exception (#443):
+the platform alone writes them, naming the organiser who saved as the
+change's author, so the package's role checks are the only gate there.
 """
 
 from typing import Protocol, runtime_checkable

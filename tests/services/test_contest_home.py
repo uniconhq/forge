@@ -157,7 +157,7 @@ async def test_a_task_page_gives_the_published_statement_caps_and_form(
     sum_task = TaskId("acme/spring/sum")
     statement = await acme.fake.content.read_file(PLATFORM, sum_task, "statement.md")
     await acme.fake.content.write_file(
-        acme.ada.identity,
+        PLATFORM,
         sum_task,
         "statement.md",
         b"A draft nobody published.\n",

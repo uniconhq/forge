@@ -87,9 +87,10 @@ forge/api/
                 OrgProfile read returns
   contests.py   create, list, and contest_id_of, the id of the contest a scope
                 is in
-  tasks.py      create, list, state, standing, the TaskState state returns,
-                the TaskStanding and Timeline standing returns, and
-                task_id_of, the id of the task a scope names
+  tasks.py      create, list, state, standing, take_out, put_back, the
+                TaskState state returns, the TaskStanding and Timeline
+                standing returns, the TakeOut and PutBack the last two
+                return, and task_id_of, the id of the task a scope names
   workflows.py  create, listing, view, read_version, save, create_version,
                 check, set_visibility, share, unshare, copy, combine,
                 primitives, and the NewWorkflow, WorkflowSummary,
@@ -98,9 +99,9 @@ forge/api/
   files.py      read, tree, history, write, rollback, write_upload, download,
                 and the File, TreeEntry, UploadInfo, EntryKind and Change
                 they return
-  publications.py  save, list, workflow_form, and the Published, Draft,
-                Publication, WorkflowForm, DeclaredInput and DeclaredField
-                they return
+  publications.py  save, list, workflow_form, and the Published, SaveEffect,
+                Draft, Publication, WorkflowForm, DeclaredInput and
+                DeclaredField they return
   release.py    of_task, and the TaskRelease it returns with its Closed reason
   entrants.py   register, mine, invite, withdraw_invite, leave, rename, list,
                 approve, reject, reopen, remove, extend, organise_rename,
@@ -109,6 +110,7 @@ forge/api/
                 they return, with its Status, WayKind and Locks
   contest_home.py  contests, home, task, public_file, and the ContestSummary,
                 ContestHome, TaskEntry, TaskPage and PublicFile they return,
+                the BoardPoints and Points a task's points per board are,
                 PUBLIC_MOST, the most of a public file served, with the Limits and Rate a
                 page carries, the ContestantInput entries and their InputType
                 a submit panel is built from, and the State and
@@ -122,15 +124,16 @@ forge/api/
   announcements.py  post, edit, close, reopen, manage, contest, task, and the
                 Announcement and AnsweredQuestion they return
   clarifications.py  ask, mine, follow_up, inbox, of_contest, reply, mark,
-                unmark, answer_publicly, and the Clarification and Message
-                they return
+                unmark, answer_publicly, and the Clarification, Message,
+                AnnouncementLink and PublicAnswer they return
   live.py       stream, the nudges one session hears, and the Nudge and
                 NudgeKind it yields
   uploads.py    slot, task_file_slot, complete, door, the Slot a slot is, the
                 Upload complete returns with its UploadStatus, and the Door
                 the proxy is answered with
-  submissions.py  submit, mine, one, files, download, the SubmittedInput
-                submit takes, and the Submission, Result, GroupShown, Points,
+  submissions.py  submit, mine, one, organised, files, download, the
+                SubmittedInput submit takes, and the Submission, Result,
+                SubmissionState, GroupShown, Points, ValueMeaning, Fold,
                 SubmittedFiles, GradingStatus and Show they return
   boards.py     seen, organised, held, mark, unmark, written, and the
                 Standings, Key, Column, NotInView, Ranked, Cell,
@@ -139,7 +142,7 @@ forge/api/
                 queue_depth, and the GradingRecord, Rejudged, FeedEntry,
                 Submitter, QueueDepth and GradingStatus they return; list
                 and feed both give FeedEntry
-  regrades.py   latest, dismiss, gradings_of, and the Summary, Change,
+  regrades.py   latest, dismiss, gradings_of, and the Summary, ChangeKind,
                 Compared, Side and RegradeCause they return
   runs.py       config, envelope, callback, the InboundRequest config takes
                 and the InboundAnswer it returns, GradingStatus, and CI_CONFIG_PATH,
@@ -256,11 +259,27 @@ without a request, since a path would resolve it away.
 Operations done for a person take the identity the call is made under, so the
 host records the change as theirs and enforces their permissions underneath
 the platform's own: a submission is committed by the contestant, a person's
-roles are read with their own credential, and the platform's token never makes
-a change in anyone's name. The host's permission for a role is `write` for
+roles are read with their own credential, and everything an organiser reads
+is read as them. A contest's and a task's files are the exception (#443):
+the platform alone writes them at the forge, so a change there goes through
+the package's save and its checks and no role at the forge can push past
+them, admins included. Each such change is written by the platform's
+account with the organiser as its author and committer, by their name and
+the address their account has, by which the host knows the commit for
+theirs, so the history stays theirs; the package's role checks are the
+only gate for those writes, and each refuses before anything is written.
+The host's permission for a role is `write` for
 admin and manager alike and `read` for observer, never a repository admin,
 since a repository admin may delete a tag's protection; the package holds the
-difference between admin and manager. Making orgs, contests, tasks and
+difference between admin and manager. `write` is still what a team needs at
+a contest and its tasks: for an organiser's upload into a task's large-file
+store (below, Uploads), and for the threads, which are the repository's
+issues; a contest's and a task's default branch then refuses a push or a
+merge from anyone but the platform's account, repository admins included
+(`content.secure`; Forgejo: the branch protection's push and merge
+allow-lists name the platform's account alone, applied to admins). Another
+branch or a tag other than a publication's someone pushes there is never
+read. Making orgs, contests, tasks and
 workspaces, which includes creating every repository since the host lets no
 one else create one, and naming protected versions are done as the platform
 account, the account
@@ -274,12 +293,14 @@ A contest or a task is made bare, with its starter files, by
 gives it the rest: the roles of its contest and, for a task, of the task
 itself reach it (Forgejo: the contest's three teams and the task's three
 attached to the repository, so a contest's roles reach its tasks), its
-history cannot be rewritten (a protected `main`, which Forgejo keeps from
-every force-push), and for a task its publications are reserved for the
+files are written by the platform alone and its history cannot be rewritten
+(a protected `main` that only the platform's account may push or merge to,
+and which Forgejo keeps from every force-push), and for a task its publications are reserved for the
 platform account (the `published/*` tag protection). `secure` checks each
 first and puts back only what is missing, so it can be run again, and says
 how many it put back. `content.save_files` writes several files as one
-change as the person saving, a file given as none removed, each carrying the token it was read with, and refuses the
+change, as the platform with the organiser who saved named as its `author`,
+a file given as none removed, each carrying the token it was read with, and refuses the
 whole change as `Conflict` when any has moved; `content.list_files` gives
 every file of a place at a version with its token, the same for the same
 content, which is how a save compares data files without reading them.
@@ -570,7 +591,7 @@ hosting process calls are actions, marked `@action` from
 | `sign_in` | `complete` |
 | `orgs` | `create`, `create_by_operator`, `update`, `read` |
 | `contests` | `create`, `list` |
-| `tasks` | `create`, `list`, `state`, `standing` |
+| `tasks` | `create`, `list`, `state`, `standing`, `take_out`, `put_back` |
 | `files` | `read`, `tree`, `history`, `write`, `rollback`, `write_upload`, `download` |
 | `publications` | `save`, `list`, `workflow_form` |
 | `release` | `of_task` |
@@ -848,9 +869,10 @@ package enforces deadlines with.
 ## Files
 
 `files.read`, `tree` and `history` need the observer role at the contest or
-task, and `write` and `rollback` the manager role; each goes through the
+task, and `write` and `rollback` the manager role; a read goes through the
 port as the organiser's own identity, so the forge's own check stays
-underneath and the history is theirs. `history` names each change's author
+underneath it, and a write is made by the platform with the organiser as
+its author (#443), so the history is theirs. `history` names each change's author
 by username as well as id (`Change.author`, which Forgejo's commits
 carry; an author given by id alone is looked up once), so
 someone who no longer holds a role at the place is still named, to those
@@ -875,7 +897,14 @@ published and past its start and the task's `release_at` passed, so a
 contest that was never published moves freely. A contest that has started,
 saved before as `published` or `archived`, never goes back to `draft`
 (#438), and its `entrants` no longer asks more of a team, allows fewer, or
-moves between everyone entering alone and in teams. When the settings saved
+moves between everyone entering alone and in teams. The save that opens the
+contest, from `draft` to `published`, is refused while a task it lists, but
+a withdrawn one, has no publication or its latest publication's statement
+is not written (C5, M57), the grounds the organisers' opening checklist
+blocks on, each task at the `state` line by its letter and name: "A · sum:
+it is not published yet.", "A · sum: its statement is not written yet.".
+Only that save: a task added or saved once the contest is open keeps no
+later save of its settings from being made. When the settings saved
 before do not read, these are checked against the latest earlier version
 that does. A task reveals once it has
 closed for every row, with the longest extension in force on it: an
@@ -1004,8 +1033,9 @@ each file under it, named one by one.
    `keep_as_draft=True` is written as a draft that says what it held back
    and publishes nothing, on any save, valid or not, started contest or not.
 4. The organiser's files and `plans/plan.json` are written as one change,
-   as the organiser; any other file under `plans/` is removed in the same
-   change.
+   by the platform with the organiser as its author, since the platform
+   alone writes a task's files at the forge (#443); any other file under
+   `plans/` is removed in the same change.
 5. That change is named as the next publication, as the platform, with a
    note saying whether it changed how the task grades and what, which
    workflow each workflow name was, by the forge's own id for it, and what
@@ -1453,7 +1483,8 @@ as the organiser, "Answered publicly in the announcement" and its title,
 carrying a line the platform adds that names the announcement, which the
 question's readers alone see and are served as the message's
 `announcement` (its task, none for the contest's own, and its number).
-Only a message an organiser wrote naming an announcement of the
+It answers with both, the announcement and the question as it now stands
+with that message (`PublicAnswer`). Only a message an organiser wrote naming an announcement of the
 question's own contest is read so. The message is written last: a retry
 after a failure part way finds the announcement already answering the
 question that no message names, brings its title and text to the ones
@@ -1577,8 +1608,9 @@ code of its own: the task is open by the server's clock plus the
 contestant's extension (`task_closed` with its `reason`, `task_withdrawn`
 for a task withdrawn from its contest, or `archived`); they
 are approved (`not_approved`); they have submissions left (`submission_limit`),
-counted from the submissions at the forge but for the ones staff
-cancelled; the task's rate holds
+counted from the submissions at the forge but for the ones with no result
+whose latest attempt staff cancelled, ended over the limit or reads as a
+system error (`gradings.place_of`); the task's rate holds
 (`rate_limited`, with `retry_at`), counted from the grading rows within its
 window; every upload named is theirs for this task (`upload_not_yours`), a
 checked file no submission used (`upload_not_ready`), and each and all of
@@ -1827,8 +1859,16 @@ the CI as the org's account, signing it in again once if the CI refuses it,
 since the CI's database restored from a dump taken at another moment, or
 alone, may not know a task made since; a task the CI knows is unchanged,
 and one it cannot activate is logged as `reconcile.activation_failed` and
-its gradings are still inserted. It logs what it did as `reconcile.done`,
-with how many tasks it activated that the CI did not know.
+its gradings are still inserted. First of all, it secures every contest
+and task of every org again (`content.secure`), putting back what keeps
+each right where it is missing or wrong: the roles that reach it, its
+history kept from being rewritten, its files written by the platform alone
+(#443), and a task's publications reserved for the platform; so the
+operator runs it once after an upgrade too, which brings places made
+before a change to those up to it, and a place the forge fails on is
+logged as `reconcile.secure_failed` and the rest still run. It logs what it
+did as `reconcile.done`, with how many tasks it activated that the CI did
+not know and how many places it secured again.
 
 **The organiser's controls.** Each takes the `Organiser` from
 `access.organiser` and needs manager at the grading's task; a grading whose
@@ -1994,7 +2034,12 @@ attempt of it (`GradingRecord.regrade`, `Rejudged.regrade`). Each is
 compared with the result that counted for the submission when the regrade
 began, the latest earlier attempt that finished with one, both scored as
 organisers see results, every group, nothing held back, the late factor
-applied, by the boards' scoring (`forge.domain.regrades.change_of`): `up`
+applied, by the boards' scoring, the earlier one as it counted just before
+the regrade began: under the scoring of the publication then the latest
+(the regrade's own for a rejudge, the one before the save's for a save's,
+`counted_under`), and under relative credit against the best among the
+results that counted then (`scores.Before`). What changed
+(`forge.domain.regrades.change_of`) is `up`
 or `down` in points; `stopped`, now stopped before its tests where that
 result was not (a compile error, on the classic workflow); `unchanged`;
 `new`, no earlier result, or one of the two not scored since its
@@ -2120,10 +2165,10 @@ passed), carry nothing beyond the detail. The refusals of an upload or a submit 
 
 ## The tables
 
-Nine tables, keyed by UUID v7 but for `names`, keyed by the id it names,
+Ten tables, keyed by UUID v7 but for `names`, keyed by the id it names,
 with every enumeration as `text` under a `CHECK`: `sessions`,
-`entrants`, `entrant_members`, `gradings`, `uploads`, `org_accounts`,
-`names`, `invites` and `marks`. They
+`entrants`, `entrant_members`, `gradings`, `regrades`, `uploads`,
+`org_accounts`, `names`, `invites` and `marks`. They
 hold what a forge cannot: of users, orgs, contests and tasks only the names
 people gave the last three (above), the rest read live. `org_accounts` is
 one row per org, by the org's id, its service account's
@@ -2148,7 +2193,8 @@ workspace, the member who submitted, the submission with
 its number and the exact version its files went in with, when it was
 submitted, the publication, the attempt, and the idempotency key
 of the submit that made it; its status is one of `queued`, `dispatched`,
-`running`, `done`, `cancelled` and `system_error`. `queued_at` is when it
+`running`, `done`, `cancelled`, `system_error` and `over_limit` (0020).
+`queued_at` is when it
 was queued, `run_id`, `dispatched_at`, `started_at` and `deadline_at` are
 its run, when it was started, when its harness fetched the envelope and its
 deadline, `progress` the last progress reported, `result` and `log_key`
@@ -2156,7 +2202,14 @@ what came back, `error` a line for staff, and `cancel_reason` the sentence
 staff cancelled it with, which its contestant reads, on every submission
 staff cancelled (a stock one on those cancelled before 0013) and on no
 attempt a rejudge replaced, and `automatic` marks the attempt the platform
-made by itself when the one before it failed (0019). An `uploads` row is one
+made by itself when the one before it failed (0019).
+`submission_limit` is the task's `submissions.max` an `over_limit` attempt
+ended against (0020), and `regrade_id` the regrade of many the attempt
+belongs to, one it made or a retry of one of those (0021). A `regrades`
+row is one rejudge of a task, or one regrade a save started (0021): the
+task, the publication its attempts grade against, its `cause`, `rejudge`
+or `save`, who started it and when, and who took its summary off the
+contest's page and when. An `uploads` row is one
 browser upload: its owner, its purpose, task and input (or, for a task's
 own file, the path it goes in the task), name, type, size, digest, status,
 the submission that consumed it, and when its lifetime ends. An `invites` row is one
@@ -2170,9 +2223,10 @@ submission's number, and who marked it.
 under `forge/db/alembic/` and exits. A deployment runs it before the host
 starts, from the host's image, which has the package and its command
 installed; the host has no migrate command of its own. `unicon-forge
-reconcile` activates every published task at the CI and gives every
-submission at the forge without gradings its gradings (above), and the
-operator runs it once after a restore.
+reconcile` secures every contest and task again, activates every
+published task at the CI and gives every submission at the forge without
+gradings its gradings (above), and the operator runs it once after a
+restore, and once after an upgrade.
 
 There is no jobs table, and nothing in the package runs on a timer. Each
 piece of upkeep is done by a request that already touches what it keeps:
