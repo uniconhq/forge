@@ -10,6 +10,7 @@ An answer made public is an announcement every contestant reads, pointing
 at the question, which stays private.
 """
 
+import asyncio
 from dataclasses import replace
 
 import pytest
@@ -30,6 +31,7 @@ from tests.services.conftest import (
     organiser,
     segment,
     signed_in,
+    write_contest,
 )
 
 
@@ -174,6 +176,33 @@ async def test_an_answer_made_public_points_at_the_question_which_stays_private(
     assert len(await clarifications.mine(setup, entered.session, SPRING)) == 1
 
 
+async def test_a_public_answer_about_a_withdrawn_task_goes_on_the_contest_where_entrants_read_it(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    number = await _ask(setup, entered)
+    settings = await acme.fake.content.read_file(PLATFORM, SPRING, "contest.yaml")
+    withdrawn = settings.content.replace(b"  - id: sum\n", b"  - id: sum\n    withdrawn: true\n")
+    assert withdrawn != settings.content
+    await write_contest(acme.fake, withdrawn.decode())
+
+    public = await clarifications.answer_publicly(
+        setup,
+        acme.ada,
+        SPRING,
+        segment(entered.entrant),
+        number,
+        title="On sum",
+        body="sum was withdrawn: its tests were wrong.",
+    )
+
+    assert public.announcement.where.path == "acme/spring"
+    [read] = await announcements.contest(setup, entered.session, SPRING)
+    assert (read.title, read.answers_question) == ("On sum", True)
+    assert [message.announcement for message in public.question.messages] == [
+        clarifications.AnnouncementLink(None, public.announcement.number, "On sum")
+    ]
+
+
 async def test_a_public_answer_leaves_a_message_naming_it_and_marks_the_question_answered(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
@@ -194,7 +223,7 @@ async def test_a_public_answer_leaves_a_message_naming_it_and_marks_the_question
         from_asker=False,
         body="Answered publicly in the announcement ‘On n’",  # noqa: RUF001
         at=mine.messages[0].at,
-        announcement=clarifications.AnnouncementLink("sum", public.announcement.number),
+        announcement=clarifications.AnnouncementLink("sum", public.announcement.number, "On n"),
     )
     # The asker's entrant reads it with the question; the organisers too.
     assert mine.messages == (said,)
@@ -228,7 +257,7 @@ async def test_a_public_answer_may_leave_the_question_open(
 
     assert (public.question.answered, public.question.closed) == (False, False)
     assert [message.announcement for message in public.question.messages] == [
-        clarifications.AnnouncementLink("sum", public.announcement.number)
+        clarifications.AnnouncementLink("sum", public.announcement.number, "On n")
     ]
     assert acme.fake.calls_to("mark_answered") == []
 
@@ -255,7 +284,7 @@ async def test_a_public_answer_that_failed_part_way_is_finished_on_retry_not_pos
     [read] = await announcements.task(setup, entered.session, entered.task)
     assert (read.number, read.body) == (public.announcement.number, "n is at most 10^5.")
     assert [message.announcement for message in public.question.messages] == [
-        clarifications.AnnouncementLink("sum", read.number)
+        clarifications.AnnouncementLink("sum", read.number, "On n")
     ]
     # Once the message names it, a second public answer is a new one.
     again = await clarifications.answer_publicly(
@@ -263,6 +292,27 @@ async def test_a_public_answer_that_failed_part_way_is_finished_on_retry_not_pos
     )
     assert again.announcement.number != read.number
     assert len(await announcements.task(setup, entered.session, entered.task)) == 2
+
+
+async def test_a_public_answer_sent_twice_at_once_or_again_after_posts_one_announcement(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    number = await _ask(setup, entered)
+    asker = segment(entered.entrant)
+
+    async def send() -> clarifications.PublicAnswer:
+        return await clarifications.answer_publicly(
+            setup, acme.ada, SPRING, asker, number, title="On n", body="n is at most 10^5."
+        )
+
+    first, second = await asyncio.gather(send(), send())
+    third = await send()
+
+    assert first.announcement.number == second.announcement.number == third.announcement.number
+    assert len(await announcements.task(setup, entered.session, entered.task)) == 1
+    assert [message.announcement for message in third.question.messages] == [
+        clarifications.AnnouncementLink("sum", first.announcement.number, "On n")
+    ]
 
 
 async def test_a_link_the_asker_writes_into_their_own_message_is_not_trusted(
@@ -280,6 +330,25 @@ async def test_a_link_the_asker_writes_into_their_own_message_is_not_trusted(
 
     assert [(message.body, message.announcement) for message in mine.messages] == [
         ("See this.", None)
+    ]
+
+
+async def test_a_public_answers_message_edited_at_the_forge_still_links_with_no_title(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    number = await _ask(setup, entered)
+    workspace = acme.fake.workspaces.workspace_of(SPRING, EntrantOwner(entered.entrant))
+    thread = acme.fake.threads.thread_of(workspace, number)
+    await acme.fake.threads.comment(
+        acme.ada.identity,
+        thread,
+        f"See the contest page.\n\n<!-- unicon:announcement {SPRING}#1 -->",
+    )
+
+    [mine] = await clarifications.mine(setup, entered.session, SPRING)
+
+    assert [(message.body, message.announcement) for message in mine.messages] == [
+        ("See the contest page.", clarifications.AnnouncementLink(None, 1, None))
     ]
 
 

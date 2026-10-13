@@ -229,6 +229,52 @@ def test_a_grading_change_counts_what_runs_again_and_counts_the_boards_again(
     assert effect.scores == ("The leaderboards Standings and Live are counted again.",)
 
 
+def test_a_grading_change_that_regrades_none_of_the_submissions_made_says_so() -> None:
+    # Every submission made was cancelled by staff: there are some, and none
+    # is graded again.
+    effect = effect_of(
+        "sum",
+        parse_task(BEFORE),
+        parse_task(BEFORE),
+        CONTEST,
+        changes=("The input of test 1 in the group main changed.",),
+        regrades=0,
+        graded=False,
+        submitted=True,
+        read=NOTHING_READ,
+    )
+
+    assert effect.runs_again == (
+        "No submission runs again: none of those made is graded again.",
+        "The input of test 1 in the group main changed.",
+    )
+
+
+def test_a_latest_publication_that_no_longer_reads_is_not_taken_for_a_first_one() -> None:
+    effect = effect_of(
+        "sum",
+        None,
+        parse_task(BEFORE),
+        CONTEST,
+        changes=(),
+        regrades=0,
+        graded=True,
+        unread=True,
+        read=ReadChanges(statement=True),
+    )
+
+    assert effect.runs_again == (
+        "No submission runs again: the tests and how they run are the same.",
+    )
+    assert effect.scores == (
+        "The latest publication's settings no longer read, so its scores cannot be compared: "
+        "every result is scored as this save says.",
+        "Every result is scored again, and the leaderboards Standings and Live with them.",
+    )
+    assert effect.reading == ("The statement changes.",)
+    assert effect.results_change is True
+
+
 def test_what_entrants_read_is_the_title_the_statement_and_the_files_beside_it() -> None:
     effect = _effect(
         _task("  main: {each: 100}\n  large: {pass: 50, show: after_close}\n", name="Sum of two"),

@@ -5,15 +5,17 @@ it (P1); `secret` is an input's word; every primitive declares its outcome;
 and the keys and words the format no longer has are refused at their paths.
 """
 
+import json
 from collections.abc import Mapping
+from typing import Any
 
 import pytest
 
-from forge.domain.contracts import violation
+from forge.domain.contracts import schema_text, violation
 from forge.domain.definitions import parse_task
 from forge.domain.grading import PLATFORM_MACHINE
 from forge.domain.plans import compile_plan
-from forge.domain.primitives import Port, PrimitiveDeclaration, parse_primitive
+from forge.domain.primitives import STEP_OUTCOMES, Port, PrimitiveDeclaration, parse_primitive
 from forge.domain.types import Type
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml
 from forge.testing import PLACEHOLDER_DIGEST, PRIMITIVES
@@ -155,6 +157,22 @@ def test_each_seeded_primitive_says_what_each_outcome_it_reports_means() -> None
         "diff-check": ["accepted", "wrong_answer"],
     }
     assert (said["compile"] or {})["accepted"] == "the source compiles"
+
+
+def test_the_outcomes_a_step_may_report_are_the_contracts_own_in_their_order() -> None:
+    def outcomes(node: Any) -> list[Any]:
+        if isinstance(node, list):
+            return [found for each in node for found in outcomes(each)]
+        if not isinstance(node, dict):
+            return []
+        held = node.get("properties", {}).get("outcomes", {}).get("propertyNames", {})
+        return ([held["enum"]] if "enum" in held else []) + outcomes(list(node.values()))
+
+    result = json.loads(schema_text("result"))
+    [named] = outcomes(json.loads(schema_text("primitive")))
+
+    assert tuple(named) == STEP_OUTCOMES
+    assert tuple(result["$defs"]["outcome"]["enum"]) == (*STEP_OUTCOMES, "skipped", "system_error")
 
 
 def test_outcomes_name_what_a_step_can_report_each_with_a_line() -> None:

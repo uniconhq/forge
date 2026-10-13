@@ -7,7 +7,9 @@ The forge lets nobody but the platform create a repository: people have no
 personal quota and no team may create under an org. So every repository is
 made by the platform account, under an org it owns or, through the
 administrator's endpoint, under the person who asked for it, who owns it
-from then on. What goes into it is written as the caller. What needs a
+from then on. What goes into it is written as the caller the service
+names: the platform, with the organiser as author, for a contest's and a
+task's files, and the contestant for a submission. What needs a
 repository admin, the protection, the mark, visibility and collaborators,
 is done as the platform too, since no organiser's team is one.
 """
@@ -16,7 +18,7 @@ import base64
 from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from forge.adapters.git.forgejo.http import (
     MAX_PAGES,
@@ -55,9 +57,13 @@ SEARCH_PATH = "/api/v1/repos/search"
 
 
 class Repos:
-    def __init__(self, http: Http, *, platform_account: str) -> None:
+    def __init__(self, http: Http, *, platform_account: str, public_url: str) -> None:
+        """`public_url` is Forgejo's own, whose host is its `DOMAIN` and so
+        names its `NO_REPLY_ADDRESS`, `noreply.<host>`, unless set apart.
+        """
         self._http = http
         self._platform_account = platform_account
+        self._no_reply = f"noreply.{urlparse(public_url).hostname}"
         self._org_ids: dict[str, int] = {}
 
     async def create(
@@ -128,7 +134,8 @@ class Repos:
         it, so nothing written can be rewritten, and say whether that had to
         be put back. Forgejo has no switch for force-pushes: a protected
         branch refuses them all. Forgejo refuses a second protection of the
-        branch, so one another maker put there meanwhile counts as there.
+        branch, so one another maker put there meanwhile counts as there, and
+        is read as one found.
 
         `platform_only` lets the platform's account alone push or merge to
         the branch, repository admins included (#443): whoever else may write
@@ -148,9 +155,9 @@ class Repos:
                     json={"branch_name": DEFAULT_BRANCH, **wanted},
                 )
             except Forbidden, Conflict:
-                await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}")
-                return False
-            return True
+                found = json_of(await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}"))
+            else:
+                return True
         if not platform_only or all(found.get(key) == value for key, value in wanted.items()):
             return False
         await self._http.call(PLATFORM, "PATCH", f"{path}/{DEFAULT_BRANCH}", json=wanted)
@@ -287,7 +294,7 @@ class Repos:
                 "branch": DEFAULT_BRANCH,
                 "message": message,
                 "files": operations,
-                **_identity(author),
+                **_identity(author, self._no_reply),
             },
         )
         return VersionId(str(json_of(written)["commit"]["sha"]))
@@ -395,7 +402,7 @@ class Repos:
             "content": _encoded(content),
             "message": message,
             "branch": DEFAULT_BRANCH,
-            **_identity(author),
+            **_identity(author, self._no_reply),
         }
         target = f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents/{file_path(path)}"
         if expected is None:
@@ -774,15 +781,20 @@ def _encoded(content: bytes) -> str:
     return base64.b64encode(content).decode()
 
 
-def _identity(author: User | None) -> dict[str, Any]:
+def _identity(author: User | None, no_reply: str) -> dict[str, Any]:
     """The author and committer a change the platform writes for `author`
     names, by which Forgejo knows the commit for theirs: their name and the
-    address their account has, which it matches to them. None for a change
-    of the caller's own, or for a person with no address to name.
+    address Forgejo gives an account that keeps its own private, their
+    username at `no_reply`, which it matches to them as it does their own,
+    so the commit never shows the address they signed up with. None for a
+    change of the caller's own.
     """
-    if author is None or not author.email:
+    if author is None:
         return {}
-    person = {"name": author.name or author.username, "email": author.email}
+    person = {
+        "name": author.name or author.username,
+        "email": f"{author.username.lower()}@{no_reply}",
+    }
     return {"author": person, "committer": person}
 
 

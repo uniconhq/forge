@@ -182,8 +182,9 @@ class ConfirmationRequired(ServiceError):
     would change how the task grades, in words a person reads, `regrades`
     how many submissions the save would grade again, and `results_change`,
     `summary`, `runs_again`, `scores` and `reading` what it does
-    (`domain.save_effect`); the same save sent again with the confirmation
-    publishes it.
+    (`domain.save_effect`), and `asked` the head and latest publication it
+    was worked out from; the same save sent again with the confirmation and
+    `asked` publishes it while neither has moved.
     """
 
     code = "confirmation_required"

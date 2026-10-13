@@ -19,6 +19,7 @@ import json
 from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
+from unittest.mock import ANY
 
 import pytest
 from sqlalchemy import select, update
@@ -38,6 +39,7 @@ from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.plans import PLAN_PATH, Plan
+from forge.domain.publications import write_note
 from forge.domain.roles import Role, RoleGrant, Scope, contest_id_of, task_scope
 from forge.domain.save_effect import SaveEffect
 from forge.domain.submissions import SubmittedInput
@@ -1012,6 +1014,7 @@ async def test_a_grading_change_once_the_contest_has_started_asks_first_and_writ
 
     assert asked.value.code == "confirmation_required"
     assert asked.value.extra == {
+        "asked": ANY,
         "changes": listed,
         "regrades": 0,
         "results_change": False,
@@ -1028,6 +1031,28 @@ async def test_a_grading_change_once_the_contest_has_started_asks_first_and_writ
         True,
         listed,
     )
+
+
+async def test_a_confirmation_stands_only_for_the_files_and_publication_it_was_asked_about(
+    setup: Setup, acme: Acme, running: TaskId
+) -> None:
+    files = {"statement.md": b"Typo fixed.\n"}
+    with pytest.raises(ConfirmationRequired) as first:
+        await _save(setup, acme, running, files)
+    await _save(setup, acme, running, {"tests/main/1/input": b"5 5\n"}, keep_as_draft=True)
+    acme.fake.reset_calls()
+
+    with pytest.raises(ConfirmationRequired) as again:
+        await _save(setup, acme, running, files, confirm=True, asked=first.value.extra["asked"])
+
+    assert again.value.extra["changes"] == ["The input of test 1 in the group main changed."]
+    assert again.value.extra["asked"] != first.value.extra["asked"]
+    assert _written(acme) == []
+    confirmed = await _save(
+        setup, acme, running, files, confirm=True, asked=again.value.extra["asked"]
+    )
+    assert isinstance(confirmed, Published)
+    assert (confirmed.number, confirmed.grading_changed) == (2, True)
 
 
 @pytest.mark.parametrize(
@@ -1076,6 +1101,7 @@ async def test_every_save_that_publishes_once_the_contest_has_started_asks_first
         await _save(setup, acme, running, saved)
 
     assert asked.value.extra == {
+        "asked": ANY,
         "changes": [],
         "regrades": 0,
         "results_change": False,
@@ -1105,6 +1131,26 @@ async def test_a_save_of_what_is_published_asks_nothing_and_a_draft_save_asks_no
     # nothing asks, and what it publishes changes nothing.
     assert isinstance(back, Published), back
     assert back.effect.reading == ("Nothing entrants read changes.",)
+
+
+async def test_a_save_that_changes_only_the_words_of_the_values_publishes_with_no_regrade(
+    setup: Setup, acme: Acme, running: TaskId
+) -> None:
+    # A publication made before the words were frozen notes none.
+    (latest,) = await acme.fake.workspaces.list_publications(running)
+    await acme.fake.workspaces.publish(running, latest.version, write_note(False, ()))
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _save(setup, acme, running, {})
+    saved = await _save(setup, acme, running, {}, confirm=True)
+
+    assert (asked.value.extra["changes"], asked.value.extra["regrades"]) == ([], 0)
+    assert asked.value.extra["reading"] == ["The names and units results give their values change."]
+    assert isinstance(saved, Published)
+    assert (saved.number, saved.grading_changed, saved.regraded) == (3, False, 0)
+    *_, newest = await acme.fake.workspaces.list_publications(running)
+    assert newest.meanings == latest.meanings
+    assert isinstance(await _save(setup, acme, running, {}), Published)
 
 
 async def test_a_grading_change_kept_as_a_draft_is_written_and_not_published(
@@ -1390,6 +1436,7 @@ async def test_the_confirmation_counts_the_submissions_the_save_regrades_and_no_
     confirmed = await _save(setup, acme, entered.task, change, confirm=True)
 
     assert asked.value.extra == {
+        "asked": ANY,
         "changes": ["The way the task grades changed."],
         "regrades": 2,
         "results_change": True,
@@ -1402,6 +1449,46 @@ async def test_the_confirmation_counts_the_submissions_the_save_regrades_and_no_
     assert confirmed.regraded == 2
     assert confirmed.effect.runs_again == (
         "2 submissions are graded again: the way the task grades changed.",
+    )
+
+
+async def test_a_grading_change_with_every_submission_cancelled_says_none_is_graded_again(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _graded(setup, acme, entered)
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Grading).values(
+                status=GradingStatus.CANCELLED, cancel_reason="The machine broke."
+            )
+        )
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _save(setup, acme, entered.task, _with(acme, b"time_limit: 2", b"time_limit: 1"))
+
+    assert asked.value.extra["runs_again"] == [
+        "No submission runs again: none of those made is graded again.",
+        "The way the task grades changed.",
+    ]
+
+
+async def test_a_latest_publication_whose_settings_no_longer_read_is_not_called_the_first(
+    setup: Setup, acme: Acme, running: TaskId, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A publication's settings stop reading when a later forge reads them
+    # more strictly than the one that published them.
+    async def unread(*_: object) -> None:
+        return None
+
+    monkeypatch.setattr(publications, "_definition_of", unread)
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _save(setup, acme, running, {"statement.md": b"Typo fixed.\n"})
+
+    assert (asked.value.extra["runs_again"], asked.value.extra["scores"][0]) == (
+        ["No submission runs again: the tests and how they run are the same."],
+        "The latest publication's settings no longer read, so its scores cannot be compared: "
+        "every result is scored as this save says.",
     )
 
 
@@ -1421,6 +1508,7 @@ async def test_a_save_that_picks_up_a_moved_image_names_it_beside_the_regrade_co
         await _save(setup, acme, entered.task, statement)
 
     assert asked.value.extra == {
+        "asked": ANY,
         "changes": [
             "The way the task grades changed.",
             "A release updated sandbox-run@v2 in place.",

@@ -235,12 +235,13 @@ async def write(
     *,
     message: str | None = None,
     confirm: bool = False,
+    asked: str | None = None,
     keep_as_draft: bool = False,
 ) -> Written | Published | Draft:
     """Write one file, `expected` being the token it was read with or none
     for a new file. A contest's file comes back as the version written, with
-    its boards' notes; a task's as the save's publication or draft, `confirm` and `keep_as_draft`
-    doing what they do for a save.
+    its boards' notes; a task's as the save's publication or draft,
+    `confirm`, `asked` and `keep_as_draft` doing what they do for a save.
     """
     scope = scope_of_place(place)
     require(organiser, scope, Role.MANAGER)
@@ -252,6 +253,7 @@ async def write(
             TaskId(place),
             {path: Edit(content, expected)},
             confirm=confirm,
+            asked=asked,
             keep_as_draft=keep_as_draft,
             message=message,
         )
@@ -305,6 +307,7 @@ async def rollback(
     *,
     message: str | None = None,
     confirm: bool = False,
+    asked: str | None = None,
     keep_as_draft: bool = False,
 ) -> Written | Published | Draft:
     """Write the file as it was at `version` back as a new change, through
@@ -322,6 +325,7 @@ async def rollback(
         expected,
         message=message or f"Roll back {path} to {version}",
         confirm=confirm,
+        asked=asked,
         keep_as_draft=keep_as_draft,
     )
     log.info("files.rolled_back", place=place, path=path, to=version, user_id=organiser.user.id)
@@ -387,6 +391,7 @@ async def write_upload(
     *,
     message: str | None = None,
     confirm: bool = False,
+    asked: str | None = None,
     keep_as_draft: bool = False,
 ) -> Published | Draft:
     """Put a file the organiser uploaded into the task at `path`, as a save
@@ -406,6 +411,7 @@ async def write_upload(
         task,
         {path: Edit(Uploaded(upload), expected)},
         confirm=confirm,
+        asked=asked,
         keep_as_draft=keep_as_draft,
         message=message,
     )

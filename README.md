@@ -265,8 +265,10 @@ the platform alone writes them at the forge, so a change there goes through
 the package's save and its checks and no role at the forge can push past
 them, admins included. Each such change is written by the platform's
 account with the organiser as its author and committer, by their name and
-the address their account has, by which the host knows the commit for
-theirs, so the history stays theirs; the package's role checks are the
+the private address the host gives their account (with Forgejo, their
+username at its `NO_REPLY_ADDRESS`), by which the host knows the commit for
+theirs without showing the address they signed up with, so the history
+stays theirs; the package's role checks are the
 only gate for those writes, and each refuses before anything is written.
 The host's permission for a role is `write` for
 admin and manager alike and `read` for observer, never a repository admin,
@@ -1005,7 +1007,11 @@ each file under it, named one by one.
    other than the latest publication's or another plan, is refused with
    `ConfirmationRequired`, a first publication and a change to scoring or
    the statement as much as one to how the task grades, and nothing is
-   written; the same save with `confirm=True` publishes. A save that
+   written; the same save with `confirm=True` publishes. The refusal's
+   `asked` names the head and the latest publication it was worked out
+   from: sent back as `asked` beside `confirm`, a confirmation is asked
+   again when either has moved since, so another organiser's change made
+   after the question is never published unread. A save that
    publishes nothing new, and a draft, ask nothing. The refusal carries
    `changes`, what changes how the task grades, `regrades`, how many
    submissions it would grade again (`gradings.to_regrade`, counted as the
@@ -1482,7 +1488,9 @@ the question answered, unless asked not to, and leaves a message on it,
 as the organiser, "Answered publicly in the announcement" and its title,
 carrying a line the platform adds that names the announcement, which the
 question's readers alone see and are served as the message's
-`announcement` (its task, none for the contest's own, and its number).
+`announcement` (its task, none for the contest's own, its number, and
+the title the message names, so a page writes the message with the title
+as the link; none once the message is edited at the forge).
 It answers with both, the announcement and the question as it now stands
 with that message (`PublicAnswer`). Only a message an organiser wrote naming an announcement of the
 question's own contest is read so. The message is written last: a retry
@@ -2119,7 +2127,7 @@ structured members in `extra`:
 | `InvalidPath` | `invalid_path` | `path`, the path refused |
 | `AdminOnly` | `admin_only` | `keys`, each admin-only key or file |
 | `ReservedPath` | `reserved_path` | `paths` inside `plans/` |
-| `ConfirmationRequired` | `confirmation_required` | `changes`, what would change how the task grades; `regrades`, how many submissions it would grade again; `results_change`, `summary`, `runs_again`, `scores` and `reading`, what the save does (the save, step 3) |
+| `ConfirmationRequired` | `confirmation_required` | `changes`, what would change how the task grades; `regrades`, how many submissions it would grade again; `results_change`, `summary`, `runs_again`, `scores` and `reading`, what the save does (the save, step 3); `asked`, the head and publication it was worked out from |
 | `SoleAdmin` | `sole_admin` | `scopes`, each `{"kind", "name"}` |
 | `ContestantConflict` | `contestant_conflict` | `contests` |
 | `SharedWorkflowOwner` | `shared_workflow_owner` | `workflows` |

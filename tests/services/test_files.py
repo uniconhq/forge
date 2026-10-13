@@ -25,7 +25,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import files, publications, submissions, timelines, uploads
+from forge.services import files, publications, submissions, taking_out, timelines, uploads
 from forge.services.access import Organiser
 from forge.services.publications import Published
 from tests.services.conftest import (
@@ -761,6 +761,8 @@ WRITES = (
     "task upload slot",
     "contest write",
     "contest rollback",
+    "take out",
+    "put back",
 )
 """Every way a contest's or a task's files are written."""
 MINE = b"Mine.\n"
@@ -783,6 +785,10 @@ async def _write(
         )
     if write == "contest write":
         return await files.write(setup, who, SPRING, "notes.md", MINE, None)
+    if write == "take out":
+        return await taking_out.take_out(setup, who, task, taking_out.TakeOut.REMOVE)
+    if write == "put back":
+        return await taking_out.put_back(setup, who, task)
     return await files.rollback(setup, who, SPRING, "contest.yaml", VersionId("v"), None)
 
 
@@ -803,7 +809,15 @@ async def test_every_write_refuses_an_observer_and_someone_with_no_role_writing_
     with pytest.raises(Forbidden, match="manager role at acme/spring"):
         await _write(setup, write, bob, sum_task, head.tokens["statement.md"])
 
-    written = {"save_files", "write_file", "publish", "read_file"}
+    written = {
+        "save_files",
+        "write_file",
+        "publish",
+        "read_file",
+        "deactivate",
+        "delete_submission_place",
+        "delete_place",
+    }
     assert [call for call in acme.fake.calls if call.operation in written] == []
 
 

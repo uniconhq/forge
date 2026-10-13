@@ -83,7 +83,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 
 from forge.db.tables import Grading
 from forge.domain.board_checks import covered
@@ -252,6 +252,7 @@ async def save(
     changes: Mapping[str, Edit],
     *,
     confirm: bool = False,
+    asked: str | None = None,
     keep_as_draft: bool = False,
     message: str | None = None,
 ) -> Published | Draft:
@@ -259,8 +260,11 @@ async def save(
     remove it, and the token it was read with, and publish the result when
     it is valid. Needs the manager role at the task. `keep_as_draft` writes
     the files and publishes nothing, on any save; otherwise `confirm`
-    publishes anything new while its contest runs (#449). A
-    token that has moved is `Conflict`, with nothing written.
+    publishes anything new while its contest runs (#449). `asked` is the
+    question's own `asked`: a confirmation of a question asked about another
+    head or another latest publication than now is asked again, so nobody
+    publishes a change the question did not describe. A token that has
+    moved is `Conflict`, with nothing written.
     """
     scope = task_scope(task)
     require(organiser, scope, Role.MANAGER)
@@ -285,21 +289,28 @@ async def save(
     changed: tuple[str, ...] = ()
     read = ReadChanges()
     anew = True
+    worded = False
     if latest is not None:
         before, published_files = await _published_snapshot(ctx, as_, task, latest)
         after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
         changed = grading_changes(before, after)
         differ = await _differing(ctx, as_, task, head, written, published_files)
+        # A workflow moved in place can change a value's words alone, which
+        # only a new publication's note carries.
+        worded = checked.compiled is not None and latest.meanings != checked.compiled.meanings
         read = ReadChanges(
             statement=STATEMENT_FILE in differ,
             public=any(path.startswith(PUBLIC_FOLDER) for path in differ),
+            words=worded,
         )
-        anew = bool(differ) or before.plans.get(PLAN_PATH) != after.plans[PLAN_PATH]
+        anew = bool(differ) or before.plans.get(PLAN_PATH) != after.plans[PLAN_PATH] or worded
     if keep_as_draft:
         version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, (), changed)
     assert checked.compiled is not None and checked.definition is not None
-    if anew and not confirm and await _contest_running(ctx, task):
+    basis = f"{head.version}:{latest.id if latest is not None else ''}"
+    confirmed = confirm and asked in (None, basis)
+    if anew and not confirmed and await _contest_running(ctx, task):
         regrades = (
             await gradings.to_regrade(ctx, task, limit=checked.definition.submissions.max)
             if changed
@@ -314,6 +325,7 @@ async def save(
             changes=[*changed],
             regrades=regrades,
             **as_extra(effect),
+            asked=basis,
         )
 
     plans = await _plan_files(ctx, as_, task, head, checked)
@@ -322,7 +334,7 @@ async def save(
     if version != head.version and await _landed_under(ctx, as_, task, head, version, touched):
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
     notes = checked.compiled.notes
-    if latest is not None and version == latest.version:
+    if latest is not None and version == latest.version and not worded:
         effect = await _effect(
             ctx, task, checked.definition, latest, (), 0, ReadChanges(), checked.compiled
         )
@@ -498,6 +510,7 @@ async def _effect(
     """
     name = (await names.names_of(ctx, [task])).get(task)
     before = await _definition_of(ctx, task, latest) if latest is not None else None
+    submitted = await ctx.db.scalar(select(exists().where(Grading.task_id == task)))
     titles = {
         meaning.name: meaning.title
         for meaning in (*(latest.meanings if latest is not None else ()), *compiled.meanings)
@@ -513,6 +526,8 @@ async def _effect(
         graded=bool(await _graded_under(ctx, task)),
         read=read,
         titles=titles,
+        submitted=bool(submitted),
+        unread=latest is not None and before is None,
     )
 
 

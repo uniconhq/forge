@@ -7,7 +7,8 @@ manager's key.
   `create` is undone: its activation at the CI, then its place at the forge
   with its roles, and its name, so the name may be taken again. What still
   named it goes with it: an entrant's extension that names it no longer
-  does, and an invite to one of its roles still waiting is withdrawn. A
+  does, an invite to one of its roles still waiting is withdrawn, and each
+  entrant's place to submit it goes with any upload waiting there. A
   leaderboard that names it in its `tasks` refuses it
   (`take_out_refused`): taking it out of the board is the organisers' call.
 - **Withdrawn**, once anyone has: its entry stays, marked `withdrawn: true`,
@@ -41,7 +42,7 @@ from enum import StrEnum
 
 from sqlalchemy import delete, func, select, update
 
-from forge.db.tables import Entrant, Grading, Name
+from forge.db.tables import Entrant, Grading, Name, Upload
 from forge.db.tables import Invite as InviteRow
 from forge.domain.content import File
 from forge.domain.contest_entries import NoEntry, Unlisted, with_withdrawn, without_entry
@@ -57,6 +58,7 @@ from forge.domain.errors import (
 from forge.domain.identity import PLATFORM, AsOrgAccount
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.invites import InviteStatus
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, contest_id_of, contest_scope, task_scope
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
@@ -262,7 +264,7 @@ async def _remove(
         updated = _edited(name, lambda: without_entry(found.content, name))
         if updated is not None:
             await _write(ctx, contest, found, updated, f"Remove {name} from the contest", author)
-            made.add("contest_entry", contest, _restore(ctx, contest, found, updated))
+            made.add("contest_entry", contest, _restore(ctx, contest, found, updated, author))
         account = await org_accounts.identity(ctx, OrgId(contest_scope(contest).org))
         account = await _deactivate(ctx, account, task)
 
@@ -271,9 +273,30 @@ async def _remove(
 
         made.add("activation", task, reactivate)
         await _forget(ctx, contest, task, name)
+        await _drop_places(ctx, contest, task, name)
         await ctx.forge.content.delete_place(task)
     except PortError as exc:
         raise making.failure(exc, "tasks.remove_failed", task=task) from None
+
+
+async def _drop_places(ctx: Context, contest: ContestId, task: TaskId, name: str) -> None:
+    """Every entrant's place to submit the task, made ahead or by an upload,
+    with the uploads waiting in it, and the platform's record of every
+    upload to the task. A place holding a submission the platform has no
+    row for, which a crash or a restore can leave, refuses the removal, so
+    it never loses one.
+    """
+    rows = await ctx.db.scalars(select(Entrant.id).where(Entrant.contest_id == contest))
+    for entrant in rows.all():
+        workspace = ctx.forge.workspaces.workspace_of(contest, EntrantOwner(entrant))
+        try:
+            await ctx.forge.workspaces.delete_submission_place(workspace, task)
+        except Conflict:
+            raise TakeOutRefused(
+                f"{name} has a submission the platform has not recorded yet, so it cannot be "
+                "removed. Ask the platform's operator to reconcile, then withdraw it."
+            ) from None
+    await ctx.db.execute(delete(Upload).where(Upload.task_id == task))
 
 
 async def _deactivate(ctx: Context, account: AsOrgAccount, task: TaskId) -> AsOrgAccount:
@@ -285,8 +308,12 @@ async def _deactivate(ctx: Context, account: AsOrgAccount, task: TaskId) -> AsOr
     return account
 
 
-def _restore(ctx: Context, contest: ContestId, found: File, updated: bytes) -> making.Removal:
-    """Put the entry back while the file still says what the removal wrote."""
+def _restore(
+    ctx: Context, contest: ContestId, found: File, updated: bytes, author: int
+) -> making.Removal:
+    """Put the entry back while the file still says what the removal wrote,
+    `author` named as the change's author as on the removal.
+    """
 
     async def restore() -> None:
         now = await ctx.forge.content.read_file(PLATFORM, contest, CONTEST_FILE)
@@ -299,6 +326,7 @@ def _restore(ctx: Context, contest: ContestId, found: File, updated: bytes) -> m
             found.content,
             message="Put the removed task back",
             expected=now.token,
+            author=author,
         )
         published.forget_contests(ctx)
 

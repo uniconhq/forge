@@ -50,6 +50,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy import text
+
 from forge.domain import release as rules
 from forge.domain.errors import (
     EntrantChanged,
@@ -81,16 +83,25 @@ ANNOUNCED = re.compile(r"\n*<!-- unicon:announcement (\S+)#(\d+) -->\s*$")
 ANSWERED_PUBLICLY = "Answered publicly in the announcement ‘{title}’"  # noqa: RUF001
 """The message a public answer leaves on its question, naming the
 announcement by its title in curly single quotes."""
+ANSWERED_TITLE = re.compile(r"Answered publicly in the announcement ‘(.*)’", re.DOTALL)  # noqa: RUF001
+"""`ANSWERED_PUBLICLY` read back, its title the one group."""
+ANSWER_LOCK = 0x414E5357
+"""The first key of every lock on one question's public answers, the second
+being the contest, the asker and the number hashed by Postgres."""
 
 
 @dataclass(frozen=True, slots=True)
 class AnnouncementLink:
     """The announcement a message names: on the question's contest, or on
-    the task of it named `task`, by its number there.
+    the task of it named `task`, by its number there, and its `title` as
+    the message names it, so a page writes the message with the title as
+    the link; none when the message no longer reads as the platform wrote
+    it, edited at the forge.
     """
 
     task: str | None
     number: int
+    title: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,7 +349,8 @@ async def answer_publicly(
     mark: bool = True,
 ) -> PublicAnswer:
     """Turn an answer into an announcement every contestant reads, on the
-    task the question names or else on the contest, pointing back at the
+    task the question names or else on the contest, and on the contest too
+    for a task withdrawn, which no contestant reads, pointing back at the
     question, which stays where it is; mark the question answered, unless
     `mark` is false, as a reply's "Mark it answered" is; and leave a message
     on it, as the organiser, naming the announcement, which only those who
@@ -348,9 +360,19 @@ async def answer_publicly(
     announcement answering the question that no message on it names yet is
     one a call that failed part way posted, and a retry finishes that one,
     with the title and text it is given now, instead of posting another.
+    Answers to one question are made one at a time, and one with the title
+    and text of an announcement already answering it, as a second click
+    sends, is that announcement, posted and named once.
     """
+    require(organiser, contest_scope(contest), Role.MANAGER)
+    await ctx.db.execute(
+        text("SELECT pg_advisory_xact_lock(:space, hashtext(:target))"),
+        {"space": ANSWER_LOCK, "target": f"{contest}|{asker}|{number}"},
+    )
     thread = await _managed(ctx, organiser, contest, asker, number)
     about = _about(thread, contest)
+    if about is not None and await _withdrawn(ctx, contest, about):
+        about = None
     scope = task_scope(about) if about is not None else contest_scope(contest)
     place = announcements.place_of(scope)
     question = AnsweredQuestion(_asker(_owner(asker)), number)
@@ -360,29 +382,29 @@ async def answer_publicly(
         for comment in thread.comments
         if comment.author_id not in askers and (found := ANNOUNCED.search(comment.body)) is not None
     }
-    unfinished = [
-        posted
-        for posted in await announcements.answering(ctx, organiser, scope, question)
-        if (str(place), posted.number) not in noted
-    ]
-    if unfinished:
-        posted = unfinished[-1]
-        if (posted.title, posted.body) != announcements.checked(title, body):
-            posted = await announcements.edit(
-                ctx, organiser, scope, posted.number, title=title, body=body
-            )
+    answering = await announcements.answering(ctx, organiser, scope, question)
+    wanted = announcements.checked(title, body)
+    same = [posted for posted in answering if (posted.title, posted.body) == wanted]
+    unfinished = [posted for posted in answering if (str(place), posted.number) not in noted]
+    if same:
+        posted = same[-1]
+    elif unfinished:
+        posted = await announcements.edit(
+            ctx, organiser, scope, unfinished[-1].number, title=title, body=body
+        )
     else:
         posted = await announcements.post(
             ctx, organiser, scope, title=title, body=body, answers=question
         )
     if mark and not (thread.answered and thread.closed):
         await ctx.forge.threads.mark_answered(organiser.identity, thread.id)
-    said = ANSWERED_PUBLICLY.format(title=posted.title)
-    await ctx.forge.threads.comment(
-        organiser.identity,
-        thread.id,
-        f"{said}\n\n<!-- unicon:announcement {place}#{posted.number} -->",
-    )
+    if (str(place), posted.number) not in noted:
+        said = ANSWERED_PUBLICLY.format(title=posted.title)
+        await ctx.forge.threads.comment(
+            organiser.identity,
+            thread.id,
+            f"{said}\n\n<!-- unicon:announcement {place}#{posted.number} -->",
+        )
     log.info(
         "clarifications.answered_publicly",
         contest=contest,
@@ -475,6 +497,13 @@ def _about(thread: Thread, contest: ContestId) -> TaskId | None:
     return TaskId(found.group(1))
 
 
+async def _withdrawn(ctx: Context, contest: ContestId, task: TaskId) -> bool:
+    """Whether the contest's settings mark the task withdrawn."""
+    name = (await names.names_of(ctx, [task])).get(task)
+    entry = (await published.contest(ctx, contest)).entry(name) if name is not None else None
+    return entry is not None and entry.withdrawn
+
+
 async def _shown(
     ctx: Context,
     threads: list[Thread] | tuple[Thread, ...],
@@ -547,15 +576,18 @@ def _message(
     found = ANNOUNCED.search(comment.body)
     if found is None:
         return Message(from_asker=from_asker, body=comment.body, at=comment.at)
+    body = ANNOUNCED.sub("", comment.body).rstrip()
+    said = ANSWERED_TITLE.fullmatch(body)
+    title = said.group(1) if said is not None else None
     link: AnnouncementLink | None = None
     kind = _in_contest(found.group(1), contest)
     if not from_asker and kind == "contest":
-        link = AnnouncementLink(None, int(found.group(2)))
+        link = AnnouncementLink(None, int(found.group(2)), title)
     elif not from_asker and kind == "task" and found.group(1) in places:
-        link = AnnouncementLink(places[found.group(1)].task, int(found.group(2)))
+        link = AnnouncementLink(places[found.group(1)].task, int(found.group(2)), title)
     return Message(
         from_asker=from_asker,
-        body=ANNOUNCED.sub("", comment.body).rstrip(),
+        body=body,
         at=comment.at,
         announcement=link,
     )
