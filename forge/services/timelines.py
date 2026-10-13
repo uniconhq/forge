@@ -245,7 +245,7 @@ async def check_contest(
     extensions = await every_extension(ctx, contest)
     for entry in before.tasks:
         if after.entry(entry.id) is None:
-            message = _dropped(before, entry, made.get(entry.id, []), ctx.now)
+            message = _dropped(before, entry, made.get(entry.id, []), entry.id in tasks, ctx.now)
             if message is not None:
                 problems.append(Problem(path="tasks", message=message))
     for index, entry in enumerate(after.tasks):
@@ -342,15 +342,26 @@ def _sizes_moved(
 
 
 def _dropped(
-    before: ContestDefinition, entry: ContestTask, made: Collection[Made], now: datetime
+    before: ContestDefinition,
+    entry: ContestTask,
+    made: Collection[Made],
+    at_forge: bool,
+    now: datetime,
 ) -> str | None:
-    """Why the task's entry may not leave `tasks`, or none: a task released
-    under `before`, withdrawn since or not, or with submissions, would be
-    hidden by it. Taking it out of the contest is its own action, which
-    deletes the task with its entry, or withdraws one with submissions.
+    """Why the task's entry may not leave `tasks`, or none: a task with
+    submissions, or released under `before`, would be hidden by it, and any
+    task still `at_forge` would stay there with nothing listing it. Taking
+    it out of the contest is its own action, which deletes the task with its
+    entry, or withdraws one with submissions. An entry naming no task left
+    at the forge goes.
     """
     if made:
         count = f"{len(made)} submission" + ("s" if len(made) > 1 else "")
+        if entry.withdrawn:
+            return (
+                f"{entry.id} is withdrawn and has {count}, so its entry stays: its submissions "
+                "are kept. Put it back from the contest's Tasks card, or leave it withdrawn."
+            )
         return (
             f"{entry.id} has {count}, so it cannot be removed from the contest. Withdraw it "
             "instead: entrants no longer see it and no leaderboard counts it, and its "
@@ -361,6 +372,11 @@ def _dropped(
         return (
             f"{entry.id} was released on {in_words(opened)}, so entrants have seen it. Remove "
             "it from the contest's Tasks card instead, which deletes the task too."
+        )
+    if at_forge:
+        return (
+            f"{entry.id} is one of this contest's tasks. Remove it from the contest's Tasks "
+            "card instead, which deletes the task too."
         )
     return None
 

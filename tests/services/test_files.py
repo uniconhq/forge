@@ -519,9 +519,12 @@ async def test_an_entry_naming_no_task_of_the_contest_is_refused_at_its_id(
     ]
 
 
-async def test_an_entry_is_dropped_only_from_a_task_that_neither_opened_nor_has_submissions(
+async def test_an_entry_of_a_task_still_at_the_forge_is_never_dropped_by_hand(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
+    # Dropped by hand, a task never released and with no submissions would
+    # stay at the forge with its name taken and no row to take it out from
+    # (#452); one with submissions is withdrawn, not removed.
     await make_task(setup, acme, "product")
     await _submitted(setup, acme, entered)
     product = b"  - id: product\n"
@@ -529,7 +532,7 @@ async def test_an_entry_is_dropped_only_from_a_task_that_neither_opened_nor_has_
     await write_contest(acme.fake, (draft + product).decode())
 
     refused = await _refused(setup, acme, draft.replace(SUM_ENTRY.encode(), product))
-    version = await _write_contest(setup, acme, draft)
+    unreached = await _refused(setup, acme, draft)
 
     assert refused == [
         (
@@ -539,7 +542,33 @@ async def test_an_entry_is_dropped_only_from_a_task_that_neither_opened_nor_has_
             "submissions are kept.",
         )
     ]
-    assert version
+    assert unreached == [
+        (
+            "tasks",
+            "product is one of this contest's tasks. Remove it from the contest's Tasks card "
+            "instead, which deletes the task too.",
+        )
+    ]
+
+
+async def test_a_withdrawn_tasks_entry_is_not_dropped_and_says_it_is_withdrawn(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await make_task(setup, acme, "product")
+    await _submitted(setup, acme, entered)
+    product = "  - id: product\n"
+    withdrawn = SUM_ENTRY.rstrip("\n") + "\n    withdrawn: true\n"
+    await write_contest(acme.fake, _running(withdrawn + product).decode())
+
+    refused = await _refused(setup, acme, _running(product))
+
+    assert refused == [
+        (
+            "tasks",
+            "sum is withdrawn and has 1 submission, so its entry stays: its submissions are "
+            "kept. Put it back from the contest's Tasks card, or leave it withdrawn.",
+        )
+    ]
 
 
 async def test_a_contest_opens_only_once_each_task_is_published_with_its_statement_written(
