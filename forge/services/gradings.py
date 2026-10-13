@@ -1755,7 +1755,8 @@ async def to_regrade(ctx: Context, task: TaskId, *, limit: int | None = None) ->
     attempts: dict[str, builtins.list[Grading]] = {}
     for row in rows:
         attempts.setdefault(row.submission_id, []).append(row)
-    return len(regraded) - len(_without_room(ctx, regraded, attempts, (), limit))
+    gone = await lost(ctx, rows)
+    return len(regraded) - len(_without_room(ctx, regraded, attempts, gone, limit))
 
 
 async def regrade(

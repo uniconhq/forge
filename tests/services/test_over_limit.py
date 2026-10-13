@@ -21,8 +21,9 @@ from sqlalchemy import select, update
 from forge.db.tables import Grading
 from forge.domain.content import Edit
 from forge.domain.errors import SubmissionLimit
-from forge.domain.grading import GradingStatus
+from forge.domain.grading import LOST_CHECK_AFTER, GradingStatus, RunState
 from forge.domain.identity import PLATFORM
+from forge.domain.ids import RunId
 from forge.domain.roles import Role, Scope
 from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
@@ -244,6 +245,31 @@ async def test_the_earliest_delayed_submissions_are_the_ones_graded(
     earlier = await gradings.retry(setup, manager, _latest(rows, 2).id)
 
     assert (later.status, earlier.status) == (GradingStatus.OVER_LIMIT, GradingStatus.QUEUED)
+
+
+async def test_a_saves_question_counts_a_run_the_ci_lost_as_its_regrade_does(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    # One place, taken by the first's result; the second's run is lost, so
+    # it is delayed: the regrade grades the first alone, and the question
+    # says so.
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    await _most(setup, acme, entered, 2)
+    await _submit(setup, acme, entered, clock, "key-0001-aaaa")
+    await _stands(setup, 1, **GRADED)
+    await _submit(setup, acme, entered, clock, "key-0002-bbbb")
+    await _most(setup, acme, entered, 1)
+    second = _latest(await _rows(setup), 2)
+    assert second.run_id is not None
+    acme.fake.ci.runs[RunId(second.run_id)].ci_state = RunState.LOST
+    clock.advance(LOST_CHECK_AFTER)
+
+    async with setup.unit_of_work() as ctx:
+        asked = await gradings.to_regrade(ctx, entered.task)
+    rejudged = await gradings.rejudge(setup, manager, entered.task)
+
+    assert (rejudged.queued, rejudged.over_limit) == (1, 1)
+    assert asked == rejudged.queued
 
 
 async def test_a_rejudge_grades_the_earliest_delayed_and_ends_the_rest_over_the_limit(
