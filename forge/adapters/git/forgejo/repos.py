@@ -18,7 +18,7 @@ import base64
 from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from forge.adapters.git.forgejo.http import (
     MAX_PAGES,
@@ -57,9 +57,13 @@ SEARCH_PATH = "/api/v1/repos/search"
 
 
 class Repos:
-    def __init__(self, http: Http, *, platform_account: str) -> None:
+    def __init__(self, http: Http, *, platform_account: str, public_url: str) -> None:
+        """`public_url` is Forgejo's own, whose host is its `DOMAIN` and so
+        names its `NO_REPLY_ADDRESS`, `noreply.<host>`, unless set apart.
+        """
         self._http = http
         self._platform_account = platform_account
+        self._no_reply = f"noreply.{urlparse(public_url).hostname}"
         self._org_ids: dict[str, int] = {}
 
     async def create(
@@ -290,7 +294,7 @@ class Repos:
                 "branch": DEFAULT_BRANCH,
                 "message": message,
                 "files": operations,
-                **_identity(author),
+                **_identity(author, self._no_reply),
             },
         )
         return VersionId(str(json_of(written)["commit"]["sha"]))
@@ -398,7 +402,7 @@ class Repos:
             "content": _encoded(content),
             "message": message,
             "branch": DEFAULT_BRANCH,
-            **_identity(author),
+            **_identity(author, self._no_reply),
         }
         target = f"/api/v1/repos/{segment(owner)}/{segment(name)}/contents/{file_path(path)}"
         if expected is None:
@@ -777,15 +781,20 @@ def _encoded(content: bytes) -> str:
     return base64.b64encode(content).decode()
 
 
-def _identity(author: User | None) -> dict[str, Any]:
+def _identity(author: User | None, no_reply: str) -> dict[str, Any]:
     """The author and committer a change the platform writes for `author`
     names, by which Forgejo knows the commit for theirs: their name and the
-    address their account has, which it matches to them. None for a change
-    of the caller's own, or for a person with no address to name.
+    address Forgejo gives an account that keeps its own private, their
+    username at `no_reply`, which it matches to them as it does their own,
+    so the commit never shows the address they signed up with. None for a
+    change of the caller's own.
     """
-    if author is None or not author.email:
+    if author is None:
         return {}
-    person = {"name": author.name or author.username, "email": author.email}
+    person = {
+        "name": author.name or author.username,
+        "email": f"{author.username.lower()}@{no_reply}",
+    }
     return {"author": person, "committer": person}
 
 

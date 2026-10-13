@@ -166,7 +166,7 @@ class ForgejoContent:
 
     async def _author(self, user_id: int | None) -> User | None:
         """The person a change the platform writes names as its author, read
-        as the platform, which sees their address.
+        as the platform.
         """
         return await self._users.find(user_id) if user_id is not None else None
 

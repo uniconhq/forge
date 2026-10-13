@@ -49,7 +49,7 @@ class ForgejoForge:
         self._client = http
 
         users = Users(http)
-        repos = Repos(http, platform_account=config.platform_account)
+        repos = Repos(http, platform_account=config.platform_account, public_url=config.public_url)
         teams = Teams(http)
         oauth = OAuth(
             http,

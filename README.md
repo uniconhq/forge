@@ -265,8 +265,10 @@ the platform alone writes them at the forge, so a change there goes through
 the package's save and its checks and no role at the forge can push past
 them, admins included. Each such change is written by the platform's
 account with the organiser as its author and committer, by their name and
-the address their account has, by which the host knows the commit for
-theirs, so the history stays theirs; the package's role checks are the
+the private address the host gives their account (with Forgejo, their
+username at its `NO_REPLY_ADDRESS`), by which the host knows the commit for
+theirs without showing the address they signed up with, so the history
+stays theirs; the package's role checks are the
 only gate for those writes, and each refuses before anything is written.
 The host's permission for a role is `write` for
 admin and manager alike and `read` for observer, never a repository admin,

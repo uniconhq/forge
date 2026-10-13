@@ -1049,15 +1049,19 @@ async def test_a_protection_another_maker_put_on_a_new_place_meanwhile_is_put_ri
     assert (made, patched) == (put_back, [PLATFORM_ONLY] * put_back)
 
 
-async def test_a_save_the_platform_writes_for_someone_names_them_its_author(
-    forgejo: ForgejoForge, recorder: Recorder
+@pytest.mark.parametrize("email", ["ada@acme.test", None])
+async def test_a_save_the_platform_writes_for_someone_names_them_by_their_private_address(
+    forgejo: ForgejoForge, recorder: Recorder, email: str | None
 ) -> None:
+    """Forgejo's own address for an account that keeps its address private,
+    which it knows for theirs as well, so a commit never shows the address
+    they signed up with."""
     repo = "/api/v1/repos/acme/spring.sum.task"
     recorder.on("POST", f"{repo}/contents", ok({"commit": {"sha": "c-3"}}))
     recorder.on(
         "GET",
         "/api/v1/users/search",
-        ok({"data": [{"id": 7, "login": "ada", "full_name": "Ada L", "email": "ada@acme.test"}]}),
+        ok({"data": [{"id": 7, "login": "Ada", "full_name": "Ada L", "email": email}]}),
     )
 
     await forgejo.content.save_files(
@@ -1070,7 +1074,7 @@ async def test_a_save_the_platform_writes_for_someone_names_them_its_author(
     )
 
     (sent,) = recorder.sent("POST", f"{repo}/contents")
-    person = {"name": "Ada L", "email": "ada@acme.test"}
+    person = {"name": "Ada L", "email": "ada@noreply.forge.test"}
     assert (sent["author"], sent["committer"]) == (person, person)
     assert recorder.headers("POST", f"{repo}/contents") == ["token admin"]
 
