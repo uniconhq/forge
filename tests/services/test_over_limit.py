@@ -20,7 +20,7 @@ from sqlalchemy import select, update
 
 from forge.db.tables import Grading
 from forge.domain.content import Edit
-from forge.domain.errors import SubmissionLimit
+from forge.domain.errors import ConfirmationRequired, SubmissionLimit
 from forge.domain.grading import LOST_CHECK_AFTER, GradingStatus, RunState
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import RunId
@@ -245,6 +245,38 @@ async def test_the_earliest_delayed_submissions_are_the_ones_graded(
     earlier = await gradings.retry(setup, manager, _latest(rows, 2).id)
 
     assert (later.status, earlier.status) == (GradingStatus.OVER_LIMIT, GradingStatus.QUEUED)
+
+
+async def test_a_save_that_lowers_the_most_regrades_under_the_most_it_saves(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    # Two graded and one delayed under a most of 3; a save that changes a
+    # test and lowers the most to 2 grades the two again and ends the
+    # delayed one over the limit, as its question said.
+    await _most(setup, acme, entered, 3)
+    for number, key in enumerate(("key-0001-aaaa", "key-0002-bbbb", "key-0003-cccc"), start=1):
+        await _submit(setup, acme, entered, clock, key)
+        await _stands(setup, number, **(FAILED if number == 3 else GRADED))
+    current = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
+    lowered = current.content.split(b"submissions:")[0] + b"submissions: {max: 2}\n"
+    head = await acme.fake.content.list_files(PLATFORM, entered.task)
+    edits = {
+        "task.yaml": Edit(lowered, head.tokens["task.yaml"]),
+        "tests/main/1/answer": Edit(b"4\n", head.tokens["tests/main/1/answer"]),
+    }
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await publications.save(setup, acme.ada, entered.task, edits)
+    saved = await publications.save(setup, acme.ada, entered.task, edits, confirm=True)
+
+    assert isinstance(saved, publications.Published) and saved.regraded == 2
+    assert asked.value.extra["regrades"] == saved.regraded
+    over = [
+        (row.submission_number, row.status == GradingStatus.OVER_LIMIT)
+        for row in await _rows(setup)
+        if row.attempt == 2
+    ]
+    assert over == [(1, False), (2, False), (3, True)]
 
 
 async def test_a_saves_question_counts_a_run_the_ci_lost_as_its_regrade_does(
