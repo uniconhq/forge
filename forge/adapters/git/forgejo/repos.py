@@ -7,7 +7,9 @@ The forge lets nobody but the platform create a repository: people have no
 personal quota and no team may create under an org. So every repository is
 made by the platform account, under an org it owns or, through the
 administrator's endpoint, under the person who asked for it, who owns it
-from then on. What goes into it is written as the caller. What needs a
+from then on. What goes into it is written as the caller the service
+names: the platform, with the organiser as author, for a contest's and a
+task's files, and the contestant for a submission. What needs a
 repository admin, the protection, the mark, visibility and collaborators,
 is done as the platform too, since no organiser's team is one.
 """
