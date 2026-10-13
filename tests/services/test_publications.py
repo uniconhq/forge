@@ -1405,6 +1405,46 @@ async def test_the_confirmation_counts_the_submissions_the_save_regrades_and_no_
     )
 
 
+async def test_a_grading_change_with_every_submission_cancelled_says_none_is_graded_again(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _graded(setup, acme, entered)
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Grading).values(
+                status=GradingStatus.CANCELLED, cancel_reason="The machine broke."
+            )
+        )
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _save(setup, acme, entered.task, _with(acme, b"time_limit: 2", b"time_limit: 1"))
+
+    assert asked.value.extra["runs_again"] == [
+        "No submission runs again: none of those made is graded again.",
+        "The way the task grades changed.",
+    ]
+
+
+async def test_a_latest_publication_whose_settings_no_longer_read_is_not_called_the_first(
+    setup: Setup, acme: Acme, running: TaskId, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A publication's settings stop reading when a later forge reads them
+    # more strictly than the one that published them.
+    async def unread(*_: object) -> None:
+        return None
+
+    monkeypatch.setattr(publications, "_definition_of", unread)
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _save(setup, acme, running, {"statement.md": b"Typo fixed.\n"})
+
+    assert (asked.value.extra["runs_again"], asked.value.extra["scores"][0]) == (
+        ["No submission runs again: the tests and how they run are the same."],
+        "The latest publication's settings no longer read, so its scores cannot be compared: "
+        "every result is scored as this save says.",
+    )
+
+
 async def test_a_save_that_picks_up_a_moved_image_names_it_beside_the_regrade_count(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:

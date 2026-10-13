@@ -49,6 +49,11 @@ NO_RESULT_CHANGES = "Nobody's result changes."
 NOTHING_RUNS_AGAIN = "No submission runs again: the tests and how they run are the same."
 FIRST_PUBLICATION = "No submission runs again: this is the task's first publication."
 NONE_MADE = "No submission runs again: there are none yet."
+NONE_REGRADED = "No submission runs again: none of those made is graded again."
+UNREAD_SCORES = (
+    "The latest publication's settings no longer read, so its scores cannot be compared: "
+    "every result is scored as this save says."
+)
 NO_SCORE_CHANGES = "No score changes."
 NOTHING_READ_CHANGES = "Nothing entrants read changes."
 STATEMENT_CHANGES = "The statement changes."
@@ -96,33 +101,37 @@ def effect_of(
     graded: bool,
     read: ReadChanges,
     titles: Mapping[str, str] | None = None,
+    submitted: bool = False,
+    unread: bool = False,
 ) -> SaveEffect:
     """What saving `after` over the latest publication's `before` (none for
-    a first publication) does to the task named `task` in `contest`, given
-    what changed how it grades, how many submissions that grades again, and
-    whether the task has a graded submission; `titles` are what the
-    workflow calls the values it reports, by key.
+    a first publication, or `unread` when the latest publication's settings
+    no longer read) does to the task named `task` in `contest`, given what
+    changed how it grades, how many submissions that grades again, whether
+    the task has a graded submission, and whether it has any; `titles` are
+    what the workflow calls the values it reports, by key.
     """
-    scores, moves = _scores(task, before, after, contest, bool(changes), titles or {})
+    first = before is None and not unread
+    scores, moves = _scores(task, before, after, contest, bool(changes), titles or {}, unread)
     changes_results = (bool(changes) and regrades > 0) or (graded and moves)
     return SaveEffect(
         results_change=changes_results,
         summary=RESULTS_CHANGE if changes_results else NO_RESULT_CHANGES,
-        runs_again=_runs_again(before, changes, regrades),
+        runs_again=_runs_again(first, changes, regrades, submitted),
         scores=tuple(scores) or (NO_SCORE_CHANGES,),
-        reading=_reading(before, after, read),
+        reading=_reading(first, before, after, read),
     )
 
 
 def _runs_again(
-    before: TaskDefinition | None, changes: Sequence[str], regrades: int
+    first: bool, changes: Sequence[str], regrades: int, submitted: bool
 ) -> tuple[str, ...]:
-    if before is None:
+    if first:
         return (FIRST_PUBLICATION,)
     if not changes:
         return (NOTHING_RUNS_AGAIN,)
     if regrades == 0:
-        return (NONE_MADE, *changes)
+        return (NONE_REGRADED if submitted else NONE_MADE, *changes)
     counted = (
         "1 submission is graded again"
         if regrades == 1
@@ -144,12 +153,12 @@ def _lowered(sentence: str) -> str:
 
 
 def _reading(
-    before: TaskDefinition | None, after: TaskDefinition, read: ReadChanges
+    first: bool, before: TaskDefinition | None, after: TaskDefinition, read: ReadChanges
 ) -> tuple[str, ...]:
-    if before is None:
+    if first:
         return (FIRST_READ,)
     found: list[str] = []
-    if before.name != after.name:
+    if before is not None and before.name != after.name:
         found.append(f"The task's title changes to {after.name} (was {before.name}).")
     if read.statement:
         found.append(STATEMENT_CHANGES)
@@ -165,6 +174,7 @@ def _scores(
     contest: ContestDefinition | None,
     grading_changed: bool,
     titles: Mapping[str, str],
+    unread: bool,
 ) -> tuple[list[str], bool]:
     """Each scoring change in words, then the boards it counts again, and
     whether any of it moves what a result earns or shows.
@@ -176,6 +186,8 @@ def _scores(
         if contest is not None and not (entry is not None and entry.withdrawn)
         else []
     )
+    if before is None and unread:
+        return [UNREAD_SCORES, _scored_again([board.name for board in boards])], True
     if before is None:
         found = _points_first(after, _worth(entry, after))
         found += [f"{task} now counts on the leaderboard {board.name}." for board in boards]
@@ -377,14 +389,7 @@ def _boards(
     named = [board.name for board in boards]
     found: list[str] = []
     if rescored:
-        if not named:
-            found.append("Every result is scored again.")
-        elif len(named) == 1:
-            found.append(f"Every result is scored again, and the leaderboard {named[0]} with it.")
-        else:
-            found.append(
-                f"Every result is scored again, and the leaderboards {_joined(named)} with them."
-            )
+        found.append(_scored_again(named))
     elif regraded and named:
         found.append(
             f"The leaderboard {named[0]} is counted again."
@@ -398,6 +403,14 @@ def _boards(
         if board.over is not Over.ALL and _scope_moved(board, before, after)
     ]
     return found
+
+
+def _scored_again(named: Sequence[str]) -> str:
+    if not named:
+        return "Every result is scored again."
+    if len(named) == 1:
+        return f"Every result is scored again, and the leaderboard {named[0]} with it."
+    return f"Every result is scored again, and the leaderboards {_joined(named)} with them."
 
 
 def _scope_moved(board: Leaderboard, before: TaskDefinition, after: TaskDefinition) -> bool:

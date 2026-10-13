@@ -83,7 +83,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 
 from forge.db.tables import Grading
 from forge.domain.board_checks import covered
@@ -498,6 +498,7 @@ async def _effect(
     """
     name = (await names.names_of(ctx, [task])).get(task)
     before = await _definition_of(ctx, task, latest) if latest is not None else None
+    submitted = await ctx.db.scalar(select(exists().where(Grading.task_id == task)))
     titles = {
         meaning.name: meaning.title
         for meaning in (*(latest.meanings if latest is not None else ()), *compiled.meanings)
@@ -513,6 +514,8 @@ async def _effect(
         graded=bool(await _graded_under(ctx, task)),
         read=read,
         titles=titles,
+        submitted=bool(submitted),
+        unread=latest is not None and before is None,
     )
 
 
