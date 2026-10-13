@@ -10,6 +10,7 @@ An answer made public is an announcement every contestant reads, pointing
 at the question, which stays private.
 """
 
+import asyncio
 from dataclasses import replace
 
 import pytest
@@ -291,6 +292,27 @@ async def test_a_public_answer_that_failed_part_way_is_finished_on_retry_not_pos
     )
     assert again.announcement.number != read.number
     assert len(await announcements.task(setup, entered.session, entered.task)) == 2
+
+
+async def test_a_public_answer_sent_twice_at_once_or_again_after_posts_one_announcement(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    number = await _ask(setup, entered)
+    asker = segment(entered.entrant)
+
+    async def send() -> clarifications.PublicAnswer:
+        return await clarifications.answer_publicly(
+            setup, acme.ada, SPRING, asker, number, title="On n", body="n is at most 10^5."
+        )
+
+    first, second = await asyncio.gather(send(), send())
+    third = await send()
+
+    assert first.announcement.number == second.announcement.number == third.announcement.number
+    assert len(await announcements.task(setup, entered.session, entered.task)) == 1
+    assert [message.announcement for message in third.question.messages] == [
+        clarifications.AnnouncementLink("sum", first.announcement.number)
+    ]
 
 
 async def test_a_link_the_asker_writes_into_their_own_message_is_not_trusted(

@@ -50,6 +50,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy import text
+
 from forge.domain import release as rules
 from forge.domain.errors import (
     EntrantChanged,
@@ -81,6 +83,9 @@ ANNOUNCED = re.compile(r"\n*<!-- unicon:announcement (\S+)#(\d+) -->\s*$")
 ANSWERED_PUBLICLY = "Answered publicly in the announcement ‘{title}’"  # noqa: RUF001
 """The message a public answer leaves on its question, naming the
 announcement by its title in curly single quotes."""
+ANSWER_LOCK = 0x414E5357
+"""The first key of every lock on one question's public answers, the second
+being the contest, the asker and the number hashed by Postgres."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,7 +354,15 @@ async def answer_publicly(
     announcement answering the question that no message on it names yet is
     one a call that failed part way posted, and a retry finishes that one,
     with the title and text it is given now, instead of posting another.
+    Answers to one question are made one at a time, and one with the title
+    and text of an announcement already answering it, as a second click
+    sends, is that announcement, posted and named once.
     """
+    require(organiser, contest_scope(contest), Role.MANAGER)
+    await ctx.db.execute(
+        text("SELECT pg_advisory_xact_lock(:space, hashtext(:target))"),
+        {"space": ANSWER_LOCK, "target": f"{contest}|{asker}|{number}"},
+    )
     thread = await _managed(ctx, organiser, contest, asker, number)
     about = _about(thread, contest)
     if about is not None and await _withdrawn(ctx, contest, about):
@@ -363,29 +376,29 @@ async def answer_publicly(
         for comment in thread.comments
         if comment.author_id not in askers and (found := ANNOUNCED.search(comment.body)) is not None
     }
-    unfinished = [
-        posted
-        for posted in await announcements.answering(ctx, organiser, scope, question)
-        if (str(place), posted.number) not in noted
-    ]
-    if unfinished:
-        posted = unfinished[-1]
-        if (posted.title, posted.body) != announcements.checked(title, body):
-            posted = await announcements.edit(
-                ctx, organiser, scope, posted.number, title=title, body=body
-            )
+    answering = await announcements.answering(ctx, organiser, scope, question)
+    wanted = announcements.checked(title, body)
+    same = [posted for posted in answering if (posted.title, posted.body) == wanted]
+    unfinished = [posted for posted in answering if (str(place), posted.number) not in noted]
+    if same:
+        posted = same[-1]
+    elif unfinished:
+        posted = await announcements.edit(
+            ctx, organiser, scope, unfinished[-1].number, title=title, body=body
+        )
     else:
         posted = await announcements.post(
             ctx, organiser, scope, title=title, body=body, answers=question
         )
     if mark and not (thread.answered and thread.closed):
         await ctx.forge.threads.mark_answered(organiser.identity, thread.id)
-    said = ANSWERED_PUBLICLY.format(title=posted.title)
-    await ctx.forge.threads.comment(
-        organiser.identity,
-        thread.id,
-        f"{said}\n\n<!-- unicon:announcement {place}#{posted.number} -->",
-    )
+    if (str(place), posted.number) not in noted:
+        said = ANSWERED_PUBLICLY.format(title=posted.title)
+        await ctx.forge.threads.comment(
+            organiser.identity,
+            thread.id,
+            f"{said}\n\n<!-- unicon:announcement {place}#{posted.number} -->",
+        )
     log.info(
         "clarifications.answered_publicly",
         contest=contest,
