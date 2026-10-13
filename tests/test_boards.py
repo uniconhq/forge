@@ -790,6 +790,30 @@ def test_a_tasks_points_pending_when_marked_come_from_the_marked_or_the_one_it_c
     )
 
 
+def test_with_nothing_marked_pending_comes_from_the_one_a_value_led_board_counts() -> None:
+    # Ranked by score, nothing marked: the board counts the first (score 9,
+    # 15 of small's 30), not the second, which shows more points (30) but
+    # scores less; what may still come is the first's large, 70.
+    groups = {
+        "small": group(each=30, show=Show.ALWAYS),
+        "large": group(pass_=70, show=Show.AFTER_CLOSE),
+    }
+    ids = [*named("small", 2), "large/1"]
+    nine = dict.fromkeys(ids, "9")
+    first = candidate(
+        1, minute(1), graded(ids, groups, ["small/2"], values={"score": nine}, measures=SCORE)
+    )
+    one = dict.fromkeys(ids, "1")
+    second = candidate(2, minute(2), graded(ids, groups, values={"score": one}, measures=SCORE))
+    on = column("opt", groups)
+
+    found = points_on(
+        on, [first, second], Select.MARKED, order=["score"], directions={"score": Better.HIGHER}
+    )
+
+    assert found == Points(Fraction(15), Fraction(70), CLOSE)
+
+
 def test_a_task_with_nothing_submitted_has_nothing_pending_and_one_giving_no_points_none() -> None:
     assert points_on(column("sum", HIDDEN_LARGE), []) == Points(Fraction(0), Fraction(0), None)
     assert points_on(column("sum", HIDDEN_LARGE, worth=None), []) is None

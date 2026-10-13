@@ -514,7 +514,7 @@ def task_points(
         if (most := _most(entry, column.revealed, scope)) is not None
     ]
     if board.select is Select.MARKED:
-        within = _marked_reach(within)
+        within = _marked_reach(within, cell.submissions)
     if board.select is Select.BEST_PER_GROUP:
         groups = {name for _, most in within for name in most}
         reach = sum((max(most.get(name, ZERO) for _, most in within) for name in groups), ZERO)
@@ -576,14 +576,22 @@ def _most(
 
 def _marked_reach(
     within: Sequence[tuple[Entry, dict[str, Fraction]]],
+    counted: Sequence[int] | None,
 ) -> list[tuple[Entry, dict[str, Fraction]]]:
     """The submissions a `marked` board can still count: the marked ones,
-    or, with none marked, the one it counts, the best on what was shown
-    before the reveal, with any run held back beside it.
+    or, with none marked, the one it counts (`counted`, its cell's), with
+    any run held back beside it; while its cell counts none, the one with
+    the most points shown before the reveal.
     """
     marked = [(entry, most) for entry, most in within if entry.marked]
     if marked:
         return marked
+    if counted:
+        return [
+            (entry, most)
+            for entry, most in within
+            if entry.number in counted or entry.state is State.ATTEMPT
+        ]
     live = in_scope(Over.LIVE)
     candidates = [
         entry for entry, _ in within if entry.state is State.CANDIDATE and entry.scored is not None
