@@ -24,7 +24,6 @@ from forge.domain.showing import (
     told,
     under,
 )
-from forge.domain.workflow_definition import Fold
 
 REVEAL = datetime(2026, 6, 1, 14, tzinfo=UTC)
 
@@ -180,7 +179,7 @@ def test_a_group_a_sealed_stop_kept_from_running_reads_as_hidden_until_the_revea
     assert after.groups[1] == GroupShown("second", Show.AFTER_CLOSE, None, (), None, ran=False)
 
 
-def test_a_held_stop_holds_back_every_group_its_points_and_its_folds_until_the_reveal() -> None:
+def test_a_held_stop_holds_back_every_group_and_its_points_until_the_reveal() -> None:
     """Showing alone, on groups T5 would refuse beside a sealed step: a held
     stop shows nothing of any group until the reveal, where the same groups
     of a run not stopped show what their `show` allows."""
@@ -190,7 +189,7 @@ def test_a_held_stop_holds_back_every_group_its_points_and_its_folds_until_the_r
         "second": Group.model_validate({"each": 1, "show": "after_close"}),
     }
     tests = ("open/1", "first/1", "second/1")
-    time = {"time_ms": Measure(Fold.MAX, Better.LOWER, Fraction(0), Fraction(1000))}
+    time = {"time_ms": Measure(Better.LOWER, Fraction(0), Fraction(1000))}
     ran = {**RESULT, "tests": [row(test, time_ms=5) for test in tests]}
     cut = {
         **RESULT,
@@ -210,18 +209,13 @@ def test_a_held_stop_holds_back_every_group_its_points_and_its_folds_until_the_r
         for name, group in groups.items()
     )
     assert held.points == Points(None, Fraction(90), REVEAL)
-    assert held.folded == {}
-    assert (plain.points, plain.folded) == (
-        Points(Fraction(60), Fraction(30), REVEAL),
-        {"time_ms": Fraction(5)},
-    )
+    assert plain.points == Points(Fraction(60), Fraction(30), REVEAL)
 
     after = seen(cut, True)
     assert (after.stopped, after.points) == (
         "runtime_error",
         Points(Fraction(0), Fraction(0), None),
     )
-    assert after.folded == {"time_ms": Fraction(1000)}
 
 
 def test_a_sealed_per_test_value_is_held_on_its_rows_until_the_reveal() -> None:

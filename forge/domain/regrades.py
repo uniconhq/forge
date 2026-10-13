@@ -13,10 +13,12 @@ results that counted then. What it changed is one `ChangeKind`:
 
 - `up` and `down`, its points went up or down; on a task that gives no
   points, a larger or smaller share of its tests accepted, or with the same
-  share, its values with a declared direction: down when any got worse, up
-  when none did and one got better, so a regrade that makes anything worse
-  is never read as an improvement; a value one side has and the other has
-  not is the worst where it is missing, as a board reads it;
+  share, the values its boards rank, each folded as its board folds it,
+  with a declared direction: down when any got worse, up when none did and
+  one got better, so a regrade that makes anything worse is never read as
+  an improvement; a value one side has and the other has not is the worst
+  where it is missing, as a board reads it; a value no board ranks is not
+  compared;
 - `stopped`, it now stops before its tests where the result it replaced did
   not: in the classic workflow, it now fails to compile;
 - `unchanged`, all of that the same;
@@ -36,6 +38,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from fractions import Fraction
 
+from forge.domain.definitions import Fold
 from forge.domain.ids import PublicationId
 from forge.domain.publications import Publication
 from forge.domain.scoring import Better
@@ -72,8 +75,9 @@ class Side:
     """One result a regrade compares, as organisers see it: its attempt,
     its points, none on a task that gives no points, how many of its tests
     were accepted of how many it has, the outcome that stopped its run
-    before its tests, none when nothing did, each value with a fold and a
-    declared direction, folded over every test, and that direction.
+    before its tests, none when nothing did, each value a board covering
+    the task ranks, with a declared direction, folded over every test as
+    that board folds it, by name and fold, and each value's direction.
     """
 
     attempt: int
@@ -81,7 +85,7 @@ class Side:
     accepted: int
     tests: int
     stopped: str | None = None
-    values: Mapping[str, Fraction] = field(default_factory=dict)
+    values: Mapping[tuple[str, Fold], Fraction] = field(default_factory=dict)
     better: Mapping[str, Better] = field(default_factory=dict)
 
     @property
@@ -133,9 +137,9 @@ def change_of(earlier: Side | None, now: Side | None) -> ChangeKind:
     if now.share is not None and earlier.share is not None and now.share != earlier.share:
         return _by(now.share - earlier.share)
     worse = better = False
-    for name in now.values.keys() | earlier.values.keys():
-        before, value = earlier.values.get(name), now.values.get(name)
-        direction = now.better.get(name) or earlier.better.get(name)
+    for key in now.values.keys() | earlier.values.keys():
+        before, value = earlier.values.get(key), now.values.get(key)
+        direction = now.better.get(key[0]) or earlier.better.get(key[0])
         if direction is None or before == value:
             continue
         if before is None or value is None:

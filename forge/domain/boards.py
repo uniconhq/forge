@@ -14,7 +14,8 @@ are given, and between moments only what is shown.
   `marked`, the best of the marked candidates, or, with none, the one
   `best` picks over what the `live` scope showed before the reveal.
 - **Keys** (`order`): `points`, higher is better; a value, its own
-  direction; `penalty`, whole minutes from the contest's start to the
+  direction, folded over each task's tests as the key says (`sum`, `mean`
+  or `max`); `penalty`, whole minutes from the contest's start to the
   counted submission (the latest of them under `best_per_group`), plus
   `per_attempt` for each earlier attempt that is not itself counted.
 - **Rows**: a cell counts when its counted submission earned something on
@@ -29,7 +30,8 @@ are given, and between moments only what is shown.
 A task not yet released is not on the board's view; organisers' `final`
 counts every task as revealed. A board whose scope shows nothing yet is
 given as the time it is shown from. `rows` and the viewer's own row only
-cut what is handed over (`for_viewer`).
+cut what is handed over (`for_viewer`). A submission's page reads its own
+line on each board covering its task the same way (`on_board`).
 """
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -38,7 +40,16 @@ from datetime import datetime
 from enum import IntEnum, StrEnum
 from fractions import Fraction
 
-from forge.domain.definitions import Leaderboard, Over, Penalty, Select, Show, Who
+from forge.domain.definitions import (
+    Fold,
+    Leaderboard,
+    Over,
+    Penalty,
+    Select,
+    Show,
+    ValueKey,
+    Who,
+)
 from forge.domain.meanings import ValueMeaning
 from forge.domain.names import WorkspaceOwner
 from forge.domain.scoring import (
@@ -117,7 +128,8 @@ class Key:
     """One key rows are compared on: what it ranks by, which way is better,
     none for a value no covered task gives a direction, the minutes a
     `penalty` charges per attempt, and, on a value, the title and unit its
-    column is named by, none where no covered task gives them.
+    column is named by, none where no covered task gives them, and how it
+    combines across each task's tests.
     """
 
     by: str
@@ -125,6 +137,7 @@ class Key:
     per_attempt: int | None = None
     title: str | None = None
     unit: str | None = None
+    fold: Fold | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +197,23 @@ class Standings:
     nothing_shown: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class OnBoard:
+    """One submission as one board covering its task reads it: the board's
+    name and scope, its number on each key but `penalty`, none where it has
+    none, the most the scope's groups not shown yet could still add to its
+    points, when the scope first shows something while it shows nothing
+    yet, and whether the row's cell on the task counts it.
+    """
+
+    board: str
+    over: Over
+    numbers: tuple[tuple[Key, Fraction | None], ...]
+    pending: Fraction | None
+    shown_at: datetime | None
+    counted: bool
+
+
 class Audience(IntEnum):
     """Who is reading a board, among those who may see the contest."""
 
@@ -223,20 +253,21 @@ def keys_of(
     for key in board.order:
         if isinstance(key, Penalty):
             found.append(Key(PENALTY, Better.LOWER, key.per_attempt))
-        elif key == PENALTY:
-            found.append(Key(PENALTY, Better.LOWER, 0))
-        elif key == POINTS:
-            found.append(Key(POINTS, Better.HIGHER))
-        else:
-            named = (words or {}).get(key)
+        elif isinstance(key, ValueKey):
+            named = (words or {}).get(key.by)
             found.append(
                 Key(
-                    key,
-                    directions.get(key),
+                    key.by,
+                    directions.get(key.by),
                     title=named.title if named is not None else None,
                     unit=named.unit if named is not None else None,
+                    fold=key.fold,
                 )
             )
+        elif key == PENALTY:
+            found.append(Key(PENALTY, Better.LOWER, 0))
+        else:
+            found.append(Key(POINTS, Better.HIGHER))
     return tuple(found)
 
 
@@ -406,6 +437,15 @@ def _order(
     return tuple(found)
 
 
+def _value(scored: Scored, key: Key, scope: Callable[[Show], bool], seen: Seen) -> Fraction | None:
+    """A submission's number on a value key: the value folded as the key
+    says over the scope's shown tests.
+    """
+    if key.fold is None:
+        return None
+    return scored.value(key.by, scope, seen, key.fold)
+
+
 def _counts(first: Key, number: Fraction | None) -> bool:
     """Whether a cell earned something on the first key."""
     if number is None:
@@ -442,7 +482,7 @@ def _cell(
             elif key.by == PENALTY:
                 found.append(_minutes(start, entry.at) + (key.per_attempt or 0) * earlier)
             else:
-                found.append(entry.scored.value(key.by, reading, at))
+                found.append(_value(entry.scored, key, reading, at))
         return tuple(found)
 
     def best(pool: Sequence[Entry], reading: Callable[[Show], bool], at: Seen) -> Entry | None:
@@ -530,6 +570,52 @@ def task_points(
     pending = max(reach, counted) - counted if waiting else ZERO
     shown = counted if _shows_some(column, scope, seen, keys[0]) else None
     return Points(shown, pending, column.reveal_at if pending else None)
+
+
+def counted_by(
+    board: Leaderboard,
+    keys: Sequence[Key],
+    start: datetime,
+    column: Column,
+    entries: Sequence[Entry],
+) -> frozenset[int]:
+    """The submissions a row's cell on the task counts now, read by the same
+    cell as the board's own row (`_cell`); none while it does not count.
+    """
+    cell = _cell(board.select, keys, start, in_scope(board.over), Seen(column.revealed), entries)
+    return frozenset(cell.submissions or ()) if cell.counting else frozenset()
+
+
+def on_board(
+    board: Leaderboard,
+    keys: Sequence[Key],
+    scored: Scored,
+    seen: Seen,
+    reveal_at: datetime | None,
+    *,
+    counted: bool,
+) -> OnBoard:
+    """One submission's line on `board`: its points on the board's scope,
+    each value folded as its key says over the scope's shown tests, both as
+    `seen` shows them, and the scope's pending points; given the task's
+    reveal as `shown_at` while the scope shows nothing the first key reads.
+    """
+    scope = in_scope(board.over)
+    numbers = tuple(
+        (key, scored.points(scope, seen) if key.by == POINTS else _value(scored, key, scope, seen))
+        for key in keys
+        if key.by != PENALTY
+    )
+    reads = seen.verdict if keys[0].by == POINTS else seen.tests
+    shows = any(scope(group.show) and reads(group.show) for group in scored.groups)
+    return OnBoard(
+        board.name,
+        board.over,
+        numbers,
+        scored.pending(seen, scope),
+        None if shows else reveal_at,
+        counted,
+    )
 
 
 def _cell_points(

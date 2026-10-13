@@ -9,8 +9,8 @@ when the same name has come to mean another workflow, what the task's
 sealed steps hold back until its reveal (`forge.domain.showing.Sealed`):
 the sealed steps that run once, whose stop is held back, and the values
 reported from sealed steps; and what each per-test number the workflow
-reports means for the task (`forge.domain.scoring.Measure`), its fold, its
-direction with the task's values in and its bounds, as the workflow at its
+reports means for the task (`forge.domain.scoring.Measure`), its direction
+with the task's values in and its bounds, as the workflow at its
 pinned version said when the task published, so a grading is scored and a
 board is checked without reading the workflow again; and every value the
 workflow reports, in its order, with the title and unit a page names it by
@@ -25,13 +25,13 @@ those either.
     sealed_steps: [validate]
     sealed_values: [accuracy]
     values:
-      time_ms: {fold: max, better: lower, at_least: "0"}
+      time_ms: {better: lower, at_least: "0"}
     reported:
       time_ms: {title: Run time, unit: ms}
       log: {title: Compile log}
 
 A publication made before values were noted has none: its numbers are shown
-on their tests and fold into nothing until the task publishes again. One
+on their tests and no board ranks them until the task publishes again. One
 made before the reported values' words were noted lists its per-test
 numbers by name alone, and a page names each by its key.
 """

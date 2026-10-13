@@ -146,14 +146,12 @@ report:
     from: ${{ steps.run.time_ms }}
     title: Run time
     unit: ms
-    fold: max
     better: lower
     at_least: 0
   memory_kb:
     from: ${{ steps.run.memory_kb }}
     title: Memory used
     unit: KB
-    fold: max
     better: lower
     at_least: 0
   log:
