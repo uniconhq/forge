@@ -16,9 +16,9 @@ from fractions import Fraction
 from typing import Any
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
-from forge.db.tables import Entrant, Grading
+from forge.db.tables import Entrant, Grading, Upload
 from forge.domain.errors import (
     Forbidden,
     NotFound,
@@ -127,9 +127,10 @@ async def test_a_task_nobody_submitted_to_is_removed_and_the_letters_after_it_mo
     assert b"product" not in await _settings(acme)
     assert ("acme", "spring.product.task") not in acme.fake.state.repos
     assert PRODUCT not in acme.fake.ci.activated
-    assert [call.operation for call in acme.fake.calls if call.operation != "read_file"][-3:] == [
+    assert [call.operation for call in acme.fake.calls if call.operation != "read_file"][-4:] == [
         "write_file",
         "deactivate",
+        "delete_submission_place",
         "delete_place",
     ]
     async with setup.unit_of_work() as ctx:
@@ -172,6 +173,50 @@ async def test_a_removal_that_fails_puts_the_entry_back_naming_the_same_manager(
         ("Remove product from the contest", 7),
         ("Put the removed task back", 7),
     ]
+
+
+def _places(acme: Acme, task: str) -> set[str]:
+    return {
+        name
+        for _, name in acme.fake.state.repos
+        if name.startswith(f"spring.{task}.") and name.endswith(".sub")
+    }
+
+
+async def test_a_removal_takes_each_entrants_place_to_submit_with_the_uploads_waiting_there(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await three(setup, acme)
+    manager = await _manager(setup, acme)
+    await upload(setup, acme.fake, entered.session, PRODUCT, b"print(6)\n")
+    assert _places(acme, "product")
+
+    await take_out(setup, manager, PRODUCT, TakeOut.REMOVE)
+
+    assert _places(acme, "product") == set()
+    async with setup.unit_of_work() as ctx:
+        assert (await ctx.db.scalars(select(Upload).where(Upload.task_id == PRODUCT))).all() == []
+
+
+async def test_a_place_holding_a_submission_the_platform_has_no_row_for_refuses_a_removal(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await three(setup, acme)
+    manager = await _manager(setup, acme)
+    await _submit(setup, acme, entered.session, PRODUCT, "key-0001-aaaa")
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(delete(Grading).where(Grading.task_id == PRODUCT))
+    settings = await _settings(acme)
+
+    with pytest.raises(TakeOutRefused) as refused:
+        await take_out(setup, manager, PRODUCT, TakeOut.REMOVE)
+
+    assert refused.value.detail == (
+        "product has a submission the platform has not recorded yet, so it cannot be removed. "
+        "Ask the platform's operator to reconcile, then withdraw it."
+    )
+    assert await _settings(acme) == settings
+    assert ("acme", "spring.product.task") in acme.fake.state.repos
 
 
 async def test_a_task_with_a_submission_is_withdrawn_and_hidden_from_entrants_until_put_back(

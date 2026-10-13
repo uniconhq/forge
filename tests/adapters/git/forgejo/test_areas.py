@@ -708,6 +708,36 @@ async def test_roles_and_labels_that_exist_are_kept_on_a_rerun(
     assert labels == ["clarification", "answered"]
 
 
+async def test_a_place_to_submit_is_deleted_only_while_it_holds_no_submission(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = f"/api/v1/repos/acme/spring.sum.{U8}.sub"
+    workspace, task = WorkspaceId(f"acme/spring/@{U8}"), TaskId("acme/spring/sum")
+    held = {"name": "submission/1", "commit": {"sha": "c-1", "created": "2026-09-30T10:00:00Z"}}
+    recorder.on("GET", f"{repo}/tags", ok([held]), ok([{"name": "v-other"}]))
+    recorder.on("DELETE", repo, httpx.Response(204))
+
+    with pytest.raises(Conflict):
+        await forgejo.workspaces.delete_submission_place(workspace, task)
+    assert f"DELETE {repo}" not in recorder.calls()
+    await forgejo.workspaces.delete_submission_place(workspace, task)
+
+    assert recorder.calls().count(f"DELETE {repo}") == 1
+
+
+async def test_a_place_to_submit_not_there_is_no_error(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = f"/api/v1/repos/acme/spring.sum.{U8}.sub"
+    recorder.on("GET", f"{repo}/tags", ok({"message": "not found"}, 404))
+
+    await forgejo.workspaces.delete_submission_place(
+        WorkspaceId(f"acme/spring/@{U8}"), TaskId("acme/spring/sum")
+    )
+
+    assert f"DELETE {repo}" not in recorder.calls()
+
+
 async def test_a_submission_is_written_as_the_contestant_and_named_at_that_commit(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
