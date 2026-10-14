@@ -14,7 +14,7 @@ from forge.domain.boards import (
     Ranked,
     Standings,
 )
-from forge.domain.definitions import Over, Select, Who
+from forge.domain.definitions import Fold, Over, Select, Who
 from forge.domain.names import EntrantOwner
 from forge.domain.scoring import Better, Points, written
 from forge.services.boards import OrganisedBoard, organised, seen
@@ -25,6 +25,7 @@ __all__ = [
     "Cell",
     "Column",
     "EntrantOwner",
+    "Fold",
     "Key",
     "Marks",
     "NotInView",

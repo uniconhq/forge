@@ -173,8 +173,6 @@ def _entry(entry: str | Meaning, rename: Callable[[str], str]) -> str | dict[str
         written["title"] = entry.title
     if entry.unit is not None:
         written["unit"] = entry.unit
-    if entry.fold is not None:
-        written["fold"] = entry.fold.value
     if entry.better is not None:
         written["better"] = rename(entry.better)
     if entry.at_least is not None:

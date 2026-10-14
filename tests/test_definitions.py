@@ -21,6 +21,7 @@ from forge.domain.definitions import (
     Approval,
     ContestVisibility,
     Entrants,
+    Fold,
     InviteWay,
     Locks,
     Over,
@@ -31,6 +32,7 @@ from forge.domain.definitions import (
     Show,
     SignupWay,
     State,
+    ValueKey,
     Way,
     Who,
     admin_only_changes,
@@ -359,9 +361,22 @@ def test_every_retired_key_in_one_file_is_named_together() -> None:
             "leaderboards[0].order[2]",
             "already ranks by penalty above.",
         ),
-        ("[time_ms, time_ms]", "leaderboards[0].order[1]", "already ranks by time_ms above."),
+        (
+            "[{by: time_ms, fold: max}, {by: time_ms, fold: sum}]",
+            "leaderboards[0].order[1]",
+            "already ranks by time_ms above.",
+        ),
         ("[]", "leaderboards[0].order", "Give at least one."),
         ("[Points]", "leaderboards[0].order[0]", "by a value the tasks report"),
+        (
+            "[points, time_ms]",
+            "leaderboards[0].order[1]",
+            "Say how time_ms combines across tests: {by: time_ms, fold: max} for the highest, "
+            "sum for the total, mean for the average.",
+        ),
+        ("[{by: points, fold: max}]", "leaderboards[0].order[0].by", "Write points by itself."),
+        ("[{by: time_ms}]", "leaderboards[0].order[0].fold", "This is required."),
+        ("[{by: time_ms, fold: min}]", "leaderboards[0].order[0].fold", "sum, mean or max"),
         (
             "[{by: penalty, per_attempt: -1}]",
             "leaderboards[0].order[0].per_attempt",
@@ -382,18 +397,24 @@ def test_penalty_ranks_after_points_or_a_value() -> None:
         HEAD
         + "leaderboards:\n"
         + "  - {name: A, order: [points, penalty]}\n"
-        + "  - {name: B, order: [time_ms, {by: penalty, per_attempt: 0}]}\n"
+        + "  - {name: B, order: [{by: time_ms, fold: mean}, {by: penalty, per_attempt: 0}]}\n"
     )
 
-    assert contest.leaderboards[1].order == ("time_ms", Penalty(by="penalty", per_attempt=0))
+    assert contest.leaderboards[1].order == (
+        ValueKey(by="time_ms", fold=Fold.MEAN),
+        Penalty(by="penalty", per_attempt=0),
+    )
 
 
 def test_best_per_group_ranks_points_first_and_no_value() -> None:
     value_first = contest_problems(
-        HEAD + "leaderboards: [{name: B, select: best_per_group, order: [time_ms]}]\n"
+        HEAD
+        + "leaderboards: [{name: B, select: best_per_group, order: [{by: time_ms, fold: max}]}]\n"
     )
     with_value = contest_problems(
-        HEAD + "leaderboards: [{name: B, select: best_per_group, order: [points, time_ms]}]\n"
+        HEAD
+        + "leaderboards: [{name: B, select: best_per_group, "
+        + "order: [points, {by: time_ms, fold: max}]}]\n"
     )
 
     assert (

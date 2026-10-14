@@ -25,7 +25,6 @@ from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.types import Type
 from forge.domain.workflow_definition import (
     BadReference,
-    Fold,
     Meaning,
     Reference,
     WorkflowRef,
@@ -136,7 +135,7 @@ def test_the_classic_workflow_parses() -> None:
     assert run.with_["time_limit"] == "${{ inputs.time_limit }}"
     log = workflow.report["log"]
     assert isinstance(log, Meaning)
-    assert (log.from_, log.title, log.unit, log.fold) == (
+    assert (log.from_, log.title, log.unit, log.better) == (
         "${{ steps.compile.compile_log }}",
         "Compile log",
         None,
@@ -144,9 +143,8 @@ def test_the_classic_workflow_parses() -> None:
     )
     time_ms = workflow.report["time_ms"]
     assert isinstance(time_ms, Meaning)
-    assert (time_ms.from_, time_ms.fold, time_ms.better, time_ms.at_least, time_ms.at_most) == (
+    assert (time_ms.from_, time_ms.better, time_ms.at_least, time_ms.at_most) == (
         "${{ steps.run.time_ms }}",
-        Fold.MAX,
         "lower",
         0,
         None,
@@ -530,8 +528,13 @@ def test_a_once_step_after_a_per_test_step_is_refused_at_the_version() -> None:
             "report.x.colour",
             "does not know this setting",
         ),
-        ({"fold": "max"}, "report.x.from", "This is required."),
-        ({"from": "${{ steps.run.time_ms }}", "fold": "min"}, "report.x.fold", "sum, mean or max"),
+        ({"title": "X"}, "report.x.from", "This is required."),
+        (
+            {"from": "${{ steps.run.time_ms }}", "fold": "max"},
+            "report.x.fold",
+            "Each leaderboard that ranks a value chooses how it combines across tests. "
+            "Remove fold.",
+        ),
         (
             {"from": "${{ steps.run.time_ms }}", "better": "up"},
             "report.x.better",
@@ -566,7 +569,7 @@ def test_a_once_step_after_a_per_test_step_is_refused_at_the_version() -> None:
     ids=[
         "w1-key",
         "w1-from",
-        "w3-fold",
+        "retired-fold",
         "w3-better",
         "w3-contestant",
         "w3-number",
@@ -963,22 +966,16 @@ def test_a_reference_that_points_at_nothing_it_may_read_is_refused(
             "Give the step output this reports, as ${{ steps.<id>.<output> }}.",
         ),
         (
-            {"from": "${{ steps.compile.compile_log }}", "fold": "max"},
-            "fold, better, at_least and at_most apply only to a number, and this is text.",
+            {"from": "${{ steps.compile.compile_log }}", "better": "higher"},
+            "better, at_least and at_most apply only to a number, and this is text.",
         ),
         (
             {"from": "${{ steps.compile.compile_log }}", "at_most": 1},
-            "fold, better, at_least and at_most apply only to a number, and this is text.",
-        ),
-        (
-            {"from": "${{ steps.echo.size }}", "fold": "sum"},
-            "fold and better apply only to a number reported for each test, and this step runs "
-            "once.",
+            "better, at_least and at_most apply only to a number, and this is text.",
         ),
         (
             {"from": "${{ steps.echo.size }}", "better": "higher"},
-            "fold and better apply only to a number reported for each test, and this step runs "
-            "once.",
+            "better applies only to a number reported for each test, and this step runs once.",
         ),
     ],
 )
@@ -989,13 +986,12 @@ def test_a_report_entry_reads_a_declared_port_of_a_type_it_holds(entry: Any, mes
     assert checked(document) == [{"path": "report.x", "message": message}]
 
 
-def test_a_once_number_may_carry_bounds_and_a_per_test_one_a_fold_and_a_direction() -> None:
+def test_a_once_number_may_carry_bounds_and_a_per_test_one_a_direction() -> None:
     document = with_echo(**ECHO_PORTS)
     document["report"]["size"] = {"from": "${{ steps.echo.size }}", "at_least": 0, "at_most": 10}
     document["report"]["said"] = "${{ steps.echo.said }}"
-    document["report"]["total_ms"] = {
+    document["report"]["cpu_ms"] = {
         "from": "${{ steps.run.time_ms }}",
-        "fold": "sum",
         "better": "lower",
         "at_least": 0,
     }

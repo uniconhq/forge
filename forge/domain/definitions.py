@@ -72,6 +72,7 @@ __all__ = [
     "ContestTask",
     "ContestVisibility",
     "Entrants",
+    "Fold",
     "Form",
     "Group",
     "InvalidDefinition",
@@ -89,6 +90,7 @@ __all__ = [
     "State",
     "Submissions",
     "TaskDefinition",
+    "ValueKey",
     "Way",
     "Who",
     "admin_only_changes",
@@ -377,18 +379,52 @@ class Penalty(Model):
     per_attempt: Annotated[int, Field(strict=True, ge=0)] = 0
 
 
-def _order_key(value: object) -> str | Penalty:
-    if isinstance(value, dict):
-        return Penalty.model_validate(value)
+class Fold(StrEnum):
+    """How a board combines a value over a task's tests: the total, the
+    average, or the highest.
+    """
+
+    SUM = "sum"
+    MEAN = "mean"
+    MAX = "max"
+
+
+def _ranked_value(value: object) -> str:
     if not isinstance(value, str) or not VALUE_NAME.match(value):
-        raise ValueError(
-            "Rank by points, by penalty minutes, or by a value the tasks report, "
-            "named as they report it."
-        )
+        raise ValueError("Name a value the tasks report, as they report it.")
+    if value == "points":
+        raise ValueError("Write points by itself.")
     return value
 
 
-OrderKey = Annotated[str | Penalty, PlainValidator(_order_key)]
+class ValueKey(Model):
+    """A value a board ranks by, with how it combines across each task's
+    tests. The fold has no default: no single one suits every value.
+    """
+
+    by: Annotated[str, PlainValidator(_ranked_value)]
+    fold: Fold
+
+
+def _order_key(value: object) -> str | Penalty | ValueKey:
+    if isinstance(value, dict):
+        if value.get("by") == "penalty":
+            return Penalty.model_validate(value)
+        return ValueKey.model_validate(value)
+    if value in ("points", "penalty"):
+        return str(value)
+    if isinstance(value, str) and VALUE_NAME.match(value):
+        raise ValueError(
+            f"Say how {value} combines across tests: {{by: {value}, fold: max}} for the "
+            "highest, sum for the total, mean for the average."
+        )
+    raise ValueError(
+        "Rank by points, by penalty minutes, or by a value the tasks report, written as "
+        "{by: <value>, fold: sum, mean or max}."
+    )
+
+
+OrderKey = Annotated[str | Penalty | ValueKey, PlainValidator(_order_key)]
 
 
 def _rows(value: object) -> Literal["all", "own"] | int:
@@ -401,8 +437,10 @@ def _rows(value: object) -> Literal["all", "own"] | int:
     )
 
 
-def key_name(key: str | Penalty) -> str:
+def key_name(key: str | Penalty | ValueKey) -> str:
     """The name an `order` key ranks on: `points`, `penalty` or a value's."""
+    if isinstance(key, ValueKey):
+        return key.by
     return key if isinstance(key, str) else "penalty"
 
 

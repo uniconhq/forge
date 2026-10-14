@@ -28,12 +28,12 @@ section 2, check 12): its sealed facts always, since they say what that
 plan's steps read; and the `test_groups`, `credit` and value meanings of the
 task's latest publication while no grading change was published since, so a
 change to rule weights, `show` or `credit` alone counts at once, and its own
-otherwise, until its regrade ends, so a result's rows are always folded with
+otherwise, until its regrade ends, so a result's rows are always scored with
 the tests they ran on and a credit always names a value its plan reported.
 With a grading scored (`forge.domain.scoring`), each group shown carries
 its points and most points, each test row its credit, and the result its
-points shown and pending and each value with a fold, folded over the tests
-shown (TASK-FORMAT.md section 1.7).
+points shown and pending (TASK-FORMAT.md section 1.7). A value combined
+across tests is a board's, and the result gives it once per board.
 """
 
 from collections.abc import Collection, Mapping, Sequence
@@ -150,8 +150,7 @@ class GroupShown:
 @dataclass(frozen=True, slots=True)
 class Shown:
     """A result as a contestant sees it now: what stopped it, its outcome,
-    its groups and its once values; scored, its points and each value with
-    a fold, folded over the tests shown.
+    its groups and its once values; scored, its points.
     """
 
     stopped: str | None
@@ -159,7 +158,6 @@ class Shown:
     groups: tuple[GroupShown, ...]
     values: Mapping[str, Any]
     points: Points | None = None
-    folded: Mapping[str, Fraction] = field(default_factory=dict)
 
 
 class SubmissionState(StrEnum):
@@ -216,8 +214,7 @@ def shown(
     `test_groups`, with its sealed facts, before or after the task's
     reveal at `reveal_at`; with `scored`, the grading scored under those
     groups, each group's points and most points, its points only once its
-    verdict is shown, each test's credit, the points shown and pending, and
-    the folded values.
+    verdict is shown, each test's credit, and the points shown and pending.
     """
     rows: dict[str, list[Mapping[str, Any]]] = {}
     for row in result.get("tests") or ():
@@ -273,7 +270,6 @@ def shown(
         tuple(found),
         values,
         points_seen(scored, seen, reveal_at) if scored is not None else None,
-        scored.values(seen) if scored is not None else {},
     )
 
 

@@ -411,7 +411,10 @@ async def test_a_save_that_writes_withdrawn_by_hand_reads_as_the_action_does(
     await three(setup, acme)
     manager = await _manager(setup, acme)
     await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
-    by_time = "leaderboards:\n  - {name: Fastest, who: everyone, tasks: [sum], order: [speed]}\n"
+    by_time = (
+        "leaderboards:\n"
+        "  - {name: Fastest, who: everyone, tasks: [sum], order: [{by: speed, fold: max}]}\n"
+    )
     withdrawn = contest(by_time).replace("  - id: sum\n", "  - id: sum\n    withdrawn: true\n")
     current = await acme.fake.content.read_file(PLATFORM, SPRING, "contest.yaml")
 
