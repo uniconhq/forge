@@ -19,7 +19,6 @@ A value in a step's `with` or in the report may be or hold a reference,
 
 import re
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import BeforeValidator, Field, PlainValidator, model_validator
@@ -255,26 +254,19 @@ class WorkflowStep(Model):
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
 
 
-class Fold(StrEnum):
-    SUM = "sum"
-    MEAN = "mean"
-    MAX = "max"
-
-
 class Meaning(Model):
     """A reported value with what it means: `from` the step output it reads,
-    the `title` and `unit` a page names it by ("Run time", "ms"), how it
-    folds over tests, which way is better, and its bounds. The title and
-    the unit change no plan. Only a number takes a unit: making or checking
-    a version refuses one on text, naming the entry
-    (`plans.stray_report_units`), and a version made before reads with it
-    dropped.
+    the `title` and `unit` a page names it by ("Run time", "ms"), which way
+    is better, and its bounds. How it combines across tests is chosen by
+    each board that ranks it. The title and the unit change no plan. Only a
+    number takes a unit: making or checking a version refuses one on text,
+    naming the entry (`plans.stray_report_units`), and a version made
+    before reads with it dropped.
     """
 
     from_: str = Field(alias="from")
     title: Line | None = None
     unit: Line | None = None
-    fold: Fold | None = None
     better: str | None = None
     at_least: Number | None = None
     at_most: Number | None = None
@@ -293,7 +285,7 @@ def _report_entry(value: object) -> str | Meaning:
     if not isinstance(value, str):
         raise ValueError(
             "Give the step output this reports, as ${{ steps.<id>.<output> }}, or that "
-            "output with what it means: from, title, unit, fold, better, at_least and at_most."
+            "output with what it means: from, title, unit, better, at_least and at_most."
         )
     return value
 
@@ -499,6 +491,10 @@ RETIRED = (
         ("steps", ANY, "foreach"),
         "This is now set by running the step for each test. Turn that on, and remove this.",
     ),
+    Retired(
+        ("report", ANY, "fold"),
+        "Each leaderboard that ranks a value chooses how it combines across tests. Remove fold.",
+    ),
 )
 
 
@@ -574,14 +570,12 @@ report:
     from: ${{{{ steps.run.time_ms }}}}
     title: Run time
     unit: ms
-    fold: max
     better: lower
     at_least: 0
   memory_kb:
     from: ${{{{ steps.run.memory_kb }}}}
     title: Memory used
     unit: KB
-    fold: max
     better: lower
     at_least: 0
   log:
@@ -595,7 +589,6 @@ __all__ = [
     "RESERVED_NAMES",
     "WORKFLOW_FILE",
     "BadReference",
-    "Fold",
     "Meaning",
     "Reference",
     "TestField",

@@ -462,7 +462,7 @@ async def _boards(
     name = (await names.names_of(ctx, [task])).get(task)
     if contest is None or name is None:
         return []
-    shape = covered(compiled.measures, definition.test_groups, compiled.meanings)
+    shape = covered(compiled.measures, definition.test_groups, compiled.meanings, definition.credit)
     return await boards.check_task(ctx, contest_id_of(task_scope(task)), contest, name, shape)
 
 
@@ -488,7 +488,7 @@ async def _report(
         found.append(
             f"{name} shows its hidden results on {in_words(reveal_of(contest, entry, extensions))}."
         )
-    shape = covered(compiled.measures, definition.test_groups, compiled.meanings)
+    shape = covered(compiled.measures, definition.test_groups, compiled.meanings, definition.credit)
     found += boards.task_notes(contest, name, shape)
     return found
 

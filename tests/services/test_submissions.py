@@ -57,7 +57,6 @@ from forge.domain.scoring import Better, Points
 from forge.domain.showing import GroupShown, Sealed, SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import pointer_text
-from forge.domain.workflow_definition import Fold
 from forge.domain.workflows import Visibility
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
@@ -1069,8 +1068,8 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
     assert before.grading.values == {"log": "compiled"}
     # Each value with the words its publication froze, in the report's order.
     assert before.grading.meanings == (
-        ValueMeaning("time_ms", "Run time", "ms", Fold.MAX, Better.LOWER),
-        ValueMeaning("memory_kb", "Memory used", "KB", Fold.MAX, Better.LOWER),
+        ValueMeaning("time_ms", "Run time", "ms", Better.LOWER),
+        ValueMeaning("memory_kb", "Memory used", "KB", Better.LOWER),
         ValueMeaning("log", "Compile log"),
     )
     # No worth in the contest, so the task is worth its groups' total, 200:
@@ -1168,9 +1167,7 @@ async def test_a_result_reads_the_words_of_a_later_publication_that_changed_noth
     [mine] = await submissions.mine(setup, entered.session, entered.task)
 
     assert mine.grading is not None
-    assert mine.grading.meanings[0] == ValueMeaning(
-        "time_ms", "Time taken", "ms", Fold.MAX, Better.LOWER
-    )
+    assert mine.grading.meanings[0] == ValueMeaning("time_ms", "Time taken", "ms", Better.LOWER)
 
 
 async def test_a_sealed_values_words_are_served_to_organisers_and_to_entrants_at_the_reveal(

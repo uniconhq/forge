@@ -18,7 +18,7 @@ import pytest
 
 from forge.domain import exact_json
 from forge.domain.contracts import violation
-from forge.domain.definitions import parse_task, starter_task
+from forge.domain.definitions import Fold, parse_task, starter_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine
 from forge.domain.meanings import ValueMeaning, shown_meanings
 from forge.domain.plans import (
@@ -45,7 +45,7 @@ from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.publications import read_note, write_note
 from forge.domain.scoring import Better, fold, written
 from forge.domain.showing import NOTHING_SEALED, Sealed
-from forge.domain.workflow_definition import Fold, WorkflowDefinition, parse_workflow
+from forge.domain.workflow_definition import WorkflowDefinition, parse_workflow
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES
 
@@ -201,12 +201,12 @@ steps:
       expected: ${{ test.answer }}
 report:
   fraction:
-    {from: "${{ steps.score.fraction }}", fold: mean, better: higher, at_least: 0, at_most: 1}
-  miss: {from: "${{ steps.score.fraction }}", fold: mean, better: lower, at_least: 0, at_most: 1}
-  steps_taken: {from: "${{ steps.score.steps }}", fold: sum, better: lower, at_least: 0}
-  raw: {from: "${{ steps.score.steps }}", fold: sum, at_least: 0}
-  reward: {from: "${{ steps.score.steps }}", fold: sum, better: higher}
-  chosen: {from: "${{ steps.score.steps }}", fold: sum, better: "${{ inputs.better }}", at_least: 0}
+    {from: "${{ steps.score.fraction }}", better: higher, at_least: 0, at_most: 1}
+  miss: {from: "${{ steps.score.fraction }}", better: lower, at_least: 0, at_most: 1}
+  steps_taken: {from: "${{ steps.score.steps }}", better: lower, at_least: 0}
+  raw: {from: "${{ steps.score.steps }}", at_least: 0}
+  reward: {from: "${{ steps.score.steps }}", better: higher}
+  chosen: {from: "${{ steps.score.steps }}", better: "${{ inputs.better }}", at_least: 0}
   log: ${{ steps.compile.compile_log }}
 """
 )
@@ -238,7 +238,7 @@ steps:
 report:
   accuracy: ${{ steps.predict.accuracy }}
   fraction:
-    {from: "${{ steps.score.fraction }}", fold: mean, better: higher, at_least: 0, at_most: 1}
+    {from: "${{ steps.score.fraction }}", better: higher, at_least: 0, at_most: 1}
 """
 )
 """The contestant's notebook run once over a data folder the task names, and
@@ -751,13 +751,13 @@ def test_a_values_title_and_unit_change_no_plan_and_are_compiled_beside_it() -> 
 
     assert untitled.plan.to_bytes() == titled.plan.to_bytes()
     assert titled.meanings == (
-        ValueMeaning("time_ms", "Run time", "ms", Fold.MAX, Better.LOWER),
-        ValueMeaning("memory_kb", "Memory used", "KB", Fold.MAX, Better.LOWER),
+        ValueMeaning("time_ms", "Run time", "ms", Better.LOWER),
+        ValueMeaning("memory_kb", "Memory used", "KB", Better.LOWER),
         ValueMeaning("log", "Compile log"),
     )
     assert untitled.meanings == (
-        ValueMeaning("time_ms", fold=Fold.MAX, better=Better.LOWER),
-        ValueMeaning("memory_kb", "Memory used", "KB", Fold.MAX, Better.LOWER),
+        ValueMeaning("time_ms", better=Better.LOWER),
+        ValueMeaning("memory_kb", "Memory used", "KB", Better.LOWER),
         ValueMeaning("log"),
     )
 
@@ -773,8 +773,8 @@ def test_a_publications_note_keeps_each_values_words_in_the_reports_order() -> N
     # A publication made before the words were noted names its per-test
     # numbers alone, by key.
     assert before.meanings == (
-        ValueMeaning("memory_kb", fold=Fold.MAX, better=Better.LOWER),
-        ValueMeaning("time_ms", fold=Fold.MAX, better=Better.LOWER),
+        ValueMeaning("memory_kb", better=Better.LOWER),
+        ValueMeaning("time_ms", better=Better.LOWER),
     )
 
 
@@ -1431,8 +1431,8 @@ def test_a_bounded_number_credit_does_not_name_is_reported_not_refused() -> None
 
 TITLED = parse_workflow(
     CHECKED_TEXT.replace(
-        "fold: mean, better: lower,", "title: Share missed, fold: mean, better: lower,"
-    ).replace("fold: sum, at_least: 0}", "title: Raw steps, fold: sum, at_least: 0}")
+        'fraction }}", better: lower,', 'fraction }}", title: Share missed, better: lower,'
+    ).replace('steps }}", at_least: 0}', 'steps }}", title: Raw steps, at_least: 0}')
 )
 """Checked, with a title on `miss` and on `raw`."""
 
@@ -1477,7 +1477,8 @@ THIRTY_DIGITS = "-12345678901234.5678901234567891"
 def test_a_bound_of_thirty_significant_digits_survives_from_the_file_to_a_score() -> None:
     workflow = parse_workflow(
         CHECKED_TEXT.replace(
-            "fold: sum, better: higher}", f"fold: sum, better: higher, at_least: {THIRTY_DIGITS}}}"
+            'steps }}", better: higher}',
+            f'steps }}}}", better: higher, at_least: {THIRTY_DIGITS}}}',
         )
     )
     built = compiled(CHECKED_TASK, classic_tests("main/1"), workflow)
@@ -1489,8 +1490,8 @@ def test_a_bound_of_thirty_significant_digits_survives_from_the_file_to_a_score(
     )
     noted = read_note(write_note(False, (), measures=built.measures)).measures["reward"]
     # A test without the value counts as the bound, to the last digit.
-    assert fold(noted, [None]) == Fraction(THIRTY_DIGITS)
-    assert written(fold(noted, [None, Fraction(1)]) or Fraction(0)) == (
+    assert fold(Fold.SUM, noted, [None]) == Fraction(THIRTY_DIGITS)
+    assert written(fold(Fold.SUM, noted, [None, Fraction(1)]) or Fraction(0)) == (
         "-12345678901233.5678901234567891"
     )
 

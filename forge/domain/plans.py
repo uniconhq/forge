@@ -938,15 +938,12 @@ def _check_report(
         )
     if isinstance(entry, Meaning):
         if port.type is not Type.NUMBER and any(
-            value is not None for value in (entry.fold, entry.better, entry.at_least, entry.at_most)
+            value is not None for value in (entry.better, entry.at_least, entry.at_most)
         ):
+            raise _Refused("better, at_least and at_most apply only to a number, and this is text.")
+        if not known[1] and entry.better is not None:
             raise _Refused(
-                "fold, better, at_least and at_most apply only to a number, and this is text."
-            )
-        if not known[1] and (entry.fold is not None or entry.better is not None):
-            raise _Refused(
-                "fold and better apply only to a number reported for each test, and this "
-                "step runs once."
+                "better applies only to a number reported for each test, and this step runs once."
             )
 
 
@@ -1708,8 +1705,8 @@ def value_meanings(
 
 def measures(values: Mapping[str, ReportedValue], task: TaskDefinition) -> dict[str, Measure]:
     """What each per-test number the workflow reports means for this task:
-    its fold, its direction with the task's values in, and its bounds, each
-    bound the exact rational of the decimal it is written as.
+    its direction with the task's values in, and its bounds, each bound the
+    exact rational of the decimal it is written as.
     """
     found: dict[str, Measure] = {}
     for name, value in sorted(values.items()):
@@ -1721,7 +1718,6 @@ def measures(values: Mapping[str, ReportedValue], task: TaskDefinition) -> dict[
             continue
         better = _better(meaning, task)
         found[name] = Measure(
-            fold=meaning.fold,
             better=Better(better) if better in ("higher", "lower") else None,
             at_least=exact(meaning.at_least),
             at_most=exact(meaning.at_most),

@@ -3,9 +3,12 @@ T9 and C4), checked from either side: a task's save against every board
 covering it, with the other covered tasks as their latest publications give
 them, and a contest's save against every covered task's latest publication.
 
-- Every value a board ranks is a number each covered task reports per test
-  with a `fold`, whose `better` resolves, the same direction and fold in
-  every covered task.
+- No value a board ranks is the one a covered task's `credit` names: that
+  task already turns it into points, through its groups and weights. The
+  value behind relative credit may be ranked.
+- Every value a board ranks is a number each covered task reports per test,
+  whose `better` resolves, the same direction in every covered task. The
+  board folds it the same way in each, so the tasks need not agree on more.
 - A value first on a board covering more than one task is `better: higher`
   with `at_least` at least 0 in each: a task that does not count adds 0 to
   a row's sum, so 0 has to be the worst any task can report.
@@ -34,25 +37,27 @@ from forge.domain.definitions import (
     Group,
     Leaderboard,
     Over,
+    Relative,
     Select,
     Show,
     key_name,
 )
 from forge.domain.meanings import ValueMeaning, in_sentence
 from forge.domain.scoring import ZERO, Better, Measure, rule_weight, written
-from forge.domain.workflow_definition import Fold
 
 
 @dataclass(frozen=True, slots=True)
 class Covered:
     """A covered task as a board reads it: what each per-test number means,
-    each group's `show` and whether it has a rule weight, and the title its
-    workflow gives each value that has one.
+    each group's `show` and whether it has a rule weight, the title its
+    workflow gives each value that has one, and the value its `credit`
+    names, none for no credit or relative credit.
     """
 
     measures: Mapping[str, Measure]
     groups: Mapping[str, tuple[Show, bool]]
     titles: Mapping[str, str] = field(default_factory=dict)
+    credit: str | None = None
 
     @property
     def gives_points(self) -> bool:
@@ -63,11 +68,13 @@ def covered(
     measures: Mapping[str, Measure],
     groups: Mapping[str, Group],
     meanings: Iterable[ValueMeaning] = (),
+    credit: str | Relative | None = None,
 ) -> Covered:
     return Covered(
         measures,
         {name: (group.shown, rule_weight(group) > 0) for name, group in groups.items()},
         {meaning.name: meaning.title for meaning in meanings if meaning.title},
+        credit if isinstance(credit, str) else None,
     )
 
 
@@ -93,8 +100,8 @@ def _opening(said: str, name: str) -> str:
 @dataclass(frozen=True, slots=True)
 class Breach:
     """What a board refuses of one covered task: which `order` key, none
-    for its scope or its `select`, whether it is the task's `workflow` or
-    its `test_groups` that would mend it, and why.
+    for its scope or its `select`, whether it is the task's `workflow`, its
+    `test_groups` or its `credit` that would mend it, and why.
     """
 
     task: str
@@ -178,14 +185,17 @@ def _value(
             continue
         against = given if only is not None else given[:position]
         said = value_words(tasks, name, task)
-        if measure is None or measure.fold is None:
+        if tasks[task].credit == name:
+            found.append(Breach(task, index, "credit", _credit_message(board, said, task, only)))
+            continue
+        if measure is None:
             found.append(
                 Breach(
                     task,
                     index,
                     "workflow",
                     f"The leaderboard {board.name} ranks by {said}, but {task}'s workflow does "
-                    f"not report {said} for each test, combined across its tests.",
+                    f"not report {said} as a number for each test.",
                 )
             )
             continue
@@ -213,18 +223,32 @@ def _value(
     return found
 
 
+def _credit_message(board: Leaderboard, name: str, task: str, only: str | None) -> str:
+    """Why a board cannot rank by the value a task's `credit` names, said
+    to the task's save (`only`) or to the contest's.
+    """
+    if only is not None:
+        return (
+            f"{board.name} ranks by {name}, so {task} cannot also use {name} as its credit: "
+            "the board would rank a plain average that ignores test weights and groups. "
+            "Change the board, or remove credit."
+        )
+    return (
+        f"The leaderboard {board.name} ranks by {name}, but {task} already turns {name} into "
+        "points through its test groups. Rank by points instead."
+    )
+
+
 def _first_other(
     given: Sequence[tuple[str, Measure | None]], task: str, measure: Measure
 ) -> tuple[str, Measure] | None:
-    """The first other covered task giving the value another direction or
-    fold.
-    """
+    """The first other covered task giving the value another direction."""
     for other, theirs in given:
         if other == task:
             continue
-        if theirs is None or theirs.fold is None or theirs.better is None:
+        if theirs is None or theirs.better is None:
             continue
-        if theirs.better != measure.better or theirs.fold != measure.fold:
+        if theirs.better != measure.better:
             return other, theirs
     return None
 
@@ -232,21 +256,11 @@ def _first_other(
 def _differs(
     board: Leaderboard, name: str, task: str, measure: Measure, other: str, theirs: Measure
 ) -> str:
-    if theirs.better != measure.better:
-        assert measure.better is not None and theirs.better is not None
-        return (
-            f"The leaderboard {board.name} ranks by {name}, but a {measure.better} {name} is "
-            f"better in {task} and a {theirs.better} one in {other}."
-        )
-    assert measure.fold is not None and theirs.fold is not None
+    assert measure.better is not None and theirs.better is not None
     return (
-        f"The leaderboard {board.name} ranks by {name}, but {task} takes "
-        f"{_FOLDS[measure.fold]} of {name} over its tests and {other} takes "
-        f"{_FOLDS[theirs.fold]}."
+        f"The leaderboard {board.name} ranks by {name}, but a {measure.better} {name} is "
+        f"better in {task} and a {theirs.better} one in {other}."
     )
-
-
-_FOLDS = {Fold.SUM: "the sum", Fold.MEAN: "the mean", Fold.MAX: "the highest"}
 
 
 def _sum_problem(board: Leaderboard, name: str, opening: str, measure: Measure) -> str | None:

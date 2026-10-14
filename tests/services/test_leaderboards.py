@@ -13,8 +13,9 @@ task's `marks` never lowered below what a row holds (C1).
 
 import asyncio
 import contextlib
+import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from typing import Any
@@ -41,6 +42,7 @@ from forge.domain.scoring import Points
 from forge.domain.sessions import Session
 from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
+from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import (
@@ -56,7 +58,7 @@ from forge.services import (
 )
 from forge.services.access import Organiser
 from forge.services.publications import Draft, Published
-from forge.testing import FakeClock
+from forge.testing import CLASSIC, FakeClock
 from tests.services.conftest import (
     RUNNING,
     SPRING,
@@ -740,10 +742,10 @@ async def test_a_lower_is_better_value_first_over_two_tasks_is_refused_on_the_co
     product = await make_task(setup, acme, "product")
     await write_contest(acme.fake, contest(entry="  - id: product\n"))
     await publish(setup, acme, product)
-    fastest = "leaderboards:\n  - {name: Fastest, order: [time_ms]}\n"
+    fastest = "leaderboards:\n  - {name: Fastest, order: [{by: time_ms, fold: max}]}\n"
 
     refused = await _refused(setup, acme, contest(fastest, "  - id: product\n"))
-    alone = "leaderboards:\n  - {name: Fastest, tasks: [sum], order: [time_ms]}\n"
+    alone = "leaderboards:\n  - {name: Fastest, tasks: [sum], order: [{by: time_ms, fold: max}]}\n"
 
     said = (
         "The leaderboard Fastest ranks first by run time, for which lower is better, over more "
@@ -753,11 +755,83 @@ async def test_a_lower_is_better_value_first_over_two_tasks_is_refused_on_the_co
     assert await _write(setup, acme, contest(alone, "  - id: product\n"))
 
 
+SCORED = CLASSIC.replace(
+    CLASSIC[CLASSIC.index(b"report:") :],
+    b"report:\n  fraction:\n    from: ${{ steps.run.memory_kb }}\n"
+    b"    better: higher\n    at_least: 0\n    at_most: 1\n",
+)
+"""classic, reporting a per-test fraction a task can use as its credit."""
+
+
+async def _scored(acme: Acme) -> None:
+    made = await acme.fake.workflows.create_workflow(
+        PLATFORM, "acme", "scored", {"workflow.yaml": SCORED}, Visibility.PUBLIC
+    )
+    await acme.fake.workflows.create_workflow_version(PLATFORM, made, "v1")
+
+
+async def _credited(
+    setup: Setup, acme: Acme, task: TaskId, credit: bytes, *, base: bytes | None = None
+) -> Published | Draft:
+    """The task saved on acme/scored@v1 with `credit`, over `base` or the current file."""
+    current = base if base is not None else await _task_yaml(acme, task)
+    scored = re.sub(rb"workflow: \S+", b"workflow: acme/scored@v1", current)
+    return await _save(setup, acme, task, {"task.yaml": scored + credit})
+
+
+async def test_a_board_ranking_a_tasks_credit_value_is_refused_on_the_contests_save(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await write_contest(acme.fake, contest())
+    await _scored(acme)
+    assert isinstance(await _credited(setup, acme, entered.task, b"credit: fraction\n"), Published)
+    ranked = "leaderboards:\n  - {name: Standings, order: [points, {by: fraction, fold: mean}]}\n"
+
+    refused = await _refused(setup, acme, contest(ranked))
+
+    assert refused == [
+        (
+            "leaderboards[0].order[1]",
+            "The leaderboard Standings ranks by fraction, but sum already turns fraction into "
+            "points through its test groups. Rank by points instead.",
+        )
+    ]
+
+
+async def test_a_tasks_save_with_the_credit_a_board_ranks_is_refused_at_credit(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await write_contest(
+        acme.fake,
+        contest(
+            "leaderboards:\n  - {name: Standings, order: [points, {by: fraction, fold: mean}]}\n"
+        ),
+    )
+    await _scored(acme)
+
+    base = await _task_yaml(acme, entered.task)
+
+    refused = await _credited(setup, acme, entered.task, b"credit: fraction\n", base=base)
+    plain = await _credited(setup, acme, entered.task, b"", base=base)
+
+    assert isinstance(refused, Draft)
+    assert [(error["path"], error["message"]) for error in refused.errors] == [
+        (
+            "credit",
+            "Standings ranks by fraction, so sum cannot also use fraction as its credit: the "
+            "board would rank a plain average that ignores test weights and groups. Change the "
+            "board, or remove credit.",
+        )
+    ]
+    assert isinstance(plain, Published), plain
+
+
 async def test_a_tasks_save_is_refused_where_a_board_ranks_what_its_groups_hide(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await write_contest(
-        acme.fake, contest("leaderboards:\n  - {name: Fast, over: live, order: [time_ms]}\n")
+        acme.fake,
+        contest("leaderboards:\n  - {name: Fast, over: live, order: [{by: time_ms, fold: max}]}\n"),
     )
     current = await _task_yaml(acme, entered.task)
     hidden = current.replace(b"main: {each: 100}", b"main: {pass: 100, show: verdict}")
@@ -870,14 +944,6 @@ async def test_an_organiser_reads_a_hidden_groups_points_and_tests_before_the_re
     assert seen.grading.outcome == "wrong_answer"
     assert seen.grading.points is not None
     assert (seen.grading.points.shown, seen.grading.points.pending) == (Fraction(65), Fraction(0))
-    # Its large test was not accepted, so it has no time at all; the second,
-    # which passed every test, has large's 30 among its own.
-    assert "time_ms" not in seen.grading.folded
-    every = await submissions.organised(
-        setup, observer, ranked.task, EntrantOwner(ranked.entrant), 2
-    )
-    assert every.grading is not None
-    assert every.grading.folded["time_ms"] == Fraction(30)
     assert (seen.number, seen.submitted_at, seen.late_days) == (
         own.number,
         own.submitted_at,
@@ -958,13 +1024,110 @@ async def test_a_mark_in_flight_and_a_save_lowering_marks_never_leave_a_row_over
 async def test_a_value_ranked_on_is_named_by_the_title_and_unit_its_task_gives(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    fastest = "leaderboards:\n  - {name: Fast, who: everyone, order: [points, time_ms]}\n"
+    fastest = (
+        "leaderboards:\n"
+        "  - {name: Fast, who: everyone, order: [points, {by: time_ms, fold: max}]}\n"
+    )
     await write_contest(acme.fake, contest(fastest))
     await _three_groups(setup, acme, entered.task)
 
     (standings,) = await boards.seen(setup, None, SPRING)
 
-    assert [(key.by, key.title, key.unit) for key in standings.keys] == [
-        ("points", None, None),
-        ("time_ms", "Run time", "ms"),
+    assert [(key.by, key.title, key.unit, key.fold) for key in standings.keys] == [
+        ("points", None, None, None),
+        ("time_ms", "Run time", "ms", "max"),
     ]
+
+
+# A submission's line on each board covering its task (TASK-FORMAT.md 3.6)
+
+Line = tuple[tuple[Fraction | None, ...], Fraction | None, datetime | None, bool]
+
+
+def _lines(read: Sequence[submissions.Submission]) -> dict[tuple[int, str], Line]:
+    """Each submission's line on each board, by number and board: its
+    numbers, pending points, when its scope is shown and whether it counts.
+    """
+    found: dict[tuple[int, str], Line] = {}
+    for each in read:
+        assert each.grading is not None
+        for line in each.grading.boards:
+            numbers = tuple(number for _, number in line.numbers)
+            found[each.number, line.board] = (numbers, line.pending, line.shown_at, line.counted)
+    return found
+
+
+async def test_a_submission_reads_its_line_on_each_board_as_that_board_counts_it(
+    setup: Setup, ranked: Entered, clock: FakeClock
+) -> None:
+    before = _lines(await submissions.mine(setup, ranked.session, ranked.task))
+    clock.set(END)
+    await identity.current(ranked.session.id, setup=setup)
+    after = _lines(await submissions.mine(setup, ranked.session, ranked.task))
+
+    # Before the reveal both read 65 on Standings, with large's 35 pending,
+    # and the earlier counts; Final, over large alone, shows nothing yet
+    # and counts neither.
+    assert before == {
+        (2, "Standings"): ((Fraction(65),), Fraction(35), None, False),
+        (2, "Final"): ((Fraction(0),), Fraction(35), END, False),
+        (1, "Standings"): ((Fraction(65),), Fraction(35), None, True),
+        (1, "Final"): ((Fraction(0),), Fraction(35), END, False),
+    }
+    # Once revealed the second passed everything and counts on Standings;
+    # Final counts the first, best on what was shown before, which earned
+    # nothing on large, so no cell counts.
+    assert after == {
+        (2, "Standings"): ((Fraction(100),), Fraction(0), None, True),
+        (2, "Final"): ((Fraction(35),), Fraction(0), None, False),
+        (1, "Standings"): ((Fraction(65),), Fraction(0), None, False),
+        (1, "Final"): ((Fraction(0),), Fraction(0), None, False),
+    }
+
+
+async def test_an_organiser_reads_a_line_on_every_board_and_a_contestant_on_those_they_see(
+    setup: Setup, acme: Acme, ranked: Entered
+) -> None:
+    await write_contest(acme.fake, contest(BOARDS + "  - {name: Staff, who: organisers}\n"))
+    observer = _observer_of(acme, Scope("acme", "spring"))
+
+    own = await submissions.one(setup, ranked.session, ranked.task, 1)
+    seen = await submissions.organised(
+        setup, observer, ranked.task, EntrantOwner(ranked.entrant), 1
+    )
+
+    assert own.grading is not None and seen.grading is not None
+    assert [line.board for line in own.grading.boards] == ["Standings", "Final"]
+    assert [line.board for line in seen.grading.boards] == ["Standings", "Final", "Staff"]
+    # Read as after the reveal, every group shown, and counted as the row
+    # is counted now.
+    standings = seen.grading.boards[0]
+    assert (standings.numbers[0][1], standings.pending, standings.counted) == (
+        Fraction(65),
+        Fraction(0),
+        True,
+    )
+
+
+async def test_a_line_on_a_board_ranking_a_value_is_the_number_its_cell_counts(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    fastest = (
+        "leaderboards:\n"
+        "  - {name: Slowest, who: contestants, over: live, order: [{by: time_ms, fold: max}]}\n"
+        "  - {name: Total, who: contestants, over: live, order: [{by: time_ms, fold: sum}]}\n"
+    )
+    await write_contest(acme.fake, contest(fastest))
+    await _three_groups(setup, acme, entered.task)
+    await _graded(setup, await _submit(setup, acme, entered, "key-0001-aaaa"), EVERY_TEST)
+
+    (read,) = await submissions.mine(setup, entered.session, entered.task)
+    slowest, total = await boards.seen(setup, entered.session, SPRING)
+
+    assert read.grading is not None
+    lines = {line.board: line for line in read.grading.boards}
+    for board in (slowest, total):
+        line = lines[board.board.name]
+        ((key, number),) = line.numbers
+        assert (key.by, key.fold, line.counted) == ("time_ms", board.keys[0].fold, True)
+        assert number is not None and (number,) == board.rows[0].keys

@@ -9,7 +9,7 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import Any
 
-from forge.domain.definitions import Group, Relative, Show
+from forge.domain.definitions import Fold, Group, Relative, Show
 from forge.domain.scoring import (
     BEFORE_REVEAL,
     EVERYTHING,
@@ -26,7 +26,6 @@ from forge.domain.scoring import (
     score,
     written,
 )
-from forge.domain.workflow_definition import Fold
 
 
 def group(**rules: Any) -> Group:
@@ -104,7 +103,7 @@ def test_per_test_points_earn_five_a_test_and_a_test_weight_earns_itself() -> No
     assert without_11.points(everywhere, EVERYTHING) == 40
 
 
-FRACTION = {"fraction": Measure(Fold.MEAN, Better.HIGHER, Fraction(0), Fraction(1))}
+FRACTION = {"fraction": Measure(Better.HIGHER, Fraction(0), Fraction(1))}
 
 
 def checker(rows: Mapping[str, tuple[str, str | None]]) -> dict[str, Any]:
@@ -209,7 +208,7 @@ def test_a_verdict_group_shows_its_outcome_and_points_live() -> None:
     assert thirty.outcome(BEFORE_REVEAL) == "wrong_answer"
 
 
-SCORE = {"score": Measure(Fold.SUM, Better.HIGHER, Fraction(0))}
+SCORE = {"score": Measure(Better.HIGHER, Fraction(0))}
 
 
 def test_raw_scores_of_ten_to_the_eighth_sum_exactly_and_a_failure_counts_at_least() -> None:
@@ -231,14 +230,14 @@ def test_raw_scores_of_ten_to_the_eighth_sum_exactly_and_a_failure_counts_at_lea
     )
     first = score(one, ids, groups, None, SCORE, worth=None)
     second = score(other, ids, groups, None, SCORE, worth=None)
-    assert first.value("score", everywhere, EVERYTHING) == 200000001
-    assert second.value("score", everywhere, EVERYTHING) == 200000000
+    assert first.value("score", everywhere, EVERYTHING, Fold.SUM) == 200000001
+    assert second.value("score", everywhere, EVERYTHING, Fold.SUM) == 200000000
     assert not first.gives_points
     assert first.points(everywhere, EVERYTHING) is None
 
 
-TIME = {"time_ms": Measure(Fold.MAX, Better.LOWER, Fraction(0))}
-CAPPED = {"time_ms": Measure(Fold.MAX, Better.LOWER, Fraction(0), Fraction(2000))}
+TIME = {"time_ms": Measure(Better.LOWER, Fraction(0))}
+CAPPED = {"time_ms": Measure(Better.LOWER, Fraction(0), Fraction(2000))}
 
 
 def test_a_test_not_accepted_has_no_value_for_a_fold_and_counts_as_the_worst_bound() -> None:
@@ -257,44 +256,44 @@ def test_a_test_not_accepted_has_no_value_for_a_fold_and_counts_as_the_worst_bou
         }
     )
     scored = score(wrong, ids, groups, None, TIME, worth=100)
-    assert scored.values(EVERYTHING) == {}
-    assert scored.value("time_ms", everywhere, EVERYTHING) is None
+    for kind in Fold:
+        assert scored.value("time_ms", everywhere, EVERYTHING, kind) is None
     # Each test still shows what it reported.
     assert [test.values for test in scored.groups[0].tests] == [
         {"time_ms": Decimal("50")},
         {"time_ms": Decimal("1")},
     ]
-    assert score(timed_out, ids, groups, None, CAPPED, worth=100).values(EVERYTHING) == {
-        "time_ms": 2000
-    }
+    capped = score(timed_out, ids, groups, None, CAPPED, worth=100)
+    assert capped.value("time_ms", everywhere, EVERYTHING, Fold.MAX) == 2000
+    assert capped.value("time_ms", everywhere, EVERYTHING, Fold.SUM) == 2050
     accepted = result({test: ("accepted", {"time_ms": Decimal("50")}) for test in ids})
-    assert score(accepted, ids, groups, None, TIME, worth=100).values(EVERYTHING) == {"time_ms": 50}
-    fraction = {"fraction": Measure(Fold.MEAN, Better.HIGHER, Fraction(0), Fraction(1))}
+    timed = score(accepted, ids, groups, None, TIME, worth=100)
+    assert timed.value("time_ms", everywhere, EVERYTHING, Fold.MAX) == 50
+    fraction = {"fraction": Measure(Better.HIGHER, Fraction(0), Fraction(1))}
     near_miss = result(
         {
             "main/1": ("accepted", {"fraction": Decimal("1")}),
             "main/2": ("wrong_answer", {"fraction": Decimal("0.9")}),
         }
     )
-    assert score(near_miss, ids, groups, None, fraction, worth=100).values(EVERYTHING) == {
-        "fraction": Fraction(1, 2)
-    }
+    missed = score(near_miss, ids, groups, None, fraction, worth=100)
+    assert missed.value("fraction", everywhere, EVERYTHING, Fold.MEAN) == Fraction(1, 2)
 
 
 def test_a_lower_is_better_value_with_no_worst_bound_has_no_value_when_a_test_lacks_it() -> None:
-    measure = Measure(Fold.MEAN, Better.LOWER)
-    assert fold(measure, [Fraction(3), None]) is None
-    assert fold(measure, [Fraction(3), Fraction(5)]) == 4
-    assert fold(measure, []) is None
-    assert (
-        fold(Measure(Fold.MAX, Better.LOWER, Fraction(0), Fraction(2000)), [None, Fraction(3)])
-        == 2000
-    )
+    measure = Measure(Better.LOWER)
+    assert fold(Fold.MEAN, measure, [Fraction(3), None]) is None
+    assert fold(Fold.MEAN, measure, [Fraction(3), Fraction(5)]) == 4
+    assert fold(Fold.SUM, measure, [Fraction(3), Fraction(5)]) == 8
+    assert fold(Fold.MAX, measure, [Fraction(3), Fraction(5)]) == 5
+    assert fold(Fold.MEAN, measure, []) is None
+    capped = Measure(Better.LOWER, Fraction(0), Fraction(2000))
+    assert fold(Fold.MAX, capped, [None, Fraction(3)]) == 2000
 
 
 def test_relative_credit_is_the_value_against_the_best_any_candidate_reached() -> None:
-    measures = {"score": Measure(Fold.SUM, Better.HIGHER, Fraction(0))}
-    lower = {"score": Measure(Fold.SUM, Better.LOWER, Fraction(0))}
+    measures = {"score": Measure(Better.HIGHER, Fraction(0))}
+    lower = {"score": Measure(Better.LOWER, Fraction(0))}
     relative = Relative(relative="score")
     row = {"score": Decimal("40")}
     assert credit_of("accepted", row, relative, measures, Fraction(80)) == Fraction(1, 2)
@@ -313,7 +312,7 @@ def test_relative_credit_is_the_value_against_the_best_any_candidate_reached() -
 
 def test_relative_credit_is_scored_with_b_beside_the_value() -> None:
     ids = named("main", 2)
-    measures = {"score": Measure(Fold.SUM, Better.HIGHER, Fraction(0))}
+    measures = {"score": Measure(Better.HIGHER, Fraction(0))}
     rows = result(
         {
             "main/1": ("accepted", {"score": Decimal("40")}),

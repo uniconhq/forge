@@ -41,7 +41,7 @@ from fractions import Fraction
 from sqlalchemy import select
 
 from forge.db.tables import Grading, Regrade
-from forge.domain.definitions import ContestDefinition
+from forge.domain.definitions import ContestDefinition, Fold, ValueKey
 from forge.domain.errors import NotFound, PortError
 from forge.domain.grading import UNFINISHED, GradingStatus
 from forge.domain.ids import ContestId, PublicationId, TaskId, WorkspaceId
@@ -313,6 +313,7 @@ async def _read(
         else None
     )
     factors = await _factors(ctx, current, settings, builtins.list(newest.values()))
+    ranked = _ranked(settings, current.name) if settings is not None and current else ()
     found: builtins.list[_Read] = []
     for submission, row in newest.items():
         first = min(each.attempt for each in ours[submission])
@@ -320,7 +321,7 @@ async def _read(
             each for each in attempts[submission] if each.attempt < first
         )
         status = gradings.status_of(ctx, row, gone)
-        before = await _side(stood, earlier, factors) if earlier is not None else None
+        before = await _side(stood, earlier, factors, ranked) if earlier is not None else None
         if status in UNFINISHED:
             compared = Compared(ChangeKind.RUNNING, before, None)
         elif status is GradingStatus.OVER_LIMIT:
@@ -328,7 +329,7 @@ async def _read(
         elif not gradings.good(row):
             compared = Compared(ChangeKind.FAILED, before, None)
         else:
-            now = await _side(scorer, row, factors)
+            now = await _side(scorer, row, factors, ranked)
             compared = Compared(change_of(before, now), before, now)
         found.append(_Read(row, compared))
     return found
@@ -359,11 +360,28 @@ async def _factors(
     }
 
 
+def _ranked(settings: ContestDefinition, task: str) -> tuple[tuple[str, Fold], ...]:
+    """Each value a board covering the task ranks, with the fold that board
+    gives it, once each, in the file's order.
+    """
+    found: dict[tuple[str, Fold], None] = {}
+    for board in settings.leaderboards:
+        if board.covers(task):
+            found.update(
+                {(key.by, key.fold): None for key in board.order if isinstance(key, ValueKey)}
+            )
+    return tuple(found)
+
+
 async def _side(
-    scorer: scores.Scorer | None, row: Grading, factors: Mapping[str, Fraction]
+    scorer: scores.Scorer | None,
+    row: Grading,
+    factors: Mapping[str, Fraction],
+    ranked: Sequence[tuple[str, Fold]],
 ) -> Side | None:
     """A finished attempt as a regrade compares it, or none when it cannot
     be scored: the task or the publication it ran under does not read.
+    `ranked` is each value a board covering the task ranks, with its fold.
     """
     if scorer is None:
         return None
@@ -375,11 +393,16 @@ async def _side(
         return None
     scored = await scorer.scored(row, graded, factor)
     tests = [test for group in scored.groups for test in group.tests]
-    values = scored.values(EVERYTHING)
     better = {
         name: measure.better
         for name, measure in scored.measures.items()
-        if measure.better is not None and name in values
+        if measure.better is not None and any(name == by for by, _ in ranked)
+    }
+    values = {
+        (name, kind): value
+        for name, kind in ranked
+        if name in better
+        and (value := scored.value(name, everywhere, EVERYTHING, kind)) is not None
     }
     return Side(
         attempt=row.attempt,
@@ -387,6 +410,6 @@ async def _side(
         accepted=sum(1 for test in tests if test.outcome == ACCEPTED),
         tests=len(tests),
         stopped=(row.result or {}).get("stopped"),
-        values={name: values[name] for name in better},
+        values=values,
         better=better,
     )
