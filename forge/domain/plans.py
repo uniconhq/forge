@@ -1917,34 +1917,44 @@ def _sealed_notes(compiler: _Compiler) -> list[str]:
     ]
 
 
+_RUN_RANK = {Show.ALWAYS: 0, Show.VERDICT: 1, Show.AFTER_CLOSE: 2}
+"""Which tests a per-test step runs first: those entrants see everything of
+during the contest, then those they see only the outcome and points of,
+then those they see nothing of until the reveal."""
+
+
 def run_order(tests: Sequence[TestCase], task: TaskDefinition) -> list[TestCase]:
-    """`tests` in the order a per-test step runs them: those of every group
-    shown during the contest (`always` or `verdict`) first, then those shown
-    only at the reveal, each part in plan order. A run can tell only the runs
-    after it what it read or how long it took, through what its container
-    keeps between items (`findings/batch-channels-test.md`), so no hidden
-    test runs before a shown one.
+    """`tests` in the order a per-test step runs them: those of `always`
+    groups first, then `verdict`, then `after_close`, each part in plan order.
+    A run can tell only the runs after it what it read or how long it took,
+    through what its container keeps between items
+    (`findings/batch-channels-test.md`), so no test runs before one whose
+    values entrants see sooner. A `verdict` test may tell another `verdict`
+    test, since entrants see only their outcomes.
     """
-    groups = task.test_groups
-    return sorted(
-        tests,
-        key=lambda test: test.group in groups and groups[test.group].shown is Show.AFTER_CLOSE,
-    )
+    return sorted(tests, key=lambda test: _rank(test.group, task))
+
+
+def _rank(group: str, task: TaskDefinition) -> int:
+    found = task.test_groups.get(group)
+    return 0 if found is None else _RUN_RANK[found.shown]
 
 
 def _order_notes(compiler: _Compiler) -> list[str]:
     """The one leak `run_order` cannot close in one step: a second per-test
-    step running the contestant's code runs its shown tests after the first
-    step's hidden ones. Said, not refused, so no saved task stops saving.
+    step running the contestant's code runs the tests entrants see sooner
+    after the first step's tests they see later. Said, not refused, so no
+    saved task stops saving.
     """
-    shown = {group.shown is not Show.AFTER_CLOSE for group in compiler.task.test_groups.values()}
-    if len(compiler.runs_per_test) < 2 or shown != {True, False}:
+    ranks = {_RUN_RANK[group.shown] for group in compiler.task.test_groups.values()}
+    if len(compiler.runs_per_test) < 2 or len(ranks) < 2:
         return []
     first, second = compiler.runs_per_test[:2]
     return [
         f"The workflow runs the entrant's code in two steps for each test, {first} and "
-        f"{second}. A hidden test's run in {first} can tell a later shown test's run in "
-        f"{second} how long it took. Show every group only at the reveal to avoid it."
+        f"{second}. A run in {first} of a test whose results entrants see later can tell a run "
+        f"in {second} of a test whose results they see sooner how long it took. Show every "
+        "group the same way to avoid it."
     ]
 
 
@@ -2068,9 +2078,11 @@ def _same(before: object, after: object) -> bool:
 
 
 def _in_test_order(plan: object) -> object:
-    """`plan` with each batch's items, and each run of per-test entries of
-    one step, in test order, so two plans differing only in the order their
-    steps run their tests read the same.
+    """`plan` with each batch's items sorted by test, and the per-test entries
+    of each step gathered where that step first appears and sorted by test,
+    so two plans differing only in the order their steps run their tests
+    read the same. The compiler writes a step's entries together, so
+    gathering them merges nothing two different plans would keep apart.
     """
     if not isinstance(plan, dict) or not isinstance(plan.get("steps"), list):
         return plan

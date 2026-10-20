@@ -731,15 +731,27 @@ def test_a_batch_runs_the_tests_shown_during_the_contest_before_the_hidden_ones(
     }
 
 
-def test_a_group_shown_as_an_outcome_runs_in_name_order_with_the_shown_ones() -> None:
+def test_a_group_shown_as_an_outcome_runs_after_the_shown_ones() -> None:
+    # Entrants see a verdict test's outcome, not its time, so one run before
+    # a shown test could pass it its input through the CPU counter.
     text = task_with(groups="  main: {pass: 100, show: verdict}\n  samples: {}\n")
     plan = compiled(text, classic_tests("main/1", "main/2", "samples/1")).plan
 
     assert [item["test"] for item in step(plan, "run")["batch"]] == [
+        "samples/1",
         "main/1",
         "main/2",
-        "samples/1",
     ]
+
+
+def test_a_group_shown_as_an_outcome_runs_before_the_hidden_ones() -> None:
+    groups = (
+        "  a: {each: 1, show: after_close}\n  b: {pass: 100, show: verdict}\n"
+        "  samples: {show: always}\n"
+    )
+    plan = compiled(task_with(groups=groups), classic_tests("a/1", "b/1", "samples/1")).plan
+
+    assert [item["test"] for item in step(plan, "run")["batch"]] == ["samples/1", "b/1", "a/1"]
 
 
 def test_hiding_no_group_compiles_the_plan_it_compiled_before() -> None:
@@ -785,9 +797,9 @@ TWO_RUNS = parse_workflow(
 """The classic workflow running the contestant's program twice on each test."""
 
 TWO_RUNS_NOTE = (
-    "The workflow runs the entrant's code in two steps for each test, run and again. A "
-    "hidden test's run in run can tell a later shown test's run in again how long it took. "
-    "Show every group only at the reveal to avoid it."
+    "The workflow runs the entrant's code in two steps for each test, run and again. A run in "
+    "run of a test whose results entrants see later can tell a run in again of a test whose "
+    "results they see sooner how long it took. Show every group the same way to avoid it."
 )
 
 
@@ -799,6 +811,8 @@ def test_running_the_entrants_code_twice_per_test_with_a_hidden_group_is_noted()
     assert compiled(task_with(groups=TWO_GROUPS), tests, TWO_RUNS).notes == ()
     every_group_hidden = "  main: {each: 100, show: after_close}\n  samples: {show: after_close}\n"
     assert compiled(task_with(groups=every_group_hidden), tests, TWO_RUNS).notes == ()
+    outcome_only = "  main: {pass: 100, show: verdict}\n  samples: {}\n"
+    assert compiled(task_with(groups=outcome_only), tests, TWO_RUNS).notes == (TWO_RUNS_NOTE,)
 
 
 def test_a_limit_is_raised_and_rounded_up() -> None:
