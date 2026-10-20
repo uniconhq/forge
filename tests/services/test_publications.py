@@ -25,6 +25,7 @@ import pytest
 from sqlalchemy import select, update
 
 from forge.db.tables import Grading
+from forge.domain import plans
 from forge.domain.content import Edit
 from forge.domain.contracts import violation
 from forge.domain.errors import (
@@ -1299,6 +1300,33 @@ async def test_before_any_grading_is_done_a_group_may_be_hidden(
     )
 
     assert isinstance(result, Published), result
+
+
+async def test_a_save_that_only_runs_the_shown_tests_first_publishes_with_no_regrade(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Published by a forge that ran every test in plan order: main/1 first,
+    # though only samples/1 is shown during the contest.
+    monkeypatch.setattr(plans, "run_order", lambda tests, task: list(tests))
+    hidden = _with(
+        acme, b"main: {each: 100}", b"main: {each: 100, show: after_close}\n  samples: {}"
+    )
+    samples = {"tests/samples/1/input": b"1 1\n", "tests/samples/1/answer": b"2\n"}
+    first = await _save(setup, acme, entered.task, {**hidden, **samples}, confirm=True)
+    assert isinstance(first, Published), first
+    await _graded(setup, acme, entered)
+    monkeypatch.undo()
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _save(setup, acme, entered.task, {})
+    saved = await _save(setup, acme, entered.task, {}, confirm=True)
+
+    assert (asked.value.extra["changes"], asked.value.extra["regrades"]) == ([], 0)
+    assert isinstance(saved, Published), saved
+    assert (saved.grading_changed, saved.regraded) == (False, 0)
+    plan = json.loads(acme.fake.state.repos[("acme", "spring.sum.task")].files[PLAN_PATH])
+    (run,) = [step for step in plan["steps"] if step["id"] == "run"]
+    assert [item["test"] for item in run["batch"]] == ["samples/1", "main/1"]
 
 
 NEW_GROUP = {"tests/large/1/input": b"5 6\n", "tests/large/1/answer": b"11\n"}

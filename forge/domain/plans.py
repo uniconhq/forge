@@ -38,7 +38,10 @@ A test's id is `<group>/<test>`, and the plan lists every test, groups in
 name order and tests in natural order within each (`2` before `10`), so
 reordering `test_groups` changes no plan. A per-test step over a primitive
 that takes a batch is one step with an item per test, and over any other
-one entry per test.
+one entry per test. Either runs its tests in `run_order`: those of the
+groups shown during the contest first, so a hidden test's run can tell no
+shown one what it read or how long it took. Showing a group earlier or
+later changes the order its tests run in, and nothing else.
 """
 
 import math
@@ -1065,6 +1068,10 @@ class _Compiler:
         stopped the run (#432)."""
         self.raised: list[_Raised] = []
         """Every limit raised above its primitive's, run by run."""
+        self.runs_per_test: list[str] = []
+        """Each per-test step that runs the contestant's code, in order."""
+        self.run_rank = {test.id: at for at, test in enumerate(run_order(self.tests, self.task))}
+        """Each test's place in the order a per-test step runs them."""
         self.served = self._served()
 
     def refuse(self, path: str, message: str) -> None:
@@ -1244,6 +1251,14 @@ class _Compiler:
                 self.sealed[step] = self.sealed[order[first]]
                 self.after_sealed[step] = order[first]
 
+    def _in_run_order(
+        self, items: Sequence[tuple[TestCase | None, Inputs]]
+    ) -> list[tuple[TestCase, Inputs]]:
+        return sorted(
+            ((test, inputs) for test, inputs in items if test is not None),
+            key=lambda item: self.run_rank[item[0].id],
+        )
+
     def _step(
         self,
         index: int,
@@ -1271,6 +1286,8 @@ class _Compiler:
                 if not port.secret and value_taint.hidden:
                     hidden_on = hidden_on or value_taint.hidden
             items.append((test, inputs))
+        if per_test and runs_contestant:
+            self.runs_per_test.append(step_id)
         if runs_contestant and hidden_on is not None:
             self.sealed[step_id] = hidden_on
         elif taint.sealed is not None:
@@ -1303,7 +1320,7 @@ class _Compiler:
             return [PlanStep(**common, limits=limits, inputs=inputs)]
         if declaration.batch:
             batch = tuple(
-                BatchItem(test=test.id, inputs=inputs) for test, inputs in items if test is not None
+                BatchItem(test=test.id, inputs=inputs) for test, inputs in self._in_run_order(items)
             )
             limits = self._limits(step_id, None, declaration, given, items)
             return [PlanStep(**common, limits=limits, batch=batch)]
@@ -1314,8 +1331,7 @@ class _Compiler:
                 inputs=inputs,
                 test=test.id,
             )
-            for test, inputs in items
-            if test is not None
+            for test, inputs in self._in_run_order(items)
         ]
 
     def _value(
@@ -1525,7 +1541,7 @@ def compile_plan(
     return Compiled(
         plan,
         tuple(sorted(compiler.sealed)),
-        (*_sealed_notes(compiler), *_credit_notes(task, values)),
+        (*_sealed_notes(compiler), *_order_notes(compiler), *_credit_notes(task, values)),
         held,
         measured,
         {
@@ -1901,6 +1917,37 @@ def _sealed_notes(compiler: _Compiler) -> list[str]:
     ]
 
 
+def run_order(tests: Sequence[TestCase], task: TaskDefinition) -> list[TestCase]:
+    """`tests` in the order a per-test step runs them: those of every group
+    shown during the contest (`always` or `verdict`) first, then those shown
+    only at the reveal, each part in plan order. A run can tell only the runs
+    after it what it read or how long it took, through what its container
+    keeps between items (`findings/batch-channels-test.md`), so no hidden
+    test runs before a shown one.
+    """
+    groups = task.test_groups
+    return sorted(
+        tests,
+        key=lambda test: test.group in groups and groups[test.group].shown is Show.AFTER_CLOSE,
+    )
+
+
+def _order_notes(compiler: _Compiler) -> list[str]:
+    """The one leak `run_order` cannot close in one step: a second per-test
+    step running the contestant's code runs its shown tests after the first
+    step's hidden ones. Said, not refused, so no saved task stops saving.
+    """
+    shown = {group.shown is not Show.AFTER_CLOSE for group in compiler.task.test_groups.values()}
+    if len(compiler.runs_per_test) < 2 or shown != {True, False}:
+        return []
+    first, second = compiler.runs_per_test[:2]
+    return [
+        f"The workflow runs the entrant's code in two steps for each test, {first} and "
+        f"{second}. A hidden test's run in {first} can tell a later shown test's run in "
+        f"{second} how long it took. Show every group only at the reveal to avoid it."
+    ]
+
+
 def _unique(problems: Sequence[Problem]) -> list[Problem]:
     seen: set[tuple[str, str]] = set()
     found = []
@@ -2004,16 +2051,48 @@ def _images(plan: object) -> dict[str, str]:
 def _same(before: object, after: object) -> bool:
     """Whether two plans, or two digests, are the same: a plan by what it
     says, so a number written `2.50` in one and `2.5` in the other is no
-    change, and anything that does not read as JSON by its bytes.
+    change, nor the order a step runs its tests in, which changes no test's
+    outcome or values (`run_order`); anything that does not read as JSON by
+    its bytes.
     """
     if before == after:
         return True
     if not isinstance(before, bytes) or not isinstance(after, bytes):
         return False
     try:
-        return bool(exact_json.loads(before) == exact_json.loads(after))
+        return bool(
+            _in_test_order(exact_json.loads(before)) == _in_test_order(exact_json.loads(after))
+        )
     except ValueError:
         return False
+
+
+def _in_test_order(plan: object) -> object:
+    """`plan` with each batch's items, and each run of per-test entries of
+    one step, in test order, so two plans differing only in the order their
+    steps run their tests read the same.
+    """
+    if not isinstance(plan, dict) or not isinstance(plan.get("steps"), list):
+        return plan
+
+    def test_of(entry: object) -> str:
+        return str(entry.get("test", "")) if isinstance(entry, dict) else ""
+
+    steps = [
+        {**entry, "batch": sorted(entry["batch"], key=test_of)}
+        if isinstance(entry, dict) and isinstance(entry.get("batch"), list)
+        else entry
+        for entry in plan["steps"]
+    ]
+    first: dict[str, int] = {}
+    for at, entry in enumerate(steps):
+        first.setdefault(str(entry.get("id")) if isinstance(entry, dict) else "", at)
+
+    def place(entry: object) -> tuple[int, str]:
+        step_id = str(entry.get("id")) if isinstance(entry, dict) else ""
+        return first[step_id], test_of(entry)
+
+    return {**plan, "steps": sorted(steps, key=place)}
 
 
 def grading_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...]:
