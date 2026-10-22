@@ -67,9 +67,10 @@ activated once and trusted for `volumes` alone, started on `main` with:
 
 and answered with one workflow, `grading`:
 
-- `when` the run is started by hand, and `labels` the pool's and, for a
-  pipeline holding an `exec` or `interact` step, the machine shape's,
-  since a label picks a machine for the whole pipeline;
+- `when` the run is started by hand, and `labels` the pool's, for a
+  pipeline holding an `exec` or `interact` step the machine shape's,
+  since a label picks a machine for the whole pipeline, and the size of
+  the slot it runs in and its lane;
 - under `clone:`, one step, `clone`, the clone image by digest with
   `remote`, `sha` and `ref` set, `lfs` off, since each upload reaches its
   step by a link of its own, and no `environment`, so it stays a plugin

@@ -30,9 +30,13 @@ the row and its minted steps alone, writing nothing: each step's image by
 digest, its door and token as settings, the org's cache for a step that
 takes it, its user, and what it waits for; then the report step, the step
 wrapper's base image in its report mode, which runs whatever the steps
-before it ended with. The pipeline's labels are the platform's pool, and
-the machine shape's when it holds an `exec` or `interact` step, since a
-label picks a machine for a whole pipeline.
+before it ended with. The pipeline's labels are the platform's pool, the
+machine shape's when it holds an `exec` or `interact` step, since a label
+picks a machine for a whole pipeline, the size of the smallest slot that
+holds what its steps left to run can use at once (`run_plan.slot_of`),
+and its lane: `early` for an early row, whose slots no late row takes,
+`late` for the others. A pipeline no slot holds, as after the slots were
+made smaller than when its task was saved, is not answered.
 
 `concluded` follows a row's report: a `system_error` is tried again once by
 itself as any row is (`gradings.notice`); an early row that ends `done`
@@ -68,7 +72,10 @@ from forge.domain import exact_json
 from forge.domain.errors import CiRequestRefused, Misconfigured, NotFound, PortError, Unavailable
 from forge.domain.grading import (
     BOXED_SHAPE,
+    EARLY_LANE,
+    LATE_LANE,
     PLATFORM_POOL,
+    SIZE_LABEL,
     UNFINISHED,
     GradingStatus,
     PipelineRun,
@@ -81,7 +88,7 @@ from forge.domain.plans import PLAN_PATH
 from forge.domain.publications import Check, Publication
 from forge.domain.regrades import RegradeCause
 from forge.domain.roles import contest_id_of, task_scope
-from forge.domain.run_plan import BOXED, PipelineKind, RunPlan
+from forge.domain.run_plan import BOXED, PipelineKind, RunPlan, slot_of
 from forge.domain.step_data import REPORT_STEP, all_accepted, runs_of, without
 from forge.log import get_logger
 from forge.runtime.context import Context
@@ -238,7 +245,16 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
             always=True,
         )
     )
-    labels = (PLATFORM_POOL, BOXED_SHAPE) if boxed else (PLATFORM_POOL,)
+    slot = slot_of(left, ctx.settings.slot_sizes)
+    if slot is None:
+        log.warning("pipelines.config_refused", reason="slot", grading=grading)
+        raise CiRequestRefused(REFUSED)
+    labels = (
+        PLATFORM_POOL,
+        *((BOXED_SHAPE,) if boxed else ()),
+        f"{SIZE_LABEL}:{slot.name}",
+        EARLY_LANE if pipeline == EARLY else LATE_LANE,
+    )
     # A step reads the submission from the checkout only through an entrant
     # input, so a pipeline of compares alone clones nothing.
     clones = any(plan.files_read(each).entrant for each in left)

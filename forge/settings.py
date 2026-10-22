@@ -8,6 +8,7 @@ import base64
 import binascii
 import logging
 import os
+import re
 import sys
 from datetime import timedelta
 from typing import Annotated, Any, Literal, Self
@@ -31,6 +32,7 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from forge.domain.grading import Slot
 from forge.domain.primitives import IMAGE
 
 KEY_BYTES = 32
@@ -72,6 +74,13 @@ FAKE_IMAGES = {
 }
 """The images the fake forge's plans and runs name unless given. It runs
 neither, so a placeholder digest does."""
+
+SLOT_SIZES_VARIABLE = "UNICON_SLOT_SIZES"
+FAKE_SLOT_SIZES = "small:8192,big:28672"
+"""The slot sizes the fake forge plans with unless given: deploy's table,
+`machine/slots.json`, as deploy passes it, which a test holds this to."""
+SLOT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+"""A slot's name, a label's value as a machine's agent declares it."""
 
 S3_VARIABLES = {
     "endpoint": "UNICON_S3_ENDPOINT",
@@ -276,7 +285,12 @@ class Settings(BaseSettings):
     primitive names one is refused, and a run task's grading whose steps
     run one ends in `system_error` saying so, graded again once the task
     is saved with a fixed version. The deployment leaves them out of the
-    images the CI lets run privileged too.
+    images the CI lets run privileged too. `slot_sizes` are the sizes of
+    the grading machines' slots, `<name>:<memory MB>` comma separated, from
+    deploy's one table of them, required with `forgejo`: a run task's step
+    may take the biggest, and each pipeline is fitted in the smallest that
+    holds what it runs side by side and labelled with its name; the fake
+    plans with deploy's table unless given.
 
     `database_pool_size` connections to the database stay open in each
     process, `database_pool_overflow` more are opened in a rush, and a
@@ -324,6 +338,7 @@ class Settings(BaseSettings):
     primitive_base_image: str | None = None
     plugin_git_image: str | None = None
     withdrawn_images: Annotated[frozenset[str], NoDecode] = frozenset()
+    slot_sizes: Annotated[tuple[Slot, ...], NoDecode] = ()
 
     session_hard_ttl: timedelta = timedelta(days=30)
     session_idle_ttl: timedelta = timedelta(days=14)
@@ -378,7 +393,8 @@ class Settings(BaseSettings):
             return data
         if data.get("forge", "forgejo") != "forgejo":
             images = {name: image for name, image in FAKE_IMAGES.items() if data.get(name) is None}
-            return {**data, **images, "forgejo": None, "woodpecker": None}
+            slots = {} if data.get("slot_sizes") else {"slot_sizes": FAKE_SLOT_SIZES}
+            return {**data, **images, **slots, "forgejo": None, "woodpecker": None}
         given = data.get("forgejo")
         ci = data.get("woodpecker")
         if isinstance(given, ForgejoSettings) and isinstance(ci, WoodpeckerSettings):
@@ -412,6 +428,8 @@ class Settings(BaseSettings):
         missing += [
             variable for name, variable in IMAGE_VARIABLES.items() if data.get(name) is None
         ]
+        if not data.get("slot_sizes"):
+            missing.append(SLOT_SIZES_VARIABLE)
         if missing:
             raise ValueError(f"UNICON_FORGE=forgejo needs {', '.join(missing)}")
         if values.get("internal_url") is None:
@@ -448,6 +466,29 @@ class Settings(BaseSettings):
         for image in value:
             if not IMAGE.match(image):
                 raise ValueError(f"{image} is not an image by digest")
+        return value
+
+    @field_validator("slot_sizes", mode="before")
+    @classmethod
+    def _slots_listed(cls, value: object) -> object:
+        """The slot sizes as one variable, `<name>:<memory MB>` comma
+        separated, such as `small:8192,big:28672`."""
+        if not isinstance(value, str):
+            return value
+        found = []
+        for each in filter(None, (part.strip() for part in value.split(","))):
+            name, _, memory = each.partition(":")
+            if not SLOT_NAME.fullmatch(name) or not memory.isdigit() or int(memory) < 1:
+                raise ValueError(f"{each!r} is not a slot's name and its memory in MB")
+            found.append(Slot(name, int(memory)))
+        return tuple(found)
+
+    @field_validator("slot_sizes")
+    @classmethod
+    def _slots_named_once(cls, value: tuple[Slot, ...]) -> tuple[Slot, ...]:
+        names = [slot.name for slot in value]
+        if len(set(names)) != len(names):
+            raise ValueError("names a slot twice")
         return value
 
     @model_validator(mode="after")

@@ -101,6 +101,13 @@ BOXED_SHAPE = "shape:rootless"
 """The label a run task's pipeline holding an `exec` or `interact` step
 carries beside its pool's, so only a machine of the shape phase 4.1 picked
 takes it: Woodpecker's labels pick a machine for a whole pipeline."""
+SIZE_LABEL = "size"
+"""The label naming the slot a run task's pipeline needs, `size:<slot>`."""
+EARLY_LANE = "lane:early"
+LATE_LANE = "lane:late"
+"""The lane a run task's pipeline runs in: early pipelines in their own,
+whose slots no late pipeline takes, so an entrant's early result never
+waits behind hidden runs; late and save pipelines in the other."""
 
 RUN_TIMEOUT = timedelta(minutes=30)
 CHECKOUT_ALLOWANCE = timedelta(minutes=4)
@@ -118,20 +125,44 @@ LOST = "The machine that grades lost this grading before it began."
 
 
 @dataclass(frozen=True, slots=True)
+class Slot:
+    """One size of a grading machine's slots: its name, the value of the
+    `size` label its agents and the pipelines it fits carry, and its memory
+    in megabytes. The sizes are one table in deploy's settings
+    (`machine/slots.json`), which a machine's setup reads to share its
+    cores and memory out among agents, one per slot, and the forge reads
+    as `UNICON_SLOT_SIZES`.
+    """
+
+    name: str
+    memory_mb: int
+
+
+@dataclass(frozen=True, slots=True)
 class Machine:
     """The most one step may ask of a machine: memory in megabytes, GPU
-    devices, and whether it may reach the network.
+    devices, and whether it may reach the network; and for a run task, the
+    sizes of the slots its pipelines run in, smallest first.
     """
 
     memory_mb: int
     gpus: int
     network: bool
+    slots: tuple[Slot, ...] = ()
 
 
 PLATFORM_MACHINE = Machine(memory_mb=16384, gpus=0, network=False)
 """What a machine of the platform's pool gives one step: the socket filter's
 default memory ceiling (`UNICON_FILTER_MAX_MEMORY_MB`), no GPU and no
 network."""
+
+
+def run_machine(slots: Collection[Slot]) -> Machine:
+    """What a run task's step may take on the platform's machines: the
+    biggest slot's memory, no GPU and no network, with every slot, smallest
+    first, for the planner to fit each pipeline in one."""
+    ordered = tuple(sorted(slots, key=lambda slot: slot.memory_mb))
+    return Machine(memory_mb=ordered[-1].memory_mb, gpus=0, network=False, slots=ordered)
 
 
 class RunState(StrEnum):

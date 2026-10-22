@@ -144,7 +144,7 @@ from forge.domain.errors import (
     ReservedPath,
     UploadNotReady,
 )
-from forge.domain.grading import PLATFORM_MACHINE, GradingStatus
+from forge.domain.grading import PLATFORM_MACHINE, GradingStatus, run_machine
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import PublicationId, TaskId, VersionId, WorkflowId
 from forge.domain.plans import (
@@ -761,7 +761,7 @@ async def _check_runs(
         previous=previous,
         submitted=await _submitted(ctx, task),
         secrets=frozenset(),
-        machine=PLATFORM_MACHINE,
+        machine=run_machine(ctx.settings.slot_sizes),
     )
     problems = [
         *found.problems,
@@ -785,7 +785,7 @@ async def _check_runs(
         commit=str(read.at),
         task_files=await _task_facts(ctx, as_, task, head, written, present, named.task),
         workflow_files=await _workflow_facts(ctx, as_, read, files, named.workflow),
-        machine=PLATFORM_MACHINE,
+        machine=run_machine(ctx.settings.slot_sizes),
     )
     if planned.plan is None:
         return Checked(definition, None, tuple(planned.problems), pins)

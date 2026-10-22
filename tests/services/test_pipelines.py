@@ -42,12 +42,15 @@ from forge.domain.content import Edit
 from forge.domain.errors import CiRequestRefused, Misconfigured, Rejected, Unavailable
 from forge.domain.grading import (
     BOXED_SHAPE,
+    EARLY_LANE,
+    LATE_LANE,
     LOST_CHECK_AFTER,
     MACHINE_WAIT,
     NEVER_BEGAN,
     PLATFORM_POOL,
     GradingStatus,
     PipelineRun,
+    Slot,
 )
 from forge.domain.identity import PLATFORM, AsOrgAccount
 from forge.domain.ids import OrgId, RunId
@@ -97,6 +100,8 @@ from tests.services.test_steps import (
 )
 
 LIVE = RUNNING.format(visibility="everyone") + "  - id: islands\n"
+SMALL = "size:small"
+"""The slot every pipeline of islands fits in, the smallest of the fake's."""
 ISLANDS = Scope("acme", "spring", "islands")
 NOTHING_EARLY = TASKS["islands"][0].replace(
     "now: [sample_score, sample_time, sample_tests, samples/]", "now: [samples/]"
@@ -242,8 +247,8 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     assert acme.fake.ci.runs[RunId(early.run_id)].task == dispatch_of("acme")
     assert await _rows(setup, "late") == []
     save, first = asked
-    assert (save["labels"], save["clone"]) == ([PLATFORM_POOL], None)
-    assert first["labels"] == [PLATFORM_POOL, BOXED_SHAPE]
+    assert (save["labels"], save["clone"]) == ([PLATFORM_POOL, SMALL, LATE_LANE], None)
+    assert first["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL, EARLY_LANE]
     assert first["clone"]["image"] == setup.settings.plugin_git_image
     assert first["clone"]["submission"] == early.submission_id
     user = early.run_user
@@ -266,6 +271,7 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     assert (late.early_id, late.attempt, late.status) == (early.id, 1, GradingStatus.DISPATCHED)
     assert late.idempotency_key is None
     assert [step[0] for step in _steps(asked[-1])] == ["solution", "compare", "report"]
+    assert asked[-1]["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL, LATE_LANE]
     await _step(setup, acme, late.id, "late", "solution", _batch())
     await _step(setup, acme, late.id, "late", "compare", _batch(score=True))
     assert await _report(setup, late.id, "late") is GradingStatus.DONE
@@ -983,6 +989,32 @@ async def test_a_save_whose_save_steps_are_stored_takes_over_at_once(
         current = await published.task(ctx, islands.task)
     assert current is not None and current.publication.id == saved.publication
     assert len(asked) == 1
+
+
+async def test_a_pipeline_no_slot_holds_is_not_answered(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Slots made smaller since the task was saved leave its pipelines
+    nowhere to run, so the platform answers none."""
+    islands = await _checked(setup, acme)
+    start = acme.fake.grading.start_pipeline
+    started: list[PipelineRun] = []
+
+    async def shrunk(as_: AsOrgAccount, run: PipelineRun) -> RunId:
+        started.append(run)
+        request = acme.fake.grading.config_request(
+            None, pipeline_variables(run), now=clock.now(), org=run.org
+        )
+        with monkeypatch.context() as patched:
+            patched.setattr(setup.settings, "slot_sizes", (Slot("tiny", 64),))
+            with pytest.raises(CiRequestRefused):
+                await runs.config(setup, request)
+        return await start(as_, run)
+
+    monkeypatch.setattr(acme.fake.grading, "start_pipeline", shrunk)
+    await _submit(setup, acme, islands)
+
+    assert [run.pipeline for run in started] == ["early"]
 
 
 async def test_the_platform_answers_a_pipeline_only_while_it_starts_with_its_own_variables(

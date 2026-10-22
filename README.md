@@ -560,7 +560,13 @@ grading machines reach the platform, `UNICON_PUBLIC_URL` unless given.
 `UNICON_CLONE_IMAGE` the image the CI checks a task and a submission out
 with, by digest. Both are required when `UNICON_FORGE=forgejo`, since which
 images a deployment runs is its own choice, from its image manifest; the fake
-runs neither and names a placeholder digest unless given. A missing or malformed variable stops the process at start with the
+runs neither and names a placeholder digest unless given.
+`UNICON_SLOT_SIZES` is the grading machines' slot sizes, `name:MB` comma
+separated, which deploy writes from its `machine/slots.json`: a run task's
+pipeline is planned into the smallest slot that holds it and labelled with
+that size, and a save whose step needs more than the biggest is refused. It
+is required when `UNICON_FORGE=forgejo`; the fake plans with deploy's
+sizes unless given. A missing or malformed variable stops the process at start with the
 variable named.
 
 ## Cookies

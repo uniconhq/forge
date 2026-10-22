@@ -16,8 +16,8 @@ from forge.domain import exact_json
 from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, parse_task
-from forge.domain.grading import PLATFORM_MACHINE
-from forge.domain.plans import PLAN_PATH, Snapshot
+from forge.domain.grading import PLATFORM_MACHINE, Machine, Slot, run_machine
+from forge.domain.plans import PLAN_PATH, Snapshot, StepLimits
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.run_plan import (
     PRIMITIVE_ROOM_MB,
@@ -29,6 +29,8 @@ from forge.domain.run_plan import (
     order_problems,
     plan_runs,
     run_plan_changes,
+    side_by_side,
+    slot_of,
     steps_run_again,
 )
 from forge.domain.run_task import check_run_task
@@ -115,6 +117,7 @@ def planned(
     *,
     sizes: Mapping[str, int] | None = None,
     manifests: Mapping[str, bytes] | None = None,
+    machine: Machine = PLATFORM_MACHINE,
 ) -> RunPlanCheck:
     """The plan of `task` over `workflow` and its `files`, each task file
     in `paths` 3 bytes long but those `sizes` gives, and hashed as if it held
@@ -133,7 +136,7 @@ def planned(
         previous=None,
         submitted=False,
         secrets=frozenset(),
-        machine=PLATFORM_MACHINE,
+        machine=machine,
     )
     assert found.problems == [] and found.task is not None
     named = files_named(parsed, found.task)
@@ -157,7 +160,7 @@ def planned(
         commit=COMMIT,
         task_files=task_files,
         workflow_files=workflow_files,
-        machine=PLATFORM_MACHINE,
+        machine=machine,
     )
 
 
@@ -1102,6 +1105,175 @@ def test_a_step_over_the_machine_is_refused_at_what_gives_its_largest_file(
             "on has more than 16384."
         ]
     }
+
+
+# Slots
+
+
+SLOTS = run_machine([Slot("big", 28672), Slot("small", 8192)])
+SIDE_BY_SIDE = """\
+inputs:
+  code: folder
+  input: file
+  memory: number
+steps:
+  - id: compile
+    use: unicon/compile@v3
+    with: {source: "${{ inputs.code }}", language: python}
+  - id: first
+    use: unicon/exec@v1
+    with:
+      program: ${{ steps.compile.program }}
+      stdin: ${{ inputs.input }}
+      time_limit: 1
+      memory_limit: ${{ inputs.memory }}
+  - id: second
+    use: unicon/exec@v1
+    with:
+      program: ${{ steps.compile.program }}
+      stdin: ${{ inputs.input }}
+      time_limit: 1
+      memory_limit: 3000
+  - id: third
+    use: unicon/exec@v1
+    with:
+      program: ${{ steps.compile.program }}
+      stdin: ${{ inputs.input }}
+      time_limit: 1
+      memory_limit: 3000
+  - id: judge
+    use: acme/judge@v1
+    with: {program: "${{ steps.compile.program }}", data: "${{ inputs.input }}"}
+reports:
+  time_ms: ${{ steps.third.time_ms }}
+"""
+SIDE_BY_SIDE_TASK = """\
+name: Side by side
+workflow: acme/sidebyside@v1
+inputs:
+  code: entrant
+  memory: 3000
+repeat:
+  - inputs: [input]
+    tuples: [tests/1.in, tests/2.in]
+scoring:
+  show:
+    after_close: [all]
+"""
+
+
+def side_by_side_plan(
+    primitives: Mapping[str, PrimitiveDeclaration], memory: int = 3000
+) -> RunPlanCheck:
+    return planned(
+        primitives,
+        SIDE_BY_SIDE_TASK.replace("memory: 3000", f"memory: {memory}"),
+        SIDE_BY_SIDE,
+        {"workflow.yaml": SIDE_BY_SIDE.encode()},
+        frozenset({"task.yaml", "tests/1.in", "tests/2.in"}),
+        machine=SLOTS,
+    )
+
+
+def test_steps_side_by_side_are_chained_to_fit_the_smallest_slot(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    """Three boxed steps of 3256 MB each and a slot of 8192: the first two
+    run side by side and the third waits for both; the compile and each
+    run of the judge, which run no boxes, run beside nothing."""
+    plan = ok(side_by_side_plan(primitives))
+    late = plan.pipeline("late")
+
+    assert [step.limits.memory_mb for step in late[1:4]] == [3256, 3256, 3256]
+    assert laid_out(plan) == {
+        "late": [
+            ("compile", None, ()),
+            ("first", ("r1", "r2"), ("compile",)),
+            ("second", ("r1", "r2"), ("compile",)),
+            ("third", ("r1", "r2"), ("compile", "first", "second")),
+            ("judge.r1", ("r1",), ("compile", "third")),
+            ("judge.r2", ("r2",), ("compile", "judge.r1")),
+        ]
+    }
+    assert side_by_side(late) == 6512
+    assert slot_of(late, SLOTS.slots) == Slot("small", 8192)
+
+
+def test_a_step_too_big_for_the_small_slot_runs_its_pipeline_in_the_big_one(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    """The big slot holds all three boxed steps at once, so they wait for
+    nothing but the compile, and the judge's first run waits for all
+    three."""
+    plan = ok(side_by_side_plan(primitives, memory=20000))
+    late = plan.pipeline("late")
+
+    assert [(step.name, step.depends_on) for step in late[1:5]] == [
+        ("first", ("compile",)),
+        ("second", ("compile",)),
+        ("third", ("compile",)),
+        ("judge.r1", ("compile", "first", "second", "third")),
+    ]
+    assert side_by_side(late) == 20256 + 3256 + 3256
+    assert slot_of(late, SLOTS.slots) == Slot("big", 28672)
+
+
+def test_without_slots_a_pipeline_is_laid_out_as_wired(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(
+        planned(
+            primitives,
+            SIDE_BY_SIDE_TASK,
+            SIDE_BY_SIDE,
+            {"workflow.yaml": SIDE_BY_SIDE.encode()},
+            frozenset({"task.yaml", "tests/1.in", "tests/2.in"}),
+        )
+    )
+
+    assert all(step.depends_on in ((), ("compile",)) for step in plan.pipeline("late"))
+
+
+def test_a_step_bigger_than_the_biggest_slot_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    workflow = parse_run_workflow(SIDE_BY_SIDE)
+    files = {"workflow.yaml": SIDE_BY_SIDE.encode()}
+    checked = check_run_workflow(workflow, primitives, WorkflowFiles(frozenset(files), files))
+    found = check_run_task(
+        parse_task(SIDE_BY_SIDE_TASK.replace("memory: 3000", "memory: 30000"), runs=True),
+        workflow,
+        checked,
+        frozenset({"task.yaml", "tests/1.in", "tests/2.in"}),
+        {},
+        previous=None,
+        submitted=False,
+        secrets=frozenset(),
+        machine=SLOTS,
+    )
+
+    assert [problem["message"] for problem in found.problems] == [
+        "With memory at 30000, the step first needs 30256 MB of memory, but no machine "
+        "this task may run on has more than 28672."
+    ]
+
+
+def _step(name: str, memory: int, *waits: str) -> PipelineStep:
+    limits = StepLimits(time_ms=1000, cpu_ms=1000, memory_mb=memory, pids=64, output_mb=1, gpus=0)
+    return PipelineStep(name=name, step=name, depends_on=waits, limits=limits)
+
+
+def test_side_by_side_counts_each_step_with_every_one_it_is_not_ordered_with() -> None:
+    """a and b run together and c after both: at most c alone. d, ordered
+    with none, is counted beside all three, more than can run at once,
+    which the stages the planner makes never leave."""
+    steps = [_step("a", 100), _step("b", 200), _step("c", 400, "a", "b"), _step("d", 50)]
+
+    assert side_by_side(steps[:3]) == 400
+    assert side_by_side(steps) == 750
+    assert side_by_side([]) == 0
+    assert slot_of(steps[:3], [Slot("tiny", 399), Slot("small", 400)]) == Slot("small", 400)
+    assert slot_of(steps[:3], [Slot("tiny", 399)]) is None
 
 
 # The schema's versions

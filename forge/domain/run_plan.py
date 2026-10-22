@@ -28,6 +28,15 @@ over its runs and the rest the most of any, memory with room for the files
 `exec` and `interact` copy into their boxes, since the container holds
 what a step copies.
 
+Each pipeline runs in one slot of a grading machine (`Slot`), and the
+steps Woodpecker runs side by side share its memory. So a pipeline is laid
+out in stages, each step waiting for every step of the stage before it,
+for the smallest slot that holds its largest step: a stage holds steps in
+order while their memory adds up within the slot, and a step that runs no
+boxes, whose container may use the whole slot, is a stage alone
+(`_chained`). The pipeline's `size` label is the smallest slot that holds
+the most its steps can use at once (`slot_of`).
+
 A step is tainted (11.4) when it runs the entrant's code and gets, directly
 or through earlier steps, a file entrants are not shown during the contest
 on a port not marked secret: a task file `show` does not list under `now`
@@ -49,7 +58,7 @@ from forge.domain import exact_json
 from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, Scoring, TaskDefinition
-from forge.domain.grading import WALL_CEILING, Machine, wall_of
+from forge.domain.grading import WALL_CEILING, Machine, Slot, wall_of
 from forge.domain.plans import (
     PLAN_PATH,
     PRIMITIVE,
@@ -487,6 +496,48 @@ def cache_problems(checked: RunWorkflowCheck) -> list[Problem]:
         for step in checked.steps.values()
         if step.declaration.cache and step.use.partition("@")[0] not in BOXED
     ]
+
+
+def side_by_side(steps: Sequence[PipelineStep]) -> int:
+    """The most memory, in MB, the Woodpecker steps of one pipeline can use
+    at once, at most: for each step, its own and that of every step it
+    neither waits for nor is waited for by, through `depends_on`, and the
+    largest of those. Each step waits only for steps before it.
+    """
+    place = {step.name: number for number, step in enumerate(steps)}
+    before: list[int] = []
+    for step in steps:
+        mask = 0
+        for name in step.depends_on:
+            if name in place:
+                mask |= before[place[name]] | 1 << place[name]
+        before.append(mask)
+    after = [0] * len(steps)
+    for number in reversed(range(len(steps))):
+        for name in steps[number].depends_on:
+            if name in place:
+                after[place[name]] |= after[number] | 1 << number
+    by_memory: dict[int, int] = {}
+    for number, step in enumerate(steps):
+        by_memory[step.limits.memory_mb] = by_memory.get(step.limits.memory_mb, 0) | 1 << number
+    everyone = (1 << len(steps)) - 1
+    most = 0
+    for number, step in enumerate(steps):
+        apart = everyone & ~(before[number] | after[number] | 1 << number)
+        beside = sum(memory * (apart & mask).bit_count() for memory, mask in by_memory.items())
+        most = max(most, step.limits.memory_mb + beside)
+    return most
+
+
+def slot_of(steps: Sequence[PipelineStep], slots: Iterable[Slot]) -> Slot | None:
+    """The smallest slot that holds the most the steps can use at once,
+    none when no slot does."""
+    needed = side_by_side(steps)
+    return min(
+        (slot for slot in slots if slot.memory_mb >= needed),
+        key=lambda slot: slot.memory_mb,
+        default=None,
+    )
 
 
 def plan_runs(
@@ -932,7 +983,7 @@ class _Planner:
                     held["late"].append((step.id, late_runs))
         found: dict[PipelineKind, tuple[PipelineStep, ...]] = {}
         for kind, steps in held.items():
-            made = self._pipeline(steps)
+            made = self._chained(self._pipeline(steps))
             if made:
                 found[kind] = made
         return found
@@ -999,6 +1050,46 @@ class _Planner:
                         limits=self._limits(step_id, group),
                     )
                 )
+        return tuple(made)
+
+    def _chained(self, steps: tuple[PipelineStep, ...]) -> tuple[PipelineStep, ...]:
+        """The pipeline in stages for the smallest slot that holds its
+        largest step: a stage takes the next step while their memory adds up
+        within the slot and both run in boxes, and each step of a stage
+        waits for every step of the stage before that it does not wait for
+        already. A step that runs no boxes, whose container may use the
+        whole slot, so is a stage alone. With no slot, as without one that
+        holds the largest step, which `fit` refuses, it is as it was.
+        """
+        largest = max((step.limits.memory_mb for step in steps), default=0)
+        slot = next((each for each in self.machine.slots if each.memory_mb >= largest), None)
+        if slot is None:
+            return steps
+        stages: list[list[PipelineStep]] = []
+        held = 0
+        open_ = False
+        for step in steps:
+            boxed = self.checked.steps[step.step].use.partition("@")[0] in BOXED
+            memory = step.limits.memory_mb
+            if open_ and boxed and held + memory <= slot.memory_mb:
+                stages[-1].append(step)
+                held += memory
+            else:
+                stages.append([step])
+                held = memory
+            open_ = boxed
+        waits: dict[str, set[str]] = {}
+        made: list[PipelineStep] = []
+        for number, stage in enumerate(stages):
+            for step in stage:
+                found = {each for name in step.depends_on for each in (name, *waits.get(name, ()))}
+                added = [
+                    each.name
+                    for each in (stages[number - 1] if number else ())
+                    if each.name not in found
+                ]
+                waits[step.name] = found | set(added)
+                made.append(step.model_copy(update={"depends_on": (*step.depends_on, *added)}))
         return tuple(made)
 
     def _limits(self, step_id: str, runs: tuple[str, ...] | None) -> StepLimits:
