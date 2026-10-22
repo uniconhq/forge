@@ -10,6 +10,9 @@ refused naming the forms. A tree is at most `MOST_NODES` nodes and
 `MOST_DEPTH` deep, measured before it is walked, since every read of a
 board works its trees out.
 
+A value holds one `entered` block at most, its bounds numbers written
+out, the lower first.
+
 What each value reads directly is recorded (`Reads`), so the save can tell
 which runs a value shown during the contest reads, and whether it reads a
 fact, through other values too (`ValuesCheck.through`).
@@ -22,6 +25,7 @@ from decimal import Decimal
 from forge.domain.blocks.catalogue import (
     ALL,
     CATALOGUE,
+    ENTERED,
     FACTS,
     LEAVES,
     SKIP,
@@ -50,14 +54,15 @@ _LEAF_WORDS = (
 @dataclass(frozen=True, slots=True)
 class Reads:
     """What one value's tree reads directly: groups, through a fold's
-    `over` or a run's column; other values; facts; and each run column, by
-    its group.
+    `over` or a run's column; other values; facts; each run column, by its
+    group; and the blocks it uses that read beyond its runs (`READING`).
     """
 
     groups: frozenset[str] = frozenset()
     values: frozenset[str] = frozenset()
     facts: frozenset[str] = frozenset()
     columns: frozenset[tuple[str, str]] = frozenset()
+    blocks: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +82,7 @@ class ValuesCheck:
         values: set[str] = set()
         facts: set[str] = set()
         columns: set[tuple[str, str]] = set()
+        blocks: set[str] = set()
         waiting = [name]
         while waiting:
             current = waiting.pop()
@@ -87,8 +93,15 @@ class ValuesCheck:
             groups |= read.groups
             facts |= read.facts
             columns |= read.columns
+            blocks |= read.blocks
             waiting.extend(read.values)
-        return Reads(frozenset(groups), frozenset(values), frozenset(facts), frozenset(columns))
+        return Reads(
+            frozenset(groups),
+            frozenset(values),
+            frozenset(facts),
+            frozenset(columns),
+            frozenset(blocks),
+        )
 
 
 def same_value(first: object, second: object) -> bool:
@@ -173,7 +186,15 @@ def check_values(
             frozenset(found.values),
             frozenset(found.facts),
             frozenset(found.columns),
+            frozenset(found.blocks),
         )
+        for block in READING:
+            if found.blocks.get(block, 0) > 1:
+                checker.refuse(
+                    ("values", name),
+                    f"This value uses {block} {found.blocks[block]} times. A value uses it "
+                    f"once at most, so {_ONE_WHY[block]}.",
+                )
     checker.problems.extend(_loops(reads))
     return ValuesCheck(checker.problems, reads)
 
@@ -184,6 +205,13 @@ class _Reading:
     values: set[str] = field(default_factory=set)
     facts: set[str] = field(default_factory=set)
     columns: set[tuple[str, str]] = field(default_factory=set)
+    blocks: dict[str, int] = field(default_factory=dict)
+
+
+READING = (ENTERED,)
+"""The blocks that read beyond a submission's runs and facts, each once in
+a value at most, which `Reads.blocks` records."""
+_ONE_WHY = {ENTERED: "a mark entered for it is the value's own"}
 
 
 class _Checker:
@@ -209,6 +237,10 @@ class _Checker:
         group whose runs the innermost fold around it reads them once for
         each of, when the input is read per run.
         """
+        if wanted.plain:
+            if isinstance(node, bool) or not is_number(node):
+                self.refuse(at, "Give a number written out here, such as 0 or 10.")
+            return
         match wanted.kind:
             case Kind.RUNS:
                 self._runs(at, node)
@@ -292,6 +324,10 @@ class _Checker:
                     (*at, str(key)),
                     f"{block.name} has no input called {key}. It takes {', '.join(form.inputs)}.",
                 )
+        if block.name in READING:
+            self.reading.blocks[block.name] = self.reading.blocks.get(block.name, 0) + 1
+        if block.name == ENTERED:
+            self._bounds(at, node)
         inner = over
         if form.fold:
             inner = self._fold_group(node.get("over"))
@@ -318,6 +354,20 @@ class _Checker:
             self.refuse(at, f"{block.name} takes {_count(wanted)} here, not {len(given)}.")
         for index, each in enumerate(given):
             self.node((*at, index), each, wanted, over)
+
+    def _bounds(self, at: Path, node: Mapping[str, object]) -> None:
+        least, most = node.get("at_least"), node.get("at_most")
+        if (
+            is_number(least)
+            and is_number(most)
+            and not isinstance(least, bool)
+            and not isinstance(most, bool)
+            and Decimal(str(least)) > Decimal(str(most))
+        ):
+            self.refuse(
+                (*at, "at_most"),
+                f"at_most is {most}, below at_least, {least}. Give bounds a mark fits between.",
+            )
 
     def _fold_group(self, given: object) -> str | None:
         leaf = _leaf(given) if isinstance(given, dict) else None
@@ -521,6 +571,7 @@ def _cycle(start: str, reads: Mapping[str, Reads]) -> list[str] | None:
 __all__ = [
     "MOST_DEPTH",
     "MOST_NODES",
+    "READING",
     "Reads",
     "ValuesCheck",
     "check_names",

@@ -23,6 +23,9 @@ with what it read, every number an exact fraction.
   through everything that reads it, ahead of missing, but an `if` branch
   not taken.
 
+- **An entered mark** is the one entered for the value, missing until
+  one is, or when it is outside the bounds the version gives.
+
 - **A number past `MOST_BITS`,** in its numerator or its denominator, is
   missing, as dividing by zero is: values that square each other a few
   times would otherwise build numbers of millions of digits on every read.
@@ -47,7 +50,7 @@ from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-from forge.domain.blocks.catalogue import CATALOGUE, LEAVES, SKIP, Form
+from forge.domain.blocks.catalogue import CATALOGUE, ENTERED, LEAVES, SKIP, Form
 from forge.domain.blocks.check import form_of, same_value
 from forge.domain.blocks.numbers import Better, exact
 
@@ -115,14 +118,19 @@ def evaluate(
     runs: Mapping[str, Sequence[RunResult]],
     facts: Mapping[str, int | Fraction],
     columns: Mapping[str, Column],
+    *,
+    entered: Mapping[str, Fraction] | None = None,
 ) -> dict[str, Outcome]:
     """Each of a task's values worked out, as checked at the save: `runs`
     each group's runs in order, `all` among them; `facts` the submission's
-    facts, each a number; `columns` each report a run may give, by name. A
-    run's other columns are `passed` and its key's.
+    facts, each a number; `columns` each report a run may give, by name;
+    `entered` the mark entered for each value, by its name. A run's other
+    columns are `passed` and its key's.
     """
     walk = _Walk(runs, facts, columns, _reading_runs(values.values()))
+    walk.entered = entered or {}
     for name in _in_order(values):
+        walk.current = name
         got = walk.tree(values[name])
         walk.done[name] = Outcome(got.number, got.waiting, got.runs, got.values, got.facts)
     return {name: walk.done[name] for name in values}
@@ -189,6 +197,8 @@ class _Walk:
         self.per_run = per_run
         self.done: dict[str, Outcome] = {}
         self.kept: dict[int, _Got] = {}
+        self.entered: Mapping[str, Fraction] = {}
+        self.current = ""
 
     def tree(self, tree: object) -> _Got:
         """What a value's tree gives, its blocks driven from one stack, each
@@ -284,6 +294,8 @@ class _Walk:
             raise ValueError(f"{node!r} fits no form of {block.name}")
         if form.fold:
             return (yield from self.fold(block.name, form, node))
+        if block.name == ENTERED:
+            return self.mark(node)
         if block.name == "if":
             test = yield (node["test"], scope)
             if test.waiting or test.skip or test.number is None:
@@ -347,6 +359,17 @@ class _Walk:
             case _:
                 raise ValueError(f"{name} folds no runs")
         return _Got(_kept(found)).reading(read)
+
+    def mark(self, node: Mapping[str, object]) -> _Got:
+        """The mark entered for the value being worked out, missing when
+        none is, or when the one entered is outside the bounds this
+        version gives, as after a save that narrowed them.
+        """
+        mark = self.entered.get(self.current)
+        least, most = exact(node["at_least"]), exact(node["at_most"])
+        if mark is None or least is None or most is None or not least <= mark <= most:
+            return _NONE
+        return _Got(mark)
 
     def weight(self, run: RunResult, weights: object) -> Fraction:
         """A run's weight: the one `weights` gives its key's value, else 1."""
@@ -492,6 +515,37 @@ def _in_order(values: Mapping[str, object]) -> list[str]:
     return order
 
 
+def blocks_in(tree: object, name: str) -> list[Mapping[str, object]]:
+    """Every block called `name` in a value's tree, walked without
+    recursion; a value holds one `entered` block at most.
+    """
+    found: list[Mapping[str, object]] = []
+    waiting = [tree]
+    while waiting:
+        node = waiting.pop()
+        if isinstance(node, list):
+            waiting.extend(node)
+        elif isinstance(node, dict) and "block" in node:
+            if node["block"] == name:
+                found.append(node)
+            waiting.extend(given for key, given in node.items() if key != "block")
+    return found
+
+
+def using(values: Mapping[str, object], name: str) -> frozenset[str]:
+    """The values that use the block `name`, directly or through the
+    values they read."""
+    direct = {value for value, tree in values.items() if blocks_in(tree, name)}
+    reads = {value: _value_leaves(tree) for value, tree in values.items()}
+    found = set(direct)
+    grown = True
+    while grown:
+        more = {value for value, read in reads.items() if value not in found and read & found}
+        found |= more
+        grown = bool(more)
+    return frozenset(found)
+
+
 def _value_leaves(tree: object) -> set[str]:
     """The values a tree reads directly, through `{value: <name>}`."""
     found: set[str] = set()
@@ -508,4 +562,13 @@ def _value_leaves(tree: object) -> set[str]:
     return found
 
 
-__all__ = ["ACCEPTED", "SYSTEM_ERROR", "Column", "Outcome", "RunResult", "evaluate"]
+__all__ = [
+    "ACCEPTED",
+    "SYSTEM_ERROR",
+    "Column",
+    "Outcome",
+    "RunResult",
+    "blocks_in",
+    "evaluate",
+    "using",
+]

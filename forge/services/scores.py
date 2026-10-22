@@ -58,7 +58,7 @@ from forge.domain.showing import Graded, under
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import gradings, published, timelines
+from forge.services import entries, gradings, published, timelines
 from forge.services.published import PublishedTask, RunsHeld
 
 log = get_logger(__name__)
@@ -346,8 +346,9 @@ async def run_scored(
     row's own plan put it in a pipeline still to give it: the early row's
     while that row failed, the late row's while that row is queued, running
     or failed, or not made since the early row failed. Any other, such as
-    one a later save added, never ran (`run_results`). Worked out on every
-    read, never stored (stage 5 section 6, item 1).
+    one a later save added, never ran (`run_results`). The marks entered
+    for the submission's `entered` values are read with them (`entries`).
+    Worked out on every read, never stored (stage 5 section 6, item 1).
     """
     scoring = current.definition.scoring
     assert scoring is not None, "a run task's definition always has scoring"
@@ -371,10 +372,12 @@ async def run_scored(
     waits_late = {run for run, first in late_planned.items() if not first} if late_waits else set()
     entry = settings.entry(current.name)
     due = due_of(settings, entry, extension) if entry is not None else None
+    marks = await entries.entered_of(ctx, current.id, early.submission_id)
 
     def work(grading: RunGrading) -> Worked:
         facts = facts_of(due, settings.start, early.submitted_at, grading.compiled)
-        return Worked(grading, worked_out(scoring, held.runs, grading, facts, held.columns), facts)
+        outcomes = worked_out(scoring, held.runs, grading, facts, held.columns, marks)
+        return Worked(grading, outcomes, facts)
 
     whole = run_grading(
         held.runs,

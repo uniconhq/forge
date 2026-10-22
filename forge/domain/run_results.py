@@ -144,15 +144,17 @@ def worked_out(
     grading: RunGrading,
     facts: Mapping[str, Fraction],
     columns: Mapping[str, Column],
+    entered: Mapping[str, Fraction] | None = None,
 ) -> dict[str, Outcome]:
     """Each of the scoring's values over the grading, its groups' runs in
     the task's order, `all` among them, `columns` each report's bounds as
-    the live plan gives them.
+    the live plan gives them, and `entered` the mark entered for each value
+    of the submission.
     """
     groups = {ALL: [grading.read[run.id] for run in runs]}
     for name, picked in scoring.groups.items():
         groups[name] = [grading.read[run.id] for run in runs if holds(picked, run.key)]
-    return evaluate(scoring.values, groups, facts, columns)
+    return evaluate(scoring.values, groups, facts, columns, entered=entered)
 
 
 __all__ = [

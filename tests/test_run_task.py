@@ -1342,6 +1342,40 @@ def test_a_value_listed_sooner_than_what_it_reads_is_refused(
     )
 
 
+def test_an_entered_mark_under_on_release_is_not_given_away_by_a_value_shown_sooner(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    marked = ISLANDS.replace(
+        "    total:\n",
+        "    review: {block: entered, at_least: 0, at_most: 10}\n"
+        "    reviewed: {block: add, of: [{value: sample_score}, {value: review}]}\n"
+        "    total:\n",
+    )
+    found = islands(
+        primitives,
+        marked.replace(
+            "after_close: [st1, st2, total, all]",
+            "after_close: [st1, st2, total, all]\n    on_release: [review]",
+        ).replace("now: [sample_score,", "now: [reviewed, sample_score,"),
+    )
+
+    assert at(found, "scoring.show.now[0]") == [
+        "reviewed reads review, which is shown once results are released, so showing "
+        "reviewed as soon as a grading ends would give review away sooner. List reviewed no "
+        "sooner than review."
+    ]
+    task = ok(
+        islands(
+            primitives,
+            marked.replace(
+                "after_close: [st1, st2, total, all]",
+                "after_close: [st1, st2, total, all]\n    on_release: [review, reviewed]",
+            ),
+        )
+    )
+    assert task.values.through("reviewed").blocks == {"entered"}
+
+
 def test_a_group_shown_sooner_that_holds_runs_a_release_shows_is_noted(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:

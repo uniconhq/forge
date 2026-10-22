@@ -293,6 +293,15 @@ class InvalidExtension(ServiceError):
     code = "invalid_extension"
 
 
+class InvalidMark(ServiceError):
+    """A mark entered for a value that takes none in the task's live
+    publication, or that is not a number within the bounds its `entered`
+    block gives.
+    """
+
+    code = "invalid_mark"
+
+
 class SubmitRefused(ServiceError):
     """An upload or a submit the task's rules turn away before anything is
     written. Each rule has an error of its own below, and its `code` says

@@ -5,6 +5,7 @@ tests compare against; reading it from here is what puts them there.
 
 from forge.db.base import Base
 from forge.db.tables.entrants import Entrant, EntrantMember
+from forge.db.tables.entries import Entry
 from forge.db.tables.gradings import Grading
 from forge.db.tables.invites import Invite
 from forge.db.tables.marks import Mark
@@ -19,6 +20,7 @@ from forge.db.tables.uploads import Upload
 __all__ = [
     "Entrant",
     "EntrantMember",
+    "Entry",
     "Grading",
     "GradingReuse",
     "GradingStep",

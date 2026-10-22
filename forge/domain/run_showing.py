@@ -53,8 +53,8 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any, NamedTuple
 
-from forge.domain.blocks.catalogue import ALL
-from forge.domain.blocks.evaluate import SYSTEM_ERROR
+from forge.domain.blocks.catalogue import ALL, ENTERED
+from forge.domain.blocks.evaluate import SYSTEM_ERROR, using
 from forge.domain.content import named_by
 from forge.domain.definitions import Scoring
 from forge.domain.run_results import RunGrading, Worked
@@ -147,12 +147,17 @@ def shown(
     values reading a column the entrant could set; for an entrant, whether
     the task has revealed and whether its results are released; with
     `everything`, as organisers read it. Texts are as stored: `bare` takes
-    them out for an entrant.
+    them out for an entrant. A value reading an `entered` mark, directly or
+    through others, is served to organisers alone until the grading queue
+    decides when an entry reaches its entrant (phase 5.8).
     """
     if everything:
         return _everything(scoring, runs, whole, self_reported)
     times = times_of(revealed=revealed, released=released)
-    listed = {entry for time in times for entry in scoring.show.lists()[time]}
+    withheld = using(scoring.values, ENTERED)
+    listed = {
+        entry for time in times for entry in scoring.show.lists()[time] if entry not in withheld
+    }
     held = _held(scoring, runs, whole.grading, files, times)
     view = whole
     if not (revealed or released or {name for name, _ in held} - whole.grading.early):

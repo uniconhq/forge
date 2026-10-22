@@ -59,6 +59,7 @@ TABLES = {
     "publication_objects",
     "grading_reuses",
     "releases",
+    "entries",
 }
 
 

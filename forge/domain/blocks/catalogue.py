@@ -26,6 +26,10 @@ and `where` are read once for each of them, `weights` gives a run a weight
 by one repeated input's value, `{<input>: {<value>: <weight>}}`, a run it
 does not name weighing 1, and `missing` says what a missing report counts
 as, `skip` to leave the run out, or a number.
+
+`entered` reads no node: it is the mark a manager of the task enters for
+the submission, its bounds numbers written out, and a value holds one at
+most, so an entry is the value's own.
 """
 
 from collections.abc import Mapping
@@ -46,7 +50,8 @@ class Kind(StrEnum):
 class BlockInput:
     """One input of a block: the kind it takes; a list of at least `least`
     and at most `most` when `least` is given, one node otherwise; whether it
-    may be left out; and whether a fold reads it once for each run.
+    may be left out; whether a fold reads it once for each run; and
+    whether it takes only a number written out, never a block or a leaf.
     """
 
     kind: Kind
@@ -54,6 +59,7 @@ class BlockInput:
     most: int | None = None
     optional: bool = False
     per_run: bool = False
+    plain: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +104,11 @@ RUNS = "a group's runs"
 _PAIR = BlockInput(Kind.NUMBER, least=2, most=2)
 _SOME = BlockInput(Kind.NUMBER, least=2)
 _ONE = BlockInput(Kind.NUMBER)
+_BOUND = BlockInput(Kind.NUMBER, plain=True)
+
+ENTERED = "entered"
+"""The block a manager of the task enters a mark for, one in a value at
+most (SIMPLER-CORE.md 14.2)."""
 
 
 def _numbers(of: BlockInput) -> Form:
@@ -157,6 +168,12 @@ CATALOGUE: Mapping[str, Block] = {
             "count",
             "how many of a group's runs there are, their weights summed when weighed",
             (_fold(of=False, weights=True),),
+        ),
+        Block(
+            ENTERED,
+            "the mark a manager of the task enters for the submission, between at_least "
+            "and at_most, missing until one is entered",
+            (Form(NUMBERS, {"at_least": _BOUND, "at_most": _BOUND}),),
         ),
     )
 }

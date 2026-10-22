@@ -18,7 +18,7 @@ import pytest
 from forge.domain import exact_json
 from forge.domain.blocks.catalogue import CATALOGUE
 from forge.domain.blocks.check import MOST_DEPTH, MOST_NODES, Found, check_values, tree_size
-from forge.domain.blocks.evaluate import MOST_BITS, Column, Outcome, RunResult, evaluate
+from forge.domain.blocks.evaluate import MOST_BITS, Column, Outcome, RunResult, evaluate, using
 from forge.domain.blocks.numbers import Better, decimal_of, exact, written
 
 COLUMNS = {
@@ -73,6 +73,7 @@ def worked(
     runs: Sequence[RunResult] = (),
     groups: Mapping[str, Sequence[str]] | None = None,
     facts: Mapping[str, int | Fraction] | None = None,
+    entered: Mapping[str, Fraction] | None = None,
 ) -> dict[str, Outcome]:
     by_id = {each.id: each for each in runs}
     held = {"all": list(by_id), **(groups or {})}
@@ -81,6 +82,7 @@ def worked(
         {name: [by_id[id] for id in ids] for name, ids in held.items()},
         facts or {"seconds_late": 0, "seconds": 0, "compiled": 1},
         COLUMNS,
+        entered=entered,
     )
 
 
@@ -135,6 +137,7 @@ EACH_BLOCK: list[tuple[str, object, Fraction]] = [
     ("count", fold("count", "all"), Fraction(2)),
     ("min", fold("min", "all", "time_ms"), Fraction(30)),
     ("max", fold("max", "all", "time_ms"), Fraction(50)),
+    ("entered", {"block": "entered", "at_least": 0, "at_most": 10}, Fraction(7)),
 ]
 
 
@@ -149,7 +152,7 @@ def test_every_block_has_an_evaluation_test() -> None:
 )
 def test_each_block_works_out_exactly(name: str, tree: object, expected: Fraction) -> None:
     assert not problems({"v": tree})
-    assert number({"v": tree}, runs=RUNS) == expected
+    assert number({"v": tree}, runs=RUNS, entered={"v": Fraction(7)}) == expected
 
 
 def test_thirds_add_up_to_one_and_1200_over_1500_is_four_fifths() -> None:
@@ -516,3 +519,69 @@ def test_a_fact_that_is_not_a_number_raises() -> None:
         worked({"v": fact("compiled")}, facts={"compiled": True})
     with pytest.raises(ValueError, match="the fact seconds is None"):
         worked({"v": fact("seconds")}, facts={"compiled": 1})
+
+
+def entered(at_least: object = 0, at_most: object = 10) -> dict[str, Any]:
+    return {"block": "entered", "at_least": at_least, "at_most": at_most}
+
+
+def test_an_entered_value_is_missing_until_a_mark_is_entered_for_it() -> None:
+    values = {"search": entered(), "total": many("add", value("search"), 1)}
+
+    assert worked(values)["search"].missing
+    assert worked(values)["total"].missing
+    marked = worked(values, entered={"search": Fraction(15, 2)})
+    assert marked["search"].number == Fraction(15, 2)
+    assert marked["total"].number == Fraction(17, 2)
+
+
+def test_a_mark_is_its_own_values_and_one_outside_the_bounds_counts_as_missing() -> None:
+    values = {"a": entered(0, 10), "b": entered(0, 5)}
+
+    found = worked(values, entered={"a": Fraction(7), "b": Fraction(7)})
+
+    assert found["a"].number == 7
+    assert found["b"].missing
+
+
+def test_a_value_holds_one_entered_block_at_most() -> None:
+    assert problems({"v": many("add", entered(), entered())}) == [
+        (
+            ("values", "v"),
+            "This value uses entered 2 times. A value uses it once at most, so a mark "
+            "entered for it is the value's own.",
+        )
+    ]
+    assert not problems({"v": entered(), "w": many("add", entered(), value("v"))})
+
+
+def test_an_entered_blocks_bounds_are_numbers_written_out_in_order() -> None:
+    assert problems({"v": entered(fact("seconds"), 10)}) == [
+        (("values", "v", "at_least"), "Give a number written out here, such as 0 or 10.")
+    ]
+    assert problems({"v": entered(0, True)}) == [
+        (("values", "v", "at_most"), "Give a number written out here, such as 0 or 10.")
+    ]
+    assert problems({"v": entered(5, 1)}) == [
+        (
+            ("values", "v", "at_most"),
+            "at_most is 1, below at_least, 5. Give bounds a mark fits between.",
+        )
+    ]
+    assert problems({"v": {"block": "entered", "at_least": 0}}) == [
+        (("values", "v", "at_most"), "entered needs its input at_most.")
+    ]
+
+
+def test_what_reads_an_entered_mark_is_found_through_other_values() -> None:
+    values = {"search": entered(), "total": many("add", value("search"), 1), "time": 3}
+    found = check_values(
+        values,
+        groups=[],
+        columns=CHECKED_COLUMNS,
+        keys={},
+    )
+
+    assert using(values, "entered") == {"search", "total"}
+    assert found.through("total").blocks == {"entered"}
+    assert found.through("time").blocks == frozenset()
