@@ -240,7 +240,7 @@ def test_islands_reads_as_written_step_by_step(primitives: dict[str, PrimitiveDe
     assert compare["r1"].inputs == {
         "program": {"step": "diff", "output": "program"},
         "manifest": {"workflow": "diff/program.yaml"},
-        "time_limit": {"value": 10},
+        "time_limit": {"value": 3},
         "memory_limit": {"value": 256},
         "files": {
             "files": {
@@ -1082,9 +1082,9 @@ def test_the_wall_is_checked_per_pipeline(primitives: dict[str, PrimitiveDeclara
     # all four together would not be.
     assert held(within, "solution").limits.time_ms == 2 * (300 * 2000 + 3000)
     assert [message.split(".")[0] for message in over["inputs.time_limit"]] == [
-        "The steps of a grading's early pipeline take 31 minutes, but a pipeline may take at "
+        "The steps of a grading's early pipeline take 30 minutes, but a pipeline may take at "
         "most 25",
-        "The steps of a grading's late pipeline take 30 minutes, but a pipeline may take at "
+        "The steps of a grading's late pipeline take 29 minutes, but a pipeline may take at "
         "most 25",
     ]
 
