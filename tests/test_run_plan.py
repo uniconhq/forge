@@ -766,8 +766,8 @@ def test_on_release_makes_no_run_early_but_is_refused_as_if_shown(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     task = LINKED_TASK.replace(
-        "    now: [shown, samples/]\n",
-        "    now: [samples/]\n    on_release: [shown]\n",
+        "    now: [shown, samples/]\n    after_close: [fast, all]\n",
+        "    now: [samples/]\n    after_close: [all]\n    on_release: [shown]\n",
     )
 
     problems = refused(linked(primitives, task))
@@ -781,7 +781,7 @@ def test_on_release_is_noted_over_runs_with_their_own_hidden_input(
 ) -> None:
     text = ISLANDS.replace(
         "    after_close: [st1, st2, total, all]\n",
-        "    after_close: [st2, total, all]\n    on_release: [st1]\n",
+        "    after_close: [st2, all]\n    on_release: [st1]\n",
     )
 
     plan = ok(islands(primitives, text))
@@ -792,6 +792,8 @@ def test_on_release_is_noted_over_runs_with_their_own_hidden_input(
         "st1 reads runs whose own steps run the entrant's code beside what entrants are not "
         "shown during the contest, such as `solution` beside `tests/3.in` in the run r3, so "
         "the entrant's code can signal a little about it through what st1 shows.",
+        "all, shown at the reveal, holds runs st1 reads, so entrants see those runs before a "
+        "release shows st1.",
     )
 
 
@@ -1407,7 +1409,7 @@ def test_a_save_says_which_steps_a_submission_runs_again(
 
 RELEASING = ISLANDS.replace(
     "after_close: [st1, st2, total, all]",
-    "after_close: [st1, total, all]\n    on_release: [st2, st2_tests]",
+    "after_close: [st1, all]\n    on_release: [st2, st2_tests]",
 )
 
 

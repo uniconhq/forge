@@ -6,14 +6,16 @@ stand: `released` shows what its `show` lists under `on_release`, and
 was never released.
 
 `action` is which, `acted_by` the organiser who did it, and `acted_at` when,
-by the package's clock.
+by the package's clock. `seq` is the order the rows were written in, from
+a database sequence, which is what decides the latest row, never a clock,
+since processes' clocks may differ.
 """
 
 import uuid
 from datetime import datetime
 from typing import Final
 
-from sqlalchemy import BigInteger, CheckConstraint, Index
+from sqlalchemy import BigInteger, CheckConstraint, Identity, Index
 from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.db.base import Base, Timestamped
@@ -31,8 +33,9 @@ class Release(Base, Timestamped):
     action: Mapped[str]
     acted_by: Mapped[int] = mapped_column(BigInteger)
     acted_at: Mapped[datetime]
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True))
 
     __table_args__ = (
         CheckConstraint(f"action in ('{RELEASED}', '{HIDDEN_AGAIN}')", name="action"),
-        Index("ix_releases_task_id_acted_at", "task_id", "acted_at"),
+        Index("ix_releases_task_id_seq", "task_id", "seq"),
     )

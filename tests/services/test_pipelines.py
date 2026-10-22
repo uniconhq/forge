@@ -412,7 +412,7 @@ VALUES_ONLY = (
     )
     .replace(
         "after_close: [st1, st2, total, all]",
-        "after_close: [total]\n    on_release: [st1_tests, st2_tests]",
+        "on_release: [total, st1_tests, st2_tests]",
     )
 )
 """islands showing values alone, and groups only on a release."""

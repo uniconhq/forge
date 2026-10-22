@@ -100,6 +100,12 @@ StepClass = Literal["save_once", "save_per_run", "grading_once", "grading_per_ru
 PipelineKind = Literal["save", "early", "late"]
 PIPELINES: tuple[PipelineKind, ...] = ("save", "early", "late")
 GradingKind = Literal["early", "late"]
+RELEASE_MOVED = (
+    "What a release shows moved, so a grading made while results are released runs other runs "
+    "early."
+)
+"""The words a save says when it moves only the released split, which
+grades nothing again while the task's results are not released."""
 """The pipelines of a grading, which a release may lay out otherwise."""
 ONCE: tuple[StepClass, ...] = ("save_once", "grading_once")
 CLASS_WORDS: dict[StepClass, str] = {
@@ -648,7 +654,7 @@ def plan_runs(
         steps=planner.run_steps(),
         pipelines=pipelines,
         reports=planner.reports(),
-        notes=tuple(planner.notes()),
+        notes=(*planner.notes(), *task.release_notes()),
         confirmations=tuple(
             Confirmation(column=column, inputs=tuple(sorted(inputs)))
             for column, inputs in sorted(task.self_reported.items())
@@ -1580,10 +1586,7 @@ def run_plan_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...
         for run in released_before
         if run in released_after
     ):
-        changes.append(
-            "What a release shows moved, so a grading made while results are released runs "
-            "other runs early."
-        )
+        changes.append(RELEASE_MOVED)
     return tuple(dict.fromkeys(changes))
 
 
@@ -1679,6 +1682,7 @@ def _counted(runs: Sequence[str]) -> str:
 __all__ = [
     "BOXED",
     "PIPELINES",
+    "RELEASE_MOVED",
     "SCHEMA_VERSION",
     "FileFact",
     "FilesNamed",

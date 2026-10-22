@@ -98,9 +98,12 @@ graded for each submission."""
 RUN_ID = re.compile(r"[A-Za-z0-9_-]+")
 """What a run's id is made of, as a runs file holds it and a path names it."""
 TIMES = ("now", "after_close", "on_release")
-OPENNESS = {"on_release": 0, "after_close": 1, "now": 2}
+OPENNESS: Mapping[str, int] = {"on_release": 0, "after_close": 1, "now": 2}
 """How soon each time of `show` shows an entry, latest first: what a
 release shows is shown at no set time."""
+RELEASED_OPENNESS: Mapping[str, int] = {"after_close": 0, "on_release": 1, "now": 2}
+"""The same while the task's results are released and its reveal has not
+passed: what the release shows is shown now, and `after_close` not yet."""
 SHOWN_WORDS = {
     "now": "as soon as a grading ends",
     "after_close": "at the reveal",
@@ -309,6 +312,25 @@ class RunTask:
             return frozenset(run for group in through for run in self.groups.get(group, ()))
         return None
 
+    def release_notes(self) -> list[str]:
+        """For each group listed sooner than `on_release` that holds runs a
+        name under `on_release` reads, that those runs show before a
+        release does.
+        """
+        listed = shown_times(self.show)
+        found: list[str] = []
+        for name in self.show.on_release:
+            read = self.runs_of(name)
+            if not read:
+                continue
+            for group, time in listed.items():
+                if time != "on_release" and group in self.groups and read & set(self.groups[group]):
+                    found.append(
+                        f"{group}, shown {SHOWN_WORDS[time]}, holds runs {name} reads, so "
+                        f"entrants see those runs before a release shows {name}."
+                    )
+        return found
+
     def runs_read(self) -> dict[str, frozenset[str]]:
         """The runs each group or value listed under `now` or `on_release`
         reads, the names a release may show during the contest.
@@ -405,6 +427,41 @@ def file_time(scoring: Scoring, path: str) -> str | None:
     return None
 
 
+def read_later(scoring: Scoring, values: ValuesCheck) -> list[tuple[Path, str]]:
+    """Each value `show` lists that reads, directly or through other
+    values, a value listed later than itself, or a group listed under
+    `on_release` while it is listed sooner, at its entry, since showing it
+    would give away what is shown later (stage 5 section 6 item 39). A
+    value shown before the reveal may sum up runs a group shows at the
+    reveal, as `reward` does over `all` (SIMPLER-CORE.md 9), which is why
+    its runs run early. A name `show` does not list is free to read.
+    """
+    listed = shown_times(scoring.show)
+    found: list[tuple[Path, str]] = []
+    for time, entries in scoring.show.lists().items():
+        for index, entry in enumerate(entries):
+            if entry not in values.reads:
+                continue
+            reads = values.through(entry)
+            later = sorted(
+                name
+                for name in (reads.values - {entry}) | reads.groups
+                if name in listed
+                and OPENNESS[listed[name]] < OPENNESS[time]
+                and (name in reads.values or listed[name] == "on_release")
+            )
+            for name in later:
+                found.append(
+                    (
+                        ("scoring", "show", time, index),
+                        f"{entry} reads {name}, which is shown {SHOWN_WORDS[listed[name]]}, so "
+                        f"showing {entry} {SHOWN_WORDS[time]} would give {name} away sooner. "
+                        f"List {entry} no sooner than {name}.",
+                    )
+                )
+    return found
+
+
 def _under_sooner(entry: str, time: str, show: ShowTimes) -> str | None:
     """Why `entry`, listed under `time`, cannot be: a folder it is in is
     listed under a sooner time, which shows it then, before `time` says.
@@ -472,44 +529,56 @@ def shown_under(scoring: Scoring, paths: Collection[str]) -> Shown:
     return Shown({entry: time for entry, time in listed.items() if entry in names}, files)
 
 
-def most_shown(shown: Iterable[Shown]) -> Shown:
+def openness(*, released: bool, revealed: bool) -> Mapping[str, int]:
+    """How soon each time of `show` shows an entry now: `RELEASED_OPENNESS`
+    while the task's results are released and its reveal has not passed,
+    and `OPENNESS` otherwise, a release not counting as sooner than the
+    reveal once that has passed, since a take-back hides it again.
+    """
+    return RELEASED_OPENNESS if released and not revealed else OPENNESS
+
+
+def most_shown(shown: Iterable[Shown], rank: Mapping[str, int] = OPENNESS) -> Shown:
     """Each name and file any of `shown` lists, with the soonest time one
-    shows it.
+    shows it, by `rank`.
     """
     names: dict[str, str] = {}
     files: dict[str, tuple[str, str]] = {}
     for each in shown:
         for name, time in each.names.items():
             was = names.get(name)
-            if was is None or OPENNESS[time] > OPENNESS[was]:
+            if was is None or rank[time] > rank[was]:
                 names[name] = time
         for path, listed in each.files.items():
             had = files.get(path)
-            if had is None or OPENNESS[listed[0]] > OPENNESS[had[0]]:
+            if had is None or rank[listed[0]] > rank[had[0]]:
                 files[path] = listed
     return Shown(names, files)
 
 
-def hidden_again(before: Shown, scoring: Scoring, paths: Collection[str]) -> list[Problem]:
+def hidden_again(
+    before: Shown, scoring: Scoring, paths: Collection[str], rank: Mapping[str, int] = OPENNESS
+) -> list[Problem]:
     """A problem at `scoring`'s `show` for each name or file `before` holds,
     with the soonest time it was shown under a publication that graded a
-    submission, that `show` drops or moves later (SIMPLER-CORE.md 9.4 and
-    16); `paths` are the task's files as the save leaves them, and a file
-    no longer among them has nothing left to show. A file is compared by
-    path, whichever entry lists it, and reported by the entry that showed it.
+    submission, that `show` drops or moves later by `rank` (`openness`,
+    SIMPLER-CORE.md 9.4 and 16); `paths` are the task's files as the save
+    leaves them, and a file no longer among them has nothing left to show.
+    A file is compared by path, whichever entry lists it, and reported by
+    the entry that showed it.
     """
     now = shown_under(scoring, paths)
     problems: list[Problem] = []
     for name, then in before.names.items():
         time = now.names.get(name)
-        if time is None or OPENNESS[time] < OPENNESS[then]:
+        if time is None or rank[time] < rank[then]:
             problems.append(_hidden(name, then, time))
     reported: set[str] = set()
     for path, (then, entry) in sorted(before.files.items()):
         if path not in paths or entry in reported:
             continue
         time = now.files[path][0] if path in now.files else None
-        if time is None or OPENNESS[time] < OPENNESS[then]:
+        if time is None or rank[time] < rank[then]:
             reported.add(entry)
             problems.append(_hidden(entry, then, time))
     return problems
@@ -626,6 +695,9 @@ def check_run_task(
     groups = binder.groups(runs)
     values = binder.scoring(runs, manifests)
     binder.show()
+    if values is not None and definition.scoring is not None:
+        for at, message in read_later(definition.scoring, values):
+            binder.refuse(at, message)
     binder.limits(runs)
     binder.manifests(runs, manifests)
     binder.manifest_types(manifests)
@@ -1517,6 +1589,7 @@ def _key_read(document: Mapping[str, Any]) -> dict[str, object]:
 
 __all__ = [
     "MOST_RUNS",
+    "RELEASED_OPENNESS",
     "RUNS_PATH",
     "EntrantInput",
     "Part",
@@ -1533,6 +1606,8 @@ __all__ = [
     "holds",
     "key_json",
     "manifest_files",
+    "openness",
+    "read_later",
     "show_names",
     "shown_times",
     "shown_under",

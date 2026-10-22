@@ -101,6 +101,16 @@ async def hold_task(ctx: Context, task: TaskId, *, shared: bool = False) -> None
     )
 
 
+async def _released_held(ctx: Context, task: TaskId) -> bool:
+    """Whether the task's results are released, read under the task's hold
+    shared, so a release or a take-back in flight lands before the read or
+    after this unit of work, never between the read and what it decides
+    (stage 5 section 6 item 32).
+    """
+    await hold_task(ctx, task, shared=True)
+    return await published.results_released(ctx, task)
+
+
 def extension_of(length_seconds: int, tasks: Sequence[str] | None) -> Extension:
     """An extension as a row keeps it."""
     return Extension(
@@ -223,7 +233,8 @@ async def check_contest(
     """C1 across files and C2 for a contest save from `before` to `after`,
     each problem at its path in `contest.yaml`; a dropped entry's at
     `tasks`, since the file no longer has a line for it. A task whose
-    results are released now may not close later, as after its reveal.
+    results are released now may not close later, as after its reveal,
+    read under its hold shared (`_released_held`).
     """
     listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
     tasks = {each.name: TaskId(each.id) for each in listed}
@@ -273,7 +284,7 @@ async def check_contest(
             and task is not None
             and after.closes_of(entry) > max(before.closes_of(old), ctx.now)
             and not any(problem["path"] == closes for problem in problems)
-            and await published.results_released(ctx, task)
+            and await _released_held(ctx, task)
         ):
             problems.append(
                 Problem(
@@ -555,7 +566,7 @@ async def refuse_extension(
             if (
                 task is not None
                 and close_of(settings, entry, after) > ctx.now
-                and await published.results_released(ctx, task)
+                and await _released_held(ctx, task)
             ):
                 raise InvalidExtension(
                     f"{entry.id}'s results are released, so extra time on it would let this "

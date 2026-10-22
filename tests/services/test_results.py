@@ -27,10 +27,12 @@ from forge.domain.errors import (
     NotARunTask,
     NotFound,
 )
+from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
 from forge.domain.live import Nudge, NudgeKind
 from forge.domain.roles import Role, Scope, task_scope
+from forge.domain.run_plan import RELEASE_MOVED
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import (
@@ -48,6 +50,7 @@ from forge.services.results import ResultsState
 from forge.testing import FakeClock
 from tests.services.conftest import SPRING, Acme, Entered
 from tests.services.test_pipelines import (
+    AFTER_CLOSE,
     BEFORE_CLOSE,
     ISLANDS,
     LIVE,
@@ -62,20 +65,21 @@ from tests.services.test_pipelines import (
 )
 from tests.services.test_regrades import _held
 from tests.services.test_run_task_saves import TASKS
+from tests.services.test_steps import _batch, _report, _step
 
 RELEASING = TASKS["islands"][0].replace(
     "after_close: [st1, st2, total, all]",
-    "after_close: [st1, total, all]\n    on_release: [st2, st2_tests, tests/4.in]",
+    "after_close: [st1, all]\n    on_release: [st2, st2_tests, tests/4.in]",
 )
 """islands showing st2, its runs and one of its files on a release."""
 CONTEST = Scope("acme", "spring")
 
 
-async def _release(setup: Setup, acme: Acme, task: TaskId) -> ResultsState:
+async def _release(setup: Setup, acme: Acme, task: TaskId) -> bool:
     return await results.release(setup, acme.ada, task, confirmed=True)
 
 
-async def _hide(setup: Setup, acme: Acme, task: TaskId) -> ResultsState:
+async def _hide(setup: Setup, acme: Acme, task: TaskId) -> bool:
     return await results.hide_again(setup, acme.ada, task, confirmed=True)
 
 
@@ -142,15 +146,15 @@ async def test_each_action_is_kept_with_who_and_when_and_one_that_changes_nothin
     islands = await _checked(setup, acme, RELEASING)
     first = clock.now()
 
-    assert await results.hide_again(setup, acme.ada, islands.task) == ResultsState(False, ())
-    released = await _release(setup, acme, islands.task)
-    assert await results.release(setup, acme.ada, islands.task) == released
+    assert await results.hide_again(setup, acme.ada, islands.task) is False
+    assert await _release(setup, acme, islands.task) is True
+    assert await results.release(setup, acme.ada, islands.task) is False
     clock.advance(timedelta(minutes=2))
-    hidden = await _hide(setup, acme, islands.task)
-    assert await _hide(setup, acme, islands.task) == hidden
+    assert await _hide(setup, acme, islands.task) is True
+    assert await _hide(setup, acme, islands.task) is False
 
     state = (await tasks.state(setup, acme.ada, islands.task)).results
-    assert state == hidden
+    assert state == await results.state(setup, acme.ada, islands.task)
     assert not state.released
     assert [(each.action, each.by, each.by_name, each.at) for each in state.history] == [
         ("released", 7, "ada", first),
@@ -231,7 +235,8 @@ async def test_a_manager_of_the_contest_releases_and_an_observer_is_refused(
                 setup, _held(acme, scope, Role.OBSERVER), islands.task, confirmed=True
             )
     manager = _held(acme, CONTEST, Role.MANAGER)
-    state = await results.release(setup, manager, islands.task, confirmed=True)
+    assert await results.release(setup, manager, islands.task, confirmed=True)
+    state = await results.state(setup, _held(acme, ISLANDS, Role.OBSERVER), islands.task)
     assert state.released
     assert [each.by for each in state.history] == [9]
 
@@ -344,3 +349,152 @@ async def test_a_task_whose_results_are_released_may_not_close_later(
     ]
     await _hide(setup, acme, islands.task)
     assert await problems() == []
+
+
+OPEN = RELEASING.replace(
+    "after_close: [st1, all]\n    on_release: [st2, st2_tests, tests/4.in]",
+    "after_close: [st1, all, st2_tests, tests/4.in]\n    on_release: [st2]",
+)
+"""RELEASING with st2_tests and its file shown at the reveal instead."""
+
+
+def _kept(path: str, names: tuple[str, ...]) -> list[tuple[str, str]]:
+    return [
+        (
+            path,
+            f"Entrants have been shown {name} once results are released, and what they have "
+            "been shown cannot be hidden again. List it as soon as before.",
+        )
+        for name in names
+    ]
+
+
+async def test_while_released_what_a_release_shows_stays_shown_until_the_reveal(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, _ = await _graded_both(setup, acme, OPEN)
+    await _release(setup, acme, islands.task)
+
+    # Before the reveal, what the reveal would show may move to the release,
+    # which shows it now, but not back.
+    assert isinstance(await _try_save(setup, acme, islands.task, RELEASING), Published)
+    assert _errors(await _try_save(setup, acme, islands.task, OPEN)) == _kept(
+        "scoring.show.after_close", ("st2_tests", "tests/4.in")
+    )
+
+    # Once the reveal has passed, it may show what the release showed, and
+    # what it showed may not move back to the release.
+    clock.set(AFTER_CLOSE)
+    assert isinstance(await _try_save(setup, acme, islands.task, OPEN), Published)
+    assert _errors(await _try_save(setup, acme, islands.task, RELEASING)) == [
+        (
+            "scoring.show.on_release",
+            f"Entrants have been shown {name} at the reveal, and what they have been shown "
+            "cannot be hidden again. List it as soon as before.",
+        )
+        for name in ("st2_tests", "tests/4.in")
+    ]
+
+
+async def test_what_no_release_showed_never_holds_a_save_back(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, _ = await _graded_both(setup, acme, RELEASING)
+    dropped = RELEASING.replace("on_release: [st2, st2_tests, tests/4.in]", "on_release: [st2]")
+    assert isinstance(await _try_save(setup, acme, islands.task, dropped), Published)
+
+    await _release(setup, acme, islands.task)
+
+    again = dropped.replace("max: 50", "max: 49")
+    assert isinstance(await _try_save(setup, acme, islands.task, again), Published)
+
+
+async def test_a_value_shown_before_what_it_reads_is_refused_and_a_group_shown_sooner_noted(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme, RELEASING)
+    sooner = RELEASING.replace("after_close: [st1, all]", "after_close: [st1, total, all]")
+
+    assert _errors(await _try_save(setup, acme, islands.task, sooner)) == [
+        (
+            "scoring.show.after_close[1]",
+            f"total reads {name}, which is shown once results are released, so showing total "
+            f"at the reveal would give {name} away sooner. List total no sooner than {name}.",
+        )
+        for name in ("st2", "st2_tests")
+    ]
+    saved = await _try_save(setup, acme, islands.task, RELEASING.replace("max: 50", "max: 49"))
+    assert isinstance(saved, Published)
+    assert (
+        "all, shown at the reveal, holds runs st2 reads, so entrants see those runs before a "
+        "release shows st2."
+    ) in saved.notes
+
+
+async def test_a_save_that_moves_only_what_a_release_runs_early_regrades_only_while_released(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    files_only = RELEASING.replace(
+        "on_release: [st2, st2_tests, tests/4.in]", "on_release: [tests/4.in]"
+    )
+    islands, _ = await _graded_both(setup, acme, files_only)
+
+    quiet = await _try_save(setup, acme, islands.task, RELEASING)
+    assert isinstance(quiet, Published)
+    assert (quiet.grading_changed, quiet.changes) == (False, ())
+    assert isinstance(await _try_save(setup, acme, islands.task, files_only), Published)
+
+    await _release(setup, acme, islands.task)
+    moved = await _try_save(setup, acme, islands.task, RELEASING)
+    assert isinstance(moved, Published)
+    # Checked first by its save row, it grades again once that row passes.
+    assert (moved.grading_changed, moved.changes) == (True, (RELEASE_MOVED,))
+
+
+async def test_while_released_a_late_row_tells_its_entrant_only_for_a_grading_made_before(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    text = TASKS["islands"][0].replace(
+        "after_close: [st1, st2, total, all]", "after_close: [all]\n    on_release: [st1_tests]"
+    )
+    islands = await _checked(setup, acme, text)
+    await _submit(setup, acme, islands, user=8)
+    await _release(setup, acme, islands.task)
+    await _submit(setup, acme, islands, user=9)
+    told: list[int | None] = []
+    tell = gradings.told_late
+
+    def heard(ctx: Context, row: Grading) -> None:
+        told.append(row.submitted_by)
+        tell(ctx, row)
+
+    monkeypatch.setattr(gradings, "told_late", heard)
+    late: dict[int, Grading] = {}
+    for user in (8, 9):
+        early = {row.submitted_by: row for row in await _rows(setup, "early")}[user]
+        if user == 8:
+            await _early(setup, acme, early.id)
+        else:
+            # The same code compiled once already, for 8.
+            await _step(setup, acme, early.id, "early", "solution", _batch())
+            await _step(setup, acme, early.id, "early", "compare", _batch(score=True))
+            await _report(setup, early.id, "early")
+            await setup.settle()
+        late[user] = {row.submitted_by: row for row in await _rows(setup, "late")}[user]
+        if late[user].status != GradingStatus.DONE:
+            await _step(setup, acme, late[user].id, "late", "solution", _batch())
+            await _step(setup, acme, late[user].id, "late", "compare", _batch(score=True))
+            await _report(setup, late[user].id, "late")
+        assert {row.submitted_by: row for row in await _rows(setup, "late")}[user].status == (
+            GradingStatus.DONE
+        )
+
+    # The grading made while released ran r3 early, so its late row's end
+    # shows nothing new, and telling it would only time the hidden run.
+    assert (late[8].released_split, late[9].released_split) == (False, True)
+    assert told == [8]

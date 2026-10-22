@@ -101,7 +101,7 @@ import hashlib
 import json
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import exists, select
 
@@ -173,6 +173,7 @@ from forge.domain.roles import (
     task_scope,
 )
 from forge.domain.run_plan import (
+    RELEASE_MOVED,
     FileFact,
     RunPlan,
     files_named,
@@ -190,6 +191,7 @@ from forge.domain.run_task import (
     hidden_again,
     manifest_files,
     most_shown,
+    openness,
     self_reported_question,
     shown_under,
     unreleased,
@@ -374,6 +376,11 @@ async def save(
             # file, which say whether anything moved.
             after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
             changed = run_plan_changes(before, after)
+            if RELEASE_MOVED in changed and not await published.results_released(ctx, task):
+                # The released split moved while no grading takes it: one
+                # made at a release takes it as it then stands, so nothing
+                # grades again for it (stage 5 section 6 item 44).
+                changed = tuple(each for each in changed if each != RELEASE_MOVED)
             rerun = steps_run_again(before, after)
             scoring = checked.definition.scoring if checked.definition is not None else None
             read = ReadChanges(
@@ -1173,10 +1180,14 @@ async def _shown_before_runs(
     listed stands for the files that publication held under it, each still
     in `present` shown as soon whichever entry now lists it. What it listed
     under `on_release` counts only while the task's results are released,
-    so after a take-back a save may drop it (stage 5 section 6 item 10).
-    And a group or value shown during the contest reads no fewer of the
-    runs the task still has (`fewer_runs`), checked once the task checks
-    (`run_task`).
+    and only from a publication that was the task's own at some time since
+    the release that stands, so what no release showed never holds a save
+    back, and after a take-back a save may drop it (stage 5 section 6 items
+    10 and 41). While released and before the reveal, `on_release` is
+    sooner than `after_close` (`openness`), so what a release shows stays
+    listed under `now` or `on_release` until the reveal. And a group or
+    value shown during the contest reads no fewer of the runs the task
+    still has (`fewer_runs`), checked once the task checks (`run_task`).
     """
     if definition.scoring is None:
         return []
@@ -1184,7 +1195,11 @@ async def _shown_before_runs(
     counted = await _graded_under(ctx, task) | await _served(ctx, task, publications)
     if not counted:
         return []
-    released = await published.results_released(ctx, task)
+    since = await published.released_since(ctx, task)
+    shown_by_release = (
+        set() if since is None else _own_since(await published.live(ctx, task, publications), since)
+    )
+    rank = openness(released=since is not None, revealed=await _task_revealed(ctx, task))
     shown = []
     read = []
     for publication in publications:
@@ -1195,17 +1210,30 @@ async def _shown_before_runs(
             continue
         held = await ctx.forge.content.list_files(PLATFORM, task, at=publication.version)
         each = shown_under(found.scoring, held.tokens.keys())
-        if not released:
+        if publication.id not in shown_by_release:
             each = unreleased(each)
         shown.append(each)
         if run_task is not None:
             runs = await _runs_file_of(ctx, task, publication)
             if runs is not None:
                 read.append((each, runs.reads))
-    problems = hidden_again(most_shown(shown), definition.scoring, present)
+    problems = hidden_again(most_shown(shown, rank), definition.scoring, present, rank)
     if run_task is not None:
         problems += fewer_runs(read, run_task)
     return problems
+
+
+async def _task_revealed(ctx: Context, task: TaskId) -> bool:
+    """Whether the task has closed for every row of its contest, so what
+    `after_close` lists is shown; a contest or task that does not read has
+    not.
+    """
+    contest = await _contest(ctx, task)
+    name = (await names.names_of(ctx, [task])).get(task)
+    if contest is None or name is None:
+        return False
+    reveal = await timelines.reveal(ctx, contest_id_of(task_scope(task)), contest, name)
+    return reveal is not None and reveal <= ctx.now
 
 
 async def _served(
@@ -1213,9 +1241,7 @@ async def _served(
 ) -> builtins.set[str]:
     """The publications whose files entrants may have been served: each
     that was the task's own (`published.live`) at some time since its
-    timeline first released it, as the contest's settings read now. A
-    publication's time is from when it was made to when the next one was,
-    which a save row passing later than that only shortens.
+    timeline first released it, as the contest's settings read now.
     """
     contest = await _contest(ctx, task)
     name = (await names.names_of(ctx, [task])).get(task)
@@ -1225,11 +1251,19 @@ async def _served(
     opened = max(contest.start, contest.release_of(entry))
     if opened > ctx.now:
         return set()
-    own = await published.live(ctx, task, publications)
+    return _own_since(await published.live(ctx, task, publications), opened)
+
+
+def _own_since(own: Sequence[Publication], since: datetime) -> builtins.set[str]:
+    """Each of the task's own publications, `own` in order, that was its
+    own at some time since `since`. A publication's time is from when it
+    was made to when the next one was, which a save row passing later than
+    that only shortens.
+    """
     return {
         each.id
         for index, each in enumerate(own)
-        if index + 1 == len(own) or own[index + 1].at > opened
+        if index + 1 == len(own) or own[index + 1].at > since
     }
 
 

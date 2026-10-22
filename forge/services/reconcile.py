@@ -161,6 +161,10 @@ async def _task(
         ).scalars()
     )
     seen = inserted = 0
+    # Read without the task's hold, which would keep a save or a release
+    # waiting on the forge calls below: a row made as a release or a
+    # take-back lands takes either split, and either is safe, since what is
+    # shown is decided when served (stage 5 section 6 item 32).
     released = bool(task.definition.runs) and await published.results_released(ctx, task.id)
     for workspace in workspaces:
         try:

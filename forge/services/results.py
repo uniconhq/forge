@@ -11,12 +11,13 @@ an extension is allowed again. A grading already made keeps the split it
 was made with, so neither action grades anything again.
 
 Each action is a `releases` row with who and when, never changed or
-deleted, and the latest row is the task's state (`state_of`).
-An action that would not change the state adds no row and answers the state
-as it is. Each asks first: sent without its confirmation, it changes nothing
-and answers, as `ConfirmationRequired`, the words to show. Only a manager or
-admin of the task does either, a role at its contest or org included. Each
-nudges the task's entrants, so an open page reads again.
+deleted, and the latest row is the task's state (`state_of`). An action
+that would not change the state adds no row. Each asks first: sent without
+its confirmation, it changes nothing and answers, as
+`ConfirmationRequired`, the words to show. Only a manager or admin of the
+task does either, a role at its contest or org included. Each nudges the
+task's entrants, so an open page reads again. Neither answers the history:
+`state` reads it once the action has committed, outside the task's hold.
 """
 
 from dataclasses import dataclass
@@ -75,89 +76,94 @@ class ResultsState:
 
 
 async def state_of(ctx: Context, task: TaskId) -> ResultsState:
-    """Where the task's results stand now, read afresh: released when its
-    latest action is a release (`published.results_released` reads the
-    same).
+    """Where the task's results stand now, read afresh, in the order the
+    rows were written (`releases.seq`): released when its latest action is
+    a release, as `published.results_released` reads it. Each organiser's
+    username is asked of the forge once, so this is never called under the
+    task's hold.
     """
     rows = (
-        await ctx.db.execute(
-            select(Release).where(Release.task_id == task).order_by(Release.acted_at, Release.id)
-        )
-    ).scalars()
-    history: list[ResultsAction] = []
-    for row in rows.all():
-        name = await entrants.username_of(ctx, row.acted_by) or None
-        history.append(ResultsAction(row.action, row.acted_by, name, row.acted_at))
-    return ResultsState(bool(history) and history[-1].action == RELEASED, tuple(history))
+        (await ctx.db.execute(select(Release).where(Release.task_id == task).order_by(Release.seq)))
+        .scalars()
+        .all()
+    )
+    names: dict[int, str | None] = {}
+    for row in rows:
+        if row.acted_by not in names:
+            names[row.acted_by] = await entrants.username_of(ctx, row.acted_by) or None
+    history = tuple(
+        ResultsAction(row.action, row.acted_by, names[row.acted_by], row.acted_at) for row in rows
+    )
+    return ResultsState(bool(history) and history[-1].action == RELEASED, history)
+
+
+@action
+async def state(ctx: Context, organiser: Organiser, task: TaskId) -> ResultsState:
+    """Where the task's results stand, for an observer of the task, as a
+    release or a take-back answers once it has committed.
+    """
+    require(organiser, task_scope(task), Role.OBSERVER)
+    return await state_of(ctx, task)
 
 
 @action
 async def release(
     ctx: Context, organiser: Organiser, task: TaskId, *, confirmed: bool = False
-) -> ResultsState:
+) -> bool:
     """Release the task's results: from now on every entrant is shown what
     its `show` lists under `on_release`. Without `confirmed`, nothing
     changes and `ConfirmationRequired` says what becomes visible, to whom,
-    and that it can be taken back. A task already released is answered as
-    it stands, with no row added.
+    and that it can be taken back. A task already released stays as it is,
+    with no row added. Whether a row was added; `state` reads the outcome.
     """
-    found = await _held(ctx, organiser, task)
-    state = await state_of(ctx, task)
-    if state.released:
-        return state
-    if not confirmed:
-        raise ConfirmationRequired(_release_words(found), action="release")
-    return await _act(ctx, organiser, found, RELEASED)
+    return await _act(ctx, organiser, task, RELEASED, confirmed=confirmed)
 
 
 @action
 async def hide_again(
     ctx: Context, organiser: Organiser, task: TaskId, *, confirmed: bool = False
-) -> ResultsState:
+) -> bool:
     """Take the release of the task's results back: from now on the task
     works as if it had never been released. Without `confirmed`, nothing
     changes and `ConfirmationRequired` carries `TAKE_BACK_WARNING`. A task
-    not released is answered as it stands, with no row added.
+    not released stays as it is, with no row added. Whether a row was
+    added; `state` reads the outcome.
     """
-    found = await _held(ctx, organiser, task)
-    state = await state_of(ctx, task)
-    if not state.released:
-        return state
-    if not confirmed:
-        raise ConfirmationRequired(TAKE_BACK_WARNING, action="hide_again")
-    return await _act(ctx, organiser, found, HIDDEN_AGAIN)
+    return await _act(ctx, organiser, task, HIDDEN_AGAIN, confirmed=confirmed)
 
 
-async def _held(ctx: Context, organiser: Organiser, task: TaskId) -> PublishedTask:
-    """The task as its latest publication froze it, held alone as a save
-    holds it, so a submit or a regrade in flight reads the state before or
-    after the action, never during it. `NotFound` for a task with no
-    publication, and `NotARunTask` for one that does not grade by runs.
+async def _act(
+    ctx: Context, organiser: Organiser, task: TaskId, act: str, *, confirmed: bool
+) -> bool:
+    """`act` done to the task's results when it changes their state. What
+    the forge is asked, the task and whether its entrants may hear of it,
+    is asked before the task is held alone, as a save holds it, so a submit
+    or a regrade in flight never waits on the forge, and reads the state
+    before or after the action, never during it. `NotFound` for a task with
+    no publication, and `NotARunTask` for one that does not grade by runs.
     """
     require(organiser, task_scope(task), Role.MANAGER)
-    await timelines.hold_task(ctx, task)
     found = await published.task(ctx, task)
     if found is None:
         raise NotFound(NO_PUBLICATION)
     if not found.definition.runs:
         raise NotARunTask(NOT_A_RUN_TASK)
-    return found
-
-
-async def _act(ctx: Context, organiser: Organiser, found: PublishedTask, act: str) -> ResultsState:
-    ctx.db.add(Release(task_id=found.id, action=act, acted_by=organiser.user.id, acted_at=ctx.now))
+    contest = contest_id_of(task_scope(task))
+    heard = await _visible(ctx, contest, task)
+    await timelines.hold_task(ctx, task)
+    if await published.results_released(ctx, task) == (act == RELEASED):
+        return False
+    if not confirmed:
+        if act == RELEASED:
+            raise ConfirmationRequired(_release_words(found), action="release")
+        raise ConfirmationRequired(TAKE_BACK_WARNING, action="hide_again")
+    ctx.db.add(Release(task_id=task, action=act, acted_by=organiser.user.id, acted_at=ctx.now))
     await ctx.db.flush()
-    contest = contest_id_of(task_scope(found.id))
     ctx.nudge(
-        Nudge(
-            NudgeKind.RESULTS,
-            found.id,
-            scope=task_scope(found.id),
-            contest=contest if await _visible(ctx, contest, found.id) else None,
-        )
+        Nudge(NudgeKind.RESULTS, task, scope=task_scope(task), contest=contest if heard else None)
     )
-    log.info("results.acted", task=found.id, action=act, by=organiser.user.id)
-    return await state_of(ctx, found.id)
+    log.info("results.acted", task=task, action=act, by=organiser.user.id)
+    return True
 
 
 async def _visible(ctx: Context, contest: ContestId, task: TaskId) -> bool:
@@ -195,5 +201,6 @@ __all__ = [
     "ResultsState",
     "hide_again",
     "release",
+    "state",
     "state_of",
 ]

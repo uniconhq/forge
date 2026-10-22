@@ -346,15 +346,23 @@ async def results_released(ctx: Context, task: TaskId) -> bool:
     release, never when it has none. Read afresh on every call and never
     kept, so a take-back hides `on_release` from every reader at once.
     """
+    return await released_since(ctx, task) is not None
+
+
+async def released_since(ctx: Context, task: TaskId) -> datetime | None:
+    """When the release that stands was made, by the package's clock, none
+    when the task's results are not released: its latest action, in the
+    order the rows were written (`releases.seq`), is not a release.
+    """
     latest = (
         await ctx.db.execute(
-            select(Release.action)
+            select(Release.action, Release.acted_at)
             .where(Release.task_id == task)
-            .order_by(Release.acted_at.desc(), Release.id.desc())
+            .order_by(Release.seq.desc())
             .limit(1)
         )
-    ).scalar_one_or_none()
-    return latest == RELEASED
+    ).one_or_none()
+    return latest.acted_at if latest is not None and latest.action == RELEASED else None
 
 
 @dataclass(frozen=True, slots=True)

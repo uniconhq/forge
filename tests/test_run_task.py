@@ -1163,7 +1163,7 @@ def test_a_value_shown_now_reading_compiled_makes_the_compile_early(
 def test_on_release_is_late_until_a_release(primitives: dict[str, PrimitiveDeclaration]) -> None:
     text = ISLANDS.replace(
         "    after_close: [st1, st2, total, all]\n",
-        "    after_close: [st2, total, all]\n    on_release: [st1]\n",
+        "    after_close: [st2, all]\n    on_release: [st1]\n",
     )
 
     task = ok(islands(primitives, text))
@@ -1276,7 +1276,7 @@ def test_what_was_shown_is_the_soonest_any_publication_showed_it() -> None:
 
 RELEASING = ISLANDS.replace(
     "after_close: [st1, st2, total, all]",
-    "after_close: [st1, total, all]\n    on_release: [st2, st2_tests, tests/4.in]",
+    "after_close: [st1, all]\n    on_release: [st2, st2_tests, tests/4.in]",
 )
 
 
@@ -1310,6 +1310,49 @@ def test_the_runs_file_keeps_the_runs_each_name_shown_during_the_contest_reads(
     document = json.loads(written.to_bytes())
     del document["reads"]
     assert RunsFile.from_bytes(json.dumps(document).encode()).reads == {}
+
+
+def test_a_value_listed_sooner_than_what_it_reads_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    found = islands(
+        primitives,
+        ISLANDS.replace(
+            "after_close: [st1, st2, total, all]",
+            "after_close: [st1, total, all]\n    on_release: [st2, st2_tests, tests/4.in]",
+        ),
+    )
+
+    assert at(found, "scoring.show.after_close[1]") == [
+        f"total reads {name}, which is shown once results are released, so showing total at "
+        f"the reveal would give {name} away sooner. List total no sooner than {name}."
+        for name in ("st2", "st2_tests")
+    ]
+    # A name show does not list is free to read, and so is one listed as
+    # soon or sooner.
+    ok(islands(primitives, RELEASING))
+    ok(
+        islands(
+            primitives,
+            ISLANDS.replace(
+                "after_close: [st1, st2, total, all]",
+                "after_close: [st1, all]\n    on_release: [st2, total, st2_tests]",
+            ),
+        )
+    )
+
+
+def test_a_group_shown_sooner_that_holds_runs_a_release_shows_is_noted(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = ok(islands(primitives, RELEASING))
+
+    assert task.release_notes() == [
+        f"all, shown at the reveal, holds runs {name} reads, so entrants see those runs "
+        f"before a release shows {name}."
+        for name in ("st2", "st2_tests")
+    ]
+    assert ok(islands(primitives)).release_notes() == []
 
 
 def test_what_on_release_listed_counts_as_not_shown_without_a_release() -> None:

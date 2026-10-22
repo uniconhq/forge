@@ -816,9 +816,12 @@ def told_late(ctx: Context, late: Grading) -> None:
     """Nudge the members of the entrant whose submission a late row grades
     that their grading moved, by its early row, the grading they know, once
     the unit of work commits. Only once the task has revealed, or while
-    its results are released, which the caller checks: their result then
-    reads the late row (`submissions`), and otherwise no entrant hears of
-    one (`changed`).
+    its results are released for a grading made before the release, which
+    the caller checks: their result then reads the late row
+    (`submissions`), and otherwise no entrant hears of one (`changed`). A
+    grading made while released ran what a release shows early, so its
+    late row's end shows nothing new, and a nudge would only tell when the
+    hidden runs ended (stage 5 section 6 item 37).
     """
     owner = ctx.forge.workspaces.owner_of(WorkspaceId(late.workspace_id))
     ctx.nudge(
