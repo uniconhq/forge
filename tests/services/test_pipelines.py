@@ -683,6 +683,25 @@ async def test_a_save_while_another_is_checked_is_compared_with_what_entrants_ar
     assert (await _row(setup, save.id)).taken_over_at is not None
 
 
+async def test_a_regrade_of_compares_alone_checks_nothing_out(
+    setup: Setup, acme: Acme, spring: str, asked: list[dict[str, Any]]
+) -> None:
+    islands = await _checked(setup, acme)
+    await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    await _early(setup, acme, early.id)
+    await _save(setup, acme, islands.task, {"task.yaml": (await _v2(acme, islands)).encode()})
+    _, save = await _rows(setup, "save")
+    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))
+    assert await _report(setup, save.id, "save") is GradingStatus.DONE
+    await setup.settle()
+
+    _, regraded = await _rows(setup, "early")
+    assert regraded.run_id is not None
+    assert [step[0] for step in _steps(asked[-1])] == ["compare", "report"]
+    assert asked[-1]["clone"] is None
+
+
 async def test_a_take_over_whose_work_never_ran_is_finished_by_the_next_read(
     setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -480,7 +480,7 @@ def _pipeline_answer(run: PipelineRun, ask: _Ask, spec: PipelineSpec) -> Inbound
         "labels": list(spec.labels),
         "clone": (
             None
-            if run.submission is None
+            if run.submission is None or not spec.clones
             else {
                 "image": spec.clone_image,
                 "submission": str(run.submission),

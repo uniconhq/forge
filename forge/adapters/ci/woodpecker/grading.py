@@ -75,7 +75,9 @@ and answered with one workflow, `grading`:
   step by a link of its own, and no `environment`, so it stays a plugin
   and is lent the credential when the image is on the CI's trusted-clone
   list, checking the submission out into the workspace; a save has no
-  submission, and clones nothing (`skip_clone`);
+  submission, and a pipeline none of whose steps reads an entrant input,
+  such as a regrade of compares, needs none, so each clones nothing
+  (`skip_clone`);
 - under `steps:`, each step with its image by digest and its
   `settings`, `volumes` with the org's cache, `unicon-cache-<org>:/cache`,
   for a step that takes it, `backend_options.docker.user` for a step the
@@ -554,10 +556,10 @@ class WoodpeckerGrading:
 
     def _pipeline(self, run: PipelineRun, ask: _Ask, spec: PipelineSpec) -> dict[str, Any]:
         """The workflow of a run task's pipeline: the submission checked out
-        into the workspace, then each step of `spec`."""
+        into the workspace when a step reads it, then each step of `spec`."""
         labels = dict(item for label in spec.labels for item in _labels(label).items())
         workflow: dict[str, Any] = {"when": [{"event": "manual"}], "labels": labels}
-        if run.submission is None:
+        if run.submission is None or not spec.clones:
             workflow["skip_clone"] = True
         else:
             workspace, task, number = parse_submission(run.submission)

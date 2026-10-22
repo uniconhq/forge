@@ -653,6 +653,7 @@ PIPELINE_SPEC = PipelineSpec(
         ),
     ),
     labels=("pool:platform", "shape:rootless"),
+    clones=True,
 )
 
 
@@ -671,12 +672,14 @@ def _dispatch_body(variables: dict[str, str]) -> bytes:
 
 
 def _pipelines(
-    run: PipelineRun = PIPELINE, seen: list[tuple[str | None, OrgId]] | None = None
+    run: PipelineRun = PIPELINE,
+    seen: list[tuple[str | None, OrgId]] | None = None,
+    spec: PipelineSpec = PIPELINE_SPEC,
 ) -> PipelineLookup:
     async def lookup(grading: str | None, org: OrgId) -> tuple[PipelineRun, PipelineSpec]:
         if seen is not None:
             seen.append((grading, org))
-        return run, PIPELINE_SPEC
+        return run, spec
 
     return lookup
 
@@ -783,6 +786,23 @@ async def test_a_save_pipeline_checks_nothing_out(
         _never_a_task,
         now=NOW,
         run_tasks=_pipelines(save),
+    )
+
+    workflow = yaml.safe_load(json.loads(answer.body)["configs"][0]["data"])
+    assert workflow["skip_clone"] is True and "clone" not in workflow
+
+
+async def test_a_pipeline_whose_steps_read_no_entrant_input_checks_nothing_out(
+    woodpecker: WoodpeckerCi, recorder: Recorder
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
+
+    answer = await woodpecker.grading.answer(
+        _signed(key, _dispatch_body(grading.pipeline_variables(PIPELINE))),
+        _never_a_task,
+        now=NOW,
+        run_tasks=_pipelines(spec=replace(PIPELINE_SPEC, clones=False)),
     )
 
     workflow = yaml.safe_load(json.loads(answer.body)["configs"][0]["data"])

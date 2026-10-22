@@ -212,7 +212,10 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
         )
     )
     labels = (PLATFORM_POOL, BOXED_SHAPE) if boxed else (PLATFORM_POOL,)
-    return run, PipelineSpec(clone_image=clone, steps=tuple(found), labels=labels)
+    # A step reads the submission from the checkout only through an entrant
+    # input, so a pipeline of compares alone clones nothing.
+    clones = any(plan.files_read(each).entrant for each in left)
+    return run, PipelineSpec(clone_image=clone, steps=tuple(found), labels=labels, clones=clones)
 
 
 async def concluded(ctx: Context, row: Grading) -> None:

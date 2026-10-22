@@ -389,13 +389,15 @@ class PipelineStepSpec:
 class PipelineSpec:
     """What a pipeline runs, read from the platform's records as it is
     started: the image its checkout of the submission is made with, its
-    steps in order, the report's last, and the labels of the machines that
-    may take it.
+    steps in order, the report's last, the labels of the machines that may
+    take it, and whether it checks the submission out at all, which it
+    does only when one of its steps reads an entrant input.
     """
 
     clone_image: str
     steps: tuple[PipelineStepSpec, ...]
     labels: tuple[str, ...]
+    clones: bool
 
 
 PipelineLookup = Callable[[str | None, OrgId], Awaitable[tuple[PipelineRun, PipelineSpec]]]
