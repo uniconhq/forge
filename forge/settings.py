@@ -8,9 +8,10 @@ import base64
 import binascii
 import logging
 import os
+import re
 import sys
 from datetime import timedelta
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -24,8 +25,14 @@ from pydantic import (
     model_validator,
 )
 from pydantic.fields import FieldInfo
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    NoDecode,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
+from forge.domain.grading import Slot
 from forge.domain.primitives import IMAGE
 
 KEY_BYTES = 32
@@ -62,9 +69,18 @@ IMAGE_VARIABLES = {
 FAKE_IMAGES = {
     "harness_image": "ghcr.io/uniconhq/harness@sha256:" + "0" * 64,
     "clone_image": "ghcr.io/uniconhq/clone@sha256:" + "0" * 64,
+    "primitive_base_image": "ghcr.io/uniconhq/primitive-base@sha256:" + "0" * 64,
+    "plugin_git_image": "docker.io/woodpeckerci/plugin-git@sha256:" + "0" * 64,
 }
 """The images the fake forge's plans and runs name unless given. It runs
 neither, so a placeholder digest does."""
+
+SLOT_SIZES_VARIABLE = "UNICON_SLOT_SIZES"
+FAKE_SLOT_SIZES = "small:8192,big:28672"
+"""The slot sizes the fake forge plans with unless given: deploy's table,
+`machine/slots.json`, as deploy passes it, which a test holds this to."""
+SLOT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+"""A slot's name, a label's value as a machine's agent declares it."""
 
 S3_VARIABLES = {
     "endpoint": "UNICON_S3_ENDPOINT",
@@ -72,6 +88,9 @@ S3_VARIABLES = {
     "access_key": "UNICON_S3_ACCESS_KEY",
     "secret_key": "UNICON_S3_SECRET_KEY",
     "results_bucket": "UNICON_S3_RESULTS_BUCKET",
+    "lfs_access_key": "UNICON_S3_LFS_ACCESS_KEY",
+    "lfs_secret_key": "UNICON_S3_LFS_SECRET_KEY",
+    "lfs_bucket": "UNICON_S3_LFS_BUCKET",
 }
 
 MAIL_VARIABLES = {
@@ -136,10 +155,13 @@ class WoodpeckerSettings(BaseModel):
 
 
 class S3Settings(BaseModel):
-    """Where the grading run log store is and the key the platform signs in
+    """Where the grading results store is and the key the platform signs in
     to it with, each read from the variable `S3_VARIABLES` names. `endpoint`
     is the store's internal address; the region is `garage` and the bucket
-    `unicon-results` unless given. What people upload goes into the forge's
+    `unicon-results` unless given. `lfs_access_key` and `lfs_secret_key` are
+    a second key, one that may only read the forge's large-file bucket,
+    `forgejo-lfs` unless given, which a run task's step is handed links
+    into the task's files with. What people upload goes into the forge's
     own store and is none of this (`port/uploads.py`).
     """
 
@@ -150,6 +172,9 @@ class S3Settings(BaseModel):
     access_key: str
     secret_key: SecretStr
     results_bucket: str = "unicon-results"
+    lfs_access_key: str
+    lfs_secret_key: SecretStr
+    lfs_bucket: str = "forgejo-lfs"
 
     @field_validator("*")
     @classmethod
@@ -247,8 +272,26 @@ class Settings(BaseSettings):
     is mailed. `harness_image` is the harness every plan names, by digest, and
     `clone_image` the image the CI checks a task and a submission out with,
     by digest, both required with `forgejo`: they are the deployment's
-    choice, from its image manifest. The fake runs neither and names a
-    placeholder unless given.
+    choice, from its image manifest. A run task's pipelines name two more,
+    by digest: `primitive_base_image`, the step wrapper's base image its
+    report step runs, and `plugin_git_image`, Woodpecker's clone plugin.
+    They are optional until the release manifest names the base image
+    (phase 4.10), and a run task's grading started without them ends in
+    `system_error` saying which. The fake runs none and names a
+    placeholder for each unless given. `withdrawn_images`, by digest and
+    comma separated, are images no step may run any more, such as an
+    `exec` or `interact` image found with a fault in its walls, dropped at
+    once rather than kept while a publication names it, each matched by
+    its digest under any name (`withdraws`): a save whose primitive names
+    one is refused, and a grading whose steps run one, a run task's or one
+    on the harness, ends in `system_error` saying so, graded again once
+    the task is saved with a fixed version. The deployment leaves them out of the
+    images the CI lets run privileged too. `slot_sizes` are the sizes of
+    the grading machines' slots, `<name>:<memory MB>` comma separated, from
+    deploy's one table of them, required with `forgejo`: a run task's step
+    may take the biggest, and each pipeline is fitted in the smallest that
+    holds what it runs side by side and labelled with its name; the fake
+    plans with deploy's table unless given.
 
     `database_pool_size` connections to the database stay open in each
     process, `database_pool_overflow` more are opened in a rush, and a
@@ -293,6 +336,10 @@ class Settings(BaseSettings):
     mail: MailSettings | None = None
     harness_image: str
     clone_image: str
+    primitive_base_image: str | None = None
+    plugin_git_image: str | None = None
+    withdrawn_images: Annotated[frozenset[str], NoDecode] = frozenset()
+    slot_sizes: Annotated[tuple[Slot, ...], NoDecode] = ()
 
     session_hard_ttl: timedelta = timedelta(days=30)
     session_idle_ttl: timedelta = timedelta(days=14)
@@ -347,7 +394,8 @@ class Settings(BaseSettings):
             return data
         if data.get("forge", "forgejo") != "forgejo":
             images = {name: image for name, image in FAKE_IMAGES.items() if data.get(name) is None}
-            return {**data, **images, "forgejo": None, "woodpecker": None}
+            slots = {} if data.get("slot_sizes") else {"slot_sizes": FAKE_SLOT_SIZES}
+            return {**data, **images, **slots, "forgejo": None, "woodpecker": None}
         given = data.get("forgejo")
         ci = data.get("woodpecker")
         if isinstance(given, ForgejoSettings) and isinstance(ci, WoodpeckerSettings):
@@ -381,19 +429,67 @@ class Settings(BaseSettings):
         missing += [
             variable for name, variable in IMAGE_VARIABLES.items() if data.get(name) is None
         ]
+        if not data.get("slot_sizes"):
+            missing.append(SLOT_SIZES_VARIABLE)
         if missing:
             raise ValueError(f"UNICON_FORGE=forgejo needs {', '.join(missing)}")
         if values.get("internal_url") is None:
             values["internal_url"] = data["forge_public_url"]
         return {**data, "forgejo": values, "woodpecker": ci_values}
 
-    @field_validator("harness_image", "clone_image")
+    @field_validator("primitive_base_image", "plugin_git_image", mode="before")
     @classmethod
-    def _an_image_by_digest(cls, value: str) -> str:
-        if not IMAGE.match(value):
+    def _none_while_empty(cls, value: object) -> object:
+        """An optional image left empty, as a deployment's environment
+        passes one its manifest does not name, is none."""
+        return None if value == "" else value
+
+    @field_validator("harness_image", "clone_image", "primitive_base_image", "plugin_git_image")
+    @classmethod
+    def _an_image_by_digest(cls, value: str | None) -> str | None:
+        if value is not None and not IMAGE.match(value):
             raise ValueError(
                 "is not an image by digest, such as ghcr.io/uniconhq/harness@sha256:..."
             )
+        return value
+
+    @field_validator("withdrawn_images", mode="before")
+    @classmethod
+    def _listed(cls, value: object) -> object:
+        """A list given as one variable, comma separated, empty for none."""
+        if isinstance(value, str):
+            return frozenset(each.strip() for each in value.split(",") if each.strip())
+        return value
+
+    @field_validator("withdrawn_images")
+    @classmethod
+    def _each_by_digest(cls, value: frozenset[str]) -> frozenset[str]:
+        for image in value:
+            if not IMAGE.match(image):
+                raise ValueError(f"{image} is not an image by digest")
+        return value
+
+    @field_validator("slot_sizes", mode="before")
+    @classmethod
+    def _slots_listed(cls, value: object) -> object:
+        """The slot sizes as one variable, `<name>:<memory MB>` comma
+        separated, such as `small:8192,big:28672`."""
+        if not isinstance(value, str):
+            return value
+        found = []
+        for each in filter(None, (part.strip() for part in value.split(","))):
+            name, _, memory = each.partition(":")
+            if not SLOT_NAME.fullmatch(name) or not memory.isdigit() or int(memory) < 1:
+                raise ValueError(f"{each!r} is not a slot's name and its memory in MB")
+            found.append(Slot(name, int(memory)))
+        return tuple(found)
+
+    @field_validator("slot_sizes")
+    @classmethod
+    def _slots_named_once(cls, value: tuple[Slot, ...]) -> tuple[Slot, ...]:
+        names = [slot.name for slot in value]
+        if len(set(names)) != len(names):
+            raise ValueError("names a slot twice")
         return value
 
     @model_validator(mode="after")
@@ -431,6 +527,13 @@ class Settings(BaseSettings):
     @classmethod
     def _thirty_two_bytes_base64url(cls, value: SecretStr) -> SecretStr:
         return require_key(value)
+
+    def withdraws(self, image: str) -> bool:
+        """Whether `image` is one of `withdrawn_images`, matched by its
+        digest whatever name it is under, a registry's or a tag's beside
+        it: the digest is what is run."""
+        digest = image.partition("@")[2]
+        return bool(digest) and digest in {each.partition("@")[2] for each in self.withdrawn_images}
 
     @property
     def token_encryption_key_bytes(self) -> bytes:

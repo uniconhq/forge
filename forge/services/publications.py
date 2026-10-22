@@ -35,6 +35,17 @@ steps in order, and refuses before anything is written.
    change, nothing is published, and the last publication keeps grading.
    The errors are not stored; `check` works them out again whenever the
    task's state is asked for.
+
+   A task whose workflow has no test block is in the run format
+   (SIMPLER-CORE.md 8 and 9), and `task.yaml`'s keys of the other format
+   are refused naming it; once anyone has submitted, the task keeps the
+   format it was published in. A run task's workflow is checked again at
+   the commit its version names, then the task against it
+   (`run_task.check_run_task`), reading each `program.yaml` the task gives
+   and keeping its runs' ids from the latest publication's runs file; what
+   its `show` listed under a publication a graded submission ran under is
+   not listed later or dropped; and its contest gives it no `worth`, `due`
+   or board until leaderboards come.
 3. What the save changes about how the task grades is worked out against
    the latest publication: its plan and the digests of the task's files the
    plan names. Groups, rule weights, `show`, `credit` and `submissions` are
@@ -50,8 +61,12 @@ steps in order, and refuses before anything is written.
    counted as the regrade (6) chooses them, and what the save does
    (`domain.save_effect`): whether anyone's result changes, what runs
    again, each scoring change, old and new, with the boards counted again,
-   and what entrants read that changes.
-4. The organiser's files and `plans/plan.json` are written as one change, by
+   and what entrants read that changes. A save of a run task asks before it
+   publishes, whether or not the contest runs, when a column the entrant
+   could set is new or set through other inputs than under the latest
+   publication (#504), one question asking both.
+4. The organiser's files and `plans/plan.json`, or a run task's
+   `plans/runs.json`, are written as one change, by
    the platform, which alone writes a task's files at the forge (#443), with
    the organiser as its author, so the history is theirs, and a publication
    never catches a task half saved.
@@ -71,7 +86,11 @@ steps in order, and refuses before anything is written.
    submission to the task: a new attempt of each one's latest attempt
    against it, as a rejudge makes (`gradings.regrade`), the delayed ones
    held to their entrants' room under the `submissions.max` the save
-   published (#445), all kept as one regrade the save started (#448).
+   published (#445), all kept as one regrade the save started (#448). A
+   run task's publication whose plan holds steps done at the save is first
+   checked by a save row of its own, which cancels any still checking an
+   earlier one (`pipelines.queue_save`); it becomes the task's, and
+   regrades, only once that row ends `done` with every run accepted.
 7. A task's first publication starts making its place to submit for every
    approved entrant, once the save has committed and without the save
    waiting for it (`places`).
@@ -79,14 +98,16 @@ steps in order, and refuses before anything is written.
 
 import builtins
 import hashlib
-from collections.abc import Collection, Mapping
+import json
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
 from sqlalchemy import exists, select
 
 from forge.db.tables import Grading
-from forge.domain.board_checks import covered
+from forge.db.tables.gradings import FRONT
+from forge.domain.board_checks import Covered, covered
 from forge.domain.content import (
     ConflictToken,
     Edit,
@@ -95,11 +116,13 @@ from forge.domain.content import (
     WrittenEdit,
     check_path,
     has_path,
+    named_by,
 )
 from forge.domain.definitions import (
     ADMIN_ONLY_FILES,
     CONTEST_FILE,
     PUBLIC_FOLDER,
+    RUN_FORMAT_KEYS,
     STATEMENT_FILE,
     TASK_FILE,
     ContestDefinition,
@@ -121,9 +144,9 @@ from forge.domain.errors import (
     ReservedPath,
     UploadNotReady,
 )
-from forge.domain.grading import PLATFORM_MACHINE, GradingStatus
+from forge.domain.grading import PLATFORM_MACHINE, GradingStatus, run_machine
 from forge.domain.identity import PLATFORM, Identity
-from forge.domain.ids import PublicationId, TaskId, VersionId
+from forge.domain.ids import PublicationId, TaskId, VersionId, WorkflowId
 from forge.domain.plans import (
     PLAN_PATH,
     Compiled,
@@ -139,7 +162,7 @@ from forge.domain.plans import (
     test_yaml_paths,
 )
 from forge.domain.primitives import PrimitiveDeclaration
-from forge.domain.publications import Publication, write_note
+from forge.domain.publications import Check, Publication, write_note
 from forge.domain.regrades import RegradeCause
 from forge.domain.release import has_started, in_words, reveal_of
 from forge.domain.roles import (
@@ -148,6 +171,27 @@ from forge.domain.roles import (
     holds,
     task_scope,
 )
+from forge.domain.run_plan import (
+    FileFact,
+    RunPlan,
+    files_named,
+    plan_runs,
+    run_plan_changes,
+    steps_run_again,
+)
+from forge.domain.run_task import (
+    RUNS_PATH,
+    RunsFile,
+    RunTask,
+    check_run_task,
+    file_time,
+    hidden_again,
+    manifest_files,
+    most_shown,
+    self_reported_question,
+    shown_under,
+)
+from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.save_effect import ReadChanges, SaveEffect, as_extra, effect_of
 from forge.domain.uploads import (
     ATTRIBUTES_FILE,
@@ -155,13 +199,15 @@ from forge.domain.uploads import (
     pointer_text,
     read_pointer,
     refuse_pointer,
+    upload_info,
 )
 from forge.domain.workflow_definition import (
     WORKFLOW_FILE,
+    RunWorkflow,
     WorkflowDefinition,
     WorkflowRef,
-    parse_workflow,
     parse_workflow_ref,
+    read_workflow,
 )
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_mapping
 from forge.log import get_logger
@@ -172,8 +218,10 @@ from forge.services import (
     boards,
     gradings,
     names,
+    pipelines,
     places,
     primitives,
+    published,
     timelines,
     uploads,
     workflows,
@@ -206,7 +254,9 @@ class Published:
     changed how the task grades and what, what the save says of the task
     beside publishing it, its sealed steps and a bounded value its `credit`
     does not name, how many submissions it queued to be graded again, and
-    what it did, in the words a running contest asks with before a save.
+    what it did, in the words a running contest asks with before a save;
+    and `check`, where a run task's publication stands while its save row
+    has not let it take over (`pipelines.checks`), none otherwise.
     """
 
     publication: PublicationId
@@ -216,6 +266,7 @@ class Published:
     notes: tuple[str, ...]
     regraded: int
     effect: SaveEffect
+    check: Check | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,14 +285,30 @@ class Draft:
 @dataclass(frozen=True, slots=True)
 class Checked:
     """What checking a state found: the task's settings and its compiled
-    plan when it is valid, and every problem when it is not, with which
-    workflow each workflow name it uses is, by the forge's own id for it.
+    plan, or for a run task its runs (`run_task`) and its plan (`run_plan`),
+    when it is valid, and every problem when it is not, with which workflow
+    each workflow name it uses is, by the forge's own id for it.
     """
 
     definition: TaskDefinition | None
     compiled: Compiled | None
     errors: tuple[Problem, ...]
     workflows: Mapping[str, str] = field(default_factory=dict)
+    run_task: RunTask | None = None
+    run_plan: RunPlan | None = None
+
+    def plan_files(self) -> dict[str, bytes]:
+        """What a save of the valid state writes under `plans/`: the plan, and
+        for a run task its runs file.
+        """
+        if self.run_task is not None:
+            assert self.run_plan is not None
+            return {
+                RUNS_PATH: self.run_task.runs_file().to_bytes(),
+                PLAN_PATH: self.run_plan.to_bytes(),
+            }
+        assert self.compiled is not None
+        return {PLAN_PATH: self.compiled.plan.to_bytes()}
 
 
 @action
@@ -284,77 +351,150 @@ async def save(
         version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, checked.errors, ())
 
-    publications = await ctx.forge.workspaces.list_publications(task)
-    latest = publications[-1] if publications else None
+    # A run task's publication still checked, or refused, is not the task's,
+    # so a save says what it changes against the one entrants are graded on.
+    await pipelines.take_over(ctx, task)
+    made = await ctx.forge.workspaces.list_publications(task)
+    live = await published.live(ctx, task, made)
+    latest = live[-1] if live else None
+    newest = made[-1] if made else None
     changed: tuple[str, ...] = ()
+    rerun: tuple[str, ...] | None = None
     read = ReadChanges()
     anew = True
     worded = False
     if latest is not None:
         before, published_files = await _published_snapshot(ctx, as_, task, latest)
-        after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
-        changed = grading_changes(before, after)
         differ = await _differing(ctx, as_, task, head, written, published_files)
-        # A workflow moved in place can change a value's words alone, which
-        # only a new publication's note carries.
-        worded = checked.compiled is not None and latest.meanings != checked.compiled.meanings
-        read = ReadChanges(
-            statement=STATEMENT_FILE in differ,
-            public=any(path.startswith(PUBLIC_FOLDER) for path in differ),
-            words=worded,
-        )
-        anew = bool(differ) or before.plans.get(PLAN_PATH) != after.plans[PLAN_PATH] or worded
+        if checked.run_task is not None:
+            # What a run task's plan changes is said from its plan and runs
+            # file, which say whether anything moved.
+            after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
+            changed = run_plan_changes(before, after)
+            rerun = steps_run_again(before, after)
+            scoring = checked.definition.scoring if checked.definition is not None else None
+            read = ReadChanges(
+                statement=STATEMENT_FILE in differ,
+                public=scoring is not None
+                and any(file_time(scoring, path) is not None for path in differ),
+            )
+            anew = bool(differ) or any(
+                before.plans.get(path) != content for path, content in checked.plan_files().items()
+            )
+        else:
+            after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
+            changed = grading_changes(before, after)
+            # A workflow moved in place can change a value's words alone,
+            # which only a new publication's note carries.
+            worded = checked.compiled is not None and latest.meanings != checked.compiled.meanings
+            read = ReadChanges(
+                statement=STATEMENT_FILE in differ,
+                public=any(path.startswith(PUBLIC_FOLDER) for path in differ),
+                words=worded,
+            )
+            anew = bool(differ) or before.plans.get(PLAN_PATH) != after.plans[PLAN_PATH] or worded
     if keep_as_draft:
         version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, (), changed)
-    assert checked.compiled is not None and checked.definition is not None
+    assert checked.definition is not None
     basis = f"{head.version}:{latest.id if latest is not None else ''}"
-    confirmed = confirm and asked in (None, basis)
-    if anew and not confirmed and await _contest_running(ctx, task):
-        regrades = (
-            await gradings.to_regrade(ctx, task, limit=checked.definition.submissions.max)
-            if changed
-            else 0
+    # What the organiser confirmed is the latest publication's, taken over
+    # or not.
+    question = (
+        self_reported_question(
+            checked.run_task,
+            await _runs_file_of(ctx, task, newest) if newest is not None else None,
         )
-        effect = await _effect(
-            ctx, task, checked.definition, latest, changed, regrades, read, checked.compiled
-        )
-        raise ConfirmationRequired(
-            "The contest is running, so this save asks before it publishes. Publish it, or "
-            "keep it as a draft.",
-            changes=[*changed],
-            regrades=regrades,
-            **as_extra(effect),
-            asked=basis,
-        )
+        if checked.run_task is not None
+        else None
+    )
+    # A self-reported column is confirmed only by an answer to the question
+    # that named it: a bare confirm, or one to another question, is no answer.
+    expected = basis if question is None else f"{basis}:{_marks_digest(checked.run_task)}"
+    confirmed = confirm and (asked == expected if question else asked in (None, basis))
+    if not confirmed:
+        await _ask(ctx, task, checked, latest, question, changed, rerun, read, expected, anew=anew)
 
     plans = await _plan_files(ctx, as_, task, head, checked)
     version = await _write(ctx, organiser, task, head, written, plans, said)
     touched = {*written, *plans}
     if version != head.version and await _landed_under(ctx, as_, task, head, version, touched):
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
-    notes = checked.compiled.notes
-    if latest is not None and version == latest.version and not worded:
+    notes = (
+        checked.compiled.notes
+        if checked.compiled is not None
+        else checked.run_plan.notes
+        if checked.run_plan is not None
+        else ()
+    )
+    if newest is not None and version == newest.version and not worded:
+        # A save that published a change to how the task grades and stopped
+        # before its regrade left the publication live and its submissions
+        # graded as before: a save of the same files grades them again.
+        # A task checked first is graded again when its check passes.
+        regraded = 0
+        if (
+            newest.grading_changed
+            and not _checked_first(checked)
+            and await gradings.behind(ctx, task, newest.id)
+        ):
+            regraded = (
+                await gradings.regrade(
+                    ctx,
+                    task,
+                    newest.id,
+                    cause=RegradeCause.SAVE,
+                    by=organiser.user.id,
+                    limit=checked.definition.submissions.max,
+                )
+            ).queued
         effect = await _effect(
-            ctx, task, checked.definition, latest, (), 0, ReadChanges(), checked.compiled
+            ctx, task, checked.definition, latest, (), regraded, ReadChanges(), checked.compiled
+        )
+        again = (
+            await pipelines.check_again(ctx, task, newest.id, checked.run_plan, organiser.user.id)
+            if checked.run_plan is not None
+            else None
         )
         return Published(
-            latest.id, latest.number, latest.grading_changed, latest.changes, notes, 0, effect
+            newest.id,
+            newest.number,
+            newest.grading_changed,
+            newest.changes,
+            notes,
+            regraded,
+            effect,
+            again,
         )
-    notes = (*notes, *await _report(ctx, task, checked.definition, checked.compiled))
-    note = write_note(
-        bool(changed),
-        changed,
-        checked.workflows,
-        checked.compiled.held,
-        checked.compiled.measures,
-        checked.compiled.titles,
-        checked.compiled.meanings,
+    notes = (*notes, *await _report(ctx, task, checked.definition, checked))
+    note = (
+        write_note(
+            bool(changed),
+            changed,
+            checked.workflows,
+            checked.compiled.held,
+            checked.compiled.measures,
+            checked.compiled.titles,
+            checked.compiled.meanings,
+        )
+        if checked.compiled is not None
+        else write_note(
+            bool(changed), changed, checked.workflows, checked_first=_checked_first(checked)
+        )
     )
+    # A publication checked first is held back by its note until a save row
+    # passes, so a save that fails once it is made leaves it unchecked, never
+    # the task's (`published.live`).
     publication = await ctx.forge.workspaces.publish(task, version, note)
     number = await _number_of(ctx, task, publication)
+    checking: Check | None = None
+    if checked.run_plan is not None:
+        saving = await pipelines.queue_save(
+            ctx, task, publication, checked.run_plan, organiser.user.id
+        )
+        checking = "checking" if saving is not None else None
     regraded = 0
-    if changed:
+    if _regrades(changed, checked):
         regraded = (
             await gradings.regrade(
                 ctx,
@@ -365,10 +505,25 @@ async def save(
                 limit=checked.definition.submissions.max,
             )
         ).queued
+    if changed and _checked_first(checked):
+        # Graded again once the save row passes: counted as the take-over
+        # will choose them.
+        counting = await gradings.to_regrade(ctx, task, limit=checked.definition.submissions.max)
+    else:
+        counting = regraded
     effect = await _effect(
-        ctx, task, checked.definition, latest, changed, regraded, read, checked.compiled
+        ctx,
+        task,
+        checked.definition,
+        latest,
+        changed,
+        counting,
+        read,
+        checked.compiled,
+        steps=rerun,
+        checked_first=_checked_first(checked),
     )
-    if latest is None:
+    if newest is None:
         places.ahead_at(ctx, task)
     log.info(
         "publications.published",
@@ -380,7 +535,84 @@ async def save(
         regraded=regraded,
         user_id=organiser.user.id,
     )
-    return Published(publication, number, bool(changed), changed, notes, regraded, effect)
+    return Published(publication, number, bool(changed), changed, notes, regraded, effect, checking)
+
+
+def _regrades(changed: tuple[str, ...], checked: Checked) -> bool:
+    """Whether the save grades the task's submissions again now: when what
+    it grades changed, the store running again only what changed by key for
+    a run task (SIMPLER-CORE.md 11.6); but not for a run task whose plan
+    holds steps done at the save, which grades them again once its save row
+    lets it take over (`pipelines`).
+    """
+    return bool(changed) and not _checked_first(checked)
+
+
+def _checked_first(checked: Checked) -> bool:
+    """Whether a save of a run task is checked by a save row before it takes
+    over, and its submissions are graded again only then."""
+    return checked.run_plan is not None and bool(checked.run_plan.pipeline("save"))
+
+
+async def _ask(
+    ctx: Context,
+    task: TaskId,
+    checked: Checked,
+    latest: Publication | None,
+    question: str | None,
+    changed: tuple[str, ...],
+    again: tuple[str, ...] | None,
+    read: ReadChanges,
+    basis: str,
+    *,
+    anew: bool,
+) -> None:
+    """Refuse a save not yet confirmed with `ConfirmationRequired` when it
+    asks first: while its contest runs, before it publishes anything new
+    (#449); and for a run task, when a column the entrant could set is new
+    or set through other inputs than under the latest publication (#504).
+    One question asks both, `self_reported` listing each such column with
+    the entrant's inputs that let them set it, and `asked` being what a
+    confirmation answers it with, `basis`.
+    """
+    assert checked.definition is not None
+    asks: builtins.list[str] = []
+    if anew and await _contest_running(ctx, task):
+        asks.append("The contest is running, so this save asks before it publishes.")
+    if question is not None:
+        asks.append(question)
+    if not asks:
+        return
+    regrades = (
+        await gradings.to_regrade(ctx, task, limit=checked.definition.submissions.max)
+        if changed
+        else 0
+    )
+    effect = await _effect(
+        ctx,
+        task,
+        checked.definition,
+        latest,
+        changed,
+        regrades,
+        read,
+        checked.compiled,
+        steps=again,
+        checked_first=_checked_first(checked),
+    )
+    marks = checked.run_task.self_reported if question and checked.run_task else {}
+    raise ConfirmationRequired(
+        " ".join([*asks, "Publish it, or keep it as a draft."]),
+        changes=[*changed],
+        regrades=regrades,
+        **as_extra(effect),
+        **(
+            {"self_reported": {name: sorted(inputs) for name, inputs in sorted(marks.items())}}
+            if marks
+            else {}
+        ),
+        asked=basis,
+    )
 
 
 async def check(
@@ -403,23 +635,34 @@ async def check(
             ),
         )
     try:
-        definition = parse_task(text)
+        definition = await _parsed(ctx, as_, text)
     except InvalidDefinition as invalid:
         return Checked(None, None, tuple(invalid.errors))
     present = _present(head, written)
-    workflow, pins, problems = await _workflow(ctx, as_, definition.workflow)
+    opened = await _workflow(ctx, as_, definition.workflow)
+    found, pins, problems = opened.found, opened.pins, opened.problems
     problems.extend(await _moved_workflows(ctx, task, definition, pins))
-    if workflow is None or problems:
+    if found is None or problems:
         return Checked(definition, None, tuple(problems), pins)
+    workflow = found.definition
+    runs = isinstance(workflow, RunWorkflow)
+    if runs != definition.runs:
+        # The workflow says the format, so the keys of the other are refused
+        # naming it.
+        try:
+            definition = parse_task(text, runs=runs)
+        except InvalidDefinition as invalid:
+            return Checked(None, None, tuple(invalid.errors), pins)
+    kept = await _format_kept(ctx, task, definition)
+    if kept:
+        return Checked(definition, None, tuple(kept), pins)
+    if isinstance(workflow, RunWorkflow):
+        return await _check_runs(ctx, as_, task, definition, workflow, found, pins, head, written)
     primitives, unresolved = await _primitives(ctx, as_, definition, workflow)
     if unresolved:
         return Checked(definition, None, unresolved, pins)
     version = [
-        Problem(
-            path="workflow",
-            message=f"The workflow {definition.workflow} has a problem ({problem['path']}): "
-            f"{problem['message']} Choose another version of it, or ask its owner to fix it.",
-        )
+        _workflow_problem(definition.workflow, problem)
         for problem in check_workflow(workflow, primitives)
     ]
     if version:
@@ -454,20 +697,302 @@ async def check(
     return Checked(definition, compiled, (), pins)
 
 
+async def _parsed(ctx: Context, as_: Identity, text: bytes) -> TaskDefinition:
+    """The `task.yaml` in `text`, read in the format its keys say, or when
+    that does not read, in the format of the workflow it names: a task of
+    today's format with a stray `scoring:` is then refused for what its
+    workflow's format refuses, not for missing `test_groups`.
+    `InvalidDefinition` with the problems of the format that applies, or of
+    the keys' when the workflow cannot be read.
+    """
+    try:
+        return parse_task(text)
+    except InvalidDefinition as invalid:
+        guessed = invalid
+    try:
+        document = load_mapping(TASK_FILE, text)
+        named = document.get("workflow")
+        ref = parse_workflow_ref(named.strip()) if isinstance(named, str) else None
+    except InvalidDefinition, InvalidName:
+        raise guessed from None
+    found = (await _workflow(ctx, as_, ref)).found if ref is not None else None
+    if found is None:
+        raise guessed
+    runs = isinstance(found.definition, RunWorkflow)
+    if runs == any(key in document for key in RUN_FORMAT_KEYS):
+        raise guessed
+    return parse_task(text, runs=runs)
+
+
+async def _check_runs(
+    ctx: Context,
+    as_: Identity,
+    task: TaskId,
+    definition: TaskDefinition,
+    workflow: RunWorkflow,
+    read: _Found,
+    pins: dict[str, str],
+    head: FileSet,
+    written: Mapping[str, WrittenEdit],
+) -> Checked:
+    """A run task's check (SIMPLER-CORE.md 8 and 9): its workflow checked
+    again at the commit its `workflow.yaml` was `read` at, as making the
+    version did, then
+    the task against it (`check_run_task`), each manifest the task gives
+    read from the saved state, the ids of its runs kept from the latest
+    publication's runs file; then what was shown is not hidden again, and
+    the contest's entry and boards ask nothing a run task cannot give yet;
+    then its plan (`plan_runs`, SIMPLER-CORE.md 11), pinned to that commit,
+    with the size and hash of every file a step is given.
+    """
+    primitives, unresolved = await _primitives(ctx, as_, definition, workflow)
+    if unresolved:
+        return Checked(definition, None, unresolved, pins)
+    ref = definition.workflow
+    try:
+        files = await workflows.files_at(ctx, as_, read.workflow, read.at, workflow)
+    except NotFound, Forbidden:
+        return Checked(definition, None, (_unopened(ref),), pins)
+    resolved = check_run_workflow(workflow, primitives, files)
+    problems = [_workflow_problem(ref, problem) for problem in resolved.problems]
+    if problems:
+        return Checked(definition, None, tuple(problems), pins)
+    present = _present(head, written)
+    manifests = {
+        path: content
+        for path in sorted(manifest_files(definition, resolved) & present)
+        if (content := await _content(ctx, as_, task, path, head, written)) is not None
+    }
+    # Run ids continue from the latest publication, taken over or not, so no
+    # id a publication gave is ever given to another key.
+    publications = await ctx.forge.workspaces.list_publications(task)
+    previous = await _runs_file_of(ctx, task, publications[-1]) if publications else None
+    if previous is None and publications:
+        before = await _definition_of(ctx, task, publications[-1])
+        if before is not None and before.runs:
+            # Numbering the runs afresh would give a key another run's id.
+            return Checked(definition, None, (Problem(path="", message=RUNS_UNREAD),), pins)
+    found = check_run_task(
+        definition,
+        workflow,
+        resolved,
+        present,
+        manifests,
+        previous=previous,
+        submitted=await _submitted(ctx, task),
+        secrets=frozenset(),
+        machine=run_machine(ctx.settings.slot_sizes),
+    )
+    problems = [
+        *found.problems,
+        *await _shown_before_runs(ctx, task, definition, present),
+        *await _contest_points(ctx, task, definition),
+    ]
+    if problems:
+        return Checked(definition, None, tuple(problems), pins)
+    assert found.task is not None, "check_run_task gives a task whenever it finds nothing wrong"
+    refused = await _boards(ctx, task, definition, None)
+    if refused:
+        return Checked(definition, None, tuple(refused), pins)
+    named = files_named(workflow, found.task)
+    planned = plan_runs(
+        definition,
+        workflow,
+        resolved,
+        found.task,
+        ref=str(ref),
+        workflow_id=str(read.workflow),
+        commit=str(read.at),
+        task_files=await _task_facts(ctx, as_, task, head, written, present, named.task),
+        workflow_files=await _workflow_facts(ctx, as_, read, files, named.workflow),
+        machine=run_machine(ctx.settings.slot_sizes),
+    )
+    if planned.plan is None:
+        return Checked(definition, None, tuple(planned.problems), pins)
+    return Checked(definition, None, (), pins, found.task, planned.plan)
+
+
+async def _task_facts(
+    ctx: Context,
+    as_: Identity,
+    task: TaskId,
+    head: FileSet,
+    written: Mapping[str, WrittenEdit],
+    present: set[str],
+    named: Iterable[str],
+) -> dict[str, FileFact]:
+    """The size and hash of each task file `named` names, a folder's files
+    each by itself, an upload's own: a file the save writes from what it
+    writes, and the head's read in batches of at most `FACTS_BATCH` bytes,
+    so the plan pins every file a step is given by its content.
+    """
+    paths = sorted({path for entry in named for path in named_by(present, entry)})
+    facts: dict[str, FileFact] = {}
+    unread: builtins.list[str] = []
+    for path in paths:
+        if path not in written:
+            unread.append(path)
+        elif (content := written[path].content) is not None:
+            facts[path] = _fact_of(content)
+    for batch in _batches(unread, head.sizes):
+        blobs = await ctx.forge.content.read_blobs(as_, task, {head.tokens[path] for path in batch})
+        for path in batch:
+            content = blobs.get(head.tokens[path])
+            if content is None:
+                content = await _content(ctx, as_, task, path, head, written)
+            if content is not None:
+                facts[path] = _fact_of(content)
+    return facts
+
+
+FACTS_BATCH = 32 * 1024 * 1024
+"""The most bytes of task files the save reads in one batch to hash them."""
+
+
+def _batches(paths: Sequence[str], sizes: Mapping[str, int]) -> Iterator[builtins.list[str]]:
+    """`paths` in order, in batches of at most `FACTS_BATCH` bytes by
+    `sizes`, a file larger than that or of no known size in a batch alone.
+    """
+    batch: builtins.list[str] = []
+    held = 0
+    for path in paths:
+        size = sizes.get(path, FACTS_BATCH)
+        if batch and held + size > FACTS_BATCH:
+            yield batch
+            batch, held = [], 0
+        batch.append(path)
+        held += size
+    if batch:
+        yield batch
+
+
+async def _workflow_facts(
+    ctx: Context, as_: Identity, read: _Found, files: WorkflowFiles, named: Iterable[str]
+) -> dict[str, FileFact]:
+    """The size and hash of each workflow file `named` names at the commit
+    the workflow was read at, as `_task_facts` gives a task file's, each
+    read but the manifests the check already holds.
+    """
+    facts: dict[str, FileFact] = {}
+    for path in sorted({path for entry in named for path in named_by(files.paths, entry)}):
+        content = files.manifests.get(path)
+        if content is None:
+            found = await ctx.forge.workflows.read_workflow_at(as_, read.workflow, read.at, path)
+            content = found.content
+        facts[path] = _fact_of(content)
+    return facts
+
+
+def _fact_of(content: bytes) -> FileFact:
+    """A file's size and SHA-256: an upload's own, from its pointer, and
+    any other file's of its content.
+    """
+    info = upload_info(content)
+    if info is not None:
+        return FileFact(size=info.size, sha256=info.digest)
+    return FileFact(size=len(content), sha256=hashlib.sha256(content).hexdigest())
+
+
+RUNS_UNREAD = (
+    f"The latest publication's {RUNS_PATH}, which keeps the id of each of the task's runs, is "
+    "missing or does not read, so this save cannot keep those ids. Ask Unicon's operators to "
+    "restore it."
+)
+
+
+def _marks_digest(task: RunTask | None) -> str:
+    """A short digest of the columns `task` marks self-reported and the
+    inputs that mark each, which a confirmation of them carries back.
+    """
+    marks = task.self_reported if task is not None else {}
+    text = json.dumps({name: sorted(inputs) for name, inputs in sorted(marks.items())})
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _workflow_problem(ref: WorkflowRef, problem: Problem) -> Problem:
+    return Problem(
+        path="workflow",
+        message=f"The workflow {ref} has a problem ({problem['path']}): {problem['message']} "
+        "Choose another version of it, or ask its owner to fix it.",
+    )
+
+
+def _unopened(ref: WorkflowRef) -> Problem:
+    return Problem(
+        path="workflow",
+        message=f"Unicon cannot open the workflow {ref}: there is no such version, or it is not "
+        "shared with you. Check its name and version, or ask its owner to share it.",
+    )
+
+
+async def _runs_file_of(ctx: Context, task: TaskId, publication: Publication) -> RunsFile | None:
+    """The publication's runs file, or none when it has none that reads."""
+    try:
+        found = await ctx.forge.content.read_file(PLATFORM, task, RUNS_PATH, at=publication.version)
+    except NotFound:
+        return None
+    return _runs_file(found.content)
+
+
+def _runs_file(content: bytes | None) -> RunsFile | None:
+    if content is None:
+        return None
+    try:
+        return RunsFile.from_bytes(content)
+    except ValueError:
+        return None
+
+
+async def _submitted(ctx: Context, task: TaskId) -> bool:
+    """Whether anyone has submitted to the task."""
+    return bool(await ctx.db.scalar(select(exists().where(Grading.task_id == task, FRONT))))
+
+
+async def _format_kept(
+    ctx: Context, task: TaskId, definition: TaskDefinition
+) -> builtins.list[Problem]:
+    """Once anyone has submitted, the task keeps the format of the
+    publication it is graded on: a submission to one is laid out as the
+    other cannot read.
+    """
+    publications = await published.live(ctx, task)
+    if not publications:
+        return []
+    before = await _definition_of(ctx, task, publications[-1])
+    if before is None or before.runs == definition.runs or not await _submitted(ctx, task):
+        return []
+    was = "scored by its runs" if before.runs else "graded test by test"
+    return [
+        Problem(
+            path="workflow",
+            message=f"Entrants have submitted to this task, which is {was}, so its workflow "
+            "must keep that format. Choose a version that does.",
+        )
+    ]
+
+
 async def _boards(
-    ctx: Context, task: TaskId, definition: TaskDefinition, compiled: Compiled
+    ctx: Context, task: TaskId, definition: TaskDefinition, compiled: Compiled | None
 ) -> builtins.list[Problem]:
     """T8: what each board covering the task asks of it as saved."""
     contest = await _contest(ctx, task)
     name = (await names.names_of(ctx, [task])).get(task)
     if contest is None or name is None:
         return []
-    shape = covered(compiled.measures, definition.test_groups, compiled.meanings, definition.credit)
-    return await boards.check_task(ctx, contest_id_of(task_scope(task)), contest, name, shape)
+    return await boards.check_task(
+        ctx, contest_id_of(task_scope(task)), contest, name, _shape(definition, compiled)
+    )
+
+
+def _shape(definition: TaskDefinition, compiled: Compiled | None) -> Covered:
+    """The task as a board reads it; a run task gives a board nothing yet."""
+    if compiled is None:
+        return covered({}, {}, runs=definition.runs)
+    return covered(compiled.measures, definition.test_groups, compiled.meanings)
 
 
 async def _report(
-    ctx: Context, task: TaskId, definition: TaskDefinition, compiled: Compiled
+    ctx: Context, task: TaskId, definition: TaskDefinition, checked: Checked
 ) -> builtins.list[str]:
     """T9 beside what the save's effect says: the task's reveal in words
     when it hides anything (a group not shown at once, or a sealed step),
@@ -480,16 +1005,20 @@ async def _report(
         return []
     entry = contest.entry(name)
     found: builtins.list[str] = []
-    hides = bool(compiled.sealed) or any(
-        group.shown is not Show.ALWAYS for group in definition.test_groups.values()
-    )
+    compiled = checked.compiled
+    if checked.run_task is not None:
+        hides = bool(checked.run_task.show.after_close)
+    else:
+        assert compiled is not None
+        hides = bool(compiled.sealed) or any(
+            group.shown is not Show.ALWAYS for group in definition.test_groups.values()
+        )
     if entry is not None and hides:
         extensions = await timelines.every_extension(ctx, contest_id_of(task_scope(task)))
         found.append(
             f"{name} shows its hidden results on {in_words(reveal_of(contest, entry, extensions))}."
         )
-    shape = covered(compiled.measures, definition.test_groups, compiled.meanings, definition.credit)
-    found += boards.task_notes(contest, name, shape)
+    found += boards.task_notes(contest, name, _shape(definition, compiled))
     return found
 
 
@@ -501,19 +1030,24 @@ async def _effect(
     changed: tuple[str, ...],
     regrades: int,
     read: ReadChanges,
-    compiled: Compiled,
+    compiled: Compiled | None,
+    *,
+    steps: tuple[str, ...] | None = None,
+    checked_first: bool = False,
 ) -> SaveEffect:
     """What saving `definition` over the latest publication does, in the
     words a running contest asks with before a save and a save that
     published answers with, each reported value named by its title in the
-    save or, where the save no longer reports it, in the latest publication.
+    save or, where the save no longer reports it, in the latest publication;
+    for a run task, the steps a submission runs again, and whether that
+    waits for the save's check.
     """
     name = (await names.names_of(ctx, [task])).get(task)
     before = await _definition_of(ctx, task, latest) if latest is not None else None
-    submitted = await ctx.db.scalar(select(exists().where(Grading.task_id == task)))
+    meanings = compiled.meanings if compiled is not None else ()
     titles = {
         meaning.name: meaning.title
-        for meaning in (*(latest.meanings if latest is not None else ()), *compiled.meanings)
+        for meaning in (*(latest.meanings if latest is not None else ()), *meanings)
         if meaning.title is not None
     }
     return effect_of(
@@ -526,8 +1060,10 @@ async def _effect(
         graded=bool(await _graded_under(ctx, task)),
         read=read,
         titles=titles,
-        submitted=bool(submitted),
+        submitted=await _submitted(ctx, task),
         unread=latest is not None and before is None,
+        steps=steps,
+        checked_first=checked_first,
     )
 
 
@@ -566,7 +1102,7 @@ async def _graded_under(ctx: Context, task: TaskId) -> set[str]:
         (
             await ctx.db.scalars(
                 select(Grading.publication_id)
-                .where(Grading.task_id == task, Grading.status == GradingStatus.DONE)
+                .where(Grading.task_id == task, Grading.status == GradingStatus.DONE, FRONT)
                 .distinct()
             )
         ).all()
@@ -621,6 +1157,30 @@ async def _shown_before(
     return problems
 
 
+async def _shown_before_runs(
+    ctx: Context, task: TaskId, definition: TaskDefinition, present: Collection[str]
+) -> builtins.list[Problem]:
+    """T7 for a run task (SIMPLER-CORE.md 9.4 and 16): once the task has a
+    graded submission, what `show` listed under any publication a graded
+    submission ran under is listed as soon, or sooner; a folder it listed
+    stands for the files that publication held under it, each still in
+    `present` shown as soon whichever entry now lists it.
+    """
+    graded = await _graded_under(ctx, task)
+    if not graded or definition.scoring is None:
+        return []
+    shown = []
+    for publication in await ctx.forge.workspaces.list_publications(task):
+        if publication.id not in graded:
+            continue
+        found = await _definition_of(ctx, task, publication)
+        if found is None or found.scoring is None:
+            continue
+        held = await ctx.forge.content.list_files(PLATFORM, task, at=publication.version)
+        shown.append(shown_under(found.scoring, held.tokens.keys()))
+    return hidden_again(most_shown(shown), definition.scoring, present)
+
+
 async def _groups_of(ctx: Context, task: TaskId, publication: Publication) -> Mapping[str, Group]:
     """The test groups of the publication's `task.yaml`, or none when it
     does not read, which a save never publishes.
@@ -672,6 +1232,17 @@ async def _contest_points(
             said.append(f"gives it a worth of {spelled(entry.worth)}")
         if entry.due is not None:
             said.append("gives it a due time")
+        if definition.runs:
+            problems.extend(
+                Problem(
+                    path="scoring",
+                    message=f"{name} is scored by its runs, and gives no points until "
+                    f"leaderboards come, but the contest {line}. Remove that from the contest "
+                    "first.",
+                )
+                for line in said
+            )
+            continue
         problems.extend(
             Problem(
                 path="test_groups",
@@ -768,42 +1339,59 @@ async def _content(
     return (await ctx.forge.content.read_file(as_, task, path, at=head.version)).content
 
 
-async def _workflow(
-    ctx: Context, as_: Identity, ref: WorkflowRef
-) -> tuple[WorkflowDefinition | None, dict[str, str], builtins.list[Problem]]:
-    """The workflow `ref` names, read at its version as `as_`, which
-    workflow its name is, by the forge's own id for it, and a problem when
-    it cannot be read or is not a workflow in the current format.
+@dataclass(frozen=True, slots=True)
+class _Found:
+    """A workflow as read: with or without a test block, the forge's id for
+    it, and the commit its version stood at when it was read, which every
+    later read of its files in the same check is pinned to.
+    """
+
+    definition: WorkflowDefinition | RunWorkflow
+    workflow: WorkflowId
+    at: VersionId
+
+
+@dataclass(frozen=True, slots=True)
+class _Opened:
+    """The workflow a task names, none when it cannot be read or is in an
+    old format, with the problem saying so, and which workflow its name is,
+    by the forge's own id for it.
+    """
+
+    found: _Found | None
+    pins: dict[str, str]
+    problems: builtins.list[Problem]
+
+
+async def _workflow(ctx: Context, as_: Identity, ref: WorkflowRef) -> _Opened:
+    """The workflow `ref` names, its version resolved once to a commit and
+    `workflow.yaml` read there as `as_`.
     """
     workflow = await names.workflow_id(ctx, ref)
     try:
-        file = await ctx.forge.workflows.read_workflow_file(
-            as_, workflow, ref.version, WORKFLOW_FILE
-        )
+        at = await ctx.forge.workflows.workflow_version(as_, workflow, ref.version)
+        file = await ctx.forge.workflows.read_workflow_at(as_, workflow, at, WORKFLOW_FILE)
         pins = {f"{ref.owner}/{ref.name}": await ctx.forge.workflows.workflow_key(workflow)}
     except NotFound, Forbidden:
-        message = (
-            f"Unicon cannot open the workflow {ref}: there is no such version, or it is not "
-            "shared with you. Check its name and version, or ask its owner to share it."
-        )
-        return None, {}, [Problem(path="workflow", message=message)]
+        return _Opened(None, {}, [_unopened(ref)])
     try:
-        return parse_workflow(file.content), pins, []
+        definition = read_workflow(file.content)
     except InvalidDefinition as invalid:
         message = (
             f"The workflow {ref} is written in an older form that Unicon no longer reads, so "
             f"its owner needs to make a new version of it. {invalid.detail}"
         )
-        return None, pins, [Problem(path="workflow", message=message)]
+        return _Opened(None, pins, [Problem(path="workflow", message=message)])
+    return _Opened(_Found(definition, workflow, at), pins, [])
 
 
 async def _moved_workflows(
     ctx: Context, task: TaskId, definition: TaskDefinition, pins: Mapping[str, str]
 ) -> builtins.list[Problem]:
-    """A problem at each workflow name the latest publication used for
-    another workflow than the one it names now.
+    """A problem at each workflow name the publication the task is graded on
+    used for another workflow than the one it names now.
     """
-    publications = await ctx.forge.workspaces.list_publications(task)
+    publications = await published.live(ctx, task)
     pinned = publications[-1].workflows if publications else {}
     ref = definition.workflow
     name = f"{ref.owner}/{ref.name}"
@@ -821,7 +1409,7 @@ async def _primitives(
     ctx: Context,
     as_: Identity,
     definition: TaskDefinition,
-    workflow: WorkflowDefinition,
+    workflow: WorkflowDefinition | RunWorkflow,
 ) -> tuple[dict[str, PrimitiveDeclaration], tuple[Problem, ...]]:
     """The declaration of every primitive a step of the task's workflow
     uses, read at its version as `as_`, and a problem at the `workflow` line
@@ -857,8 +1445,9 @@ async def _published_snapshot(
     }
     named: tuple[str, ...] = ()
     if PLAN_PATH in plans:
+        reader = RunPlan if RUNS_PATH in plans else Plan
         try:
-            named = Plan.from_bytes(plans[PLAN_PATH]).task_paths()
+            named = reader.from_bytes(plans[PLAN_PATH]).task_paths()
         except ValueError:
             named = ()
     data = {path: str(token) for each in named for path, token in _under(files, each).items()}
@@ -889,8 +1478,8 @@ async def _saved_snapshot(
     otherwise by a digest of its content that no token equals; one it
     removes is not there, so the comparison names it removed.
     """
-    assert checked.compiled is not None
-    plan = checked.compiled.plan
+    plan = checked.run_plan or (checked.compiled.plan if checked.compiled is not None else None)
+    assert plan is not None
     data: dict[str, str] = {}
     for named in plan.task_paths():
         for path, token in _under(head, named).items():
@@ -934,12 +1523,11 @@ async def _contest_running(ctx: Context, task: TaskId) -> bool:
 async def _plan_files(
     ctx: Context, as_: Identity, task: TaskId, head: FileSet, checked: Checked
 ) -> dict[str, bytes | None]:
-    """The plan the save writes, when it is new or differs from the head's,
-    and none for every other file under `plans/` at the head, which the save
-    removes.
+    """The plan the save writes, or a run task's runs file, when it is new
+    or differs from the head's, and none for every other file under
+    `plans/` at the head, which the save removes.
     """
-    assert checked.compiled is not None
-    compiled = {PLAN_PATH: checked.compiled.plan.to_bytes()}
+    compiled = checked.plan_files()
     files: dict[str, bytes | None] = {}
     for path, content in compiled.items():
         if await _content(ctx, as_, task, path, head, {}) != content:
@@ -1063,7 +1651,10 @@ class WorkflowForm:
     the task has a graded submission, from when on a save refuses a test
     group it adds without its `show` (T10); and `newer`, the workflow's
     latest version when it comes after the one the task names, which the
-    task keeps until someone saves it naming another (Task 10.6.5).
+    task keeps until someone saves it naming another (Task 10.6.5); and
+    `runs`, whether the workflow describes one run, so the task is in the
+    run format (SIMPLER-CORE.md 8), its inputs given by the task, the
+    entrant or `repeat`, and no test fields.
     """
 
     workflow: str | None
@@ -1072,6 +1663,7 @@ class WorkflowForm:
     problem: str | None = None
     graded: bool = False
     newer: str | None = None
+    runs: bool = False
 
 
 @action
@@ -1106,10 +1698,34 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
     except InvalidName as invalid:
         return WorkflowForm(named, problem=invalid.detail)
     newer = await workflows.newer_version(ctx, organiser.identity, ref)
-    workflow, _, problems = await _workflow(ctx, organiser.identity, ref)
+    opened = await _workflow(ctx, organiser.identity, ref)
+    workflow = opened.found.definition if opened.found is not None else None
+    problems = opened.problems
     if workflow is None:
         return WorkflowForm(
             str(ref), problem=problems[0]["message"] if problems else None, newer=newer
+        )
+    if isinstance(workflow, RunWorkflow):
+        # Who gives a run workflow's input, and whether it repeats, are the
+        # task's, so each reads as given once by the task until it says.
+        return WorkflowForm(
+            str(ref),
+            newer=newer,
+            runs=True,
+            inputs=tuple(
+                DeclaredInput(
+                    id=name,
+                    type=declared.type.value,
+                    contestant=False,
+                    options=declared.options,
+                    per_test=False,
+                    optional=declared.optional,
+                    title=declared.title,
+                    help=declared.help,
+                    unit=declared.unit,
+                )
+                for name, declared in workflow.inputs.items()
+            ),
         )
     return WorkflowForm(
         str(ref),
@@ -1138,10 +1754,14 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
 @action
 async def list(ctx: Context, organiser: Organiser, task: TaskId) -> tuple[Publication, ...]:
     """Every publication of the task, oldest first, each saying whether it
-    changed how the task grades. Needs the observer role at the task.
+    changed how the task grades, and a run task's that has not taken over
+    where it stands (`pipelines.checks`). Needs the observer role at the
+    task.
     """
     require(organiser, task_scope(task), Role.OBSERVER)
-    return await ctx.forge.workspaces.list_publications(task)
+    made = await ctx.forge.workspaces.list_publications(task)
+    found = await pipelines.checks(ctx, task, made)
+    return tuple(replace(each, check=found.get(each.id)) for each in made)
 
 
 async def _held_pointer(

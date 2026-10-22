@@ -11,11 +11,10 @@ section 3), so changing how a task scores regrades nothing.
   `worth * R_g / W`. Nothing is divided by the rule weight of a subset.
 - The **late factor**: `max(0, 1 - late_per_day * d)` for `d` started days
   after the row's due, 1 on time.
-- A **value** folded over a set of tests (3.4), as the board reading it
-  says (`sum`, `mean` or `max`), a test that was not accepted or did not
-  report the value counting as its worst declared bound, and the fold
-  having no value when that bound is not declared or the set is empty.
-  Each test still shows the value it reported.
+- A **value**'s fold over a set of tests (3.4), a test that was not
+  accepted or did not report the value counting as its worst declared
+  bound, and the fold having no value when that bound is not declared or
+  the set is empty. Each test still shows the value it reported.
 - What is **shown** at a moment (3.5): a group's verdict, its outcome and
   points, unless it is `after_close` and the task has not revealed; its
   tests when it is `always` or the task has revealed. Everything is shown
@@ -37,7 +36,8 @@ from enum import StrEnum
 from fractions import Fraction
 from typing import Any
 
-from forge.domain.definitions import Fold, Group, Relative, Show
+from forge.domain.definitions import Group, Relative, Show
+from forge.domain.workflow_definition import Fold
 
 ACCEPTED = "accepted"
 SIGNIFICANT = 30
@@ -102,10 +102,11 @@ class Better(StrEnum):
 @dataclass(frozen=True, slots=True)
 class Measure:
     """What a per-test number means, as its workflow declares it with the
-    task's values in: which way is better, and its bounds. How it combines
-    across tests is each board's choice.
+    task's values in: how it folds over tests, which way is better, and its
+    bounds.
     """
 
+    fold: Fold | None = None
     better: Better | None = None
     at_least: Fraction | None = None
     at_most: Fraction | None = None
@@ -124,6 +125,8 @@ class Measure:
     def noted(self) -> dict[str, str]:
         """The measure as a publication's note keeps it."""
         found: dict[str, str] = {}
+        if self.fold is not None:
+            found["fold"] = self.fold.value
         if self.better is not None:
             found["better"] = self.better.value
         if self.at_least is not None:
@@ -140,12 +143,13 @@ def measure_noted(value: object) -> Measure | None:
     if not isinstance(value, dict):
         return None
     try:
+        fold = Fold(value["fold"]) if "fold" in value else None
         better = Better(value["better"]) if "better" in value else None
         at_least = Fraction(str(value["at_least"])) if "at_least" in value else None
         at_most = Fraction(str(value["at_most"])) if "at_most" in value else None
     except ValueError:
         return None
-    return Measure(better, at_least, at_most)
+    return Measure(fold, better, at_least, at_most)
 
 
 def late_factor(days: int, late_per_day: object) -> Fraction:
@@ -198,12 +202,12 @@ def credit_of(
     return min(ONE, max(ZERO, value))
 
 
-def fold(kind: Fold, measure: Measure, values: Sequence[Fraction | None]) -> Fraction | None:
-    """The value over a set of tests by `kind`, a test without it counting
-    as its worst declared bound; none over no tests, or when a test lacks
-    it and no worst bound is declared.
+def fold(measure: Measure, values: Sequence[Fraction | None]) -> Fraction | None:
+    """The value over a set of tests by its fold, a test without it counting
+    as its worst declared bound; none without a fold, over no tests, or when
+    a test lacks it and no worst bound is declared.
     """
-    if not values:
+    if measure.fold is None or not values:
         return None
     filled: list[Fraction] = []
     for value in values:
@@ -212,7 +216,7 @@ def fold(kind: Fold, measure: Measure, values: Sequence[Fraction | None]) -> Fra
                 return None
             value = measure.worst
         filled.append(value)
-    match kind:
+    match measure.fold:
         case Fold.SUM:
             return sum(filled, ZERO)
         case Fold.MEAN:
@@ -303,36 +307,31 @@ class Scored:
             ZERO,
         )
 
-    def pending(self, seen: Seen, scope: Callable[[Show], bool] | None = None) -> Fraction | None:
+    def pending(self, seen: Seen) -> Fraction | None:
         """The most its groups whose verdict is not shown yet can add, with
-        the late factor, of the groups in `scope`, every group without one;
-        none on a task that gives no points.
+        the late factor; none on a task that gives no points.
         """
         if not self.gives_points:
             return None
-        within = scope or everywhere
         return sum(
             (
                 (group.max or ZERO) * self.factor
                 for group in self.groups
-                if within(group.show) and not seen.verdict(group.show)
+                if not seen.verdict(group.show)
             ),
             ZERO,
         )
 
-    def value(
-        self, name: str, scope: Callable[[Show], bool], seen: Seen, kind: Fold
-    ) -> Fraction | None:
-        """The value folded by `kind` over the tests of the groups in
-        `scope` whose tests are shown, a test that was not accepted counting
-        as having no value, whatever it reported (so a wrong answer is never
-        fast); none without a value.
+    def value(self, name: str, scope: Callable[[Show], bool], seen: Seen) -> Fraction | None:
+        """The value folded over the tests of the groups in `scope` whose
+        tests are shown, a test that was not accepted counting as having no
+        value, whatever it reported (so a wrong answer is never fast); none
+        without a fold or a value.
         """
         measure = self.measures.get(name)
         if measure is None:
             return None
         return fold(
-            kind,
             measure,
             [
                 exact(test.values.get(name)) if test.outcome == ACCEPTED else None
@@ -341,6 +340,15 @@ class Scored:
                 for test in group.tests
             ],
         )
+
+    def values(self, seen: Seen) -> dict[str, Fraction]:
+        """Every value with a fold, over every shown test, that has one."""
+        found: dict[str, Fraction] = {}
+        for name in self.measures:
+            value = self.value(name, everywhere, seen)
+            if value is not None:
+                found[name] = value
+        return found
 
     def outcome(self, seen: Seen) -> str | None:
         """The first outcome other than `accepted` among the groups whose

@@ -35,6 +35,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from forge.db.tables import Grading
+from forge.db.tables.gradings import FRONT
 from forge.domain.boards import State
 from forge.domain.definitions import (
     TASK_FILE,
@@ -234,7 +235,7 @@ class Scorer:
         grouped: dict[tuple[str, int], list[Grading]] = {}
         for row in await ctx.db.scalars(
             select(Grading).where(
-                Grading.task_id == self.current.id, Grading.workspace_id.in_(workspaces)
+                Grading.task_id == self.current.id, Grading.workspace_id.in_(workspaces), FRONT
             )
         ):
             if before is not None and (

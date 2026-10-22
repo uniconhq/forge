@@ -18,7 +18,7 @@ import pytest
 
 from forge.domain import exact_json
 from forge.domain.contracts import violation
-from forge.domain.definitions import Fold, parse_task, starter_task
+from forge.domain.definitions import parse_task, starter_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine
 from forge.domain.meanings import ValueMeaning, shown_meanings
 from forge.domain.plans import (
@@ -45,7 +45,7 @@ from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.publications import read_note, write_note
 from forge.domain.scoring import Better, fold, written
 from forge.domain.showing import NOTHING_SEALED, Sealed
-from forge.domain.workflow_definition import WorkflowDefinition, parse_workflow
+from forge.domain.workflow_definition import Fold, WorkflowDefinition, parse_workflow
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES
 
@@ -201,12 +201,12 @@ steps:
       expected: ${{ test.answer }}
 report:
   fraction:
-    {from: "${{ steps.score.fraction }}", better: higher, at_least: 0, at_most: 1}
-  miss: {from: "${{ steps.score.fraction }}", better: lower, at_least: 0, at_most: 1}
-  steps_taken: {from: "${{ steps.score.steps }}", better: lower, at_least: 0}
-  raw: {from: "${{ steps.score.steps }}", at_least: 0}
-  reward: {from: "${{ steps.score.steps }}", better: higher}
-  chosen: {from: "${{ steps.score.steps }}", better: "${{ inputs.better }}", at_least: 0}
+    {from: "${{ steps.score.fraction }}", fold: mean, better: higher, at_least: 0, at_most: 1}
+  miss: {from: "${{ steps.score.fraction }}", fold: mean, better: lower, at_least: 0, at_most: 1}
+  steps_taken: {from: "${{ steps.score.steps }}", fold: sum, better: lower, at_least: 0}
+  raw: {from: "${{ steps.score.steps }}", fold: sum, at_least: 0}
+  reward: {from: "${{ steps.score.steps }}", fold: sum, better: higher}
+  chosen: {from: "${{ steps.score.steps }}", fold: sum, better: "${{ inputs.better }}", at_least: 0}
   log: ${{ steps.compile.compile_log }}
 """
 )
@@ -238,7 +238,7 @@ steps:
 report:
   accuracy: ${{ steps.predict.accuracy }}
   fraction:
-    {from: "${{ steps.score.fraction }}", better: higher, at_least: 0, at_most: 1}
+    {from: "${{ steps.score.fraction }}", fold: mean, better: higher, at_least: 0, at_most: 1}
 """
 )
 """The contestant's notebook run once over a data folder the task names, and
@@ -708,6 +708,113 @@ def test_a_batching_primitive_is_one_step_with_an_item_per_test_and_its_limits_r
     assert "folders" not in check
 
 
+HIDDEN_MAIN = "  main: {each: 100, show: after_close}\n  samples: {}\n"
+
+
+def test_a_batch_runs_the_tests_shown_during_the_contest_before_the_hidden_ones() -> None:
+    # A hidden test run first could leave its input in shared memory, or its
+    # time in the CPU counter, for the shown test after it (the batch leak).
+    text = task_with(groups=HIDDEN_MAIN)
+    plan = compiled(text, classic_tests("main/1", "main/2", "samples/1")).plan
+    written = document(plan)
+
+    assert violation(written, "plan") is None
+    assert written["tests"] == ["main/1", "main/2", "samples/1"]
+    for step_id in ("run", "check"):
+        assert [item["test"] for item in step(plan, step_id)["batch"]] == [
+            "samples/1",
+            "main/1",
+            "main/2",
+        ]
+    assert step(plan, "check")["batch"][0]["inputs"]["expected"] == {
+        "task": "tests/samples/1/answer"
+    }
+
+
+def test_a_group_shown_as_an_outcome_runs_after_the_shown_ones() -> None:
+    # Entrants see a verdict test's outcome, not its time, so one run before
+    # a shown test could pass it its input through the CPU counter.
+    text = task_with(groups="  main: {pass: 100, show: verdict}\n  samples: {}\n")
+    plan = compiled(text, classic_tests("main/1", "main/2", "samples/1")).plan
+
+    assert [item["test"] for item in step(plan, "run")["batch"]] == [
+        "samples/1",
+        "main/1",
+        "main/2",
+    ]
+
+
+def test_a_group_shown_as_an_outcome_runs_before_the_hidden_ones() -> None:
+    groups = (
+        "  a: {each: 1, show: after_close}\n  b: {pass: 100, show: verdict}\n"
+        "  samples: {show: always}\n"
+    )
+    plan = compiled(task_with(groups=groups), classic_tests("a/1", "b/1", "samples/1")).plan
+
+    assert [item["test"] for item in step(plan, "run")["batch"]] == ["samples/1", "b/1", "a/1"]
+
+
+def test_hiding_no_group_compiles_the_plan_it_compiled_before() -> None:
+    always = compiled(
+        task_with(groups="  main: {each: 100, show: always}\n  samples: {show: always}\n"),
+        classic_tests("main/1", "main/2", "samples/1"),
+    )
+    unsaid = compiled(task_with(groups=TWO_GROUPS), classic_tests("main/1", "main/2", "samples/1"))
+
+    assert always.plan.to_bytes() == unsaid.plan.to_bytes()
+    assert [item["test"] for item in step(unsaid.plan, "run")["batch"]] == list(
+        document(unsaid.plan)["tests"]
+    )
+
+
+def test_a_non_batching_per_test_step_runs_the_shown_tests_first() -> None:
+    text = task_with(
+        workflow="acme/output-only@v1",
+        inputs="  answers: {max_size: 1MB}\n",
+        groups="  a: {each: 1, show: after_close}\n  b: {each: 1}\n",
+    )
+    plan = compiled(text, classic_tests("a/1", "a/2", "b/1"), OUTPUT_ONLY).plan
+    written = document(plan)
+
+    assert written["tests"] == ["a/1", "a/2", "b/1"]
+    assert [entry["test"] for entry in written["steps"]] == ["b/1", "a/1", "a/2"]
+
+
+TWO_RUNS = parse_workflow(
+    CLASSIC.replace(
+        b"  - id: check\n",
+        b"  - id: again\n"
+        b"    use: unicon/sandbox-run@v2\n"
+        b"    per_test: true\n"
+        b"    with:\n"
+        b"      binary: ${{ steps.compile.binary }}\n"
+        b"      input: ${{ test.input }}\n"
+        b"      time_limit: ${{ inputs.time_limit }}\n"
+        b"      memory_limit: ${{ inputs.memory_limit }}\n"
+        b"  - id: check\n",
+    )
+)
+"""The classic workflow running the contestant's program twice on each test."""
+
+TWO_RUNS_NOTE = (
+    "The workflow runs the entrant's code in two steps for each test, run and again. A run in "
+    "run of a test whose results entrants see later can tell a run in again of a test whose "
+    "results they see sooner how long it took. Show every group the same way to avoid it."
+)
+
+
+def test_running_the_entrants_code_twice_per_test_with_a_hidden_group_is_noted() -> None:
+    tests = classic_tests("main/1", "samples/1")
+
+    assert compiled(task_with(groups=HIDDEN_MAIN), tests, TWO_RUNS).notes == (TWO_RUNS_NOTE,)
+    assert compiled(task_with(groups=HIDDEN_MAIN), tests).notes == ()
+    assert compiled(task_with(groups=TWO_GROUPS), tests, TWO_RUNS).notes == ()
+    every_group_hidden = "  main: {each: 100, show: after_close}\n  samples: {show: after_close}\n"
+    assert compiled(task_with(groups=every_group_hidden), tests, TWO_RUNS).notes == ()
+    outcome_only = "  main: {pass: 100, show: verdict}\n  samples: {}\n"
+    assert compiled(task_with(groups=outcome_only), tests, TWO_RUNS).notes == (TWO_RUNS_NOTE,)
+
+
 def test_a_limit_is_raised_and_rounded_up() -> None:
     low = task_with(inputs="  time_limit: 0.5\n  memory_limit: 1.2\n")
     run = step(compiled(low, classic_tests("main/1")).plan, "run")
@@ -751,13 +858,13 @@ def test_a_values_title_and_unit_change_no_plan_and_are_compiled_beside_it() -> 
 
     assert untitled.plan.to_bytes() == titled.plan.to_bytes()
     assert titled.meanings == (
-        ValueMeaning("time_ms", "Run time", "ms", Better.LOWER),
-        ValueMeaning("memory_kb", "Memory used", "KB", Better.LOWER),
+        ValueMeaning("time_ms", "Run time", "ms", Fold.MAX, Better.LOWER),
+        ValueMeaning("memory_kb", "Memory used", "KB", Fold.MAX, Better.LOWER),
         ValueMeaning("log", "Compile log"),
     )
     assert untitled.meanings == (
-        ValueMeaning("time_ms", better=Better.LOWER),
-        ValueMeaning("memory_kb", "Memory used", "KB", Better.LOWER),
+        ValueMeaning("time_ms", fold=Fold.MAX, better=Better.LOWER),
+        ValueMeaning("memory_kb", "Memory used", "KB", Fold.MAX, Better.LOWER),
         ValueMeaning("log"),
     )
 
@@ -773,8 +880,8 @@ def test_a_publications_note_keeps_each_values_words_in_the_reports_order() -> N
     # A publication made before the words were noted names its per-test
     # numbers alone, by key.
     assert before.meanings == (
-        ValueMeaning("memory_kb", better=Better.LOWER),
-        ValueMeaning("time_ms", better=Better.LOWER),
+        ValueMeaning("memory_kb", fold=Fold.MAX, better=Better.LOWER),
+        ValueMeaning("time_ms", fold=Fold.MAX, better=Better.LOWER),
     )
 
 
@@ -1009,6 +1116,16 @@ def test_a_folder_value_names_a_folder_with_a_file_in_the_task(data: str, messag
     text = NOTEBOOK_TASK.replace("data/mnist-test/", data)
 
     assert refused(text, NOTEBOOK_PATHS, NOTEBOOK) == [{"path": "inputs.data", "message": message}]
+
+
+def test_a_task_of_todays_format_keeps_a_folder_with_a_space_at_a_parts_edge() -> None:
+    """As a task saved before the run format's stricter path rule was."""
+    text = NOTEBOOK_TASK.replace("data/mnist-test/", "data /mnist-test/")
+    paths = {path.replace("data/", "data /") for path in NOTEBOOK_PATHS}
+
+    predict = step(compiled(text, paths, NOTEBOOK).plan, "predict")
+
+    assert predict["inputs"]["data"] == {"task": "data /mnist-test/"}
 
 
 def test_a_task_folder_into_a_folder_port_is_listed_in_folders() -> None:
@@ -1431,8 +1548,8 @@ def test_a_bounded_number_credit_does_not_name_is_reported_not_refused() -> None
 
 TITLED = parse_workflow(
     CHECKED_TEXT.replace(
-        'fraction }}", better: lower,', 'fraction }}", title: Share missed, better: lower,'
-    ).replace('steps }}", at_least: 0}', 'steps }}", title: Raw steps, at_least: 0}')
+        "fold: mean, better: lower,", "title: Share missed, fold: mean, better: lower,"
+    ).replace("fold: sum, at_least: 0}", "title: Raw steps, fold: sum, at_least: 0}")
 )
 """Checked, with a title on `miss` and on `raw`."""
 
@@ -1477,8 +1594,7 @@ THIRTY_DIGITS = "-12345678901234.5678901234567891"
 def test_a_bound_of_thirty_significant_digits_survives_from_the_file_to_a_score() -> None:
     workflow = parse_workflow(
         CHECKED_TEXT.replace(
-            'steps }}", better: higher}',
-            f'steps }}}}", better: higher, at_least: {THIRTY_DIGITS}}}',
+            "fold: sum, better: higher}", f"fold: sum, better: higher, at_least: {THIRTY_DIGITS}}}"
         )
     )
     built = compiled(CHECKED_TASK, classic_tests("main/1"), workflow)
@@ -1490,8 +1606,8 @@ def test_a_bound_of_thirty_significant_digits_survives_from_the_file_to_a_score(
     )
     noted = read_note(write_note(False, (), measures=built.measures)).measures["reward"]
     # A test without the value counts as the bound, to the last digit.
-    assert fold(Fold.SUM, noted, [None]) == Fraction(THIRTY_DIGITS)
-    assert written(fold(Fold.SUM, noted, [None, Fraction(1)]) or Fraction(0)) == (
+    assert fold(noted, [None]) == Fraction(THIRTY_DIGITS)
+    assert written(fold(noted, [None, Fraction(1)]) or Fraction(0)) == (
         "-12345678901233.5678901234567891"
     )
 
@@ -1842,6 +1958,34 @@ def test_a_plan_whose_numbers_are_only_spelled_otherwise_changes_nothing() -> No
     assert grading_changes(before, snapshot(b'{"limit": 2.6, "at_least": 1000.0}\n')) == (
         "The way the task grades changed.",
     )
+
+
+def test_a_plan_differing_only_in_the_order_its_steps_run_their_tests_changes_nothing() -> None:
+    tests = classic_tests("main/1", "main/2", "samples/1")
+    shown = compiled(task_with(groups=TWO_GROUPS), tests).plan
+    hidden = compiled(task_with(groups=HIDDEN_MAIN), tests).plan
+    assert shown.to_bytes() != hidden.to_bytes()
+
+    assert grading_changes(snapshot(shown.to_bytes()), snapshot(hidden.to_bytes())) == ()
+    other_input = hidden.to_bytes().replace(b"tests/samples/1/input", b"tests/samples/1/other")
+    assert grading_changes(snapshot(shown.to_bytes()), snapshot(other_input)) == (
+        "The way the task grades changed.",
+    )
+
+
+def test_per_test_entries_differing_only_in_order_change_nothing() -> None:
+    def output_only(groups: str) -> bytes:
+        text = task_with(
+            workflow="acme/output-only@v1", inputs="  answers: {max_size: 1MB}\n", groups=groups
+        )
+        return compiled(text, classic_tests("a/1", "a/2", "b/1"), OUTPUT_ONLY).plan.to_bytes()
+
+    shown = output_only("  a: {each: 1}\n  b: {each: 1}\n")
+    hidden = output_only("  a: {each: 1, show: after_close}\n  b: {each: 1}\n")
+    assert shown != hidden
+
+    assert grading_changes(snapshot(shown), snapshot(hidden)) == ()
+    assert grading_changes(snapshot(shown), snapshot(hidden.replace(b"a/2/answer", b"b/1/answer")))
 
 
 def _plan(**images: str) -> bytes:

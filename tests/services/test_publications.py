@@ -25,6 +25,7 @@ import pytest
 from sqlalchemy import select, update
 
 from forge.db.tables import Grading
+from forge.domain import plans
 from forge.domain.content import Edit
 from forge.domain.contracts import violation
 from forge.domain.errors import (
@@ -758,8 +759,8 @@ async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_line_nami
     assert "Unicon cannot open the workflow" in error["message"]
     assert named in error["message"]
     assert acme.fake.calls_to("publish") == []
-    reads = acme.fake.calls_to("read_workflow_file")
-    assert {call.identity for call in reads} == {acme.ada.identity}
+    reads = acme.fake.calls_to("workflow_version")
+    assert reads and {call.identity for call in reads} == {acme.ada.identity}
 
 
 async def test_a_workflow_in_an_old_format_is_refused_at_its_line_for_its_owner_to_retag(
@@ -782,6 +783,49 @@ async def test_a_workflow_in_an_old_format_is_refused_at_its_line_for_its_owner_
         "its owner needs to make a new version of it. There are "
     )
     assert acme.fake.calls_to("publish") == []
+
+
+async def test_a_task_of_todays_format_naming_a_workflow_without_a_test_block_is_refused(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _workflow(acme, "run", b"steps:\n  - {id: a, use: unicon/compile@v3}\n")
+
+    draft = await _save(
+        setup,
+        acme,
+        sum_task,
+        _with(acme, b"workflow: unicon/classic@v2", b"workflow: unicon/run@v1"),
+    )
+
+    assert isinstance(draft, Draft)
+    assert draft.errors == (
+        {
+            "path": "test_groups",
+            "message": "This task's workflow describes one run, with no test block, so the task "
+            "has no test groups: its runs are grouped under scoring's groups. Remove this.",
+        },
+        {"path": "scoring", "message": "This is required."},
+    )
+    assert acme.fake.calls_to("publish") == []
+
+
+async def test_a_workflow_of_todays_format_reporting_passed_still_publishes(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _workflow(
+        acme,
+        "passing",
+        CLASSIC.replace(b"  log:\n", b"  passed:\n    from: ${{ steps.run.time_ms }}\n  log:\n"),
+    )
+
+    result = await _save(
+        setup,
+        acme,
+        sum_task,
+        _with(acme, b"workflow: unicon/classic@v2", b"workflow: unicon/passing@v1"),
+    )
+
+    assert not isinstance(result, Draft), result.errors
 
 
 async def test_a_workflow_that_does_not_check_as_a_version_is_refused_at_its_line(
@@ -1301,6 +1345,33 @@ async def test_before_any_grading_is_done_a_group_may_be_hidden(
     assert isinstance(result, Published), result
 
 
+async def test_a_save_that_only_runs_the_shown_tests_first_publishes_with_no_regrade(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Published by a forge that ran every test in plan order: main/1 first,
+    # though only samples/1 is shown during the contest.
+    monkeypatch.setattr(plans, "run_order", lambda tests, task: list(tests))
+    hidden = _with(
+        acme, b"main: {each: 100}", b"main: {each: 100, show: after_close}\n  samples: {}"
+    )
+    samples = {"tests/samples/1/input": b"1 1\n", "tests/samples/1/answer": b"2\n"}
+    first = await _save(setup, acme, entered.task, {**hidden, **samples}, confirm=True)
+    assert isinstance(first, Published), first
+    await _graded(setup, acme, entered)
+    monkeypatch.undo()
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _save(setup, acme, entered.task, {})
+    saved = await _save(setup, acme, entered.task, {}, confirm=True)
+
+    assert (asked.value.extra["changes"], asked.value.extra["regrades"]) == ([], 0)
+    assert isinstance(saved, Published), saved
+    assert (saved.grading_changed, saved.regraded) == (False, 0)
+    plan = json.loads(acme.fake.state.repos[("acme", "spring.sum.task")].files[PLAN_PATH])
+    (run,) = [step for step in plan["steps"] if step["id"] == "run"]
+    assert [item["test"] for item in run["batch"]] == ["samples/1", "main/1"]
+
+
 NEW_GROUP = {"tests/large/1/input": b"5 6\n", "tests/large/1/answer": b"11\n"}
 
 
@@ -1554,6 +1625,39 @@ async def test_a_published_grading_change_regrades_every_submission_and_a_scorin
     assert again[3] in (GradingStatus.QUEUED, GradingStatus.DISPATCHED)
 
 
+class _Stopped(Exception):
+    """The process stopping in the middle of a save."""
+
+
+async def test_a_grading_change_whose_save_stopped_before_its_regrade_is_regraded_at_a_resave(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The publication is live once made, but the save stopped before its
+    regrade: a save of the same files grades the submissions again, once."""
+    await _graded(setup, acme, entered)
+    (graded,) = await _attempts(setup)
+
+    async def stopped(*_args: Any, **_kwargs: Any) -> None:
+        raise _Stopped
+
+    monkeypatch.setattr(gradings, "regrade", stopped)
+    with pytest.raises(_Stopped):
+        await _save(
+            setup, acme, entered.task, _with(acme, b"time_limit: 2", b"time_limit: 1"), confirm=True
+        )
+    monkeypatch.undo()
+    assert await _attempts(setup) == [graded]
+
+    again = await _save(setup, acme, entered.task, {}, confirm=True)
+    once_more = await _save(setup, acme, entered.task, {}, confirm=True)
+
+    assert isinstance(again, Published) and isinstance(once_more, Published)
+    assert (again.grading_changed, again.regraded, once_more.regraded) == (True, 1, 0)
+    first, regraded = await _attempts(setup)
+    assert first == graded
+    assert regraded[:3] == (1, 2, again.publication)
+
+
 WORTH = RUNNING + "    worth: 50\n"
 DUE = RUNNING + "    due: 2026-09-26T14:00:00Z\n"
 
@@ -1610,8 +1714,8 @@ async def test_the_task_form_reads_the_inputs_and_test_fields_its_workflow_decla
         ("input", "file"),
         ("answer", "file"),
     ]
-    reads = acme.fake.calls_to("read_workflow_file")
-    assert {call.identity for call in reads} == {acme.ada.identity}
+    reads = [*acme.fake.calls_to("workflow_version"), *acme.fake.calls_to("read_workflow_at")]
+    assert reads and {call.identity for call in reads} == {acme.ada.identity}
 
 
 async def test_a_task_on_a_version_made_with_a_unit_on_a_file_saves_and_reads_without_it(
@@ -1704,6 +1808,26 @@ async def test_a_workflow_in_an_old_format_gives_the_form_its_reason(
     )
     with pytest.raises(Forbidden):
         await publications.workflow_form(setup, stranger, sum_task)
+
+
+async def test_a_workflow_without_a_test_block_gives_the_form_its_inputs_for_a_run_task(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _workflow(
+        acme,
+        "run",
+        b"inputs:\n  code: {type: folder, title: Code}\n  seed: {type: number, unit: s}\n"
+        b"steps:\n  - {id: a, use: unicon/compile@v3}\n",
+    )
+    await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v2", b"unicon/run@v1"))
+
+    form = await publications.workflow_form(setup, acme.ada, sum_task)
+
+    assert (form.workflow, form.problem, form.runs, form.test) == ("unicon/run@v1", None, True, ())
+    assert [(each.id, each.type, each.title, each.unit) for each in form.inputs] == [
+        ("code", "folder", "Code", None),
+        ("seed", "number", None, "s"),
+    ]
 
 
 async def test_a_submit_in_flight_while_a_grading_change_publishes_is_graded_against_it(

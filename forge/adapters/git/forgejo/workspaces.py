@@ -281,6 +281,7 @@ class ForgejoWorkspaces:
                     measures=note.measures,
                     titles=note.titles,
                     meanings=note.meanings,
+                    checked_first=note.checked_first,
                     at=datetime.fromisoformat(str(commit["created"])),
                 )
             )

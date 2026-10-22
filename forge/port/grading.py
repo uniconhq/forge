@@ -7,7 +7,9 @@ the platform stores it, encrypted, and locks it while it is refreshed.
 
 A run is described to the port as a `GradingRun`, in the platform's words,
 with a `RunSpec` of what it runs; the implementation writes them in the
-CI's words, and says where the run's checkouts are (`run_places`).
+CI's words, and says where the run's checkouts are (`run_places`). A run
+task's grading runs instead on the org's dispatch place, each a
+`PipelineRun` with a `PipelineSpec` of its steps (phase 4.9).
 """
 
 from datetime import datetime
@@ -17,6 +19,8 @@ from forge.domain.grading import (
     GradingRun,
     InboundAnswer,
     InboundRequest,
+    PipelineLookup,
+    PipelineRun,
     RunLookup,
     RunPlaces,
     RunSpec,
@@ -68,6 +72,25 @@ class GradingPort(Protocol):
         """
         ...
 
+    async def activate_dispatch(self, as_: AsOrgAccount, org: OrgId) -> bool:
+        """Switch the CI on for the org's dispatch place, which the content
+        port made, as the org's account, so a run task's grading runs can
+        start on it, and say whether the CI did not know it before.
+        Activating twice changes nothing. `Forbidden` when `as_` is another
+        org's account.
+        """
+        ...
+
+    async def start_pipeline(self, as_: AsOrgAccount, run: PipelineRun) -> RunId:
+        """Start a run task's grading run on the org's dispatch place as
+        the org's account, with its variables. The steps are not sent: a CI
+        that asks is answered from the platform's records. `Rejected` when
+        the CI answers without a run; `Unavailable` when no answer came
+        back; `NotFound` when the dispatch place is not activated;
+        `Forbidden` when `as_` is another org's account.
+        """
+        ...
+
     async def start_run(self, as_: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
         """Start `run` at the CI as the task's org account, with its variables,
         pinned to the machines carrying its label, to run what `spec` says.
@@ -91,7 +114,12 @@ class GradingPort(Protocol):
         ...
 
     async def answer(
-        self, request: InboundRequest, lookup: RunLookup, *, now: datetime
+        self,
+        request: InboundRequest,
+        lookup: RunLookup,
+        *,
+        now: datetime,
+        run_tasks: PipelineLookup,
     ) -> InboundAnswer:
         """For a CI that asks the platform what a run is as it starts one: the
         answer to `request`, once it is found to be the CI's own and fresh at
@@ -101,7 +129,11 @@ class GradingPort(Protocol):
         the submission at its version, each with its large files, both with
         the spec's clone image, and runs the spec's harness image as the
         runner's machine contract says, on a machine carrying the run's
-        label; the same every time for the same run. `Forbidden` for a
+        label; the same every time for the same run. A request about an
+        org's dispatch place is a run task's grading run, found by
+        `run_tasks` and answered with its steps: the submission checked out
+        by the spec's clone image unless it is a save, then each step with
+        its settings, and the report's last. `Forbidden` for a
         request the CI did not sign, one changed since or a stale one;
         `Rejected` for one that is no such question, or names other
         variables; whatever `lookup` raises; and `NotFound` from a CI that is

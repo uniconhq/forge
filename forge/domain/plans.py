@@ -38,7 +38,10 @@ A test's id is `<group>/<test>`, and the plan lists every test, groups in
 name order and tests in natural order within each (`2` before `10`), so
 reordering `test_groups` changes no plan. A per-test step over a primitive
 that takes a batch is one step with an item per test, and over any other
-one entry per test.
+one entry per test. Either runs its tests in `run_order`: those of the
+groups shown during the contest first, so a hidden test's run can tell no
+shown one what it read or how long it took. Showing a group earlier or
+later changes the order its tests run in, and nothing else.
 """
 
 import math
@@ -51,6 +54,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, PlainValidator, model_validator
 
 from forge.domain import exact_json
+from forge.domain.content import path_problem
 from forge.domain.contracts import violation
 from forge.domain.definitions import (
     PUBLIC_FOLDER,
@@ -62,7 +66,14 @@ from forge.domain.definitions import (
 )
 from forge.domain.grading import WALL_CEILING, Machine, wall_seconds
 from forge.domain.meanings import ValueMeaning, in_sentence, with_measures
-from forge.domain.primitives import BATCH_SCALED, IMAGE, LIMIT_NAMES, Port, PrimitiveDeclaration
+from forge.domain.primitives import (
+    BATCH_SCALED,
+    IMAGE,
+    LIMIT_NAMES,
+    FromInput,
+    Port,
+    PrimitiveDeclaration,
+)
 from forge.domain.scoring import Better, Measure, exact
 from forge.domain.showing import NOTHING_SEALED, Sealed
 from forge.domain.types import FILES, SCALARS, Type
@@ -70,6 +81,7 @@ from forge.domain.workflow_definition import (
     BadReference,
     Meaning,
     Reference,
+    RunWorkflow,
     WorkflowDefinition,
     WorkflowInput,
     references,
@@ -286,25 +298,6 @@ def spelled(value: object) -> str:
             text = text.rstrip("0").rstrip(".")
         return "0" if text in ("-0", "") else text
     return str(value)
-
-
-def path_problem(value: object, *, folder: bool) -> str | None:
-    """What is wrong with `value` as a path in the task repo, if anything; a
-    folder's path ends in `/` and a file's does not.
-    """
-    if not isinstance(value, str) or not value:
-        return (
-            "Give the path of a file or folder in the task, such as data/ or checker/checker.cpp."
-        )
-    if value.startswith("/") or "\\" in value:
-        return "Give the path from the top of the task's files, with forward slashes (/)."
-    if any(part in ("", ".", "..") for part in value.removesuffix("/").split("/")):
-        return "The path cannot have empty, . or .. parts."
-    if folder and not value.endswith("/"):
-        return "This is a folder, so its path ends with /, such as data/."
-    if not folder and value.endswith("/"):
-        return "This is one file, so its path does not end with /."
-    return None
 
 
 def has_path(paths: Collection[str], path: str) -> bool:
@@ -608,11 +601,13 @@ class Kind:
 
     type: Type
     options: frozenset[str] | None = None
-    source: Literal["literal", "input", "contestant", "test", "step", "text"] = "literal"
+    source: Literal["literal", "input", "contestant", "test", "step", "text", "workflow"] = (
+        "literal"
+    )
     optional: bool = False
 
 
-def stray_units(workflow: WorkflowDefinition) -> list[Problem]:
+def stray_units(workflow: WorkflowDefinition | RunWorkflow) -> list[Problem]:
     """A unit on an input that is not a number, refused where a version is
     made or checked, naming the input and its type in words. A version
     made with one before is read with it dropped (`shown_unit`), and a task
@@ -622,7 +617,7 @@ def stray_units(workflow: WorkflowDefinition) -> list[Problem]:
     problems: list[Problem] = []
     for key, declared in workflow.inputs.items():
         if declared.unit is not None and declared.type is not Type.NUMBER:
-            kind = "one of a list" if declared.type is Type.ENUM else _a(declared.type)
+            kind = "one of a list" if declared.type is Type.ENUM else a_type(declared.type)
             problems.append(
                 Problem(
                     path=path_text(("inputs", key, "unit")),
@@ -652,7 +647,7 @@ def stray_report_units(
             problems.append(
                 Problem(
                     path=path_text(("report", name, "unit")),
-                    message=f"Only a number takes a unit, and {name} is {_a(port.type)}. "
+                    message=f"Only a number takes a unit, and {name} is {a_type(port.type)}. "
                     "Remove the unit.",
                 )
             )
@@ -724,6 +719,15 @@ def check_workflow(
                 )
             )
             continue
+        if declaration.schema_version != 5:
+            problems.append(
+                Problem(
+                    path=path_text((*where, "use")),
+                    message=f"{step.use} is written for the run workflow's format, which this "
+                    "workflow is not in. Use a version written for this format.",
+                )
+            )
+            continue
         for name in sorted(set(step.with_) - set(declaration.inputs)):
             problems.append(
                 Problem(
@@ -739,14 +743,18 @@ def check_workflow(
                         message=f"{step.use} needs a value for its input {name}.",
                     )
                 )
-        raised = {source.input for source in declaration.limits_from.values()}
+        raised = {
+            source.input
+            for source in declaration.limits_from.values()
+            if isinstance(source, FromInput)
+        }
         for name, raw in step.with_.items():
             given = declaration.inputs.get(name)
             if given is None:
                 continue
             try:
                 _check_value(workflow, outputs, step.per_test, raw, given, name in raised)
-            except _Refused as refused:
+            except Refused as refused:
                 problems.append(
                     Problem(path=path_text((*where, "with", name)), message=str(refused))
                 )
@@ -754,13 +762,15 @@ def check_workflow(
     for name, entry in workflow.report.items():
         try:
             _check_report(entry, outputs)
-        except _Refused as refused:
+        except Refused as refused:
             problems.append(Problem(path=path_text(("report", name)), message=str(refused)))
     return problems
 
 
-class _Refused(Exception):
-    """One problem with a value, said in a sentence."""
+class Refused(Exception):
+    """One problem with a value, said in a sentence; the run workflow's
+    checks (`forge.domain.run_workflow`) say theirs with it too.
+    """
 
 
 def _kind_of(
@@ -773,9 +783,9 @@ def _kind_of(
         case "inputs":
             declared = workflow.inputs.get(found.name)
             if declared is None:
-                raise _Refused(f"The workflow has no input called {found.name}.")
+                raise Refused(f"The workflow has no input called {found.name}.")
             if declared.per_test and not per_test:
-                raise _Refused(
+                raise Refused(
                     f"{found.name} is given once for each test, so only a step that runs for "
                     "each test can read it."
                 )
@@ -787,25 +797,30 @@ def _kind_of(
         case "test":
             field_ = workflow.test.get(found.name)
             if field_ is None:
-                raise _Refused(f"{found.name} is not one of the workflow's test fields.")
+                raise Refused(f"{found.name} is not one of the workflow's test fields.")
             if not per_test:
-                raise _Refused("Only a step that runs for each test can read a test's fields.")
+                raise Refused("Only a step that runs for each test can read a test's fields.")
             options = frozenset(field_.options) if field_.options else None
             return Kind(field_.type, options, "test")
+        case "workflow":
+            raise Refused(
+                "Only a workflow without a test block, which describes one run, reads its own "
+                "files. Give this file as an input or a test field instead."
+            )
     assert found.output is not None
     known = outputs.get(found.name)
     if known is None:
-        raise _Refused(f"There is no step called {found.name} before this one.")
+        raise Refused(f"There is no step called {found.name} before this one.")
     declaration, step_per_test = known
     port = declaration.outputs.get(found.output)
     if port is None:
-        raise _Refused(f"The step {found.name} has no output called {found.output}.")
+        raise Refused(f"The step {found.name} has no output called {found.output}.")
     if step_per_test and not per_test:
-        raise _Refused(
+        raise Refused(
             f"The step {found.name} runs for each test, so a step that runs once cannot read it."
         )
     if port.type is Type.OUTCOME:
-        raise _Refused(
+        raise Refused(
             "A step's outcome is read by Unicon itself, and cannot be given to another step."
         )
     options = frozenset(port.options) if port.options else None
@@ -823,15 +838,58 @@ def _check_value(
     kind = _raw_kind(workflow, outputs, per_test, raw)
     if raises_limit and kind.source in ("contestant", "step", "text"):
         if kind.source == "contestant":
-            raise _Refused("This value raises a limit, so the task must give it, not the entrant.")
-        raise _Refused("This value raises a limit, so it must be known when the task is saved.")
+            raise Refused("This value raises a limit, so the task must give it, not the entrant.")
+        raise Refused("This value raises a limit, so it must be known when the task is saved.")
     if kind.optional and not port.optional:
         if kind.source == "step":
-            raise _Refused(
+            raise Refused(
                 "That output may be missing, so it can be given only to an optional port."
             )
-        raise _Refused("That input is optional, so it can be given only to an optional port.")
-    _fits(kind, port, raw)
+        raise Refused("That input is optional, so it can be given only to an optional port.")
+    fits(kind, port, raw)
+
+
+def literal_or_references(
+    raw: object, *, runs: bool = False
+) -> Kind | tuple[Reference | None, list[Reference]]:
+    """The kind of `raw` when it is true or false or a number; for text,
+    the reference it is whole, or else those written into it, in either
+    format. `Refused` for anything else, and for a `${{ }}` that is no
+    reference.
+    """
+    if isinstance(raw, bool):
+        return Kind(Type.BOOLEAN)
+    if is_number(raw):
+        return Kind(Type.NUMBER)
+    if raw is None or isinstance(raw, list | dict):
+        raise Refused(
+            "Give text, a number, true or false, or a ${{ }} reference, not a list, a set "
+            "of settings or nothing."
+        )
+    if not isinstance(raw, str):
+        raise Refused("Give text, a number, true or false, or a ${{ }} reference.")
+    try:
+        whole = whole_reference(raw, runs=runs)
+        written = [found for _, found in references(raw, runs=runs)] if whole is None else []
+    except BadReference as bad:
+        raise Refused(str(bad)) from None
+    return whole, written
+
+
+def check_written(found: Reference, kind: Kind) -> None:
+    """Refuse `found`, of `kind`, written into text: only text, a number,
+    true or false or an enum, always given, may be.
+    """
+    if kind.type not in SCALARS:
+        raise Refused(
+            f"{found} is {a_type(kind.type)}, and only text, a number, true or false or an "
+            "enum can be written into text."
+        )
+    if kind.optional:
+        raise Refused(
+            f"{found} is optional, so it can be given only whole, to an optional port, not "
+            "written into text."
+        )
 
 
 def _raw_kind(
@@ -840,44 +898,22 @@ def _raw_kind(
     per_test: bool,
     raw: object,
 ) -> Kind:
-    if isinstance(raw, bool):
-        return Kind(Type.BOOLEAN)
-    if is_number(raw):
-        return Kind(Type.NUMBER)
-    if raw is None or isinstance(raw, list | dict):
-        raise _Refused(
-            "Give text, a number, true or false, or a ${{ }} reference, not a list, a set "
-            "of settings or nothing."
-        )
-    if not isinstance(raw, str):
-        raise _Refused("Give text, a number, true or false, or a ${{ }} reference.")
-    try:
-        whole = whole_reference(raw)
-        written = references(raw) if whole is None else []
-    except BadReference as bad:
-        raise _Refused(str(bad)) from None
+    found = literal_or_references(raw)
+    if isinstance(found, Kind):
+        return found
+    whole, written = found
     if whole is not None:
         return _kind_of(workflow, outputs, per_test, whole)
     if not written:
         return Kind(Type.TEXT)
-    for _, found in written:
-        if found.kind == "steps":
-            raise _Refused("A step's output can be given only whole, not written into text.")
-        kind = _kind_of(workflow, outputs, per_test, found)
-        if kind.type not in SCALARS:
-            raise _Refused(
-                f"{found} is {_a(kind.type)}, and only text, a number, true or false or an enum "
-                "can be written into text."
-            )
-        if kind.optional:
-            raise _Refused(
-                f"{found} is optional, so it can be given only whole, to an optional port, not "
-                "written into text."
-            )
+    for reference in written:
+        if reference.kind == "steps":
+            raise Refused("A step's output can be given only whole, not written into text.")
+        check_written(reference, _kind_of(workflow, outputs, per_test, reference))
     return Kind(Type.TEXT, source="text")
 
 
-def _fits(kind: Kind, port: Port, raw: object) -> None:
+def fits(kind: Kind, port: Port, raw: object) -> None:
     """Refuse a value of `kind` given to `port`, under the two widenings: a
     scalar fits a text port, and a file fits a folder port.
     """
@@ -891,20 +927,20 @@ def _fits(kind: Kind, port: Port, raw: object) -> None:
         if kind.type is Type.TEXT and kind.source == "literal":
             if raw in allowed:
                 return
-            raise _Refused(f"This takes one of {', '.join(port.options or ())}.")
+            raise Refused(f"This takes one of {', '.join(port.options or ())}.")
         if kind.type is Type.ENUM and kind.options is not None:
             extra = sorted(kind.options - allowed)
             if not extra:
                 return
-            raise _Refused(
+            raise Refused(
                 f"This takes one of {', '.join(port.options or ())}, not {', '.join(extra)}."
             )
-        raise _Refused(f"This takes one of {', '.join(port.options or ())}.")
+        raise Refused(f"This takes one of {', '.join(port.options or ())}.")
     if kind.type is not wanted:
-        raise _Refused(f"This takes {_a(wanted)}, not {_a(kind.type)}.")
+        raise Refused(f"This takes {a_type(wanted)}, not {a_type(kind.type)}.")
 
 
-def _a(kind: Type) -> str:
+def a_type(kind: Type) -> str:
     """A type as a sentence names one value of it."""
     return {
         Type.TEXT: "text",
@@ -924,26 +960,29 @@ def _check_report(
     try:
         found = whole_reference(raw)
     except BadReference as bad:
-        raise _Refused(str(bad)) from None
+        raise Refused(str(bad)) from None
     if found is None or found.kind != "steps" or found.output is None:
-        raise _Refused("Give the step output this reports, as ${{ steps.<id>.<output> }}.")
+        raise Refused("Give the step output this reports, as ${{ steps.<id>.<output> }}.")
     known = outputs.get(found.name)
     port = known[0].outputs.get(found.output) if known is not None else None
     if known is None or port is None:
-        raise _Refused(f"steps.{found.name}.{found.output} is not the output of any step.")
+        raise Refused(f"steps.{found.name}.{found.output} is not the output of any step.")
     if port.type not in (Type.TEXT, Type.NUMBER):
-        raise _Refused(
-            f"steps.{found.name}.{found.output} is {_a(port.type)}, and only text or a number "
+        raise Refused(
+            f"steps.{found.name}.{found.output} is {a_type(port.type)}, and only text or a number "
             "can be reported."
         )
     if isinstance(entry, Meaning):
         if port.type is not Type.NUMBER and any(
-            value is not None for value in (entry.better, entry.at_least, entry.at_most)
+            value is not None for value in (entry.fold, entry.better, entry.at_least, entry.at_most)
         ):
-            raise _Refused("better, at_least and at_most apply only to a number, and this is text.")
-        if not known[1] and entry.better is not None:
-            raise _Refused(
-                "better applies only to a number reported for each test, and this step runs once."
+            raise Refused(
+                "fold, better, at_least and at_most apply only to a number, and this is text."
+            )
+        if not known[1] and (entry.fold is not None or entry.better is not None):
+            raise Refused(
+                "fold and better apply only to a number reported for each test, and this "
+                "step runs once."
             )
 
 
@@ -1062,6 +1101,10 @@ class _Compiler:
         stopped the run (#432)."""
         self.raised: list[_Raised] = []
         """Every limit raised above its primitive's, run by run."""
+        self.runs_per_test: list[str] = []
+        """Each per-test step that runs the contestant's code, in order."""
+        self.run_rank = {test.id: at for at, test in enumerate(run_order(self.tests, self.task))}
+        """Each test's place in the order a per-test step runs them."""
         self.served = self._served()
 
     def refuse(self, path: str, message: str) -> None:
@@ -1154,7 +1197,7 @@ class _Compiler:
                 return None if given in options else f"This must be one of {', '.join(options)}."
             case Type.FILE | Type.FOLDER:
                 folder = wanted.type is Type.FOLDER
-                problem = path_problem(given, folder=folder)
+                problem = path_problem(given, folder=folder, today=True)
                 if problem is not None:
                     return problem
                 assert isinstance(given, str)
@@ -1241,6 +1284,14 @@ class _Compiler:
                 self.sealed[step] = self.sealed[order[first]]
                 self.after_sealed[step] = order[first]
 
+    def _in_run_order(
+        self, items: Sequence[tuple[TestCase | None, Inputs]]
+    ) -> list[tuple[TestCase, Inputs]]:
+        return sorted(
+            ((test, inputs) for test, inputs in items if test is not None),
+            key=lambda item: self.run_rank[item[0].id],
+        )
+
     def _step(
         self,
         index: int,
@@ -1268,6 +1319,8 @@ class _Compiler:
                 if not port.secret and value_taint.hidden:
                     hidden_on = hidden_on or value_taint.hidden
             items.append((test, inputs))
+        if per_test and runs_contestant:
+            self.runs_per_test.append(step_id)
         if runs_contestant and hidden_on is not None:
             self.sealed[step_id] = hidden_on
         elif taint.sealed is not None:
@@ -1300,7 +1353,7 @@ class _Compiler:
             return [PlanStep(**common, limits=limits, inputs=inputs)]
         if declaration.batch:
             batch = tuple(
-                BatchItem(test=test.id, inputs=inputs) for test, inputs in items if test is not None
+                BatchItem(test=test.id, inputs=inputs) for test, inputs in self._in_run_order(items)
             )
             limits = self._limits(step_id, None, declaration, given, items)
             return [PlanStep(**common, limits=limits, batch=batch)]
@@ -1311,8 +1364,7 @@ class _Compiler:
                 inputs=inputs,
                 test=test.id,
             )
-            for test, inputs in items
-            if test is not None
+            for test, inputs in self._in_run_order(items)
         ]
 
     def _value(
@@ -1404,19 +1456,24 @@ class _Compiler:
         what the workflow gives the step's ports.
         """
         raised: list[dict[str, int]] = []
+        least = declaration.limits.as_mapping()
         for test, inputs in runs:
-            limits = declaration.limits.as_mapping()
+            # A sum or max over a programs port is contract 6's, which
+            # `check_workflow` refuses in this format.
+            numbers = {
+                source.input: value["value"]
+                for source in declaration.limits_from.values()
+                if isinstance(source, FromInput)
+                and (value := inputs.get(source.input)) is not None
+                and set(value) == {"value"}
+                and is_number(value["value"])
+            }
+            limits = declaration.item_limits(numbers)
             for name, source in declaration.limits_from.items():
-                value = inputs.get(source.input)
-                if value is None or set(value) != {"value"} or not is_number(value["value"]):
-                    continue
-                number = value["value"]
-                wanted = exact_number(number) * source.scale + source.add
-                ceiling = math.ceil(wanted)
-                if ceiling > limits[name]:
-                    limits[name] = ceiling
+                if isinstance(source, FromInput) and limits[name] > least[name]:
+                    number = numbers[source.input]
                     origin = _origin_of(given.get(source.input), source.input, number, test)
-                    self.raised.append(_Raised(step_id, entry, test, name, ceiling, origin))
+                    self.raised.append(_Raised(step_id, entry, test, name, limits[name], origin))
             raised.append(limits)
         combined = {
             name: sum(run[name] for run in raised)
@@ -1522,7 +1579,7 @@ def compile_plan(
     return Compiled(
         plan,
         tuple(sorted(compiler.sealed)),
-        (*_sealed_notes(compiler), *_credit_notes(task, values)),
+        (*_sealed_notes(compiler), *_order_notes(compiler), *_credit_notes(task, values)),
         held,
         measured,
         {
@@ -1705,8 +1762,8 @@ def value_meanings(
 
 def measures(values: Mapping[str, ReportedValue], task: TaskDefinition) -> dict[str, Measure]:
     """What each per-test number the workflow reports means for this task:
-    its direction with the task's values in, and its bounds, each bound the
-    exact rational of the decimal it is written as.
+    its fold, its direction with the task's values in, and its bounds, each
+    bound the exact rational of the decimal it is written as.
     """
     found: dict[str, Measure] = {}
     for name, value in sorted(values.items()):
@@ -1718,6 +1775,7 @@ def measures(values: Mapping[str, ReportedValue], task: TaskDefinition) -> dict[
             continue
         better = _better(meaning, task)
         found[name] = Measure(
+            fold=meaning.fold,
             better=Better(better) if better in ("higher", "lower") else None,
             at_least=exact(meaning.at_least),
             at_most=exact(meaning.at_most),
@@ -1897,6 +1955,47 @@ def _sealed_notes(compiler: _Compiler) -> list[str]:
     ]
 
 
+_RUN_RANK = {Show.ALWAYS: 0, Show.VERDICT: 1, Show.AFTER_CLOSE: 2}
+"""Which tests a per-test step runs first: those entrants see everything of
+during the contest, then those they see only the outcome and points of,
+then those they see nothing of until the reveal."""
+
+
+def run_order(tests: Sequence[TestCase], task: TaskDefinition) -> list[TestCase]:
+    """`tests` in the order a per-test step runs them: those of `always`
+    groups first, then `verdict`, then `after_close`, each part in plan order.
+    A run can tell only the runs after it what it read or how long it took,
+    through what its container keeps between items
+    (`findings/batch-channels-test.md`), so no test runs before one whose
+    values entrants see sooner. A `verdict` test may tell another `verdict`
+    test, since entrants see only their outcomes.
+    """
+    return sorted(tests, key=lambda test: _rank(test.group, task))
+
+
+def _rank(group: str, task: TaskDefinition) -> int:
+    found = task.test_groups.get(group)
+    return 0 if found is None else _RUN_RANK[found.shown]
+
+
+def _order_notes(compiler: _Compiler) -> list[str]:
+    """The one leak `run_order` cannot close in one step: a second per-test
+    step running the contestant's code runs the tests entrants see sooner
+    after the first step's tests they see later. Said, not refused, so no
+    saved task stops saving.
+    """
+    ranks = {_RUN_RANK[group.shown] for group in compiler.task.test_groups.values()}
+    if len(compiler.runs_per_test) < 2 or len(ranks) < 2:
+        return []
+    first, second = compiler.runs_per_test[:2]
+    return [
+        f"The workflow runs the entrant's code in two steps for each test, {first} and "
+        f"{second}. A run in {first} of a test whose results entrants see later can tell a run "
+        f"in {second} of a test whose results they see sooner how long it took. Show every "
+        "group the same way to avoid it."
+    ]
+
+
 def _unique(problems: Sequence[Problem]) -> list[Problem]:
     seen: set[tuple[str, str]] = set()
     found = []
@@ -2000,16 +2099,50 @@ def _images(plan: object) -> dict[str, str]:
 def _same(before: object, after: object) -> bool:
     """Whether two plans, or two digests, are the same: a plan by what it
     says, so a number written `2.50` in one and `2.5` in the other is no
-    change, and anything that does not read as JSON by its bytes.
+    change, nor the order a step runs its tests in, which changes no test's
+    outcome or values (`run_order`); anything that does not read as JSON by
+    its bytes.
     """
     if before == after:
         return True
     if not isinstance(before, bytes) or not isinstance(after, bytes):
         return False
     try:
-        return bool(exact_json.loads(before) == exact_json.loads(after))
+        return bool(
+            _in_test_order(exact_json.loads(before)) == _in_test_order(exact_json.loads(after))
+        )
     except ValueError:
         return False
+
+
+def _in_test_order(plan: object) -> object:
+    """`plan` with each batch's items sorted by test, and the per-test entries
+    of each step gathered where that step first appears and sorted by test,
+    so two plans differing only in the order their steps run their tests
+    read the same. The compiler writes a step's entries together, so
+    gathering them merges nothing two different plans would keep apart.
+    """
+    if not isinstance(plan, dict) or not isinstance(plan.get("steps"), list):
+        return plan
+
+    def test_of(entry: object) -> str:
+        return str(entry.get("test", "")) if isinstance(entry, dict) else ""
+
+    steps = [
+        {**entry, "batch": sorted(entry["batch"], key=test_of)}
+        if isinstance(entry, dict) and isinstance(entry.get("batch"), list)
+        else entry
+        for entry in plan["steps"]
+    ]
+    first: dict[str, int] = {}
+    for at, entry in enumerate(steps):
+        first.setdefault(str(entry.get("id")) if isinstance(entry, dict) else "", at)
+
+    def place(entry: object) -> tuple[int, str]:
+        step_id = str(entry.get("id")) if isinstance(entry, dict) else ""
+        return first[step_id], test_of(entry)
+
+    return {**plan, "steps": sorted(steps, key=place)}
 
 
 def grading_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...]:

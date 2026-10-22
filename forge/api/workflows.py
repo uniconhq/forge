@@ -5,7 +5,15 @@ one and combining several; the platform's primitives at each version for
 the palette; and the types they come back as.
 """
 
-from forge.domain.primitives import LimitFrom, Limits, Port, PrimitiveDeclaration
+from forge.domain.primitives import (
+    FromInput,
+    FromMax,
+    FromSum,
+    LimitFrom,
+    Limits,
+    Port,
+    PrimitiveDeclaration,
+)
 from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import Problem
 from forge.services.primitives import PrimitiveVersion
@@ -31,6 +39,9 @@ from forge.services.workflows import (
 
 __all__ = [
     "Draft",
+    "FromInput",
+    "FromMax",
+    "FromSum",
     "LimitFrom",
     "Limits",
     "NewWorkflow",

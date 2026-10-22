@@ -21,6 +21,7 @@ from forge.domain.definitions import DEFAULT_MAX_SIZE
 from forge.domain.errors import InvalidInputs
 from forge.domain.grading import callback_token, envelope_key, token_hash
 from forge.domain.plans import ContestantInput
+from forge.domain.run_task import Part, Run
 from forge.domain.submissions import (
     TEST_FILE,
     Field,
@@ -29,7 +30,9 @@ from forge.domain.submissions import (
     fields_of,
     key_is_valid,
     lay_out,
+    lay_out_runs,
     read_note,
+    skipped,
     write_note,
 )
 from forge.domain.types import Type
@@ -535,3 +538,104 @@ def test_a_gradings_secrets_are_its_own_and_only_the_hash_is_kept() -> None:
     assert "=" not in token and len(token) == 43
     assert len(token_hash(token)) == 32
     assert token_hash(token) != token.encode()
+
+
+ROUTE1, ROUTE3, CODE = (uuid.uuid4() for _ in range(3))
+RUN_UPLOADS = {
+    ROUTE1: UploadedFile(ROUTE1, "route", "route.txt", 10),
+    ROUTE3: UploadedFile(ROUTE3, "route", "route.txt", 12),
+    CODE: UploadedFile(CODE, "code", "main.py", 10),
+}
+RUN_FIELDS = (
+    Field(id="code", type=Type.FILE, label="code"),
+    Field(id="route", type=Type.FILE, label="route"),
+    Field(id="guess", type=Type.NUMBER, label="guess"),
+)
+PARTS = {"route": 3, "guess": 2}
+TOUR_RUNS = [
+    Run(f"r{part}", {"input": f"parts/{part}.in", "route": Part(part)}, False) for part in (1, 2, 3)
+]
+
+
+def test_a_run_submission_lays_out_each_part_under_its_number() -> None:
+    given = {
+        "code": SubmittedInput(uploads=(CODE,)),
+        "route": SubmittedInput(
+            parts={1: SubmittedInput(uploads=(ROUTE1,)), 3: SubmittedInput(uploads=(ROUTE3,))}
+        ),
+        "guess": SubmittedInput(parts={2: SubmittedInput(value="7")}),
+    }
+
+    layout = lay_out_runs(RUN_FIELDS, PARTS, given, RUN_UPLOADS)
+
+    assert layout.files == {
+        "files/code/main.py": CODE,
+        "files/route/1/route.txt": ROUTE1,
+        "files/route/3/route.txt": ROUTE3,
+    }
+    document = json.loads(layout.document)
+    assert document == {
+        "schema_version": 6,
+        "inputs": {
+            "code": {"files": ["files/code/main.py"]},
+            "route": {
+                "parts": {
+                    "1": {"files": ["files/route/1/route.txt"]},
+                    "3": {"files": ["files/route/3/route.txt"]},
+                }
+            },
+            "guess": {"parts": {"2": {"value": 7}}},
+        },
+    }
+    assert violation(document, "submission") is None
+
+
+def test_a_part_left_out_skips_the_runs_made_from_its_tuple() -> None:
+    given = {
+        "code": SubmittedInput(uploads=(CODE,)),
+        "route": SubmittedInput(parts={1: SubmittedInput(uploads=(ROUTE1,))}),
+        "guess": SubmittedInput(parts={2: SubmittedInput(value="7")}),
+    }
+
+    layout = lay_out_runs(RUN_FIELDS, PARTS, given, RUN_UPLOADS)
+
+    assert skipped(TOUR_RUNS, layout.inputs) == {"r2", "r3"}
+
+
+@pytest.mark.parametrize(
+    ("given", "input_", "words"),
+    [
+        ({"route": SubmittedInput()}, "route", "Give at least one part"),
+        ({"route": SubmittedInput(uploads=(ROUTE1,))}, "route", "part by part"),
+        (
+            {"route": SubmittedInput(parts={4: SubmittedInput(uploads=(ROUTE1,))})},
+            "route",
+            "no part 4",
+        ),
+        ({"route": SubmittedInput(parts={1: SubmittedInput(value="x")})}, "route", "Part 1:"),
+        (
+            {"code": SubmittedInput(parts={1: SubmittedInput(uploads=(CODE,))})},
+            "code",
+            "given once",
+        ),
+        (
+            {"guess": SubmittedInput(parts={1: SubmittedInput(value="seven")})},
+            "guess",
+            "plain digits",
+        ),
+    ],
+)
+def test_a_run_submission_that_does_not_fit_is_refused_at_its_input(
+    given: dict[str, SubmittedInput], input_: str, words: str
+) -> None:
+    complete = {
+        "code": SubmittedInput(uploads=(CODE,)),
+        "route": SubmittedInput(parts={1: SubmittedInput(uploads=(ROUTE1,))}),
+        "guess": SubmittedInput(parts={2: SubmittedInput(value="7")}),
+    }
+
+    with pytest.raises(InvalidInputs) as raised:
+        lay_out_runs(RUN_FIELDS, PARTS, {**complete, **given}, RUN_UPLOADS)
+
+    errors = raised.value.extra["errors"]
+    assert any(error["input"] == input_ and words in error["message"] for error in errors), errors

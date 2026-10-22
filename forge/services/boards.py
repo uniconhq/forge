@@ -36,6 +36,7 @@ from fractions import Fraction
 from sqlalchemy import select
 
 from forge.db.tables import Entrant, Grading
+from forge.db.tables.gradings import FRONT
 from forge.domain import release as rules
 from forge.domain.board_checks import (
     Breach,
@@ -51,11 +52,9 @@ from forge.domain.boards import (
     Audience,
     Column,
     Entry,
-    Key,
     Row,
     Standings,
     State,
-    counted_by,
     for_viewer,
     in_scope,
     keys_of,
@@ -241,58 +240,6 @@ async def own_points(
 
 
 @dataclass(frozen=True, slots=True)
-class Counting:
-    """A board covering a task, as a submission's page reads it: the board,
-    its keys, and the submissions the row's cell on the task counts now.
-    """
-
-    board: Leaderboard
-    keys: tuple[Key, ...]
-    counted: frozenset[int]
-
-
-async def counting(
-    ctx: Context,
-    contest: ContestId,
-    settings: ContestDefinition,
-    task: PublishedTask,
-    owner: WorkspaceOwner,
-    audience: Audience,
-) -> tuple[Counting, ...]:
-    """Each board `audience` sees that covers `task`, in the file's order,
-    with the submissions the row `owner`'s cell on it counts now, read as
-    every board reads them (`_entries`, `counted_by`); none for a task the
-    contest does not list.
-    """
-    if task.entry is None:
-        return ()
-    shown = [
-        board
-        for board in settings.leaderboards
-        if sees(board, audience) and task.name in covered_tasks(settings, board)
-    ]
-    if not shown:
-        return ()
-    extensions = await timelines.of_owners(ctx, contest, await timelines.rows(ctx, contest))
-    extension = (
-        extensions[owner] if owner in extensions else await timelines.of_owner(ctx, contest, owner)
-    )
-    entries = (
-        (await _entries(ctx, contest, settings, [task], [owner], {owner: extension}))
-        .get(owner, {})
-        .get(task.name, ())
-    )
-    column = _column(ctx, settings, task, list(extensions.values()))
-    found: list[Counting] = []
-    for board in shown:
-        keys = keys_of(board, _directions([task]), _words([task]))
-        found.append(
-            Counting(board, keys, counted_by(board, keys, settings.start, column, entries))
-        )
-    return tuple(found)
-
-
-@dataclass(frozen=True, slots=True)
 class ContestCheck:
     """What C4 and C1 found of a save of the contest's settings: each
     refusal, and, for a save none refuses, what each board reports of its
@@ -394,6 +341,12 @@ def task_notes(settings: ContestDefinition, name: str, shape: Covered) -> list[s
 def _board_path(index: int, board: Leaderboard, breach: Breach) -> str:
     if breach.key is not None:
         return f"leaderboards[{index}].order[{breach.key}]"
+    if breach.mended_in == "scoring":
+        # A board that names no tasks covers every task, so the board
+        # itself is where one is left out.
+        if board.tasks is None:
+            return f"leaderboards[{index}]"
+        return f"leaderboards[{index}].tasks"
     if breach.mended_in == "test_groups" and board.select is Select.MARKED:
         return f"leaderboards[{index}].select"
     return f"leaderboards[{index}].over"
@@ -422,7 +375,7 @@ def _covered(task: PublishedTask) -> Covered:
         task.publication.measures,
         task.definition.test_groups,
         task.publication.meanings,
-        task.definition.credit,
+        runs=task.definition.runs,
     )
 
 
@@ -590,6 +543,7 @@ async def _entries(
                 select(Grading).where(
                     Grading.task_id == task.id,
                     Grading.workspace_id.in_(sorted(workspaces)),
+                    FRONT,
                 )
             )
         ).all()
@@ -599,6 +553,7 @@ async def _entries(
         latest = [max(each, key=lambda row: row.attempt) for each in grouped.values()]
         lost = await gradings.lost(ctx, latest)
         await gradings.notice(ctx, latest, lost)
+        await gradings.notice_late(ctx, latest)
         scorer = scores.Scorer(ctx, task)
         by_owner: dict[WorkspaceOwner, list[Entry]] = {}
         for (workspace, number), attempts in grouped.items():

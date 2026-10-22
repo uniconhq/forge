@@ -1,11 +1,12 @@
 """The package's own test fixtures come from `forge.testing`, the plugin every
 dependant loads too. `sibling` finds a file of another Unicon repo checked out
 beside this one, for the tests that compare the package's copies with the
-originals.
+originals, and `released` reads one as a release tag of that repo has it.
 """
 
 import asyncio
 import os
+import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -29,6 +30,24 @@ def sibling(repo: str, *path: str) -> Path:
             pytest.fail(f"{found} is missing; CI checks {repo} out beside this repo")
         pytest.skip(f"the {repo} repo is not checked out beside this one")
     return found
+
+
+def released(repo: str, tag: str, path: str) -> str:
+    """`path` in the repo `repo` beside this one as its tag `tag` has it,
+    whatever the checkout's own branch, skipped or failed as `sibling` is
+    when the checkout or the tag is missing.
+    """
+    checkout = sibling(repo)
+    shown = subprocess.run(
+        ["git", "-C", str(checkout), "show", f"refs/tags/{tag}:{path}"],
+        capture_output=True,
+        check=False,
+    )
+    if shown.returncode != 0:
+        if os.environ.get("CI"):
+            pytest.fail(f"{repo} has no {path} at {tag}; CI fetches {repo}'s tags")
+        pytest.skip(f"the {repo} checkout has no {path} at {tag}")
+    return shown.stdout.decode()
 
 
 def pytest_asyncio_loop_factories(

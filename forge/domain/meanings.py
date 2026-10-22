@@ -1,36 +1,44 @@
 """What a page names each reported value by (TASK-FORMAT.md section 1.3):
 its `title`, "Run time", and its `unit`, "ms", on a number only, as the
-workflow's `report` gives them, with which way is better, so a page can
-say "Run time (ms), lower is better".
+workflow's `report` gives them, with how the value folds over tests and
+which way is better, so a page can say "Run time (ms), the longest".
 
 The words are frozen with a publication, in its note beside what each
 per-test number means, in the order the workflow reports the values, so a
 result, a board or a form never reads the workflow again. A publication
 made before they were frozen lists its per-test numbers by name alone, and
 a page names each by its key.
+
+A workflow without a test block names a report the same way, but a
+report there adds only a title and a unit: which way is better and its
+bounds come from the `primitive.yaml` or `program.yaml` that gives the
+value, and `ReportMeaning` says which one that was.
 """
 
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 
 from forge.domain.scoring import Better, Measure
+from forge.domain.workflow_definition import Fold
 
 
 @dataclass(frozen=True, slots=True)
 class ValueMeaning:
     """One reported value as a page names it: its name in the report, its
     title and unit, none where the workflow gives none, and, on a number
-    reported for each test, which way is better.
+    reported for each test, how it folds and which way is better.
     """
 
     name: str
     title: str | None = None
     unit: str | None = None
+    fold: Fold | None = None
     better: Better | None = None
 
     def noted(self) -> dict[str, str]:
-        """The words as a publication's note keeps them; the direction is
-        kept with the value's other meanings.
+        """The words as a publication's note keeps them; the fold and the
+        direction are kept with the value's other meanings.
         """
         found: dict[str, str] = {}
         if self.title is not None:
@@ -38,6 +46,25 @@ class ValueMeaning:
         if self.unit is not None:
             found["unit"] = self.unit
         return found
+
+
+@dataclass(frozen=True, slots=True)
+class ReportMeaning:
+    """One report of a run workflow (SIMPLER-CORE.md 7.3) as a page names it
+    and what its number means: its `title` and `unit`, the unit on a number
+    only, which the report gives, and which way is better and its bounds,
+    which only the `primitive.yaml` or `program.yaml` that made the number
+    says, and nothing after it restates. `made_by` names that file:
+    `unicon/exec@v1`, or `diff/program.yaml`.
+    """
+
+    name: str
+    made_by: str
+    title: str | None = None
+    unit: str | None = None
+    better: Better | None = None
+    at_least: int | Decimal | None = None
+    at_most: int | Decimal | None = None
 
 
 def in_sentence(title: str) -> str:
@@ -52,7 +79,7 @@ def in_sentence(title: str) -> str:
 def with_measures(
     words: Iterable[ValueMeaning], measures: Mapping[str, Measure]
 ) -> tuple[ValueMeaning, ...]:
-    """`words`, each with the direction `measures` give its name;
+    """`words`, each with the fold and direction `measures` give its name;
     with no words, as a publication made before they were frozen has, every
     measured value by name alone, in name order.
     """
@@ -65,6 +92,7 @@ def with_measures(
                 meaning.name,
                 meaning.title,
                 meaning.unit,
+                measure.fold if measure is not None else None,
                 measure.better if measure is not None else None,
             )
         )
@@ -102,4 +130,11 @@ def meanings_noted(value: object) -> tuple[ValueMeaning, ...]:
     return tuple(found)
 
 
-__all__ = ["ValueMeaning", "in_sentence", "meanings_noted", "shown_meanings", "with_measures"]
+__all__ = [
+    "ReportMeaning",
+    "ValueMeaning",
+    "in_sentence",
+    "meanings_noted",
+    "shown_meanings",
+    "with_measures",
+]

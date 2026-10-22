@@ -90,8 +90,9 @@ def _count(value: object) -> int | None:
 
 
 def result_problem(result: Any) -> str | None:
-    """What is wrong with `result` as a result, in words for staff, or none
-    when it is one to keep.
+    """What is wrong with `result` as a result a run posts, version 5, in
+    words for staff, or none when it is one to keep. Version 6 is the
+    forge's own, which no run posts.
     """
     try:
         size = len(exact_json.dumps(result).encode())
@@ -99,7 +100,7 @@ def result_problem(result: Any) -> str | None:
         return "The result is not a JSON document."
     if size > RESULT_MAX:
         return f"The result is {size} bytes, more than the {RESULT_MAX} a result may be."
-    broken = violation(result, "result")
+    broken = violation(result, "result", "result_v5")
     if broken is not None:
         return f"The result does not match result.schema.json {broken}"[:ERROR_LIMIT]
     return None

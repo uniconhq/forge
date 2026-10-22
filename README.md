@@ -172,11 +172,14 @@ only when it is added here, and that one line is the review point.
 
 The format is the proposal's `TASK-FORMAT.md`. `forge/domain/definitions.py`
 reads `contest.yaml` and `task.yaml` into models, `workflow_definition.py` a
-`workflow.yaml` and `primitives.py` a `primitive.yaml`, with the YAML loading
+`workflow.yaml`, `primitives.py` a `primitive.yaml`, contract 5 or 6, and
+`program_manifest.py` an organiser's program's `program.yaml`, the reports it
+writes, whose JSON `exec` and `interact` are handed, with the YAML loading
 and the error paths they share in `yaml_models.py` and the six value types in
-`types.py`. Every file is read as YAML 1.2's core schema, whatever `%YAML`
-line it carries (`ruamel.yaml` with the core schema's own patterns): only
-`true` and `false` are booleans, so a group named `no` is text, and
+`types.py`, beside the three only a contract 6 input port takes. Every
+file is read as YAML 1.2's core schema, whatever `%YAML` line it carries
+(`ruamel.yaml` with the core schema's own patterns): only `true` and
+`false` are booleans, so a group named `no` is text, and
 `1_000`, `1:30` and a date are text too. Every number that is not whole is
 the exact `Decimal` it is written as, never a float, and `one_line` writes a
 value back so the same reader reads the same value. The platform's own tag
@@ -217,7 +220,7 @@ is, its two secrets, its clock and the machine a plan must fit,
 `reports.py` what a run reports back and which results are kept,
 `exact_json.py` the JSON that keeps a result's numbers exactly as written,
 `showing.py` what a contestant is shown of a result and when,
-`scoring.py` a result's credit, points and the values a board folds, exact,
+`scoring.py` a result's credit, points and folded values, exact,
 `boards.py` a board ranked from scored results, `board_checks.py` what a
 board asks of the tasks it covers (T8, C4), and
 `contracts.py` checks a document against `schemas/`, a copy of the five
@@ -557,7 +560,13 @@ grading machines reach the platform, `UNICON_PUBLIC_URL` unless given.
 `UNICON_CLONE_IMAGE` the image the CI checks a task and a submission out
 with, by digest. Both are required when `UNICON_FORGE=forgejo`, since which
 images a deployment runs is its own choice, from its image manifest; the fake
-runs neither and names a placeholder digest unless given. A missing or malformed variable stops the process at start with the
+runs neither and names a placeholder digest unless given.
+`UNICON_SLOT_SIZES` is the grading machines' slot sizes, `name:MB` comma
+separated, which deploy writes from its `machine/slots.json`: a run task's
+pipeline is planned into the smallest slot that holds it and labelled with
+that size, and a save whose step needs more than the biggest is refused. It
+is required when `UNICON_FORGE=forgejo`; the fake plans with deploy's
+sizes unless given. A missing or malformed variable stops the process at start with the
 variable named.
 
 ## Cookies
@@ -1668,16 +1677,12 @@ row's due it was and the latest attempt of its grading, as the task's test
 groups show it (`domain/showing.py`): a group shown `always` with its
 outcome and its tests, one shown as a `verdict` with its outcome and its
 tests at the task's reveal, one shown `after_close` with its name and when
-it is shown; the outcome over the groups shown; the values reported once;
-its line on each board the reader sees that covers the task (`boards`):
-its points on the board's scope, each value the board ranks folded as its
-key says, the scope's pending points, when the scope is shown while it
-shows nothing yet, and whether the row's cell on that board counts it now,
-read by the same cell as the board's own row; and what stopped the
+it is shown; the outcome over the groups shown; the values reported once,
+and each value folded over the tests shown (`folded`); and what stopped the
 run. A run that a sealed step stopped, as the result's `stopped_by` names
 it, is held whole until the reveal: no stop, every group hidden as if it
-ran, its points all pending and no values on its board lines, so nothing
-tells it from a run that has not stopped. A grading is shown
+ran, its points all pending and no folds, so nothing tells it from a run
+that has not stopped. A grading is shown
 with the publication it ran under: that publication's sealed facts always,
 and the latest publication's `test_groups` when the two plans list the
 same tests, its own otherwise, so its rows are folded with the tests they
@@ -2069,9 +2074,8 @@ would hide a broken checker from an organiser who was away.
 `regrades.gradings_of(contest, regrade, change=, user=, entrant=, limit=)`
 gives its gradings as the feed does, one per submission, each with
 `change`, a `Compared` holding the change and both results as `Side`s:
-attempt, points, tests accepted of how many, what stopped it, and each
-value a board covering the task ranks, by name and fold, folded as that
-board folds it. Nothing stores a comparison: each read scores
+attempt, points, tests accepted of how many, what stopped it, and the
+values with a direction. Nothing stores a comparison: each read scores
 again. Migration 0021 adds the table and the column.
 
 ## Scores and boards
@@ -2079,14 +2083,12 @@ again. Migration 0021 adds the table and the column.
 Nothing scored is stored. A result keeps the run's raw facts, and every read
 scores it again (`services/scores.py`, `domain/scoring.py`, TASK-FORMAT.md
 sections 3.1 to 3.5): each test's credit, each group's points
-`worth * late * E_g / W` and most `worth * R_g / W`, and each value a board
-ranks folded over the tests as the board's key says (`{by: time_ms, fold:
-max}`: `sum`, `mean` or `max`, with no default), all as exact rationals, a
-value written `0.1` read as one tenth. A workflow says only which way a
-value is better and its bounds. A test that was not accepted has no value
-for a fold, whatever it reported, and counts as the value's worst declared
-bound or leaves the fold with none, the same on a submission's board lines
-and on every board: a wrong answer has no time, so it never ranks as fast. Each test's
+`worth * late * E_g / W` and most `worth * R_g / W`, and each reported value
+folded over the tests, all as exact rationals, a value written `0.1` read
+as one tenth. A test that was not accepted has no value for a fold,
+whatever it reported, and counts as the value's worst declared bound or
+leaves the fold with none, the same on a submission's page and on every
+board: a wrong answer has no time, so it never ranks as fast. Each test's
 row still shows what it reported. A grading is scored with the latest publication's groups,
 credit and value meanings while no grading change came between them, and
 with its own otherwise. The value meanings carry each reported value's
@@ -2120,10 +2122,6 @@ contestant alone, and to anyone else an open task reads closed as
 not give (T8) and reports the boards it moves (T9); a contest's save is
 refused where a board asks what its tasks do not give (C4), or lowers a
 task's `marks` below what a row holds (C1), and answers the notes C4 reports.
-Both refuse a board ranking the value a covered task names as its plain
-`credit`, which its points already count: the contest's save at the
-board's key, the task's at `credit`. The value behind relative credit may
-still be ranked.
 
 ## Errors
 
@@ -2327,10 +2325,10 @@ someone a contestant, with a status and an extension. `seed_classic(fake)`
 puts the built-in workflow `unicon/classic@v2` at the fake from `CLASSIC`, a
 copy of the file deploy's bootstrap seeds, and with `seed_primitives` the
 three primitives it uses from `PRIMITIVES`, each primitive repo's own
-`primitive.yaml` with an image of `PLACEHOLDER_DIGEST`, so a task's first
-save finds a workflow and every step's image; the package's tests check the
-copies against deploy's file and the primitives' own when those repos are
-checked out beside this one.
+`primitive.yaml` at the release deploy pins, with an image of
+`PLACEHOLDER_DIGEST`, so a task's first save finds a workflow and every
+step's image; the package's tests check the copies against deploy's file and
+the primitives' own when those repos are checked out beside this one.
 The fake's large-file store is `fake.uploads`: a test plays the browser
 through the door with `send`, handing back the address the door gave out,
 or puts an object straight into a place with `put`, and `forget` drops one
@@ -2403,12 +2401,14 @@ two tests need only the forge.
 
 A few tests compare the package's copies with their originals in the repos
 checked out beside this one: `schemas/` with `runner`'s, `CLASSIC` with the
-workflow `deploy` seeds, and `PRIMITIVES` with each `primitive-<name>`'s
-`primitive.yaml`. Without a repo they are skipped, unless `CI` is set, when
-they fail. CI checks the forge out beside them: the runner at the release
-whose contracts `schemas/` copies, a `ref:` in `.github/workflows/ci.yaml`
-that moves with the copy, deploy's `main`, and each primitive at the release
-whose declaration `PRIMITIVES` copies, which moves the same way.
+workflow `deploy` seeds, `PRIMITIVES` with each `primitive-<name>`'s
+`primitive.yaml` at the tag deploy's `images.json` pins for `v2`, read with
+git whatever the checkout's branch, and `program_manifest.py`'s name rules
+and JSON with `exec`'s and `interact`'s own. Without a repo or a tag they are
+skipped, unless `CI` is set, when they fail. Until the stage 4 work ships and
+is tagged, CI checks every repo out at the branch it is built on,
+`feat/simpler-core`, the three seeded primitives with their tags; each
+`ref:` in `.github/workflows/ci.yaml` moves to its tag then.
 
 ## Releasing
 

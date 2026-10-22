@@ -11,7 +11,8 @@ publishes (#449), and answer a save that published (M66).
   grades nothing by itself (#445), so they change only what entrants may
   still submit; nor does anything said under what entrants read.
 - **Runs again:** how many submissions are graded again, and why, from what
-  changed how the task grades.
+  changed how the task grades; for a run task, which of its steps run
+  again, and that they wait for the save's check when it has one.
 - **Scores:** each scoring change, new and old, and each leaderboard counted
   again with it.
 - **What entrants read:** whether the statement, the task's title or the
@@ -107,13 +108,17 @@ def effect_of(
     titles: Mapping[str, str] | None = None,
     submitted: bool = False,
     unread: bool = False,
+    steps: Sequence[str] | None = None,
+    checked_first: bool = False,
 ) -> SaveEffect:
     """What saving `after` over the latest publication's `before` (none for
     a first publication, or `unread` when the latest publication's settings
     no longer read) does to the task named `task` in `contest`, given what
     changed how it grades, how many submissions that grades again, whether
     the task has a graded submission, and whether it has any; `titles` are
-    what the workflow calls the values it reports, by key.
+    what the workflow calls the values it reports, by key. For a run task,
+    `steps` are the steps a submission runs again, and `checked_first` that
+    the regrade waits for the save's check to pass.
     """
     first = before is None and not unread
     scores, moves = _scores(task, before, after, contest, bool(changes), titles or {}, unread)
@@ -121,14 +126,19 @@ def effect_of(
     return SaveEffect(
         results_change=changes_results,
         summary=RESULTS_CHANGE if changes_results else NO_RESULT_CHANGES,
-        runs_again=_runs_again(first, changes, regrades, submitted),
+        runs_again=_runs_again(first, changes, regrades, submitted, steps, checked_first),
         scores=tuple(scores) or (NO_SCORE_CHANGES,),
         reading=_reading(first, before, after, read),
     )
 
 
 def _runs_again(
-    first: bool, changes: Sequence[str], regrades: int, submitted: bool
+    first: bool,
+    changes: Sequence[str],
+    regrades: int,
+    submitted: bool,
+    steps: Sequence[str] | None,
+    checked_first: bool,
 ) -> tuple[str, ...]:
     if first:
         return (FIRST_PUBLICATION,)
@@ -141,6 +151,14 @@ def _runs_again(
         if regrades == 1
         else f"{regrades} submissions are graded again"
     )
+    if steps is not None:
+        counted += (
+            f", running {_joined(steps)} again"
+            if steps
+            else ", from what is stored, running no step again"
+        )
+    if checked_first:
+        counted = f"Once the save's check passes, {counted[0].lower()}{counted[1:]}"
     if len(changes) == 1:
         return (f"{counted}: {_lowered(changes[0])}",)
     return (f"{counted}, for these changes:", *changes)

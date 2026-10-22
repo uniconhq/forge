@@ -53,6 +53,8 @@ def _forgejo_settings() -> Settings:
             endpoint="http://garage:3900",
             access_key="key",
             secret_key="secret",
+            lfs_access_key="lfs-key",
+            lfs_secret_key="lfs-secret",
         ),
     )
 

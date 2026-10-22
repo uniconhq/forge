@@ -122,6 +122,9 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
                 secret_key=s3.secret_key.get_secret_value(),
                 results_bucket=s3.results_bucket,
                 machine_url=str(settings.machine_url),
+                lfs_access_key=s3.lfs_access_key,
+                lfs_secret_key=s3.lfs_secret_key.get_secret_value(),
+                lfs_bucket=s3.lfs_bucket,
             )
         ),
         mail=_mail(settings),

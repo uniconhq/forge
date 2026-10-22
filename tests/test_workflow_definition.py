@@ -7,6 +7,7 @@ port given a value of its type, under the two widenings, from a reference
 that may feed it.
 """
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -25,6 +26,7 @@ from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.types import Type
 from forge.domain.workflow_definition import (
     BadReference,
+    Fold,
     Meaning,
     Reference,
     WorkflowRef,
@@ -36,7 +38,7 @@ from forge.domain.workflow_definition import (
     whole_reference,
 )
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line
-from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES
+from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES, RUN_WORKFLOWS
 from tests.conftest import sibling
 
 SEEDED = {f"unicon/{name}@v2": parse_primitive(text) for name, text in PRIMITIVES.items()}
@@ -112,6 +114,16 @@ ECHO_PORTS: dict[str, Any] = {"message": "hi", "times": 1, "mode": "fast"}
 # The file
 
 
+def test_a_long_reported_value_name_of_todays_format_still_parses() -> None:
+    """As a version made before the run format capped a column's name at
+    64 letters, which today's format never did.
+    """
+    name = "log_" + "x" * 66
+    workflow = parse_workflow(CLASSIC.replace(b"\n  log:\n", f"\n  {name}:\n".encode()))
+
+    assert name in workflow.report
+
+
 def test_the_classic_workflow_parses() -> None:
     workflow = parse_workflow(CLASSIC)
 
@@ -135,7 +147,7 @@ def test_the_classic_workflow_parses() -> None:
     assert run.with_["time_limit"] == "${{ inputs.time_limit }}"
     log = workflow.report["log"]
     assert isinstance(log, Meaning)
-    assert (log.from_, log.title, log.unit, log.better) == (
+    assert (log.from_, log.title, log.unit, log.fold) == (
         "${{ steps.compile.compile_log }}",
         "Compile log",
         None,
@@ -143,8 +155,9 @@ def test_the_classic_workflow_parses() -> None:
     )
     time_ms = workflow.report["time_ms"]
     assert isinstance(time_ms, Meaning)
-    assert (time_ms.from_, time_ms.better, time_ms.at_least, time_ms.at_most) == (
+    assert (time_ms.from_, time_ms.fold, time_ms.better, time_ms.at_least, time_ms.at_most) == (
         "${{ steps.run.time_ms }}",
+        Fold.MAX,
         "lower",
         0,
         None,
@@ -330,8 +343,16 @@ def test_the_seeded_classic_workflow_is_the_one_tested_here() -> None:
     assert parse_workflow(seeded.read_bytes()) == parse_workflow(CLASSIC)
 
 
+def todays_seeded() -> list[Path]:
+    """Every workflow deploy seeds in today's format: the run workflows beside
+    them are another format, read by `forge.domain.run_workflow`."""
+    run = {sibling("deploy", folder) for folder in RUN_WORKFLOWS.values()}
+    found = sibling("deploy", "workflows").glob("*/*/workflow.yaml")
+    return sorted(path for path in found if path.parent not in run)
+
+
 def test_every_seeded_workflow_puts_a_unit_only_on_a_number() -> None:
-    seeded = sorted(sibling("deploy", "workflows").glob("*/*/workflow.yaml"))
+    seeded = todays_seeded()
 
     assert len(seeded) >= 2
     for path in seeded:
@@ -342,7 +363,7 @@ def test_every_seeded_workflow_puts_a_unit_only_on_a_number() -> None:
 
 
 def test_every_seeded_workflow_names_each_value_it_reports() -> None:
-    seeded = sorted(sibling("deploy", "workflows").glob("*/*/workflow.yaml"))
+    seeded = todays_seeded()
 
     for path in seeded:
         workflow = parse_workflow(path.read_bytes())
@@ -528,13 +549,8 @@ def test_a_once_step_after_a_per_test_step_is_refused_at_the_version() -> None:
             "report.x.colour",
             "does not know this setting",
         ),
-        ({"title": "X"}, "report.x.from", "This is required."),
-        (
-            {"from": "${{ steps.run.time_ms }}", "fold": "max"},
-            "report.x.fold",
-            "Each leaderboard that ranks a value chooses how it combines across tests. "
-            "Remove fold.",
-        ),
+        ({"fold": "max"}, "report.x.from", "This is required."),
+        ({"from": "${{ steps.run.time_ms }}", "fold": "min"}, "report.x.fold", "sum, mean or max"),
         (
             {"from": "${{ steps.run.time_ms }}", "better": "up"},
             "report.x.better",
@@ -569,7 +585,7 @@ def test_a_once_step_after_a_per_test_step_is_refused_at_the_version() -> None:
     ids=[
         "w1-key",
         "w1-from",
-        "retired-fold",
+        "w3-fold",
         "w3-better",
         "w3-contestant",
         "w3-number",
@@ -966,16 +982,22 @@ def test_a_reference_that_points_at_nothing_it_may_read_is_refused(
             "Give the step output this reports, as ${{ steps.<id>.<output> }}.",
         ),
         (
-            {"from": "${{ steps.compile.compile_log }}", "better": "higher"},
-            "better, at_least and at_most apply only to a number, and this is text.",
+            {"from": "${{ steps.compile.compile_log }}", "fold": "max"},
+            "fold, better, at_least and at_most apply only to a number, and this is text.",
         ),
         (
             {"from": "${{ steps.compile.compile_log }}", "at_most": 1},
-            "better, at_least and at_most apply only to a number, and this is text.",
+            "fold, better, at_least and at_most apply only to a number, and this is text.",
+        ),
+        (
+            {"from": "${{ steps.echo.size }}", "fold": "sum"},
+            "fold and better apply only to a number reported for each test, and this step runs "
+            "once.",
         ),
         (
             {"from": "${{ steps.echo.size }}", "better": "higher"},
-            "better applies only to a number reported for each test, and this step runs once.",
+            "fold and better apply only to a number reported for each test, and this step runs "
+            "once.",
         ),
     ],
 )
@@ -986,12 +1008,13 @@ def test_a_report_entry_reads_a_declared_port_of_a_type_it_holds(entry: Any, mes
     assert checked(document) == [{"path": "report.x", "message": message}]
 
 
-def test_a_once_number_may_carry_bounds_and_a_per_test_one_a_direction() -> None:
+def test_a_once_number_may_carry_bounds_and_a_per_test_one_a_fold_and_a_direction() -> None:
     document = with_echo(**ECHO_PORTS)
     document["report"]["size"] = {"from": "${{ steps.echo.size }}", "at_least": 0, "at_most": 10}
     document["report"]["said"] = "${{ steps.echo.said }}"
-    document["report"]["cpu_ms"] = {
+    document["report"]["total_ms"] = {
         "from": "${{ steps.run.time_ms }}",
+        "fold": "sum",
         "better": "lower",
         "at_least": 0,
     }
@@ -1031,3 +1054,37 @@ def test_a_definition_names_at_most_32_primitive_versions() -> None:
         parse_workflow(f"test: {{input: file}}\nsteps:\n{steps}")
 
     assert [error["path"] for error in refused.value.errors] == ["steps"]
+
+
+@pytest.mark.parametrize("kind", ["named_files", "programs", "links"])
+def test_a_workflow_input_or_test_field_takes_none_of_a_ports_own_types(kind: str) -> None:
+    """`named_files`, `programs` and `links` are a contract 6 primitive's
+    input ports' alone, though they share `Type`.
+    """
+    document = classic()
+    document["inputs"]["extra"] = {"type": kind}
+    document["test"]["extra"] = kind
+
+    problems = refused(document)
+
+    assert paths(problems) == ["inputs.extra.type", "test.extra.type"]
+    assert {problem["message"] for problem in problems} == {
+        "This must be one of text, number, boolean, enum, file, folder."
+    }
+
+
+def test_a_contract_6_primitive_is_refused_in_this_format() -> None:
+    """The forge reads contract 6 primitives before any workflow can use
+    them, so this format, which hands every step contract 5's files, refuses
+    one by its `use`.
+    """
+    six = ECHO.model_copy(update={"schema_version": 6})
+
+    assert checked(with_echo(**ECHO_PORTS), {**SEEDED, "acme/echo@v1": six}) == [
+        {
+            "path": "steps[1].use",
+            "message": "acme/echo@v1 is written for the run workflow's format, which this "
+            "workflow is not in. Use a version written for this format.",
+        }
+    ]
+    assert checked(with_echo(**ECHO_PORTS)) == []

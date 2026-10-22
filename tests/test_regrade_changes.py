@@ -9,7 +9,6 @@ graded.
 from datetime import UTC, datetime
 from fractions import Fraction
 
-from forge.domain.definitions import Fold
 from forge.domain.ids import PublicationId, VersionId
 from forge.domain.publications import Publication
 from forge.domain.regrades import (
@@ -33,7 +32,7 @@ def _valued(accepted: int, tests: int, **values: tuple[str, Better]) -> Side:
         None,
         accepted,
         tests,
-        values={(name, Fold.MAX): Fraction(value) for name, (value, _) in values.items()},
+        values={name: Fraction(value) for name, (value, _) in values.items()},
         better={name: better for name, (_, better) in values.items()},
     )
 

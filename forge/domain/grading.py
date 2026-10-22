@@ -79,23 +79,35 @@ from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from forge.domain.errors import InvalidReason
-from forge.domain.ids import AgentId, PublicationId, SubmissionId, TaskId, VersionId
+from forge.domain.ids import AgentId, OrgId, PublicationId, SubmissionId, TaskId, VersionId
 
 if TYPE_CHECKING:
     from forge.domain.plans import Plan
 
 CALLBACK_INFO = b"unicon-grading-callback"
 ENVELOPE_INFO = b"unicon-grading-envelope"
+STEP_INFO = b"unicon-grading-step"
 
 PLATFORM_POOL = "pool:platform"
 """The label every run is pinned to until orgs bring machines of their own:
 only a machine the platform controls declares it."""
+BOXED_SHAPE = "shape:rootless"
+"""The label a run task's pipeline holding an `exec` or `interact` step
+carries beside its pool's, so only a machine of the shape phase 4.1 picked
+takes it: Woodpecker's labels pick a machine for a whole pipeline."""
+SIZE_LABEL = "size"
+"""The label naming the slot a run task's pipeline needs, `size:<slot>`."""
+EARLY_LANE = "lane:early"
+LATE_LANE = "lane:late"
+"""The lane a run task's pipeline runs in: early pipelines in their own,
+whose slots no late pipeline takes, so an entrant's early result never
+waits behind hidden runs; late and save pipelines in the other."""
 
 RUN_TIMEOUT = timedelta(minutes=30)
 CHECKOUT_ALLOWANCE = timedelta(minutes=4)
@@ -113,20 +125,44 @@ LOST = "The machine that grades lost this grading before it began."
 
 
 @dataclass(frozen=True, slots=True)
+class Slot:
+    """One size of a grading machine's slots: its name, the value of the
+    `size` label its agents and the pipelines it fits carry, and its memory
+    in megabytes. The sizes are one table in deploy's settings
+    (`machine/slots.json`), which a machine's setup reads to share its
+    cores and memory out among agents, one per slot, and the forge reads
+    as `UNICON_SLOT_SIZES`.
+    """
+
+    name: str
+    memory_mb: int
+
+
+@dataclass(frozen=True, slots=True)
 class Machine:
     """The most one step may ask of a machine: memory in megabytes, GPU
-    devices, and whether it may reach the network.
+    devices, and whether it may reach the network; and for a run task, the
+    sizes of the slots its pipelines run in, smallest first.
     """
 
     memory_mb: int
     gpus: int
     network: bool
+    slots: tuple[Slot, ...] = ()
 
 
 PLATFORM_MACHINE = Machine(memory_mb=16384, gpus=0, network=False)
 """What a machine of the platform's pool gives one step: the socket filter's
 default memory ceiling (`UNICON_FILTER_MAX_MEMORY_MB`), no GPU and no
 network."""
+
+
+def run_machine(slots: Collection[Slot]) -> Machine:
+    """What a run task's step may take on the platform's machines: the
+    biggest slot's memory, no GPU and no network, with every slot, smallest
+    first, for the planner to fit each pipeline in one."""
+    ordered = tuple(sorted(slots, key=lambda slot: slot.memory_mb))
+    return Machine(memory_mb=ordered[-1].memory_mb, gpus=0, network=False, slots=ordered)
 
 
 class RunState(StrEnum):
@@ -345,6 +381,63 @@ from the platform's records and never from the request."""
 
 
 @dataclass(frozen=True, slots=True)
+class PipelineRun:
+    """One pipeline of a run task's grading (phase 4.9), in the platform's
+    words: the grading's row and which of its pipelines, `save`, `early` or
+    `late`, the org on whose dispatch repository it runs, the commit the
+    publication froze, the submission with the version its files went in
+    with, none for a save, and the label of the machines that may take it.
+    """
+
+    grading: uuid.UUID
+    pipeline: str
+    org: OrgId
+    publication_version: VersionId
+    submission: SubmissionId | None
+    submission_version: VersionId | None
+    compute: str
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineStepSpec:
+    """One Woodpecker step of a pipeline: its name, its image by digest, its
+    settings, the steps it waits for, whether it takes the org's cache,
+    the user its container runs as, none for a step that runs as its image
+    says, and whether it runs whatever the steps it waits for ended with,
+    as the report step does.
+    """
+
+    name: str
+    image: str
+    settings: Mapping[str, Any]
+    depends_on: tuple[str, ...] = ()
+    cache: bool = False
+    user: int | None = None
+    always: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineSpec:
+    """What a pipeline runs, read from the platform's records as it is
+    started: the image its checkout of the submission is made with, its
+    steps in order, the report's last, the labels of the machines that may
+    take it, and whether it checks the submission out at all, which it
+    does only when one of its steps reads an entrant input.
+    """
+
+    clone_image: str
+    steps: tuple[PipelineStepSpec, ...]
+    labels: tuple[str, ...]
+    clones: bool
+
+
+PipelineLookup = Callable[[str | None, OrgId], Awaitable[tuple[PipelineRun, PipelineSpec]]]
+"""`RunLookup` for a pipeline on an org's dispatch repository: by the
+grading id the pipeline names, as it was given, and the org whose
+repository the CI asks about."""
+
+
+@dataclass(frozen=True, slots=True)
 class RunPlaces:
     """Where a run is at the forge and on the machine: the task, the
     publication by name and version, the submission by place, name and
@@ -375,8 +468,21 @@ def envelope_key(key: bytes, grading: uuid.UUID) -> str:
     return _secret(key, ENVELOPE_INFO, b"envelope", grading)
 
 
+def step_token(key: bytes, grading: uuid.UUID, attempt: int, step: str) -> str:
+    """The token one Woodpecker step of a run task's grading asks its door
+    with: `base64url(HMAC-SHA256(k, "step:<grading>:<attempt>:<step>"))`,
+    `k` derived as for the other two under `STEP_INFO`, so it names the
+    row, the attempt and the step, and no other step's door takes it.
+    """
+    derived = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=STEP_INFO).derive(key)
+    message = b":".join((b"step", str(grading).encode(), str(attempt).encode(), step.encode()))
+    mac = hmac.new(derived, message, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(mac).decode().rstrip("=")
+
+
 def token_hash(token: str) -> bytes:
-    """What a grading's row keeps of its callback token."""
+    """What a grading's row keeps of its callback token, and a step's row of
+    its step token."""
     return hashlib.sha256(token.encode()).digest()
 
 
@@ -397,9 +503,16 @@ def wall_seconds(plan: Plan) -> int:
     for each container and one for the run. A save refuses a plan for which
     this is more than `WALL_CEILING`.
     """
-    steps = sum(step.limits.time_ms for step in plan.steps) / 1000
-    margin = BASE_WALL + STEP_OVERHEAD * len(plan.steps)
-    return max(1, math.ceil(steps + margin.total_seconds()))
+    return wall_of([step.limits.time_ms for step in plan.steps])
+
+
+def wall_of(time_ms: Collection[int]) -> int:
+    """How long a run of containers with these time limits may take, in
+    seconds: the limits summed, with a margin for each container and one for
+    the run. A run task's plan works it out per pipeline.
+    """
+    margin = BASE_WALL + STEP_OVERHEAD * len(time_ms)
+    return max(1, math.ceil(sum(time_ms) / 1000 + margin.total_seconds()))
 
 
 def run_deadline(fetched_at: datetime, wall: int) -> datetime:

@@ -29,7 +29,14 @@ from forge.adapters.ci.woodpecker import WoodpeckerCi
 from forge.adapters.ci.woodpecker.grading import run_variables
 from forge.db.tables import Grading
 from forge.domain.errors import Forbidden
-from forge.domain.grading import GradingRun, GradingStatus, InboundRequest, RunSpec
+from forge.domain.grading import (
+    GradingRun,
+    GradingStatus,
+    InboundRequest,
+    PipelineRun,
+    PipelineSpec,
+    RunSpec,
+)
 from forge.domain.ids import (
     ContestId,
     OrgId,
@@ -102,6 +109,10 @@ async def _never_looked_up(grading: str | None, task: TaskId) -> tuple[GradingRu
     raise AssertionError("a request that does not verify is never looked up")
 
 
+async def _no_pipeline(grading: str | None, org: OrgId) -> tuple[PipelineRun, PipelineSpec]:
+    raise AssertionError("a request that does not verify is never looked up")
+
+
 async def test_the_cis_key_is_read_and_a_request_it_did_not_sign_is_refused(
     woodpecker: WoodpeckerCi,
 ) -> None:
@@ -128,7 +139,7 @@ async def test_the_cis_key_is_read_and_a_request_it_did_not_sign_is_refused(
     )
 
     with pytest.raises(Forbidden):
-        await woodpecker.grading.answer(request, _never_looked_up, now=now)
+        await woodpecker.grading.answer(request, _never_looked_up, now=now, run_tasks=_no_pipeline)
 
     assert isinstance(woodpecker.grading._key, Ed25519PublicKey)
 

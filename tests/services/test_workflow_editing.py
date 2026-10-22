@@ -3,15 +3,19 @@ save carries, a save as the person with the conflict check, a version made
 only of a draft that checks and never changed after, a definition checked
 on its own, its three visibilities with the list of readers, a read at a
 version as a named user, a copy at a version, a combination of several,
-the workflows a person may read, and the newest version a task's notice
-names.
+the workflows a person may read, the newest version a task's notice
+names, and a version of a workflow with no test block checked against the
+files of its own commit.
 """
+
+from pathlib import Path
 
 import pytest
 
 from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, Rejected
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import WorkflowId
+from forge.domain.program_manifest import MAX_MANIFEST, TOO_LARGE
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.domain.workflow_definition import parse_workflow, parse_workflow_ref
@@ -19,7 +23,8 @@ from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import primitives, workflows
-from forge.testing import CLASSIC
+from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, RUN_WORKFLOWS
+from tests.conftest import sibling
 from tests.services.conftest import Acme, signed_in
 
 BROKEN_REFERENCE = CLASSIC.replace(
@@ -42,7 +47,7 @@ async def test_the_owner_reads_the_draft_saves_it_and_versions_it(setup: Setup, 
     assert page.summary.visibility is Visibility.PRIVATE
     assert page.summary.versions == ()
     assert page.draft is not None
-    edited = page.draft.text.replace("at_least: 0\n", "at_least: 1\n", 1)
+    edited = page.draft.text.replace("fold: max\n", "fold: sum\n", 1)
     assert edited != page.draft.text
     saved = await workflows.save(setup, bob, "bob", "tuned", edited, page.draft.token)
 
@@ -52,7 +57,7 @@ async def test_the_owner_reads_the_draft_saves_it_and_versions_it(setup: Setup, 
     assert repo.files["workflow.yaml"] == edited.encode()
     assert repo.history[-1].author_id == 8
     assert await workflows.create_version(setup, bob, "bob", "tuned", "v1") == "v1"
-    later = edited.replace("at_least: 1", "at_least: 2", 1)
+    later = edited.replace("fold: sum", "fold: mean", 1)
     await workflows.save(setup, bob, "bob", "tuned", later, saved.token)
 
     assert await workflows.read_version(setup, bob, "bob/tuned@v1") == edited
@@ -637,3 +642,102 @@ async def test_a_create_of_a_name_left_unmarked_finishes_it(setup: Setup, acme: 
 
     assert (await workflows.view(setup, bob, "bob", "loose")).summary.editable
     assert acme.fake.state.repo("bob", "loose.workflow").rewrites_refused
+
+
+def _run_primitives(acme: Acme) -> None:
+    """The contract 6 primitives the run workflows use, from the checkouts
+    beside this one, with the image line bootstrap writes.
+    """
+    for name, version in (("exec", "v1"), ("interact", "v2"), ("compile", "v3")):
+        text = sibling(f"primitive-{name}", "primitive.yaml").read_bytes()
+        image = f"image: ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}\n".encode()
+        acme.fake.primitives.add(name, {version: image + text})
+
+
+def _held(folder: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(folder)): path.read_bytes()
+        for path in folder.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    }
+
+
+@pytest.mark.parametrize("ref", list(RUN_WORKFLOWS))
+async def test_a_built_in_run_workflow_versions_with_its_own_files(
+    setup: Setup, acme: Acme, ref: str
+) -> None:
+    _run_primitives(acme)
+    bob = await _own(setup, acme)
+    repo = acme.fake.state.repos[("bob", "tuned.workflow")]
+    acme.fake.state.commit(repo, _held(sibling("deploy", RUN_WORKFLOWS[ref])), "copy", 8)
+
+    assert await workflows.create_version(setup, bob, "bob", "tuned", "v1") == "v1"
+    reads = [*acme.fake.calls_to("workflow_files"), *acme.fake.calls_to("read_workflow_at")]
+    assert reads
+    for read in reads:
+        assert isinstance(read.identity, AsUser) and read.identity.user_id == 8
+        assert read.arguments["at"] == repo.versions["v1"]
+
+
+async def test_a_manifest_over_the_largest_size_is_refused_unread(setup: Setup, acme: Acme) -> None:
+    _run_primitives(acme)
+    bob = await _own(setup, acme)
+    repo = acme.fake.state.repos[("bob", "tuned.workflow")]
+    held = _held(sibling("deploy", RUN_WORKFLOWS["unicon/classic@v3"]))
+    held["diff/program.yaml"] = b"#" * (MAX_MANIFEST + 1)
+    acme.fake.state.commit(repo, held, "copy", 8)
+
+    with pytest.raises(InvalidDefinition) as refused:
+        await workflows.create_version(setup, bob, "bob", "tuned", "v1")
+
+    assert refused.value.errors == [
+        {"path": "steps[3].with.manifest", "message": f"diff/program.yaml: {TOO_LARGE}"}
+    ]
+    assert acme.fake.calls_to("read_workflow_at") == []
+
+
+async def test_a_run_workflows_path_its_commit_lacks_is_refused_by_a_version_alone(
+    setup: Setup, acme: Acme
+) -> None:
+    _run_primitives(acme)
+    bob = await _own(setup, acme)
+    text = (sibling("deploy", RUN_WORKFLOWS["unicon/classic@v3"]) / "workflow.yaml").read_bytes()
+    repo = acme.fake.state.repos[("bob", "tuned.workflow")]
+    acme.fake.state.commit(repo, {"workflow.yaml": text}, "copy", 8)
+
+    assert await workflows.check(setup, bob, text.decode()) == ()
+    with pytest.raises(InvalidDefinition) as refused:
+        await workflows.create_version(setup, bob, "bob", "tuned", "v1")
+
+    assert refused.value.errors == [
+        {"path": "steps[2].with.source", "message": "The workflow has no folder diff/."},
+        {
+            "path": "steps[3].with.manifest",
+            "message": "The workflow has no file diff/program.yaml.",
+        },
+    ]
+
+
+async def test_a_manifest_listed_but_not_read_as_a_file_is_refused_at_its_port(
+    setup: Setup, acme: Acme, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As a symbolic link the host listed anyway would be."""
+    _run_primitives(acme)
+    bob = await _own(setup, acme)
+    repo = acme.fake.state.repos[("bob", "tuned.workflow")]
+    held = _held(sibling("deploy", RUN_WORKFLOWS["unicon/classic@v3"]))
+    acme.fake.state.commit(repo, held, "copy", 8)
+
+    async def unreadable(*_: object) -> None:
+        raise NotFound("diff/program.yaml is not a file")
+
+    monkeypatch.setattr(acme.fake.workflows, "read_workflow_at", unreadable)
+    with pytest.raises(InvalidDefinition) as refused:
+        await workflows.create_version(setup, bob, "bob", "tuned", "v1")
+
+    assert refused.value.errors == [
+        {
+            "path": "steps[3].with.manifest",
+            "message": "The workflow has no file diff/program.yaml.",
+        }
+    ]

@@ -1735,6 +1735,88 @@ async def test_a_version_is_read_at_its_tags_commit_whatever_its_name_spells(
     assert read.url.params["ref"] == tagged
 
 
+async def test_a_workflows_files_but_no_link_are_listed_and_read_at_the_commit_given(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    commit = "c" * 40
+    recorder.on("GET", repo, ok({"name": "grading.workflow", "topics": ["unicon-workflow"]}))
+    recorder.on(
+        "GET",
+        f"{repo}/git/trees/{commit}",
+        ok(
+            {
+                "tree": [
+                    {
+                        "path": "diff/program.yaml",
+                        "type": "blob",
+                        "mode": "100644",
+                        "sha": "b",
+                        "size": 2,
+                    },
+                    {"path": "diff/linked.yaml", "type": "blob", "mode": "120000", "sha": "l"},
+                ]
+            }
+        ),
+    )
+    recorder.on(
+        "GET",
+        f"{repo}/contents/diff/program.yaml",
+        ok({"type": "file", "sha": "b", "content": base64.b64encode(b"{}").decode(), "size": 2}),
+    )
+    ada, workflow = AsUser(7, _credential()), WorkflowId("acme/grading")
+
+    listed = await forgejo.workflows.workflow_files(ada, workflow, VersionId(commit))
+    read = await forgejo.workflows.read_workflow_at(
+        ada, workflow, VersionId(commit), "diff/program.yaml"
+    )
+
+    assert (listed.version, dict(listed.tokens)) == (commit, {"diff/program.yaml": "b"})
+    assert dict(listed.sizes) == {"diff/program.yaml": 2}
+    assert read.content == b"{}"
+    [seen] = [seen for seen in recorder.seen if seen.url.path.endswith("/program.yaml")]
+    assert seen.url.params["ref"] == commit
+
+
+async def test_a_workflows_files_are_read_at_a_commit_and_never_at_a_name(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    recorder.on("GET", repo, ok({"name": "grading.workflow", "topics": ["unicon-workflow"]}))
+    ada, workflow = AsUser(7, _credential()), WorkflowId("acme/grading")
+
+    for name in ("v1", "main"):
+        with pytest.raises(NotFound):
+            await forgejo.workflows.workflow_files(ada, workflow, VersionId(name))
+        with pytest.raises(NotFound):
+            await forgejo.workflows.read_workflow_at(
+                ada, workflow, VersionId(name), "diff/program.yaml"
+            )
+    assert [seen.url.path for seen in recorder.seen if seen.url.path != repo] == []
+
+
+async def test_a_workflow_version_is_the_commit_its_tag_stands_at(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    recorder.on("GET", repo, ok({"name": "grading.workflow", "topics": ["unicon-workflow"]}))
+    recorder.on(
+        "GET",
+        f"{repo}/tags",
+        ok(
+            [
+                {"name": "v2", "commit": {"sha": "d" * 40}},
+                {"name": "v1", "commit": {"sha": "c" * 40}},
+            ]
+        ),
+    )
+    ada, workflow = AsUser(7, _credential()), WorkflowId("acme/grading")
+
+    assert await forgejo.workflows.workflow_version(ada, workflow, "v1") == "c" * 40
+    with pytest.raises(NotFound):
+        await forgejo.workflows.workflow_version(ada, workflow, "v3")
+
+
 @pytest.mark.parametrize("user_id", [0, -1])
 async def test_an_id_no_user_can_have_is_no_user_and_asks_nothing(
     forgejo: ForgejoForge, recorder: Recorder, user_id: int

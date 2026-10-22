@@ -3,7 +3,9 @@ what the run is, the harness fetching its envelope, and the harness
 reporting. Each call is handed over as it arrived and authenticated here,
 since a grading's id alone proves nothing.
 
-`config` answers a CI that asks what a run is as it starts one. What runs
+`config` answers a CI that asks what a run is as it starts one, or what a
+run task's pipeline is (`pipelines.lookup`, phase 4.9), held to the same two
+checks. What runs
 is decided by the platform, never by the request or the repository, and
 that takes two checks, kept apart. The implementation proves the request
 the CI's own, reads which grading and task it is about, and asks `lookup`
@@ -80,19 +82,21 @@ from forge.domain.grading import (
     GradingStatus,
     InboundAnswer,
     InboundRequest,
+    PipelineRun,
+    PipelineSpec,
     RunSpec,
     log_key,
     run_deadline,
     token_hash,
     wall_seconds,
 )
-from forge.domain.ids import TaskId
+from forge.domain.ids import OrgId, TaskId
 from forge.domain.plans import Plan
 from forge.domain.reports import ERROR_LIMIT, Event, read_report, result_problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import gradings
+from forge.services import gradings, pipelines
 
 log = get_logger(__name__)
 
@@ -119,15 +123,23 @@ async def config(ctx: Context, request: InboundRequest) -> InboundAnswer:
     names one of another task or one not being started, or one started with
     other variables; `NotFound` from a CI that never asks.
     """
-    looked_up: list[GradingRun] = []
+    looked_up: list[uuid.UUID] = []
 
     async def lookup(grading: str | None, task: TaskId) -> tuple[GradingRun, RunSpec]:
         run, spec = await _starting(ctx, grading, task)
-        looked_up.append(run)
+        looked_up.append(run.grading)
+        return run, spec
+
+    async def pipeline(grading: str | None, org: OrgId) -> tuple[PipelineRun, PipelineSpec]:
+        try:
+            run, spec = await pipelines.lookup(ctx, grading, org)
+        except Unavailable as exc:
+            raise _ForgeDown(exc) from None
+        looked_up.append(run.grading)
         return run, spec
 
     try:
-        answer = await ctx.forge.grading.answer(request, lookup, now=ctx.now)
+        answer = await ctx.forge.grading.answer(request, lookup, now=ctx.now, run_tasks=pipeline)
     except _ForgeDown as down:
         raise down.error from None
     except NotFound:
@@ -140,21 +152,21 @@ async def config(ctx: Context, request: InboundRequest) -> InboundAnswer:
             reason = "answer"
         else:
             reason = "unverified"
-        grading = str(looked_up[0].grading) if looked_up else None
+        grading = str(looked_up[0]) if looked_up else None
         log.warning("runs.config_refused", reason=reason, grading=grading, detail=exc.detail)
         raise CiRequestRefused(REFUSED) from None
     except PortError as exc:
         log.warning("runs.config_key_unread", error=type(exc).__name__, detail=exc.detail)
         raise Unavailable("The CI's signing key could not be read.") from None
-    [run] = looked_up
-    log.info("runs.configured", grading=str(run.grading), task=run.task)
+    [configured] = looked_up
+    log.info("runs.configured", grading=str(configured))
     return answer
 
 
 async def _starting(ctx: Context, grading: str | None, task: TaskId) -> tuple[GradingRun, RunSpec]:
     """The platform's half of what decides a run: the run and what it runs,
     for a grading of `task` whose run is being started. `CiRequestRefused`
-    for any other.
+    for any other, and for one whose plan runs a withdrawn image.
     """
     row = await _named(ctx, grading)
     if row is None or row.task_id != task:
@@ -168,7 +180,11 @@ async def _starting(ctx: Context, grading: str | None, task: TaskId) -> tuple[Gr
         plan = await _plan(ctx, row, run, CiRequestRefused(REFUSED))
     except Unavailable as exc:
         raise _ForgeDown(exc) from None
-    return run, gradings.spec_of(ctx, plan)
+    try:
+        return run, gradings.spec_of(ctx, plan)
+    except pipelines.ImageWithdrawn:
+        log.warning("runs.config_refused", reason="withdrawn", grading=str(row.id))
+        raise CiRequestRefused(REFUSED) from None
 
 
 @action
@@ -228,7 +244,7 @@ async def callback(
     that is no report, and `GradingClosed` for a grading that takes no
     reports now.
     """
-    token = _bearer(authorization)
+    token = bearer(authorization)
     row = None
     if token is not None:
         given = token_hash(token)
@@ -344,7 +360,9 @@ async def _plan(ctx: Context, row: Grading, run: GradingRun, refusal: Exception)
         raise Unavailable("The forge did not answer.") from None
 
 
-def _bearer(authorization: str | None) -> str | None:
+def bearer(authorization: str | None) -> str | None:
+    """The token an `Authorization: Bearer <token>` header carries, none for
+    any other header or none."""
     if not authorization:
         return None
     scheme, _, token = authorization.strip().partition(" ")

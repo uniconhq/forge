@@ -3,11 +3,16 @@ Forgejo, object store and image settings are required only when Forgejo is
 chosen, and cookies are secure whenever the platform is served over https.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
+from forge.domain.grading import Slot
 from forge.settings import (
     FAKE_IMAGES,
+    FAKE_SLOT_SIZES,
     ForgejoSettings,
     S3Settings,
     Settings,
@@ -30,9 +35,15 @@ COMPLETE = {
     "UNICON_S3_ENDPOINT": "http://garage:3900",
     "UNICON_S3_ACCESS_KEY": "GK-test",
     "UNICON_S3_SECRET_KEY": "s3-secret",
+    "UNICON_S3_LFS_ACCESS_KEY": "GK-lfs",
+    "UNICON_S3_LFS_SECRET_KEY": "lfs-secret",
     "UNICON_HARNESS_IMAGE": "ghcr.io/uniconhq/harness@sha256:" + "1" * 64,
     "UNICON_CLONE_IMAGE": "ghcr.io/uniconhq/clone@sha256:" + "2" * 64,
+    "UNICON_SLOT_SIZES": "small:8192,big:28672",
 }
+DEPLOY_SLOTS = Path(__file__).resolve().parents[2] / "deploy" / "machine" / "slots.json"
+"""Deploy's one table of slot sizes, which its bootstrap passes the forge
+and its machine setup reads."""
 
 
 @pytest.fixture
@@ -50,6 +61,7 @@ def environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "UNICON_MACHINE_URL",
         "UNICON_S3_REGION",
         "UNICON_S3_RESULTS_BUCKET",
+        "UNICON_S3_LFS_BUCKET",
     ]:
         monkeypatch.delenv(name, raising=False)
     for name, value in COMPLETE.items():
@@ -238,7 +250,13 @@ def test_forgejo_without_the_object_store_names_its_variables(
 
 
 def test_the_fake_needs_no_object_store(environment: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("UNICON_S3_ENDPOINT", "UNICON_S3_ACCESS_KEY", "UNICON_S3_SECRET_KEY"):
+    for name in (
+        "UNICON_S3_ENDPOINT",
+        "UNICON_S3_ACCESS_KEY",
+        "UNICON_S3_SECRET_KEY",
+        "UNICON_S3_LFS_ACCESS_KEY",
+        "UNICON_S3_LFS_SECRET_KEY",
+    ):
         monkeypatch.delenv(name)
     monkeypatch.setenv("UNICON_FORGE", "fake")
     assert load_settings().forgejo is None
@@ -270,6 +288,8 @@ def test_forgejo_needs_both_images(
     [
         ("UNICON_HARNESS_IMAGE", "harness_image", "ghcr.io/uniconhq/harness:latest"),
         ("UNICON_CLONE_IMAGE", "clone_image", "ghcr.io/uniconhq/clone:v1"),
+        ("UNICON_PRIMITIVE_BASE_IMAGE", "primitive_base_image", "ghcr.io/uniconhq/base:v1"),
+        ("UNICON_PLUGIN_GIT_IMAGE", "plugin_git_image", "woodpeckerci/plugin-git:2.10.1"),
     ],
 )
 def test_an_image_is_the_one_given_and_always_by_digest(
@@ -288,6 +308,16 @@ def test_an_image_is_the_one_given_and_always_by_digest(
     with pytest.raises(SystemExit):
         load_settings()
     assert f"{variable}: Value error, is not an image by digest" in capsys.readouterr().err
+
+
+def test_a_pipelines_images_are_none_while_left_empty(
+    environment: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UNICON_PRIMITIVE_BASE_IMAGE", "")
+    monkeypatch.setenv("UNICON_PLUGIN_GIT_IMAGE", "")
+
+    settings = load_settings()
+    assert (settings.primitive_base_image, settings.plugin_git_image) == (None, None)
 
 
 def test_the_fake_names_placeholder_images_unless_given(
@@ -377,5 +407,80 @@ def test_forgejo_settings_given_whole_still_need_the_cis() -> None:
                 oauth_client_secret="secret",
                 platform_account="platform",
             ),
-            s3=S3Settings(endpoint="http://garage:3900", access_key="key", secret_key="secret"),
+            s3=S3Settings(
+                endpoint="http://garage:3900",
+                access_key="key",
+                secret_key="secret",
+                lfs_access_key="lfs-key",
+                lfs_secret_key="lfs-secret",
+            ),
         )
+
+
+def test_withdrawn_images_are_listed_by_digest_comma_separated(
+    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    first = "ghcr.io/uniconhq/primitive-exec@sha256:" + "a" * 64
+    second = "ghcr.io/uniconhq/primitive-interact@sha256:" + "b" * 64
+    assert load_settings().withdrawn_images == frozenset()
+    monkeypatch.setenv("UNICON_WITHDRAWN_IMAGES", "")
+    assert load_settings().withdrawn_images == frozenset()
+    monkeypatch.setenv("UNICON_WITHDRAWN_IMAGES", f"{first}, {second}")
+    assert load_settings().withdrawn_images == {first, second}
+    assert load_settings().withdraws("mirror.example/exec:v2@sha256:" + "a" * 64)
+    assert not load_settings().withdraws("ghcr.io/uniconhq/primitive-exec@sha256:" + "c" * 64)
+    assert not load_settings().withdraws("ghcr.io/uniconhq/primitive-exec:v2")
+
+    monkeypatch.setenv("UNICON_WITHDRAWN_IMAGES", "ghcr.io/uniconhq/primitive-exec:v1")
+    with pytest.raises(SystemExit):
+        load_settings()
+    assert "is not an image by digest" in capsys.readouterr().err
+
+
+def test_forgejo_needs_the_slot_sizes(
+    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("UNICON_SLOT_SIZES")
+
+    with pytest.raises(SystemExit):
+        load_settings()
+
+    assert "UNICON_FORGE=forgejo needs UNICON_SLOT_SIZES" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("given", "told"),
+    [
+        ("small", "is not a slot's name and its memory in MB"),
+        ("small:8g", "is not a slot's name and its memory in MB"),
+        ("small:0", "is not a slot's name and its memory in MB"),
+        ("a b:1024", "is not a slot's name and its memory in MB"),
+        ("small:1024,small:2048", "names a slot twice"),
+    ],
+)
+def test_the_slot_sizes_are_names_and_memory_comma_separated(
+    environment: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    given: str,
+    told: str,
+) -> None:
+    assert load_settings().slot_sizes == (Slot("small", 8192), Slot("big", 28672))
+    monkeypatch.setenv("UNICON_SLOT_SIZES", given)
+
+    with pytest.raises(SystemExit):
+        load_settings()
+
+    assert told in capsys.readouterr().err
+
+
+def test_the_fake_plans_with_deploys_slot_sizes() -> None:
+    """The fake's slot sizes are deploy's table, as bootstrap passes it:
+    skipped without a deploy checkout beside this one."""
+    assert Settings.for_tests().slot_sizes == (Slot("small", 8192), Slot("big", 28672))
+    if not DEPLOY_SLOTS.is_file():
+        pytest.skip("no deploy checkout beside this one")
+    table = json.loads(DEPLOY_SLOTS.read_text())
+    assert (
+        ",".join(f"{name}:{size['memory_mb']}" for name, size in table.items()) == FAKE_SLOT_SIZES
+    )
