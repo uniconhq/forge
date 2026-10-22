@@ -306,11 +306,11 @@ def test_a_batch_sums_its_runs_time_and_holds_the_most_of_the_rest(
     solution = held(plan, "solution", "early")
 
     # Each run: 2 s gives 2 * 2000 + 3000 ms; 256 MB gives exec's 512 MB,
-    # which holds the box's 256 MB, the entrant's program, which compile may
-    # write up to 64 MB of, and exec's own room.
+    # the box's 256 MB and exec's room, with the entrant's program, which
+    # compile may write up to 64 MB of, and the run's stdin, under a page
+    # and so a megabyte rounded up, on top.
     assert (solution.limits.time_ms, solution.limits.cpu_ms) == (14000, 14000)
-    assert solution.limits.memory_mb == 256 + 256
-    assert solution.limits.memory_mb >= 256 + 64 + PRIMITIVE_ROOM_MB
+    assert solution.limits.memory_mb == 256 + 256 + 64
     assert plan.items_of(solution) == [
         ("r1", (plan.steps["solution"].items or {})["r1"].inputs),
         ("r2", (plan.steps["solution"].items or {})["r2"].inputs),
@@ -323,11 +323,11 @@ def test_each_container_holds_the_files_it_copies(
 ) -> None:
     plan = ok(islands(primitives, sizes={"tests/3.ans": 300 * 1024 * 1024}))
 
-    # The box's 256 MB; the diff script and the solution's output, each up
-    # to 64 MB; the 300 MB answer; and exec's own room. The samples' runs
-    # fit in exec's 512 MB.
-    assert held(plan, "compare").limits.memory_mb == 256 + 64 + 64 + 300 + PRIMITIVE_ROOM_MB
-    assert held(plan, "compare", "early").limits.memory_mb == 256 + 256
+    # The box's 256 MB and exec's room of 256 MB, with the diff script and
+    # the solution's output, each up to 64 MB, and the 300 MB answer on
+    # top; the samples' runs copy the small answers.
+    assert held(plan, "compare").limits.memory_mb == 256 + 256 + 64 + 64 + 300
+    assert held(plan, "compare", "early").limits.memory_mb == 256 + 256 + 64 + 64 + 1
 
 
 def test_an_entrant_file_is_copied_at_the_most_its_input_may_hold(
@@ -341,14 +341,11 @@ def test_an_entrant_file_is_copied_at_the_most_its_input_may_hold(
     )
     larger = ok(planned(primitives, task, CARTPOLE, CARTPOLE_FILES, frozenset({"task.yaml"})))
 
-    # The box's 1024 MB, the runner's program, up to 64 MB, the weights, up
-    # to 10 MB, and exec's room fit in exec's 1280 MB; 500 MB of weights
-    # do not.
+    # The box's 1024 MB and exec's room, with the runner's program, up to
+    # 64 MB, and the weights, up to 10 MB, or 500 MB, on top.
     assert plan.entrant["weights"].max_size == DEFAULT_MAX_SIZE
-    assert held(plan, "episode", "early").limits.memory_mb == 1024 + 256
-    assert held(larger, "episode", "early").limits.memory_mb == (
-        1024 + 64 + 500 + PRIMITIVE_ROOM_MB
-    )
+    assert held(plan, "episode", "early").limits.memory_mb == 1024 + 256 + 64 + 10
+    assert held(larger, "episode", "early").limits.memory_mb == 1024 + 256 + 64 + 500
 
 
 def test_interact_needs_a_box_per_program(primitives: dict[str, PrimitiveDeclaration]) -> None:
@@ -365,9 +362,9 @@ def test_interact_needs_a_box_per_program(primitives: dict[str, PrimitiveDeclara
     )
 
     assert plan.steps["game"].boxes == 2
-    # Both programs' 256 MB and interact's 512 MB, which holds both
-    # programs copied in and interact's own room.
-    assert held(plan, "game").limits.memory_mb == 256 + 256 + 512
+    # Both programs' 256 MB and interact's room of 512 MB, with both
+    # programs, each up to 64 MB, copied in on top.
+    assert held(plan, "game").limits.memory_mb == 256 + 256 + 512 + 64 + 64
     assert plan.steps["game"].inputs == {
         "programs": {
             "programs": {
@@ -1100,7 +1097,7 @@ def test_a_step_over_the_machine_is_refused_at_what_gives_its_largest_file(
 
     assert problems == {
         "repeat[0].inputs[1]": [
-            "The step compare needs 17904 MB of memory, with the files it copies in beside its "
+            "The step compare needs 18048 MB of memory, with the files it copies in beside its "
             "programs, the largest `tests/3.ans` at 17408 MB, but no machine this task may run "
             "on has more than 16384."
         ]
@@ -1178,13 +1175,13 @@ def side_by_side_plan(
 def test_steps_side_by_side_are_chained_to_fit_the_smallest_slot(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    """Three boxed steps of 3256 MB each and a slot of 8192: the first two
+    """Three boxed steps of 3320 MB each and a slot of 8192: the first two
     run side by side and the third waits for both; the compile and each
     run of the judge, which run no boxes, run beside nothing."""
     plan = ok(side_by_side_plan(primitives))
     late = plan.pipeline("late")
 
-    assert [step.limits.memory_mb for step in late[1:4]] == [3256, 3256, 3256]
+    assert [step.limits.memory_mb for step in late[1:4]] == [3320, 3320, 3320]
     assert laid_out(plan) == {
         "late": [
             ("compile", None, ()),
@@ -1195,7 +1192,7 @@ def test_steps_side_by_side_are_chained_to_fit_the_smallest_slot(
             ("judge.r2", ("r2",), ("compile", "judge.r1")),
         ]
     }
-    assert side_by_side(late) == 6512
+    assert side_by_side(late) == 6640
     assert slot_of(late, SLOTS.slots) == Slot("small", 8192)
 
 
@@ -1214,7 +1211,7 @@ def test_a_step_too_big_for_the_small_slot_runs_its_pipeline_in_the_big_one(
         ("third", ("compile",)),
         ("judge.r1", ("compile", "first", "second", "third")),
     ]
-    assert side_by_side(late) == 20256 + 3256 + 3256
+    assert side_by_side(late) == 20320 + 3320 + 3320
     assert slot_of(late, SLOTS.slots) == Slot("big", 28672)
 
 

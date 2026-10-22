@@ -885,8 +885,12 @@ class _Planner:
         self, resolved: ResolvedStep, inputs: Mapping[str, Any]
     ) -> tuple[dict[str, int], list[_Copy]]:
         """One run's limits, raised from its numbers, and for a boxed
-        primitive the files it copies into its boxes, its memory at least
-        its boxes' memory limits, those files and `PRIMITIVE_ROOM_MB`.
+        primitive the files it copies into its boxes, its memory what its
+        declaration gives, its boxes' memory limits and the room it adds,
+        with those files on top, and at least its boxes' memory limits,
+        those files and `PRIMITIVE_ROOM_MB`. The primitive caps its step at
+        this figure, handed to it in the step's job, and does not work it
+        out again.
         """
         declaration = resolved.declaration
         numbers = {
@@ -920,8 +924,8 @@ class _Planner:
                 for each in (numbers, *programs.values())
                 if _number(each.get(BOX_MEMORY))
             )
-            needed = math.ceil(boxes_mb + kb / 1024) + PRIMITIVE_ROOM_MB
-            limits["memory_mb"] = max(limits["memory_mb"], needed)
+            least = math.ceil(boxes_mb + kb / 1024) + PRIMITIVE_ROOM_MB
+            limits["memory_mb"] = max(limits["memory_mb"] + math.ceil(kb / 1024), least)
         return limits, copies
 
     def _copies(self, value: object) -> list[_Copy]:

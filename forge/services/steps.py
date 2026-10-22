@@ -1047,6 +1047,7 @@ class _Job:
         if self.boxed:
             first = await _box_users(self.ctx, held)
             document["box_users"] = {"first": first, "last": first + BOX_BLOCK - 1}
+            document["step_memory_mb"] = self.pipeline_step.limits.memory_mb
         held.items = [[run, key] for run, key, _ in items]
         held.served = self.served
         held.job_at = held.job_at or self.ctx.now

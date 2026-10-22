@@ -345,6 +345,7 @@ async def test_islands_is_graded_through_the_door_step_by_step(
     await _report(setup, row, "early")
 
     assert compile_job["fail_on_non_accepted"] is True and "box_users" not in compile_job
+    assert "step_memory_mb" not in compile_job
     assert compile_job["time_limit"] == 60 and "secrets" not in compile_job
     given = compile_job["inputs"]
     assert violation(given, "primitive", "inputs_file") is None
@@ -354,6 +355,10 @@ async def test_islands_is_graded_through_the_door_step_by_step(
     assert _runs(solution) == ["r1", "r2"] and solution["fail_on_non_accepted"] is False
     users = solution["box_users"]
     assert users["last"] - users["first"] == BOX_BLOCK - 1
+    async with setup.unit_of_work() as ctx:
+        plan, _ = await steps.plan_of(ctx, await _row(setup, row))
+    [planned] = [each for each in plan.pipeline("early") if each.name == "solution"]
+    assert solution["step_memory_mb"] == planned.limits.memory_mb
     first = solution["inputs"]["batch"][0]["inputs"]
     stdin = _download(solution, first["stdin"]["file"])
     assert stdin["cached"] is True and stdin["path"].startswith("cache/")
