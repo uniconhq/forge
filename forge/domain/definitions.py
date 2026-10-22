@@ -72,6 +72,7 @@ __all__ = [
     "TASK_FILE",
     "Approval",
     "Axis",
+    "Check",
     "ContestDefinition",
     "ContestTask",
     "ContestVisibility",
@@ -892,14 +893,28 @@ class Scoring(Model):
     show: ShowTimes = ShowTimes()
 
 
+class Check(Model):
+    """One of a run task's `checks` (SIMPLER-CORE.md 9.6): a made-up
+    submission, `submit`, giving each entrant input by its name, a task
+    path for a file or folder, a list of them in tuple order for one given
+    in parts, a value otherwise; and what it must get, `expect`: a
+    `verdict` every run must get, a number for each value named, or both.
+    What each names is checked against the task at its save
+    (`forge.domain.checks`).
+    """
+
+    submit: dict[str, Any] = Field(default_factory=dict)
+    expect: dict[str, Any] = Field(min_length=1)
+
+
 class TaskDefinition(Model):
     """A `task.yaml`, in one of two formats, as its workflow's: a workflow
     with a test block is graded test by test, under `test_groups` and
     `credit`; a run workflow (SIMPLER-CORE.md 8 and 9) runs once per
-    combination of `repeat`'s tuples, and is scored by `scoring`, which
-    such a task always has (`runs`). `inputs` defaults to none, `credit` to
-    an accepted test earning 1, and `submissions` to 50 at one every 30
-    seconds.
+    combination of `repeat`'s tuples, is scored by `scoring`, which such a
+    task always has (`runs`), and may list `checks`, graded at its save.
+    `inputs` defaults to none, `credit` to an accepted test earning 1, and
+    `submissions` to 50 at one every 30 seconds.
     """
 
     name: Line
@@ -909,6 +924,7 @@ class TaskDefinition(Model):
     test_groups: dict[str, Group] = Field(default_factory=dict, min_length=1)
     repeat: list[Axis] = Field(default_factory=list)
     scoring: Scoring | None = None
+    checks: list[Check] = Field(default_factory=list)
     submissions: Submissions = Submissions()
 
     @property
@@ -1240,6 +1256,12 @@ TEST_FORMAT_RETIRED = (
         "This task's workflow has a test block, so it is scored by its test groups, not by "
         "scoring. Choose a workflow that describes one run, such as unicon/classic@v3, or "
         "remove this.",
+    ),
+    Retired(
+        ("checks",),
+        "This task's workflow has a test block, and checks grade a made-up submission through "
+        "a run task's runs. Choose a workflow that describes one run, such as "
+        "unicon/classic@v3, or remove this.",
     ),
 )
 

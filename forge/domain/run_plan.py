@@ -47,6 +47,15 @@ boxes, whose container may use the whole slot, is a stage alone
 (`_chained`). The pipeline's `size` label is the smallest slot that holds
 the most its steps can use at once (`slot_of`).
 
+A task's checks (SIMPLER-CORE.md 9.6) are graded in the save's pipeline:
+each check copies every step graded per submission (`RunStep.check`),
+named `c<check>-<step>`, given the check's files and values where the
+entrant's would be, done for every run, once the save's own steps and the
+check before it have finished, so the save's pipeline holds the whole
+grading of each check (`_check_copies`). No grading reads a copy, and a
+file only a copy is given is not one the grading depends on
+(`RunPlan.task_paths`).
+
 A step is tainted (11.4) when it runs the entrant's code and gets, directly
 or through earlier steps, a file entrants are not shown during the contest
 on a port not marked secret: a task file `show` does not list under `now`
@@ -66,6 +75,7 @@ from typing import Annotated, Any, Literal
 from pydantic import ConfigDict, Field, PlainValidator
 
 from forge.domain import exact_json
+from forge.domain.checks import COPY_MOST, TaskCheck, check_paths, copy_of
 from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, VALUE_NAME, Scoring, TaskDefinition
@@ -330,6 +340,14 @@ class ValueStep(Model):
     report: str | None = None
 
 
+class CheckStep(Model):
+    """The check a step is a copy for: its place in the task's `checks`,
+    from 1, and the step it copies."""
+
+    index: Annotated[int, Field(ge=1)]
+    of: StepId
+
+
 class RunStep(Model):
     """One workflow step bound to the task's values: its class, its
     primitive and image, whether it may reach the network and takes the
@@ -337,7 +355,8 @@ class RunStep(Model):
     whether its manifest program's reports are the entrant's, and its
     inputs once or an item per run, by run id, each with why it is tainted.
     A value's program is two steps of its own (`value`): compiled once at
-    the save, and run once per grading after the runs it reads.
+    the save, and run once per grading after the runs it reads. A check's
+    copy of a step graded per submission says which (`check`).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
@@ -353,6 +372,7 @@ class RunStep(Model):
     self_reported: Literal[True] | None = None
     tainted: Taint | None = None
     value: ValueStep | None = None
+    check: CheckStep | None = None
     inputs: Inputs | None = None
     items: dict[RunId, Item] | None = None
 
@@ -500,8 +520,23 @@ class RunPlan(Model):
         )
 
     def task_paths(self) -> tuple[str, ...]:
-        """Every file of the publication a step is given, sorted."""
-        return tuple(sorted(self.task_files))
+        """Every file of the publication a step is given, sorted, but one
+        only a check's copies are given, on which no grading depends."""
+        copies: set[str] = set()
+        graded: set[str] = set()
+        for kind in PIPELINES:
+            for held in self.pipeline(kind):
+                read = self.files_read(held).task
+                (copies if self.steps[held.step].check is not None else graded).update(read)
+        return tuple(
+            sorted(path for path in self.task_files if path in graded or path not in copies)
+        )
+
+    def checks(self) -> tuple[int, ...]:
+        """The place of each of the task's checks, from 1, in order."""
+        return tuple(
+            sorted({step.check.index for step in self.steps.values() if step.check is not None})
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -529,6 +564,7 @@ def files_named(workflow: RunWorkflow, task: RunTask) -> FilesNamed:
     it makes the plan.
     """
     named_task: set[str] = {program.folder for program in task.programs.values()}
+    named_task |= check_paths(task.checks)
     named_workflow: set[str] = set()
     for step in workflow.steps:
         for found in _references_in(step.with_.values()):
@@ -697,6 +733,17 @@ def plan_runs(
         if early_released != task.early() or on_release != pipelines
         else None
     )
+    copied, save, refused = _check_copies(
+        task, planner.run_steps(), pipelines.get("save", ()), planner.whole(), task_files
+    )
+    if refused:
+        return RunPlanCheck(refused, None)
+    if save:
+        pipelines = {
+            kind: save if kind == "save" else pipelines[kind]
+            for kind in PIPELINES
+            if kind == "save" or kind in pipelines
+        }
     plan = RunPlan(
         workflow=PinnedWorkflow(
             ref=ref, id=workflow_id, commit=commit, files=dict(sorted(workflow_files.items()))
@@ -706,7 +753,7 @@ def plan_runs(
         runs=tuple(
             RunEntry(id=run.id, key=_key_json(run.key), early=run.early) for run in task.runs
         ),
-        steps=planner.run_steps(),
+        steps={**planner.run_steps(), **copied},
         pipelines=pipelines,
         reports=planner.reports(),
         notes=(*planner.notes(), *task.release_notes()),
@@ -729,6 +776,173 @@ def plan_runs(
             None,
         )
     return RunPlanCheck([], plan)
+
+
+def _check_copies(
+    task: RunTask,
+    steps: Mapping[str, RunStep],
+    own: Sequence[PipelineStep],
+    whole: Sequence[PipelineStep],
+    task_files: Mapping[str, FileFact],
+) -> tuple[dict[str, RunStep], tuple[PipelineStep, ...], list[Problem]]:
+    """Each check's copies of the steps graded per submission, and the
+    save's pipeline with them after its `own` steps, check by check, each
+    check's laid out as `whole` lays a grading out; or what refuses them: a
+    copy's name taken or too long, a check's file larger than the entrant
+    may give, or the pipeline then past the run ceiling. None when the
+    task has no checks.
+    """
+    if not task.checks:
+        return {}, (), []
+    order = list(dict.fromkeys(held.step for held in whole))
+    problems: list[Problem] = []
+    copied: dict[str, RunStep] = {}
+    save = list(own)
+    for check in task.checks:
+        at = ("checks", check.index - 1)
+        rename = {step: copy_of(check.index, step) for step in order}
+        taken = next(
+            (name for name in rename.values() if name in steps or len(name) > COPY_MOST), None
+        )
+        if taken is not None:
+            problems.append(
+                Problem(
+                    path=path_text(at),
+                    message=f"Unicon names this check's copy of a step {taken}, which "
+                    + (
+                        "the workflow's step of that name already takes."
+                        if taken in steps
+                        else f"is longer than the {COPY_MOST} characters a step's name may be."
+                    )
+                    + " Remove the check, or use a workflow whose steps' ids are shorter.",
+                )
+            )
+            continue
+        problems += _too_large(task, check, at, task_files)
+        for step in order:
+            copied[rename[step]] = _copied(steps[step], step, check, rename, task)
+        before = _last(save)
+        for each in whole:
+            waits = tuple(copy_of(check.index, name) for name in each.depends_on)
+            save.append(
+                each.model_copy(
+                    update={
+                        "name": copy_of(check.index, each.name),
+                        "step": rename[each.step],
+                        "depends_on": waits or before,
+                    }
+                )
+            )
+    if problems:
+        return {}, (), problems
+    total = wall_of([held.limits.time_ms for held in save])
+    ceiling = WALL_CEILING.total_seconds()
+    if total > ceiling:
+        problems.append(
+            Problem(
+                path="checks",
+                message=f"The save's steps and its checks take {math.ceil(total / 60)} "
+                f"minutes, but a pipeline may take at most {int(ceiling // 60)}. Give fewer "
+                "checks.",
+            )
+        )
+        return {}, (), problems
+    return copied, tuple(save), []
+
+
+def _last(steps: Sequence[PipelineStep]) -> tuple[str, ...]:
+    """The steps of a pipeline no other step of it waits for."""
+    waited = {name for held in steps for name in held.depends_on}
+    return tuple(held.name for held in steps if held.name not in waited)
+
+
+def _too_large(
+    task: RunTask, check: TaskCheck, at: Path, task_files: Mapping[str, FileFact]
+) -> list[Problem]:
+    """A file or folder a check gives that holds more than the entrant may
+    give that input."""
+    found: list[Problem] = []
+    for name, given in check.given.items():
+        most = task.entrant[name].form.max_size or DEFAULT_MAX_SIZE
+        for path in given.paths:
+            size = sum(task_files[each].size for each in named_by(task_files, path))
+            if size > most:
+                found.append(
+                    Problem(
+                        path=path_text((*at, "submit", name)),
+                        message=f"{path} holds {size} bytes, more than the {most} the entrant "
+                        f"may give as {name}.",
+                    )
+                )
+    return found
+
+
+def _copied(
+    step: RunStep, of: str, check: TaskCheck, rename: Mapping[str, str], task: RunTask
+) -> RunStep:
+    """Check `check`'s copy of `step`, the step `of`: done at the save, for
+    every run, given what the check gives where the entrant's inputs were,
+    and reading the check's copies of the steps it reads."""
+
+    def given(value: Any) -> Any:
+        return _for_check(value, check, rename, task)
+
+    return step.model_copy(
+        update={
+            "class_": "save_once" if step.once else "save_per_run",
+            "check": CheckStep(index=check.index, of=of),
+            "inputs": (
+                {port: given(value) for port, value in step.inputs.items()}
+                if step.inputs is not None
+                else None
+            ),
+            "items": (
+                {
+                    run: item.model_copy(
+                        update={
+                            "inputs": {port: given(value) for port, value in item.inputs.items()}
+                        }
+                    )
+                    for run, item in step.items.items()
+                }
+                if step.items is not None
+                else None
+            ),
+        }
+    )
+
+
+def _for_check(value: Any, check: TaskCheck, rename: Mapping[str, str], task: RunTask) -> Any:
+    """A bound value as a check's copy is given it: an entrant's file or
+    folder by the check's task path, any other entrant value, or text
+    written with one, by the check's value, and a step graded per
+    submission by the check's copy of it."""
+    if not isinstance(value, dict):
+        return value
+    if "entrant" in value:
+        given = check.part(value["entrant"], value.get("part"))
+        return {"task": given} if task.entrant[value["entrant"]].type in FILES else {"value": given}
+    if "template" in value:
+        parts = [spelled(check.part(part["entrant"], part.get("part"))) for part in value["parts"]]
+        return {"value": value["template"].format(*parts)}
+    if "step" in value and value["step"] in rename:
+        return {**value, "step": rename[value["step"]]}
+    if "files" in value:
+        return {
+            "files": {
+                name: _for_check(each, check, rename, task) for name, each in value["files"].items()
+            }
+        }
+    if PROGRAMS in value:
+        return {
+            PROGRAMS: {
+                program: {
+                    port: _for_check(each, check, rename, task) for port, each in inputs.items()
+                }
+                for program, inputs in value[PROGRAMS].items()
+            }
+        }
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -1217,6 +1431,33 @@ class _Planner:
             if made:
                 found[kind] = made
         return self._program_pipelines(found, released=released)
+
+    def whole(self) -> tuple[PipelineStep, ...]:
+        """Every step graded per submission laid out as one pipeline over
+        every run, each value's program after the rest: a check's grading,
+        done in the save's pipeline (`_check_copies`)."""
+        every = tuple(run.id for run in self.task.runs)
+        held: list[tuple[str, tuple[str, ...] | None]] = []
+        for step in self.workflow.steps:
+            placed = self.classes[step.id]
+            if placed == "grading_once":
+                held.append((step.id, None))
+            elif placed == "grading_per_run":
+                held.append((step.id, every))
+        made = self._chained(self._pipeline(held))
+        for name in self.task.programs:
+            program = f"exec-{name}"
+            if program in self.program_steps:
+                made = (
+                    *made,
+                    PipelineStep(
+                        name=program,
+                        step=program,
+                        depends_on=_last(made),
+                        limits=self._limits(program, None),
+                    ),
+                )
+        return made
 
     def _early_once(self, any_early: bool, *, released: bool = False) -> set[str]:
         """The steps done once per grading in the early pipeline: every one
@@ -1720,7 +1961,10 @@ def run_plan_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...
     elif old.workflow.commit != new.workflow.commit:
         changes.append(f"The workflow {new.workflow.ref} moved to another commit.")
     changes += _compared(old.workflow.files, new.workflow.files, "The workflow's file {}")
-    for step_id in [*new.steps, *(each for each in old.steps if each not in new.steps)]:
+    # A check's copy grades no submission, so it changes nothing here.
+    graded_old = [name for name, step in old.steps.items() if step.check is None]
+    graded_new = [name for name, step in new.steps.items() if step.check is None]
+    for step_id in [*graded_new, *(each for each in graded_old if each not in graded_new)]:
         was, now = old.steps.get(step_id), new.steps.get(step_id)
         if was is None:
             changes.append(f"The step {step_id} was added.")

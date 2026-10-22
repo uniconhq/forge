@@ -165,7 +165,13 @@ PASSED = and_(
             ),
         )
     ),
+    not_(
+        func.jsonb_path_exists(
+            Grading.result, literal_column("""'$.checks[*] ? (@.passed != true)'::jsonpath""")
+        )
+    ),
 )
 """The rows `done` whose result accepts every run, a skipped one among
-them, as `step_data.all_accepted` tells it: a save row that lets its
-publication take over."""
+them, and whose every check got what it expects, as
+`step_data.all_accepted` tells it: a save row that lets its publication
+take over."""

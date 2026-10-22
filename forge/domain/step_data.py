@@ -41,6 +41,14 @@ thousand runs leaves the result small. Reports of steps done once go in
 `once` on the grading whose pipeline ran the step, with the outcome each
 of those steps returned, which the `compiled` fact reads.
 
+**A save's checks** (SIMPLER-CORE.md 9.6) are graded in its pipeline by
+each check's copies of the steps graded per submission: a check's run goes
+through the steps done at the save and its own check's copies, and no
+grading's run through any copy. The save's result keeps each check's
+runs, steps done once and values' numbers under `checks`, its steps named
+as the workflow names them, for its expectations to be read against
+(`run_results.check_failing`).
+
 **A value's program** is no step of any run's: it reads its group's runs
 whole, as a JSON file the forge builds from their stored outputs
 (`runs_file`), each run's id, key, verdict, `passed` and number reports,
@@ -166,15 +174,31 @@ def step_order(plan: RunPlan, kind: PipelineKind) -> tuple[str, ...]:
     return tuple(found)
 
 
-def chain_of(plan: RunPlan, order: Sequence[str], run: str) -> list[Item]:
+def chain_of(plan: RunPlan, order: Sequence[str], run: str, check: int | None = None) -> list[Item]:
     """The items a run goes through, in `order`: each workflow step done
-    once, and each done for it; never a value's program's."""
+    once, and each done for it; never a value's program's. A grading's run
+    goes through no check's copy; check `check`'s run through the steps
+    done at the save and that check's copies."""
     return [
         (step, None if plan.steps[step].once else run)
         for step in order
         if plan.steps[step].value is None
+        and _of_check(plan.steps[step], check)
         and (plan.steps[step].once or run in (plan.steps[step].items or {}))
     ]
+
+
+def _of_check(step: RunStep, check: int | None) -> bool:
+    """Whether a run of check `check`, or of the grading itself for none,
+    goes through `step`."""
+    return step.check is None or (check is not None and step.check.index == check)
+
+
+def origin(plan: RunPlan, step: str) -> str:
+    """The workflow step a step stands for: the one a check's copy copies,
+    else itself."""
+    found = plan.steps[step].check
+    return found.of if found is not None else step
 
 
 def holds(plan: RunPlan, kind: PipelineKind, step: str, run: str | None) -> bool:
@@ -437,14 +461,54 @@ def result_of(
     found: Mapping[Item, Found | Faulted],
 ) -> dict[str, Any]:
     """Result version 6 of a `kind` pipeline from what each item it reads
-    gave, `found`, an item missing from it having given nothing."""
+    gave, `found`, an item missing from it having given nothing; for a
+    save's pipeline, with what each check's runs got (`checks`), each
+    check's `passed` and `failing` left for its expectations to fill
+    (`run_results.check_failing`)."""
+    graded = _graded(plan, kind, skipped, found, None)
+    result: dict[str, Any] = {
+        "schema_version": RESULT_VERSION,
+        "runs": graded["runs"],
+        "once": graded["once"],
+        **({"values": graded["values"]} if graded["values"] else {}),
+        "staff": graded["staff"],
+        "error": graded["error"],
+        "run_log": None,
+    }
+    checks = plan.checks() if kind == "save" else ()
+    if checks:
+        result["checks"] = [
+            {
+                **{
+                    key: value
+                    for key, value in _graded(plan, kind, frozenset(), found, index).items()
+                    if key != "values" or value
+                },
+                "passed": False,
+                "failing": [],
+            }
+            for index in checks
+        ]
+    return result
+
+
+def _graded(
+    plan: RunPlan,
+    kind: PipelineKind,
+    skipped: frozenset[str],
+    found: Mapping[Item, Found | Faulted],
+    check: int | None,
+) -> dict[str, Any]:
+    """The runs, the steps done once, the values' numbers, what staff see
+    and the first error of the grading a `kind` pipeline did, or of check
+    `check`'s within a save's, its steps named as the workflow names them."""
     order = step_order(plan, kind)
     runs: list[dict[str, Any]] = []
     staff: list[dict[str, Any]] = []
     staffed: set[Item] = set()
     error: str | None = None
     for run in runs_of(plan, kind):
-        chain = chain_of(plan, order, run.id)
+        chain = chain_of(plan, order, run.id, check)
         entry: dict[str, Any] = {"id": run.id, "key": run.key}
         if run.id in skipped:
             runs.append({**entry, "verdict": "skipped", "passed": 0, "reports": {}, "texts": {}})
@@ -474,15 +538,19 @@ def result_of(
             }
         )
         for item in reached:
-            if item not in staffed and holds(plan, kind, *item):
+            if item not in staffed and holds(plan, kind, *item) and _counted(plan, item, check):
                 staffed.add(item)
                 staff.extend(_staff(found, item))
     once_items = [
-        (step, None) for step in order if plan.steps[step].once and holds(plan, kind, step, None)
+        (step, None)
+        for step in order
+        if plan.steps[step].once
+        and holds(plan, kind, step, None)
+        and _counted(plan, (step, None), check)
     ]
     once_reports, once_texts = _reports(plan, found, once_items)
     outcomes = {
-        step: got.outputs["outcome"]
+        origin(plan, step): got.outputs["outcome"]
         for step, _ in once_items
         if isinstance(got := found.get((step, None)), Found)
     }
@@ -502,14 +570,20 @@ def result_of(
         elif error is None:
             error = got.reason if isinstance(got, Faulted) else _nothing((step, None))
     return {
-        "schema_version": RESULT_VERSION,
         "runs": runs,
         "once": {"reports": once_reports, "texts": once_texts, "outcomes": outcomes},
-        **({"values": values} if values else {}),
+        "values": values,
         "staff": staff,
         "error": error,
-        "run_log": None,
     }
+
+
+def _counted(plan: RunPlan, item: Item, check: int | None) -> bool:
+    """Whether the result of the grading, or of check `check`, keeps what
+    `item` gave of its own: a check's of its copies alone, the grading's of
+    no copy."""
+    found = plan.steps[item[0]].check
+    return found is None if check is None else found is not None and found.index == check
 
 
 def runs_file(
@@ -518,6 +592,7 @@ def runs_file(
     ids: Sequence[str],
     skipped: frozenset[str],
     found: Mapping[Item, Found],
+    check: int | None = None,
 ) -> bytes | None:
     """The JSON file a value's program reads in a `kind` pipeline: the runs
     `ids` names, in that order, each with its id, its key, its verdict,
@@ -526,7 +601,8 @@ def runs_file(
     staff; none while an item a run goes through has given nothing. A
     number past `MOST_REPORT_CHARACTERS`, and every report of a run whose
     entry would pass `RUN_ENTRY_KB`, is left out, missing to the program,
-    so what an entrant reports never faults the grading.
+    so what an entrant reports never faults the grading. A check's copy
+    of a program reads that check's runs (`check`).
     """
     order = step_order(plan, kind)
     keys = {run.id: run.key for run in plan.runs}
@@ -538,7 +614,7 @@ def runs_file(
             )
             continue
         verdict, reached = "accepted", []
-        for item in chain_of(plan, order, run):
+        for item in chain_of(plan, order, run, check):
             got = found.get(item)
             if got is None:
                 return None
@@ -599,14 +675,16 @@ def unreported(result: Mapping[str, Any] | None, values: Iterable[str]) -> froze
 def all_accepted(result: Mapping[str, Any] | None) -> bool:
     """Whether result version 6 accepts every run it grades, a skipped one
     among them, and every step done once it ran, a value's program's
-    compile among them: what a save's checking needs for its publication
-    to take over."""
+    compile among them, and whether each check got what it expects: what a
+    save's checking needs for its publication to take over."""
     if result is None:
         return False
     outcomes = (result.get("once") or {}).get("outcomes") or {}
-    return all(
-        run.get("verdict") in ("accepted", "skipped") for run in result.get("runs", ())
-    ) and all(outcome == "accepted" for outcome in outcomes.values())
+    return (
+        all(run.get("verdict") in ("accepted", "skipped") for run in result.get("runs", ()))
+        and all(outcome == "accepted" for outcome in outcomes.values())
+        and all(check.get("passed") is True for check in result.get("checks", ()))
+    )
 
 
 def runs_of(plan: RunPlan, kind: PipelineKind) -> list[RunEntry]:
@@ -636,7 +714,11 @@ def _reports(
     for name, entry in sorted(plan.reports.items()):
         for step, run in items:
             got = found.get((step, run))
-            if step != entry.step or not isinstance(got, Found) or entry.output not in got.outputs:
+            if (
+                origin(plan, step) != entry.step
+                or not isinstance(got, Found)
+                or entry.output not in got.outputs
+            ):
                 continue
             declared = output_type(plan.steps[step], entry.output)
             if declared is not None and declared[0] == "number":

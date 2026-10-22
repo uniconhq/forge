@@ -24,6 +24,10 @@ not tainted returned `compile_error`, which the plan's steps and each
 row's `once` outcomes say, else 1. Nothing here is stored: a value is
 worked out on every read.
 
+A check's runs are worked out the same way, from what its copies of the
+steps got at the save, with `seconds_late` and `seconds` 0, and read
+against what it expects (`check_failing`).
+
 What reaches an entrant, or anything an entrant reads such as a board, is
 `for_entrants`: every value reading an `entered` mark, directly or through
 others, left out, until the grading queue decides when an entry may reach
@@ -45,7 +49,8 @@ from forge.domain.blocks.evaluate import (
     evaluate,
     using,
 )
-from forge.domain.blocks.numbers import exact
+from forge.domain.blocks.numbers import exact, written
+from forge.domain.checks import MOST_FAILING, VERDICT, failing_words
 from forge.domain.definitions import Scoring
 from forge.domain.release import seconds, seconds_late
 from forge.domain.run_plan import COMPILE_ERROR, RunPlan
@@ -103,11 +108,11 @@ def for_entrants(values: Mapping[str, object], worked: Worked) -> Worked:
 def compilers(plan: RunPlan) -> frozenset[str]:
     """The steps done once that are not tainted, whose `compile_error` makes
     `compiled` 0 (stage 4 open 79): a workflow's, never a value's
-    program's."""
+    program's nor a check's copy."""
     return frozenset(
         name
         for name, step in plan.steps.items()
-        if step.once and step.tainted is None and step.value is None
+        if step.once and step.tainted is None and step.value is None and step.check is None
     )
 
 
@@ -207,10 +212,59 @@ def worked_out(
     )
 
 
+def check_failing(
+    scoring: Scoring,
+    runs: Sequence[Run],
+    columns: Mapping[str, Column],
+    compiling: Collection[str],
+    result: Mapping[str, Any],
+    expect: Mapping[str, object],
+) -> list[str]:
+    """What a check's `result` did not get of what it expects, a sentence
+    each, at most `MOST_FAILING` and one saying how many more: a run of the
+    task's `runs` with another verdict than `expect`'s, and a value whose
+    number is not the one expected, worked out from the check's runs as a
+    submission's are, with `seconds_late` and `seconds` 0 (stage 5 section
+    6 item 9) and `compiled` from the check's own steps done once; none when
+    it got all of it."""
+    grading = run_grading(runs, result, None, waiting=(), compiling=compiling)
+    found: list[str] = []
+    verdict = expect.get(VERDICT)
+    if isinstance(verdict, str):
+        found += [
+            failing_words(run.id, grading.read[run.id].verdict, verdict)
+            for run in runs
+            if grading.read[run.id].verdict != verdict
+        ]
+    wanted = {
+        name: number
+        for name, raw in expect.items()
+        if name != VERDICT and (number := exact(raw)) is not None
+    }
+    if wanted:
+        facts = {
+            "seconds_late": Fraction(0),
+            "seconds": Fraction(0),
+            "compiled": Fraction(grading.compiled),
+        }
+        outcomes = worked_out(scoring, runs, grading, facts, columns)
+        for name, number in wanted.items():
+            outcome = outcomes.get(name)
+            if outcome is None or outcome.number is None:
+                found.append(f"{name} has no number, where {written(number)} is expected.")
+            elif outcome.number != number:
+                found.append(f"{name} is {written(outcome.number)}, not {written(number)}.")
+    if len(found) > MOST_FAILING:
+        more = len(found) - MOST_FAILING + 1
+        found = [*found[: MOST_FAILING - 1], f"And {more} more like these."]
+    return found
+
+
 __all__ = [
     "NOT_RUN",
     "RunGrading",
     "Worked",
+    "check_failing",
     "compilers",
     "facts_of",
     "for_entrants",

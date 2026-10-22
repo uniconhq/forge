@@ -927,10 +927,15 @@ RUNS_UNREAD = (
 
 def _marks_digest(task: RunTask | None) -> str:
     """A short digest of the columns `task` marks self-reported and the
-    inputs that mark each, which a confirmation of them carries back.
+    inputs that mark each, and of the values reading them and those `show`
+    lists, which a confirmation of them carries back.
     """
     marks = task.self_reported if task is not None else {}
-    text = json.dumps({name: sorted(inputs) for name, inputs in sorted(marks.items())})
+    values = sorted(task.self_reported_values()) if task is not None else []
+    shown = sorted(task.self_reported_shown()) if task is not None else []
+    text = json.dumps(
+        [{name: sorted(inputs) for name, inputs in sorted(marks.items())}, values, shown]
+    )
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
@@ -1892,13 +1897,19 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
 async def list(ctx: Context, organiser: Organiser, task: TaskId) -> tuple[Publication, ...]:
     """Every publication of the task, oldest first, each saying whether it
     changed how the task grades, and a run task's that has not taken over
-    where it stands (`pipelines.checks`). Needs the observer role at the
-    task.
+    where it stands (`pipelines.checks`), and one refused each check that
+    failed it. Needs the observer role at the task.
     """
     require(organiser, task_scope(task), Role.OBSERVER)
     made = await ctx.forge.workspaces.list_publications(task)
     found = await pipelines.checks(ctx, task, made)
-    return tuple(replace(each, check=found.get(each.id)) for each in made)
+    failed = await pipelines.failed(
+        ctx, task, [name for name, check in found.items() if check == "refused"]
+    )
+    return tuple(
+        replace(each, check=found.get(each.id), failed_checks=failed.get(each.id, ()))
+        for each in made
+    )
 
 
 async def _held_pointer(

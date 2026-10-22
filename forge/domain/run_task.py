@@ -58,6 +58,7 @@ from forge.domain.blocks.catalogue import ALL, EXEC, EXEC_MEMORY_LIMIT, EXEC_TIM
 from forge.domain.blocks.check import ValuesCheck, check_names, check_values, same_value
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.blocks.numbers import Better
+from forge.domain.checks import TaskCheck, check_checks
 from forge.domain.content import names_path, path_problem
 from forge.domain.definitions import (
     ENTRANT,
@@ -187,8 +188,11 @@ class RunsFile:
     checked them (`RunTask.self_reported_values`), which a result marks;
     and the runs each group or value listed under `now` or `on_release`
     reads (`RunTask.runs_read`), which a later save may not shrink once
-    shown (SIMPLER-CORE.md 16). A file written before `reads` was kept
-    reads as none.
+    shown (SIMPLER-CORE.md 16); and of those values, the ones `show`
+    lists, which a save that shows another asks about
+    (`self_reported_question`). A file written before `reads` was kept
+    reads as none, and one written before `self_reported_shown` was as
+    showing none.
     """
 
     ids: Mapping[str, str]
@@ -198,6 +202,7 @@ class RunsFile:
     compile_early: bool
     self_reported_values: frozenset[str] = frozenset()
     reads: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    self_reported_shown: frozenset[str] = frozenset()
 
     def to_bytes(self) -> bytes:
         document = {
@@ -215,6 +220,7 @@ class RunsFile:
             "compile_early": self.compile_early,
             "self_reported_values": sorted(self.self_reported_values),
             "reads": {name: sorted(runs) for name, runs in sorted(self.reads.items())},
+            "self_reported_shown": sorted(self.self_reported_shown),
         }
         return (exact_json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
 
@@ -247,6 +253,7 @@ class RunsFile:
                     str(name): frozenset(_run_id(each) for each in runs)
                     for name, runs in document.get("reads", {}).items()
                 },
+                frozenset(_text(each) for each in document.get("self_reported_shown", ())),
             )
         except (KeyError, TypeError, AttributeError, ValueError) as error:
             raise ValueError(f"{RUNS_PATH} does not read: {error}") from None
@@ -285,8 +292,9 @@ class RunTask:
     runs by id, `all` among them, what each value reads, `show`, the
     entrant's inputs, the settings the task gives once, the columns
     self-reported with the entrant inputs that make them so, the id of
-    every key it has had, and each step's outputs a manifest the task gives
-    declares (`_Binder.manifest_outputs`).
+    every key it has had, each step's outputs a manifest the task gives
+    declares (`_Binder.manifest_outputs`), each value's program, and its
+    checks (`forge.domain.checks`).
     """
 
     runs: tuple[Run, ...]
@@ -299,6 +307,7 @@ class RunTask:
     ids: Mapping[str, str] = field(default_factory=dict)
     manifest_outputs: Mapping[str, Mapping[str, Port]] = field(default_factory=dict)
     programs: Mapping[str, ProgramValue] = field(default_factory=dict)
+    checks: tuple[TaskCheck, ...] = ()
 
     def shown(self, *, released: bool = False) -> list[str]:
         """The entries shown during the contest: `now`'s, and `on_release`'s
@@ -393,6 +402,12 @@ class RunTask:
                 found[entry] = runs
         return found
 
+    def self_reported_shown(self) -> frozenset[str]:
+        """The values reading a self-reported column that `show` lists, at
+        any time."""
+        listed = {entry for entries in self.show.lists().values() for entry in entries}
+        return frozenset(name for name in self.self_reported_values() if name in listed)
+
     def runs_file(self) -> RunsFile:
         early = self.early()
         return RunsFile(
@@ -403,6 +418,7 @@ class RunTask:
             self.compile_early(),
             self.self_reported_values(),
             self.runs_read(),
+            self.self_reported_shown(),
         )
 
 
@@ -420,15 +436,32 @@ class RunTaskCheck:
 def self_reported_question(task: RunTask, previous: RunsFile | None) -> str | None:
     """What a save asks before it publishes `task` when a column the entrant
     could set is new, or set through other inputs than under `previous`, the
-    latest publication's runs file (#504), so it asks once per version that
-    changes one; none otherwise.
+    latest publication's runs file (#504), or when a value reading such a
+    column is new or newly listed in `show` (stage 4 open 74), so it asks
+    once per version that changes one; none otherwise.
     """
     then = previous.self_reported if previous is not None else {}
     moved = sorted(name for name, inputs in task.self_reported.items() if then.get(name) != inputs)
+    values = sorted(task.self_reported_values())
+    if previous is not None and not moved:
+        fresh = sorted(
+            (task.self_reported_values() - previous.self_reported_values)
+            | (task.self_reported_shown() - previous.self_reported_shown)
+        )
+        if not fresh:
+            return None
+        columns = sorted(task.self_reported)
+        inputs = sorted({each for name in columns for each in task.self_reported[name]})
+        one = len(fresh) == 1
+        return (
+            f"{_joined(fresh)} {'reads' if one else 'read'} {_joined(columns)}, which what "
+            f"the entrant gives as {_joined(inputs)} could set, and {'is' if one else 'are'} "
+            f"new or newly shown, so {'it is' if one else 'they are'} self-reported: entrants "
+            "could give themselves any result there. Confirm the task means it."
+        )
     if not moved:
         return None
     inputs = sorted({each for name in moved for each in task.self_reported[name]})
-    values = sorted(task.self_reported_values())
     one = len(moved) == 1
     said = (
         f"What the entrant gives as {_joined(inputs)} could set {_joined(moved)}, so "
@@ -762,6 +795,13 @@ def check_run_task(
     marks = binder.self_reported()
     if previous is not None and submitted:
         binder.entrant_kept(previous)
+    refused, checks = check_checks(
+        definition.checks,
+        binder.entrant,
+        paths,
+        definition.scoring.values if definition.scoring is not None else {},
+    )
+    binder.problems += refused
     if binder.problems:
         return RunTaskCheck(binder.problems, None)
     assert values is not None, "a task with no scoring is refused at `scoring`"
@@ -776,6 +816,7 @@ def check_run_task(
         binder.ids,
         binder.manifest_outputs(manifests),
         programs,
+        checks,
     )
     early = task.early()
     task = RunTask(
@@ -789,6 +830,7 @@ def check_run_task(
         task.ids,
         task.manifest_outputs,
         task.programs,
+        task.checks,
     )
     return RunTaskCheck([], task)
 

@@ -3,7 +3,9 @@ reads step by step as written; each step is placed by what it reads; a
 grading is an early and a late pipeline, never mixed; taint follows a
 hidden file into the steps that run the entrant's code beside it, and the
 save refuses or notes what is shown during the contest over such runs; each
-container holds the files it copies; and what a save changes is said.
+container holds the files it copies; what a save changes is said; and
+each check is graded at the save by copies of the graded steps, its files
+never a change in how the task grades.
 """
 
 import hashlib
@@ -1556,5 +1558,117 @@ def test_a_workflow_step_named_as_a_values_program_step_is_refused(
         "scoring.values.mean": [
             "The workflow has a step called build-mean, the name mean's program step takes. "
             "Rename the value or the step."
+        ]
+    }
+
+
+# Checks
+
+
+CHECKED = ISLANDS.replace(
+    "submissions:",
+    """checks:
+  - submit: {code: checks/good}
+    expect: {verdict: accepted, total: 100}
+  - submit: {code: checks/empty, language: python}
+    expect: {verdict: wrong_answer}
+  - submit: {code: checks/slow}
+    expect: {st1: 1, st2: 0}
+submissions:""",
+)
+CHECKED_PATHS = ISLANDS_PATHS | {
+    "checks/good/main.cpp",
+    "checks/empty/main.py",
+    "checks/slow/main.cpp",
+}
+
+
+def checked(
+    primitives: Mapping[str, PrimitiveDeclaration], task: str = CHECKED, **kw: Any
+) -> RunPlanCheck:
+    workflow, files = deployed("unicon/classic@v3")
+    return planned(primitives, task, workflow, files, CHECKED_PATHS, **kw)
+
+
+def test_each_check_is_graded_at_the_save_by_copies_of_the_graded_steps(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(checked(primitives))
+    copies = [
+        f"c{index}-{step}" for index in (1, 2, 3) for step in ("compile", "solution", "compare")
+    ]
+    every = ("r1", "r2", "r3", "r4")
+
+    assert laid_out(plan)["save"] == [
+        ("diff", None, ()),
+        *[
+            (name, None if name.endswith("compile") else every, (before,))
+            for name, before in zip(copies, ["diff", *copies[:-1]], strict=True)
+        ],
+    ]
+    assert laid_out(plan)["early"] == laid_out(ok(islands(primitives)))["early"]
+    assert {name: plan.steps[name].class_ for name in copies[:3]} == {
+        "c1-compile": "save_once",
+        "c1-solution": "save_per_run",
+        "c1-compare": "save_per_run",
+    }
+    assert plan.steps["c2-compile"].check is not None
+    assert (plan.steps["c2-compile"].check.index, plan.steps["c2-compile"].check.of) == (
+        2,
+        "compile",
+    )
+    # The check's files and values stand where the entrant's would be, and
+    # each copy reads the copies of what its step reads.
+    assert plan.steps["c2-compile"].inputs == {
+        "source": {"task": "checks/empty/"},
+        "language": {"value": "python"},
+    }
+    assert plan.steps["c1-compile"].inputs == {
+        "source": {"task": "checks/good/"},
+        "language": {"value": "cpp"},
+    }
+    solution = plan.steps["c3-solution"].items or {}
+    assert solution["r3"].inputs["program"] == {"step": "c3-compile", "output": "program"}
+    compare = plan.steps["c3-compare"].items or {}
+    assert compare["r3"].inputs["program"] == {"step": "diff", "output": "program"}
+    assert compare["r3"].inputs["files"]["files"]["output"] == {
+        "step": "c3-solution",
+        "output": "output",
+    }
+    assert plan.checks() == (1, 2, 3)
+    assert violation(exact_json.loads(plan.to_bytes()), "plan") is None
+    assert RunPlan.from_bytes(plan.to_bytes()) == plan
+
+
+def test_a_file_only_a_check_reads_is_copied_but_never_a_grading_change(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(checked(primitives))
+    plain = ok(islands(primitives))
+    fewer = ok(
+        checked(
+            primitives,
+            CHECKED.split("  - submit: {code: checks/slow}")[0]
+            + "submissions:"
+            + CHECKED.split("submissions:")[1],
+        )
+    )
+
+    assert "checks/good/main.cpp" in plan.task_files
+    assert plan.task_paths() == plain.task_paths()
+    assert run_plan_changes(_snapshot(plain), _snapshot(plan)) == ()
+    assert run_plan_changes(_snapshot(plan), _snapshot(fewer)) == ()
+    assert steps_run_again(_snapshot(plain), _snapshot(plan)) == ()
+    assert steps_run_again(_snapshot(plan), _snapshot(fewer)) == ()
+
+
+def test_a_check_giving_more_than_the_entrant_may_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    found = checked(primitives, sizes={"checks/slow/main.cpp": 2 * 1048576})
+
+    assert refused(found) == {
+        "checks[2].submit.code": [
+            "checks/slow/ holds 2097152 bytes, more than the 1048576 the entrant may give as code."
         ]
     }

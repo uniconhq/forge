@@ -29,7 +29,8 @@ publication is made leaves it held back until a save of the same files
 checks it; a lost save row is found by its organisers' read; a take-over
 whose work never ran is finished by the next read; and the platform
 answers a pipeline only while its row starts, and only for the variables
-it was started with.
+it was started with; a save's checks are graded by its own pipeline, and
+one that does not get what it expects refuses the save, saying why.
 """
 
 import json
@@ -103,6 +104,7 @@ from tests.services.test_steps import (
     _mint,
     _report,
     _row,
+    _runs,
     _save,
     _step,
 )
@@ -1275,3 +1277,135 @@ async def test_the_platform_answers_a_pipeline_only_while_it_starts_with_its_own
     )
     with pytest.raises(CiRequestRefused):
         await runs.config(setup, request)
+
+
+# Checks
+
+
+CHECKS = """\
+checks:
+  - submit: {code: checks/good}
+    expect: {verdict: accepted, total: 100}
+  - submit: {code: checks/empty}
+    expect: {verdict: wrong_answer}
+  - submit: {code: checks/slow}
+    expect: {st1: 1, st2: 0}
+"""
+CHECK_FILES = {
+    "checks/good/main.cpp": b"int main() {}\n",
+    "checks/empty/main.cpp": b"int main() { return 0; }\n",
+    "checks/slow/main.cpp": b"int main() { for (;;); }\n",
+}
+EVERY = ("r1", "r2", "r3", "r4")
+
+
+def _tagged(write: Any, tag: bytes) -> Any:
+    """`write`, each file it writes but `outputs.json` ending in `tag`."""
+
+    def tagged(job: dict[str, Any]) -> dict[str, bytes]:
+        written: dict[str, bytes] = write(job)
+        return {path: content + tag * (path != "outputs.json") for path, content in written.items()}
+
+    return tagged
+
+
+async def _checks_run(
+    setup: Setup,
+    acme: Acme,
+    save: uuid.UUID,
+    good: dict[str, str] | None = None,
+    *,
+    diff: bool = True,
+) -> dict[str, dict[str, Any]]:
+    """A save row's diff, unless it was done before, and its three checks'
+    copies run as a machine would: the good one accepted on every run but
+    those `good` names, the empty one a wrong answer on every run, and the
+    slow one out of time on r4; each step's job. Each check's steps write
+    files of their own, so no copy reuses another's."""
+    jobs = {}
+    if diff:
+        jobs["diff"] = await _step(setup, acme, save, "save", "diff", _compiled(CHECKER))
+    compare = {
+        1: _batch(good, score=True),
+        2: _batch(dict.fromkeys(EVERY, "wrong_answer"), score=True),
+        3: _batch(score=True),
+    }
+    solution = {1: _batch(), 2: _batch(), 3: _batch({"r4": "time_limit"})}
+    for index in (1, 2, 3):
+        name = f"c{index}-"
+        tag = name.encode()
+        for step, write in (
+            ("compile", _compiled()),
+            ("solution", solution[index]),
+            ("compare", compare[index]),
+        ):
+            jobs[f"{name}{step}"] = await _step(
+                setup, acme, save, "save", f"{name}{step}", _tagged(write, tag)
+            )
+    return jobs
+
+
+async def test_a_saves_checks_are_graded_by_its_pipeline_and_each_gets_what_it_expects(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    text = TASKS["islands"][0] + CHECKS
+    islands = await _islands(setup, acme, text=text, contest=LIVE, files=CHECK_FILES)
+    [save] = await _rows(setup, "save")
+
+    jobs = await _checks_run(setup, acme, save.id)
+    assert await _report(setup, save.id, "save") is GradingStatus.DONE
+    await setup.settle()
+
+    compiled = jobs["c1-compile"]
+    assert compiled["fail_on_non_accepted"] is False
+    assert compiled["inputs"]["inputs"]["language"] == "cpp"
+    assert {entry["path"] for entry in compiled["files"]} == {
+        f"{compiled['inputs']['inputs']['source']['folder']}/main.cpp"
+    }
+    assert _runs(jobs["c3-compare"]) == ["r1", "r2", "r3"]
+    row = await _row(setup, save.id)
+    assert row.status == GradingStatus.DONE and row.result is not None
+    assert [(each["passed"], each["failing"]) for each in row.result["checks"]] == [
+        (True, []),
+        (True, []),
+        (True, []),
+    ]
+    assert [run["verdict"] for run in row.result["checks"][2]["runs"]] == [
+        "accepted",
+        "accepted",
+        "accepted",
+        "time_limit",
+    ]
+    async with setup.unit_of_work() as ctx:
+        current = await published.task(ctx, islands.task)
+    assert current is not None and current.publication.id == islands.publication
+
+
+async def test_a_check_that_does_not_get_what_it_expects_refuses_its_save_saying_why(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands = await _checked(setup, acme)
+    text = TASKS["islands"][0] + CHECKS
+    saved = await _save(setup, acme, islands.task, {"task.yaml": text.encode(), **CHECK_FILES})
+    assert saved.check == "checking"
+    _, save = await _rows(setup, "save")
+
+    await _checks_run(setup, acme, save.id, good={"r4": "wrong_answer"}, diff=False)
+    assert await _report(setup, save.id, "save") is GradingStatus.DONE
+    await setup.settle()
+
+    async with setup.unit_of_work() as ctx:
+        current = await published.task(ctx, islands.task)
+    assert current is not None and current.publication.id == islands.publication
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    listed = await publications.list(setup, manager, islands.task)
+    assert [each.check for each in listed] == [None, "refused"]
+    [failed] = listed[1].failed_checks
+    assert (failed.index, failed.failing) == (
+        1,
+        ("The run r4 got wrong_answer, not accepted.", "total is 40, not 100."),
+    )
+    assert [(run.id, run.verdict) for run in failed.runs][-1] == ("r4", "wrong_answer")
+    assert failed.outcomes == {"compile": "accepted"} and failed.error is None
+    state = await tasks.state(setup, manager, islands.task)
+    assert state.latest is not None and state.latest.failed_checks == listed[1].failed_checks

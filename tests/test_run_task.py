@@ -3,18 +3,22 @@ tasks parse into their runs, keys and early runs; repeat crosses its axes,
 first outermost, keeps each tuple's values together and keys a run an
 entrant fills by its part; each refusal of 8.5 and 9.5 names its path; a
 run keeps its id across versions; what the entrant could set is marked
-self-reported; and what is shown when, and what was shown, is read from
-`show`.
+self-reported; what is shown when, and what was shown, is read from
+`show`; and a check gives what the entrant does and expects what the task
+can get, a file only a check names never shown.
 """
 
 import json
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from decimal import Decimal
+from fractions import Fraction
 from typing import Any
 
 import pytest
 
 from forge.domain.blocks.numbers import Better
+from forge.domain.checks import check_only
 from forge.domain.definitions import Scoring, parse_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
@@ -32,6 +36,7 @@ from forge.domain.run_task import (
     hidden_again,
     manifest_files,
     most_shown,
+    self_reported_question,
     shown_under,
     unreleased,
 )
@@ -39,6 +44,7 @@ from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.types import Type
 from forge.domain.workflow_definition import parse_run_workflow
 from forge.domain.yaml_models import InvalidDefinition
+from forge.services.published import shown_now
 from forge.testing import PLACEHOLDER_DIGEST, RUN_WORKFLOWS
 from tests.conftest import sibling
 
@@ -1604,3 +1610,144 @@ def test_a_malformed_exec_block_is_one_problem_never_a_crash(
     assert problem["path"] == path
     if words is not None:
         assert problem["message"] == words
+
+
+# Checks
+
+
+CHECKS = """\
+checks:
+  - submit: {code: checks/good}
+    expect: {verdict: accepted, total: 100}
+  - submit: {code: checks/empty/, language: python}
+    expect: {verdict: wrong_answer}
+  - submit: {code: checks/slow}
+    expect: {st1: 1, st2: 0.5}
+"""
+CHECK_PATHS = ISLANDS_PATHS | {"checks/good/main.cpp", "checks/empty/main.py", "checks/slow/a.cpp"}
+
+
+def test_a_check_gives_what_the_entrant_does_and_expects_a_verdict_or_values(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = ok(islands(primitives, ISLANDS + CHECKS, paths=CHECK_PATHS))
+
+    good, empty, slow = task.checks
+    assert good.index == 1 and good.part("code", None) == "checks/good/"
+    # A language left out takes its form's default, as the entrant's would.
+    assert good.part("language", None) == "cpp"
+    assert good.verdict == "accepted" and dict(good.values) == {"total": Fraction(100)}
+    assert (empty.part("language", None), empty.verdict, dict(empty.values)) == (
+        "python",
+        "wrong_answer",
+        {},
+    )
+    assert slow.verdict is None and dict(slow.values) == {"st1": 1, "st2": Fraction(1, 2)}
+
+
+@pytest.mark.parametrize(
+    ("check", "path", "words"),
+    [
+        (
+            "{submit: {code: checks/good, time_limit: 3}, expect: {verdict: accepted}}",
+            "checks[0].submit.time_limit",
+            "The entrant gives no time_limit, so a check cannot. A check gives what the "
+            "entrant does: code and language.",
+        ),
+        (
+            "{submit: {language: cpp}, expect: {verdict: accepted}}",
+            "checks[0].submit",
+            "This check gives no code, which the entrant must give. Give it.",
+        ),
+        (
+            "{submit: {code: checks/none}, expect: {verdict: accepted}}",
+            "checks[0].submit.code",
+            "There is no folder checks/none/ in the task, or it holds no file.",
+        ),
+        (
+            "{submit: {code: checks/good, language: java}, expect: {verdict: accepted}}",
+            "checks[0].submit.language",
+            "This input takes one of cpp and python.",
+        ),
+        (
+            "{submit: {code: checks/good}, expect: {verdict: fine}}",
+            "checks[0].expect.verdict",
+            None,
+        ),
+        (
+            "{submit: {code: checks/good}, expect: {st3: 1}}",
+            "checks[0].expect.st3",
+            "There is no value st3 in the task's scoring, so a check cannot expect it. Its "
+            "values are sample_score, sample_time, st1, st2 and total, and verdict names the "
+            "verdict every run must get.",
+        ),
+        (
+            "{submit: {code: checks/good}, expect: {total: lots}}",
+            "checks[0].expect.total",
+            "Give the number total must be.",
+        ),
+    ],
+)
+def test_a_check_that_does_not_fit_the_task_is_refused_at_its_path(
+    primitives: dict[str, PrimitiveDeclaration], check: str, path: str, words: str | None
+) -> None:
+    found = islands(primitives, f"{ISLANDS}checks:\n  - {check}\n", paths=CHECK_PATHS)
+
+    messages = at(found, path)
+    assert len(messages) == 1
+    if words is not None:
+        assert messages == [words]
+
+
+def test_a_check_needs_something_to_expect() -> None:
+    with pytest.raises(InvalidDefinition) as raised:
+        parse_task(
+            f"{ISLANDS}checks:\n  - {{submit: {{code: checks/good}}, expect: {{}}}}\n", runs=True
+        )
+
+    assert any(problem["path"] == "checks[0].expect" for problem in raised.value.extra["errors"])
+
+
+def test_a_file_only_a_check_names_is_never_shown() -> None:
+    definition = parse_task(
+        (ISLANDS + CHECKS).replace("    now: [sample_score,", "    now: [checks/, sample_score,"),
+        runs=True,
+    )
+
+    assert check_only(definition, "checks/good/main.cpp")
+    now = datetime(2026, 10, 23, tzinfo=UTC)
+    assert not shown_now(definition, "checks/good/main.cpp", reveal=now, now=now)
+    assert shown_now(definition, "samples/1.in", reveal=None, now=now)
+    assert check_only(definition, "checks/slow/a.cpp")
+    assert not check_only(definition, "samples/1.in")
+    # A file the task gives a setting or a tuple is the task's as well.
+    shared = parse_task((ISLANDS + CHECKS).replace("checks/empty/", "samples/"), runs=True)
+    assert not check_only(shared, "samples/1.in")
+
+
+def test_a_self_reported_value_newly_shown_asks_again(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    text = (
+        TOUR_TASK.replace("inputs:\n  best: 1200\n", "")
+        .replace("inputs: [input, route]", "inputs: [input, route, best]")
+        .replace("entrant]", "entrant, entrant]")
+        .replace(
+            "  values:\n",
+            "  values:\n    claimed: {block: sum, over: {runs: all}, of: {run: [all, best]}}\n",
+        )
+    )
+    hidden = ok(tour(primitives, text))
+    shown = ok(tour(primitives, text.replace("now: [total,", "now: [claimed, total,")))
+
+    assert self_reported_question(hidden, hidden.runs_file()) is None
+    assert self_reported_question(shown, shown.runs_file()) is None
+    asked = self_reported_question(shown, hidden.runs_file())
+    assert asked is not None and asked.startswith("claimed reads best,")
+    assert "new or newly shown" in asked
+    # A runs file written before what is shown was kept reads as showing
+    # none, so its next save asks once.
+    document = json.loads(shown.runs_file().to_bytes())
+    del document["self_reported_shown"]
+    older = RunsFile.from_bytes(json.dumps(document).encode())
+    assert self_reported_question(shown, older) is not None

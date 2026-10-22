@@ -38,6 +38,7 @@ from forge.db.tables import Grading, Release
 from forge.db.tables.gradings import PASSED, SAVE
 from forge.db.tables.releases import RELEASED
 from forge.domain.blocks.evaluate import Column
+from forge.domain.checks import check_only
 from forge.domain.content import check_path
 from forge.domain.definitions import (
     CONTEST_FILE,
@@ -400,10 +401,13 @@ def shown_now(
     `public/`; or for a run task, one its `show` lists, or a folder it is in,
     under `now`, under `after_close` once the task's reveal has passed, or
     under `on_release` while the task's results are `released`. A file no
-    entry lists is never shown.
+    entry lists is never shown, nor one only a check names
+    (`checks.check_only`), whatever `show` lists.
     """
     if definition.scoring is None:
         return path.startswith(PUBLIC_FOLDER)
+    if check_only(definition, path):
+        return False
     time = file_time(definition.scoring, path)
     return (
         time == "now"

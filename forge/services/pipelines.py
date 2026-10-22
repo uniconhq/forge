@@ -8,8 +8,9 @@ nothing early has an early row with nothing to run, which ends `done` at
 once, so the late row is made at once, and a plan with nothing late makes
 no late row. A publication whose plan holds steps done at the save is
 checked by a `save` row of its own before it takes over (`queue_save`):
-until that row ends `done` with every run accepted, the task's publication
-is the one before (`published.task`), so entrants keep being graded on it.
+until that row ends `done` with every run accepted and every check of the
+task given what it expects, the task's publication is the one before
+(`published.task`), so entrants keep being graded on it.
 
 Each row runs as a manual pipeline on its org's dispatch repository
 (`gradings.start`). `prepare` readies a row's start: only the steps the
@@ -51,7 +52,8 @@ organiser's read of it finishes it, so a take-over whose work failed or
 never ran is not lost.
 
 `checks` reads a task's save rows for its organisers: where each
-publication not yet taken over stands (`Check`), the lost check and the
+publication not yet taken over stands (`Check`), and `failed` each check
+that refused one (`FailedCheck`, SIMPLER-CORE.md 9.6); the lost check and the
 retry by itself run over each publication's latest save row as over any
 row read, and a take-over still waiting is finished in the background. A
 save of the same files as a publication whose checking was refused, or
@@ -85,7 +87,7 @@ from forge.domain.grading import (
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import OrgId, PublicationId, SubmissionId, TaskId, VersionId
 from forge.domain.plans import PLAN_PATH
-from forge.domain.publications import Check, Publication
+from forge.domain.publications import Check, FailedCheck, Publication, failed_checks
 from forge.domain.regrades import RegradeCause
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.run_plan import BOXED, PipelineKind, RunPlan, slot_of
@@ -397,6 +399,33 @@ async def checks(ctx: Context, task: TaskId, made: Sequence[Publication]) -> dic
         else:
             found[row.publication_id] = check
     return found
+
+
+async def failed(
+    ctx: Context, task: TaskId, refused: Collection[str]
+) -> dict[str, tuple[FailedCheck, ...]]:
+    """Each check that refused each publication of the task in `refused`,
+    by the publication's id, from its latest save row, for its organisers;
+    none for one whose row graded no check."""
+    if not refused:
+        return {}
+    rows = (
+        (
+            await ctx.db.execute(
+                select(Grading)
+                .where(
+                    Grading.task_id == task,
+                    Grading.pipeline == SAVE,
+                    Grading.publication_id.in_(sorted(refused)),
+                )
+                .order_by(Grading.publication_id, Grading.attempt.desc())
+                .distinct(Grading.publication_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {row.publication_id: failed_checks(row.result) for row in rows}
 
 
 async def check_again(

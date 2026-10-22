@@ -264,7 +264,9 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
     made = await ctx.forge.workspaces.list_publications(task)
     latest = made[-1] if made else None
     if latest is not None:
-        latest = replace(latest, check=(await pipelines.checks(ctx, task, made)).get(latest.id))
+        check = (await pipelines.checks(ctx, task, made)).get(latest.id)
+        failed = await pipelines.failed(ctx, task, [latest.id] if check == "refused" else [])
+        latest = replace(latest, check=check, failed_checks=failed.get(latest.id, ()))
     token = head.tokens.get(STATEMENT_FILE)
     written = token is not None and await published.statement_written_at(
         ctx, task, head.version, token
