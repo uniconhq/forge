@@ -107,7 +107,8 @@ EARLY_LANE = "lane:early"
 LATE_LANE = "lane:late"
 """The lane a run task's pipeline runs in: early pipelines in their own,
 whose slots no late pipeline takes, so an entrant's early result never
-waits behind hidden runs; late and save pipelines in the other."""
+waits behind hidden runs; late and save pipelines in the other, and so
+does every run on the harness (`GradingRun.labels`)."""
 
 RUN_TIMEOUT = timedelta(minutes=30)
 CHECKOUT_ALLOWANCE = timedelta(minutes=4)
@@ -337,6 +338,14 @@ class GradingRun:
     submission_version: VersionId
     envelope_url: str
     compute: str
+
+    @property
+    def labels(self) -> tuple[str, ...]:
+        """The labels its pipeline carries: its compute's, and the late
+        lane, so a run on the harness never takes a slot a grading machine
+        keeps for run tasks' early pipelines. It carries no size, so it
+        takes a slot of any."""
+        return (self.compute, LATE_LANE)
 
 
 @dataclass(frozen=True, slots=True)

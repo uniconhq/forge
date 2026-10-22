@@ -418,7 +418,7 @@ async def test_the_extension_answers_the_three_steps_for_a_grading_being_started
     assert answer == again
     document = json.loads(answer.body)
     [publication] = await acme.fake.workspaces.list_publications(entered.task)
-    assert document["labels"] == "pool:platform"
+    assert document["labels"] == ["pool:platform", "lane:late"]
     assert document["clone"][0]["commit"] == publication.version
     assert document["clone"][1]["commit"] == row.submission_version
     assert {step["image"] for step in document["clone"]} == {setup.settings.clone_image}

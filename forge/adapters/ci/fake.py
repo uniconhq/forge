@@ -392,7 +392,7 @@ class FakeGrading:
         clone_image, harness_image = spec.clone_image, spec.harness_image
         cache = [f"unicon-lfs-{places.task['org']}:/lfs-cache"]
         document = {
-            "labels": run.compute,
+            "labels": list(run.labels),
             "clone": [
                 {
                     "name": "task",

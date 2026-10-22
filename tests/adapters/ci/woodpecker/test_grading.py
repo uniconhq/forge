@@ -496,7 +496,7 @@ async def test_the_answer_is_two_full_clone_steps_and_the_harness(
     workflow = yaml.safe_load(config["data"])
     assert workflow == {
         "when": [{"event": "manual"}],
-        "labels": {"pool": "platform"},
+        "labels": {"pool": "platform", "lane": "late"},
         "clone": [
             {
                 "name": "task",

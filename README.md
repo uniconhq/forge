@@ -1805,7 +1805,8 @@ that task, and `queued`, since the CI asks while the start is under way,
 and every other variable must be the one the platform starts that
 grading's run with. The answer, `{"configs": [{"name": "grading", "data":
 ...}]}`, is the same every time for the same run: `labels` from
-`UNICON_COMPUTE`; under `clone:` two full steps, `task` and `submission`,
+`UNICON_COMPUTE` and `lane: late`, so it never takes a grading machine's
+slot kept for run tasks' early pipelines; under `clone:` two full steps, `task` and `submission`,
 each running `UNICON_CLONE_IMAGE` with `remote`, `sha`, `ref` (the
 `published/<n>` or `submission/<n>` tag) and `path` (`/woodpecker/task`,
 `/woodpecker/submission`) set, `lfs` on for both, the machine's
