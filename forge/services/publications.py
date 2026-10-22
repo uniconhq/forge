@@ -428,8 +428,28 @@ async def save(
         else ()
     )
     if newest is not None and version == newest.version and not worded:
+        # A save that published a change to how the task grades and stopped
+        # before its regrade left the publication live and its submissions
+        # graded as before: a save of the same files grades them again.
+        # A task checked first is graded again when its check passes.
+        regraded = 0
+        if (
+            newest.grading_changed
+            and not _checked_first(checked)
+            and await gradings.behind(ctx, task, newest.id)
+        ):
+            regraded = (
+                await gradings.regrade(
+                    ctx,
+                    task,
+                    newest.id,
+                    cause=RegradeCause.SAVE,
+                    by=organiser.user.id,
+                    limit=checked.definition.submissions.max,
+                )
+            ).queued
         effect = await _effect(
-            ctx, task, checked.definition, latest, (), 0, ReadChanges(), checked.compiled
+            ctx, task, checked.definition, latest, (), regraded, ReadChanges(), checked.compiled
         )
         again = (
             await pipelines.check_again(ctx, task, newest.id, checked.run_plan, organiser.user.id)
@@ -442,7 +462,7 @@ async def save(
             newest.grading_changed,
             newest.changes,
             notes,
-            0,
+            regraded,
             effect,
             again,
         )

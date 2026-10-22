@@ -1957,6 +1957,35 @@ def stop(ctx: Context, row: Grading) -> None:
     finish(ctx, row, GradingStatus.CANCELLED)
 
 
+async def behind(ctx: Context, task: TaskId, publication: PublicationId) -> bool:
+    """Whether the task's submissions were never graded again against
+    `publication`: it has no regrade recorded, and a submission's latest
+    attempt that `regrade` would grade again grades against another. So a
+    save that published a change to how the task grades and stopped before
+    its regrade is told apart from one whose regrade found nothing to do,
+    and from submissions made since, already graded against it.
+    """
+    recorded = await ctx.db.scalar(
+        select(Regrade.id)
+        .where(Regrade.task_id == task, Regrade.publication_id == publication)
+        .limit(1)
+    )
+    if recorded is not None:
+        return False
+    rows = (
+        (
+            await ctx.db.execute(
+                select(Grading)
+                .where(Grading.task_id == task, FRONT)
+                .order_by(Grading.submission_id, Grading.attempt)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return any(row.publication_id != publication for row in _regraded(rows).values())
+
+
 def _regraded(rows: Sequence[Grading]) -> dict[str, Grading]:
     """The latest attempt of each submission `regrade` gives a new one, from
     every attempt to the task in submission and attempt order: all of them

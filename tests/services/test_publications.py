@@ -1625,6 +1625,39 @@ async def test_a_published_grading_change_regrades_every_submission_and_a_scorin
     assert again[3] in (GradingStatus.QUEUED, GradingStatus.DISPATCHED)
 
 
+class _Stopped(Exception):
+    """The process stopping in the middle of a save."""
+
+
+async def test_a_grading_change_whose_save_stopped_before_its_regrade_is_regraded_at_a_resave(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The publication is live once made, but the save stopped before its
+    regrade: a save of the same files grades the submissions again, once."""
+    await _graded(setup, acme, entered)
+    (graded,) = await _attempts(setup)
+
+    async def stopped(*_args: Any, **_kwargs: Any) -> None:
+        raise _Stopped
+
+    monkeypatch.setattr(gradings, "regrade", stopped)
+    with pytest.raises(_Stopped):
+        await _save(
+            setup, acme, entered.task, _with(acme, b"time_limit: 2", b"time_limit: 1"), confirm=True
+        )
+    monkeypatch.undo()
+    assert await _attempts(setup) == [graded]
+
+    again = await _save(setup, acme, entered.task, {}, confirm=True)
+    once_more = await _save(setup, acme, entered.task, {}, confirm=True)
+
+    assert isinstance(again, Published) and isinstance(once_more, Published)
+    assert (again.grading_changed, again.regraded, once_more.regraded) == (True, 1, 0)
+    first, regraded = await _attempts(setup)
+    assert first == graded
+    assert regraded[:3] == (1, 2, again.publication)
+
+
 WORTH = RUNNING + "    worth: 50\n"
 DUE = RUNNING + "    due: 2026-09-26T14:00:00Z\n"
 
