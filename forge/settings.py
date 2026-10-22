@@ -76,7 +76,7 @@ FAKE_IMAGES = {
 neither, so a placeholder digest does."""
 
 SLOT_SIZES_VARIABLE = "UNICON_SLOT_SIZES"
-FAKE_SLOT_SIZES = "small:8192,big:28672"
+FAKE_SLOT_SIZES = "small:1:2048,big:2:8192"
 """The slot sizes the fake forge plans with unless given: deploy's table,
 `machine/slots.json`, as deploy passes it, which a test holds this to."""
 SLOT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
@@ -287,10 +287,11 @@ class Settings(BaseSettings):
     on the harness, ends in `system_error` saying so, graded again once
     the task is saved with a fixed version. The deployment leaves them out of the
     images the CI lets run privileged too. `slot_sizes` are the sizes of
-    the grading machines' slots, `<name>:<memory MB>` comma separated, from
-    deploy's one table of them, required with `forgejo`: a run task's step
-    may take the biggest, and each pipeline is fitted in the smallest that
-    holds what it runs side by side and labelled with its name; the fake
+    the grading machines' slots, `<name>:<cores>:<memory MB>` comma
+    separated, from deploy's one table of them, at least one, required with
+    `forgejo`: a run task's step may take the biggest, and each pipeline is
+    fitted in the smallest that holds what it runs side by side, with no
+    more boxes at once than its cores, and labelled with its name; the fake
     plans with deploy's table unless given.
 
     `database_pool_size` connections to the database stay open in each
@@ -472,16 +473,26 @@ class Settings(BaseSettings):
     @field_validator("slot_sizes", mode="before")
     @classmethod
     def _slots_listed(cls, value: object) -> object:
-        """The slot sizes as one variable, `<name>:<memory MB>` comma
-        separated, such as `small:8192,big:28672`."""
+        """The slot sizes as one variable, `<name>:<cores>:<memory MB>` comma
+        separated, such as `small:1:2048,big:2:8192`, at least one: a run
+        task's planner has nothing to fit a pipeline in without."""
         if not isinstance(value, str):
             return value
         found = []
         for each in filter(None, (part.strip() for part in value.split(","))):
-            name, _, memory = each.partition(":")
-            if not SLOT_NAME.fullmatch(name) or not memory.isdigit() or int(memory) < 1:
-                raise ValueError(f"{each!r} is not a slot's name and its memory in MB")
-            found.append(Slot(name, int(memory)))
+            name, _, rest = each.partition(":")
+            cores, _, memory = rest.partition(":")
+            if not (
+                SLOT_NAME.fullmatch(name)
+                and cores.isdigit()
+                and memory.isdigit()
+                and int(cores) >= 1
+                and int(memory) >= 1
+            ):
+                raise ValueError(f"{each!r} is not a slot's name, its cores and its memory in MB")
+            found.append(Slot(name, int(cores), int(memory)))
+        if not found:
+            raise ValueError("names no slot")
         return tuple(found)
 
     @field_validator("slot_sizes")

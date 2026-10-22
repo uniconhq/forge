@@ -1017,7 +1017,7 @@ async def test_a_pipeline_no_slot_holds_is_not_answered(
             None, pipeline_variables(run), now=clock.now(), org=run.org
         )
         with monkeypatch.context() as patched:
-            patched.setattr(setup.settings, "slot_sizes", (Slot("tiny", 64),))
+            patched.setattr(setup.settings, "slot_sizes", (Slot("tiny", 1, 64),))
             with pytest.raises(CiRequestRefused):
                 await runs.config(setup, request)
         return await start(as_, run)

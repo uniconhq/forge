@@ -1107,7 +1107,7 @@ def test_a_step_over_the_machine_is_refused_at_what_gives_its_largest_file(
 # Slots
 
 
-SLOTS = run_machine([Slot("big", 28672), Slot("small", 8192)])
+SLOTS = run_machine([Slot("big", 4, 28672), Slot("small", 2, 8192)])
 SIDE_BY_SIDE = """\
 inputs:
   code: folder
@@ -1160,7 +1160,9 @@ scoring:
 
 
 def side_by_side_plan(
-    primitives: Mapping[str, PrimitiveDeclaration], memory: int = 3000
+    primitives: Mapping[str, PrimitiveDeclaration],
+    memory: int = 3000,
+    machine: Machine = SLOTS,
 ) -> RunPlanCheck:
     return planned(
         primitives,
@@ -1168,7 +1170,7 @@ def side_by_side_plan(
         SIDE_BY_SIDE,
         {"workflow.yaml": SIDE_BY_SIDE.encode()},
         frozenset({"task.yaml", "tests/1.in", "tests/2.in"}),
-        machine=SLOTS,
+        machine=machine,
     )
 
 
@@ -1193,7 +1195,7 @@ def test_steps_side_by_side_are_chained_to_fit_the_smallest_slot(
         ]
     }
     assert side_by_side(late) == 6640
-    assert slot_of(late, SLOTS.slots) == Slot("small", 8192)
+    assert slot_of(late, SLOTS.slots) == Slot("small", 2, 8192)
 
 
 def test_a_step_too_big_for_the_small_slot_runs_its_pipeline_in_the_big_one(
@@ -1212,7 +1214,23 @@ def test_a_step_too_big_for_the_small_slot_runs_its_pipeline_in_the_big_one(
         ("judge.r1", ("compile", "first", "second", "third")),
     ]
     assert side_by_side(late) == 20320 + 3320 + 3320
-    assert slot_of(late, SLOTS.slots) == Slot("big", 28672)
+    assert slot_of(late, SLOTS.slots) == Slot("big", 4, 28672)
+
+
+def test_a_stage_runs_no_more_boxes_than_its_slot_has_cores(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    """A slot of one core holds the memory of two boxed steps, but runs one
+    box at a time: each boxed step waits for the one before it."""
+    plan = ok(side_by_side_plan(primitives, machine=run_machine([Slot("small", 1, 8192)])))
+    late = plan.pipeline("late")
+
+    assert [(step.name, step.depends_on) for step in late[1:4]] == [
+        ("first", ("compile",)),
+        ("second", ("compile", "first")),
+        ("third", ("compile", "second")),
+    ]
+    assert side_by_side(late) == 3320
 
 
 def test_without_slots_a_pipeline_is_laid_out_as_wired(
@@ -1269,8 +1287,10 @@ def test_side_by_side_counts_each_step_with_every_one_it_is_not_ordered_with() -
     assert side_by_side(steps[:3]) == 400
     assert side_by_side(steps) == 750
     assert side_by_side([]) == 0
-    assert slot_of(steps[:3], [Slot("tiny", 399), Slot("small", 400)]) == Slot("small", 400)
-    assert slot_of(steps[:3], [Slot("tiny", 399)]) is None
+    assert slot_of(steps[:3], [Slot("tiny", 1, 399), Slot("small", 1, 400)]) == Slot(
+        "small", 1, 400
+    )
+    assert slot_of(steps[:3], [Slot("tiny", 1, 399)]) is None
 
 
 # The schema's versions

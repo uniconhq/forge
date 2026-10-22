@@ -127,14 +127,16 @@ LOST = "The machine that grades lost this grading before it began."
 @dataclass(frozen=True, slots=True)
 class Slot:
     """One size of a grading machine's slots: its name, the value of the
-    `size` label its agents and the pipelines it fits carry, and its memory
-    in megabytes. The sizes are one table in deploy's settings
+    `size` label its agents and the pipelines it fits carry, its cores, the
+    most boxes a stage of a pipeline in it runs at once, and its memory in
+    megabytes. The sizes are one table in deploy's settings
     (`machine/slots.json`), which a machine's setup reads to share its
     cores and memory out among agents, one per slot, and the forge reads
     as `UNICON_SLOT_SIZES`.
     """
 
     name: str
+    cores: int
     memory_mb: int
 
 

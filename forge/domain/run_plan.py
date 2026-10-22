@@ -1059,28 +1059,34 @@ class _Planner:
     def _chained(self, steps: tuple[PipelineStep, ...]) -> tuple[PipelineStep, ...]:
         """The pipeline in stages for the smallest slot that holds its
         largest step: a stage takes the next step while their memory adds up
-        within the slot and both run in boxes, and each step of a stage
-        waits for every step of the stage before that it does not wait for
-        already. A step that runs no boxes, whose container may use the
-        whole slot, so is a stage alone. With no slot, as without one that
-        holds the largest step, which `fit` refuses, it is as it was.
+        within the slot, their boxes, one for an `exec` step and one for each
+        program of an `interact` step, number no more than the slot's cores,
+        and both run in boxes, and each step of a stage waits for every step
+        of the stage before that it does not wait for already. A step that
+        runs no boxes, whose container may use the whole slot, is a stage
+        alone, and so is one with more boxes than the slot has cores. With
+        no slot, as without one that holds the largest step, which `fit`
+        refuses, it is as it was.
         """
         largest = max((step.limits.memory_mb for step in steps), default=0)
         slot = next((each for each in self.machine.slots if each.memory_mb >= largest), None)
         if slot is None:
             return steps
         stages: list[list[PipelineStep]] = []
-        held = 0
+        held = boxes = 0
         open_ = False
         for step in steps:
-            boxed = self.checked.steps[step.step].use.partition("@")[0] in BOXED
+            resolved = self.checked.steps[step.step]
+            boxed = resolved.use.partition("@")[0] in BOXED
             memory = step.limits.memory_mb
-            if open_ and boxed and held + memory <= slot.memory_mb:
+            given = len(resolved.programs) or 1
+            if open_ and boxed and held + memory <= slot.memory_mb and boxes + given <= slot.cores:
                 stages[-1].append(step)
                 held += memory
+                boxes += given
             else:
                 stages.append([step])
-                held = memory
+                held, boxes = memory, given
             open_ = boxed
         waits: dict[str, set[str]] = {}
         made: list[PipelineStep] = []

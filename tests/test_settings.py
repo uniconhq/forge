@@ -39,7 +39,7 @@ COMPLETE = {
     "UNICON_S3_LFS_SECRET_KEY": "lfs-secret",
     "UNICON_HARNESS_IMAGE": "ghcr.io/uniconhq/harness@sha256:" + "1" * 64,
     "UNICON_CLONE_IMAGE": "ghcr.io/uniconhq/clone@sha256:" + "2" * 64,
-    "UNICON_SLOT_SIZES": "small:8192,big:28672",
+    "UNICON_SLOT_SIZES": "small:1:2048,big:2:8192",
 }
 DEPLOY_SLOTS = Path(__file__).resolve().parents[2] / "deploy" / "machine" / "slots.json"
 """Deploy's one table of slot sizes, which its bootstrap passes the forge
@@ -451,11 +451,15 @@ def test_forgejo_needs_the_slot_sizes(
 @pytest.mark.parametrize(
     ("given", "told"),
     [
-        ("small", "is not a slot's name and its memory in MB"),
-        ("small:8g", "is not a slot's name and its memory in MB"),
-        ("small:0", "is not a slot's name and its memory in MB"),
-        ("a b:1024", "is not a slot's name and its memory in MB"),
-        ("small:1024,small:2048", "names a slot twice"),
+        ("small", "is not a slot's name, its cores and its memory in MB"),
+        ("small:2048", "is not a slot's name, its cores and its memory in MB"),
+        ("small:1:8g", "is not a slot's name, its cores and its memory in MB"),
+        ("small:1:0", "is not a slot's name, its cores and its memory in MB"),
+        ("small:0:2048", "is not a slot's name, its cores and its memory in MB"),
+        ("a b:1:1024", "is not a slot's name, its cores and its memory in MB"),
+        ("small:1:1024,small:2:2048", "names a slot twice"),
+        (",", "names no slot"),
+        (" , ", "names no slot"),
     ],
 )
 def test_the_slot_sizes_are_names_and_memory_comma_separated(
@@ -465,7 +469,7 @@ def test_the_slot_sizes_are_names_and_memory_comma_separated(
     given: str,
     told: str,
 ) -> None:
-    assert load_settings().slot_sizes == (Slot("small", 8192), Slot("big", 28672))
+    assert load_settings().slot_sizes == (Slot("small", 1, 2048), Slot("big", 2, 8192))
     monkeypatch.setenv("UNICON_SLOT_SIZES", given)
 
     with pytest.raises(SystemExit):
@@ -477,10 +481,11 @@ def test_the_slot_sizes_are_names_and_memory_comma_separated(
 def test_the_fake_plans_with_deploys_slot_sizes() -> None:
     """The fake's slot sizes are deploy's table, as bootstrap passes it:
     skipped without a deploy checkout beside this one."""
-    assert Settings.for_tests().slot_sizes == (Slot("small", 8192), Slot("big", 28672))
+    assert Settings.for_tests().slot_sizes == (Slot("small", 1, 2048), Slot("big", 2, 8192))
     if not DEPLOY_SLOTS.is_file():
         pytest.skip("no deploy checkout beside this one")
     table = json.loads(DEPLOY_SLOTS.read_text())
     assert (
-        ",".join(f"{name}:{size['memory_mb']}" for name, size in table.items()) == FAKE_SLOT_SIZES
+        ",".join(f"{name}:{size['cores']}:{size['memory_mb']}" for name, size in table.items())
+        == FAKE_SLOT_SIZES
     )
