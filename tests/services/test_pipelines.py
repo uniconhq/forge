@@ -12,17 +12,18 @@ again once a regrade replaced its early row; a late row reads what its
 early row read, and reuses as it did; an upload is linked only when the
 submission took it; a task with nothing early makes its late row at
 once, told as submitted until the reveal, with or without the platform's
-images; each row has a user of its own, and takes one a lost row held; a
-save is checked by a pipeline of its own before it takes over, compared
-with the publication entrants are graded on, and one whose checker does
-not compile is refused while the old version keeps grading, shown so to
-its organisers and checked again by a save of the same files; a save
-that fails, or is cut off by a restart, once its publication is made
-leaves it held back until a save of the same files checks it; a lost
-save row is found by its organisers' read; a take-over whose work never
-ran is finished by the next read; and the platform answers a pipeline
-only while its row starts, and only for the variables it was started
-with.
+images; a step whose image the platform withdrew ends its start saying
+so and is refused at a save; each row has a user of its own, and takes
+one a lost row held; a save is checked by a pipeline of its own before
+it takes over, compared with the publication entrants are graded on, and
+one whose checker does not compile is refused while the old version
+keeps grading, shown so to its organisers and checked again by a save of
+the same files; a save that fails, or is cut off by a restart, once its
+publication is made leaves it held back until a save of the same files
+checks it; a lost save row is found by its organisers' read; a take-over
+whose work never ran is finished by the next read; and the platform
+answers a pipeline only while its row starts, and only for the variables
+it was started with.
 """
 
 import json
@@ -37,6 +38,7 @@ from forge.adapters.ci.fake import dispatch_of, pipeline_variables
 from forge.db.tables import Grading, GradingStep, StepOutput
 from forge.db.tables import Upload as UploadRow
 from forge.db.tables.entrants import Entrant
+from forge.domain.content import Edit
 from forge.domain.errors import CiRequestRefused, Misconfigured, Rejected, Unavailable
 from forge.domain.grading import (
     BOXED_SHAPE,
@@ -61,6 +63,7 @@ from forge.runtime.setup import Setup
 from forge.services import (
     gradings,
     pipelines,
+    primitives,
     publications,
     published,
     runs,
@@ -70,7 +73,7 @@ from forge.services import (
 )
 from forge.services.gradings import START_RETRY_WAIT
 from forge.services.pipelines import USER_FIRST
-from forge.services.publications import Published
+from forge.services.publications import Draft, Published
 from forge.settings import Settings
 from forge.testing import APP_URL, CALLBACK_PATH, FORGE_URL, FakeClock, register_entrant
 from tests.services.conftest import RUNNING, SPRING, Acme, organiser, signed_in, upload
@@ -650,6 +653,41 @@ async def test_a_row_with_nothing_to_run_ends_without_the_platforms_images(
         GradingStatus.SYSTEM_ERROR,
         "The platform names no image for a run task's report step.",
     )
+
+
+async def test_a_withdrawn_image_ends_a_start_saying_so_and_refuses_a_save(
+    setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    islands = await _checked(setup, acme)
+    await _submit(setup, acme, islands)
+    [first] = await _rows(setup, "early")
+    async with setup.unit_of_work() as ctx:
+        plan, _ = await steps.plan_of(ctx, first)
+    image = plan.steps["compile"].image
+    monkeypatch.setattr(
+        setup,
+        "_settings",
+        setup.settings.model_copy(update={"withdrawn_images": frozenset({image})}),
+    )
+
+    await _submit(setup, acme, islands, user=9)
+
+    [other] = [row for row in await _rows(setup, "early") if row.id != first.id]
+    assert (other.status, other.run_id) == (GradingStatus.SYSTEM_ERROR, None)
+    assert other.error == pipelines.WITHDRAWN.format(image=image)
+    head = await acme.fake.content.list_files(PLATFORM, islands.task)
+    saved = await publications.save(
+        setup,
+        acme.ada,
+        islands.task,
+        {"statement.md": Edit(b"# Islands, again\n", head.tokens.get("statement.md"))},
+        confirm=True,
+    )
+    assert isinstance(saved, Draft)
+    assert [problem["message"] for problem in saved.errors] == [
+        "In the workflow unicon/islands@v1, the step compile cannot run: "
+        + primitives.WITHDRAWN.format(use=plan.steps["compile"].primitive)
+    ]
 
 
 async def test_each_row_running_has_a_user_of_its_own(

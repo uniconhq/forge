@@ -10,7 +10,7 @@ import logging
 import os
 import sys
 from datetime import timedelta
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -24,7 +24,12 @@ from pydantic import (
     model_validator,
 )
 from pydantic.fields import FieldInfo
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    NoDecode,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from forge.domain.primitives import IMAGE
 
@@ -264,7 +269,14 @@ class Settings(BaseSettings):
     They are optional until the release manifest names the base image
     (phase 4.10), and a run task's grading started without them ends in
     `system_error` saying which. The fake runs none and names a
-    placeholder for each unless given.
+    placeholder for each unless given. `withdrawn_images`, by digest and
+    comma separated, are images no step may run any more, such as an
+    `exec` or `interact` image found with a fault in its walls, dropped at
+    once rather than kept while a publication names it: a save whose
+    primitive names one is refused, and a run task's grading whose steps
+    run one ends in `system_error` saying so, graded again once the task
+    is saved with a fixed version. The deployment leaves them out of the
+    images the CI lets run privileged too.
 
     `database_pool_size` connections to the database stay open in each
     process, `database_pool_overflow` more are opened in a rush, and a
@@ -311,6 +323,7 @@ class Settings(BaseSettings):
     clone_image: str
     primitive_base_image: str | None = None
     plugin_git_image: str | None = None
+    withdrawn_images: Annotated[frozenset[str], NoDecode] = frozenset()
 
     session_hard_ttl: timedelta = timedelta(days=30)
     session_idle_ttl: timedelta = timedelta(days=14)
@@ -419,6 +432,22 @@ class Settings(BaseSettings):
             raise ValueError(
                 "is not an image by digest, such as ghcr.io/uniconhq/harness@sha256:..."
             )
+        return value
+
+    @field_validator("withdrawn_images", mode="before")
+    @classmethod
+    def _listed(cls, value: object) -> object:
+        """A list given as one variable, comma separated, empty for none."""
+        if isinstance(value, str):
+            return frozenset(each.strip() for each in value.split(",") if each.strip())
+        return value
+
+    @field_validator("withdrawn_images")
+    @classmethod
+    def _each_by_digest(cls, value: frozenset[str]) -> frozenset[str]:
+        for image in value:
+            if not IMAGE.match(image):
+                raise ValueError(f"{image} is not an image by digest")
         return value
 
     @model_validator(mode="after")

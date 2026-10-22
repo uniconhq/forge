@@ -18,10 +18,12 @@ minted, and the report step; and a user for the row, from `USER_FIRST` to
 `USER_LAST`, unique among the rows not finished, a row past what its state
 may take settled to free its user, which every step but `exec` and
 `interact` runs as, since those make isolate boxes of their own (phase
-4.1). A pipeline left with nothing is not started: its row is
-concluded at once from what the store holds, and a late row whose early
-compile was not accepted so takes that step's verdict for every run with no
-pipeline run.
+4.1). A step left to run whose image the platform has withdrawn
+(`Settings.withdrawn_images`) ends the row's start in `system_error` saying
+so, and `lookup` answers no pipeline that holds one. A pipeline left with
+nothing is not started: its row is concluded at once from what the store
+holds, and a late row whose early compile was not accepted so takes that
+step's verdict for every run with no pipeline run.
 
 `lookup` answers the CI that asks what a pipeline is as it starts one, from
 the row and its minted steps alone, writing nothing: each step's image by
@@ -98,8 +100,18 @@ NO_IMAGE = "The platform names no image for a run task's {name} step."
 REPORT_MODE = "report"
 
 
+WITHDRAWN = (
+    "A step of this run task runs {image}, an image the platform has withdrawn. Its "
+    "gradings run again once the task is saved with a version that has a fixed image."
+)
+
+
 class NoImage(Misconfigured):
     """The platform names no image a run task's pipeline needs."""
+
+
+class ImageWithdrawn(Misconfigured):
+    """A step left to run names an image the platform has withdrawn."""
 
 
 async def planned(ctx: Context, row: Grading) -> bool:
@@ -127,9 +139,11 @@ async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
     minted and a user taken for it, or none once the row is concluded at
     once since nothing is left to run. `Misconfigured` for a row whose plan
     does not read, `NotFound` when its publication is gone, and
-    `Unavailable` when no user is free, and `NoImage` when the platform
-    names no image for the report or the clone. A late row reuses, or runs
-    everything again, as its early row's steps were minted to.
+    `Unavailable` when no user is free, `NoImage` when the platform names
+    no image for the report or the clone, and `ImageWithdrawn` when a step
+    left to run names an image the platform has withdrawn. A late row
+    reuses, or runs everything again, as its early row's steps were minted
+    to.
     """
     pipeline = _kind(row)
     scratch = row.early_id is not None and await steps.from_scratch_of(ctx, row.early_id)
@@ -145,6 +159,11 @@ async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
     for name, image in images.items():
         if image is None:
             raise NoImage(NO_IMAGE.format(name=name))
+    plan, _ = await steps.plan_of(ctx, row)
+    for held_step in left:
+        image = plan.steps[held_step.step].image
+        if image in ctx.settings.withdrawn_images:
+            raise ImageWithdrawn(WITHDRAWN.format(image=image))
     for held_step in left:
         await steps.mint(ctx, row, pipeline=pipeline, step=held_step.name, from_scratch=scratch)
     await steps.mint(ctx, row, pipeline=pipeline, step=REPORT_STEP, from_scratch=scratch)
@@ -189,6 +208,9 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
     boxed = False
     for each in left:
         step = plan.steps[each.step]
+        if step.image in ctx.settings.withdrawn_images:
+            log.warning("pipelines.config_refused", reason="withdrawn", grading=grading)
+            raise CiRequestRefused(REFUSED)
         in_boxes = step.primitive.partition("@")[0] in BOXED
         boxed = boxed or in_boxes
         found.append(

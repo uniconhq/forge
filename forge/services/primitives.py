@@ -18,6 +18,11 @@ from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import names, sessions
 
+WITHDRAWN = (
+    "The primitive {use} runs an image the platform has withdrawn. Use a version of it "
+    "with a fixed image."
+)
+
 
 async def declaration(
     ctx: Context, as_: Identity, use: WorkflowRef
@@ -25,7 +30,9 @@ async def declaration(
     """The declaration a `use:` names, or what is wrong with it. A `use:` that
     names a workflow the reader can read is refused as not a primitive, and
     one they cannot read is refused naming it, the same whether it is not
-    there or not shared with them.
+    there or not shared with them. A primitive whose image the platform has
+    withdrawn (`Settings.withdrawn_images`) is refused, so nothing new is
+    saved to run it.
     """
     primitive = primitive_id_of(use)
     if primitive is not None:
@@ -35,12 +42,15 @@ async def declaration(
             pass
         else:
             try:
-                return parse_primitive(text), None
+                found = parse_primitive(text)
             except InvalidDefinition as invalid:
                 return None, (
                     f"The primitive {use} is written in an older form that Unicon no longer "
                     f"reads. Use a later version of it. {invalid.detail}"
                 )
+            if found.image in ctx.settings.withdrawn_images:
+                return None, WITHDRAWN.format(use=use)
+            return found, None
     try:
         await ctx.forge.workflows.read_workflow_file(
             as_, await names.workflow_id(ctx, use), use.version, WORKFLOW_FILE

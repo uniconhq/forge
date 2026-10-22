@@ -406,3 +406,20 @@ def test_forgejo_settings_given_whole_still_need_the_cis() -> None:
                 lfs_secret_key="lfs-secret",
             ),
         )
+
+
+def test_withdrawn_images_are_listed_by_digest_comma_separated(
+    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    first = "ghcr.io/uniconhq/primitive-exec@sha256:" + "a" * 64
+    second = "ghcr.io/uniconhq/primitive-interact@sha256:" + "b" * 64
+    assert load_settings().withdrawn_images == frozenset()
+    monkeypatch.setenv("UNICON_WITHDRAWN_IMAGES", "")
+    assert load_settings().withdrawn_images == frozenset()
+    monkeypatch.setenv("UNICON_WITHDRAWN_IMAGES", f"{first}, {second}")
+    assert load_settings().withdrawn_images == {first, second}
+
+    monkeypatch.setenv("UNICON_WITHDRAWN_IMAGES", "ghcr.io/uniconhq/primitive-exec:v1")
+    with pytest.raises(SystemExit):
+        load_settings()
+    assert "is not an image by digest" in capsys.readouterr().err

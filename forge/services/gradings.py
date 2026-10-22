@@ -556,7 +556,7 @@ async def _start_pipeline(
     """
     try:
         run = await pipelines.prepare(ctx, row)
-    except pipelines.NoImage as exc:
+    except (pipelines.NoImage, pipelines.ImageWithdrawn) as exc:
         await _not_started(ctx, grading, exc, str(exc))
         return
     except NotFound as exc:
