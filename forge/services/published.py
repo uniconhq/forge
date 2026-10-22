@@ -341,45 +341,6 @@ async def statement_written_at(ctx: Context, task: TaskId, version: VersionId, k
     return await ctx.memo.remembered(f"published.statement.{task}.{key}", FORM_KEPT, read)
 
 
-@dataclass(frozen=True, slots=True)
-class ResultsAction:
-    """One staff action on a task's results (`forge.db.tables.releases`):
-    `released` or `hidden_again`, by whom and when.
-    """
-
-    action: str
-    by: int
-    at: datetime
-
-
-async def results_history(ctx: Context, task: TaskId) -> tuple[ResultsAction, ...]:
-    """Every release of the task's results and every take-back, oldest
-    first, read afresh.
-    """
-    rows = (
-        await ctx.db.execute(
-            select(Release).where(Release.task_id == task).order_by(Release.acted_at, Release.id)
-        )
-    ).scalars()
-    return tuple(ResultsAction(row.action, row.acted_by, row.acted_at) for row in rows)
-
-
-@dataclass(frozen=True, slots=True)
-class ResultsState:
-    """Where a task's results stand: whether they are released now, and
-    every release and take-back, oldest first.
-    """
-
-    released: bool
-    history: tuple[ResultsAction, ...]
-
-
-async def results_state(ctx: Context, task: TaskId) -> ResultsState:
-    """Where the task's results stand now, read afresh."""
-    history = await results_history(ctx, task)
-    return ResultsState(bool(history) and history[-1].action == RELEASED, history)
-
-
 async def results_released(ctx: Context, task: TaskId) -> bool:
     """Whether the task's results are released now: its latest action a
     release, never when it has none. Read afresh on every call and never

@@ -77,10 +77,11 @@ from forge.services import (
     pipelines,
     publications,
     published,
+    results,
     taking_out,
 )
 from forge.services.access import Organiser, require
-from forge.services.published import ResultsState
+from forge.services.results import ResultsState
 from forge.services.taking_out import TakeOut
 
 log = get_logger(__name__)
@@ -256,7 +257,7 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
     save checks it, as the organiser, so the errors are always the current
     ones. A run task's latest publication that has not taken over says
     where it stands (`pipelines.checks`). Needs the observer role at the
-    task. Where its results stand is read afresh (`published.results_state`).
+    task. Where its results stand is read afresh (`results.state_of`).
     """
     require(organiser, task_scope(task), Role.OBSERVER)
     head = await ctx.forge.content.list_files(organiser.identity, task)
@@ -268,15 +269,15 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
     written = token is not None and await published.statement_written_at(
         ctx, task, head.version, token
     )
-    results = await published.results_state(ctx, task)
+    results_now = await results.state_of(ctx, task)
     if latest is not None and latest.version == head.version:
-        return TaskState(head.version, latest, False, (), written, written, results)
+        return TaskState(head.version, latest, False, (), written, written, results_now)
     checked = await publications.check(ctx, organiser.identity, task, head, {})
     published_written = latest is not None and await published.statement_written_at(
         ctx, task, latest.version, latest.id
     )
     return TaskState(
-        head.version, latest, True, checked.errors, published_written, written, results
+        head.version, latest, True, checked.errors, published_written, written, results_now
     )
 
 

@@ -34,7 +34,7 @@ from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import entrants, gradings, landing, publications, results, steps, tasks
 from forge.services.publications import Draft, Published
-from forge.services.published import ResultsState
+from forge.services.results import ResultsState
 from forge.testing import FakeClock
 from tests.services.conftest import SPRING, Acme, Entered
 from tests.services.test_pipelines import (
@@ -141,9 +141,9 @@ async def test_each_action_is_kept_with_who_and_when_and_one_that_changes_nothin
     state = (await tasks.state(setup, acme.ada, islands.task)).results
     assert state == hidden
     assert not state.released
-    assert [(each.action, each.by, each.at) for each in state.history] == [
-        ("released", 7, first),
-        ("hidden_again", 7, first + timedelta(minutes=2)),
+    assert [(each.action, each.by, each.by_name, each.at) for each in state.history] == [
+        ("released", 7, "ada", first),
+        ("hidden_again", 7, "ada", first + timedelta(minutes=2)),
     ]
 
 

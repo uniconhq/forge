@@ -11,7 +11,7 @@ an extension is allowed again. A grading already made keeps the split it
 was made with, so neither action grades anything again.
 
 Each action is a `releases` row with who and when, never changed or
-deleted, and the latest row is the task's state (`published.results_state`).
+deleted, and the latest row is the task's state (`state_of`).
 An action that would not change the state adds no row and answers the state
 as it is. Each asks first: sent without its confirmation, it changes nothing
 and answers, as `ConfirmationRequired`, the words to show. Only a manager or
@@ -19,7 +19,11 @@ admin of the task does either, a role at its contest or org included. Each
 nudges the task's entrants, so an open page reads again.
 """
 
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Final
+
+from sqlalchemy import select
 
 from forge.db.tables import Release
 from forge.db.tables.releases import HIDDEN_AGAIN, RELEASED
@@ -31,9 +35,9 @@ from forge.domain.roles import Role, contest_id_of, task_scope
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import published, timelines
+from forge.services import entrants, published, timelines
 from forge.services.access import Organiser, require
-from forge.services.published import PublishedTask, ResultsState
+from forge.services.published import PublishedTask
 
 log = get_logger(__name__)
 
@@ -47,6 +51,46 @@ NOT_A_RUN_TASK: Final = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class ResultsAction:
+    """One staff action on a task's results: `released` or `hidden_again`,
+    by whom, by user id and `by_name`, their username, none when the forge
+    does not say, and when.
+    """
+
+    action: str
+    by: int
+    by_name: str | None
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ResultsState:
+    """Where a task's results stand: whether they are released now, and
+    every release and take-back, oldest first.
+    """
+
+    released: bool
+    history: tuple[ResultsAction, ...]
+
+
+async def state_of(ctx: Context, task: TaskId) -> ResultsState:
+    """Where the task's results stand now, read afresh: released when its
+    latest action is a release (`published.results_released` reads the
+    same).
+    """
+    rows = (
+        await ctx.db.execute(
+            select(Release).where(Release.task_id == task).order_by(Release.acted_at, Release.id)
+        )
+    ).scalars()
+    history: list[ResultsAction] = []
+    for row in rows.all():
+        name = await entrants.username_of(ctx, row.acted_by) or None
+        history.append(ResultsAction(row.action, row.acted_by, name, row.acted_at))
+    return ResultsState(bool(history) and history[-1].action == RELEASED, tuple(history))
+
+
 @action
 async def release(
     ctx: Context, organiser: Organiser, task: TaskId, *, confirmed: bool = False
@@ -58,7 +102,7 @@ async def release(
     it stands, with no row added.
     """
     found = await _held(ctx, organiser, task)
-    state = await published.results_state(ctx, task)
+    state = await state_of(ctx, task)
     if state.released:
         return state
     if not confirmed:
@@ -76,7 +120,7 @@ async def hide_again(
     not released is answered as it stands, with no row added.
     """
     found = await _held(ctx, organiser, task)
-    state = await published.results_state(ctx, task)
+    state = await state_of(ctx, task)
     if not state.released:
         return state
     if not confirmed:
@@ -113,7 +157,7 @@ async def _act(ctx: Context, organiser: Organiser, found: PublishedTask, act: st
         )
     )
     log.info("results.acted", task=found.id, action=act, by=organiser.user.id)
-    return await published.results_state(ctx, found.id)
+    return await state_of(ctx, found.id)
 
 
 async def _visible(ctx: Context, contest: ContestId, task: TaskId) -> bool:
@@ -144,4 +188,12 @@ def _release_words(found: PublishedTask) -> str:
     )
 
 
-__all__ = ["NOT_A_RUN_TASK", "TAKE_BACK_WARNING", "hide_again", "release"]
+__all__ = [
+    "NOT_A_RUN_TASK",
+    "TAKE_BACK_WARNING",
+    "ResultsAction",
+    "ResultsState",
+    "hide_again",
+    "release",
+    "state_of",
+]
