@@ -780,7 +780,8 @@ def changed(ctx: Context, row: Grading, *, organisers_only: bool = False) -> Non
     (`organisers_only`): a per-test step reports it once a test, hidden ones
     too, so a nudge to the row on each would count and time a hidden
     group's tests (TASK-FORMAT.md section 3.5). So does every move of a run
-    task's late or save row, which no entrant is told of (11.8).
+    task's late or save row, which no entrant is told of (11.8), but for a
+    late row's end once its task has revealed (`told_late`).
     """
     owner = (
         None
@@ -793,6 +794,24 @@ def changed(ctx: Context, row: Grading, *, organisers_only: bool = False) -> Non
             str(row.id),
             entrant=str(owner.entrant_id) if owner is not None else None,
             scope=task_scope(TaskId(row.task_id)),
+        )
+    )
+
+
+def told_late(ctx: Context, late: Grading) -> None:
+    """Nudge the members of the entrant whose submission a late row grades
+    that their grading moved, by its early row, the grading they know, once
+    the unit of work commits. Only once the task has revealed, which the
+    caller checks: from then on their result reads the late row
+    (`submissions`), and before it no entrant hears of one (`changed`).
+    """
+    owner = ctx.forge.workspaces.owner_of(WorkspaceId(late.workspace_id))
+    ctx.nudge(
+        Nudge(
+            NudgeKind.GRADING,
+            str(late.early_id),
+            entrant=str(owner.entrant_id),
+            scope=task_scope(TaskId(late.task_id)),
         )
     )
 

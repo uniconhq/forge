@@ -35,12 +35,14 @@ label picks a machine for a whole pipeline.
 `concluded` follows a row's report: a `system_error` is tried again once by
 itself as any row is (`gradings.notice`); an early row that ends `done`
 makes its late row, started in the background, so the report waits for no
-start; and a save row that ends `done` with every run accepted lets its
-publication take over (`published.live`). Grading the task's submissions
-again, when that publication changed how the task grades, runs in the
-background too (`take_over`); until it has, the row's `taken_over_at` is
-empty, and the next save of the task or organiser's read of it finishes it,
-so a take-over whose work failed or never ran is not lost.
+start; a late row that ends once its task has revealed is told to its
+entrant, whose result reads it then; and a save row that ends `done` with
+every run accepted lets its publication take over (`published.live`).
+Grading the task's submissions again, when that publication changed how the
+task grades, runs in the background too (`take_over`); until it has, the
+row's `taken_over_at` is empty, and the next save of the task or
+organiser's read of it finishes it, so a take-over whose work failed or
+never ran is not lost.
 
 `checks` reads a task's save rows for its organisers: where each
 publication not yet taken over stands (`Check`), the lost check and the
@@ -59,7 +61,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from forge.db.tables import Grading, GradingStep
-from forge.db.tables.gradings import EARLY, PASSED, SAVE
+from forge.db.tables.gradings import EARLY, LATE, PASSED, SAVE
 from forge.domain import exact_json
 from forge.domain.errors import CiRequestRefused, Misconfigured, NotFound, PortError, Unavailable
 from forge.domain.grading import (
@@ -76,11 +78,12 @@ from forge.domain.ids import OrgId, PublicationId, SubmissionId, TaskId, Version
 from forge.domain.plans import PLAN_PATH
 from forge.domain.publications import Check, Publication
 from forge.domain.regrades import RegradeCause
+from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.run_plan import BOXED, PipelineKind, RunPlan
 from forge.domain.step_data import REPORT_STEP, all_accepted, runs_of, without
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import gradings, published, steps, timelines
+from forge.services import gradings, names, published, steps, timelines
 
 log = get_logger(__name__)
 
@@ -224,9 +227,12 @@ async def concluded(ctx: Context, row: Grading) -> None:
     """What follows a row that has just been concluded, in the unit of work
     that concluded it: its retry by itself for a `system_error`, the late
     row for an early row `done`, and the publication taking over for a
-    save row `done` with every run accepted.
+    save row `done` with every run accepted; and for a late row once its
+    task has revealed, a nudge to its entrant, whose result reads it then.
     """
     status = GradingStatus(row.status)
+    if row.pipeline == LATE and await _revealed(ctx, TaskId(row.task_id)):
+        gradings.told_late(ctx, row)
     if status is GradingStatus.SYSTEM_ERROR:
         await gradings.notice(ctx, [row])
         return
@@ -243,6 +249,23 @@ async def concluded(ctx: Context, row: Grading) -> None:
             )
     elif row.pipeline == SAVE and accepted(row):
         _take_over_later(ctx, TaskId(row.task_id))
+
+
+async def _revealed(ctx: Context, task: TaskId) -> bool:
+    """Whether the task has closed for every row of its contest, read as
+    an entrant's result reads it; a contest or task that does not read has
+    not."""
+    contest = contest_id_of(task_scope(task))
+    name = (await names.names_of(ctx, [task])).get(task)
+    if name is None:
+        return False
+    try:
+        settings = await published.contest(ctx, contest)
+    except PortError as exc:
+        log.warning("pipelines.reveal_unread", task=task, error=type(exc).__name__)
+        return False
+    reveal = await timelines.reveal(ctx, contest, settings, name)
+    return reveal is not None and ctx.now >= reveal
 
 
 def accepted(row: Grading) -> bool:

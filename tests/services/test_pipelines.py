@@ -6,7 +6,7 @@ one the rest, made only once the early one ends `done`; an early compile
 error gives every late run its verdict with no late pipeline; an early
 `system_error` is retried once and makes no late row, nor does a cancel;
 a late one is retried once, lost or failed, found so by its entrant's
-read, and told to no entrant; a regrade stops a late row of the grading
+read, and told to no entrant until the reveal; a regrade stops a late row of the grading
 it replaces, and a late row that failed is not tried again once a regrade
 replaced its early row; a late row reads what its early row read, and reuses as it
 did; an upload is linked only when the submission took it; a task with
@@ -49,11 +49,13 @@ from forge.domain.grading import (
 from forge.domain.identity import PLATFORM, AsOrgAccount
 from forge.domain.ids import OrgId, RunId
 from forge.domain.keys import key_from_name
+from forge.domain.live import Nudge
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.run_plan import PipelineKind
 from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
+from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import (
     gradings,
@@ -336,6 +338,39 @@ async def test_the_entrant_reads_the_runs_of_the_groups_shown_now_and_after_the_
     ]
     # No entry of show lists tests/, so a run's key never names its files.
     assert [run["key"] for run in grading.runs[4:]] == [{}, {}]
+
+
+async def test_a_late_row_that_ends_is_told_to_its_entrant_only_after_the_reveal(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme)
+    await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    await _early(setup, acme, early.id)
+    # The same code again, its early steps reused, and its late ones too
+    # once the first's have run.
+    await _submit(setup, acme, islands, user=9)
+    first, second = await _rows(setup, "late")
+    told: list[Nudge] = []
+    nudge = Context.nudge
+
+    def heard(ctx: Context, made: Nudge) -> None:
+        told.append(made)
+        nudge(ctx, made)
+
+    monkeypatch.setattr(Context, "nudge", heard)
+
+    async def reported(late: Grading) -> list[tuple[str, bool]]:
+        told.clear()
+        assert await _report(setup, late.id, "late") is GradingStatus.DONE
+        return [(each.id, each.entrant is not None) for each in told]
+
+    await _step(setup, acme, first.id, "late", "solution", _batch())
+    await _step(setup, acme, first.id, "late", "compare", _batch(score=True))
+    assert await reported(first) == [(str(first.id), False)]
+    clock.set(AFTER_CLOSE)
+    assert await reported(second) == [(str(second.id), False), (str(second.early_id), True)]
 
 
 VALUES_ONLY = (
