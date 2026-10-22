@@ -34,7 +34,7 @@ shown `now` reading `compiled` makes the compile early even when no run is.
 yet, so `RunTask.early` takes whether the task is released. A report is
 self-reported when an entrant input reaches the program that wrote it, and
 the run's `verdict` and `passed` when one reaches a program given a
-manifest (#504, open 46).
+manifest (#504).
 """
 
 import itertools
@@ -401,7 +401,8 @@ SHOWN_RUN = ("verdict", "passed", "reports")
 """What an entrant sees of a run's result beside its place and key: its
 verdict, `passed`, and the numbers its steps reported. Its texts, label and
 message are references to stored outputs, which no entrant's route reads
-yet (open 114)."""
+yet: a reused output may be another entrant's of the same org, so such a
+route shows only the named output, nothing else of its grading."""
 
 
 def runs_shown(

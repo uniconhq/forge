@@ -45,7 +45,7 @@ jobs:
       # compile's own. They fail in CI when a checkout is missing, so the
       # repos sit beside each other the way they do on a laptop. Until the
       # stage ships and is tagged (#513), every one is the branch this one
-      # is built with; each moves to the tag Kenny makes then.
+      # is built with; each moves to the release tag made then.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: forge

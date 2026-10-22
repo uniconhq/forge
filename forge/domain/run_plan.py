@@ -25,7 +25,8 @@ step done once, one per step of a primitive that takes a batch holding the
 pipeline's runs of it in run order, and one per run of any other step, each
 with `depends_on` from the wiring and the container's limits, time summed
 over its runs and the rest the most of any, memory with room for the files
-`exec` and `interact` copy into their boxes (open 62).
+`exec` and `interact` copy into their boxes, since the container holds
+what a step copies.
 
 A step is tainted (11.4) when it runs the entrant's code and gets, directly
 or through earlier steps, a file entrants are not shown during the contest
@@ -506,7 +507,7 @@ def plan_runs(
     `task_files` and `workflow_files` hold the facts of every file
     `files_named` names, each folder's files each by itself; `machine` is
     the largest a step may take. The task is read before any release, which
-    the forge has no action for yet (open 10).
+    the forge has no action for yet.
     """
     assert definition.scoring is not None, "a run task has scoring once it is checked"
     planner = _Planner(
