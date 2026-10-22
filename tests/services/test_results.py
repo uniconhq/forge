@@ -4,8 +4,8 @@ lists is shown to entrants, its values, runs and files, only while the
 results are released; a take-back warns before it hides; each action is a
 row with who and when, added only when it changes the state; gradings
 made while released take the split that runs `on_release` early, and a
-grading keeps the split it was made with; an extension is refused while
-released and allowed after a take-back; a save may not drop what a
+grading keeps the split it was made with; an extension, or a later close,
+is refused while released and allowed after a take-back; a save may not drop what a
 release shows while it stands, nor have a name shown during the contest
 read fewer runs; and only a manager or admin of the task acts.
 """
@@ -19,6 +19,7 @@ from sqlalchemy import select
 from forge.db.tables import Grading
 from forge.db.tables.entrants import Entrant
 from forge.domain.content import Edit
+from forge.domain.definitions import ContestDefinition, parse_contest
 from forge.domain.errors import (
     ConfirmationRequired,
     Forbidden,
@@ -32,7 +33,16 @@ from forge.domain.live import Nudge, NudgeKind
 from forge.domain.roles import Role, Scope, task_scope
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
-from forge.services import entrants, gradings, landing, publications, results, steps, tasks
+from forge.services import (
+    entrants,
+    gradings,
+    landing,
+    publications,
+    results,
+    steps,
+    tasks,
+    timelines,
+)
 from forge.services.publications import Draft, Published
 from forge.services.results import ResultsState
 from forge.testing import FakeClock
@@ -40,6 +50,7 @@ from tests.services.conftest import SPRING, Acme, Entered
 from tests.services.test_pipelines import (
     BEFORE_CLOSE,
     ISLANDS,
+    LIVE,
     _checked,
     _early,
     _graded_both,
@@ -305,3 +316,31 @@ async def test_a_group_shown_during_the_contest_may_not_later_read_fewer_runs(
         "has, and it would now read 1 fewer. What they have been shown cannot be hidden again, "
         "so keep those runs in it.",
     ) in found
+
+
+async def test_a_task_whose_results_are_released_may_not_close_later(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme, RELEASING)
+
+    def settings(minute: int) -> ContestDefinition:
+        entry = f"  - {{id: islands, closes: 2026-09-26T14:{minute}:00Z}}\n"
+        return parse_contest(LIVE.replace("  - id: sum\n", "").replace("  - id: islands\n", entry))
+
+    async def problems() -> list[tuple[str, str]]:
+        async with setup.unit_of_work() as ctx:
+            found = await timelines.check_contest(ctx, SPRING, settings(55), settings(58))
+        return [(each["path"], each["message"]) for each in found]
+
+    assert await problems() == []
+    await _release(setup, acme, islands.task)
+    assert await problems() == [
+        (
+            "tasks[0].closes",
+            "islands's results are released, so a later closing time would let entrants submit "
+            "knowing them.",
+        )
+    ]
+    await _hide(setup, acme, islands.task)
+    assert await problems() == []

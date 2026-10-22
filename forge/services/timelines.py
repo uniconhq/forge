@@ -222,7 +222,8 @@ async def check_contest(
 ) -> list[Problem]:
     """C1 across files and C2 for a contest save from `before` to `after`,
     each problem at its path in `contest.yaml`; a dropped entry's at
-    `tasks`, since the file no longer has a line for it.
+    `tasks`, since the file no longer has a line for it. A task whose
+    results are released now may not close later, as after its reveal.
     """
     listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
     tasks = {each.name: TaskId(each.id) for each in listed}
@@ -265,6 +266,22 @@ async def check_contest(
         ):
             at = path if path in ("start", "end") else f"tasks[{index}].{path}"
             problems.append(Problem(path=at, message=message))
+        task = tasks.get(entry.id)
+        closes = f"tasks[{index}].closes" if entry.closes is not None else "end"
+        if (
+            old is not None
+            and task is not None
+            and after.closes_of(entry) > max(before.closes_of(old), ctx.now)
+            and not any(problem["path"] == closes for problem in problems)
+            and await published.results_released(ctx, task)
+        ):
+            problems.append(
+                Problem(
+                    path=closes,
+                    message=f"{entry.id}'s results are released, so a later closing time "
+                    "would let entrants submit knowing them.",
+                )
+            )
     return problems
 
 
