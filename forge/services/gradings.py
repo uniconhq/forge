@@ -499,6 +499,9 @@ async def start(ctx: Context, grading: uuid.UUID) -> None:
         return
     try:
         spec = spec_of(ctx, await plan_of(ctx, run))
+    except pipelines.ImageWithdrawn as exc:
+        await _not_started(ctx, grading, exc, str(exc))
+        return
     except (NotFound, Forbidden, ValidationError) as exc:
         # Refused as the CI refused a run whose plan its question could not
         # be answered from, before the plan was read at the start.
@@ -753,8 +756,12 @@ async def plan_of(ctx: Context, run: GradingRun) -> Plan:
 
 def spec_of(ctx: Context, plan: Plan) -> RunSpec:
     """What a run of `plan` runs: the harness image it names and the
-    platform's clone image.
+    platform's clone image. `ImageWithdrawn` when a step of the plan runs
+    an image the platform has withdrawn, which the harness would run.
     """
+    for step in plan.steps:
+        if ctx.settings.withdraws(step.image):
+            raise pipelines.ImageWithdrawn(pipelines.WITHDRAWN.format(image=step.image))
     return RunSpec(harness_image=plan.harness_image, clone_image=ctx.settings.clone_image)
 
 

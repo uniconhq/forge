@@ -48,7 +48,7 @@ async def declaration(
                     f"The primitive {use} is written in an older form that Unicon no longer "
                     f"reads. Use a later version of it. {invalid.detail}"
                 )
-            if found.image in ctx.settings.withdrawn_images:
+            if ctx.settings.withdraws(found.image):
                 return None, WITHDRAWN.format(use=use)
             return found, None
     try:

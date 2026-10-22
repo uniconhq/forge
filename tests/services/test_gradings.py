@@ -82,7 +82,15 @@ from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import gradings, org_accounts, publications, reconcile, runs, submissions
+from forge.services import (
+    gradings,
+    org_accounts,
+    pipelines,
+    publications,
+    reconcile,
+    runs,
+    submissions,
+)
 from forge.services.access import Organiser
 from forge.testing import FakeClock, logged
 from tests.services.conftest import (
@@ -529,6 +537,39 @@ async def test_the_extension_refuses_a_grading_asked_about_for_another_task(
 
     with pytest.raises(CiRequestRefused):
         await runs.config(setup, request)
+
+
+async def test_a_plan_whose_step_runs_a_withdrawn_image_is_neither_answered_nor_started(
+    setup: Setup,
+    acme: Acme,
+    entered: Entered,
+    clock: FakeClock,
+    unstarted: Start,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On the harness too: the extension answers no run for it, and its
+    start ends in `system_error` saying which image."""
+    row = await _submit(setup, acme, entered)
+    variables = await _variables(setup, row)
+    async with setup.unit_of_work() as ctx:
+        [publication] = await ctx.forge.workspaces.list_publications(entered.task)
+        found = await ctx.forge.content.read_file(
+            PLATFORM, entered.task, PLAN_PATH, at=publication.version
+        )
+    image = Plan.from_bytes(found.content).steps[0].image
+    withdrawn = setup.settings.model_copy(update={"withdrawn_images": frozenset({image})})
+    monkeypatch.setattr(setup, "_settings", withdrawn)
+
+    with pytest.raises(CiRequestRefused):
+        await runs.config(
+            setup, acme.fake.grading.config_request(entered.task, variables, now=clock.now())
+        )
+    await unstarted(setup, row)
+
+    after = await _row(setup, row.id)
+    assert (after.status, after.run_id) == (GradingStatus.SYSTEM_ERROR, None)
+    assert after.error == pipelines.WITHDRAWN.format(image=image)
+    assert acme.fake.calls_to("start_run") == []
 
 
 async def test_the_extension_refuses_a_grading_whose_run_was_started_already(

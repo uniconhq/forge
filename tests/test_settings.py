@@ -427,6 +427,9 @@ def test_withdrawn_images_are_listed_by_digest_comma_separated(
     assert load_settings().withdrawn_images == frozenset()
     monkeypatch.setenv("UNICON_WITHDRAWN_IMAGES", f"{first}, {second}")
     assert load_settings().withdrawn_images == {first, second}
+    assert load_settings().withdraws("mirror.example/exec:v2@sha256:" + "a" * 64)
+    assert not load_settings().withdraws("ghcr.io/uniconhq/primitive-exec@sha256:" + "c" * 64)
+    assert not load_settings().withdraws("ghcr.io/uniconhq/primitive-exec:v2")
 
     monkeypatch.setenv("UNICON_WITHDRAWN_IMAGES", "ghcr.io/uniconhq/primitive-exec:v1")
     with pytest.raises(SystemExit):

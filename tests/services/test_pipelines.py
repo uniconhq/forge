@@ -664,16 +664,19 @@ async def test_a_row_with_nothing_to_run_ends_without_the_platforms_images(
 async def test_a_withdrawn_image_ends_a_start_saying_so_and_refuses_a_save(
     setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Withdrawn by its digest, though under another registry's name and
+    with a tag beside it: every step whose image has that digest is."""
     islands = await _checked(setup, acme)
     await _submit(setup, acme, islands)
     [first] = await _rows(setup, "early")
     async with setup.unit_of_work() as ctx:
         plan, _ = await steps.plan_of(ctx, first)
     image = plan.steps["compile"].image
+    renamed = "mirror.example/compile:v1@" + image.partition("@")[2]
     monkeypatch.setattr(
         setup,
         "_settings",
-        setup.settings.model_copy(update={"withdrawn_images": frozenset({image})}),
+        setup.settings.model_copy(update={"withdrawn_images": frozenset({renamed})}),
     )
 
     await _submit(setup, acme, islands, user=9)
@@ -690,10 +693,15 @@ async def test_a_withdrawn_image_ends_a_start_saying_so_and_refuses_a_save(
         confirm=True,
     )
     assert isinstance(saved, Draft)
-    assert [problem["message"] for problem in saved.errors] == [
+    messages = [problem["message"] for problem in saved.errors]
+    assert messages[0] == (
         "In the workflow unicon/islands@v1, the step compile cannot run: "
         + primitives.WITHDRAWN.format(use=plan.steps["compile"].primitive)
-    ]
+    )
+    same = {step.primitive for step in plan.steps.values() if step.image.endswith(image[-64:])}
+    assert {
+        message.partition("The primitive ")[2].partition(" ")[0] for message in messages
+    } == same
 
 
 async def test_each_row_running_has_a_user_of_its_own(

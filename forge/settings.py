@@ -281,10 +281,11 @@ class Settings(BaseSettings):
     placeholder for each unless given. `withdrawn_images`, by digest and
     comma separated, are images no step may run any more, such as an
     `exec` or `interact` image found with a fault in its walls, dropped at
-    once rather than kept while a publication names it: a save whose
-    primitive names one is refused, and a run task's grading whose steps
-    run one ends in `system_error` saying so, graded again once the task
-    is saved with a fixed version. The deployment leaves them out of the
+    once rather than kept while a publication names it, each matched by
+    its digest under any name (`withdraws`): a save whose primitive names
+    one is refused, and a grading whose steps run one, a run task's or one
+    on the harness, ends in `system_error` saying so, graded again once
+    the task is saved with a fixed version. The deployment leaves them out of the
     images the CI lets run privileged too. `slot_sizes` are the sizes of
     the grading machines' slots, `<name>:<memory MB>` comma separated, from
     deploy's one table of them, required with `forgejo`: a run task's step
@@ -526,6 +527,13 @@ class Settings(BaseSettings):
     @classmethod
     def _thirty_two_bytes_base64url(cls, value: SecretStr) -> SecretStr:
         return require_key(value)
+
+    def withdraws(self, image: str) -> bool:
+        """Whether `image` is one of `withdrawn_images`, matched by its
+        digest whatever name it is under, a registry's or a tag's beside
+        it: the digest is what is run."""
+        digest = image.partition("@")[2]
+        return bool(digest) and digest in {each.partition("@")[2] for each in self.withdrawn_images}
 
     @property
     def token_encryption_key_bytes(self) -> bytes:

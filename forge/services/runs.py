@@ -166,7 +166,7 @@ async def config(ctx: Context, request: InboundRequest) -> InboundAnswer:
 async def _starting(ctx: Context, grading: str | None, task: TaskId) -> tuple[GradingRun, RunSpec]:
     """The platform's half of what decides a run: the run and what it runs,
     for a grading of `task` whose run is being started. `CiRequestRefused`
-    for any other.
+    for any other, and for one whose plan runs a withdrawn image.
     """
     row = await _named(ctx, grading)
     if row is None or row.task_id != task:
@@ -180,7 +180,11 @@ async def _starting(ctx: Context, grading: str | None, task: TaskId) -> tuple[Gr
         plan = await _plan(ctx, row, run, CiRequestRefused(REFUSED))
     except Unavailable as exc:
         raise _ForgeDown(exc) from None
-    return run, gradings.spec_of(ctx, plan)
+    try:
+        return run, gradings.spec_of(ctx, plan)
+    except pipelines.ImageWithdrawn:
+        log.warning("runs.config_refused", reason="withdrawn", grading=str(row.id))
+        raise CiRequestRefused(REFUSED) from None
 
 
 @action

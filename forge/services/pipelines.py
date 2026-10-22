@@ -108,7 +108,7 @@ REPORT_MODE = "report"
 
 
 WITHDRAWN = (
-    "A step of this run task runs {image}, an image the platform has withdrawn. Its "
+    "A step of this task runs {image}, an image the platform has withdrawn. Its "
     "gradings run again once the task is saved with a version that has a fixed image."
 )
 
@@ -118,7 +118,8 @@ class NoImage(Misconfigured):
 
 
 class ImageWithdrawn(Misconfigured):
-    """A step left to run names an image the platform has withdrawn."""
+    """A step left to run names an image the platform has withdrawn, a run
+    task's or one the harness runs (`gradings.spec_of`)."""
 
 
 async def planned(ctx: Context, row: Grading) -> bool:
@@ -169,7 +170,7 @@ async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
     plan, _ = await steps.plan_of(ctx, row)
     for held_step in left:
         image = plan.steps[held_step.step].image
-        if image in ctx.settings.withdrawn_images:
+        if ctx.settings.withdraws(image):
             raise ImageWithdrawn(WITHDRAWN.format(image=image))
     for held_step in left:
         await steps.mint(ctx, row, pipeline=pipeline, step=held_step.name, from_scratch=scratch)
@@ -215,7 +216,7 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
     boxed = False
     for each in left:
         step = plan.steps[each.step]
-        if step.image in ctx.settings.withdrawn_images:
+        if ctx.settings.withdraws(step.image):
             log.warning("pipelines.config_refused", reason="withdrawn", grading=grading)
             raise CiRequestRefused(REFUSED)
         in_boxes = step.primitive.partition("@")[0] in BOXED
