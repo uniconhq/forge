@@ -965,7 +965,8 @@ async def _runs(
     (`runs_shown`, 9.4), so a group moved to `now` shows its runs even
     where they ran late. Before the reveal the late row is told to no
     entrant; after it, while that attempt has no result, the grading is
-    told as where it stands, `grading` or `delayed`. Organisers read every
+    told as where it stands, `grading` or `delayed`; and with no early run,
+    it is told as `submitted` until the reveal. Organisers read every
     run of both rows, each as the group `all` with its id and whole key,
     and where each row stands in the gradings routes. The values a task's
     scoring makes from the runs are stage 5's.
@@ -984,6 +985,8 @@ async def _runs(
         .limit(1)
     )
     revealed = reveal_at is not None and ctx.now >= reveal_at
+    if not runs and not revealed and not everything:
+        state = SubmissionState.SUBMITTED
     if late is not None:
         if late.status == GradingStatus.DONE and late.result is not None:
             runs += late.result["runs"]

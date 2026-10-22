@@ -6,11 +6,12 @@ one the rest, made only once the early one ends `done`; an early compile
 error gives every late run its verdict with no late pipeline; an early
 `system_error` is retried once and makes no late row, nor does a cancel;
 a late one is retried once, lost or failed, found so by its entrant's
-read, and told to no entrant until the reveal; a regrade stops a late row of the grading
-it replaces, and a late row that failed is not tried again once a regrade
-replaced its early row; a late row reads what its early row read, and reuses as it
-did; an upload is linked only when the submission took it; a task with
-nothing early makes its late row at once, with or without the platform's
+read, and told to no entrant until the reveal; a regrade stops a late
+row of the grading it replaces, and a late row that failed is not tried
+again once a regrade replaced its early row; a late row reads what its
+early row read, and reuses as it did; an upload is linked only when the
+submission took it; a task with nothing early makes its late row at
+once, told as submitted until the reveal, with or without the platform's
 images; each row has a user of its own, and takes one a lost row held; a
 save is checked by a pipeline of its own before it takes over, compared
 with the publication entrants are graded on, and one whose checker does
@@ -614,8 +615,9 @@ async def test_a_pointer_to_an_upload_the_submission_did_not_take_is_given_no_li
 
 
 async def test_a_task_with_nothing_early_makes_its_late_row_at_once(
-    setup: Setup, acme: Acme, spring: str, asked: list[dict[str, Any]]
+    setup: Setup, acme: Acme, spring: str, asked: list[dict[str, Any]], clock: FakeClock
 ) -> None:
+    clock.set(BEFORE_CLOSE)
     islands = await _checked(setup, acme, NOTHING_EARLY)
     session = await _submit(setup, acme, islands)
 
@@ -625,7 +627,10 @@ async def test_a_task_with_nothing_early_makes_its_late_row_at_once(
     [late] = await _rows(setup, "late")
     assert (late.early_id, late.status) == (early.id, GradingStatus.DISPATCHED)
     assert [step[0] for step in _steps(asked[-1])] == ["compile", "solution", "compare", "report"]
-    assert await _seen(setup, session, islands) == [(1, SubmissionState.GRADED)]
+    # Submitted, results after the contest: not graded, with nothing run.
+    assert await _seen(setup, session, islands) == [(1, SubmissionState.SUBMITTED)]
+    clock.set(AFTER_CLOSE)
+    assert await _seen(setup, session, islands) == [(1, SubmissionState.GRADING)]
 
 
 async def test_a_row_with_nothing_to_run_ends_without_the_platforms_images(

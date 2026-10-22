@@ -169,12 +169,16 @@ class SubmissionState(StrEnum):
     `graded` once it has a result, `delayed` while it has none and its
     latest attempt failed for a reason of the platform's, `over_limit` once
     it was to be graded again and its entrant had no room left under the
-    task's `submissions.max`, and `cancelled` once staff ended it.
+    task's `submissions.max`, and `cancelled` once staff ended it. A run
+    task's submission with no run shown during the contest is `submitted`
+    once graded and until the task reveals, which a page words "Submitted,
+    results after the contest", since `graded` would read as nothing run.
     """
 
     QUEUED = "queued"
     GRADING = "grading"
     GRADED = "graded"
+    SUBMITTED = "submitted"
     DELAYED = "delayed"
     OVER_LIMIT = "over_limit"
     CANCELLED = "cancelled"
