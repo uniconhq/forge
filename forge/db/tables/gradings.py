@@ -37,7 +37,10 @@ counted per pipeline (its line), a publication's save attempts once each.
 `run_user` is the user the row's steps run as, while it is not finished
 unique among the rows not finished. `taken_over_at` is when a save row that
 passed let its publication take over, the task graded again when that
-changed how it grades; none while that waits.
+changed how it grades; none while that waits. `released_split` says the
+grading takes its plan's released split (`RunPlan.for_split`): its early
+row was made while the task's results were released, and its late row and
+retries keep what their grading was made with.
 """
 
 import uuid
@@ -89,6 +92,7 @@ class Grading(Base, Timestamped):
     publication_id: Mapped[str]
     pipeline: Mapped[str] = mapped_column(server_default=text(f"'{EARLY}'"))
     early_id: Mapped[uuid.UUID | None]
+    released_split: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     run_user: Mapped[int | None]
     taken_over_at: Mapped[datetime | None]
     attempt: Mapped[int] = mapped_column(server_default=text("1"))

@@ -607,13 +607,16 @@ def _door(ctx: Context, grading: uuid.UUID, step: str) -> str:
 
 
 async def plan_of(ctx: Context, row: Grading) -> tuple[RunPlan, Publication]:
-    """The run plan of the publication the grading grades against."""
+    """The run plan of the publication the grading grades against, as the
+    split the grading was made with lays it out (`RunPlan.for_split`).
+    """
     try:
         publication = await gradings.publication_of(ctx, row)
         found = await ctx.forge.content.read_file(
             PLATFORM, TaskId(row.task_id), PLAN_PATH, at=publication.version
         )
-        return RunPlan.from_bytes(found.content), publication
+        plan = RunPlan.from_bytes(found.content).for_split(row.released_split)
+        return plan, publication
     except (NotFound, ValidationError) as exc:
         raise Misconfigured(f"The grading has no run plan: {type(exc).__name__}") from None
 

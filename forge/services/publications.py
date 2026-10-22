@@ -128,6 +128,7 @@ from forge.domain.definitions import (
     ContestDefinition,
     Group,
     Show,
+    State,
     TaskDefinition,
     admin_only_changes,
     admin_only_refusal,
@@ -184,12 +185,14 @@ from forge.domain.run_task import (
     RunsFile,
     RunTask,
     check_run_task,
+    fewer_runs,
     file_time,
     hidden_again,
     manifest_files,
     most_shown,
     self_reported_question,
     shown_under,
+    unreleased,
 )
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.save_effect import ReadChanges, SaveEffect, as_extra, effect_of
@@ -785,7 +788,7 @@ async def _check_runs(
     )
     problems = [
         *found.problems,
-        *await _shown_before_runs(ctx, task, definition, present),
+        *await _shown_before_runs(ctx, task, definition, present, found.task),
         *await _contest_points(ctx, task, definition),
     ]
     if problems:
@@ -1158,27 +1161,76 @@ async def _shown_before(
 
 
 async def _shown_before_runs(
-    ctx: Context, task: TaskId, definition: TaskDefinition, present: Collection[str]
+    ctx: Context,
+    task: TaskId,
+    definition: TaskDefinition,
+    present: Collection[str],
+    run_task: RunTask | None,
 ) -> builtins.list[Problem]:
-    """T7 for a run task (SIMPLER-CORE.md 9.4 and 16): once the task has a
-    graded submission, what `show` listed under any publication a graded
-    submission ran under is listed as soon, or sooner; a folder it listed
-    stands for the files that publication held under it, each still in
-    `present` shown as soon whichever entry now lists it.
+    """T7 for a run task (SIMPLER-CORE.md 9.4 and 16): what `show` listed
+    under any publication a graded submission ran under, or whose files
+    were served (`_served`), is listed as soon, or sooner; a folder it
+    listed stands for the files that publication held under it, each still
+    in `present` shown as soon whichever entry now lists it. What it listed
+    under `on_release` counts only while the task's results are released,
+    so after a take-back a save may drop it (stage 5 section 6 item 10).
+    And a group or value shown during the contest reads no fewer of the
+    runs the task still has (`fewer_runs`), checked once the task checks
+    (`run_task`).
     """
-    graded = await _graded_under(ctx, task)
-    if not graded or definition.scoring is None:
+    if definition.scoring is None:
         return []
+    publications = await ctx.forge.workspaces.list_publications(task)
+    counted = await _graded_under(ctx, task) | await _served(ctx, task, publications)
+    if not counted:
+        return []
+    released = await published.results_released(ctx, task)
     shown = []
-    for publication in await ctx.forge.workspaces.list_publications(task):
-        if publication.id not in graded:
+    read = []
+    for publication in publications:
+        if publication.id not in counted:
             continue
         found = await _definition_of(ctx, task, publication)
         if found is None or found.scoring is None:
             continue
         held = await ctx.forge.content.list_files(PLATFORM, task, at=publication.version)
-        shown.append(shown_under(found.scoring, held.tokens.keys()))
-    return hidden_again(most_shown(shown), definition.scoring, present)
+        each = shown_under(found.scoring, held.tokens.keys())
+        if not released:
+            each = unreleased(each)
+        shown.append(each)
+        if run_task is not None:
+            runs = await _runs_file_of(ctx, task, publication)
+            if runs is not None:
+                read.append((each, runs.reads))
+    problems = hidden_again(most_shown(shown), definition.scoring, present)
+    if run_task is not None:
+        problems += fewer_runs(read, run_task)
+    return problems
+
+
+async def _served(
+    ctx: Context, task: TaskId, publications: Sequence[Publication]
+) -> builtins.set[str]:
+    """The publications whose files entrants may have been served: each
+    that was the task's own (`published.live`) at some time since its
+    timeline first released it, as the contest's settings read now. A
+    publication's time is from when it was made to when the next one was,
+    which a save row passing later than that only shortens.
+    """
+    contest = await _contest(ctx, task)
+    name = (await names.names_of(ctx, [task])).get(task)
+    entry = contest.entry(name) if contest is not None and name is not None else None
+    if contest is None or entry is None or contest.state is State.DRAFT:
+        return set()
+    opened = max(contest.start, contest.release_of(entry))
+    if opened > ctx.now:
+        return set()
+    own = await published.live(ctx, task, publications)
+    return {
+        each.id
+        for index, each in enumerate(own)
+        if index + 1 == len(own) or own[index + 1].at > opened
+    }
 
 
 async def _groups_of(ctx: Context, task: TaskId, publication: Publication) -> Mapping[str, Group]:

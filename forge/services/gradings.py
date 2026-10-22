@@ -387,6 +387,7 @@ def new_row(
     pipeline: str = EARLY,
     early: uuid.UUID | None = None,
     unwaited: bool = False,
+    released_split: bool = False,
 ) -> Grading:
     """A new `queued` grading, added to the unit of work, with the hash of
     its run's callback token, whose run starts once the unit of work
@@ -398,7 +399,8 @@ def new_row(
     to. With `over_limit`, the task's `submissions.max` its entrant has no
     room left under, it is ended `over_limit` at once instead, and nothing
     runs. A run task's late row names the `early` row it follows, and a
-    save row has no submission.
+    save row has no submission. `released_split` when the grading takes
+    its plan's released split, fixed for the row (`RunPlan.for_split`).
     """
     row = Grading(
         id=new_id(),
@@ -418,6 +420,7 @@ def new_row(
         regrade_id=regrade,
         pipeline=pipeline,
         early_id=early,
+        released_split=released_split,
     )
     row.callback_token_hash = token_hash(callback_token_of(ctx, row))
     ctx.db.add(row)
@@ -674,9 +677,12 @@ def queue_submission(
     key: str | None,
     at: datetime,
     submitted_by: int | None,
+    released_split: bool,
 ) -> Grading:
     """The submission's queued grading, attempt 1, against `publication`,
-    made by the member `submitted_by`, none when that is not known.
+    made by the member `submitted_by`, none when that is not known, taking
+    the released split when the task's results are released now
+    (`released_split`).
     """
     return new_row(
         ctx,
@@ -690,6 +696,7 @@ def queue_submission(
         attempt=1,
         key=key,
         submitted_by=submitted_by,
+        released_split=released_split,
     )
 
 
@@ -808,9 +815,10 @@ def changed(ctx: Context, row: Grading, *, organisers_only: bool = False) -> Non
 def told_late(ctx: Context, late: Grading) -> None:
     """Nudge the members of the entrant whose submission a late row grades
     that their grading moved, by its early row, the grading they know, once
-    the unit of work commits. Only once the task has revealed, which the
-    caller checks: from then on their result reads the late row
-    (`submissions`), and before it no entrant hears of one (`changed`).
+    the unit of work commits. Only once the task has revealed, or while
+    its results are released, which the caller checks: their result then
+    reads the late row (`submissions`), and otherwise no entrant hears of
+    one (`changed`).
     """
     owner = ctx.forge.workspaces.owner_of(WorkspaceId(late.workspace_id))
     ctx.nudge(
@@ -1877,10 +1885,13 @@ def _next_attempt(
     automatic: bool = False,
     regrade: uuid.UUID | None = None,
     over_limit: int | None = None,
+    released_split: bool | None = None,
 ) -> Grading:
     """The next attempt on `row`'s line against `publication`, in the
     regrade `regrade` when given and otherwise in the one `row` belongs to,
-    ended at once over the limit with `over_limit`.
+    ended at once over the limit with `over_limit`, taking the split
+    `released_split` says, and with none, the one `row` took, as a retry
+    does.
     """
     return new_row(
         ctx,
@@ -1899,6 +1910,7 @@ def _next_attempt(
         over_limit=over_limit,
         pipeline=row.pipeline,
         early=row.early_id,
+        released_split=row.released_split if released_split is None else released_split,
     )
 
 
@@ -1943,6 +1955,7 @@ async def follow(ctx: Context, early: Grading) -> Grading | None:
         regrade=early.regrade_id,
         pipeline=LATE,
         early=early.id,
+        released_split=early.released_split,
         unwaited=True,
     )
 
@@ -2092,7 +2105,9 @@ async def regrade(
     makes its late row when it ends `done`, and the store runs again only
     what changed (11.6, 11.8). A late row still unfinished is stopped when
     its submission is graded again or it grades against another
-    publication, so no late row of an old grading runs on.
+    publication, so no late row of an old grading runs on. Each new early
+    row takes the split of the task's results as they stand now
+    (`published.results_released`), and its late row the same.
     """
     # Which runs the CI has lost is asked before any row is locked, since
     # asking takes the CI's time; the task itself is held by the caller.
@@ -2137,6 +2152,7 @@ async def regrade(
     attempts: dict[str, builtins.list[Grading]] = {}
     for row in rows:
         attempts.setdefault(row.submission_id, []).append(row)
+    released = await published.results_released(ctx, task)
     regraded = _regraded(rows)
     refused = _without_room(ctx, regraded, attempts, gone, limit)
     made: builtins.list[tuple[str, Grading]] = []
@@ -2174,7 +2190,13 @@ async def regrade(
                 _cancel_after_commit(ctx, RunId(row.run_id))
         over = limit if submission in refused else None
         _next_attempt(
-            ctx, row, publication, attempts[submission], regrade=recorded.id, over_limit=over
+            ctx,
+            row,
+            publication,
+            attempts[submission],
+            regrade=recorded.id,
+            over_limit=over,
+            released_split=released,
         )
         if over is None:
             queued += 1

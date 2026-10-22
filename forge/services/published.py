@@ -34,8 +34,9 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from forge.db.tables import Grading
+from forge.db.tables import Grading, Release
 from forge.db.tables.gradings import PASSED, SAVE
+from forge.db.tables.releases import RELEASED
 from forge.domain.blocks.evaluate import Column
 from forge.domain.content import check_path
 from forge.domain.definitions import (
@@ -277,16 +278,15 @@ async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
     return await ctx.memo.remembered(key, FORM_KEPT, read)
 
 
-async def runs_at(ctx: Context, task: TaskId, version: VersionId) -> tuple[Run, ...]:
-    """The runs of a run task's publication at `version`, each saying
-    whether its plan runs it early, read once, since a publication never
-    changes."""
+async def plan_at(ctx: Context, task: TaskId, version: VersionId) -> RunPlan:
+    """The plan of a run task's publication at `version`, read once, since
+    a publication never changes."""
 
-    async def read() -> tuple[Run, ...]:
-        found = await ctx.forge.content.read_file(PLATFORM, task, RUNS_PATH, at=version)
-        return RunsFile.from_bytes(found.content).runs
+    async def read() -> RunPlan:
+        found = await ctx.forge.content.read_file(PLATFORM, task, PLAN_PATH, at=version)
+        return RunPlan.from_bytes(found.content)
 
-    return await ctx.memo.remembered(f"published.runs_at.{task}.{version}", FORM_KEPT, read)
+    return await ctx.memo.remembered(f"published.plan_at.{task}.{version}", FORM_KEPT, read)
 
 
 async def form(ctx: Context, published: PublishedTask) -> TaskForm:
@@ -342,6 +342,61 @@ async def statement_written_at(ctx: Context, task: TaskId, version: VersionId, k
 
 
 @dataclass(frozen=True, slots=True)
+class ResultsAction:
+    """One staff action on a task's results (`forge.db.tables.releases`):
+    `released` or `hidden_again`, by whom and when.
+    """
+
+    action: str
+    by: int
+    at: datetime
+
+
+async def results_history(ctx: Context, task: TaskId) -> tuple[ResultsAction, ...]:
+    """Every release of the task's results and every take-back, oldest
+    first, read afresh.
+    """
+    rows = (
+        await ctx.db.execute(
+            select(Release).where(Release.task_id == task).order_by(Release.acted_at, Release.id)
+        )
+    ).scalars()
+    return tuple(ResultsAction(row.action, row.acted_by, row.acted_at) for row in rows)
+
+
+@dataclass(frozen=True, slots=True)
+class ResultsState:
+    """Where a task's results stand: whether they are released now, and
+    every release and take-back, oldest first.
+    """
+
+    released: bool
+    history: tuple[ResultsAction, ...]
+
+
+async def results_state(ctx: Context, task: TaskId) -> ResultsState:
+    """Where the task's results stand now, read afresh."""
+    history = await results_history(ctx, task)
+    return ResultsState(bool(history) and history[-1].action == RELEASED, history)
+
+
+async def results_released(ctx: Context, task: TaskId) -> bool:
+    """Whether the task's results are released now: its latest action a
+    release, never when it has none. Read afresh on every call and never
+    kept, so a take-back hides `on_release` from every reader at once.
+    """
+    latest = (
+        await ctx.db.execute(
+            select(Release.action)
+            .where(Release.task_id == task)
+            .order_by(Release.acted_at.desc(), Release.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return latest == RELEASED
+
+
+@dataclass(frozen=True, slots=True)
 class PublicFile:
     """A file a task shows its readers, as its latest publication, or for an
     organiser its head, holds it: its path in the task and its bytes, an
@@ -365,18 +420,27 @@ def public_path(path: str) -> str:
 
 
 def shown_now(
-    definition: TaskDefinition, path: str, *, reveal: datetime | None, now: datetime
+    definition: TaskDefinition,
+    path: str,
+    *,
+    reveal: datetime | None,
+    now: datetime,
+    released: bool = False,
 ) -> bool:
     """Whether the task shows its readers the file at `path` now: one under
     `public/`; or for a run task, one its `show` lists, or a folder it is in,
-    under `now`, or under `after_close` once the task's reveal has passed.
-    `on_release` shows nothing until a release, which Unicon has no action
-    for yet, and a file no entry lists is never shown.
+    under `now`, under `after_close` once the task's reveal has passed, or
+    under `on_release` while the task's results are `released`. A file no
+    entry lists is never shown.
     """
     if definition.scoring is None:
         return path.startswith(PUBLIC_FOLDER)
     time = file_time(definition.scoring, path)
-    return time == "now" or (time == "after_close" and reveal is not None and reveal <= now)
+    return (
+        time == "now"
+        or (time == "after_close" and reveal is not None and reveal <= now)
+        or (time == "on_release" and released)
+    )
 
 
 async def public_file(
@@ -384,13 +448,22 @@ async def public_file(
 ) -> PublicFile:
     """The file at `path` as the task's latest publication holds it, when
     the task shows it now (`shown_now`, `reveal` being when the task closes
-    for every row, which a run task's `after_close` waits for), read as the
+    for every row, which a run task's `after_close` waits for, and its
+    `on_release` waiting on `results_released`), read as the
     platform, its large-file object's bytes for an upload. The caller has
     checked the reader may read the task and the path with `public_path`.
     `NotFound` for a file not shown or not there, and `PublicFileTooLarge`
     for one over `PUBLIC_MOST` bytes, read no further.
     """
-    if not shown_now(published.definition, path, reveal=reveal, now=ctx.now):
+    scoring = published.definition.scoring
+    # The release is read afresh each time, so a take-back hides the file at
+    # once.
+    released = (
+        scoring is not None
+        and file_time(scoring, path) == "on_release"
+        and await results_released(ctx, published.id)
+    )
+    if not shown_now(published.definition, path, reveal=reveal, now=ctx.now, released=released):
         raise NotFound(NO_SUCH_FILE)
     version = published.publication.version
     await ctx.let_go()

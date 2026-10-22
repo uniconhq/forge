@@ -517,8 +517,10 @@ async def refuse_extension(
     after: Extension,
 ) -> None:
     """`InvalidExtension` when changing a row's extension from `before` to
-    `after` would let it submit to a task whose reveal has passed, or leave
-    one of its submissions after the due or the close it was made before.
+    `after` would let it submit to a task whose reveal has passed or whose
+    results are released now (a take-back allows it again, stage 5 section
+    6 item 10), or leave one of its submissions after the due or the close
+    it was made before.
     """
     listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
     tasks = {each.name: TaskId(each.id) for each in listed}
@@ -531,6 +533,16 @@ async def refuse_extension(
                 raise InvalidExtension(
                     f"{entry.id}'s hidden results were shown on {in_words(revealed)}, so "
                     "extra time on it would let this entrant submit knowing them."
+                )
+            task = tasks.get(entry.id)
+            if (
+                task is not None
+                and close_of(settings, entry, after) > ctx.now
+                and await published.results_released(ctx, task)
+            ):
+                raise InvalidExtension(
+                    f"{entry.id}'s results are released, so extra time on it would let this "
+                    "entrant submit knowing them."
                 )
         for number, at in own.get(entry.id, []):
             made = Made(after, number, at)

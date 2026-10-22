@@ -20,13 +20,16 @@ holds the early runs and, when any run is early, every step done once per
 grading; when none is, but a value shown `now` reads `compiled`, the steps
 done once per grading that can give a compile error and are not tainted,
 with what they read. The late one holds the rest. Steps done at the save are
-a pipeline of their own. Each pipeline lists its Woodpecker steps: one per
-step done once, one per step of a primitive that takes a batch holding the
-pipeline's runs of it in run order, and one per run of any other step, each
-with `depends_on` from the wiring and the container's limits, time summed
-over its runs and the rest the most of any, memory with room for the files
-`exec` and `interact` copy into their boxes, since the container holds
-what a step copies.
+a pipeline of their own. A grading made while the task's results are
+released counts what `on_release` lists as shown during the contest too,
+so the plan holds that split as well, where it differs (`released`), and
+each grading reads the one it was made with (`RunPlan.for_split`). Each
+pipeline lists its Woodpecker steps: one per step done once, one per step
+of a primitive that takes a batch holding the pipeline's runs of it in run
+order, and one per run of any other step, each with `depends_on` from the
+wiring and the container's limits, time summed over its runs and the rest
+the most of any, memory with room for the files `exec` and `interact` copy
+into their boxes, since the container holds what a step copies.
 
 Each pipeline runs in one slot of a grading machine (`Slot`), and the
 steps Woodpecker runs side by side share its memory. So a pipeline is laid
@@ -96,6 +99,8 @@ SCHEMA_VERSION: Literal[6] = 6
 StepClass = Literal["save_once", "save_per_run", "grading_once", "grading_per_run"]
 PipelineKind = Literal["save", "early", "late"]
 PIPELINES: tuple[PipelineKind, ...] = ("save", "early", "late")
+GradingKind = Literal["early", "late"]
+"""The pipelines of a grading, which a release may lay out otherwise."""
 ONCE: tuple[StepClass, ...] = ("save_once", "grading_once")
 CLASS_WORDS: dict[StepClass, str] = {
     "save_once": "once, at the save",
@@ -316,6 +321,16 @@ class PipelineStep(Model):
     limits: StepLimits
 
 
+class ReleasedSplit(Model):
+    """The split a grading takes when it is made while the task's results
+    are released (9.4): the ids of the runs early then, and the early and
+    late pipelines then. The save pipeline is the same either way.
+    """
+
+    early: tuple[RunId, ...]
+    pipelines: dict[GradingKind, tuple[PipelineStep, ...]] = Field(default_factory=dict)
+
+
 class Confirmation(Model):
     """A column the entrant could set, with the entrant inputs that let
     them. The plan lists every one, whether or not its save asked the
@@ -354,6 +369,7 @@ class RunPlan(Model):
     reports: dict[str, ReportEntry]
     notes: tuple[str, ...] = ()
     confirmations: tuple[Confirmation, ...] = ()
+    released: ReleasedSplit | None = None
 
     def to_bytes(self) -> bytes:
         """The plan as the file it is committed as: JSON with sorted keys,
@@ -376,6 +392,29 @@ class RunPlan(Model):
     def pipeline(self, kind: PipelineKind) -> tuple[PipelineStep, ...]:
         """The Woodpecker steps of one pipeline, none when it is left out."""
         return self.pipelines.get(kind, ())
+
+    def for_split(self, released: bool) -> RunPlan:
+        """The plan as a grading made `released` or not reads it: made
+        while the task's results are released, each run early as the
+        released split says and its early and late pipelines; otherwise,
+        or when a release moves nothing, the plan as it is.
+        """
+        split = self.released
+        if not released or split is None:
+            return self
+        early = set(split.early)
+        return self.model_copy(
+            update={
+                "runs": tuple(
+                    run.model_copy(update={"early": run.id in early}) for run in self.runs
+                ),
+                "pipelines": {
+                    **({"save": self.pipelines["save"]} if "save" in self.pipelines else {}),
+                    **split.pipelines,
+                },
+                "released": None,
+            }
+        )
 
     def items_of(self, held: PipelineStep) -> list[tuple[str | None, Inputs]]:
         """The inputs of each run a Woodpecker step holds, in its order, or of
@@ -557,8 +596,10 @@ def plan_runs(
     (`task`) against its workflow resolved at `commit` (`checked`).
     `task_files` and `workflow_files` hold the facts of every file
     `files_named` names, each folder's files each by itself; `machine` is
-    the largest a step may take. The task is read before any release, which
-    the forge has no action for yet.
+    the largest a step may take. The plan holds both splits of a grading
+    (9.4): the one made before any release, and when a release moves
+    anything, the one made while the task's results are released
+    (`RunPlan.released`), each fitted to the machine.
     """
     assert definition.scoring is not None, "a run task has scoring once it is checked"
     planner = _Planner(
@@ -577,9 +618,24 @@ def plan_runs(
     if problems:
         return RunPlanCheck(problems, None)
     pipelines = planner.pipelines()
-    problems = [*planner.fit(pipelines), *planner.refusals()]
+    on_release = planner.pipelines(released=True)
+    fitted = planner.fit(pipelines)
+    problems = [
+        *fitted,
+        *(problem for problem in planner.fit(on_release) if problem not in fitted),
+        *planner.refusals(),
+    ]
     if problems:
         return RunPlanCheck(problems, None)
+    early_released = task.early(released=True)
+    released = (
+        ReleasedSplit(
+            early=tuple(run.id for run in task.runs if run.id in early_released),
+            pipelines={kind: on_release[kind] for kind in ("early", "late") if kind in on_release},
+        )
+        if early_released != task.early() or on_release != pipelines
+        else None
+    )
     plan = RunPlan(
         workflow=PinnedWorkflow(
             ref=ref, id=workflow_id, commit=commit, files=dict(sorted(workflow_files.items()))
@@ -597,6 +653,7 @@ def plan_runs(
             Confirmation(column=column, inputs=tuple(sorted(inputs)))
             for column, inputs in sorted(task.self_reported.items())
         ),
+        released=released,
     )
     broken = violation(exact_json.loads(plan.to_bytes()), "plan")
     if broken is not None:
@@ -964,10 +1021,13 @@ class _Planner:
 
     # Pipelines
 
-    def pipelines(self) -> dict[PipelineKind, tuple[PipelineStep, ...]]:
-        early_runs = tuple(run.id for run in self.task.runs if run.early)
-        late_runs = tuple(run.id for run in self.task.runs if not run.early)
-        early_once = self._early_once(bool(early_runs))
+    def pipelines(self, *, released: bool = False) -> dict[PipelineKind, tuple[PipelineStep, ...]]:
+        """The pipelines of a grading made before any release, or with
+        `released`, of one made while the task's results are released."""
+        early = self.task.early(released=released)
+        early_runs = tuple(run.id for run in self.task.runs if run.id in early)
+        late_runs = tuple(run.id for run in self.task.runs if run.id not in early)
+        early_once = self._early_once(bool(early_runs), released=released)
         held: dict[PipelineKind, list[tuple[str, tuple[str, ...] | None]]] = {
             kind: [] for kind in PIPELINES
         }
@@ -992,7 +1052,7 @@ class _Planner:
                 found[kind] = made
         return found
 
-    def _early_once(self, any_early: bool) -> set[str]:
+    def _early_once(self, any_early: bool, *, released: bool = False) -> set[str]:
         """The steps done once per grading in the early pipeline: every one
         when a run is early, since every run's verdict reads each; when none
         is but a value shown `now` reads `compiled`, those that can give a
@@ -1003,7 +1063,7 @@ class _Planner:
         once = [step.id for step in self.workflow.steps if self.classes[step.id] == "grading_once"]
         if any_early:
             return set(once)
-        if not self.task.compile_early():
+        if not self.task.compile_early(released=released):
             return set()
         found: set[str] = set()
         waiting = self._compilers()
@@ -1466,7 +1526,8 @@ def run_plan_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...
     workflow's version and files, each step added, removed or given other
     inputs, a release moving a primitive's image in place, runs added or
     removed, a task file a step is given, and what is shown during the
-    contest moving which runs are early. Empty for a first publication.
+    contest, before a release or while one stands, moving which runs are
+    early. Empty for a first publication.
     What a regrade reruns is not decided from this list.
     """
     if before is None:
@@ -1512,6 +1573,17 @@ def run_plan_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...
     }
     if moved:
         changes.append("What is shown during the contest moved, so other runs are graded early.")
+    released_before = {run.id: run.early for run in old.for_split(True).runs}
+    released_after = {run.id: run.early for run in new.for_split(True).runs}
+    if not moved and any(
+        released_before[run] != released_after[run]
+        for run in released_before
+        if run in released_after
+    ):
+        changes.append(
+            "What a release shows moved, so a grading made while results are released runs "
+            "other runs early."
+        )
     return tuple(dict.fromkeys(changes))
 
 
@@ -1611,10 +1683,12 @@ __all__ = [
     "FileFact",
     "FilesNamed",
     "FilesRead",
+    "GradingKind",
     "Item",
     "PinnedWorkflow",
     "PipelineKind",
     "PipelineStep",
+    "ReleasedSplit",
     "RunPlan",
     "RunPlanCheck",
     "RunStep",

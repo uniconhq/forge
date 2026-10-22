@@ -267,10 +267,14 @@ async def concluded(ctx: Context, row: Grading) -> None:
     that concluded it: its retry by itself for a `system_error`, the late
     row for an early row `done`, and the publication taking over for a
     save row `done` with every run accepted; and for a late row once its
-    task has revealed, a nudge to its entrant, whose result reads it then.
+    task has revealed, or while its results are released, a nudge to its
+    entrant, whose result reads it then.
     """
     status = GradingStatus(row.status)
-    if row.pipeline == LATE and await _revealed(ctx, TaskId(row.task_id)):
+    task = TaskId(row.task_id)
+    if row.pipeline == LATE and (
+        await _revealed(ctx, task) or await published.results_released(ctx, task)
+    ):
         gradings.told_late(ctx, row)
     if status is GradingStatus.SYSTEM_ERROR:
         await gradings.notice(ctx, [row])

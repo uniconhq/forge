@@ -53,7 +53,6 @@ from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.release import Extension, due_of, late_days
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.run_results import RunGrading, Worked, facts_of, run_grading, worked_out
-from forge.domain.run_task import Run
 from forge.domain.scoring import ONE, Scored, best_of, late_factor, rule_weight, score
 from forge.domain.showing import Graded, under
 from forge.domain.yaml_models import InvalidDefinition
@@ -368,8 +367,8 @@ async def run_scored(
             GradingStatus.OVER_LIMIT,
         )
         late_planned = await _planned(ctx, current, late, held)
-    waits_early = {run.id for run in planned if run.early} if early_failed else set()
-    waits_late = {run.id for run in late_planned if not run.early} if late_waits else set()
+    waits_early = {run for run, first in planned.items() if first} if early_failed else set()
+    waits_late = {run for run, first in late_planned.items() if not first} if late_waits else set()
     entry = settings.entry(current.name)
     due = due_of(settings, entry, extension) if entry is not None else None
 
@@ -392,11 +391,13 @@ async def run_scored(
 
 async def _planned(
     ctx: Context, current: PublishedTask, row: Grading, held: RunsHeld
-) -> tuple[Run, ...]:
-    """The runs of the publication `row` grades against, each saying whether
-    its plan runs it early; the live publication's when that one is gone."""
+) -> dict[str, bool]:
+    """Each run of the publication `row` grades against, by id, with whether
+    its plan runs it early in the split `row` was made with; the live
+    publication's when that one is gone."""
     found = next((each for each in current.publications if each.id == row.publication_id), None)
     if found is None:
         log.warning("scores.publication_gone", task=current.id, publication=row.publication_id)
-        return held.runs
-    return await published.runs_at(ctx, current.id, found.version)
+        return {run.id: run.early for run in held.runs}
+    plan = await published.plan_at(ctx, current.id, found.version)
+    return {run.id: run.early for run in plan.for_split(row.released_split).runs}

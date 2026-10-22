@@ -24,11 +24,13 @@ from forge.domain.run_task import (
     RunTaskCheck,
     Shown,
     check_run_task,
+    fewer_runs,
     file_time,
     hidden_again,
     manifest_files,
     most_shown,
     shown_under,
+    unreleased,
 )
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.types import Type
@@ -1267,3 +1269,84 @@ def test_what_was_shown_is_the_soonest_any_publication_showed_it() -> None:
     assert most_shown([first, second]) == Shown(
         {"a": "now", "b": "after_close", "c": "after_close"}, {"x": ("now", "x")}
     )
+
+
+# What a release shows, and what a later save keeps
+
+
+RELEASING = ISLANDS.replace(
+    "after_close: [st1, st2, total, all]",
+    "after_close: [st1, total, all]\n    on_release: [st2, st2_tests, tests/4.in]",
+)
+
+
+def test_a_release_makes_what_on_release_reads_early(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = ok(islands(primitives, RELEASING))
+
+    assert task.shown() == ["sample_score", "sample_time", "sample_tests", "samples/"]
+    assert task.early() == {"r1", "r2"}
+    assert task.early(released=True) == {"r1", "r2", "r3", "r4"}
+    assert [run.early for run in task.runs_file().runs] == [True, True, False, False]
+
+
+def test_the_runs_file_keeps_the_runs_each_name_shown_during_the_contest_reads(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = ok(islands(primitives, RELEASING))
+
+    assert task.runs_read() == {
+        "sample_score": {"r1", "r2"},
+        "sample_time": {"r1", "r2"},
+        "sample_tests": {"r1", "r2"},
+        "st2": {"r3", "r4"},
+        "st2_tests": {"r3", "r4"},
+    }
+    assert task.runs_of("total") == frozenset({"r3", "r4"})
+    assert task.runs_of("samples/") is None
+    written = task.runs_file()
+    assert RunsFile.from_bytes(written.to_bytes()) == written
+    document = json.loads(written.to_bytes())
+    del document["reads"]
+    assert RunsFile.from_bytes(json.dumps(document).encode()).reads == {}
+
+
+def test_what_on_release_listed_counts_as_not_shown_without_a_release() -> None:
+    shown = Shown(
+        {"a": "now", "b": "on_release"}, {"x": ("on_release", "x"), "y": ("after_close", "./")}
+    )
+
+    assert unreleased(shown) == Shown({"a": "now"}, {"y": ("after_close", "./")})
+
+
+def test_a_name_shown_during_the_contest_may_not_read_fewer_of_the_runs_left(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    fewer = ok(
+        islands(
+            primitives,
+            RELEASING.replace(
+                "sample_tests: {input: [samples/1.in, samples/2.in]}",
+                ("sample_tests: {input: [samples/1.in]}"),
+            ),
+        )
+    )
+    shown = Shown({"sample_tests": "now", "st2_tests": "on_release", "st1": "after_close"})
+    reads = {
+        "sample_tests": frozenset({"r1", "r2"}),
+        "st2_tests": frozenset({"r3", "r4", "r9"}),
+        "st1": frozenset({"r1"}),
+    }
+
+    assert fewer_runs([(shown, reads)], fewer) == [
+        {
+            "path": "scoring.groups.sample_tests",
+            "message": "Entrants have been shown sample_tests during the contest over 2 runs "
+            "the task still has, and it would now read 1 fewer. What they have been shown "
+            "cannot be hidden again, so keep those runs in it.",
+        }
+    ]
+    # A run the task no longer has is not counted, nor what was shown at
+    # the reveal, nor a release taken back.
+    assert fewer_runs([(unreleased(shown), reads)], ok(islands(primitives, RELEASING))) == []

@@ -178,7 +178,10 @@ class AdminOnly(ServiceError):
 
 
 class ConfirmationRequired(ServiceError):
-    """A save during a running contest would publish. `changes` lists what
+    """An action that asks first was sent without its confirmation, and
+    nothing changed; the detail is the words to show. A release of a task's
+    results, or a take-back, carries `action`, which one. A save during a
+    running contest would publish. `changes` lists what
     would change how the task grades, in words a person reads, `regrades`
     how many submissions the save would grade again, for a run task once
     its save is checked, and `results_change`, `summary`, `runs_again`,
@@ -189,6 +192,14 @@ class ConfirmationRequired(ServiceError):
     """
 
     code = "confirmation_required"
+
+
+class NotARunTask(ServiceError):
+    """An action only a run task has, such as releasing its results, asked
+    of a task that is not one.
+    """
+
+    code = "not_a_run_task"
 
 
 class RegistrationRefused(ServiceError):

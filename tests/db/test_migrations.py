@@ -58,6 +58,7 @@ TABLES = {
     "step_outputs",
     "publication_objects",
     "grading_reuses",
+    "releases",
 }
 
 

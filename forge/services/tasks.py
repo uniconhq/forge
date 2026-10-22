@@ -80,6 +80,7 @@ from forge.services import (
     taking_out,
 )
 from forge.services.access import Organiser, require
+from forge.services.published import ResultsState
 from forge.services.taking_out import TakeOut
 
 log = get_logger(__name__)
@@ -100,7 +101,8 @@ class TaskState:
     a statement, `statement.md` there, not blank and not the starter's
     placeholder (false when nothing is published), which the contest's
     opening checklist asks of each task (M57); `head_statement_written`
-    says the same of the head.
+    says the same of the head. `results` says whether the task's results
+    are released now, with every release and take-back, who and when.
     """
 
     head: VersionId
@@ -109,6 +111,7 @@ class TaskState:
     errors: tuple[Problem, ...]
     statement_written: bool
     head_statement_written: bool
+    results: ResultsState
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,7 +256,7 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
     save checks it, as the organiser, so the errors are always the current
     ones. A run task's latest publication that has not taken over says
     where it stands (`pipelines.checks`). Needs the observer role at the
-    task.
+    task. Where its results stand is read afresh (`published.results_state`).
     """
     require(organiser, task_scope(task), Role.OBSERVER)
     head = await ctx.forge.content.list_files(organiser.identity, task)
@@ -265,13 +268,16 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
     written = token is not None and await published.statement_written_at(
         ctx, task, head.version, token
     )
+    results = await published.results_state(ctx, task)
     if latest is not None and latest.version == head.version:
-        return TaskState(head.version, latest, False, (), written, written)
+        return TaskState(head.version, latest, False, (), written, written, results)
     checked = await publications.check(ctx, organiser.identity, task, head, {})
     published_written = latest is not None and await published.statement_written_at(
         ctx, task, latest.version, latest.id
     )
-    return TaskState(head.version, latest, True, checked.errors, published_written, written)
+    return TaskState(
+        head.version, latest, True, checked.errors, published_written, written, results
+    )
 
 
 @action

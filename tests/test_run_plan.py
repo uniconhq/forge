@@ -1400,3 +1400,56 @@ def test_a_save_says_which_steps_a_submission_runs_again(
         "solution",
         "compare",
     )
+
+
+# What a release shows
+
+
+RELEASING = ISLANDS.replace(
+    "after_close: [st1, st2, total, all]",
+    "after_close: [st1, total, all]\n    on_release: [st2, st2_tests]",
+)
+
+
+def test_the_plan_holds_the_split_a_grading_takes_while_results_are_released(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(islands(primitives, RELEASING))
+
+    assert plan.released is not None and plan.released.early == ("r1", "r2", "r3", "r4")
+    assert laid_out(plan) == laid_out(ok(islands(primitives)))
+    assert plan.for_split(False) is plan
+    released = plan.for_split(True)
+    assert [run.early for run in released.runs] == [True, True, True, True]
+    assert released.released is None
+    assert laid_out(released) == {
+        "save": [("diff", None, ())],
+        "early": [
+            ("compile", None, ()),
+            ("solution", ("r1", "r2", "r3", "r4"), ("compile",)),
+            ("compare", ("r1", "r2", "r3", "r4"), ("solution",)),
+        ],
+    }
+    assert RunPlan.from_bytes(plan.to_bytes()) == plan
+
+
+def test_a_plan_a_release_moves_nothing_in_holds_no_released_split(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(islands(primitives))
+
+    assert plan.released is None
+    assert plan.for_split(True) is plan
+
+
+def test_a_save_says_when_what_a_release_shows_moved(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    before = ok(islands(primitives))
+    after = ok(islands(primitives, RELEASING))
+
+    assert run_plan_changes(_snapshot(before), _snapshot(after)) == (
+        "What a release shows moved, so a grading made while results are released runs other "
+        "runs early.",
+    )
+    assert run_plan_changes(_snapshot(after), _snapshot(after)) == ()

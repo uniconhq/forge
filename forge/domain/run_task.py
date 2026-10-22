@@ -30,8 +30,9 @@ only.
 A run is early when a group shown `now` holds it, or a value shown `now`
 reads a group holding it, directly or through other values (11.3); a value
 shown `now` reading `compiled` makes the compile early even when no run is.
-`on_release` is late until a release, which the forge has no action for
-yet, so `RunTask.early` takes whether the task is released. A report is
+`on_release` is late until staff release the task's results, so
+`RunTask.early` takes whether they are, and the plan holds both splits
+(`run_plan.ReleasedSplit`). A report is
 self-reported when an entrant input reaches the program that wrote it, and
 the run's `verdict` and `passed` when one reaches a program given a
 manifest (#504).
@@ -166,7 +167,11 @@ class RunsFile:
     columns self-reported with the entrant inputs that make them so,
     whether a value shown `now` reads `compiled`, and the values that read
     a self-reported column, directly or through others, as the save
-    checked them (`RunTask.self_reported_values`), which a result marks.
+    checked them (`RunTask.self_reported_values`), which a result marks;
+    and the runs each group or value listed under `now` or `on_release`
+    reads (`RunTask.runs_read`), which a later save may not shrink once
+    shown (SIMPLER-CORE.md 16). A file written before `reads` was kept
+    reads as none.
     """
 
     ids: Mapping[str, str]
@@ -175,6 +180,7 @@ class RunsFile:
     self_reported: Mapping[str, frozenset[str]]
     compile_early: bool
     self_reported_values: frozenset[str] = frozenset()
+    reads: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
     def to_bytes(self) -> bytes:
         document = {
@@ -191,6 +197,7 @@ class RunsFile:
             },
             "compile_early": self.compile_early,
             "self_reported_values": sorted(self.self_reported_values),
+            "reads": {name: sorted(runs) for name, runs in sorted(self.reads.items())},
         }
         return (exact_json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
 
@@ -219,6 +226,10 @@ class RunsFile:
                 },
                 _flag(document["compile_early"]),
                 frozenset(_text(each) for each in document.get("self_reported_values", ())),
+                {
+                    str(name): frozenset(_run_id(each) for each in runs)
+                    for name, runs in document.get("reads", {}).items()
+                },
             )
         except (KeyError, TypeError, AttributeError, ValueError) as error:
             raise ValueError(f"{RUNS_PATH} does not read: {error}") from None
@@ -287,6 +298,28 @@ class RunTask:
             if any(column in self.self_reported for _, column in self.values.through(name).columns)
         )
 
+    def runs_of(self, name: str) -> frozenset[str] | None:
+        """The ids of the runs a group holds or a value reads, directly or
+        through others, none for a name that is neither.
+        """
+        if name in self.groups:
+            return frozenset(self.groups[name])
+        if name in self.values.reads:
+            through = self.values.through(name).groups
+            return frozenset(run for group in through for run in self.groups.get(group, ()))
+        return None
+
+    def runs_read(self) -> dict[str, frozenset[str]]:
+        """The runs each group or value listed under `now` or `on_release`
+        reads, the names a release may show during the contest.
+        """
+        found: dict[str, frozenset[str]] = {}
+        for entry in self.shown(released=True):
+            runs = self.runs_of(entry)
+            if runs is not None:
+                found[entry] = runs
+        return found
+
     def runs_file(self) -> RunsFile:
         early = self.early()
         return RunsFile(
@@ -296,6 +329,7 @@ class RunTask:
             self.self_reported,
             self.compile_early(),
             self.self_reported_values(),
+            self.runs_read(),
         )
 
 
@@ -478,6 +512,52 @@ def hidden_again(before: Shown, scoring: Scoring, paths: Collection[str]) -> lis
         if time is None or OPENNESS[time] < OPENNESS[then]:
             reported.add(entry)
             problems.append(_hidden(entry, then, time))
+    return problems
+
+
+def unreleased(shown: Shown) -> Shown:
+    """`shown` without what it lists under `on_release`: what a task whose
+    results are not released has shown, a take-back included (stage 5
+    section 6 item 10).
+    """
+    return Shown(
+        {name: time for name, time in shown.names.items() if time != "on_release"},
+        {path: listed for path, listed in shown.files.items() if listed[0] != "on_release"},
+    )
+
+
+def fewer_runs(
+    before: Iterable[tuple[Shown, Mapping[str, frozenset[str]]]], task: RunTask
+) -> list[Problem]:
+    """A problem for each group or value shown during the contest under an
+    earlier publication, as `before` holds each with the runs its runs file
+    says each name read, that `task` now has read fewer of the runs it
+    still has (SIMPLER-CORE.md 16). Shown during the contest is under
+    `now`, or under `on_release` where `before` still holds it.
+    """
+    present = {run.id for run in task.runs}
+    read: dict[str, set[str]] = {}
+    for shown, reads in before:
+        for name, time in shown.names.items():
+            if time in ("now", "on_release") and name in reads:
+                read.setdefault(name, set()).update(reads[name] & present)
+    problems: list[Problem] = []
+    for name, then in sorted(read.items()):
+        now = task.runs_of(name)
+        if now is None:
+            continue
+        missing = then - now
+        if missing:
+            where = "groups" if name in task.groups else "values"
+            problems.append(
+                Problem(
+                    path=path_text(("scoring", where, name)),
+                    message=f"Entrants have been shown {name} during the contest over "
+                    f"{len(then)} {'run' if len(then) == 1 else 'runs'} the task still has, "
+                    f"and it would now read {len(missing)} fewer. What they have been shown "
+                    "cannot be hidden again, so keep those runs in it.",
+                )
+            )
     return problems
 
 
@@ -1447,6 +1527,7 @@ __all__ = [
     "Shown",
     "canonical",
     "check_run_task",
+    "fewer_runs",
     "file_time",
     "hidden_again",
     "holds",
@@ -1455,4 +1536,5 @@ __all__ = [
     "show_names",
     "shown_times",
     "shown_under",
+    "unreleased",
 ]

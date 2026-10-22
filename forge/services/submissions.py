@@ -334,7 +334,7 @@ async def submit(
     for path, upload in layout.files.items():
         files[path] = await _pointer(ctx, person, user, chosen[upload])
     recorded = await _record(ctx, user, workspace, task, files, idempotency_key)
-    grading = _insert(
+    grading = await _insert(
         ctx, person, workspace, recorded, idempotency_key, at=at, by=person.session.user_id
     )
     for used in chosen.values():
@@ -531,7 +531,7 @@ async def _recover(
     found otherwise, since the forge's answer does not say; and the uploads
     it used marked consumed.
     """
-    grading = _insert(ctx, person, workspace, found, found.key, at=found.at, by=by)
+    grading = await _insert(ctx, person, workspace, found, found.key, at=found.at, by=by)
     await _consume_used(ctx, person, found)
     await ctx.db.flush()
     log.info("submissions.recovered", task=person.task, number=found.number)
@@ -750,7 +750,7 @@ def _forge_failure(exc: PortError, event: str, **fields: str) -> PortError:
     return Unavailable(FORGE_UNAVAILABLE)
 
 
-def _insert(
+async def _insert(
     ctx: Context,
     person: Person,
     workspace: WorkspaceId,
@@ -762,8 +762,12 @@ def _insert(
 ) -> Grading:
     """The submission's queued grading row, against the task's current
     publication, with the hash of its own callback token and the member
-    who submitted it, `by`.
+    who submitted it, `by`, taking the released split while the task's
+    results are released.
     """
+    released = bool(person.published.definition.runs) and await published.results_released(
+        ctx, person.task
+    )
     return gradings.queue_submission(
         ctx,
         task=person.task,
@@ -773,6 +777,7 @@ def _insert(
         key=key,
         at=at,
         submitted_by=by,
+        released_split=released,
     )
 
 
@@ -1050,11 +1055,12 @@ async def _runs(
 ) -> Result:
     """A run task's grading as its reader sees it now, from both its rows
     (11.3): its values worked out on read (`scores.run_scored`) and shown
-    by what the task's latest publication shows now
-    (`run_showing.shown`, 9.4), so a group moved to `now` shows its runs
-    even where they ran late. Before the reveal the late row is told to no
-    entrant; after it, while that attempt has no result, the grading is
-    told as where it stands, `grading` or `delayed`; and a task with
+    by what the task's latest publication shows now, `on_release` while
+    its results are released (`run_showing.shown`, 9.4), so a group moved
+    to `now` shows its runs even where they ran late. Before the reveal,
+    and with no release, the late row is told to no entrant; after it,
+    while that attempt has no result, the grading is told as where it
+    stands, `grading` or `delayed`; and a task with
     nothing shown during the contest is told as `submitted` until the
     reveal. Organisers read every value and every run of both rows at
     once, and where each row stands in the gradings routes.
@@ -1062,6 +1068,7 @@ async def _runs(
     late = await scores.late_of(ctx, row)
     scored = await scores.run_scored(ctx, current, settings, extension, row, late)
     revealed = reveal_at is not None and ctx.now >= reveal_at
+    released = not everything and await published.results_released(ctx, current.id)
     scoring = current.definition.scoring
     assert scoring is not None, "a run task's definition always has scoring"
     seen = run_showing.shown(
@@ -1072,6 +1079,7 @@ async def _runs(
         scored.early,
         scored.self_reported,
         revealed=revealed,
+        released=released,
         everything=everything,
     )
     runs, once = seen.runs, seen.once

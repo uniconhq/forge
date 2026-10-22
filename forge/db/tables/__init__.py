@@ -11,6 +11,7 @@ from forge.db.tables.marks import Mark
 from forge.db.tables.names import Name
 from forge.db.tables.org_accounts import OrgAccount
 from forge.db.tables.regrades import Regrade
+from forge.db.tables.releases import Release
 from forge.db.tables.sessions import Session
 from forge.db.tables.steps import GradingReuse, GradingStep, PublicationObjects, StepOutput
 from forge.db.tables.uploads import Upload
@@ -27,6 +28,7 @@ __all__ = [
     "OrgAccount",
     "PublicationObjects",
     "Regrade",
+    "Release",
     "Session",
     "StepOutput",
     "Upload",

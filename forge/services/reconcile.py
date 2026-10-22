@@ -161,6 +161,7 @@ async def _task(
         ).scalars()
     )
     seen = inserted = 0
+    released = bool(task.definition.runs) and await published.results_released(ctx, task.id)
     for workspace in workspaces:
         try:
             submissions = await ctx.forge.workspaces.list_submissions(workspace, task.id)
@@ -189,6 +190,7 @@ async def _task(
                         key=made.key,
                         at=made.at,
                         submitted_by=None,
+                        released_split=released,
                     )
                     await ctx.db.flush()
             except IntegrityError:
