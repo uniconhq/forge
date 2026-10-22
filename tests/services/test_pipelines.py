@@ -322,10 +322,13 @@ async def test_the_entrant_reads_the_runs_of_the_groups_shown_now_and_after_the_
     assert _runs_seen(grading) == [("sample_tests", 1, "accepted"), ("sample_tests", 2, "accepted")]
     assert set(grading.runs[0]) == {"group", "place", "key", "verdict", "passed", "reports"}
     assert grading.runs[0]["key"] == {"input": "samples/1.in", "answer": "samples/1.ans"}
+    # When the page reads it again, its late runs then shown.
+    assert grading.reveal_at is not None and BEFORE_CLOSE < grading.reveal_at <= AFTER_CLOSE
 
     clock.set(AFTER_CLOSE)
     grading = await _grading(setup, session, islands)
     assert grading.status == SubmissionState.GRADING
+    assert grading.reveal_at is None
     assert _runs_seen(grading) == [
         ("sample_tests", 1, "accepted"),
         ("sample_tests", 2, "accepted"),

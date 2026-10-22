@@ -193,7 +193,10 @@ class Result:
     value the workflow reports, in its order, with the title and unit a
     page names it by and how it folds, a value a sealed step holds back
     left out until the reveal. A run task's grading has no groups or
-    values yet: `runs` holds each run shown to its entrant (`_runs`).
+    values yet: `runs` holds each run shown to its entrant (`_runs`), and
+    `reveal_at`, until then, when the task reveals, when what its entrant
+    reads changes with no grading's change to say so, so a page open on it
+    reads it again then, as at a classic group's `shown_at`.
     """
 
     id: uuid.UUID
@@ -210,6 +213,7 @@ class Result:
     limit: int | None = None
     meanings: tuple[ValueMeaning, ...] = ()
     runs: tuple[Mapping[str, Any], ...] = ()
+    reveal_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1006,7 +1010,10 @@ async def _runs(
         ]
     else:
         shown = runs_shown(scoring, held.runs, results, held.files, revealed=revealed)
-    return Result(row.id, row.attempt, state, None, None, (), {}, runs=tuple(shown))
+    coming = reveal_at if reveal_at is not None and not revealed and not everything else None
+    return Result(
+        row.id, row.attempt, state, None, None, (), {}, runs=tuple(shown), reveal_at=coming
+    )
 
 
 async def _own(
