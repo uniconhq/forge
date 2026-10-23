@@ -90,6 +90,7 @@ from forge.domain.boards import (
     listed_now,
     read_boards,
     results_seen,
+    seen_bounds,
     sees,
     still_grading,
 )
@@ -272,23 +273,36 @@ async def read(
     since = None
     if not viewer.staff:
         since = holding(settings.hold, ctx.now, await _hold_ended(ctx, contest, settings.hold))
+    released = [entry.id for entry in settings.tasks if rules.released(settings, entry.id, ctx.now)]
     results: dict[WorkspaceOwner, dict[str, list[Loaded]]] = {owner: {} for owner in owners}
     trees: dict[str, Mapping[str, object]] = {}
     bounds: dict[str, Mapping[str, Bounds]] = {}
+    most: dict[str, int | None] = {}
     reported: dict[str, frozenset[str]] = {}
     entered: dict[str, frozenset[str]] = {}
     for task in tasks:
         scoring = task.definition.scoring
         assert scoring is not None
+        assert task.entry is not None
         held = await published.runs_held(ctx, task)
         trees[task.name] = scoring.values
         entered[task.name] = using(scoring.values, ENTERED)
+        revealed = ctx.now >= reveal_of(settings, task.entry, extensions.values())
+        results_released = not viewer.staff and await published.results_released(ctx, task.id)
         groups = {ALL: [RunResult(run.id, "", run.key) for run in held.runs]}
         for name, picked in scoring.groups.items():
             groups[name] = [
                 RunResult(run.id, "", run.key) for run in held.runs if run_holds(picked, run.key)
             ]
-        bounds[task.name] = value_bounds(scoring.values, groups, held.columns)
+        # Anyone but staff knows a column's bounds only from what they are
+        # shown now (item 126): none from a task not released to them.
+        if viewer.staff:
+            bounds[task.name] = value_bounds(scoring.values, groups, held.columns)
+            most[task.name] = task.definition.submissions.max
+        elif task.name in released:
+            times = run_showing.times_of(revealed=revealed, released=results_released)
+            bounds[task.name] = seen_bounds(scoring, groups, held.columns, times)
+            most[task.name] = task.definition.submissions.max
         reported[task.name] = held.self_reported
         attempts = side.attempts if side is not None and side.task == task.id else None
         found = await _results(
@@ -301,11 +315,12 @@ async def read(
             marked,
             viewer,
             attempts,
+            revealed=revealed,
+            released=results_released,
             notice=notice,
         )
         for owner, listed in found.items():
             results[owner][task.name] = listed
-    most = {task.name: task.definition.submissions.max for task in tasks}
     columns = column_bounds(settings.leaderboards, checked, bounds, most)
     parts = self_reported_parts(checked, reported)
     rows: list[Row] = []
@@ -329,9 +344,7 @@ async def read(
         wanted,
         rows,
         viewer,
-        released=[
-            entry.id for entry in settings.tasks if rules.released(settings, entry.id, ctx.now)
-        ],
+        released=released,
         headers={key: headers_of(key, settings.leaderboards[key], columns, parts) for key in every},
         held_from=since,
     )
@@ -353,6 +366,8 @@ async def _results(
     viewer: Viewer,
     pick: Callable[[Sequence[Grading]], Sequence[Grading]] | None = None,
     *,
+    revealed: bool,
+    released: bool,
     notice: bool = False,
 ) -> dict[WorkspaceOwner, list[Loaded]]:
     """Each row's submissions to a run task, oldest first, each with when
@@ -360,8 +375,10 @@ async def _results(
     the row's own entrant is shown them now, a value reading a mark by
     `show` alone, since a cell reading one counted its submission (stage 5
     section 6, item 117); `pick` the attempts of each submission read, all
-    when none, a submission it leaves none of left out; with `notice`, a
-    failure found is seen to.
+    when none, a submission it leaves none of left out; `revealed` whether
+    the task has revealed, and `released` whether its results are
+    released, for anyone but staff; with `notice`, a failure found is seen
+    to.
     """
     workspaces = {ctx.forge.workspaces.workspace_of(contest, owner): owner for owner in owners}
     rows = (
@@ -400,8 +417,6 @@ async def _results(
     assert entry is not None
     scoring = task.definition.scoring
     assert scoring is not None
-    revealed = ctx.now >= reveal_of(settings, entry, extensions.values())
-    released = not viewer.staff and await published.results_released(ctx, task.id)
     times = run_showing.times_of(revealed=revealed, released=released)
     values_listed, compiled_listed = listed_now(scoring, times)
     found: dict[WorkspaceOwner, list[Loaded]] = {}

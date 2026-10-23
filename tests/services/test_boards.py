@@ -193,6 +193,32 @@ async def test_a_withdrawn_tasks_columns_are_listed_to_no_entrant_and_read_nothi
     assert [cell.number for cell in staffs.rows[0].cells] == [0, 0, 0]
 
 
+async def test_a_header_gives_anyone_but_staff_only_the_bounds_of_what_they_are_shown(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    # Item 126: total is shown after the close, so before it only staff
+    # read its bounds; sample's read what is shown now.
+    clock.set(at(13, 0))
+    islands = await _checked(setup, acme, contest=OPEN)
+    entrant = await _entrant(setup, acme, islands, 20)
+    staff = await _staff(setup, acme)
+
+    def bounds(board: Board) -> list[tuple[str, Fraction | None, Fraction | None]]:
+        return [(each.name, each.at_least, each.at_most) for each in board.headers]
+
+    clock.set(BEFORE_CLOSE)
+    assert bounds(await _standings(setup, None)) == [
+        ("sample", 0, 1),
+        ("total", None, None),
+        ("tries", 0, 50),
+    ]
+    assert bounds(await _standings(setup, entrant)) == bounds(await _standings(setup, None))
+    total = ("total", Fraction(0), Fraction(100))
+    assert bounds(await _standings(setup, staff))[1] == total
+    clock.set(AFTER_CLOSE)
+    assert bounds(await _standings(setup, None))[1] == total
+
+
 async def _held_contest(setup: Setup, acme: Acme, clock: FakeClock, contest: str) -> Any:
     """entrant20 submitting at 13:00 and 14:30, entrant21 at 14:45, each
     graded; both sessions, read at 14:50."""

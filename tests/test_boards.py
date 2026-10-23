@@ -41,6 +41,7 @@ from forge.domain.boards import (
     listed_now,
     read_boards,
     results_seen,
+    seen_bounds,
     still_grading,
 )
 from forge.domain.definitions import (
@@ -1423,6 +1424,39 @@ def test_a_tasks_values_carry_their_bounds_where_every_part_has_one() -> None:
 
     assert found["total"] == (0, 100)
     assert found["slow"] is None
+
+
+def test_anyone_but_staff_knows_a_values_bounds_only_from_what_they_are_shown() -> None:
+    # Item 126: a value listed now that counts the runs of st2_tests, a
+    # group no entry shows until the reveal, would tell its size, 2.
+    text = ISLANDS_TASK.replace(
+        "    total:\n", "    hard: {block: count, over: {runs: st2_tests}}\n    total:\n"
+    ).replace("now: [sample_score,", "now: [hard, sample_score,")
+    scoring = parse_task(text).scoring
+    assert scoring is not None
+    runs = [
+        RunResult(f"r{n}", "", {"input": path})
+        for n, path in enumerate(["samples/1.in", "samples/2.in", "tests/3.in", "tests/4.in"], 1)
+    ]
+    groups = {
+        "all": runs,
+        "sample_tests": runs[:2],
+        "st1_tests": runs[2:3],
+        "st2_tests": runs[2:],
+    }
+    columns = {"score": Column(Better.HIGHER, Fraction(0), Fraction(1))}
+
+    staff = value_bounds(scoring.values, groups, columns)
+    during = seen_bounds(scoring, groups, columns, ("now",))
+    after = seen_bounds(scoring, groups, columns, ("now", "after_close"))
+
+    two, hundred = (Fraction(2), Fraction(2)), (Fraction(0), Fraction(100))
+    assert (staff["hard"], staff["total"]) == (two, hundred)
+    # During the contest: sample_score's bounds read only sample_tests,
+    # shown now; hard's read a hidden group, and total is not listed yet.
+    assert during == {"hard": None, "sample_score": (Fraction(0), Fraction(1)), "sample_time": None}
+    # From the reveal `all` shows every run, so every group is known.
+    assert (after["hard"], after["total"]) == (two, hundred)
 
 
 def test_the_gradebooks_total_carries_its_bounds_and_seconds_late_none() -> None:
