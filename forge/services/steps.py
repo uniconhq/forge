@@ -493,9 +493,11 @@ async def conclude(ctx: Context, row: Grading, pipeline: PipelineKind) -> None:
     """Build result version 6 of the grading's `pipeline` from what its
     steps and the store hold, keep it and finish the grading: `done`, or
     `system_error` with the first fault, or saying the result is over its
-    bound; an early row whose only fault is a value's program's is `done`
-    with the fault kept as its error. A grading that has finished is left
-    as it is.
+    bound. An early row whose only fault is a value's program's ends
+    `system_error` too, so the platform's retry runs the program alone
+    again; when that retry faults the same way, or no retry comes since
+    `retry_failed` is off, it is `done` with the fault kept as its error.
+    A grading that has finished is left as it is.
     """
     if GradingStatus(row.status) in FINISHED:
         return
@@ -525,10 +527,16 @@ async def conclude(ctx: Context, row: Grading, pipeline: PipelineKind) -> None:
     problem = _result_problem(result)
     if problem is not None:
         gradings.finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=problem)
-    elif result["error"] is not None and pipeline == "early" and program_alone(result):
-        # Only a value's program failed: the early row is done, so the late
-        # row still runs the hidden runs, and only that value waits for
-        # staff, the reason kept for them (stage 5 section 6 item 54).
+    elif (
+        result["error"] is not None
+        and pipeline == "early"
+        and program_alone(result)
+        and (row.automatic or not ctx.settings.retry_failed)
+    ):
+        # Only a value's program failed, and its retry by itself is spent:
+        # the early row is done, so the late row still runs the hidden runs,
+        # and only that value waits for staff, the reason kept for them
+        # (stage 5 section 6 item 54).
         row.result = result
         gradings.finish(ctx, row, GradingStatus.DONE, error=str(result["error"])[:ERROR_LIMIT])
     elif result["error"] is not None or faulted is not None:

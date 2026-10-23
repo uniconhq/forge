@@ -286,6 +286,26 @@ async def test_a_program_folder_with_no_program_yaml_is_refused_at_the_save(
     ]
 
 
+async def test_an_early_programs_fault_with_no_retry_by_itself_holds_only_its_value_at_once(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(setup.settings, "retry_failed", False)
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme, EARLY)
+    await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    await _step(setup, acme, early.id, "early", "compile", _compiled())
+    await _step(setup, acme, early.id, "early", "solution", _batch())
+    await _step(setup, acme, early.id, "early", "compare", _batch(score=True))
+    await _step(setup, acme, early.id, "early", "exec-mean", _reported(outcome="runtime_error"))
+
+    assert await _report(setup, early.id, "early") is GradingStatus.DONE
+    await setup.settle()
+    assert len(await _rows(setup, "early")) == 1
+    [late] = await _rows(setup, "late")
+    assert late.early_id == early.id
+
+
 EARLY = (
     TEXT.replace("over: {runs: all}}", "over: {runs: sample_tests}}")
     .replace("after_close: [st1, st2, total, all, mean]", "after_close: [st1, st2, total, all]")
@@ -295,7 +315,7 @@ EARLY = (
 program runs early."""
 
 
-async def test_an_early_programs_fault_holds_only_its_value_and_never_the_hidden_runs(
+async def test_an_early_programs_fault_is_retried_once_alone_then_holds_only_its_value(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
@@ -307,13 +327,24 @@ async def test_an_early_programs_fault_holds_only_its_value_and_never_the_hidden
     await _step(setup, acme, early.id, "early", "compare", _batch(score=True))
     await _step(setup, acme, early.id, "early", "exec-mean", _reported(outcome="runtime_error"))
 
-    assert await _report(setup, early.id, "early") is GradingStatus.DONE
+    # The platform tries the program again by itself before the late row.
+    assert await _report(setup, early.id, "early") is GradingStatus.SYSTEM_ERROR
     await setup.settle()
-    ended = await _row(setup, early.id)
+    assert await _rows(setup, "late") == []
+    [_, retried] = await _rows(setup, "early")
+    assert (retried.attempt, retried.automatic) == (2, True)
+    # The runs are reused, so only the program runs again.
+    assert await _to_run(setup, retried.id, "early") == [("exec-mean", [])]
+    await _step(setup, acme, retried.id, "early", "exec-mean", _reported(outcome="runtime_error"))
+
+    assert await _report(setup, retried.id, "early") is GradingStatus.DONE
+    await setup.settle()
+    ended = await _row(setup, retried.id)
     # The reason is kept for staff; no retry is made of a row that is done.
     assert ended.error == "The step exec-mean faulted: The program of mean ended runtime_error."
-    assert len(await _rows(setup, "early")) == 1
+    assert len(await _rows(setup, "early")) == 2
     [late] = await _rows(setup, "late")
+    assert late.early_id == retried.id
     await _step(setup, acme, late.id, "late", "solution", _batch())
     await _step(setup, acme, late.id, "late", "compare", _batch(score=True))
     assert await _report(setup, late.id, "late") is GradingStatus.DONE
@@ -325,9 +356,9 @@ async def test_an_early_programs_fault_holds_only_its_value_and_never_the_hidden
 
     # A staff retry runs only the program again.
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
-    await gradings.retry(setup, manager, early.id)
+    await gradings.retry(setup, manager, retried.id)
     await setup.settle()
-    [_, again] = await _rows(setup, "early")
+    [*_, again] = await _rows(setup, "early")
     assert await _to_run(setup, again.id, "early") == [("exec-mean", [])]
     await _step(setup, acme, again.id, "early", "exec-mean", _reported(0.5))
     assert await _report(setup, again.id, "early") is GradingStatus.DONE
