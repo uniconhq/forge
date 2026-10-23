@@ -21,13 +21,9 @@ steps in order, and refuses before anything is written.
    to the workflow's inputs, its sealed steps found and its fit checked; and
    a group's `show` neither hides what was shown under any publication a
    graded submission ran under nor is left unsaid on a group added once the
-   task has a graded submission (T7, T10); a task that gives no points
-   is refused while its contest's entry for it gives it a `worth`; and the
-   task keeps every value a leaderboard of its contest reads, by its name,
-   and gives no column a reason to be refused across files, such as a
-   value a pick chooses by now reading a mark (`board_checks.across`), each
-   problem naming the board and the column. A workflow is named
-   `<owner>/<name>`, the owner an org by its name or a person by their
+   task has a graded submission (T7, T10); a task that gives no points is
+   refused while its contest's entry for it gives it a `worth`. A workflow
+   is named `<owner>/<name>`, the owner an org by its name or a person by their
    username; when the latest publication used a workflow of
    that name and it is now another workflow, by the forge's own id for it,
    the state is refused at that line, since the owner may have been renamed
@@ -46,8 +42,12 @@ steps in order, and refuses before anything is written.
    (`run_task.check_run_task`), reading each `program.yaml` the task gives
    and keeping its runs' ids from the latest publication's runs file; what
    its `show` listed under a publication a graded submission ran under is
-   not listed later or dropped; and its contest gives it no `worth` or
-   late share, since a leaderboard reads its values instead.
+   not listed later or dropped; its contest gives it no `worth` or late
+   share, since a leaderboard reads its values instead; and the task keeps
+   every value a leaderboard of its contest reads, by its name, and gives
+   no column a reason to be refused across files, such as a value a pick
+   chooses by now reading a mark (`board_checks.across`), each problem
+   naming the board and the column.
 3. What the save changes about how the task grades is worked out against
    the latest publication: its plan and the digests of the task's files the
    plan names. Groups, rule weights, `show`, `credit` and `submissions` are
@@ -737,7 +737,6 @@ async def check(
     problems.extend(group_problems(definition, tests, present))
     problems.extend(await _shown_before(ctx, task, definition))
     problems.extend(await _contest_points(ctx, task, definition))
-    problems.extend(await _board_reads(ctx, task, definition))
     if problems:
         return Checked(definition, None, tuple(problems), pins)
     try:
@@ -1399,9 +1398,9 @@ async def _board_reads(
     for what the task's values now read (`board_checks.across`). Each
     problem names the board and the column, at the value it is about when
     the task still gives it, else at `scoring.values`. A board whose own
-    check finds anything is the contest's to mend, and asks nothing here;
-    a task graded test by test gives a board no results, and is not
-    checked.
+    check finds anything is the contest's to mend, and asks nothing here.
+    A run task's save calls it; a task graded test by test gives a board
+    no results, and is not checked (stage 5 section 6, item 103).
     """
     if definition.scoring is None:
         return []
