@@ -23,13 +23,13 @@ across files (`forge.domain.leaderboard_checks`).
   a pick column, and every sort key is displayed.
 
 A leaderboard whose check finds anything, or that reads a column of such a
-leaderboard, is not worked out on read (`BoardsCheck.readable`); the contest's
-save refuses it first. `BoardsCheck.order` gives every column of the
+leaderboard, is not worked out on read (`LeaderboardsCheck.readable`); the contest's
+save refuses it first. `LeaderboardsCheck.order` gives every column of the
 readable leaderboards after each column it reads, so they are worked out in one
-pass with no recursion between them. `BoardsCheck.through` gives, for each
+pass with no recursion between them. `LeaderboardsCheck.through` gives, for each
 column giving a submission's results, every value and fact any column of
 any leaderboard reads through it, which its picks read as well (guarantee 5);
-`BoardsCheck.hiding` gives the same read by the leaderboards a read works out
+`LeaderboardsCheck.hiding` gives the same read by the leaderboards a read works out
 alone, which hide its picks where held back (stage 5 section 6, item 98).
 
 Each column's tree is at most `MOST_NODES` nodes and `MOST_DEPTH` deep,
@@ -65,12 +65,12 @@ from forge.domain.definitions import VALUE_NAME, Leaderboard
 from forge.domain.yaml_models import Path, is_number
 
 MOST_COLUMNS = 100
-"""The most columns one board has."""
+"""The most columns one leaderboard has."""
 MOST_LEADERBOARDS = 20
-"""The most boards a contest has."""
+"""The most leaderboards a contest has."""
 
 ColumnRef = tuple[str, str]
-"""A column by its board's key and its name."""
+"""A column by its leaderboard's key and its name."""
 
 _LEAF_WORDS = (
     "Give a number, a block such as {block: add, of: [...]}, or what it reads: "

@@ -342,7 +342,7 @@ BEST = LIVE + (
     "          - review\n"
     "    display: [review]\n"
 )
-"""A board over islands' review of the submission with the highest total,
+"""A leaderboard over islands' review of the submission with the highest total,
 which is shown only after the close."""
 END = datetime(2026, 9, 26, 15, 0, tzinfo=UTC)
 WRONG_LATE = _result({"r3": "accepted", "r4": "wrong_answer"})
@@ -649,8 +649,8 @@ HELD_MARK = (
     "          - review\n"
     "    display: [best]\n"
 )
-"""A board for everyone over the latest submission's review, held from
-14:00 until staff end it, and a staff board over the review of the
+"""A leaderboard for everyone over the latest submission's review, held from
+14:00 until staff end it, and a staff leaderboard over the review of the
 submission with the highest total."""
 
 
@@ -708,8 +708,8 @@ THROUGH_PICK = LIVE + (
     "      best: {value: [theirs, total]}\n"
     "    display: [best]\n"
 )
-"""Each entrant's board over their latest submission's review, and a
-staff board reading that pick's total, shown only after the close."""
+"""Each entrant's leaderboard over their latest submission's review, and a
+staff leaderboard reading that pick's total, shown only after the close."""
 
 
 async def test_a_leaderboard_the_entrant_never_reads_keeps_back_no_mark_their_own_cell_counted(
@@ -775,7 +775,7 @@ MIXED = GRADEBOOK + (
     "      review: {value: [pick, review]}\n"
     "    display: [review]\n"
 )
-"""The gradebook, and a staff board over the latest submission chosen
+"""The gradebook, and a staff leaderboard over the latest submission chosen
 by a column reading the task sum."""
 
 

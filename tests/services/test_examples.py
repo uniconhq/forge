@@ -113,7 +113,7 @@ KAGGLE_LEADERBOARDS = """\
 tasks:
   - {id: house-prices, marks: 2}
 leaderboards:
-  public_board:
+  public_leaderboard:
     title: Public
     audience: {who: everyone}
     columns:
@@ -126,7 +126,7 @@ leaderboards:
       public_at: {value: [{column: pub}, seconds]}
     sort: [{public: asc}, {public_at: asc}]
     display: [public, public_at]
-  private_board:
+  private_leaderboard:
     title: Private
     audience: {who: everyone}
     columns:
@@ -147,7 +147,7 @@ leaderboards:
     sort: [{private: asc}, {at: asc}]
     display: [private, at]
 """
-"""The leaderboards note's two Kaggle boards, lowest first: the public
+"""The leaderboards note's two Kaggle leaderboards, lowest first: the public
 one by each row's best public RMSE, the private one by the better of
 its marked submissions' private RMSE, or, with none marked, the private
 RMSE of its best public submission; each pick skipping a submission
@@ -571,7 +571,7 @@ async def test_kaggle_ranks_each_split_lowest_first_and_a_malformed_file_nowhere
     # The public leaderboard ranks by each row's best public RMSE, lowest first:
     # Ana's second, at 12:00, then Ben's. Cy's only submission has no
     # RMSE, so no pick, and his row sorts last with nothing in it.
-    public = await _leaderboard(setup, None, "public_board")
+    public = await _leaderboard(setup, None, "public_leaderboard")
     assert [row.name for row in public.rows] == ["ana", "ben", "cy"]
     assert [_numbers(row) for row in public.rows] == [
         {"public": Fraction(1, 5), "public_at": 7200},
@@ -581,7 +581,7 @@ async def test_kaggle_ranks_each_split_lowest_first_and_a_malformed_file_nowhere
     assert [row.place for row in public.rows[:2]] == [1, 2]
     # The private leaderboard picks by the private RMSE, shown only after the
     # close, so before it no row has a number there and nothing is placed.
-    private = await _leaderboard(setup, None, "private_board")
+    private = await _leaderboard(setup, None, "private_leaderboard")
     assert [_numbers(row) for row in private.rows] == [{"private": None, "at": None}] * 3
     assert {row.place for row in private.rows} == {None}
     assert private.dropped == ("private", "at")
@@ -590,7 +590,7 @@ async def test_kaggle_ranks_each_split_lowest_first_and_a_malformed_file_nowhere
     # nobody, gives his private 0.35; Ana's marks give 0.4, her malformed
     # one skipped, not counted as best; Cy still last.
     clock.set(at(15, 5))
-    private = await _leaderboard(setup, None, "private_board")
+    private = await _leaderboard(setup, None, "private_leaderboard")
     assert [row.name for row in private.rows] == ["ben", "ana", "cy"]
     assert [_numbers(row)["private"] for row in private.rows] == [
         Fraction(7, 20),

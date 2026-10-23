@@ -48,7 +48,7 @@ def test_a_block_list_gets_one_more_item_at_its_own_indent() -> None:
         "    - id: product\n"
         "      marks: 5\n"
         "\n"
-        "# The boards.\n"
+        "# The leaderboards.\n"
         "leaderboards: {}\n"
     ).encode()
 
@@ -56,7 +56,7 @@ def test_a_block_list_gets_one_more_item_at_its_own_indent() -> None:
 
     assert updated is not None
     text = updated.decode()
-    assert "      marks: 5\n    - id: sum\n\n# The boards.\n" in text
+    assert "      marks: 5\n    - id: sum\n\n# The leaderboards.\n" in text
     assert "    # Easiest first.\n" in text
     contest = parse_contest(updated)
     assert ids(updated) == ["product", "sum"]

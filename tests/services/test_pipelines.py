@@ -961,7 +961,7 @@ BUILT_LEADERBOARD = (
     + "      c: {value: [{block: latest, from: {results: islands}}, compiled]}\n"
     + "    display: [c]\n"
 )
-"""A board for staff reading the latest submission's `compiled`."""
+"""A leaderboard for staff reading the latest submission's `compiled`."""
 
 
 async def test_compiled_waits_for_every_reader_until_the_late_row_that_compiles_has_run(
@@ -1704,7 +1704,7 @@ GRADEBOOK = LIVE + (
     "    sort: [{total: desc}]\n"
     "    display: [st2, total]\n"
 )
-"""The running contest with a staff board reading islands' latest
+"""The running contest with a staff leaderboard reading islands' latest
 submission, ranked by its total."""
 
 
@@ -1963,7 +1963,7 @@ MIRRORED = GRADEBOOK + (
     "    sort: [{total: desc}]\n"
     "    display: [total]\n"
 )
-"""The gradebook, and a board reading islands only through its total."""
+"""The gradebook, and a leaderboard reading islands only through its total."""
 
 
 async def test_the_leaderboard_diff_covers_a_leaderboard_reading_the_task_through_another_alone(

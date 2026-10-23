@@ -62,7 +62,7 @@ leaderboards:
     sort: [{best: desc}]
     display: [best, graded]
 """
-"""A board working islands' total out again from its best st1 and st2,
+"""A leaderboard working islands' total out again from its best st1 and st2,
 choosing a submission by st1 and reading its mark through it."""
 
 
@@ -326,7 +326,7 @@ async def test_the_holds_from_stays_inside_the_contest_and_is_never_set_to_a_tim
 LATEST_GRADED = _column(
     "{block: otherwise, of: [{value: [{block: latest, from: {results: islands}}, graded]}, 0]}"
 )
-"""A board reading islands' graded on its latest submission."""
+"""A leaderboard reading islands' graded on its latest submission."""
 
 
 async def _check_refused(setup: Setup, publication: str) -> None:

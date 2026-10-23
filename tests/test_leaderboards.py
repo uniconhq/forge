@@ -69,7 +69,7 @@ from forge.domain.yaml_models import one_line
 from tests.test_run_task import ISLANDS as ISLANDS_TASK
 
 HEAD = """\
-name: Boards
+name: Leaderboards
 start: 2026-06-01T09:00:00Z
 end: 2026-06-01T14:00:00Z
 state: published
@@ -815,7 +815,7 @@ leaderboards:
       secret: {value: [theirs, private]}
     display: [secret]
 """
-"""A board for everyone reading its latest submission's public score, and
+"""A leaderboard for everyone reading its latest submission's public score, and
 staff's reading the private score through that pick."""
 
 

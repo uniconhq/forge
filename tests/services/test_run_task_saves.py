@@ -56,7 +56,7 @@ from tests.test_run_task import (
 )
 
 DRAFT = RUNNING.format(visibility="everyone").replace("state: published", "state: draft")
-"""acme/spring, not started, with no board."""
+"""acme/spring, not started, with no leaderboard."""
 
 ISLANDS_DATA = {
     "samples/1.in": b"1\n",

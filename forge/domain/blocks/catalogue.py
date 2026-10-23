@@ -175,10 +175,10 @@ known as it is made, and whether the row marked it (stage 5 section 6,
 item 124)."""
 SHOWN_FACTS = ("compiled",)
 """The facts a grading gives, each listed in a task's `show` by its name,
-as a value is, so that anything a board reads of a task its `show` can
+as a value is, so that anything a leaderboard reads of a task its `show` can
 show (item 124)."""
 FACTS = (*ROW_FACTS, *SHOWN_FACTS)
-"""A submission's facts (the leaderboards note's 5.2), which a board's
+"""A submission's facts (the leaderboards note's 5.2), which a leaderboard's
 column reads beside its values."""
 TASK_FACTS = ("seconds_late", "seconds", "compiled")
 """The facts a task's value may read (SIMPLER-CORE.md 9.2): not `attempt`,
@@ -186,7 +186,7 @@ which depends on the entrant's other submissions, nor `marked`, which
 changes until the close."""
 LEAVES = ("runs", "run", "value", "fact", "results", "column", "name")
 TASK_LEAVES = ("runs", "run", "value", "fact")
-"""The leaves a task's value may hold; a board's column holds `value`,
+"""The leaves a task's value may hold; a leaderboard's column holds `value`,
 `results`, `column` and `name`."""
 LEADERBOARD_LEAVES = ("value", "results", "column", "name")
 DESC = "desc"
@@ -284,7 +284,7 @@ CATALOGUE: Mapping[str, Block] = {
         Block(
             "if",
             "then when test is not 0, else else, reading only the branch it takes; on a "
-            "board, a test that is a submission's results is true when there is one",
+            "leaderboard, a test that is a submission's results is true when there is one",
             (
                 Form(
                     NUMBERS,

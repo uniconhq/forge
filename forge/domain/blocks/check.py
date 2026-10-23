@@ -7,7 +7,7 @@ are one set, none named like a fact, and `all` is every run's. A block with
 more than one form is checked against the one its node fits, by the inputs
 it is given and whether each is a group's runs; a node fitting none is
 refused naming the forms. A form or a leaf only a leaderboard's column may use
-(`Scope.BOARD`, `BOARD_LEAVES`) is refused in a task's value, naming
+(`Scope.LEADERBOARD`, `LEADERBOARD_LEAVES`) is refused in a task's value, naming
 where it belongs. A tree is at most `MOST_NODES` nodes and
 `MOST_DEPTH` deep, and a task has at most `MOST_VALUES` values and
 `MOST_GROUPS` groups, each measured before anything is walked, since every

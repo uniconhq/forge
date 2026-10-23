@@ -38,7 +38,7 @@ the check a save of the contest's settings runs over them.
   regraded task's submissions read once by the attempts that counted when
   the regrade began and once with its own added (`Side`, `regrade_sides`).
 - **A read works out** only the leaderboards asked for, the leaderboards their columns
-  read, and the columns of those (`BoardsCheck.needed`), and loads only the
+  read, and the columns of those (`LeaderboardsCheck.needed`), and loads only the
   tasks those read.
 - **What a row's cells counted** of one task (`chosen`): those a cell
   shown to its own entrant counted, which the task's page reads to serve

@@ -71,7 +71,7 @@ leaderboards:
     sort: [{points: desc}]
     display: [points]
 """
-"""A board reading which of sum's submissions an entrant marks."""
+"""A leaderboard reading which of sum's submissions an entrant marks."""
 
 GROUPS = b"""\
 test_groups:

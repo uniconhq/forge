@@ -6,7 +6,7 @@ from pydantic import Field, PlainValidator, model_validator
 from forge.domain.yaml_models import Line, Model, fail
 
 COLUMN_NAME = re.compile(r"^[a-z][a-z0-9_-]*$")
-"""A board's column's name: lower case letters, digits, hyphens and
+"""A leaderboard's column's name: lower case letters, digits, hyphens and
 underscores, starting with a letter, as a formula reads it once each `-`
 is written `_`."""
 COLUMN_LONGEST = 40
@@ -48,7 +48,7 @@ class LeaderboardAudience(Model):
 
 
 STAFF_ONLY = LeaderboardAudience()
-"""A board with no `audience`: staff's alone (#512)."""
+"""A leaderboard with no `audience`: staff's alone (#512)."""
 
 
 def _column_name(value: object) -> str:

@@ -30,7 +30,7 @@ submission whose number changed, old to new, and each run whose verdict
 changed, so a submission that now fails to compile is told
 (`run_changes`). Its values have no direction (#490): up and down are a
 row's place on a leaderboard, which the leaderboard's sort says, and each leaderboard that
-reads the task gives its rows before and after (`BoardDiff`, from phase
+reads the task gives its rows before and after (`LeaderboardDiff`, from phase
 5.5).
 """
 

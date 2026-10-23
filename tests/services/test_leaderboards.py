@@ -64,13 +64,13 @@ leaderboards:
     sort: [{total: desc}]
     display: [total]
 """
-"""A board for everyone over islands' sample score, shown at once, and its
+"""A leaderboard for everyone over islands' sample score, shown at once, and its
 total, shown after the close; and a gradebook each entrant reads alone."""
 
 OPEN = LIVE + LEADERBOARDS
 HOLD_FROM = datetime(2026, 9, 26, 14, tzinfo=UTC)
 HELD = LIVE + "hold: {from: 2026-09-26T14:00:00Z, until: staff}\n" + LEADERBOARDS
-"""The boards, held from 14:00 until staff end it."""
+"""The leaderboards, held from 14:00 until staff end it."""
 
 
 def at(hour: int, minute: int) -> datetime:
@@ -235,7 +235,7 @@ leaderboards:
           - {block: max, over: {results: b}, of: {value: [b, score]}}
     display: [tries, best]
 """
-"""A board whose columns each read a task released at the start and one
+"""A leaderboard whose columns each read a task released at the start and one
 released at 13:00."""
 
 
@@ -332,7 +332,7 @@ async def test_the_contest_home_shows_an_entrant_their_own_row_of_each_leaderboa
 
 
 RANKED = OPEN.replace("sort: [{sample: desc}, {tries: asc}]", "sort: [{total: desc}]", 1)
-"""The boards, the one for everyone ranked by the total shown after the
+"""The leaderboards, the one for everyone ranked by the total shown after the
 close."""
 
 

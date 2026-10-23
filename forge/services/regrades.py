@@ -30,7 +30,7 @@ what changed, by the tests' verdicts alone.
   it counted under then, a bounded few and the rest counted; how many
   are still running, and how many it cannot compare; and, for a
   manager or admin of the contest alone, each leaderboard that reads the task
-  before and after (`BoardDiff`, from phase 5.5).
+  before and after (`LeaderboardDiff`, from phase 5.5).
 
 Each reads where an attempt stands as every read does, so a failure it
 finds starts that attempt's retry by itself (`gradings.notice`).

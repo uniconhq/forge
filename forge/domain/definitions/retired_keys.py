@@ -146,7 +146,7 @@ IGNORED_ON_READ = ("on_system_error", "freeze_at")
 """Retired contest keys that nothing took the place of, so a stored file that
 still holds one reads with it ignored, and only a save that has it is
 refused, naming it. Leaderboards written in the old list form are ignored
-on read the same way (`_old_boards`): a stored contest reads with no boards
+on read the same way (`_old_leaderboards`): a stored contest reads with no leaderboards
 until a save writes them as columns."""
 ENTRY_IGNORED_ON_READ = ("worth", "late_per_day")
 """Retired keys of a task's entry, ignored on read and refused in a save the

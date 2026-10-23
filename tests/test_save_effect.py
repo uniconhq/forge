@@ -29,7 +29,7 @@ leaderboards:
     title: Standings
     columns:
       sum_total: {value: [{block: latest, from: {results: sum}}, total]}
-  other_board:
+  other_leaderboard:
     title: Other
     columns:
       other_total: {value: [{block: latest, from: {results: other}}, total]}

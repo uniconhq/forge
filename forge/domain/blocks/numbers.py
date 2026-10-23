@@ -20,7 +20,7 @@ from fractions import Fraction
 
 SIGNIFICANT = 30
 """The significant digits a rational that is no finite decimal is given in,
-far past any two numbers a board tells apart."""
+far past any two numbers a leaderboard tells apart."""
 MOST_EXPONENT = 1000
 """The largest exponent, up or down, of a decimal read as a number."""
 
