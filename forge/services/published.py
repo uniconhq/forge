@@ -34,8 +34,11 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from forge.db.tables import Grading
+from forge.db.tables import Grading, Release
 from forge.db.tables.gradings import PASSED, SAVE
+from forge.db.tables.releases import RELEASED
+from forge.domain.blocks.evaluate import Column
+from forge.domain.checks import check_only
 from forge.domain.content import check_path
 from forge.domain.definitions import (
     CONTEST_FILE,
@@ -55,6 +58,7 @@ from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.publications import Publication
 from forge.domain.run_plan import RunPlan
+from forge.domain.run_results import compilers
 from forge.domain.run_task import RUNS_PATH, Run, RunsFile, file_time
 from forge.domain.showing import generation_of
 from forge.domain.submissions import Field, fields_of, run_fields_of
@@ -236,27 +240,54 @@ changes, so the time only bounds what is held."""
 @dataclass(frozen=True, slots=True)
 class RunsHeld:
     """A run task's latest publication as its entrants' results read it:
-    its runs in the task's order, and every file it holds.
+    its runs in the task's order, every file it holds, each report's
+    column as its plan gives it, the steps whose compile error `compiled`
+    reads (`run_results.compilers`), and the values that read a column the
+    entrant could set, as its save checked them (#504).
     """
 
     runs: tuple[Run, ...]
     files: frozenset[str]
+    columns: Mapping[str, Column] = field(default_factory=dict)
+    compiling: frozenset[str] = frozenset()
+    self_reported: frozenset[str] = frozenset()
 
 
 async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
-    """The runs and files of a run task's latest publication, read once,
-    since a publication never changes. A publication's runs file always
-    reads, as its save wrote it, so one that does not fails loudly.
+    """The runs, files and plan of a run task's latest publication, read
+    once, since a publication never changes. A publication's runs file and
+    plan always read, as its save wrote them, so one that does not fails
+    loudly.
     """
     version = published.publication.version
 
     async def read() -> RunsHeld:
         found = await ctx.forge.content.read_file(PLATFORM, published.id, RUNS_PATH, at=version)
+        planned = await ctx.forge.content.read_file(PLATFORM, published.id, PLAN_PATH, at=version)
         listed = await ctx.forge.content.list_files(PLATFORM, published.id, at=version)
-        return RunsHeld(RunsFile.from_bytes(found.content).runs, frozenset(listed.tokens))
+        runs = RunsFile.from_bytes(found.content)
+        plan = RunPlan.from_bytes(planned.content)
+        return RunsHeld(
+            runs.runs,
+            frozenset(listed.tokens),
+            {name: entry.column() for name, entry in plan.reports.items()},
+            compilers(plan),
+            runs.self_reported_values,
+        )
 
     key = f"published.runs.{published.id}.{version}"
     return await ctx.memo.remembered(key, FORM_KEPT, read)
+
+
+async def plan_at(ctx: Context, task: TaskId, version: VersionId) -> RunPlan:
+    """The plan of a run task's publication at `version`, read once, since
+    a publication never changes."""
+
+    async def read() -> RunPlan:
+        found = await ctx.forge.content.read_file(PLATFORM, task, PLAN_PATH, at=version)
+        return RunPlan.from_bytes(found.content)
+
+    return await ctx.memo.remembered(f"published.plan_at.{task}.{version}", FORM_KEPT, read)
 
 
 async def form(ctx: Context, published: PublishedTask) -> TaskForm:
@@ -311,6 +342,30 @@ async def statement_written_at(ctx: Context, task: TaskId, version: VersionId, k
     return await ctx.memo.remembered(f"published.statement.{task}.{key}", FORM_KEPT, read)
 
 
+async def results_released(ctx: Context, task: TaskId) -> bool:
+    """Whether the task's results are released now: its latest action a
+    release, never when it has none. Read afresh on every call and never
+    kept, so a take-back hides `on_release` from every reader at once.
+    """
+    return await released_since(ctx, task) is not None
+
+
+async def released_since(ctx: Context, task: TaskId) -> datetime | None:
+    """When the release that stands was made, by the package's clock, none
+    when the task's results are not released: its latest action, in the
+    order the rows were written (`releases.seq`), is not a release.
+    """
+    latest = (
+        await ctx.db.execute(
+            select(Release.action, Release.acted_at)
+            .where(Release.task_id == task)
+            .order_by(Release.seq.desc())
+            .limit(1)
+        )
+    ).one_or_none()
+    return latest.acted_at if latest is not None and latest.action == RELEASED else None
+
+
 @dataclass(frozen=True, slots=True)
 class PublicFile:
     """A file a task shows its readers, as its latest publication, or for an
@@ -335,18 +390,30 @@ def public_path(path: str) -> str:
 
 
 def shown_now(
-    definition: TaskDefinition, path: str, *, reveal: datetime | None, now: datetime
+    definition: TaskDefinition,
+    path: str,
+    *,
+    reveal: datetime | None,
+    now: datetime,
+    released: bool = False,
 ) -> bool:
     """Whether the task shows its readers the file at `path` now: one under
     `public/`; or for a run task, one its `show` lists, or a folder it is in,
-    under `now`, or under `after_close` once the task's reveal has passed.
-    `on_release` shows nothing until a release, which Unicon has no action
-    for yet, and a file no entry lists is never shown.
+    under `now`, under `after_close` once the task's reveal has passed, or
+    under `on_release` while the task's results are `released`. A file no
+    entry lists is never shown, nor one only a check names
+    (`checks.check_only`), whatever `show` lists.
     """
     if definition.scoring is None:
         return path.startswith(PUBLIC_FOLDER)
+    if check_only(definition, path):
+        return False
     time = file_time(definition.scoring, path)
-    return time == "now" or (time == "after_close" and reveal is not None and reveal <= now)
+    return (
+        time == "now"
+        or (time == "after_close" and reveal is not None and reveal <= now)
+        or (time == "on_release" and released)
+    )
 
 
 async def public_file(
@@ -354,13 +421,22 @@ async def public_file(
 ) -> PublicFile:
     """The file at `path` as the task's latest publication holds it, when
     the task shows it now (`shown_now`, `reveal` being when the task closes
-    for every row, which a run task's `after_close` waits for), read as the
+    for every row, which a run task's `after_close` waits for, and its
+    `on_release` waiting on `results_released`), read as the
     platform, its large-file object's bytes for an upload. The caller has
     checked the reader may read the task and the path with `public_path`.
     `NotFound` for a file not shown or not there, and `PublicFileTooLarge`
     for one over `PUBLIC_MOST` bytes, read no further.
     """
-    if not shown_now(published.definition, path, reveal=reveal, now=ctx.now):
+    scoring = published.definition.scoring
+    # The release is read afresh each time, so a take-back hides the file at
+    # once.
+    released = (
+        scoring is not None
+        and file_time(scoring, path) == "on_release"
+        and await results_released(ctx, published.id)
+    )
+    if not shown_now(published.definition, path, reveal=reveal, now=ctx.now, released=released):
         raise NotFound(NO_SUCH_FILE)
     version = published.publication.version
     await ctx.let_go()

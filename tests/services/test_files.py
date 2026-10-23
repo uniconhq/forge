@@ -320,7 +320,7 @@ async def _submitted(setup: Setup, acme: Acme, entered: Entered) -> None:
     )
 
 
-async def test_a_worth_or_a_due_on_a_task_that_gives_no_points_is_refused_at_its_line(
+async def test_a_worth_on_a_task_that_gives_no_points_is_refused_at_its_line_and_a_due_is_not(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     current = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
@@ -345,14 +345,12 @@ async def test_a_worth_or_a_due_on_a_task_that_gives_no_points_is_refused_at_its
             "sum gives no points, so it cannot have a worth. Leave this empty, and rank it by a "
             "value instead.",
         ),
-        (
-            "tasks[0].due",
-            "sum gives no points, so a due time would change nothing. Give it a closing time "
-            "instead.",
-        ),
     ]
+    # Any task may have a due (stage 5, phase 5.7).
     assert await _write_contest(
-        setup, acme, _running(SUM_ENTRY + "    closes: 2026-09-26T14:00:00Z\n")
+        setup,
+        acme,
+        _running(SUM_ENTRY + "    due: 2026-09-26T14:00:00Z\n    closes: 2026-09-26T14:00:00Z\n"),
     )
 
 

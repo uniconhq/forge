@@ -20,13 +20,23 @@ holds the early runs and, when any run is early, every step done once per
 grading; when none is, but a value shown `now` reads `compiled`, the steps
 done once per grading that can give a compile error and are not tainted,
 with what they read. The late one holds the rest. Steps done at the save are
-a pipeline of their own. Each pipeline lists its Woodpecker steps: one per
-step done once, one per step of a primitive that takes a batch holding the
-pipeline's runs of it in run order, and one per run of any other step, each
-with `depends_on` from the wiring and the container's limits, time summed
-over its runs and the rest the most of any, memory with room for the files
-`exec` and `interact` copy into their boxes, since the container holds
-what a step copies.
+a pipeline of their own. A grading made while the task's results are
+released counts what `on_release` lists as shown during the contest too,
+so the plan holds that split as well, where it differs (`released`), and
+each grading reads the one it was made with (`RunPlan.for_split`). Each
+pipeline lists its Woodpecker steps: one per step done once, one per step
+of a primitive that takes a batch holding the pipeline's runs of it in run
+order, and one per run of any other step, each with `depends_on` from the
+wiring and the container's limits, time summed over its runs and the rest
+the most of any, memory with room for the files `exec` and `interact` copy
+into their boxes, since the container holds what a step copies.
+
+A value's `exec` program adds two steps no workflow names, each marked
+with its value (`RunStep.value`): `build-<value>`, compiling its folder at
+the save, and `exec-<value>`, run once per grading at the end of the
+pipeline its value is shown from, after every step there, on the runs
+file the forge builds from its group's runs (`RUNS_FILE`), at most
+`RUN_ENTRY_KB` a run. Neither is any run's step.
 
 Each pipeline runs in one slot of a grading machine (`Slot`), and the
 steps Woodpecker runs side by side share its memory. So a pipeline is laid
@@ -36,6 +46,15 @@ order while their memory adds up within the slot, and a step that runs no
 boxes, whose container may use the whole slot, is a stage alone
 (`_chained`). The pipeline's `size` label is the smallest slot that holds
 the most its steps can use at once (`slot_of`).
+
+A task's checks (SIMPLER-CORE.md 9.6) are graded in the save's pipeline:
+each check copies every step graded per submission (`RunStep.check`),
+named `c<check>-<step>`, given the check's files and values where the
+entrant's would be, done for every run, once the save's own steps and the
+check before it have finished, so the save's pipeline holds the whole
+grading of each check (`_check_copies`). No grading reads a copy, and a
+file only a copy is given is not one the grading depends on
+(`RunPlan.task_paths`).
 
 A step is tainted (11.4) when it runs the entrant's code and gets, directly
 or through earlier steps, a file entrants are not shown during the contest
@@ -50,14 +69,24 @@ whose own steps are tainted (15.4).
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field, PlainValidator
 
 from forge.domain import exact_json
+from forge.domain.checks import (
+    CHECKS_ROOM,
+    COPY_MOST,
+    RUNS_KEPT,
+    TaskCheck,
+    check_paths,
+    check_room,
+    copy_of,
+)
 from forge.domain.content import named_by
 from forge.domain.contracts import violation
-from forge.domain.definitions import DEFAULT_MAX_SIZE, Scoring, TaskDefinition
+from forge.domain.definitions import DEFAULT_MAX_SIZE, VALUE_NAME, Scoring, TaskDefinition
 from forge.domain.grading import WALL_CEILING, Machine, Slot, wall_of
 from forge.domain.plans import (
     PLAN_PATH,
@@ -78,8 +107,9 @@ from forge.domain.primitives import (
     FromMax,
     FromSum,
     Port,
+    PrimitiveDeclaration,
 )
-from forge.domain.run_task import RUN_ID, SHOWN_WORDS, Part, RunTask, file_time
+from forge.domain.run_task import RUN_ID, SHOWN_WORDS, Part, RunTask, file_time, show_names
 from forge.domain.run_workflow import ResolvedStep, RunWorkflowCheck
 from forge.domain.types import FILES, Type
 from forge.domain.workflow_definition import (
@@ -96,6 +126,24 @@ SCHEMA_VERSION: Literal[6] = 6
 StepClass = Literal["save_once", "save_per_run", "grading_once", "grading_per_run"]
 PipelineKind = Literal["save", "early", "late"]
 PIPELINES: tuple[PipelineKind, ...] = ("save", "early", "late")
+GradingKind = Literal["early", "late"]
+"""The pipelines of a grading, which a release may lay out otherwise."""
+RELEASE_MOVED = (
+    "What a release shows moved, so a grading made while results are released runs other runs "
+    "early."
+)
+"""The words a save says when it moves only the released split, which
+grades nothing again while the task's results are not released."""
+COMPILE_USE = "unicon/compile@v3"
+EXEC_USE = "unicon/exec@v1"
+PROGRAM_USES = (COMPILE_USE, EXEC_USE)
+"""The primitives a value's `exec` program is compiled and run with, which
+a save reads when a value has one."""
+RUNS_FILE = "runs.json"
+"""The name a value's program reads its group's runs under."""
+RUN_ENTRY_KB = 16
+"""The most one run takes in a program's runs file, which bounds the file
+as its box holds it."""
 ONCE: tuple[StepClass, ...] = ("save_once", "grading_once")
 CLASS_WORDS: dict[StepClass, str] = {
     "save_once": "once, at the save",
@@ -175,6 +223,17 @@ def _output_value(value: object) -> bool:
     )
 
 
+def _runs_value(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"runs"}
+        and isinstance(value["runs"], list)
+        and bool(value["runs"])
+        and all(isinstance(each, str) and RUN_ID.fullmatch(each) for each in value["runs"])
+        and len(set(value["runs"])) == len(value["runs"])
+    )
+
+
 def _run_value(value: object) -> dict[str, Any]:
     """One value of a step's inputs, in exactly one of the plan's shapes."""
     if not isinstance(value, dict):
@@ -196,7 +255,12 @@ def _run_value(value: object) -> dict[str, Any]:
         return value
     if keys == {"files"} and isinstance(value["files"], dict):
         for each in value["files"].values():
-            if not (_file_value(each) or _entrant_value(each) or _output_value(each)):
+            if not (
+                _file_value(each)
+                or _entrant_value(each)
+                or _output_value(each)
+                or _runs_value(each)
+            ):
                 raise ValueError(f"{each!r} is not a file a plan holds")
         return value
     if keys == {"programs"} and isinstance(value["programs"], dict) and value["programs"]:
@@ -275,12 +339,32 @@ class Item(Model):
     tainted: Taint | None = None
 
 
+class ValueStep(Model):
+    """The value a step serves the `exec` program of, never a workflow
+    step's: its name, and for the program's run, the report it gives the
+    value's number under."""
+
+    name: Annotated[str, Field(pattern=VALUE_NAME.pattern)]
+    report: str | None = None
+
+
+class CheckStep(Model):
+    """The check a step is a copy for: its place in the task's `checks`,
+    from 1, and the step it copies."""
+
+    index: Annotated[int, Field(ge=1)]
+    of: StepId
+
+
 class RunStep(Model):
     """One workflow step bound to the task's values: its class, its
     primitive and image, whether it may reach the network and takes the
     cache, the boxes one item uses at once, its outputs, its folder ports,
     whether its manifest program's reports are the entrant's, and its
     inputs once or an item per run, by run id, each with why it is tainted.
+    A value's program is two steps of its own (`value`): compiled once at
+    the save, and run once per grading after the runs it reads. A check's
+    copy of a step graded per submission says which (`check`).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
@@ -295,6 +379,8 @@ class RunStep(Model):
     folders: tuple[str, ...] | None = None
     self_reported: Literal[True] | None = None
     tainted: Taint | None = None
+    value: ValueStep | None = None
+    check: CheckStep | None = None
     inputs: Inputs | None = None
     items: dict[RunId, Item] | None = None
 
@@ -314,6 +400,16 @@ class PipelineStep(Model):
     runs: tuple[RunId, ...] | None = Field(default=None, min_length=1)
     depends_on: tuple[str, ...] = ()
     limits: StepLimits
+
+
+class ReleasedSplit(Model):
+    """The split a grading takes when it is made while the task's results
+    are released (9.4): the ids of the runs early then, and the early and
+    late pipelines then. The save pipeline is the same either way.
+    """
+
+    early: tuple[RunId, ...]
+    pipelines: dict[GradingKind, tuple[PipelineStep, ...]] = Field(default_factory=dict)
 
 
 class Confirmation(Model):
@@ -354,6 +450,7 @@ class RunPlan(Model):
     reports: dict[str, ReportEntry]
     notes: tuple[str, ...] = ()
     confirmations: tuple[Confirmation, ...] = ()
+    released: ReleasedSplit | None = None
 
     def to_bytes(self) -> bytes:
         """The plan as the file it is committed as: JSON with sorted keys,
@@ -376,6 +473,29 @@ class RunPlan(Model):
     def pipeline(self, kind: PipelineKind) -> tuple[PipelineStep, ...]:
         """The Woodpecker steps of one pipeline, none when it is left out."""
         return self.pipelines.get(kind, ())
+
+    def for_split(self, released: bool) -> RunPlan:
+        """The plan as a grading made `released` or not reads it: made
+        while the task's results are released, each run early as the
+        released split says and its early and late pipelines; otherwise,
+        or when a release moves nothing, the plan as it is.
+        """
+        split = self.released
+        if not released or split is None:
+            return self
+        early = set(split.early)
+        return self.model_copy(
+            update={
+                "runs": tuple(
+                    run.model_copy(update={"early": run.id in early}) for run in self.runs
+                ),
+                "pipelines": {
+                    **({"save": self.pipelines["save"]} if "save" in self.pipelines else {}),
+                    **split.pipelines,
+                },
+                "released": None,
+            }
+        )
 
     def items_of(self, held: PipelineStep) -> list[tuple[str | None, Inputs]]:
         """The inputs of each run a Woodpecker step holds, in its order, or of
@@ -408,8 +528,23 @@ class RunPlan(Model):
         )
 
     def task_paths(self) -> tuple[str, ...]:
-        """Every file of the publication a step is given, sorted."""
-        return tuple(sorted(self.task_files))
+        """Every file of the publication a step is given, sorted, but one
+        only a check's copies are given, on which no grading depends."""
+        copies: set[str] = set()
+        graded: set[str] = set()
+        for kind in PIPELINES:
+            for held in self.pipeline(kind):
+                read = self.files_read(held).task
+                (copies if self.steps[held.step].check is not None else graded).update(read)
+        return tuple(
+            sorted(path for path in self.task_files if path in graded or path not in copies)
+        )
+
+    def checks(self) -> tuple[int, ...]:
+        """The place of each of the task's checks, from 1, in order."""
+        return tuple(
+            sorted({step.check.index for step in self.steps.values() if step.check is not None})
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,7 +571,8 @@ def files_named(workflow: RunWorkflow, task: RunTask) -> FilesNamed:
     """What the plan of `task` names, which a save reads the facts of before
     it makes the plan.
     """
-    named_task: set[str] = set()
+    named_task: set[str] = {program.folder for program in task.programs.values()}
+    named_task |= check_paths(task.checks)
     named_workflow: set[str] = set()
     for step in workflow.steps:
         for found in _references_in(step.with_.values()):
@@ -552,13 +688,20 @@ def plan_runs(
     task_files: Mapping[str, FileFact],
     workflow_files: Mapping[str, FileFact],
     machine: Machine,
+    programs: Mapping[str, PrimitiveDeclaration] | None = None,
 ) -> RunPlanCheck:
     """The plan of the run task `definition`, as `check_run_task` checked it
     (`task`) against its workflow resolved at `commit` (`checked`).
     `task_files` and `workflow_files` hold the facts of every file
     `files_named` names, each folder's files each by itself; `machine` is
-    the largest a step may take. The task is read before any release, which
-    the forge has no action for yet.
+    the largest a step may take; `programs` the declarations of
+    `PROGRAM_USES`, by use, when a value has an `exec` program, which is
+    compiled at the save and run once per grading in the pipeline its
+    value is shown from, after its group's runs (`_Planner.programs`).
+    The plan holds both splits of a grading (9.4): the one made before any
+    release, and when a release moves anything, the one made while the
+    task's results are released (`RunPlan.released`), each fitted to the
+    machine.
     """
     assert definition.scoring is not None, "a run task has scoring once it is checked"
     planner = _Planner(
@@ -573,13 +716,51 @@ def plan_runs(
     )
     for step in workflow.steps:
         planner.bind(step.id, step.with_)
-    problems = [*cache_problems(checked), *order_problems(planner.classes, planner.reads)]
+    problems = [
+        *cache_problems(checked),
+        *order_problems(planner.classes, planner.reads),
+        *planner.shown_reports(),
+    ]
+    if task.programs:
+        assert programs is not None, "a save reads the program primitives when a value has one"
+        problems += planner.programs(programs[COMPILE_USE], programs[EXEC_USE])
     if problems:
         return RunPlanCheck(problems, None)
     pipelines = planner.pipelines()
-    problems = [*planner.fit(pipelines), *planner.refusals()]
+    on_release = planner.pipelines(released=True)
+    fitted = planner.fit(pipelines)
+    problems = [
+        *fitted,
+        *(problem for problem in planner.fit(on_release) if problem not in fitted),
+        *planner.refusals(),
+    ]
     if problems:
         return RunPlanCheck(problems, None)
+    early_released = task.early(released=True)
+    released = (
+        ReleasedSplit(
+            early=tuple(run.id for run in task.runs if run.id in early_released),
+            pipelines={kind: on_release[kind] for kind in ("early", "late") if kind in on_release},
+        )
+        if early_released != task.early() or on_release != pipelines
+        else None
+    )
+    copied, save, refused = _check_copies(
+        task,
+        planner.run_steps(),
+        pipelines.get("save", ()),
+        planner.whole(),
+        task_files,
+        len(planner.reports()),
+    )
+    if refused:
+        return RunPlanCheck(refused, None)
+    if save:
+        pipelines = {
+            kind: save if kind == "save" else pipelines[kind]
+            for kind in PIPELINES
+            if kind == "save" or kind in pipelines
+        }
     plan = RunPlan(
         workflow=PinnedWorkflow(
             ref=ref, id=workflow_id, commit=commit, files=dict(sorted(workflow_files.items()))
@@ -589,14 +770,15 @@ def plan_runs(
         runs=tuple(
             RunEntry(id=run.id, key=_key_json(run.key), early=run.early) for run in task.runs
         ),
-        steps=planner.run_steps(),
+        steps={**planner.run_steps(), **copied},
         pipelines=pipelines,
         reports=planner.reports(),
-        notes=tuple(planner.notes()),
+        notes=(*planner.notes(), *task.release_notes()),
         confirmations=tuple(
             Confirmation(column=column, inputs=tuple(sorted(inputs)))
             for column, inputs in sorted(task.self_reported.items())
         ),
+        released=released,
     )
     broken = violation(exact_json.loads(plan.to_bytes()), "plan")
     if broken is not None:
@@ -611,6 +793,186 @@ def plan_runs(
             None,
         )
     return RunPlanCheck([], plan)
+
+
+def _check_copies(
+    task: RunTask,
+    steps: Mapping[str, RunStep],
+    own: Sequence[PipelineStep],
+    whole: Sequence[PipelineStep],
+    task_files: Mapping[str, FileFact],
+    reports: int,
+) -> tuple[dict[str, RunStep], tuple[PipelineStep, ...], list[Problem]]:
+    """Each check's copies of the steps graded per submission, and the
+    save's pipeline with them after its `own` steps, check by check, each
+    check's laid out as `whole` lays a grading out; or what refuses them: a
+    copy's name taken or too long, a check's file larger than the entrant
+    may give, the pipeline then past the run ceiling, or the checks able
+    to keep more of the save's result than `CHECKS_ROOM`. None when the
+    task has no checks.
+    """
+    if not task.checks:
+        return {}, (), []
+    order = list(dict.fromkeys(held.step for held in whole))
+    problems: list[Problem] = []
+    copied: dict[str, RunStep] = {}
+    save = list(own)
+    for check in task.checks:
+        at = ("checks", check.index - 1)
+        rename = {step: copy_of(check.index, step) for step in order}
+        taken = next(
+            (name for name in rename.values() if name in steps or len(name) > COPY_MOST), None
+        )
+        if taken is not None:
+            problems.append(
+                Problem(
+                    path=path_text(at),
+                    message=f"Unicon names this check's copy of a step {taken}, which "
+                    + (
+                        "the workflow's step of that name already takes."
+                        if taken in steps
+                        else f"is longer than the {COPY_MOST} characters a step's name may be."
+                    )
+                    + " Remove the check, or use a workflow whose steps' ids are shorter.",
+                )
+            )
+            continue
+        problems += _too_large(task, check, at, task_files)
+        for step in order:
+            copied[rename[step]] = _copied(steps[step], step, check, rename, task)
+        before = _last(save)
+        for each in whole:
+            waits = tuple(copy_of(check.index, name) for name in each.depends_on)
+            save.append(
+                each.model_copy(
+                    update={
+                        "name": copy_of(check.index, each.name),
+                        "step": rename[each.step],
+                        "depends_on": waits or before,
+                    }
+                )
+            )
+    if problems:
+        return {}, (), problems
+    total = wall_of([held.limits.time_ms for held in save])
+    ceiling = WALL_CEILING.total_seconds()
+    if total > ceiling:
+        problems.append(
+            Problem(
+                path="checks",
+                message=f"The save's steps and its checks take {math.ceil(total / 60)} "
+                f"minutes, but a pipeline may take at most {int(ceiling // 60)}. Give fewer "
+                "checks.",
+            )
+        )
+        return {}, (), problems
+    room = len(task.checks) * check_room([run.key for run in task.runs], reports, len(order))
+    if room > CHECKS_ROOM:
+        problems.append(
+            Problem(
+                path="checks",
+                message=f"A failed check keeps up to {RUNS_KEPT} of its runs in the save's "
+                f"result, so these {len(task.checks)} checks could keep {room} bytes, more than "
+                f"the {CHECKS_ROOM} they may. Give fewer checks.",
+            )
+        )
+        return {}, (), problems
+    return copied, tuple(save), []
+
+
+def _last(steps: Sequence[PipelineStep]) -> tuple[str, ...]:
+    """The steps of a pipeline no other step of it waits for."""
+    waited = {name for held in steps for name in held.depends_on}
+    return tuple(held.name for held in steps if held.name not in waited)
+
+
+def _too_large(
+    task: RunTask, check: TaskCheck, at: Path, task_files: Mapping[str, FileFact]
+) -> list[Problem]:
+    """A file or folder a check gives that holds more than the entrant may
+    give that input."""
+    found: list[Problem] = []
+    for name, given in check.given.items():
+        most = task.entrant[name].form.max_size or DEFAULT_MAX_SIZE
+        for path in given.paths:
+            size = sum(task_files[each].size for each in named_by(task_files, path))
+            if size > most:
+                found.append(
+                    Problem(
+                        path=path_text((*at, "submit", name)),
+                        message=f"{path} holds {size} bytes, more than the {most} the entrant "
+                        f"may give as {name}.",
+                    )
+                )
+    return found
+
+
+def _copied(
+    step: RunStep, of: str, check: TaskCheck, rename: Mapping[str, str], task: RunTask
+) -> RunStep:
+    """Check `check`'s copy of `step`, the step `of`: done at the save, for
+    every run, given what the check gives where the entrant's inputs were,
+    and reading the check's copies of the steps it reads."""
+
+    def given(value: Any) -> Any:
+        return _for_check(value, check, rename, task)
+
+    return step.model_copy(
+        update={
+            "class_": "save_once" if step.once else "save_per_run",
+            "check": CheckStep(index=check.index, of=of),
+            "inputs": (
+                {port: given(value) for port, value in step.inputs.items()}
+                if step.inputs is not None
+                else None
+            ),
+            "items": (
+                {
+                    run: item.model_copy(
+                        update={
+                            "inputs": {port: given(value) for port, value in item.inputs.items()}
+                        }
+                    )
+                    for run, item in step.items.items()
+                }
+                if step.items is not None
+                else None
+            ),
+        }
+    )
+
+
+def _for_check(value: Any, check: TaskCheck, rename: Mapping[str, str], task: RunTask) -> Any:
+    """A bound value as a check's copy is given it: an entrant's file or
+    folder by the check's task path, any other entrant value, or text
+    written with one, by the check's value, and a step graded per
+    submission by the check's copy of it."""
+    if not isinstance(value, dict):
+        return value
+    if "entrant" in value:
+        given = check.part(value["entrant"], value.get("part"))
+        return {"task": given} if task.entrant[value["entrant"]].type in FILES else {"value": given}
+    if "template" in value:
+        parts = [spelled(check.part(part["entrant"], part.get("part"))) for part in value["parts"]]
+        return {"value": value["template"].format(*parts)}
+    if "step" in value and value["step"] in rename:
+        return {**value, "step": rename[value["step"]]}
+    if "files" in value:
+        return {
+            "files": {
+                name: _for_check(each, check, rename, task) for name, each in value["files"].items()
+            }
+        }
+    if PROGRAMS in value:
+        return {
+            PROGRAMS: {
+                program: {
+                    port: _for_check(each, check, rename, task) for port, each in inputs.items()
+                }
+                for program, inputs in value[PROGRAMS].items()
+            }
+        }
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -676,6 +1038,8 @@ class _Planner:
         self.output_mb: dict[str, int] = {}
         """The most any run of each step may write, which bounds a file it
         gives another step."""
+        self.program_steps: dict[str, RunStep] = {}
+        """The steps of each value's `exec` program, by id."""
 
     # Binding
 
@@ -962,12 +1326,118 @@ class _Planner:
             return 0
         return entrant.form.max_size or DEFAULT_MAX_SIZE
 
+    # A value's program
+
+    def programs(self, build: PrimitiveDeclaration, run: PrimitiveDeclaration) -> list[Problem]:
+        """The two steps of each value's `exec` program: `build-<value>`,
+        compiling the folder at the save, and `exec-<value>`, running it on
+        the JSON file of its group's runs the forge builds (`RUNS_FILE`),
+        its manifest the folder's `program.yaml`, under its limits, with
+        room for what it copies into its box. A workflow step of either
+        name is refused.
+        """
+        problems: list[Problem] = []
+        for name, program in self.task.programs.items():
+            ids = self.task.groups[program.group]
+            taken = [step for step in (f"build-{name}", f"exec-{name}") if step in self.classes]
+            if taken:
+                problems.append(
+                    Problem(
+                        path=path_text(("scoring", "values", name)),
+                        message=f"The workflow has a step called {taken[0]}, the name {name}'s "
+                        "program step takes. Rename the value or the step.",
+                    )
+                )
+                continue
+            compiles = {"source": {"task": program.folder}, "language": {"value": program.language}}
+            compiled = build.item_limits({})
+            self.bound[(f"build-{name}", None)] = _Bound(compiles, [], None, compiled)
+            inputs: dict[str, Any] = {
+                "program": {"step": f"build-{name}", "output": "program"},
+                "files": {"files": {RUNS_FILE: {"runs": list(ids)}}},
+                "manifest": {"task": program.manifest},
+                "time_limit": {"value": program.time_limit},
+                "memory_limit": {"value": program.memory_limit},
+            }
+            copies = [
+                _Copy(compiled["output_mb"] * 1024, f"the program of {name}", None),
+                _Copy(_pages(self.task_files[program.manifest].size), program.manifest, None),
+                _Copy(RUN_ENTRY_KB * len(ids), f"the runs {name} reads", None),
+            ]
+            limits = run.item_limits(
+                {"time_limit": program.time_limit, "memory_limit": program.memory_limit}
+            )
+            kb = sum(copy.kb for copy in copies)
+            least = (
+                math.ceil(Decimal(program.memory_limit) + Decimal(kb) / 1024) + PRIMITIVE_ROOM_MB
+            )
+            limits["memory_mb"] = max(limits["memory_mb"] + math.ceil(kb / 1024), least)
+            self.bound[(f"exec-{name}", None)] = _Bound(inputs, [], None, limits, copies)
+            self.raising[f"build-{name}"] = self.raising[f"exec-{name}"] = []
+            self.program_steps[f"build-{name}"] = RunStep.model_validate(
+                {
+                    "class": "save_once",
+                    "primitive": COMPILE_USE,
+                    "image": build.image,
+                    "network": build.network,
+                    "cache": build.cache,
+                    "outputs": _declared(build),
+                    "folders": ("source",),
+                    "value": {"name": name},
+                    "inputs": compiles,
+                }
+            )
+            self.program_steps[f"exec-{name}"] = RunStep.model_validate(
+                {
+                    "class": "grading_once",
+                    "primitive": EXEC_USE,
+                    "image": run.image,
+                    "network": run.network,
+                    "cache": run.cache,
+                    "boxes": 1,
+                    "outputs": {**_declared(run), program.report: Type.NUMBER.value},
+                    "value": {"name": name, "report": program.report},
+                    "inputs": inputs,
+                }
+            )
+        return problems
+
+    def _program_pipelines(
+        self, found: dict[PipelineKind, tuple[PipelineStep, ...]], *, released: bool
+    ) -> dict[PipelineKind, tuple[PipelineStep, ...]]:
+        """`found` with each value's program steps after the rest: its
+        compile at the save, and its run in the early pipeline when its
+        value is early (`RunTask.early_programs`), else the late one, each
+        waiting for every step before it, so the runs it reads are done.
+        """
+        early = self.task.early_programs(released=released)
+        held = dict(found)
+        for name in self.task.programs:
+            placed: list[tuple[PipelineKind, str]] = [
+                ("save", f"build-{name}"),
+                ("early" if name in early else "late", f"exec-{name}"),
+            ]
+            for kind, step in placed:
+                if step not in self.program_steps:
+                    continue
+                before = held.get(kind, ())
+                waited = {waits for each in before for waits in each.depends_on}
+                last = tuple(each.name for each in before if each.name not in waited)
+                made = PipelineStep(
+                    name=step, step=step, depends_on=last, limits=self._limits(step, None)
+                )
+                held[kind] = (*before, made)
+        return {kind: held[kind] for kind in PIPELINES if kind in held}
+
     # Pipelines
 
-    def pipelines(self) -> dict[PipelineKind, tuple[PipelineStep, ...]]:
-        early_runs = tuple(run.id for run in self.task.runs if run.early)
-        late_runs = tuple(run.id for run in self.task.runs if not run.early)
-        early_once = self._early_once(bool(early_runs))
+    def pipelines(self, *, released: bool = False) -> dict[PipelineKind, tuple[PipelineStep, ...]]:
+        """The pipelines of a grading made before any release, or with
+        `released`, of one made while the task's results are released."""
+        early = self.task.early(released=released)
+        early_runs = tuple(run.id for run in self.task.runs if run.id in early)
+        late_runs = tuple(run.id for run in self.task.runs if run.id not in early)
+        early_once = self._early_once(bool(early_runs), released=released)
         held: dict[PipelineKind, list[tuple[str, tuple[str, ...] | None]]] = {
             kind: [] for kind in PIPELINES
         }
@@ -990,9 +1460,36 @@ class _Planner:
             made = self._chained(self._pipeline(steps))
             if made:
                 found[kind] = made
-        return found
+        return self._program_pipelines(found, released=released)
 
-    def _early_once(self, any_early: bool) -> set[str]:
+    def whole(self) -> tuple[PipelineStep, ...]:
+        """Every step graded per submission laid out as one pipeline over
+        every run, each value's program after the rest: a check's grading,
+        done in the save's pipeline (`_check_copies`)."""
+        every = tuple(run.id for run in self.task.runs)
+        held: list[tuple[str, tuple[str, ...] | None]] = []
+        for step in self.workflow.steps:
+            placed = self.classes[step.id]
+            if placed == "grading_once":
+                held.append((step.id, None))
+            elif placed == "grading_per_run":
+                held.append((step.id, every))
+        made = self._chained(self._pipeline(held))
+        for name in self.task.programs:
+            program = f"exec-{name}"
+            if program in self.program_steps:
+                made = (
+                    *made,
+                    PipelineStep(
+                        name=program,
+                        step=program,
+                        depends_on=_last(made),
+                        limits=self._limits(program, None),
+                    ),
+                )
+        return made
+
+    def _early_once(self, any_early: bool, *, released: bool = False) -> set[str]:
         """The steps done once per grading in the early pipeline: every one
         when a run is early, since every run's verdict reads each; when none
         is but a value shown `now` reads `compiled`, those that can give a
@@ -1003,7 +1500,7 @@ class _Planner:
         once = [step.id for step in self.workflow.steps if self.classes[step.id] == "grading_once"]
         if any_early:
             return set(once)
-        if not self.task.compile_early():
+        if not self.task.compile_early(released=released):
             return set()
         found: set[str] = set()
         waiting = self._compilers()
@@ -1059,28 +1556,34 @@ class _Planner:
     def _chained(self, steps: tuple[PipelineStep, ...]) -> tuple[PipelineStep, ...]:
         """The pipeline in stages for the smallest slot that holds its
         largest step: a stage takes the next step while their memory adds up
-        within the slot and both run in boxes, and each step of a stage
-        waits for every step of the stage before that it does not wait for
-        already. A step that runs no boxes, whose container may use the
-        whole slot, so is a stage alone. With no slot, as without one that
-        holds the largest step, which `fit` refuses, it is as it was.
+        within the slot, their boxes, one for an `exec` step and one for each
+        program of an `interact` step, number no more than the slot's cores,
+        and both run in boxes, and each step of a stage waits for every step
+        of the stage before that it does not wait for already. A step that
+        runs no boxes, whose container may use the whole slot, is a stage
+        alone, and so is one with more boxes than the slot has cores. With
+        no slot, as without one that holds the largest step, which `fit`
+        refuses, it is as it was.
         """
         largest = max((step.limits.memory_mb for step in steps), default=0)
         slot = next((each for each in self.machine.slots if each.memory_mb >= largest), None)
         if slot is None:
             return steps
         stages: list[list[PipelineStep]] = []
-        held = 0
+        held = boxes = 0
         open_ = False
         for step in steps:
-            boxed = self.checked.steps[step.step].use.partition("@")[0] in BOXED
+            resolved = self.checked.steps[step.step]
+            boxed = resolved.use.partition("@")[0] in BOXED
             memory = step.limits.memory_mb
-            if open_ and boxed and held + memory <= slot.memory_mb:
+            given = len(resolved.programs) or 1
+            if open_ and boxed and held + memory <= slot.memory_mb and boxes + given <= slot.cores:
                 stages[-1].append(step)
                 held += memory
+                boxes += given
             else:
                 stages.append([step])
-                held = memory
+                held, boxes = memory, given
             open_ = boxed
         waits: dict[str, set[str]] = {}
         made: list[PipelineStep] = []
@@ -1304,6 +1807,27 @@ class _Planner:
             assert tainted is not None
         return chain, tainted["beside"]
 
+    def shown_reports(self) -> list[Problem]:
+        """A report `show` lists by itself that a step gives for each run,
+        which is shown with the runs of the groups `show` lists (stage 5
+        section 6 item 30). An entry naming a group or a value names that.
+        """
+        names = show_names(self.scoring)
+        problems: list[Problem] = []
+        for time, entries in self.scoring.show.lists().items():
+            for index, entry in enumerate(entries):
+                report = self.checked.reports.get(entry)
+                if report is None or entry in names or self.classes[report.step] in ONCE:
+                    continue
+                problems.append(
+                    Problem(
+                        path=path_text(("scoring", "show", time, index)),
+                        message=f"{entry} is reported for each run, so it is shown with the runs "
+                        "of the groups show lists. Remove it.",
+                    )
+                )
+        return problems
+
     def _shown(self) -> Iterable[tuple[str, int, str]]:
         """Each entry of `show` during the contest, with its time and place."""
         lists = self.scoring.show.lists()
@@ -1368,7 +1892,7 @@ class _Planner:
                     for run in self.task.runs
                 }
                 steps[step.id] = RunStep.model_validate({**common, "items": items})
-        return steps
+        return {**steps, **self.program_steps}
 
     def entrant_entries(self) -> dict[str, EntrantEntry]:
         return {
@@ -1389,10 +1913,20 @@ class _Planner:
             found[name] = ReportEntry(
                 step=report.step,
                 output=f"{report.program}.{report.output}" if report.program else report.output,
+                better=port.better if number and port is not None else None,
                 at_least=port.at_least if number and port is not None else None,
                 at_most=port.at_most if number and port is not None else None,
             )
         return found
+
+
+def _declared(declaration: PrimitiveDeclaration) -> dict[str, str]:
+    """A primitive's own outputs as a plan's step lists them, a `?` after
+    the name of one that may be missing."""
+    return {
+        f"{name}?" if port.optional else name: port.type.value
+        for name, port in declaration.outputs.items()
+    }
 
 
 def _references_in(values: Iterable[object]) -> list[Reference]:
@@ -1459,7 +1993,8 @@ def run_plan_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...
     workflow's version and files, each step added, removed or given other
     inputs, a release moving a primitive's image in place, runs added or
     removed, a task file a step is given, and what is shown during the
-    contest moving which runs are early. Empty for a first publication.
+    contest, before a release or while one stands, moving which runs are
+    early. Empty for a first publication.
     What a regrade reruns is not decided from this list.
     """
     if before is None:
@@ -1477,7 +2012,10 @@ def run_plan_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...
     elif old.workflow.commit != new.workflow.commit:
         changes.append(f"The workflow {new.workflow.ref} moved to another commit.")
     changes += _compared(old.workflow.files, new.workflow.files, "The workflow's file {}")
-    for step_id in [*new.steps, *(each for each in old.steps if each not in new.steps)]:
+    # A check's copy grades no submission, so it changes nothing here.
+    graded_old = [name for name, step in old.steps.items() if step.check is None]
+    graded_new = [name for name, step in new.steps.items() if step.check is None]
+    for step_id in [*graded_new, *(each for each in graded_old if each not in graded_new)]:
         was, now = old.steps.get(step_id), new.steps.get(step_id)
         if was is None:
             changes.append(f"The step {step_id} was added.")
@@ -1505,7 +2043,30 @@ def run_plan_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...
     }
     if moved:
         changes.append("What is shown during the contest moved, so other runs are graded early.")
+    released_before = {run.id: run.early for run in old.for_split(True).runs}
+    released_after = {run.id: run.early for run in new.for_split(True).runs}
+    if not moved and any(
+        released_before[run] != released_after[run]
+        for run in released_before
+        if run in released_after
+    ):
+        changes.append(RELEASE_MOVED)
     return tuple(dict.fromkeys(changes))
+
+
+def pin_moved(before: Snapshot | None, after: Snapshot) -> bool:
+    """Whether a save moves the workflow's pin (SIMPLER-CORE.md 11.8): the
+    task names another version or another workflow than the previous
+    publication's plan, or the same at another commit. A first
+    publication, or one whose plan does not read, moves none."""
+    if before is None or PLAN_PATH not in before.plans:
+        return False
+    try:
+        old = RunPlan.from_bytes(before.plans[PLAN_PATH])
+    except ValueError:
+        return False
+    new = RunPlan.from_bytes(after.plans[PLAN_PATH])
+    return (old.workflow.ref, old.workflow.commit) != (new.workflow.ref, new.workflow.commit)
 
 
 def steps_run_again(before: Snapshot | None, after: Snapshot) -> tuple[str, ...]:
@@ -1566,6 +2127,12 @@ def _runs_again(old: RunPlan, new: RunPlan, step_id: str, now: RunStep, again: s
                 return True
         elif "step" in value and value["step"] in again:
             return True
+        elif "runs" in value and (
+            old.reports != new.reports or any(new.steps[each].value is None for each in again)
+        ):
+            # A program reads its runs' verdicts and reports, which a step
+            # run again, or other reports, may change.
+            return True
     return False
 
 
@@ -1599,21 +2166,29 @@ def _counted(runs: Sequence[str]) -> str:
 
 __all__ = [
     "BOXED",
+    "COMPILE_USE",
+    "EXEC_USE",
     "PIPELINES",
+    "PROGRAM_USES",
+    "RELEASE_MOVED",
     "SCHEMA_VERSION",
     "FileFact",
     "FilesNamed",
     "FilesRead",
+    "GradingKind",
     "Item",
     "PinnedWorkflow",
     "PipelineKind",
     "PipelineStep",
+    "ReleasedSplit",
     "RunPlan",
     "RunPlanCheck",
     "RunStep",
     "StepClass",
+    "ValueStep",
     "files_named",
     "order_problems",
+    "pin_moved",
     "plan_runs",
     "run_plan_changes",
     "steps_run_again",

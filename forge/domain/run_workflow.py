@@ -108,6 +108,9 @@ TIME_LIMIT = "time_limit"
 REPORT_TEXTS = ("label", "message", "staff_message")
 """What a program given a manifest writes in its report folder beside its
 verdict and reports, each an output of `exec` of its name."""
+STAFF_OUTPUTS = ("staff_message", "extras")
+"""The outputs only staff see (SIMPLER-CORE.md 13), which no report may
+name, since a report is shown to entrants as `show` lists it."""
 MANIFEST_FROM_STEP = (
     "A manifest must be known when the workflow or the task is saved, and a step's output "
     "is known only when it runs. Give a file of the workflow, such as "
@@ -970,6 +973,13 @@ class _Checker:
         if found is None or found.kind != "steps" or found.output is None:
             self.refuse(at, "Give the step output this reports, as ${{ steps.<id>.<output> }}.")
             return
+        if found.output in STAFF_OUTPUTS:
+            self.refuse(
+                at,
+                f"{found.output} is only for staff to see, and a report is shown to entrants. "
+                "Report another output, or leave this one to staff.",
+            )
+            return
         try:
             step, port, made_by = self._output(found)
         except Refused as refused:
@@ -1064,6 +1074,7 @@ def _references_in(values: Iterable[object]) -> list[Reference]:
 
 
 __all__ = [
+    "STAFF_OUTPUTS",
     "Deferred",
     "InputManifest",
     "InputUse",

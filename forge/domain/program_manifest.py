@@ -26,7 +26,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from forge.domain import exact_json
-from forge.domain.scoring import Better
+from forge.domain.blocks.numbers import Better
 from forge.domain.workflow_definition import REPORT_NAME
 from forge.domain.yaml_models import (
     InvalidDefinition,

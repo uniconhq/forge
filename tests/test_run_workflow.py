@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from forge.domain.blocks.numbers import Better
 from forge.domain.errors import Rejected
 from forge.domain.plans import check_workflow
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
@@ -30,7 +31,6 @@ from forge.domain.run_workflow import (
     check_run_workflow,
     manifest_paths,
 )
-from forge.domain.scoring import Better
 from forge.domain.types import Type
 from forge.domain.workflow_combine import combinable
 from forge.domain.workflow_definition import (
@@ -656,7 +656,7 @@ def test_the_verdict_and_texts_of_the_organisers_programs_are_not_self_reported(
     assert found.reports["note"].self_reported_by == frozenset()
 
 
-@pytest.mark.parametrize("text", ["label", "message", "staff_message"])
+@pytest.mark.parametrize("text", ["label", "message"])
 def test_a_text_the_entrants_program_writes_beside_its_reports_is_self_reported(
     primitives: dict[str, PrimitiveDeclaration], text: str
 ) -> None:
@@ -671,6 +671,24 @@ def test_a_text_the_entrants_program_writes_beside_its_reports_is_self_reported(
     assert found.reports["note"].self_reported_by == {"code", "language"}
     assert found.reports["note"].made_by is None
     assert found.reports["solution_note"].self_reported_by == frozenset()
+
+
+@pytest.mark.parametrize("output", ["staff_message", "extras"])
+def test_a_report_never_names_what_only_staff_see(
+    primitives: dict[str, PrimitiveDeclaration], output: str
+) -> None:
+    given = document(CLASSIC_V3)
+    given["reports"]["note"] = f"${{{{ steps.compare.{output} }}}}"
+
+    found = checked(primitives, given, files(CLASSIC_V3))
+
+    assert found.problems == [
+        {
+            "path": "reports.note",
+            "message": f"{output} is only for staff to see, and a report is shown to "
+            "entrants. Report another output, or leave this one to staff.",
+        }
+    ]
 
 
 def test_the_verdict_of_a_program_inside_interact_is_recorded_per_program(

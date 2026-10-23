@@ -3,7 +3,7 @@ it has, what a save comes back as and what it did, and the inputs and test
 fields of the workflow the task names, which its form is built from.
 """
 
-from forge.domain.publications import Publication
+from forge.domain.publications import CheckRun, FailedCheck, Publication
 from forge.domain.save_effect import SaveEffect
 from forge.services.publications import (
     DeclaredField,
@@ -17,9 +17,11 @@ from forge.services.publications import (
 )
 
 __all__ = [
+    "CheckRun",
     "DeclaredField",
     "DeclaredInput",
     "Draft",
+    "FailedCheck",
     "Publication",
     "Published",
     "SaveEffect",

@@ -37,7 +37,10 @@ counted per pipeline (its line), a publication's save attempts once each.
 `run_user` is the user the row's steps run as, while it is not finished
 unique among the rows not finished. `taken_over_at` is when a save row that
 passed let its publication take over, the task graded again when that
-changed how it grades; none while that waits.
+changed how it grades; none while that waits. `released_split` says the
+grading takes its plan's released split (`RunPlan.for_split`): its early
+row was made while the task's results were released, and its late row and
+retries keep what their grading was made with.
 """
 
 import uuid
@@ -89,6 +92,7 @@ class Grading(Base, Timestamped):
     publication_id: Mapped[str]
     pipeline: Mapped[str] = mapped_column(server_default=text(f"'{EARLY}'"))
     early_id: Mapped[uuid.UUID | None]
+    released_split: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     run_user: Mapped[int | None]
     taken_over_at: Mapped[datetime | None]
     attempt: Mapped[int] = mapped_column(server_default=text("1"))
@@ -151,17 +155,26 @@ FRONT = Grading.pipeline == EARLY
 row of today's tasks, and a run task's early row; not a late row, which
 follows one, nor a save row, which has no submission."""
 
+
+def _failing(holds: str, items: str) -> str:
+    """A path to each of `items` for which `holds` is false or unknown,
+    unknown being a value of another type, so it fails as in Python."""
+    return f"{items} ? (!({holds}) || ({holds}) is unknown)"
+
+
 PASSED = and_(
     Grading.status == GradingStatus.DONE,
-    not_(
-        func.jsonb_path_exists(
-            Grading.result,
-            literal_column(
-                """'$.runs[*] ? (@.verdict != "accepted" && @.verdict != "skipped")'::jsonpath"""
-            ),
+    *(
+        not_(func.jsonb_path_exists(Grading.result, literal_column(f"'{path}'::jsonpath")))
+        for path in (
+            _failing('@.verdict == "accepted" || @.verdict == "skipped"', "$.runs[*]"),
+            _failing('@ == "accepted"', "$.once.outcomes.*"),
+            _failing("@.passed == true", "$.checks[*]"),
         )
     ),
 )
 """The rows `done` whose result accepts every run, a skipped one among
-them, as `step_data.all_accepted` tells it: a save row that lets its
-publication take over."""
+them, every step done once, and whose every check got what it expects,
+exactly as `step_data.all_accepted` tells it: a save row that lets its
+publication take over. A run with no verdict, or a check whose `passed`
+is missing or not `true`, fails it as it does in Python."""

@@ -12,14 +12,15 @@ Every write carries the token the file was read with, and a file that has
 moved since is `Conflict`, with nothing written. A write to a contest's
 `contest.yaml` is validated first and refused whole when it is not valid,
 or when it moves a task's timeline behind what rows already did, puts a
-worth or a due on a task that gives no points, or opens the contest while a
-task it lists is not published or its statement is not written
+worth on a task that gives no points, or opens the contest while a task it
+lists is not published or its statement is not written
 (`timelines.check_contest`),
-or when a board asks what a covered task's latest publication does not give
-or a task's marks fall below what a row holds (`boards.check_contest`),
-and a manager's change to one of its admin-only keys is refused naming each.
-One that is written answers with what C4 reports of its boards beside the
-version, as a task's save answers T9's (`Written`). A
+or when a board breaks the board check, reads what a task it reads does not
+give, or chooses by a mark, the hold's `from` leaves the contest or is set
+to a time passed, or a task's marks fall below what a row holds
+(`boards.check_contest`), and a manager's change to one of its
+admin-only keys is refused naming each. One that is written answers with
+what the check notes beside the version (`Written`). A
 write to a task is a save of the task, which publishes it when it is valid
 (`publications.save`). A rollback is not an undo: the file as it was at the
 chosen version is written back as a new change through the same write, so a
@@ -271,7 +272,7 @@ async def write(
         await timelines.hold_rules(ctx, contest)
         standing = await _last_read(ctx, organiser, contest, before)
         problems = await timelines.check_contest(ctx, contest, standing, after)
-        checked = await boards.check_contest(ctx, contest, after)
+        checked = await boards.check_contest(ctx, contest, standing, after)
         problems += checked.problems
         notes = checked.notes
         if problems:

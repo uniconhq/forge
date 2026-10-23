@@ -138,6 +138,9 @@ forge/api/
   boards.py     seen, organised, held, mark, unmark, written, and the
                 Standings, Key, Column, NotInView, Ranked, Cell,
                 OrganisedBoard, Marks, Points and EntrantOwner they return
+  blocks.py     CATALOGUE, every block a value may use, LEAVES, TASK_FACTS
+                and SKIP, and the Block, Form, BlockInput and Kind it is
+                made of
   gradings.py   cancel, retry, rejudge, list, run_log, task_of, feed,
                 queue_depth, and the GradingRecord, Rejudged, FeedEntry,
                 Submitter, QueueDepth and GradingStatus they return; list
@@ -561,13 +564,14 @@ grading machines reach the platform, `UNICON_PUBLIC_URL` unless given.
 with, by digest. Both are required when `UNICON_FORGE=forgejo`, since which
 images a deployment runs is its own choice, from its image manifest; the fake
 runs neither and names a placeholder digest unless given.
-`UNICON_SLOT_SIZES` is the grading machines' slot sizes, `name:MB` comma
-separated, which deploy writes from its `machine/slots.json`: a run task's
-pipeline is planned into the smallest slot that holds it and labelled with
-that size, and a save whose step needs more than the biggest is refused. It
-is required when `UNICON_FORGE=forgejo`; the fake plans with deploy's
-sizes unless given. A missing or malformed variable stops the process at start with the
-variable named.
+`UNICON_SLOT_SIZES` is the grading machines' slot sizes, `name:cores:MB`
+comma separated, at least one, which deploy writes from its
+`machine/slots.json`: a run task's pipeline is planned into the smallest
+slot that holds it, its stages running no more boxes at once than the
+slot's cores, and labelled with that size, and a save whose step needs more
+than the biggest is refused. It is required when `UNICON_FORGE=forgejo`;
+the fake plans with deploy's sizes unless given. A missing or malformed
+variable stops the process at start with the variable named.
 
 ## Cookies
 
@@ -1804,7 +1808,8 @@ that task, and `queued`, since the CI asks while the start is under way,
 and every other variable must be the one the platform starts that
 grading's run with. The answer, `{"configs": [{"name": "grading", "data":
 ...}]}`, is the same every time for the same run: `labels` from
-`UNICON_COMPUTE`; under `clone:` two full steps, `task` and `submission`,
+`UNICON_COMPUTE` and no size, so it takes a grading machine's slot of
+any size; under `clone:` two full steps, `task` and `submission`,
 each running `UNICON_CLONE_IMAGE` with `remote`, `sha`, `ref` (the
 `published/<n>` or `submission/<n>` tag) and `path` (`/woodpecker/task`,
 `/woodpecker/submission`) set, `lfs` on for both, the machine's

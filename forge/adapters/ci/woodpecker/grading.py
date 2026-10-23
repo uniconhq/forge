@@ -33,7 +33,8 @@ draft, so the answer to the extension pins both checkouts itself. It is one
 workflow, `grading`, the same every time for the same run:
 
 - `when` the run is started by hand, which every grading run is;
-- `labels` from `UNICON_COMPUTE`, `pool:platform` becoming `pool: platform`;
+- `labels` from `UNICON_COMPUTE`, `pool:platform` becoming `pool: platform`,
+  and no size, so it takes a slot of any;
 - under `clone:`, two full steps, `task` and `submission`, each running the
   clone image with `remote`, `sha`, `ref` and `path` set, `lfs` on, and the
   machine's store of large files of the task's org mounted as
@@ -70,7 +71,7 @@ and answered with one workflow, `grading`:
 - `when` the run is started by hand, and `labels` the pool's, for a
   pipeline holding an `exec` or `interact` step the machine shape's,
   since a label picks a machine for the whole pipeline, and the size of
-  the slot it runs in and its lane;
+  the slot it runs in;
 - under `clone:`, one step, `clone`, the clone image by digest with
   `remote`, `sha` and `ref` set, `lfs` off, since each upload reaches its
   step by a link of its own, and no `environment`, so it stays a plugin
@@ -515,7 +516,9 @@ class WoodpeckerGrading:
         cache = lfs_cache_volume(places.task["org"])
         workflow = {
             "when": [{"event": "manual"}],
-            "labels": _labels(run.compute),
+            "labels": {
+                name: value for label in run.labels for name, value in _labels(label).items()
+            },
             "clone": [
                 _clone(
                     "task",

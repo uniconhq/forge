@@ -21,12 +21,10 @@ steps in order, and refuses before anything is written.
    to the workflow's inputs, its sealed steps found and its fit checked; and
    a group's `show` neither hides what was shown under any publication a
    graded submission ran under nor is left unsaid on a group added once the
-   task has a graded submission (T7, T10); and a task that gives no points
-   is refused while its contest's entry for it gives it a `worth` or a
-   `due`; and every board covering the task gets what it asks of it, beside
-   the other covered tasks as their latest publications stand (check 10,
-   T8, `boards.check_task`). A workflow is named `<owner>/<name>`, the owner an org by its name or a
-   person by their username; when the latest publication used a workflow of
+   task has a graded submission (T7, T10); a task that gives no points is
+   refused while its contest's entry for it gives it a `worth`. A workflow
+   is named `<owner>/<name>`, the owner an org by its name or a person by their
+   username; when the latest publication used a workflow of
    that name and it is now another workflow, by the forge's own id for it,
    the state is refused at that line, since the owner may have been renamed
    and the name taken by someone else. No org holds a secret yet, so a
@@ -44,8 +42,12 @@ steps in order, and refuses before anything is written.
    (`run_task.check_run_task`), reading each `program.yaml` the task gives
    and keeping its runs' ids from the latest publication's runs file; what
    its `show` listed under a publication a graded submission ran under is
-   not listed later or dropped; and its contest gives it no `worth`, `due`
-   or board until leaderboards come.
+   not listed later or dropped; its contest gives it no `worth` or late
+   share, since a leaderboard reads its values instead; and the task keeps
+   every value a leaderboard of its contest reads, by its name, and gives
+   no column a reason to be refused across files, such as a value a pick
+   chooses by now reading a mark (`board_checks.across`), each problem
+   naming the board and the column.
 3. What the save changes about how the task grades is worked out against
    the latest publication: its plan and the digests of the task's files the
    plan names. Groups, rule weights, `show`, `credit` and `submissions` are
@@ -75,10 +77,9 @@ steps in order, and refuses before anything is written.
    workflow each workflow name was, what the task's sealed steps hold back
    until its reveal, and what each value it reports means. The save answers
    with what it did, in the same words a running contest asks with (M66):
-   each group's most points where they moved, the boards it joins or counts
-   again, and those whose scope a `show` change moves; and notes the task's
-   reveal and each board ranking `points` that counts nothing from it (T9).
-   When another
+   each group's most points where they moved, and the boards reading a value
+   it moves or, on a first publication, reading the task; and notes the
+   task's reveal. When another
    save landed between the check and the write, the change holds files this
    save never checked, so it is kept as a draft instead, saying so, and the
    next save checks and publishes the task as it then stands.
@@ -99,15 +100,18 @@ steps in order, and refuses before anything is written.
 import builtins
 import hashlib
 import json
+import uuid
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import exists, select
 
 from forge.db.tables import Grading
 from forge.db.tables.gradings import FRONT
-from forge.domain.board_checks import Covered, covered
+from forge.domain.blocks.catalogue import EXEC
+from forge.domain.blocks.evaluate import blocks_in
+from forge.domain.board_checks import Scored, across, boards_of
 from forge.domain.content import (
     ConflictToken,
     Edit,
@@ -128,6 +132,7 @@ from forge.domain.definitions import (
     ContestDefinition,
     Group,
     Show,
+    State,
     TaskDefinition,
     admin_only_changes,
     admin_only_refusal,
@@ -172,9 +177,12 @@ from forge.domain.roles import (
     task_scope,
 )
 from forge.domain.run_plan import (
+    PROGRAM_USES,
+    RELEASE_MOVED,
     FileFact,
     RunPlan,
     files_named,
+    pin_moved,
     plan_runs,
     run_plan_changes,
     steps_run_again,
@@ -184,12 +192,15 @@ from forge.domain.run_task import (
     RunsFile,
     RunTask,
     check_run_task,
+    fewer_runs,
     file_time,
     hidden_again,
     manifest_files,
     most_shown,
+    openness,
     self_reported_question,
     shown_under,
+    unreleased,
 )
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.save_effect import ReadChanges, SaveEffect, as_extra, effect_of
@@ -215,7 +226,7 @@ from forge.port.uploads import TaskPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
-    boards,
+    entries,
     gradings,
     names,
     pipelines,
@@ -236,6 +247,13 @@ LANDED_UNDER = (
     "Someone else saved this task while yours was being saved, so the task as it now stands "
     "was not checked. Save again to publish it."
 )
+PIN_ANSWER = "pin"
+"""What the answer to a save's question carries when the save moves the
+workflow's pin, so only an answer to that question confirms it."""
+PIN_MOVED = (
+    "This save moves the workflow's pin, so its submissions are graded again on the new "
+    "version. Once that regrade runs, its summary lists each value and verdict it changed."
+)
 SHOWN_WORDS = {
     Show.ALWAYS: "as soon as a grading ends",
     Show.VERDICT: "as an outcome before the reveal",
@@ -255,8 +273,10 @@ class Published:
     beside publishing it, its sealed steps and a bounded value its `credit`
     does not name, how many submissions it queued to be graded again, and
     what it did, in the words a running contest asks with before a save;
-    and `check`, where a run task's publication stands while its save row
-    has not let it take over (`pipelines.checks`), none otherwise.
+    `check`, where a run task's publication stands while its save row
+    has not let it take over (`pipelines.checks`), none otherwise; and
+    `regrade`, the regrade it started, for its summary, none when it
+    started none now.
     """
 
     publication: PublicationId
@@ -267,6 +287,7 @@ class Published:
     regraded: int
     effect: SaveEffect
     check: Check | None = None
+    regrade: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -360,6 +381,7 @@ async def save(
     newest = made[-1] if made else None
     changed: tuple[str, ...] = ()
     rerun: tuple[str, ...] | None = None
+    pinned = False
     read = ReadChanges()
     anew = True
     worded = False
@@ -371,6 +393,12 @@ async def save(
             # file, which say whether anything moved.
             after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
             changed = run_plan_changes(before, after)
+            pinned = pin_moved(before, after)
+            if RELEASE_MOVED in changed and not await published.results_released(ctx, task):
+                # The released split moved while no grading takes it: one
+                # made at a release takes it as it then stands, so nothing
+                # grades again for it (stage 5 section 6 item 44).
+                changed = tuple(each for each in changed if each != RELEASE_MOVED)
             rerun = steps_run_again(before, after)
             scoring = checked.definition.scoring if checked.definition is not None else None
             read = ReadChanges(
@@ -408,12 +436,28 @@ async def save(
         if checked.run_task is not None
         else None
     )
-    # A self-reported column is confirmed only by an answer to the question
-    # that named it: a bare confirm, or one to another question, is no answer.
+    # A self-reported column, or a pin moved, is confirmed only by an
+    # answer to the question that named it: a bare confirm, or one to
+    # another question, is no answer (stage 5 section 6 item 68).
     expected = basis if question is None else f"{basis}:{_marks_digest(checked.run_task)}"
-    confirmed = confirm and (asked == expected if question else asked in (None, basis))
+    if pinned:
+        expected = f"{expected}:{PIN_ANSWER}"
+    exact = question is not None or pinned
+    confirmed = confirm and (asked == expected if exact else asked in (None, basis))
     if not confirmed:
-        await _ask(ctx, task, checked, latest, question, changed, rerun, read, expected, anew=anew)
+        await _ask(
+            ctx,
+            task,
+            checked,
+            latest,
+            question,
+            changed,
+            rerun,
+            read,
+            expected,
+            anew=anew,
+            pinned=pinned,
+        )
 
     plans = await _plan_files(ctx, as_, task, head, checked)
     version = await _write(ctx, organiser, task, head, written, plans, said)
@@ -433,21 +477,21 @@ async def save(
         # graded as before: a save of the same files grades them again.
         # A task checked first is graded again when its check passes.
         regraded = 0
+        started: uuid.UUID | None = None
         if (
             newest.grading_changed
             and not _checked_first(checked)
             and await gradings.behind(ctx, task, newest.id)
         ):
-            regraded = (
-                await gradings.regrade(
-                    ctx,
-                    task,
-                    newest.id,
-                    cause=RegradeCause.SAVE,
-                    by=organiser.user.id,
-                    limit=checked.definition.submissions.max,
-                )
-            ).queued
+            regrading = await gradings.regrade(
+                ctx,
+                task,
+                newest.id,
+                cause=RegradeCause.SAVE,
+                by=organiser.user.id,
+                limit=checked.definition.submissions.max,
+            )
+            regraded, started = regrading.queued, regrading.regrade
         effect = await _effect(
             ctx, task, checked.definition, latest, (), regraded, ReadChanges(), checked.compiled
         )
@@ -465,6 +509,7 @@ async def save(
             regraded,
             effect,
             again,
+            started,
         )
     notes = (*notes, *await _report(ctx, task, checked.definition, checked))
     note = (
@@ -485,6 +530,14 @@ async def save(
     # A publication checked first is held back by its note until a save row
     # passes, so a save that fails once it is made leaves it unchecked, never
     # the task's (`published.live`).
+    if latest is not None:
+        # A value given an `entered` block the live version lacks starts with
+        # no marks, before any mark can be entered under the new version
+        # (stage 5 section 6 item 57).
+        prior = entries.entered_values(await _definition_of(ctx, task, latest))
+        added = entries.entered_values(checked.definition) - prior
+        if added:
+            await entries.start_again(ctx, task, added, organiser.user.id)
     publication = await ctx.forge.workspaces.publish(task, version, note)
     number = await _number_of(ctx, task, publication)
     checking: Check | None = None
@@ -494,17 +547,17 @@ async def save(
         )
         checking = "checking" if saving is not None else None
     regraded = 0
+    started = None
     if _regrades(changed, checked):
-        regraded = (
-            await gradings.regrade(
-                ctx,
-                task,
-                publication,
-                cause=RegradeCause.SAVE,
-                by=organiser.user.id,
-                limit=checked.definition.submissions.max,
-            )
-        ).queued
+        regrading = await gradings.regrade(
+            ctx,
+            task,
+            publication,
+            cause=RegradeCause.SAVE,
+            by=organiser.user.id,
+            limit=checked.definition.submissions.max,
+        )
+        regraded, started = regrading.queued, regrading.regrade
     if changed and _checked_first(checked):
         # Graded again once the save row passes: counted as the take-over
         # will choose them.
@@ -522,6 +575,7 @@ async def save(
         checked.compiled,
         steps=rerun,
         checked_first=_checked_first(checked),
+        programs=_programs_again(checked, rerun),
     )
     if newest is None:
         places.ahead_at(ctx, task)
@@ -535,7 +589,9 @@ async def save(
         regraded=regraded,
         user_id=organiser.user.id,
     )
-    return Published(publication, number, bool(changed), changed, notes, regraded, effect, checking)
+    return Published(
+        publication, number, bool(changed), changed, notes, regraded, effect, checking, started
+    )
 
 
 def _regrades(changed: tuple[str, ...], checked: Checked) -> bool:
@@ -566,28 +622,32 @@ async def _ask(
     basis: str,
     *,
     anew: bool,
+    pinned: bool = False,
 ) -> None:
     """Refuse a save not yet confirmed with `ConfirmationRequired` when it
     asks first: while its contest runs, before it publishes anything new
-    (#449); and for a run task, when a column the entrant could set is new
-    or set through other inputs than under the latest publication (#504).
-    One question asks both, `self_reported` listing each such column with
-    the entrant's inputs that let them set it, and `asked` being what a
-    confirmation answers it with, `basis`.
+    (#449); for a run task, when a column the entrant could set is new or
+    set through other inputs than under the latest publication (#504); and
+    when it moves the workflow's pin, `pinned`, with submissions to grade
+    again (11.8). One question asks all of them, `self_reported` listing
+    each such column with the entrant's inputs that let them set it, and
+    `asked` being what a confirmation answers it with, `basis`.
     """
     assert checked.definition is not None
-    asks: builtins.list[str] = []
-    if anew and await _contest_running(ctx, task):
-        asks.append("The contest is running, so this save asks before it publishes.")
-    if question is not None:
-        asks.append(question)
-    if not asks:
-        return
     regrades = (
         await gradings.to_regrade(ctx, task, limit=checked.definition.submissions.max)
         if changed
         else 0
     )
+    asks: builtins.list[str] = []
+    if anew and await _contest_running(ctx, task):
+        asks.append("The contest is running, so this save asks before it publishes.")
+    if pinned and regrades:
+        asks.append(PIN_MOVED)
+    if question is not None:
+        asks.append(question)
+    if not asks:
+        return
     effect = await _effect(
         ctx,
         task,
@@ -599,6 +659,7 @@ async def _ask(
         checked.compiled,
         steps=again,
         checked_first=_checked_first(checked),
+        programs=_programs_again(checked, again),
     )
     marks = checked.run_task.self_reported if question and checked.run_task else {}
     raise ConfirmationRequired(
@@ -691,9 +752,6 @@ async def check(
         )
     except InvalidDefinition as invalid:
         return Checked(definition, None, tuple(invalid.errors), pins)
-    refused = await _boards(ctx, task, definition, compiled)
-    if refused:
-        return Checked(definition, None, tuple(refused), pins)
     return Checked(definition, compiled, (), pins)
 
 
@@ -741,7 +799,7 @@ async def _check_runs(
     the task against it (`check_run_task`), each manifest the task gives
     read from the saved state, the ids of its runs kept from the latest
     publication's runs file; then what was shown is not hidden again, and
-    the contest's entry and boards ask nothing a run task cannot give yet;
+    the contest's entry asks nothing a run task cannot give;
     then its plan (`plan_runs`, SIMPLER-CORE.md 11), pinned to that commit,
     with the size and hash of every file a step is given.
     """
@@ -785,15 +843,13 @@ async def _check_runs(
     )
     problems = [
         *found.problems,
-        *await _shown_before_runs(ctx, task, definition, present),
+        *await _shown_before_runs(ctx, task, definition, present, found.task),
         *await _contest_points(ctx, task, definition),
+        *await _board_reads(ctx, task, definition),
     ]
     if problems:
         return Checked(definition, None, tuple(problems), pins)
     assert found.task is not None, "check_run_task gives a task whenever it finds nothing wrong"
-    refused = await _boards(ctx, task, definition, None)
-    if refused:
-        return Checked(definition, None, tuple(refused), pins)
     named = files_named(workflow, found.task)
     planned = plan_runs(
         definition,
@@ -806,6 +862,7 @@ async def _check_runs(
         task_files=await _task_facts(ctx, as_, task, head, written, present, named.task),
         workflow_files=await _workflow_facts(ctx, as_, read, files, named.workflow),
         machine=run_machine(ctx.settings.slot_sizes),
+        programs={use: primitives[use] for use in PROGRAM_USES if use in primitives},
     )
     if planned.plan is None:
         return Checked(definition, None, tuple(planned.problems), pins)
@@ -902,10 +959,15 @@ RUNS_UNREAD = (
 
 def _marks_digest(task: RunTask | None) -> str:
     """A short digest of the columns `task` marks self-reported and the
-    inputs that mark each, which a confirmation of them carries back.
+    inputs that mark each, and of the values reading them and those `show`
+    lists, which a confirmation of them carries back.
     """
     marks = task.self_reported if task is not None else {}
-    text = json.dumps({name: sorted(inputs) for name, inputs in sorted(marks.items())})
+    values = sorted(task.self_reported_values()) if task is not None else []
+    shown = sorted(task.self_reported_shown()) if task is not None else []
+    text = json.dumps(
+        [{name: sorted(inputs) for name, inputs in sorted(marks.items())}, values, shown]
+    )
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
@@ -971,33 +1033,13 @@ async def _format_kept(
     ]
 
 
-async def _boards(
-    ctx: Context, task: TaskId, definition: TaskDefinition, compiled: Compiled | None
-) -> builtins.list[Problem]:
-    """T8: what each board covering the task asks of it as saved."""
-    contest = await _contest(ctx, task)
-    name = (await names.names_of(ctx, [task])).get(task)
-    if contest is None or name is None:
-        return []
-    return await boards.check_task(
-        ctx, contest_id_of(task_scope(task)), contest, name, _shape(definition, compiled)
-    )
-
-
-def _shape(definition: TaskDefinition, compiled: Compiled | None) -> Covered:
-    """The task as a board reads it; a run task gives a board nothing yet."""
-    if compiled is None:
-        return covered({}, {}, runs=definition.runs)
-    return covered(compiled.measures, definition.test_groups, compiled.meanings)
-
-
 async def _report(
     ctx: Context, task: TaskId, definition: TaskDefinition, checked: Checked
 ) -> builtins.list[str]:
-    """T9 beside what the save's effect says: the task's reveal in words
-    when it hides anything (a group not shown at once, or a sealed step),
-    and each board ranking `points` that counts nothing from the task. Each
-    group's most points, and the boards the save moves, are the effect's.
+    """The note beside what the save's effect says: the task's reveal in words
+    when it hides anything (a group not shown at once, or a sealed step).
+    Each group's most points, and the boards the save moves, are the
+    effect's.
     """
     contest = await _contest(ctx, task)
     name = (await names.names_of(ctx, [task])).get(task)
@@ -1018,7 +1060,6 @@ async def _report(
         found.append(
             f"{name} shows its hidden results on {in_words(reveal_of(contest, entry, extensions))}."
         )
-    found += boards.task_notes(contest, name, _shape(definition, compiled))
     return found
 
 
@@ -1034,13 +1075,14 @@ async def _effect(
     *,
     steps: tuple[str, ...] | None = None,
     checked_first: bool = False,
+    programs: tuple[str, ...] = (),
 ) -> SaveEffect:
     """What saving `definition` over the latest publication does, in the
     words a running contest asks with before a save and a save that
     published answers with, each reported value named by its title in the
     save or, where the save no longer reports it, in the latest publication;
-    for a run task, the steps a submission runs again, and whether that
-    waits for the save's check.
+    for a run task, the steps a submission runs again, whether that waits
+    for the save's check, and the values whose program runs again.
     """
     name = (await names.names_of(ctx, [task])).get(task)
     before = await _definition_of(ctx, task, latest) if latest is not None else None
@@ -1064,6 +1106,22 @@ async def _effect(
         unread=latest is not None and before is None,
         steps=steps,
         checked_first=checked_first,
+        programs=programs,
+    )
+
+
+def _programs_again(checked: Checked, steps: tuple[str, ...] | None) -> tuple[str, ...]:
+    """The values whose `exec` program a submission runs again, each in a
+    container of its own, of the steps that run again."""
+    plan = checked.run_plan
+    if plan is None or not steps:
+        return ()
+    return tuple(
+        value.name
+        for step in steps
+        if step in plan.steps
+        and (value := plan.steps[step].value) is not None
+        and value.report is not None
     )
 
 
@@ -1158,27 +1216,103 @@ async def _shown_before(
 
 
 async def _shown_before_runs(
-    ctx: Context, task: TaskId, definition: TaskDefinition, present: Collection[str]
+    ctx: Context,
+    task: TaskId,
+    definition: TaskDefinition,
+    present: Collection[str],
+    run_task: RunTask | None,
 ) -> builtins.list[Problem]:
-    """T7 for a run task (SIMPLER-CORE.md 9.4 and 16): once the task has a
-    graded submission, what `show` listed under any publication a graded
-    submission ran under is listed as soon, or sooner; a folder it listed
-    stands for the files that publication held under it, each still in
-    `present` shown as soon whichever entry now lists it.
+    """T7 for a run task (SIMPLER-CORE.md 9.4 and 16): what `show` listed
+    under any publication a graded submission ran under, or whose files
+    were served (`_served`), is listed as soon, or sooner; a folder it
+    listed stands for the files that publication held under it, each still
+    in `present` shown as soon whichever entry now lists it. What it listed
+    under `on_release` counts only while the task's results are released,
+    and only from a publication that was the task's own at some time since
+    the release that stands, so what no release showed never holds a save
+    back, and after a take-back a save may drop it (stage 5 section 6 items
+    10 and 41). While released and before the reveal, `on_release` is
+    sooner than `after_close` (`openness`), so what a release shows stays
+    listed under `now` or `on_release` until the reveal. And a group or
+    value shown during the contest reads no fewer of the runs the task
+    still has (`fewer_runs`), checked once the task checks (`run_task`).
     """
-    graded = await _graded_under(ctx, task)
-    if not graded or definition.scoring is None:
+    if definition.scoring is None:
         return []
+    publications = await ctx.forge.workspaces.list_publications(task)
+    counted = await _graded_under(ctx, task) | await _served(ctx, task, publications)
+    if not counted:
+        return []
+    since = await published.released_since(ctx, task)
+    shown_by_release = (
+        set() if since is None else _own_since(await published.live(ctx, task, publications), since)
+    )
+    rank = openness(released=since is not None, revealed=await _task_revealed(ctx, task))
     shown = []
-    for publication in await ctx.forge.workspaces.list_publications(task):
-        if publication.id not in graded:
+    read = []
+    for publication in publications:
+        if publication.id not in counted:
             continue
         found = await _definition_of(ctx, task, publication)
         if found is None or found.scoring is None:
             continue
         held = await ctx.forge.content.list_files(PLATFORM, task, at=publication.version)
-        shown.append(shown_under(found.scoring, held.tokens.keys()))
-    return hidden_again(most_shown(shown), definition.scoring, present)
+        each = shown_under(found.scoring, held.tokens.keys())
+        if publication.id not in shown_by_release:
+            each = unreleased(each)
+        shown.append(each)
+        if run_task is not None:
+            runs = await _runs_file_of(ctx, task, publication)
+            if runs is not None:
+                read.append((each, runs.reads))
+    problems = hidden_again(most_shown(shown, rank), definition.scoring, present, rank)
+    if run_task is not None:
+        problems += fewer_runs(read, run_task)
+    return problems
+
+
+async def _task_revealed(ctx: Context, task: TaskId) -> bool:
+    """Whether the task has closed for every row of its contest, so what
+    `after_close` lists is shown; a contest or task that does not read has
+    not.
+    """
+    contest = await _contest(ctx, task)
+    name = (await names.names_of(ctx, [task])).get(task)
+    if contest is None or name is None:
+        return False
+    reveal = await timelines.reveal(ctx, contest_id_of(task_scope(task)), contest, name)
+    return reveal is not None and reveal <= ctx.now
+
+
+async def _served(
+    ctx: Context, task: TaskId, publications: Sequence[Publication]
+) -> builtins.set[str]:
+    """The publications whose files entrants may have been served: each
+    that was the task's own (`published.live`) at some time since its
+    timeline first released it, as the contest's settings read now.
+    """
+    contest = await _contest(ctx, task)
+    name = (await names.names_of(ctx, [task])).get(task)
+    entry = contest.entry(name) if contest is not None and name is not None else None
+    if contest is None or entry is None or contest.state is State.DRAFT:
+        return set()
+    opened = max(contest.start, contest.release_of(entry))
+    if opened > ctx.now:
+        return set()
+    return _own_since(await published.live(ctx, task, publications), opened)
+
+
+def _own_since(own: Sequence[Publication], since: datetime) -> builtins.set[str]:
+    """Each of the task's own publications, `own` in order, that was its
+    own at some time since `since`. A publication's time is from when it
+    was made to when the next one was, which a save row passing later than
+    that only shortens.
+    """
+    return {
+        each.id
+        for index, each in enumerate(own)
+        if index + 1 == len(own) or own[index + 1].at > since
+    }
 
 
 async def _groups_of(ctx: Context, task: TaskId, publication: Publication) -> Mapping[str, Group]:
@@ -1213,9 +1347,10 @@ async def _contest_points(
     ctx: Context, task: TaskId, definition: TaskDefinition
 ) -> builtins.list[Problem]:
     """Check 10's last part: a task that gives no points is refused while
-    its contest's entry for it gives it a `worth` or a `due`, naming the
-    contest's line, since every save of the contest would be refused there
-    from then on.
+    its contest's entry for it gives it a `worth`, naming the contest's
+    line, since every save of the contest would be refused there from then
+    on; a run task may not take a `late_per_day` either. Any task may have
+    a `due` (stage 5, phase 5.7).
     """
     if definition.gives_points:
         return []
@@ -1230,15 +1365,15 @@ async def _contest_points(
         said = []
         if entry.worth is not None:
             said.append(f"gives it a worth of {spelled(entry.worth)}")
-        if entry.due is not None:
-            said.append("gives it a due time")
+        if entry.late_per_day is not None and definition.runs:
+            said.append("takes a share of its points for each late day")
         if definition.runs:
             problems.extend(
                 Problem(
                     path="scoring",
-                    message=f"{name} is scored by its runs, and gives no points until "
-                    f"leaderboards come, but the contest {line}. Remove that from the contest "
-                    "first.",
+                    message=f"{name} is scored by its runs and gives no points, since a "
+                    f"leaderboard reads its values, but the contest {line}. Remove that from the "
+                    "contest first.",
                 )
                 for line in said
             )
@@ -1251,6 +1386,35 @@ async def _contest_points(
             )
             for line in said
         )
+    return problems
+
+
+async def _board_reads(
+    ctx: Context, task: TaskId, definition: TaskDefinition
+) -> builtins.list[Problem]:
+    """What the contest's leaderboards ask of the task (stage 5, phase 5.7),
+    against the values the save would give it: every value a column reads
+    of it is kept, by its name, and no column would be refused across files
+    for what the task's values now read (`board_checks.across`). Each
+    problem names the board and the column, at the value it is about when
+    the task still gives it, else at `scoring.values`. A board whose own
+    check finds anything is the contest's to mend, and asks nothing here.
+    A run task's save calls it; a task graded test by test gives a board
+    no results, and is not checked (stage 5 section 6, item 103).
+    """
+    if definition.scoring is None:
+        return []
+    contest = await _contest(ctx, task)
+    name = (await names.names_of(ctx, [task])).get(task)
+    if contest is None or name is None or not contest.leaderboards:
+        return []
+    values = definition.scoring.values
+    problems: builtins.list[Problem] = []
+    for each in across(contest, boards_of(contest), {name: Scored(values)}):
+        path = f"scoring.values.{each.value}" if each.value in values else "scoring.values"
+        problem = Problem(path=path, message=each.saved)
+        if problem not in problems:
+            problems.append(problem)
     return problems
 
 
@@ -1412,9 +1576,10 @@ async def _primitives(
     workflow: WorkflowDefinition | RunWorkflow,
 ) -> tuple[dict[str, PrimitiveDeclaration], tuple[Problem, ...]]:
     """The declaration of every primitive a step of the task's workflow
-    uses, read at its version as `as_`, and a problem at the `workflow` line
-    for each `use:` that cannot be read, is not a primitive, or does not
-    validate.
+    uses, read at its version as `as_`, and those a value's `exec` program
+    is compiled and run with (`PROGRAM_USES`) when a value has one, and a
+    problem at the `workflow` line for each `use:` that cannot be read, is
+    not a primitive, or does not validate, or at `scoring` for one of those.
     """
     found: dict[str, PrimitiveDeclaration] = {}
     problems: builtins.list[Problem] = []
@@ -1430,6 +1595,21 @@ async def _primitives(
             problems.append(Problem(path="workflow", message=where + problem))
         elif declaration is not None:
             found[use] = declaration
+    values = definition.scoring.values if definition.scoring is not None else {}
+    if any(blocks_in(tree, EXEC) for tree in values.values()):
+        for use in PROGRAM_USES:
+            if use in found or use in tried:
+                continue
+            declaration, problem = await primitives.declaration(ctx, as_, parse_workflow_ref(use))
+            if problem is not None:
+                problems.append(
+                    Problem(
+                        path="scoring",
+                        message=f"A value's exec program cannot run: {problem}",
+                    )
+                )
+            elif declaration is not None:
+                found[use] = declaration
     return found, tuple(problems)
 
 
@@ -1755,13 +1935,19 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
 async def list(ctx: Context, organiser: Organiser, task: TaskId) -> tuple[Publication, ...]:
     """Every publication of the task, oldest first, each saying whether it
     changed how the task grades, and a run task's that has not taken over
-    where it stands (`pipelines.checks`). Needs the observer role at the
-    task.
+    where it stands (`pipelines.checks`), and one refused each check that
+    failed it. Needs the observer role at the task.
     """
     require(organiser, task_scope(task), Role.OBSERVER)
     made = await ctx.forge.workspaces.list_publications(task)
     found = await pipelines.checks(ctx, task, made)
-    return tuple(replace(each, check=found.get(each.id)) for each in made)
+    failed = await pipelines.failed(
+        ctx, task, [name for name, check in found.items() if check == "refused"]
+    )
+    return tuple(
+        replace(each, check=found.get(each.id), failed_checks=failed.get(each.id, ()))
+        for each in made
+    )
 
 
 async def _held_pointer(

@@ -95,13 +95,15 @@ async def _islands(
     before: Callable[[TaskId], None] | None = None,
     text: str = TASKS["islands"][0],
     contest: str = DRAFT,
+    files: Mapping[str, bytes] | None = None,
 ) -> Islands:
-    """islands saved as `text` and published over the workflow
-    `unicon/islands@v1` in `contest`, `before` called on the task once it
-    is made."""
+    """islands saved as `text`, with `files` beside its own, and published
+    over the workflow `unicon/islands@v1` in `contest`, `before` called on
+    the task once it is made."""
     task = await make_task(setup, acme, "islands")
     _primitives(acme)
     _, held, data = TASKS["islands"]
+    data = {**data, **(files or {})}
     workflow = await acme.fake.workflows.create_workflow(
         PLATFORM, "unicon", "islands", dict(held), Visibility.PUBLIC
     )
@@ -383,6 +385,7 @@ async def test_islands_is_graded_through_the_door_step_by_step(
     assert result["once"] == {
         "reports": {},
         "texts": {"log": {"output": str(log.id), "name": "log"}},
+        "outcomes": {"compile": "accepted"},
     }
     assert result["runs"][0]["message"]["name"] == "message"
     assert len(await _stored(setup, grading_id=row)) == 5
@@ -411,7 +414,7 @@ async def test_a_late_grading_does_only_the_late_runs_reading_the_early_compile(
         ("r3", "accepted"),
         ("r4", "accepted"),
     ]
-    assert result["once"] == {"reports": {}, "texts": {}}
+    assert result["once"] == {"reports": {}, "texts": {}, "outcomes": {}}
 
 
 async def test_a_run_an_earlier_step_did_not_accept_is_left_out(
@@ -1030,7 +1033,7 @@ inputs:
   board: boards/1.txt
 scoring:
   values:
-    time: {block: max_runs, over: {runs: all}, of: {run: [all, time]}}
+    time: {block: max, over: {runs: all}, of: {run: [all, time]}}
   show: {now: [time, all, boards/]}
 """
 

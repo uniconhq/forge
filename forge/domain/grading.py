@@ -103,11 +103,6 @@ carries beside its pool's, so only a machine of the shape phase 4.1 picked
 takes it: Woodpecker's labels pick a machine for a whole pipeline."""
 SIZE_LABEL = "size"
 """The label naming the slot a run task's pipeline needs, `size:<slot>`."""
-EARLY_LANE = "lane:early"
-LATE_LANE = "lane:late"
-"""The lane a run task's pipeline runs in: early pipelines in their own,
-whose slots no late pipeline takes, so an entrant's early result never
-waits behind hidden runs; late and save pipelines in the other."""
 
 RUN_TIMEOUT = timedelta(minutes=30)
 CHECKOUT_ALLOWANCE = timedelta(minutes=4)
@@ -127,14 +122,16 @@ LOST = "The machine that grades lost this grading before it began."
 @dataclass(frozen=True, slots=True)
 class Slot:
     """One size of a grading machine's slots: its name, the value of the
-    `size` label its agents and the pipelines it fits carry, and its memory
-    in megabytes. The sizes are one table in deploy's settings
+    `size` label its agents and the pipelines it fits carry, its cores, the
+    most boxes a stage of a pipeline in it runs at once, and its memory in
+    megabytes. The sizes are one table in deploy's settings
     (`machine/slots.json`), which a machine's setup reads to share its
     cores and memory out among agents, one per slot, and the forge reads
     as `UNICON_SLOT_SIZES`.
     """
 
     name: str
+    cores: int
     memory_mb: int
 
 
@@ -335,6 +332,12 @@ class GradingRun:
     submission_version: VersionId
     envelope_url: str
     compute: str
+
+    @property
+    def labels(self) -> tuple[str, ...]:
+        """The labels its pipeline carries: its compute's alone. It carries
+        no size, so it takes a slot of any."""
+        return (self.compute,)
 
 
 @dataclass(frozen=True, slots=True)

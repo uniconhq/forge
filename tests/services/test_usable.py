@@ -12,8 +12,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from forge.db.tables import Grading
-from forge.domain.boards import State
 from forge.domain.grading import Place
+from forge.domain.scoring import State
 from forge.runtime.context import Context
 from forge.services.gradings import place_of
 from forge.services.scores import counted, usable

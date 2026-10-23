@@ -54,8 +54,70 @@ from forge.domain.showing import NOTHING_SEALED, Sealed
 Check = Literal["checking", "refused", "replaced"]
 """Where a run task's publication stands while its save row has not let it
 take over: still `checking`; `refused`, its checking ended without every
-run accepted, or never began, since its save failed after publishing; or
+run accepted and every check given what it expects, or never began, since
+its save failed after publishing; or
 `replaced`, its checking stopped by a later save."""
+
+
+@dataclass(frozen=True, slots=True)
+class CheckRun:
+    """One run of a check as its save graded it: its id, its key, its
+    verdict and its number reports."""
+
+    id: str
+    key: Mapping[str, object]
+    verdict: str
+    reports: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class FailedCheck:
+    """A check that refused its save, for the organiser (SIMPLER-CORE.md
+    9.6): its place in `checks`, from 1, why it failed, a sentence each,
+    its runs, the outcome of each step done once, the number each value's
+    program reported, and the fault of its steps, if any."""
+
+    index: int
+    failing: tuple[str, ...]
+    runs: tuple[CheckRun, ...]
+    outcomes: Mapping[str, str]
+    values: Mapping[str, object]
+    error: str | None
+
+
+def failed_checks(result: Mapping[str, object] | None) -> tuple[FailedCheck, ...]:
+    """Each check of a save row's `result` that did not get what it
+    expects."""
+    entries = (result or {}).get("checks")
+    if not isinstance(entries, list):
+        return ()
+    found: list[FailedCheck] = []
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict) or entry.get("passed") is True:
+            continue
+        once = entry.get("once") or {}
+        found.append(
+            FailedCheck(
+                index=index,
+                failing=tuple(str(each) for each in entry.get("failing") or ()),
+                runs=tuple(
+                    CheckRun(
+                        id=str(run["id"]),
+                        key=dict(run.get("key") or {}),
+                        verdict=str(run["verdict"]),
+                        reports=dict(run.get("reports") or {}),
+                    )
+                    for run in entry.get("runs") or ()
+                ),
+                outcomes={
+                    str(step): str(outcome)
+                    for step, outcome in (once.get("outcomes") or {}).items()
+                },
+                values=dict(entry.get("values") or {}),
+                error=entry.get("error") if isinstance(entry.get("error"), str) else None,
+            )
+        )
+    return tuple(found)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +126,8 @@ class Publication:
     the version it froze, what its note says and when it was made; and for
     an organiser, `check`, where a run task's one stands while it has not
     taken over, none once it has or when it needs no checking;
-    `checked_first` when it is not the task's until a save row passes.
+    `checked_first` when it is not the task's until a save row passes; and
+    when its check is `refused`, each of the task's checks that failed it.
     """
 
     id: PublicationId
@@ -80,6 +143,7 @@ class Publication:
     meanings: tuple[ValueMeaning, ...] = ()
     check: Check | None = None
     checked_first: bool = False
+    failed_checks: tuple[FailedCheck, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,8 +8,9 @@ from fractions import Fraction
 from types import SimpleNamespace
 from typing import Any
 
+from forge.domain.blocks.numbers import Better
 from forge.domain.definitions import Group
-from forge.domain.scoring import Better, Measure
+from forge.domain.scoring import Measure
 from forge.domain.showing import NOTHING_SEALED, Graded
 from forge.services.scores import Scorer
 

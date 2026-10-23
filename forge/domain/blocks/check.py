@@ -3,8 +3,20 @@ leaderboards note's 6.1, SIMPLER-CORE.md 9.5): every node a block the
 catalogue has or a leaf, each input of the kind its block takes, every name
 a leaf reads existing, a run's column read only inside a fold over its
 group, and no value reading itself through others. Group and value names
-are one set, none named like a fact, and `all` is every run's. Working a
-value out is stage 5's.
+are one set, none named like a fact, and `all` is every run's. A block with
+more than one form is checked against the one its node fits, by the inputs
+it is given and whether each is a group's runs; a node fitting none is
+refused naming the forms. A form or a leaf only a board's column may use
+(`Scope.BOARD`, `BOARD_LEAVES`) is refused in a task's value, naming
+where it belongs. A tree is at most `MOST_NODES` nodes and
+`MOST_DEPTH` deep, measured before it is walked, since every read of a
+board works its trees out.
+
+A value holds one `entered` block at most, its bounds numbers written
+out, the lower first, and one `exec` block at most, its program a folder,
+its language one `unicon/compile@v3` takes and its limits numbers more
+than 0; the save checks the folder and its `program.yaml`
+(`run_task`).
 
 What each value reads directly is recorded (`Reads`), so the save can tell
 which runs a value shown during the contest reads, and whether it reads a
@@ -18,18 +30,29 @@ from decimal import Decimal
 from forge.domain.blocks.catalogue import (
     ALL,
     CATALOGUE,
+    ENTERED,
+    EXEC,
     FACTS,
+    LANGUAGES,
     LEAVES,
     SKIP,
     TASK_FACTS,
+    TASK_LEAVES,
     Block,
     BlockInput,
+    Form,
     Kind,
+    Scope,
 )
 from forge.domain.definitions import VALUE_NAME
 from forge.domain.yaml_models import Path, is_number
 
 Found = list[tuple[Path, str]]
+
+MOST_NODES = 1000
+"""The most nodes a value's tree holds, every number, leaf and block."""
+MOST_DEPTH = 64
+"""The most nodes deep a value's tree is, the top one at depth 1."""
 
 _LEAF_WORDS = (
     "Give a number, a block such as {block: add, of: [...]}, or what it reads: "
@@ -40,14 +63,15 @@ _LEAF_WORDS = (
 @dataclass(frozen=True, slots=True)
 class Reads:
     """What one value's tree reads directly: groups, through a fold's
-    `over` or a run's column; other values; facts; and each run column, by
-    its group.
+    `over` or a run's column; other values; facts; each run column, by its
+    group; and the blocks it uses that read beyond its runs (`READING`).
     """
 
     groups: frozenset[str] = frozenset()
     values: frozenset[str] = frozenset()
     facts: frozenset[str] = frozenset()
     columns: frozenset[tuple[str, str]] = frozenset()
+    blocks: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +91,7 @@ class ValuesCheck:
         values: set[str] = set()
         facts: set[str] = set()
         columns: set[tuple[str, str]] = set()
+        blocks: set[str] = set()
         waiting = [name]
         while waiting:
             current = waiting.pop()
@@ -77,8 +102,15 @@ class ValuesCheck:
             groups |= read.groups
             facts |= read.facts
             columns |= read.columns
+            blocks |= read.blocks
             waiting.extend(read.values)
-        return Reads(frozenset(groups), frozenset(values), frozenset(facts), frozenset(columns))
+        return Reads(
+            frozenset(groups),
+            frozenset(values),
+            frozenset(facts),
+            frozenset(columns),
+            frozenset(blocks),
+        )
 
 
 def same_value(first: object, second: object) -> bool:
@@ -147,14 +179,37 @@ def check_values(
     reads: dict[str, Reads] = {}
     for name, tree in values.items():
         checker.reading = _Reading()
-        checker.node(("values", name), tree, BlockInput(Kind.NUMBER), None)
+        nodes, depth = tree_size(tree)
+        if nodes > MOST_NODES or depth > MOST_DEPTH:
+            checker.refuse(
+                ("values", name),
+                f"This value has {nodes} parts and is {depth} deep. A value has at most "
+                f"{MOST_NODES} parts and is at most {MOST_DEPTH} deep, so working it out "
+                "stays quick.",
+            )
+        else:
+            checker.node(("values", name), tree, BlockInput(Kind.NUMBER), None)
         found = checker.reading
         reads[name] = Reads(
             frozenset(found.groups),
             frozenset(found.values),
             frozenset(found.facts),
             frozenset(found.columns),
+            frozenset(found.blocks),
         )
+        for block in READING:
+            if found.blocks.get(block, 0) > 1:
+                checker.refuse(
+                    ("values", name),
+                    f"This value uses {block} {found.blocks[block]} times. A value uses it "
+                    f"once at most, so {_ONE_WHY[block]}.",
+                )
+        if EXEC in found.blocks and len(name) > MOST_EXEC_NAME:
+            checker.refuse(
+                ("values", name),
+                f"A value using exec has a name of at most {MOST_EXEC_NAME} characters, since "
+                "its program's steps are named after it.",
+            )
     checker.problems.extend(_loops(reads))
     return ValuesCheck(checker.problems, reads)
 
@@ -165,6 +220,19 @@ class _Reading:
     values: set[str] = field(default_factory=set)
     facts: set[str] = field(default_factory=set)
     columns: set[tuple[str, str]] = field(default_factory=set)
+    blocks: dict[str, int] = field(default_factory=dict)
+
+
+READING = (ENTERED, EXEC)
+"""The blocks that read beyond a submission's runs and facts, each once in
+a value at most, which `Reads.blocks` records."""
+_ONE_WHY = {
+    ENTERED: "a mark entered for it is the value's own",
+    EXEC: "its program's steps are named after it",
+}
+MOST_EXEC_NAME = 34
+"""The longest name of a value using `exec`, whose program's steps are
+named `build-<value>` and `exec-<value>`, at most 40 characters."""
 
 
 class _Checker:
@@ -190,9 +258,15 @@ class _Checker:
         group whose runs the innermost fold around it reads them once for
         each of, when the input is read per run.
         """
+        if wanted.plain:
+            if isinstance(node, bool) or not is_number(node):
+                self.refuse(at, "Give a number written out here, such as 0 or 10.")
+            return
         match wanted.kind:
             case Kind.RUNS:
                 self._runs(at, node)
+            case Kind.RESULTS | Kind.NAME | Kind.DIRECTIONS:
+                self.refuse(at, ONLY_BOARDS)
             case Kind.WEIGHTS:
                 self._weights(at, node)
             case Kind.MISSING:
@@ -202,8 +276,18 @@ class _Checker:
                         f"Give what a missing report counts as: {SKIP}, to leave the run out, "
                         "or a number.",
                     )
-            case Kind.NUMBER:
+            case Kind.NUMBER | Kind.EITHER:
                 self._number(at, node, over)
+            case Kind.PATH:
+                if not _folder(node):
+                    self.refuse(
+                        at,
+                        "Give the folder of the task that holds the program and its "
+                        "program.yaml, such as programs/mean/.",
+                    )
+            case Kind.LANGUAGE:
+                if node not in LANGUAGES:
+                    self.refuse(at, f"Give the program's language, one of {', '.join(LANGUAGES)}.")
 
     def _number(self, at: Path, node: object, over: str | None) -> None:
         if isinstance(node, bool):
@@ -217,17 +301,20 @@ class _Checker:
         if "block" in node:
             self._block(at, node, over)
             return
-        leaf = _leaf(node)
+        leaf = leaf_of(node)
         if leaf is None:
             self.refuse(at, _LEAF_WORDS)
             return
         kind, named = leaf
+        if kind not in TASK_LEAVES or (kind == "value" and isinstance(named, list)):
+            self.refuse(at, ONLY_BOARDS)
+            return
         match kind:
             case "runs":
                 self.refuse(
                     at,
                     "A group's runs give no number by themselves. Fold them, such as "
-                    f"{{block: count_runs, over: {{runs: {named}}}}}.",
+                    f"{{block: count, over: {{runs: {named}}}}}.",
                 )
             case "run":
                 self._column(at, named, over)
@@ -263,16 +350,34 @@ class _Checker:
                 f"{name} is not a block Unicon has. The blocks are {', '.join(CATALOGUE)}.",
             )
             return
+        form = form_of(block, node, Scope.BOARD)
+        if form is None:
+            self.refuse(at, forms_words(block, Scope.BOARD))
+            return
+        if form.scope is Scope.BOARD:
+            self.refuse(
+                at, f"{block.name} given {form.given} is for a leaderboard's column. {ONLY_BOARDS}"
+            )
+            return
         for key in node:
-            if key != "block" and key not in block.inputs:
+            if key != "block" and key not in form.inputs:
                 self.refuse(
                     (*at, str(key)),
-                    f"{block.name} has no input called {key}. It takes {', '.join(block.inputs)}.",
+                    f"{block.name} has no input called {key}. It takes {', '.join(form.inputs)}.",
                 )
+        if block.name in READING:
+            self.reading.blocks[block.name] = self.reading.blocks.get(block.name, 0) + 1
+        if block.name == ENTERED:
+            self._bounds(at, node)
+        if block.name == EXEC:
+            for key in ("time_limit", "memory_limit"):
+                given = node.get(key)
+                if is_number(given) and not isinstance(given, bool) and Decimal(str(given)) <= 0:
+                    self.refuse((*at, key), f"{key} is a number more than 0.")
         inner = over
-        if block.fold:
+        if form.fold:
             inner = self._fold_group(node.get("over"))
-        for key, wanted in block.inputs.items():
+        for key, wanted in form.inputs.items():
             if key not in node:
                 if not wanted.optional:
                     self.refuse((*at, key), f"{block.name} needs its input {key}.")
@@ -296,14 +401,28 @@ class _Checker:
         for index, each in enumerate(given):
             self.node((*at, index), each, wanted, over)
 
+    def _bounds(self, at: Path, node: Mapping[str, object]) -> None:
+        least, most = node.get("at_least"), node.get("at_most")
+        if (
+            is_number(least)
+            and is_number(most)
+            and not isinstance(least, bool)
+            and not isinstance(most, bool)
+            and Decimal(str(least)) > Decimal(str(most))
+        ):
+            self.refuse(
+                (*at, "at_most"),
+                f"at_most is {most}, below at_least, {least}. Give bounds a mark fits between.",
+            )
+
     def _fold_group(self, given: object) -> str | None:
-        leaf = _leaf(given) if isinstance(given, dict) else None
+        leaf = leaf_of(given) if isinstance(given, dict) else None
         if leaf is None or leaf[0] != "runs" or not isinstance(leaf[1], str):
             return None
         return leaf[1]
 
     def _runs(self, at: Path, node: object) -> None:
-        leaf = _leaf(node) if isinstance(node, dict) else None
+        leaf = leaf_of(node) if isinstance(node, dict) else None
         if leaf is None or leaf[0] != "runs":
             self.refuse(at, "Give the group whose runs this folds, as {runs: <group>}.")
             return
@@ -326,7 +445,7 @@ class _Checker:
             self.refuse(
                 at,
                 "A run's column is read only inside a fold over its group's runs, in its of "
-                "or its where, such as {block: max_runs, over: {runs: "
+                "or its where, such as {block: max, over: {runs: "
                 f"{group}}}, of: {{run: [{group}, {column}]}}}}.",
             )
             return
@@ -378,10 +497,94 @@ class _Checker:
                 self.refuse(where, "A weight is a number more than 0.")
 
 
+ONLY_BOARDS = (
+    "A task's value reads one submission's runs and facts; a task's results, a "
+    "submission's results and a leaderboard's columns are read on a leaderboard only."
+)
 _FACT_WHY = {
     "attempt": "depends on the entrant's other submissions",
     "marked": "changes until the task closes",
 }
+
+
+def form_of(
+    block: Block, node: Mapping[str, object], leaving_out: Scope | None = None
+) -> Form | None:
+    """The form of `block` a node means: the one its inputs fit, by name and
+    by whether each is a group's runs or a task's results; else the only
+    form usable where the block is, those whose scope is not `leaving_out`,
+    so its inputs are checked one by one; none when they fit no form of
+    several.
+    """
+    for form in block.forms:
+        if _fits(form, node):
+            return form
+    usable = [form for form in block.forms if form.scope is not leaving_out]
+    return usable[0] if len(usable) == 1 else None
+
+
+def _fits(form: Form, node: Mapping[str, object]) -> bool:
+    given = [key for key in node if key != "block"]
+    if any(key not in form.inputs for key in given):
+        return False
+    if any(key not in node for key, wanted in form.inputs.items() if not wanted.optional):
+        return False
+    for key in given:
+        wanted = form.inputs[key]
+        value = node[key]
+        if isinstance(value, list) != (wanted.least is not None):
+            return False
+        for each in value if isinstance(value, list) else [value]:
+            leaf = leaf_of(each) if isinstance(each, dict) else None
+            gathered = leaf[0] if leaf is not None and leaf[0] in _GATHERED else None
+            if gathered != _GATHERED_BY.get(wanted.kind):
+                return False
+    return True
+
+
+_GATHERED = ("runs", "results")
+"""The leaves that give many, which tell a fold's forms apart."""
+_GATHERED_BY = {Kind.RUNS: "runs", Kind.RESULTS: "results"}
+
+
+def forms_words(block: Block, leaving_out: Scope) -> str:
+    """What `block` takes, naming only the forms usable where the block is:
+    those whose scope is not `leaving_out`."""
+    forms = [form for form in block.forms if form.scope is not leaving_out]
+    if not forms:
+        where = "a leaderboard's column" if leaving_out is Scope.TASK else "a task's value"
+        return f"{block.name} is for {where} only."
+    takes = "; ".join(
+        f"given {form.given}, "
+        + ", ".join(
+            f"{key}{' (optional)' if wanted.optional else ''}"
+            for key, wanted in form.inputs.items()
+        )
+        for form in forms
+    )
+    return (
+        f"{block.name} is given {' or '.join(form.given for form in forms)}, and these "
+        f"inputs fit no form of it. It takes, {takes}."
+    )
+
+
+def tree_size(tree: object) -> tuple[int, int]:
+    """How many nodes a value's tree holds and how deep it is, walked
+    without recursion: every number, leaf and block a block's inputs give,
+    and nothing inside a leaf or a `weights` mapping.
+    """
+    nodes = deepest = 0
+    waiting: list[tuple[object, int]] = [(tree, 1)]
+    while waiting:
+        node, depth = waiting.pop()
+        if isinstance(node, list):
+            waiting.extend((each, depth) for each in node)
+            continue
+        nodes += 1
+        deepest = max(deepest, depth)
+        if isinstance(node, dict) and "block" in node:
+            waiting.extend((given, depth + 1) for key, given in node.items() if key != "block")
+    return nodes, deepest
 
 
 def _count(wanted: BlockInput) -> str:
@@ -390,7 +593,15 @@ def _count(wanted: BlockInput) -> str:
     return f"at least {wanted.least} inputs"
 
 
-def _leaf(node: Mapping[object, object]) -> tuple[str, object] | None:
+def _folder(node: object) -> bool:
+    """Whether `node` names a folder of the task: a relative path ending in
+    `/`, no segment empty, `.` or `..`."""
+    if not isinstance(node, str) or not node.endswith("/") or node.startswith("/"):
+        return False
+    return all(segment not in ("", ".", "..") for segment in node[:-1].split("/"))
+
+
+def leaf_of(node: Mapping[object, object]) -> tuple[str, object] | None:
     """A leaf's kind and what it names, when `node` is one."""
     if len(node) != 1:
         return None
@@ -432,9 +643,17 @@ def _cycle(start: str, reads: Mapping[str, Reads]) -> list[str] | None:
 
 
 __all__ = [
+    "MOST_DEPTH",
+    "MOST_EXEC_NAME",
+    "MOST_NODES",
+    "READING",
     "Reads",
     "ValuesCheck",
     "check_names",
     "check_values",
+    "form_of",
+    "forms_words",
+    "leaf_of",
     "same_value",
+    "tree_size",
 ]

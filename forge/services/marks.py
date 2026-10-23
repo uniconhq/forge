@@ -1,9 +1,9 @@
-"""The submissions a row marks for the `marked` boards (TASK-FORMAT.md
-section 1.1, Marks): up to the task's `marks` of the row's own submissions,
-graded or not, one set shared by every board and by every member of the
-entrant. Marks change until the row's close on the task, its extension
-included, and are frozen after it. Marking grades nothing; a board reads a
-mark only on a candidate.
+"""The submissions a row marks, which a board reads as each submission's
+`marked` (TASK-FORMAT.md section 1.1, Marks; SIMPLER-CORE.md 10.1): up to
+the task's `marks` of the row's own submissions, graded or not, one set
+shared by every board and by every member of the entrant. Marks change
+until the row's close on the task, its extension included, and are frozen
+after it. Marking grades nothing.
 
 Marks of one row on one task change one after another, under a Postgres
 advisory lock held until the unit of work ends, so a row never holds more
@@ -21,6 +21,7 @@ from datetime import datetime
 from sqlalchemy import delete, func, select, text
 
 from forge.db.tables import Grading, Mark
+from forge.domain.board_checks import marks_of
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import MarkLimit, MarksFrozen, MarksOff, NotApproved, NotFound
 from forge.domain.ids import TaskId, WorkspaceId
@@ -41,7 +42,7 @@ MARKS_LOCK = 0x4D41524B
 the workspace and task hashed by Postgres."""
 NO_SUCH_SUBMISSION = "There is no such submission."
 NOT_MARKED = (
-    "This task does not take marks: no leaderboard that counts marked submissions covers it."
+    "This task does not take marks: no leaderboard reads which of its submissions an entrant marks."
 )
 
 
@@ -178,7 +179,7 @@ async def _place(ctx: Context, person: Person) -> tuple[WorkspaceId, int, dateti
         raise NotApproved("Only approved entrants can mark submissions.")
     settings: ContestDefinition = person.settings
     entry = settings.entry(person.published.name)
-    most = settings.marks_of(entry) if entry is not None else None
+    most = marks_of(settings, entry) if entry is not None else None
     if entry is None or most is None:
         raise MarksOff(NOT_MARKED)
     extension = submitters.extension(person)

@@ -9,7 +9,8 @@ submitted; a self-reported report asks once, and the save is refused
 until that question is answered; what was shown is not hidden again; the
 files `show` lists are served from their time on, and no other, the
 reveal's from its instant and a release's not yet; the contest gives a
-run task no worth, due or board; and an entrant submits to one in parts.
+run task a due but no worth, share taken per late day or board; and an
+entrant submits to one in parts.
 """
 
 import hashlib
@@ -481,45 +482,55 @@ async def test_after_close_is_served_from_the_reveal_and_on_release_never_yet(
         await landing.public_file(setup, sum_task, "tests/4.in")
 
 
-async def test_a_contest_gives_a_run_task_no_worth_due_or_board(
+BOARD = (
+    "leaderboards:\n  standings:\n    columns:\n"
+    "      score: {value: [{block: latest, from: {results: sum}}, total]}\n"
+)
+
+
+async def test_a_contest_gives_a_run_task_a_due_and_a_board_but_no_worth_or_late_share(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     text = await _ready(acme, "tour", DRAFT + "    worth: 50\n")
     contents = {"task.yaml": text.encode(), **TOUR_DATA}
 
     worth = await _save(setup, acme, sum_task, contents, confirm=True)
-    await write_contest(acme.fake, DRAFT + "leaderboards:\n  - {name: Standings}\n")
-    board = await _save(setup, acme, sum_task, contents, confirm=True)
-    await write_contest(acme.fake, DRAFT)
+    late = DRAFT + "    due: 2026-09-26T14:00:00Z\n    late_per_day: 0.5\n"
+    await write_contest(acme.fake, late)
+    share = await _save(setup, acme, sum_task, contents, confirm=True)
+    await write_contest(acme.fake, DRAFT + BOARD)
     assert isinstance(await _save(setup, acme, sum_task, contents, confirm=True), Published)
     await checked(setup, sum_task)
 
     assert _errors(worth) == [
         (
             "scoring",
-            "sum is scored by its runs, and gives no points until leaderboards come, but the "
-            "contest gives it a worth of 50. Remove that from the contest first.",
+            "sum is scored by its runs and gives no points, since a leaderboard reads its "
+            "values, but the contest gives it a worth of 50. Remove that from the contest first.",
         )
     ]
-    assert _errors(board) == [
+    assert _errors(share) == [
         (
             "scoring",
-            "sum is scored by its runs, and the leaderboard Standings covers it, but boards over "
-            "runs come with leaderboards, which Unicon does not have yet. Leave sum out of the "
-            "leaderboard.",
+            "sum is scored by its runs and gives no points, since a leaderboard reads its "
+            "values, but the contest takes a share of its points for each late day. Remove that "
+            "from the contest first.",
         )
     ]
     current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
     for content, path in (
         (DRAFT + "    worth: 50\n", "tasks[0].worth"),
-        (DRAFT + "leaderboards:\n  - {name: Standings}\n", "leaderboards[0]"),
-        (DRAFT + "leaderboards:\n  - {name: Standings, tasks: [sum]}\n", "leaderboards[0].tasks"),
+        (DRAFT + "leaderboards:\n  - {name: Standings}\n", "leaderboards"),
+        (late, "tasks[0].late_per_day"),
     ):
         with pytest.raises(InvalidDefinition) as refused:
             await files.write(
                 setup, acme.ada, SPRING, "contest.yaml", content.encode(), current.token
             )
         assert [error["path"] for error in refused.value.errors] == [path]
+    # seconds_late reads a due, so a run task may have one.
+    due = DRAFT + "    due: 2026-09-26T14:00:00Z\n"
+    assert await files.write(setup, acme.ada, SPRING, "contest.yaml", due.encode(), current.token)
 
 
 async def test_an_entrant_submits_to_a_run_task_and_its_early_row_is_queued(

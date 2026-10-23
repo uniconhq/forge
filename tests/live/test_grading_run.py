@@ -328,6 +328,7 @@ async def test_a_run_goes_from_its_queued_row_to_its_result(
             key="live-key-0001",
             at=ctx.now,
             submitted_by=int(contestant["id"]),
+            released_split=False,
         )
         grading = row.id
     assert publication.id == current.publication.id

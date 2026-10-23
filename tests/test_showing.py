@@ -11,9 +11,10 @@ from typing import Any
 
 import pytest
 
+from forge.domain.blocks.numbers import Better
 from forge.domain.definitions import Group, Show
 from forge.domain.grading import GradingStatus
-from forge.domain.scoring import Better, Measure, Points, group_of, score
+from forge.domain.scoring import Measure, Points, group_of, score
 from forge.domain.showing import (
     NOTHING_SEALED,
     Graded,

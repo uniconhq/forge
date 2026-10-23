@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from forge.domain.board_checks import marks_of
 from forge.domain.definitions import (
     CONTEST_ADMIN_KEYS,
     DEFAULT_RATE,
@@ -23,16 +24,12 @@ from forge.domain.definitions import (
     Entrants,
     InviteWay,
     Locks,
-    Over,
-    Penalty,
     Registration,
     Relative,
-    Select,
     Show,
     SignupWay,
     State,
     Way,
-    Who,
     admin_only_changes,
     form_problems,
     letters,
@@ -70,18 +67,20 @@ entrants:
   fewest: 1
   locks: start
 leaderboards:
-  - name: Standings
-    tasks: [sum-of-two, shortest]
-    over: all
-    select: best
-    order: [points, {by: penalty, per_attempt: 20}]
-    who: contestants
-    rows: all
-  - name: Final
-    tasks: [shortest]
-    over: after_close
-    select: marked
-    who: contestants
+  standings:
+    title: Standings
+    audience: {who: entrants, rows: 10}
+    columns:
+      picked:
+        block: latest
+        from: {results: shortest}
+        where: {value: [shortest, marked]}
+      score:
+        block: otherwise
+        of: [{value: [{column: picked}, score]}, 0]
+    sort: [{score: desc}]
+    display: [{score: {places: 2}}]
+hold: {from: 2026-06-01T13:00:00Z, until: staff}
 tasks:
   - {id: sum-of-two, worth: 100}
   - id: shortest
@@ -183,34 +182,41 @@ def test_the_format_documents_example_contest_parses() -> None:
     assert contest.registration.invite_way == 0
     assert contest.registration.capacity == 500
     assert contest.entrants == Entrants(most=3, fewest=1, locks=Locks.START)
-    standings, final = contest.leaderboards
-    assert standings.order == ("points", Penalty(by="penalty", per_attempt=20))
-    assert (standings.who, standings.rows) == (Who.CONTESTANTS, "all")
-    assert (final.over, final.select, final.order) == (Over.AFTER_CLOSE, Select.MARKED, ("points",))
+    standings = contest.leaderboards["standings"]
+    assert (standings.title, standings.audience.who, standings.audience.rows) == (
+        "Standings",
+        "entrants",
+        10,
+    )
+    assert (standings.sort, standings.display) == ((("score", "desc"),), (("score", 2),))
+    assert contest.hold is not None
+    assert (contest.hold.from_, contest.hold.until) == (
+        datetime(2026, 6, 1, 13, tzinfo=UTC),
+        "staff",
+    )
     shortest = contest.tasks[1]
     assert shortest.late_per_day == Decimal("0.1")
-    assert contest.marks_of(shortest) == 2
-    assert contest.marks_of(contest.tasks[0]) is None
+    assert marks_of(contest, shortest) == 2
+    assert marks_of(contest, contest.tasks[0]) is None
     assert [contest.label_of(task.id) for task in contest.tasks] == ["A", "B"]
 
 
 def test_a_contest_leaves_the_optional_blocks_to_their_defaults() -> None:
-    contest = parse_contest(HEAD + "leaderboards: [{name: Standings}]\ntasks: [{id: a}]\n")
+    contest = parse_contest(HEAD + "leaderboards: {standings: {}}\ntasks: [{id: a}]\n")
 
     assert contest.description is None
     assert contest.entrants == Entrants(most=1, fewest=1, locks=Locks.START)
     assert contest.registration.ways == (Way(signup=SignupWay(approval=Approval.MANUAL)),)
     assert contest.registration.invite_way is None
     assert contest.registration.capacity is None
-    board = contest.leaderboards[0]
-    assert (board.tasks, board.over, board.select, board.order, board.who, board.rows) == (
+    board = contest.leaderboards["standings"]
+    assert (board.title, board.audience.who, board.audience.rows, board.sort) == (
         None,
-        Over.ALL,
-        Select.BEST,
-        ("points",),
-        Who.ORGANISERS,
+        "staff",
         "all",
+        (),
     )
+    assert (board.columns, board.display, contest.hold) == ({}, (), None)
     entry = contest.tasks[0]
     assert (entry.worth, entry.release_at, entry.due, entry.late_per_day, entry.closes) == (
         None,
@@ -260,48 +266,18 @@ def test_a_label_is_the_entrys_place_as_a_letter() -> None:
         ("registration: {code: sesame}\n", "registration.code", "Add a way in"),
         ("tasks: [{id: a, label: A}]\n", "tasks[0].label", "its place in the contest's list"),
         ("tasks: [{id: a, points: 100}]\n", "tasks[0].points", "This is now called worth"),
+        ("leaderboards: [{name: B}]\n", "leaderboards", "keyed by name"),
+        ("leaderboards: {b: {name: B}}\n", "leaderboards.b.name", "written as blocks"),
+        ("leaderboards: {b: {select: best}}\n", "leaderboards.b.select", "written as blocks"),
+        ("leaderboards: {b: {order: [points]}}\n", "leaderboards.b.order", "written as blocks"),
+        ("leaderboards: {b: {who: everyone}}\n", "leaderboards.b.who", "written as blocks"),
+        ("leaderboards: {b: {rows: all}}\n", "leaderboards.b.rows", "written as blocks"),
         (
-            "leaderboards: [{name: B, stage: default}]\n",
-            "leaderboards[0].stage",
-            "counts test groups",
+            "leaderboards: {b: {freeze_at: 2026-06-01T13:00:00Z}}\n",
+            "leaderboards.b.freeze_at",
+            "written as blocks",
         ),
-        (
-            "leaderboards: [{name: B, combine: sum}]\n",
-            "leaderboards[0].combine",
-            "adds up its tasks",
-        ),
-        (
-            "leaderboards: [{name: B, visibility: public}]\n",
-            "leaderboards[0].visibility",
-            "who the leaderboard is shown to",
-        ),
-        (
-            "leaderboards: [{name: B, freeze_at: 2026-06-01T13:00:00Z}]\n",
-            "leaderboards[0].freeze_at",
-            "no longer freeze",
-        ),
-        (
-            "leaderboards: [{name: B, team_only: true}]\n",
-            "leaderboards[0].team_only",
-            "the contest's entrants",
-        ),
-        ("leaderboards: [{name: B, select: latest}]\n", "leaderboards[0].select", "on each group"),
-        ("leaderboards: [{name: B, select: selected}]\n", "leaderboards[0].select", "marks"),
-        (
-            "leaderboards: [{name: B, select: first_accepted}]\n",
-            "leaderboards[0].select",
-            "the best submission, the best submission on each group, or the best of the",
-        ),
-        (
-            "leaderboards: [{name: B, order: [{metric: points, direction: desc}]}]\n",
-            "leaderboards[0].order[0]",
-            "set by its workflow",
-        ),
-        (
-            "leaderboards: [{name: B, order: [points, {key: penalty, per_rejected: 20}]}]\n",
-            "leaderboards[0].order[1]",
-            "penalty minutes",
-        ),
+        ("freeze_at: 2026-06-01T13:00:00Z\n", "freeze_at", "give the contest a hold"),
     ],
 )
 def test_a_retired_contest_key_is_refused_at_its_path_with_what_replaced_it(
@@ -319,6 +295,17 @@ def test_a_stored_contest_still_holding_on_system_error_reads_with_it_ignored(va
 
     assert parse_contest(text) == parse_contest(HEAD)
     assert paths(contest_problems(text)) == ["on_system_error"]
+
+
+def test_a_stored_contest_with_old_boards_or_freeze_at_reads_with_no_boards() -> None:
+    text = (
+        HEAD
+        + "freeze_at: 2026-06-01T13:00:00Z\n"
+        + "leaderboards:\n  - {name: Standings, who: contestants, select: best}\n"
+    )
+
+    assert parse_contest(text) == parse_contest(HEAD)
+    assert paths(contest_problems(text)) == ["leaderboards", "freeze_at"]
 
 
 def test_public_visibility_is_refused_naming_everyone() -> None:
@@ -345,100 +332,13 @@ def test_every_retired_key_in_one_file_is_named_together() -> None:
 
 
 @pytest.mark.parametrize(
-    ("order", "path", "sentence"),
-    [
-        ("[penalty]", "leaderboards[0].order[0]", "Penalty minutes cannot come first"),
-        (
-            "[{by: penalty}, points]",
-            "leaderboards[0].order[0]",
-            "Penalty minutes cannot come first",
-        ),
-        ("[points, points]", "leaderboards[0].order[1]", "already ranks by points above."),
-        (
-            "[points, penalty, {by: penalty, per_attempt: 5}]",
-            "leaderboards[0].order[2]",
-            "already ranks by penalty above.",
-        ),
-        ("[time_ms, time_ms]", "leaderboards[0].order[1]", "already ranks by time_ms above."),
-        ("[]", "leaderboards[0].order", "Give at least one."),
-        ("[Points]", "leaderboards[0].order[0]", "by a value the tasks report"),
-        (
-            "[{by: penalty, per_attempt: -1}]",
-            "leaderboards[0].order[0].per_attempt",
-            "This must be at least 0.",
-        ),
-    ],
-)
-def test_a_boards_order_breaking_c3_is_refused_at_the_key(
-    order: str, path: str, sentence: str
-) -> None:
-    problems = contest_problems(HEAD + f"leaderboards: [{{name: B, order: {order}}}]\n")
-
-    assert sentence in at(problems, path)
-
-
-def test_penalty_ranks_after_points_or_a_value() -> None:
-    contest = parse_contest(
-        HEAD
-        + "leaderboards:\n"
-        + "  - {name: A, order: [points, penalty]}\n"
-        + "  - {name: B, order: [time_ms, {by: penalty, per_attempt: 0}]}\n"
-    )
-
-    assert contest.leaderboards[1].order == ("time_ms", Penalty(by="penalty", per_attempt=0))
-
-
-def test_best_per_group_ranks_points_first_and_no_value() -> None:
-    value_first = contest_problems(
-        HEAD + "leaderboards: [{name: B, select: best_per_group, order: [time_ms]}]\n"
-    )
-    with_value = contest_problems(
-        HEAD + "leaderboards: [{name: B, select: best_per_group, order: [points, time_ms]}]\n"
-    )
-
-    assert (
-        "Counting the best submission on each group ranks by points first. Put points first, "
-        "or count another submission."
-    ) in [problem["message"] for problem in value_first]
-    assert at(with_value, "leaderboards[0].select") == (
-        "The best submission on each group adds up groups from different submissions, so it "
-        "cannot rank by time_ms, which belongs to one submission. Count another submission, or "
-        "stop ranking by time_ms."
-    )
-    parse_contest(
-        HEAD + "leaderboards: [{name: B, select: best_per_group, order: [points, penalty]}]\n"
-    )
-
-
-def test_own_rows_are_refused_on_a_board_everyone_sees() -> None:
-    problems = contest_problems(HEAD + "leaderboards: [{name: B, rows: own, who: everyone}]\n")
-
-    assert at(problems, "leaderboards[0].rows") == (
-        "A leaderboard shown to everyone cannot show each entrant only their own row, since a "
-        "guest has none. Show every row or the top rows."
-    )
-    assert parse_contest(HEAD + "leaderboards: [{name: B, rows: own, who: contestants}]\n")
-    assert parse_contest(HEAD + "leaderboards: [{name: B, rows: 10, who: everyone}]\n")
-
-
-@pytest.mark.parametrize("rows", ["0", "some", "true", "-3"])
-def test_rows_is_all_own_or_a_count_of_at_least_one(rows: str) -> None:
-    problems = contest_problems(HEAD + f"leaderboards: [{{name: B, rows: {rows}}}]\n")
-
-    assert paths(problems) == ["leaderboards[0].rows"]
-
-
-@pytest.mark.parametrize(
     ("extra", "path"),
     [
-        ("leaderboards: [{name: B}, {name: B}]\n", "leaderboards[1].name"),
         ("tasks: [{id: a}, {id: a}]\n", "tasks[1].id"),
-        (
-            "tasks: [{id: a}]\nleaderboards: [{name: B, tasks: [a, b]}]\n",
-            "leaderboards[0].tasks[1]",
-        ),
-        ("leaderboards: [{name: B, over: live_only}]\n", "leaderboards[0].over"),
-        ("leaderboards: [{name: B, who: public}]\n", "leaderboards[0].who"),
+        ("leaderboards: {b: {audience: {who: public}}}\n", "leaderboards.b.audience.who"),
+        ("leaderboards: {b: {audience: {rows: 0}}}\n", "leaderboards.b.audience.rows"),
+        ("leaderboards: {Big: {}}\n", "leaderboards.Big"),
+        ("hold: {from: 2026-06-01T13:00:00Z, until: never}\n", "hold.until"),
         ("tasks: [{id: Big-Task}]\n", "tasks[0].id"),
         ("tasks: [{id: abcdefghijklmnopqrstuvwxy}]\n", "tasks[0].id"),
         ("tasks: [{id: a, worth: -1}]\n", "tasks[0].worth"),
@@ -564,12 +464,10 @@ def test_a_full_timeline_in_order_is_valid() -> None:
         + "    late_per_day: 1\n"
         + "    closes: 2026-06-01T14:00:00Z\n"
         + "    marks: 10\n"
-        + "leaderboards: [{name: F, select: marked, tasks: [a]}]\n"
     )
 
     entry = contest.tasks[0]
     assert (entry.worth, entry.late_per_day, entry.marks) == (50, 1, 10)
-    assert contest.marks_of(entry) == 10
 
 
 def test_equal_times_are_in_order_and_a_task_may_never_take_a_submission() -> None:
@@ -651,30 +549,11 @@ def test_a_late_fraction_is_more_than_0_and_at_most_1(fraction: str) -> None:
     )
 
 
-def test_marks_need_a_marked_board_covering_the_task() -> None:
-    nothing_marked = entry_problems("{id: a, marks: 2}", "leaderboards: [{name: B}]\n")
-    other_task = contest_problems(
-        HEAD
-        + "tasks: [{id: a, marks: 2}, {id: b}]\n"
-        + "leaderboards: [{name: F, select: marked, tasks: [b]}]\n"
-    )
-
-    for problems in (nothing_marked, other_task):
-        assert at(problems, "tasks[0].marks") == (
-            "This applies only when a leaderboard covering this task counts the submissions an "
-            "entrant marks."
-        )
-    covering = parse_contest(HEAD + "tasks: [{id: a}]\nleaderboards: [{name: F, select: marked}]\n")
-    assert covering.marks_of(covering.tasks[0]) == 1
-
-
 @pytest.mark.parametrize(
     ("marks", "sentence"), [("0", "This must be at least 1."), ("11", "This must be at most 10.")]
 )
 def test_marks_are_1_to_10(marks: str, sentence: str) -> None:
-    problems = entry_problems(
-        f"{{id: a, marks: {marks}}}", "leaderboards: [{name: F, select: marked}]\n"
-    )
+    problems = entry_problems(f"{{id: a, marks: {marks}}}")
 
     assert at(problems, "tasks[0].marks") == sentence
 
@@ -1051,9 +930,7 @@ def test_the_starter_contest_is_the_formats_and_starts_on_the_hour_a_week_on() -
     assert contest.description is None and contest.entrants == Entrants()
     assert contest.registration == Registration()
     assert contest.registration.ways[0].approval is Approval.MANUAL
-    assert [(board.name, board.who) for board in contest.leaderboards] == [
-        ("Standings", Who.CONTESTANTS)
-    ]
+    assert contest.leaderboards == {}
     assert contest.tasks == ()
     assert b"tasks" not in starter_contest("x", NOW)
 

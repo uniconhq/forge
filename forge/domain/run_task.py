@@ -24,17 +24,27 @@ once anyone has submitted, the entrant's inputs and their types as they
 were. Then `scoring`: each group picks runs by values of repeated inputs the
 task fills and holds at least one; group and value names one set, none a
 path in the task; each value's blocks (`forge.domain.blocks.check`); and
-each `show` entry naming a group, a value, a file or a folder, at one time
-only.
+each `show` entry naming a group, a value, a report, a file or a folder, at
+one time only; the planner refuses a report done for each run, since only
+what the steps done once report is listed by itself (stage 5 section 6
+item 30).
 
 A run is early when a group shown `now` holds it, or a value shown `now`
 reads a group holding it, directly or through other values (11.3); a value
 shown `now` reading `compiled` makes the compile early even when no run is.
-`on_release` is late until a release, which the forge has no action for
-yet, so `RunTask.early` takes whether the task is released. A report is
+`on_release` is late until staff release the task's results, so
+`RunTask.early` takes whether they are, and the plan holds both splits
+(`run_plan.ReleasedSplit`). A report is
 self-reported when an entrant input reaches the program that wrote it, and
 the run's `verdict` and `passed` when one reaches a program given a
 manifest (#504).
+
+A value's `exec` block names a program of the task (`ProgramValue`): its
+folder holds a `program.yaml` declaring one number report, never left
+out, with which way is better, and its group holds runs. Its program runs
+early when its value is shown during the contest, or read by one that is
+(`RunTask.early_programs`), and a value it works out is self-reported
+when any column is, since it reads its runs whole.
 """
 
 import itertools
@@ -46,8 +56,11 @@ from decimal import Decimal
 from typing import Any
 
 from forge.domain import exact_json
-from forge.domain.blocks.catalogue import ALL
+from forge.domain.blocks.catalogue import ALL, EXEC, EXEC_MEMORY_LIMIT, EXEC_TIME_LIMIT
 from forge.domain.blocks.check import ValuesCheck, check_names, check_values, same_value
+from forge.domain.blocks.evaluate import blocks_in
+from forge.domain.blocks.numbers import Better
+from forge.domain.checks import TaskCheck, check_checks
 from forge.domain.content import named_by, names_path, path_problem
 from forge.domain.definitions import (
     ENTRANT,
@@ -68,7 +81,12 @@ from forge.domain.plans import (
     spelled,
 )
 from forge.domain.primitives import PROGRAMS, Port
-from forge.domain.program_manifest import ProgramManifest, parse_program
+from forge.domain.program_manifest import (
+    EXEC_OWN_NAMES,
+    PROGRAM_FILE,
+    ProgramManifest,
+    parse_program,
+)
 from forge.domain.run_workflow import (
     InputManifest,
     Program,
@@ -97,9 +115,12 @@ graded for each submission."""
 RUN_ID = re.compile(r"[A-Za-z0-9_-]+")
 """What a run's id is made of, as a runs file holds it and a path names it."""
 TIMES = ("now", "after_close", "on_release")
-OPENNESS = {"on_release": 0, "after_close": 1, "now": 2}
+OPENNESS: Mapping[str, int] = {"on_release": 0, "after_close": 1, "now": 2}
 """How soon each time of `show` shows an entry, latest first: what a
 release shows is shown at no set time."""
+RELEASED_OPENNESS: Mapping[str, int] = {"after_close": 0, "on_release": 1, "now": 2}
+"""The same while the task's results are released and its reveal has not
+passed: what the release shows is shown now, and `after_close` not yet."""
 SHOWN_WORDS = {
     "now": "as soon as a grading ends",
     "after_close": "at the reveal",
@@ -163,8 +184,17 @@ class EntrantInput:
 class RunsFile:
     """`plans/runs.json`: the id of every key the task has had, its runs as
     the version saved them, its entrant inputs' types and parts, the
-    columns self-reported with the entrant inputs that make them so, and
-    whether a value shown `now` reads `compiled`.
+    columns self-reported with the entrant inputs that make them so,
+    whether a value shown `now` reads `compiled`, and the values that read
+    a self-reported column, directly or through others, as the save
+    checked them (`RunTask.self_reported_values`), which a result marks;
+    and the runs each group or value listed under `now` or `on_release`
+    reads (`RunTask.runs_read`), which a later save may not shrink once
+    shown (SIMPLER-CORE.md 16); and of those values, the ones `show`
+    lists, which a save that shows another asks about
+    (`self_reported_question`). A file written before `reads` was kept
+    reads as none, and one written before `self_reported_shown` was as
+    showing none.
     """
 
     ids: Mapping[str, str]
@@ -172,12 +202,15 @@ class RunsFile:
     entrant: Mapping[str, tuple[Type, int | None]]
     self_reported: Mapping[str, frozenset[str]]
     compile_early: bool
+    self_reported_values: frozenset[str] = frozenset()
+    reads: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    self_reported_shown: frozenset[str] = frozenset()
 
     def to_bytes(self) -> bytes:
         document = {
             "ids": dict(sorted(self.ids.items())),
             "runs": [
-                {"id": run.id, "key": _key_json(run.key), "early": run.early} for run in self.runs
+                {"id": run.id, "key": key_json(run.key), "early": run.early} for run in self.runs
             ],
             "entrant": {
                 name: {"type": kind.value, "parts": parts}
@@ -187,6 +220,9 @@ class RunsFile:
                 name: sorted(inputs) for name, inputs in sorted(self.self_reported.items())
             },
             "compile_early": self.compile_early,
+            "self_reported_values": sorted(self.self_reported_values),
+            "reads": {name: sorted(runs) for name, runs in sorted(self.reads.items())},
+            "self_reported_shown": sorted(self.self_reported_shown),
         }
         return (exact_json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
 
@@ -214,6 +250,12 @@ class RunsFile:
                     for name, inputs in document["self_reported"].items()
                 },
                 _flag(document["compile_early"]),
+                frozenset(_text(each) for each in document.get("self_reported_values", ())),
+                {
+                    str(name): frozenset(_run_id(each) for each in runs)
+                    for name, runs in document.get("reads", {}).items()
+                },
+                frozenset(_text(each) for each in document.get("self_reported_shown", ())),
             )
         except (KeyError, TypeError, AttributeError, ValueError) as error:
             raise ValueError(f"{RUNS_PATH} does not read: {error}") from None
@@ -225,13 +267,36 @@ class RunsFile:
 
 
 @dataclass(frozen=True, slots=True)
+class ProgramValue:
+    """A value its `exec` block's program works out (SIMPLER-CORE.md 14):
+    the value, the folder the program and its `program.yaml` are in, the
+    language, the group whose runs it reads, its limits in seconds and
+    megabytes, and the one number report its `program.yaml` declares.
+    """
+
+    value: str
+    folder: str
+    language: str
+    group: str
+    time_limit: int | Decimal
+    memory_limit: int | Decimal
+    report: str
+    better: Better
+
+    @property
+    def manifest(self) -> str:
+        return f"{self.folder}{PROGRAM_FILE}"
+
+
+@dataclass(frozen=True, slots=True)
 class RunTask:
     """A run task as its save checked it: its runs in order, each group's
     runs by id, `all` among them, what each value reads, `show`, the
     entrant's inputs, the settings the task gives once, the columns
     self-reported with the entrant inputs that make them so, the id of
-    every key it has had, and each step's outputs a manifest the task gives
-    declares (`_Binder.manifest_outputs`).
+    every key it has had, each step's outputs a manifest the task gives
+    declares (`_Binder.manifest_outputs`), each value's program, and its
+    checks (`forge.domain.checks`).
     """
 
     runs: tuple[Run, ...]
@@ -243,6 +308,8 @@ class RunTask:
     self_reported: Mapping[str, frozenset[str]]
     ids: Mapping[str, str] = field(default_factory=dict)
     manifest_outputs: Mapping[str, Mapping[str, Port]] = field(default_factory=dict)
+    programs: Mapping[str, ProgramValue] = field(default_factory=dict)
+    checks: tuple[TaskCheck, ...] = ()
 
     def shown(self, *, released: bool = False) -> list[str]:
         """The entries shown during the contest: `now`'s, and `on_release`'s
@@ -272,15 +339,76 @@ class RunTask:
             if entry in self.values.reads
         )
 
+    def early_programs(self, *, released: bool = False) -> frozenset[str]:
+        """The values whose `exec` program runs in the early pipeline: each
+        shown during the contest, or read by a value shown then, directly or
+        through others.
+        """
+        read = {
+            name
+            for entry in self.shown(released=released)
+            if entry in self.values.reads
+            for name in self.values.through(entry).values
+        }
+        return frozenset(name for name in self.programs if name in read)
+
     def self_reported_values(self) -> frozenset[str]:
         """The values that read a self-reported column, directly or through
-        other values.
+        other values, a program reading their runs whole among them.
         """
         return frozenset(
             name
             for name in self.values.reads
             if any(column in self.self_reported for _, column in self.values.through(name).columns)
+            or (EXEC in self.values.through(name).blocks and bool(self.self_reported))
         )
+
+    def runs_of(self, name: str) -> frozenset[str] | None:
+        """The ids of the runs a group holds or a value reads, directly or
+        through others, none for a name that is neither.
+        """
+        if name in self.groups:
+            return frozenset(self.groups[name])
+        if name in self.values.reads:
+            through = self.values.through(name).groups
+            return frozenset(run for group in through for run in self.groups.get(group, ()))
+        return None
+
+    def release_notes(self) -> list[str]:
+        """For each group listed sooner than `on_release` that holds runs a
+        name under `on_release` reads, that those runs show before a
+        release does.
+        """
+        listed = shown_times(self.show)
+        found: list[str] = []
+        for name in self.show.on_release:
+            read = self.runs_of(name)
+            if not read:
+                continue
+            for group, time in listed.items():
+                if time != "on_release" and group in self.groups and read & set(self.groups[group]):
+                    found.append(
+                        f"{group}, shown {SHOWN_WORDS[time]}, holds runs {name} reads, so "
+                        f"entrants see those runs before a release shows {name}."
+                    )
+        return found
+
+    def runs_read(self) -> dict[str, frozenset[str]]:
+        """The runs each group or value listed under `now` or `on_release`
+        reads, the names a release may show during the contest.
+        """
+        found: dict[str, frozenset[str]] = {}
+        for entry in self.shown(released=True):
+            runs = self.runs_of(entry)
+            if runs is not None:
+                found[entry] = runs
+        return found
+
+    def self_reported_shown(self) -> frozenset[str]:
+        """The values reading a self-reported column that `show` lists, at
+        any time."""
+        listed = {entry for entries in self.show.lists().values() for entry in entries}
+        return frozenset(name for name in self.self_reported_values() if name in listed)
 
     def runs_file(self) -> RunsFile:
         early = self.early()
@@ -290,6 +418,9 @@ class RunTask:
             {name: (each.type, each.parts) for name, each in self.entrant.items()},
             self.self_reported,
             self.compile_early(),
+            self.self_reported_values(),
+            self.runs_read(),
+            self.self_reported_shown(),
         )
 
 
@@ -307,15 +438,32 @@ class RunTaskCheck:
 def self_reported_question(task: RunTask, previous: RunsFile | None) -> str | None:
     """What a save asks before it publishes `task` when a column the entrant
     could set is new, or set through other inputs than under `previous`, the
-    latest publication's runs file (#504), so it asks once per version that
-    changes one; none otherwise.
+    latest publication's runs file (#504), or when a value reading such a
+    column is new or newly listed in `show` (stage 4 open 74), so it asks
+    once per version that changes one; none otherwise.
     """
     then = previous.self_reported if previous is not None else {}
     moved = sorted(name for name, inputs in task.self_reported.items() if then.get(name) != inputs)
+    values = sorted(task.self_reported_values())
+    if previous is not None and not moved:
+        fresh = sorted(
+            (task.self_reported_values() - previous.self_reported_values)
+            | (task.self_reported_shown() - previous.self_reported_shown)
+        )
+        if not fresh:
+            return None
+        columns = sorted(task.self_reported)
+        inputs = sorted({each for name in columns for each in task.self_reported[name]})
+        one = len(fresh) == 1
+        return (
+            f"{_joined(fresh)} {'reads' if one else 'read'} {_joined(columns)}, which what "
+            f"the entrant gives as {_joined(inputs)} could set, and {'is' if one else 'are'} "
+            f"new or newly shown, so {'it is' if one else 'they are'} self-reported: entrants "
+            "could give themselves any result there. Confirm the task means it."
+        )
     if not moved:
         return None
     inputs = sorted({each for name in moved for each in task.self_reported[name]})
-    values = sorted(task.self_reported_values())
     one = len(moved) == 1
     said = (
         f"What the entrant gives as {_joined(inputs)} could set {_joined(moved)}, so "
@@ -344,7 +492,7 @@ def canonical(key: Mapping[str, object]) -> str:
         name: Decimal(spelled(value)) if is_number(value) and not isinstance(value, bool) else value
         for name, value in key.items()
     }
-    return exact_json.dumps(_key_json(amounts), sort_keys=True)
+    return exact_json.dumps(key_json(amounts), sort_keys=True)
 
 
 def show_names(scoring: Scoring) -> set[str]:
@@ -363,6 +511,41 @@ def file_time(scoring: Scoring, path: str) -> str | None:
         if any(entry not in names and names_path(entry, path) for entry in entries):
             return time
     return None
+
+
+def read_later(scoring: Scoring, values: ValuesCheck) -> list[tuple[Path, str]]:
+    """Each value `show` lists that reads, directly or through other
+    values, a value listed later than itself, or a group listed under
+    `on_release` while it is listed sooner, at its entry, since showing it
+    would give away what is shown later (stage 5 section 6 item 39). A
+    value shown before the reveal may sum up runs a group shows at the
+    reveal, as `reward` does over `all` (SIMPLER-CORE.md 9), which is why
+    its runs run early. A name `show` does not list is free to read.
+    """
+    listed = shown_times(scoring.show)
+    found: list[tuple[Path, str]] = []
+    for time, entries in scoring.show.lists().items():
+        for index, entry in enumerate(entries):
+            if entry not in values.reads:
+                continue
+            reads = values.through(entry)
+            later = sorted(
+                name
+                for name in (reads.values - {entry}) | reads.groups
+                if name in listed
+                and OPENNESS[listed[name]] < OPENNESS[time]
+                and (name in reads.values or listed[name] == "on_release")
+            )
+            for name in later:
+                found.append(
+                    (
+                        ("scoring", "show", time, index),
+                        f"{entry} reads {name}, which is shown {SHOWN_WORDS[listed[name]]}, so "
+                        f"showing {entry} {SHOWN_WORDS[time]} would give {name} away sooner. "
+                        f"List {entry} no sooner than {name}.",
+                    )
+                )
+    return found
 
 
 def _under_sooner(entry: str, time: str, show: ShowTimes) -> str | None:
@@ -397,77 +580,6 @@ def holds(picked: Mapping[str, object], key: Mapping[str, object]) -> bool:
     )
 
 
-SHOWN_RUN = ("verdict", "passed", "reports")
-"""What an entrant sees of a run's result beside its place and key: its
-verdict, `passed`, and the numbers its steps reported. Its texts, label and
-message are references to stored outputs, which no entrant's route reads
-yet: a reused output may be another entrant's of the same org, so such a
-route shows only the named output, nothing else of its grading."""
-
-
-def runs_shown(
-    scoring: Scoring,
-    runs: Sequence[Run],
-    results: Mapping[str, Mapping[str, Any]],
-    files: Collection[str],
-    *,
-    revealed: bool,
-) -> list[dict[str, Any]]:
-    """The runs of a grading its entrant is shown now (9.4), from `scoring`,
-    the task's as entrants read it, `runs`, its runs in the task's order,
-    `results`, the grading's runs by id, and `files`, every file of the
-    task. Only a group `show` lists shows runs: each listed under `now`,
-    and under `after_close` once `revealed`, in the order listed, `all`
-    among them. `on_release` shows nothing until a release, which Unicon
-    has no action for yet, and a value shows no run, whatever it reads.
-    Each run of a listed group with a result is shown with the group's
-    name, its place in the group from 1 ("Test 3"), never its id, which
-    counts every run of the task; its key, a file or folder it names left
-    out unless `show` shows it now; and `SHOWN_RUN`. A run in two listed
-    groups is shown in each.
-    """
-    times = ("now", "after_close") if revealed else ("now",)
-    listed = [entry for time in times for entry in scoring.show.lists()[time]]
-    shown: list[dict[str, Any]] = []
-    for group in dict.fromkeys(listed):
-        if group == ALL:
-            held = list(runs)
-        elif group in scoring.groups:
-            held = [run for run in runs if holds(scoring.groups[group], run.key)]
-        else:
-            continue
-        for place, run in enumerate(held, start=1):
-            result = results.get(run.id)
-            if result is None:
-                continue
-            key = {
-                name: value
-                for name, value in _key_json(run.key).items()
-                if _file_shown(scoring, value, files, times)
-            }
-            shown.append(
-                {
-                    "group": group,
-                    "place": place,
-                    "key": key,
-                    **{name: result[name] for name in SHOWN_RUN if name in result},
-                }
-            )
-    return shown
-
-
-def _file_shown(
-    scoring: Scoring, value: object, files: Collection[str], times: Sequence[str]
-) -> bool:
-    """Whether a run's key may name `value`: it names no file or folder of
-    the task, or `show` shows each file it names at one of `times`.
-    """
-    if not isinstance(value, str):
-        return True
-    named = named_by(files, value)
-    return not named or all(file_time(scoring, path) in times for path in named)
-
-
 def shown_times(show: ShowTimes) -> dict[str, str]:
     """Each entry of `show` with its time."""
     return {entry: time for time, entries in show.lists().items() for entry in entries}
@@ -475,9 +587,9 @@ def shown_times(show: ShowTimes) -> dict[str, str]:
 
 @dataclass(frozen=True, slots=True)
 class Shown:
-    """What a `show` lists, each with its time: the groups and values by
-    name, and each task file by path, with the entry that lists it, a
-    folder's entry standing for every file under it.
+    """What a `show` lists, each with its time: the groups, values and
+    reports by name, and each task file by path, with the entry that lists
+    it, a folder's entry standing for every file under it.
     """
 
     names: Mapping[str, str] = field(default_factory=dict)
@@ -486,7 +598,8 @@ class Shown:
 
 def shown_under(scoring: Scoring, paths: Collection[str]) -> Shown:
     """What `scoring`'s `show` lists, its files those of `paths`, the task's
-    files as the same save left them.
+    files as the same save left them. An entry naming none of them is a
+    name: a group, a value or a report, which the save checked.
     """
     names = show_names(scoring)
     files: dict[str, tuple[str, str]] = {}
@@ -500,49 +613,114 @@ def shown_under(scoring: Scoring, paths: Collection[str]) -> Shown:
                 files[path] = (time, entry)
                 break
     listed = shown_times(scoring.show)
-    return Shown({entry: time for entry, time in listed.items() if entry in names}, files)
+    return Shown(
+        {
+            entry: time
+            for entry, time in listed.items()
+            if entry in names or not named_by(paths, entry)
+        },
+        files,
+    )
 
 
-def most_shown(shown: Iterable[Shown]) -> Shown:
+def openness(*, released: bool, revealed: bool) -> Mapping[str, int]:
+    """How soon each time of `show` shows an entry now: `RELEASED_OPENNESS`
+    while the task's results are released and its reveal has not passed,
+    and `OPENNESS` otherwise, a release not counting as sooner than the
+    reveal once that has passed, since a take-back hides it again.
+    """
+    return RELEASED_OPENNESS if released and not revealed else OPENNESS
+
+
+def most_shown(shown: Iterable[Shown], rank: Mapping[str, int] = OPENNESS) -> Shown:
     """Each name and file any of `shown` lists, with the soonest time one
-    shows it.
+    shows it, by `rank`.
     """
     names: dict[str, str] = {}
     files: dict[str, tuple[str, str]] = {}
     for each in shown:
         for name, time in each.names.items():
             was = names.get(name)
-            if was is None or OPENNESS[time] > OPENNESS[was]:
+            if was is None or rank[time] > rank[was]:
                 names[name] = time
         for path, listed in each.files.items():
             had = files.get(path)
-            if had is None or OPENNESS[listed[0]] > OPENNESS[had[0]]:
+            if had is None or rank[listed[0]] > rank[had[0]]:
                 files[path] = listed
     return Shown(names, files)
 
 
-def hidden_again(before: Shown, scoring: Scoring, paths: Collection[str]) -> list[Problem]:
+def hidden_again(
+    before: Shown, scoring: Scoring, paths: Collection[str], rank: Mapping[str, int] = OPENNESS
+) -> list[Problem]:
     """A problem at `scoring`'s `show` for each name or file `before` holds,
     with the soonest time it was shown under a publication that graded a
-    submission, that `show` drops or moves later (SIMPLER-CORE.md 9.4 and
-    16); `paths` are the task's files as the save leaves them, and a file
-    no longer among them has nothing left to show. A file is compared by
-    path, whichever entry lists it, and reported by the entry that showed it.
+    submission, that `show` drops or moves later by `rank` (`openness`,
+    SIMPLER-CORE.md 9.4 and 16); `paths` are the task's files as the save
+    leaves them, and a file no longer among them has nothing left to show.
+    A file is compared by path, whichever entry lists it, and reported by
+    the entry that showed it.
     """
     now = shown_under(scoring, paths)
     problems: list[Problem] = []
     for name, then in before.names.items():
         time = now.names.get(name)
-        if time is None or OPENNESS[time] < OPENNESS[then]:
+        if time is None or rank[time] < rank[then]:
             problems.append(_hidden(name, then, time))
     reported: set[str] = set()
     for path, (then, entry) in sorted(before.files.items()):
         if path not in paths or entry in reported:
             continue
         time = now.files[path][0] if path in now.files else None
-        if time is None or OPENNESS[time] < OPENNESS[then]:
+        if time is None or rank[time] < rank[then]:
             reported.add(entry)
             problems.append(_hidden(entry, then, time))
+    return problems
+
+
+def unreleased(shown: Shown) -> Shown:
+    """`shown` without what it lists under `on_release`: what a task whose
+    results are not released has shown, a take-back included (stage 5
+    section 6 item 10).
+    """
+    return Shown(
+        {name: time for name, time in shown.names.items() if time != "on_release"},
+        {path: listed for path, listed in shown.files.items() if listed[0] != "on_release"},
+    )
+
+
+def fewer_runs(
+    before: Iterable[tuple[Shown, Mapping[str, frozenset[str]]]], task: RunTask
+) -> list[Problem]:
+    """A problem for each group or value shown during the contest under an
+    earlier publication, as `before` holds each with the runs its runs file
+    says each name read, that `task` now has read fewer of the runs it
+    still has (SIMPLER-CORE.md 16). Shown during the contest is under
+    `now`, or under `on_release` where `before` still holds it.
+    """
+    present = {run.id for run in task.runs}
+    read: dict[str, set[str]] = {}
+    for shown, reads in before:
+        for name, time in shown.names.items():
+            if time in ("now", "on_release") and name in reads:
+                read.setdefault(name, set()).update(reads[name] & present)
+    problems: list[Problem] = []
+    for name, then in sorted(read.items()):
+        now = task.runs_of(name)
+        if now is None:
+            continue
+        missing = then - now
+        if missing:
+            where = "groups" if name in task.groups else "values"
+            problems.append(
+                Problem(
+                    path=path_text(("scoring", where, name)),
+                    message=f"Entrants have been shown {name} during the contest over "
+                    f"{len(then)} {'run' if len(then) == 1 else 'runs'} the task still has, "
+                    f"and it would now read {len(missing)} fewer. What they have been shown "
+                    "cannot be hidden again, so keep those runs in it.",
+                )
+            )
     return problems
 
 
@@ -567,11 +745,17 @@ def manifest_inputs(checked: RunWorkflowCheck) -> set[str]:
 
 
 def manifest_files(definition: TaskDefinition, checked: RunWorkflowCheck) -> set[str]:
-    """The task files the task fills a manifest input with, which the save
-    reads as `program.yaml` files before it checks the task.
+    """The task files the task fills a manifest input with, and the
+    `program.yaml` of each `exec` block's program, which the save reads as
+    `program.yaml` files before it checks the task.
     """
     wanted = manifest_inputs(checked)
     found: set[str] = set()
+    for tree in (definition.scoring.values if definition.scoring is not None else {}).values():
+        for node in blocks_in(tree, EXEC):
+            folder = node.get("program")
+            if isinstance(folder, str) and folder.endswith("/"):
+                found.add(f"{folder}{PROGRAM_FILE}")
     for name in wanted:
         given = definition.inputs.get(name)
         if isinstance(given, str) and given != ENTRANT:
@@ -611,12 +795,23 @@ def check_run_task(
     groups = binder.groups(runs)
     values = binder.scoring(runs, manifests)
     binder.show()
+    if values is not None and definition.scoring is not None:
+        for at, message in read_later(definition.scoring, values):
+            binder.refuse(at, message)
+    programs = binder.programs(groups, manifests, values) if values is not None else {}
     binder.limits(runs)
     binder.manifests(runs, manifests)
     binder.manifest_types(manifests)
     marks = binder.self_reported()
     if previous is not None and submitted:
         binder.entrant_kept(previous)
+    refused, checks = check_checks(
+        definition.checks,
+        binder.entrant,
+        paths,
+        definition.scoring.values if definition.scoring is not None else {},
+    )
+    binder.problems += refused
     if binder.problems:
         return RunTaskCheck(binder.problems, None)
     assert values is not None, "a task with no scoring is refused at `scoring`"
@@ -630,6 +825,8 @@ def check_run_task(
         marks,
         binder.ids,
         binder.manifest_outputs(manifests),
+        programs,
+        checks,
     )
     early = task.early()
     task = RunTask(
@@ -642,6 +839,8 @@ def check_run_task(
         task.self_reported,
         task.ids,
         task.manifest_outputs,
+        task.programs,
+        task.checks,
     )
     return RunTaskCheck([], task)
 
@@ -986,6 +1185,84 @@ class _Binder:
             return None
         return Port.model_validate({"type": min(types, key=lambda each: types[each])})
 
+    def programs(
+        self,
+        groups: Mapping[str, tuple[str, ...]],
+        manifests: Mapping[str, bytes],
+        values: ValuesCheck,
+    ) -> dict[str, ProgramValue]:
+        """Each value's `exec` program, its blocks checked (`values`): its
+        folder one of the task's, holding a `program.yaml` that declares
+        one report, a number that is never left out, with which way is
+        better; and its group holding runs. A value whose blocks were
+        refused is left out, so each mistake is said once.
+        """
+        scoring = self.task.scoring
+        refused = {path[1] for path, _ in values.problems if len(path) > 1 and path[0] == "values"}
+        found: dict[str, ProgramValue] = {}
+        for name, tree in (scoring.values if scoring is not None else {}).items():
+            nodes = blocks_in(tree, EXEC)
+            if name in refused or len(nodes) != 1:
+                continue
+            node = nodes[0]
+            at: Path = ("scoring", "values", name)
+            folder, language, over = node.get("program"), node.get("language"), node.get("over")
+            group = over.get("runs") if isinstance(over, dict) else None
+            if not (
+                isinstance(folder, str) and isinstance(language, str) and isinstance(group, str)
+            ):
+                continue
+            if not groups.get(group):
+                self.refuse(
+                    (*at, "over"),
+                    f"{group} holds no runs, so the program would have none to read.",
+                )
+                continue
+            if not has_path(self.paths, folder):
+                self.refuse((*at, "program"), f"{folder} is not a folder of the task.")
+                continue
+            path = f"{folder}{PROGRAM_FILE}"
+            text = manifests.get(path)
+            if text is None:
+                self.refuse(
+                    (*at, "program"),
+                    f"{folder} holds no {PROGRAM_FILE}, which declares the one number the "
+                    "program reports.",
+                )
+                continue
+            try:
+                read = parse_program(text, path, own_names=EXEC_OWN_NAMES)
+            except InvalidDefinition as invalid:
+                self.refuse((*at, "program"), f"{path} does not read: {invalid.detail}")
+                continue
+            if len(read.reports) != 1:
+                self.refuse(
+                    (*at, "program"),
+                    f"{path} declares {len(read.reports)} reports, and a value's program "
+                    "reports one number, the value's.",
+                )
+                continue
+            [(report, declared)] = read.reports.items()
+            if declared.type != "number" or declared.optional or declared.better is None:
+                self.refuse(
+                    (*at, "program"),
+                    f"{path} declares {report} as {declared.type}"
+                    f"{', optional' if declared.optional else ''}"
+                    f"{'' if declared.better is not None else ', with no better'}. A value's "
+                    "program reports one number, never left out, saying which way is better.",
+                )
+                continue
+            limits = [node.get("time_limit"), node.get("memory_limit")]
+            time_limit, memory_limit = (
+                given if is_number(given) and not isinstance(given, bool) else default
+                for given, default in zip(limits, (EXEC_TIME_LIMIT, EXEC_MEMORY_LIMIT), strict=True)
+            )
+            assert isinstance(time_limit, int | Decimal) and isinstance(memory_limit, int | Decimal)
+            found[name] = ProgramValue(
+                name, folder, language, group, time_limit, memory_limit, report, declared.better
+            )
+        return found
+
     # 9.4: show
 
     def show(self) -> None:
@@ -1009,6 +1286,14 @@ class _Binder:
                 seen[entry] = time
                 if entry in names:
                     continue
+                if entry in self.checked.reports:
+                    if entry in self.paths:
+                        self.refuse(
+                            at,
+                            f"{entry} names both a report of the workflow and a file of the task, "
+                            "so show cannot tell which it lists. Rename the file.",
+                        )
+                    continue
                 problem = self._shown_path_problem(entry)
                 if problem is not None:
                     self.refuse(at, problem)
@@ -1022,8 +1307,9 @@ class _Binder:
         problem = path_problem(entry, folder=folder)
         if problem is not None or not (folder or "/" in entry or entry in self.paths):
             return (
-                f"{entry} names no group, value, file or folder of the task. Give a group or "
-                "a value by its name, a file by its path, or a folder with a / at its end."
+                f"{entry} names no group, value, report, file or folder of the task. Give a "
+                "group, a value or a report by its name, a file by its path, or a folder with "
+                "a / at its end."
             )
         if is_reserved(entry):
             return f"Unicon writes the files in {PLANS_FOLDER} itself, and serves none of them."
@@ -1462,7 +1748,7 @@ def _value_words(value: object) -> str:
     return str(value) if isinstance(value, Part) else spelled(value)
 
 
-def _key_json(key: Mapping[str, object]) -> dict[str, object]:
+def key_json(key: Mapping[str, object]) -> dict[str, object]:
     return {
         name: {"part": value.number} if isinstance(value, Part) else value
         for name, value in key.items()
@@ -1502,6 +1788,7 @@ def _key_read(document: Mapping[str, Any]) -> dict[str, object]:
 
 __all__ = [
     "MOST_RUNS",
+    "RELEASED_OPENNESS",
     "RUNS_PATH",
     "EntrantInput",
     "Part",
@@ -1512,10 +1799,16 @@ __all__ = [
     "Shown",
     "canonical",
     "check_run_task",
+    "fewer_runs",
     "file_time",
     "hidden_again",
+    "holds",
+    "key_json",
     "manifest_files",
+    "openness",
+    "read_later",
     "show_names",
     "shown_times",
     "shown_under",
+    "unreleased",
 ]

@@ -6,7 +6,8 @@ publishes (#449), and answer a save that published (M66).
   the save grades a submission again, or when the task has a graded
   submission and the save moves what one earns or shows: a group's points,
   how a group earns them, a test's weight, what a test earns (`credit`), or
-  when a group's results are shown. A change to the submission limits
+  when a group's results are shown; for a run task, its groups, its values
+  or when `show` shows a group or value. A change to the submission limits
   moves no result: a lowered `max` takes no result away and a raised one
   grades nothing by itself (#445), so they change only what entrants may
   still submit; nor does anything said under what entrants read.
@@ -14,9 +15,13 @@ publishes (#449), and answer a save that published (M66).
   changed how the task grades; for a run task, which of its steps run
   again, and that they wait for the save's check when it has one.
 - **Scores:** each scoring change, new and old, and each leaderboard counted
-  again with it.
+  again with it. For a run task, each group and value added, removed or
+  changed, a value changed with what it reads, and each entry `show`
+  shows at another time; a value is named, never written out, since the
+  editor shows its tree.
 - **What entrants read:** whether the statement, the task's title or the
-  files beside the statement change.
+  files beside the statement change; for a run task, each task file or
+  folder `show` lists at another time, never one only a check names.
 
 Every list holds at least one line, a "nothing changes" line when nothing
 does, so a page lays the four parts out as they come. No line names a key
@@ -28,22 +33,23 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 
-from forge.domain.board_checks import group_max
-from forge.domain.boards import in_scope
+from forge.domain.blocks.board_check import BoardsCheck, check_boards
+from forge.domain.blocks.numbers import exact, written
+from forge.domain.checks import check_only
 from forge.domain.definitions import (
     ContestDefinition,
     ContestTask,
     Group,
-    Leaderboard,
-    Over,
     Rate,
     Relative,
+    Scoring,
     Show,
     TaskDefinition,
     worth_of,
 )
 from forge.domain.meanings import in_sentence
-from forge.domain.scoring import ZERO, exact, rule_weight, written
+from forge.domain.run_task import SHOWN_WORDS, show_names, shown_times
+from forge.domain.scoring import ZERO, group_max, rule_weight
 
 RESULTS_CHANGE = "Results change."
 NO_RESULT_CHANGES = "Nobody's result changes."
@@ -110,6 +116,7 @@ def effect_of(
     unread: bool = False,
     steps: Sequence[str] | None = None,
     checked_first: bool = False,
+    programs: Sequence[str] = (),
 ) -> SaveEffect:
     """What saving `after` over the latest publication's `before` (none for
     a first publication, or `unread` when the latest publication's settings
@@ -117,8 +124,10 @@ def effect_of(
     changed how it grades, how many submissions that grades again, whether
     the task has a graded submission, and whether it has any; `titles` are
     what the workflow calls the values it reports, by key. For a run task,
-    `steps` are the steps a submission runs again, and `checked_first` that
-    the regrade waits for the save's check to pass.
+    `steps` are the steps a submission runs again, `checked_first` that
+    the regrade waits for the save's check to pass, and `programs` the
+    values whose `exec` program runs again, each in a container per
+    submission, which the save says the cost of.
     """
     first = before is None and not unread
     scores, moves = _scores(task, before, after, contest, bool(changes), titles or {}, unread)
@@ -126,9 +135,12 @@ def effect_of(
     return SaveEffect(
         results_change=changes_results,
         summary=RESULTS_CHANGE if changes_results else NO_RESULT_CHANGES,
-        runs_again=_runs_again(first, changes, regrades, submitted, steps, checked_first),
+        runs_again=(
+            *_runs_again(first, changes, regrades, submitted, steps, checked_first),
+            *(_program_cost(name, regrades) for name in programs if changes and regrades),
+        ),
         scores=tuple(scores) or (NO_SCORE_CHANGES,),
-        reading=_reading(first, before, after, read),
+        reading=_reading(first, before, after, read, _file_moves(before, after)),
     )
 
 
@@ -164,6 +176,12 @@ def _runs_again(
     return (f"{counted}, for these changes:", *changes)
 
 
+def _program_cost(value: str, regrades: int) -> str:
+    """What a value's program running again costs, said once per value."""
+    counted = "1 submission" if regrades == 1 else f"{regrades:,} submissions"
+    return f"The program of {value} works out this value again for {counted}, in a container each."
+
+
 def _lowered(sentence: str) -> str:
     """A sentence carried on after a colon: its first letter in lower case,
     unless the first word is a name such as a test group's.
@@ -175,11 +193,15 @@ def _lowered(sentence: str) -> str:
 
 
 def _reading(
-    first: bool, before: TaskDefinition | None, after: TaskDefinition, read: ReadChanges
+    first: bool,
+    before: TaskDefinition | None,
+    after: TaskDefinition,
+    read: ReadChanges,
+    files: Sequence[str],
 ) -> tuple[str, ...]:
     if first:
         return (FIRST_READ,)
-    found: list[str] = []
+    found: list[str] = [*files]
     if before is not None and before.name != after.name:
         found.append(f"The task's title changes to {after.name} (was {before.name}).")
     if read.statement:
@@ -204,18 +226,22 @@ def _scores(
     whether any of it moves what a result earns or shows.
     """
     entry = contest.entry(task) if contest is not None else None
-    # No board counts a withdrawn task, so a save of one moves none.
-    boards = (
-        [board for board in contest.leaderboards if board.covers(task)]
-        if contest is not None and not (entry is not None and entry.withdrawn)
-        else []
+    # No board counts a withdrawn task, so a save of one moves none; and a
+    # board reads no task graded test by test (stage 5 section 6, item 70).
+    checked = (
+        check_boards(contest.leaderboards, [each.id for each in contest.tasks])
+        if contest is not None
+        and not (entry is not None and entry.withdrawn)
+        and after.scoring is not None
+        else None
     )
+    boards = _titles(contest, checked, checked.reading(task)) if checked is not None else []
     if before is None and unread:
-        return [UNREAD_SCORES, _scored_again([board.name for board in boards])], True
+        return [UNREAD_SCORES, _scored_again(boards)], True
+    if after.scoring is not None:
+        return _run_scores(task, before, after.scoring, contest, checked)
     if before is None:
-        found = _points_first(after, _worth(entry, after))
-        found += [f"{task} now counts on the leaderboard {board.name}." for board in boards]
-        return found, False
+        return _points_first(after, _worth(entry, after)), False
     worth_before, worth_after = _worth(entry, before), _worth(entry, after)
     points = _points(before, after, worth_before, worth_after)
     scales = (_scale(before, worth_before), _scale(after, worth_after))
@@ -234,8 +260,176 @@ def _scores(
     limit, rate = _submissions(before, after)
     rescored = bool(points or earning or credit)
     found = [*points, *earning, *credit, *shown, *limit, *rate]
-    found += _boards(task, boards, before, after, rescored=rescored, regraded=grading_changed)
+    if rescored:
+        found.append(_scored_again([]))
     return found, bool(rescored or shown)
+
+
+def _titles(
+    contest: ContestDefinition | None, checked: BoardsCheck | None, keys: Sequence[str]
+) -> list[str]:
+    """The titles of the boards `keys`, in the file's order."""
+    if contest is None or checked is None:
+        return []
+    return [board.title_or(key) for key, board in contest.leaderboards.items() if key in keys]
+
+
+def _run_scores(
+    task: str,
+    before: TaskDefinition | None,
+    after: Scoring,
+    contest: ContestDefinition | None,
+    checked: BoardsCheck | None,
+) -> tuple[list[str], bool]:
+    """A run task's scoring changes in words: each group and value added,
+    removed or changed, a value changed when its tree is or when a group or
+    value it reads, directly or through others, changed; each entry `show`
+    shows at another time; then the boards reading a value that changed,
+    which count again, or at a first publication each board reading the
+    task. Whether any of it moves what a result is or shows. A value is
+    named, never written out: the editor shows its tree."""
+    if before is None:
+        named = _titles(contest, checked, checked.reading(task) if checked is not None else [])
+        return [f"{task} now counts on the leaderboard {name}." for name in named], False
+    then = before.scoring or Scoring()
+    found: list[str] = []
+    groups = _changed(then.groups, after.groups)
+    for name in after.groups:
+        if name not in then.groups:
+            found.append(f"The group {name} is new.")
+        elif name in groups:
+            found.append(f"The group {name} now holds other runs.")
+    found += [f"The group {name} is gone." for name in then.groups if name not in after.groups]
+    own = _changed(then.values, after.values)
+    moved = _moved_values(after.values, own | groups | (set(then.groups) - set(after.groups)))
+    for name in after.values:
+        if name not in then.values:
+            found.append(f"The value {name} is new.")
+        elif name in own:
+            found.append(f"The value {name} is worked out another way.")
+        elif name in moved:
+            found.append(f"The value {name} changes with {_joined(sorted(moved[name]))}.")
+    found += [f"The value {name} is gone." for name in then.values if name not in after.values]
+    rescored = bool(found)
+    names = show_names(then) | show_names(after)
+    shown = _shown_moves(then, after, names)
+    found += shown
+    if rescored:
+        changed = (
+            own
+            | set(moved)
+            | {name for name in after.values if name not in then.values}
+            | {name for name in then.values if name not in after.values}
+        )
+        keys = (
+            {key for name in changed for key in checked.reads(task, name)}
+            if checked is not None
+            else set()
+        )
+        found.append(_scored_again(_titles(contest, checked, sorted(keys))))
+    return found, bool(rescored or shown)
+
+
+def _changed(before: Mapping[str, object], after: Mapping[str, object]) -> set[str]:
+    """The names both hold whose definitions differ."""
+    return {name for name, tree in after.items() if name in before and before[name] != tree}
+
+
+def _moved_values(values: Mapping[str, object], changed: set[str]) -> dict[str, set[str]]:
+    """Each value that reads one of `changed`, a group or value, directly
+    or through the values it reads, with the changed names it reads."""
+    reads = {name: _read_names(tree) for name, tree in values.items()}
+    found: dict[str, set[str]] = {}
+    for name in values:
+        seen: set[str] = set()
+        waiting = [*reads[name]]
+        while waiting:
+            current = waiting.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            waiting.extend(reads.get(current, ()))
+        hit = (seen - {name}) & changed
+        if hit:
+            found[name] = hit
+    return found
+
+
+def _read_names(node: object) -> set[str]:
+    """Every group and value a value's tree names: a fold's `{runs: g}`, a
+    run's `{run: [g, column]}` and another value's `{value: name}`."""
+    if isinstance(node, list):
+        return {name for each in node for name in _read_names(each)}
+    if not isinstance(node, Mapping):
+        return set()
+    found: set[str] = set()
+    for key, each in node.items():
+        if key in ("value", "runs") and isinstance(each, str):
+            found.add(each)
+        elif key == "run" and isinstance(each, list) and each and isinstance(each[0], str):
+            found.add(each[0])
+        else:
+            found |= _read_names(each)
+    return found
+
+
+def _shown_moves(before: Scoring, after: Scoring, names: set[str]) -> list[str]:
+    """Each group or value, of `names`, that `show` shows at another time,
+    or no longer shows."""
+    then = {entry: time for entry, time in shown_times(before.show).items() if entry in names}
+    now = {entry: time for entry, time in shown_times(after.show).items() if entry in names}
+    found: list[str] = []
+    for entry, time in now.items():
+        was = then.get(entry)
+        if was is None:
+            found.append(f"Entrants now see {entry} {SHOWN_WORDS[time]}.")
+        elif was != time:
+            found.append(f"Entrants see {entry} {SHOWN_WORDS[time]} (was {SHOWN_WORDS[was]}).")
+    found += [
+        f"Entrants no longer see {entry} (was {SHOWN_WORDS[was]})."
+        for entry, was in then.items()
+        if entry not in now
+    ]
+    return found
+
+
+FILE_WORDS = {
+    "now": "during the contest",
+    "after_close": "from the reveal",
+    "on_release": "once results are released",
+}
+"""When entrants may read a task file `show` lists, by its time."""
+
+
+def _file_moves(before: TaskDefinition | None, after: TaskDefinition) -> list[str]:
+    """Each task file or folder a run task's `show` lists at another time,
+    or no longer lists, but one only a check names, which is never shown
+    (`checks.check_only`). What entrants read, never a result."""
+    if before is None or before.scoring is None or after.scoring is None:
+        return []
+    names = show_names(before.scoring) | show_names(after.scoring)
+
+    def files(definition: TaskDefinition, scoring: Scoring) -> dict[str, str]:
+        return {
+            entry: time
+            for entry, time in shown_times(scoring.show).items()
+            if entry not in names and not check_only(definition, entry)
+        }
+
+    then, now = files(before, before.scoring), files(after, after.scoring)
+    found: list[str] = []
+    for entry, time in now.items():
+        was = then.get(entry)
+        if was is None:
+            found.append(f"Entrants can read {entry} {FILE_WORDS[time]}.")
+        elif was != time:
+            found.append(f"Entrants can read {entry} {FILE_WORDS[time]} (was {FILE_WORDS[was]}).")
+    found += [
+        f"Entrants can no longer read {entry} (was {FILE_WORDS[was]})."
+        for entry, was in then.items()
+        if entry not in now
+    ]
+    return found
 
 
 def _worth(entry: ContestTask | None, definition: TaskDefinition) -> Fraction | None:
@@ -398,52 +592,12 @@ def _submissions(before: TaskDefinition, after: TaskDefinition) -> tuple[list[st
     return limit, rate
 
 
-def _boards(
-    task: str,
-    boards: Sequence[Leaderboard],
-    before: TaskDefinition,
-    after: TaskDefinition,
-    *,
-    rescored: bool,
-    regraded: bool,
-) -> list[str]:
-    """Each board covering the task that the save counts again, and each
-    whose scope a change to `show` moves.
-    """
-    named = [board.name for board in boards]
-    found: list[str] = []
-    if rescored:
-        found.append(_scored_again(named))
-    elif regraded and named:
-        found.append(
-            f"The leaderboard {named[0]} is counted again."
-            if len(named) == 1
-            else f"The leaderboards {_joined(named)} are counted again."
-        )
-    found += [
-        f"A change to when entrants see results changes what the leaderboard {board.name} "
-        f"counts of {task}."
-        for board in boards
-        if board.over is not Over.ALL and _scope_moved(board, before, after)
-    ]
-    return found
-
-
 def _scored_again(named: Sequence[str]) -> str:
     if not named:
         return "Every result is scored again."
     if len(named) == 1:
         return f"Every result is scored again, and the leaderboard {named[0]} with it."
     return f"Every result is scored again, and the leaderboards {_joined(named)} with them."
-
-
-def _scope_moved(board: Leaderboard, before: TaskDefinition, after: TaskDefinition) -> bool:
-    """Whether a group of the task moved into or out of the board's scope."""
-    scope = in_scope(board.over)
-    return any(
-        name in before.test_groups and scope(before.test_groups[name].shown) != scope(group.shown)
-        for name, group in after.test_groups.items()
-    )
 
 
 def _joined(items: Sequence[str]) -> str:

@@ -154,8 +154,13 @@
         "oneOf": [{ "type": "number" }, { "type": "string", "maxLength": 10000 }]
       }
     },
+    "value_numbers": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+      "additionalProperties": { "type": "number" }
+    },
     "result_v6": {
-      "description": "A run task's result, which the forge builds itself once a grading's pipeline has ended, from what each step's outputs.json held, its own and the ones the store held for an item it would have done again. Every run the pipeline grades, with its verdict and the reports its steps wrote; the reports of steps done once; what staff alone see; and an error exactly when a run's verdict is system_error.",
+      "description": "A run task's result, which the forge builds itself once a grading's pipeline has ended, from what each step's outputs.json held, its own and the ones the store held for an item it would have done again. Every run the pipeline grades, with its verdict and the reports its steps wrote; the reports of steps done once; what staff alone see; the number each value's program reported; and an error exactly when a run's verdict is system_error or a value's program faulted.",
       "type": "object",
       "required": ["schema_version", "runs", "once", "staff", "error", "run_log"],
       "additionalProperties": false,
@@ -170,42 +175,83 @@
           "type": "array",
           "items": { "$ref": "#/$defs/run_result" }
         },
-        "once": {
-          "description": "The reports of the steps done once that this grading's pipeline ran.",
-          "type": "object",
-          "required": ["reports", "texts"],
-          "additionalProperties": false,
-          "properties": {
-            "reports": { "$ref": "#/$defs/report_numbers" },
-            "texts": { "$ref": "#/$defs/report_texts" }
-          }
+        "once": { "$ref": "#/$defs/once_result" },
+        "values": {
+          "description": "The number each value's exec block came to, by the value's name: the one number report its program wrote, read through its program.yaml. A value whose program faulted or gave nothing has none, and the error names it.",
+          "$ref": "#/$defs/value_numbers"
         },
-        "staff": {
-          "description": "What a step wrote for staff alone, once per item this grading's pipeline did: its staff_message and its extras folder. Never shown to an entrant.",
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["step", "run"],
-            "additionalProperties": false,
-            "properties": {
-              "step": { "$ref": "#/$defs/step_id" },
-              "run": {
-                "description": "The run the item was done for, null for a step done once.",
-                "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/run_id" }]
-              },
-              "staff_message": { "$ref": "#/$defs/text_ref" },
-              "extras": { "$ref": "#/$defs/text_ref" }
-            }
-          }
-        },
+        "staff": { "$ref": "#/$defs/staff_items" },
         "error": {
-          "description": "One sentence for staff naming the first step that faulted or gave nothing for a run, when one did, otherwise null. Never shown to an entrant.",
+          "description": "One sentence for staff naming the first step that faulted or gave nothing for a run, or a value's program that faulted or gave nothing, when one did, otherwise null. Never shown to an entrant.",
           "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }]
         },
         "run_log": {
           "description": "Where the run's log went, or null. A run task's steps' logs stay with the CI, so the forge writes null.",
           "type": ["string", "null"],
           "format": "uri"
+        },
+        "checks": {
+          "description": "A save's pipeline's checks, one per check of the task in its order, each graded as an entrant's submission through the copies of the steps graded per submission, and left out when the task has none.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/check_result" }
+        }
+      }
+    },
+    "once_result": {
+      "description": "The reports of the steps done once that this grading's pipeline ran, and the outcome each of those steps returned, by its id, which the compiled fact reads; a step that faulted or gave nothing has none.",
+      "type": "object",
+      "required": ["reports", "texts", "outcomes"],
+      "additionalProperties": false,
+      "properties": {
+        "reports": { "$ref": "#/$defs/report_numbers" },
+        "texts": { "$ref": "#/$defs/report_texts" },
+        "outcomes": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/step_id" },
+          "additionalProperties": { "$ref": "#/$defs/outcome" }
+        }
+      }
+    },
+    "staff_items": {
+      "description": "What a step wrote for staff alone, once per item this grading's pipeline did: its staff_message and its extras folder. Never shown to an entrant.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["step", "run"],
+        "additionalProperties": false,
+        "properties": {
+          "step": { "$ref": "#/$defs/step_id" },
+          "run": {
+            "description": "The run the item was done for, null for a step done once.",
+            "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/run_id" }]
+          },
+          "staff_message": { "$ref": "#/$defs/text_ref" },
+          "extras": { "$ref": "#/$defs/text_ref" }
+        }
+      }
+    },
+    "check_result": {
+      "description": "One check graded at the save: the runs worth reading, each with its verdict and reports, the steps done once and each value's program's number, with each step named as the workflow names it, not by its copy; what its steps wrote for staff, done once or for a run kept, by the copies' names; an error exactly when a step of the check faulted or gave nothing; whether it got what it expects; and a sentence for each thing it did not get.",
+      "type": "object",
+      "required": ["runs", "once", "staff", "error", "passed", "failing"],
+      "additionalProperties": false,
+      "properties": {
+        "runs": {
+          "description": "The runs worth reading: none once the check passed, else at most 20, those that did not get what it expects first, in the task's order.",
+          "type": "array",
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/run_result" }
+        },
+        "once": { "$ref": "#/$defs/once_result" },
+        "values": { "$ref": "#/$defs/value_numbers" },
+        "staff": { "$ref": "#/$defs/staff_items" },
+        "error": { "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }] },
+        "passed": { "type": "boolean" },
+        "failing": {
+          "description": "Why the check did not get what it expects, one sentence each, at most 20, the last saying how many more when there are; empty when it did.",
+          "type": "array",
+          "maxItems": 20,
+          "items": { "type": "string", "minLength": 1 }
         }
       }
     },

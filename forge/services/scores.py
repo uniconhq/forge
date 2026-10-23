@@ -1,5 +1,6 @@
 """Scoring a task's gradings on read (`forge.domain.scoring`), the same way
-for a contestant's own submissions and for the boards.
+for a contestant's own submissions and for the boards; and a run task's
+values, worked out on every read from both its rows (`run_scored`).
 
 A grading is scored with the publication it ran under as `showing.under`
 says: its own tests and sealed facts, and the latest `test_groups`,
@@ -26,7 +27,7 @@ error, and nothing once that attempt is cancelled or ended over the limit
 """
 
 import uuid
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
@@ -35,8 +36,8 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from forge.db.tables import Grading
-from forge.db.tables.gradings import FRONT
-from forge.domain.boards import State
+from forge.db.tables.gradings import FRONT, LATE
+from forge.domain.blocks.numbers import Better
 from forge.domain.definitions import (
     TASK_FILE,
     ContestDefinition,
@@ -50,16 +51,28 @@ from forge.domain.ids import PublicationId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.release import Extension, due_of, late_days
 from forge.domain.roles import contest_id_of, task_scope
-from forge.domain.scoring import ONE, Better, Scored, best_of, late_factor, rule_weight, score
+from forge.domain.run_results import (
+    RunGrading,
+    Worked,
+    facts_of,
+    for_entrants,
+    run_grading,
+    worked_out,
+)
+from forge.domain.scoring import ONE, Scored, State, best_of, late_factor, rule_weight, score
 from forge.domain.showing import Graded, under
+from forge.domain.step_data import unreported
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import gradings, published, timelines
-from forge.services.published import PublishedTask
+from forge.services import entries, gradings, published, timelines
+from forge.services.published import PublishedTask, RunsHeld
 
 log = get_logger(__name__)
 
+FINISHED_WITH_RESULT = (GradingStatus.DONE, GradingStatus.SYSTEM_ERROR)
+"""Where a run task's row stands when its result is read: done, or failed
+with the runs it gave, its faulted ones waiting for staff."""
 GRADED_KEPT = published.FORM_KEPT
 """How long this process keeps what a past publication scores its gradings
 with: a publication never changes, so the time only bounds what is held."""
@@ -290,3 +303,164 @@ class Scorer:
 
         key = f"scores.graded.{current.id}.{publication}"
         return await ctx.memo.remembered(key, GRADED_KEPT, read)
+
+
+@dataclass(frozen=True, slots=True)
+class RunScored:
+    """A run task's grading worked out on read: the live publication's runs
+    and plan, the grading from both its rows and from its early row alone,
+    each as an entrant may be given it (`run_results.for_entrants`), the
+    grading from both rows with every value, for organisers alone
+    (`organised`), and the values reading a column the entrant could set.
+    """
+
+    held: RunsHeld
+    whole: Worked
+    early: Worked
+    organised: Worked
+    self_reported: frozenset[str]
+
+
+async def late_of(ctx: Context, early: Grading) -> Grading | None:
+    """The attempt of the late row that follows the early row `early` that
+    counts, as `counted` takes an early row's: the latest that finished
+    with a result, so a staff retry still to run takes nothing away, or,
+    while none has, the latest; none while there is none."""
+    attempts = (
+        await ctx.db.scalars(
+            select(Grading).where(
+                Grading.submission_id == early.submission_id,
+                Grading.pipeline == LATE,
+                Grading.early_id == early.id,
+            )
+        )
+    ).all()
+    return counted(attempts) if attempts else None
+
+
+async def lates_of(ctx: Context, earlies: Iterable[Grading]) -> dict[uuid.UUID, Grading]:
+    """`late_of` for each of `earlies` at once, by the early row's id; one
+    with no late row is left out."""
+    ids = sorted({early.id for early in earlies})
+    if not ids:
+        return {}
+    attempts: dict[uuid.UUID, list[Grading]] = {}
+    for row in await ctx.db.scalars(
+        select(Grading).where(Grading.pipeline == LATE, Grading.early_id.in_(ids))
+    ):
+        assert row.early_id is not None
+        attempts.setdefault(row.early_id, []).append(row)
+    return {early: counted(rows) for early, rows in attempts.items()}
+
+
+async def run_scored(
+    ctx: Context,
+    current: PublishedTask,
+    settings: ContestDefinition,
+    extension: Extension,
+    early: Grading,
+    late: Grading | None,
+    marks: Mapping[str, Fraction] | None = None,
+) -> RunScored:
+    """The values of a run task's submission (SIMPLER-CORE.md 9.2): the live
+    publication's `scoring` over the runs of its early row, done or failed
+    with a result, and of its late row's attempt that counts, `late`, once
+    that is done or failed with a result, matched by run id, with the facts
+    of the row's due, its extension included, and the contest's start; and
+    the same from the early row alone, which is all an entrant reads until
+    the reveal (`run_showing`). A run neither row holds, or a value's
+    program neither row gives, waits only when its
+    row's own plan put it in a pipeline still to give it: the early row's
+    while that row failed, the late row's while that row is queued, running
+    or failed, or not made since the early row failed. Any other, such as
+    one a later save added, never ran (`run_results`). The marks entered
+    for the submission's `entered` values are read with them (`entries`),
+    unless the caller read them already, as `marks`.
+    `whole` and `early` leave out every value reading a mark
+    (`run_results.for_entrants`), so whatever an entrant reads, a board
+    among them, is built from them; `organised` keeps every value. A
+    program waits while its row is to give it, and for staff once its row
+    ended with a fault and no number for it. Worked out on every read,
+    never stored (stage 5 section 6, item 1).
+    """
+    scoring = current.definition.scoring
+    assert scoring is not None, "a run task's definition always has scoring"
+    held = await published.runs_held(ctx, current)
+    early_failed = early.status != GradingStatus.DONE
+    late_result = None
+    late_waits = early_failed
+    planned, programs = await _planned(ctx, current, early, held)
+    late_planned, late_programs = planned, programs
+    if late is not None:
+        status = gradings.status_of(ctx, late)
+        if late.result is not None and status in FINISHED_WITH_RESULT:
+            late_result = late.result
+        late_waits = status not in (
+            GradingStatus.DONE,
+            GradingStatus.CANCELLED,
+            GradingStatus.OVER_LIMIT,
+        )
+        late_planned, late_programs = await _planned(ctx, current, late, held)
+    waits_early = {run for run, first in planned.items() if first} if early_failed else set()
+    waits_late = {run for run, first in late_planned.items() if not first} if late_waits else set()
+    # A program waits while its row is still to give it, and, once its row
+    # ended with a fault and no number for it, for staff.
+    early_named = {name for name, first in programs.items() if first}
+    late_named = {name for name, first in late_programs.items() if not first}
+    programs_early = early_named if early_failed else set(unreported(early.result, early_named))
+    programs_late = late_named if late_waits else set(unreported(late_result, late_named))
+    entry = settings.entry(current.name)
+    due = due_of(settings, entry, extension) if entry is not None else None
+    if marks is None:
+        marks = await entries.entered_of(ctx, current.id, early.submission_id)
+
+    def work(grading: RunGrading) -> Worked:
+        facts = facts_of(due, settings.start, early.submitted_at, grading.compiled)
+        outcomes = worked_out(scoring, held.runs, grading, facts, held.columns, marks)
+        return Worked(grading, outcomes, facts)
+
+    whole = run_grading(
+        held.runs,
+        early.result,
+        late_result,
+        waiting=waits_early | waits_late,
+        compiling=held.compiling,
+        programs_waiting=programs_early | programs_late,
+    )
+    alone = run_grading(
+        held.runs,
+        early.result,
+        None,
+        waiting=waits_early,
+        compiling=held.compiling,
+        programs_waiting=programs_early,
+    )
+    everything = work(whole)
+    return RunScored(
+        held,
+        for_entrants(scoring.values, everything),
+        for_entrants(scoring.values, work(alone)),
+        everything,
+        held.self_reported,
+    )
+
+
+async def _planned(
+    ctx: Context, current: PublishedTask, row: Grading, held: RunsHeld
+) -> tuple[dict[str, bool], dict[str, bool]]:
+    """Each run of the publication `row` grades against, by id, with whether
+    its plan runs it early in the split `row` was made with, and each value
+    whose program it runs, with whether early; the live publication's runs
+    when that one is gone, and no program."""
+    found = next((each for each in current.publications if each.id == row.publication_id), None)
+    if found is None:
+        log.warning("scores.publication_gone", task=current.id, publication=row.publication_id)
+        return {run.id: run.early for run in held.runs}, {}
+    plan = (await published.plan_at(ctx, current.id, found.version)).for_split(row.released_split)
+    programs: dict[str, bool] = {}
+    for kind in ("early", "late"):
+        for each in plan.pipeline(kind):
+            value = plan.steps[each.step].value
+            if value is not None and value.report is not None:
+                programs[value.name] = kind == "early"
+    return {run.id: run.early for run in plan.runs}, programs

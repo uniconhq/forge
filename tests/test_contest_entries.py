@@ -34,11 +34,11 @@ def ids(content: bytes) -> list[str]:
 
 
 def test_an_empty_list_becomes_a_list_of_one_and_keeps_its_comment() -> None:
-    content = (HEAD + "tasks: []  # none yet\n\nleaderboards: []\n").encode()
+    content = (HEAD + "tasks: []  # none yet\n\nleaderboards: {}\n").encode()
 
     expected = HEAD + "tasks:  # none yet\n  - id: sum\n"
 
-    assert with_entry(content, "sum") == (expected + "\nleaderboards: []\n").encode()
+    assert with_entry(content, "sum") == (expected + "\nleaderboards: {}\n").encode()
 
 
 def test_a_block_list_gets_one_more_item_at_its_own_indent() -> None:
@@ -49,7 +49,7 @@ def test_a_block_list_gets_one_more_item_at_its_own_indent() -> None:
         "      worth: 50\n"
         "\n"
         "# The boards.\n"
-        "leaderboards: []\n"
+        "leaderboards: {}\n"
     ).encode()
 
     updated = with_entry(content, "sum")
@@ -143,7 +143,7 @@ THREE = (
     "  - {id: max, worth: 20}  # Last.\n"
     "\n"
     "leaderboards:\n"
-    "  - {name: Standings, who: everyone}\n"
+    "  standings: {audience: {who: everyone}}\n"
 )
 
 
@@ -162,19 +162,12 @@ def test_a_removed_entry_takes_its_own_lines_and_the_letters_after_it_move_up() 
 
 
 def test_removing_the_only_entry_leaves_an_empty_list_with_its_comment() -> None:
-    content = (HEAD + "tasks:  # none yet\n  - id: sum\n\nleaderboards: []\n").encode()
+    content = (HEAD + "tasks:  # none yet\n  - id: sum\n\nleaderboards: {}\n").encode()
 
     assert (
         without_entry(content, "sum")
-        == (HEAD + "tasks: [] # none yet\n\nleaderboards: []\n").encode()
+        == (HEAD + "tasks: [] # none yet\n\nleaderboards: {}\n").encode()
     )
-
-
-def test_an_entry_a_leaderboard_names_cannot_be_removed_alone() -> None:
-    content = THREE.replace("{name: Standings, who: everyone}", "{name: Sum, tasks: [sum]}")
-
-    with pytest.raises(InvalidDefinition):
-        without_entry(content.encode(), "sum")
 
 
 def test_a_withdrawn_entry_gets_the_key_as_its_last_line_and_keeps_its_letter() -> None:

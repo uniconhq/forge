@@ -68,7 +68,7 @@ import hashlib
 import hmac
 import secrets
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
@@ -82,8 +82,10 @@ from sqlalchemy.exc import IntegrityError
 from forge.db.tables import Grading, GradingReuse, GradingStep, PublicationObjects, StepOutput
 from forge.db.tables import Upload as UploadRow
 from forge.domain import exact_json
+from forge.domain.checks import VERDICT, keep_runs
 from forge.domain.content import UploadInfo, named_by
 from forge.domain.contracts import violation
+from forge.domain.definitions import TASK_FILE, parse_task
 from forge.domain.errors import (
     Conflict,
     GradingClosed,
@@ -112,7 +114,16 @@ from forge.domain.primitives import MANIFEST, PROGRAMS
 from forge.domain.program_manifest import parse_program
 from forge.domain.publications import Publication
 from forge.domain.reports import ERROR_LIMIT, RESULT_MAX
-from forge.domain.run_plan import BOXED, PipelineKind, PipelineStep, RunPlan
+from forge.domain.run_plan import (
+    BOXED,
+    RUN_ENTRY_KB,
+    PipelineKind,
+    PipelineStep,
+    RunPlan,
+    RunStep,
+)
+from forge.domain.run_results import check_failing, compilers
+from forge.domain.run_task import RUNS_PATH, RunsFile
 from forge.domain.step_data import (
     BOX_BLOCK,
     BOX_BLOCKS,
@@ -127,17 +138,21 @@ from forge.domain.step_data import (
     Faulted,
     Found,
     Item,
+    ItemOutputs,
     Upload,
+    chain_of,
     holds,
     is_batch,
     is_step_name,
     item_key,
     output_type,
+    program_alone,
     read_outputs,
     read_uploads,
     reads_from,
     result_of,
     results_key,
+    runs_file,
     runs_of,
     skipped_runs,
     step_order,
@@ -145,6 +160,7 @@ from forge.domain.step_data import (
 )
 from forge.domain.submissions import FILES_FOLDER, SUBMISSION_FILE
 from forge.domain.uploads import POINTER_MOST, UploadStatus, may_be_pointer, upload_info
+from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -173,6 +189,8 @@ NOT_TAKING = "The grading takes no more of its steps' work."
 SECRET_PLANNED = "The plan names a secret, which a save refuses until org secrets exist."
 MISSING = object()
 """What an input is when an earlier step it reads has given nothing yet."""
+RUNS = "runs"
+"""The kind of file the door serves that is a value's runs file."""
 STOPPED = object()
 """What an input is when an earlier step it reads gave what stops the
 run: an outcome not accepted, or no such output."""
@@ -345,6 +363,7 @@ async def step_done(
         )
         named = {path: up for item in written for path, up in item.files.items()}
         await _check_stored(ctx, row.id, step, named)
+        _program_answered(run_step, written)
     except Fault as fault:
         held.fault = str(fault).replace("\x00", "")[:ERROR_LIMIT]
         log.warning("steps.faulted", grading=str(row.id), step=step, fault=held.fault)
@@ -474,11 +493,15 @@ async def conclude(ctx: Context, row: Grading, pipeline: PipelineKind) -> None:
     """Build result version 6 of the grading's `pipeline` from what its
     steps and the store hold, keep it and finish the grading: `done`, or
     `system_error` with the first fault, or saying the result is over its
-    bound. A grading that has finished is left as it is.
+    bound. An early row whose only fault is a value's program's ends
+    `system_error` too, so the platform's retry runs the program alone
+    again; when that retry faults the same way, or no retry comes since
+    `retry_failed` is off, it is `done` with the fault kept as its error.
+    A grading that has finished is left as it is.
     """
     if GradingStatus(row.status) in FINISHED:
         return
-    plan, _ = await plan_of(ctx, row)
+    plan, publication = await plan_of(ctx, row)
     reader = await _Reader.open(ctx, row, pipeline, plan, from_scratch=None)
     faults = {
         held.step: held.fault
@@ -500,18 +523,81 @@ async def conclude(ctx: Context, row: Grading, pipeline: PipelineKind) -> None:
             if got is not None:
                 found[(step, run)] = Found(str(got.id), got.outputs)
     result = result_of(plan, pipeline, reader.skipped, found)
+    faulted = await _checked(ctx, row, plan, publication, result)
     problem = _result_problem(result)
     if problem is not None:
         gradings.finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=problem)
-    elif result["error"] is not None:
+    elif (
+        result["error"] is not None
+        and pipeline == "early"
+        and program_alone(result)
+        and (row.automatic or not ctx.settings.retry_failed)
+    ):
+        # Only a value's program failed, and its retry by itself is spent:
+        # the early row is done, so the late row still runs the hidden runs,
+        # and only that value waits for staff, the reason kept for them
+        # (stage 5 section 6 item 54).
+        row.result = result
+        gradings.finish(ctx, row, GradingStatus.DONE, error=str(result["error"])[:ERROR_LIMIT])
+    elif result["error"] is not None or faulted is not None:
         row.result = result
         gradings.finish(
-            ctx, row, GradingStatus.SYSTEM_ERROR, error=str(result["error"])[:ERROR_LIMIT]
+            ctx,
+            row,
+            GradingStatus.SYSTEM_ERROR,
+            error=str(result["error"] or faulted)[:ERROR_LIMIT],
         )
     else:
         row.result = result
         gradings.finish(ctx, row, GradingStatus.DONE)
     log.info("steps.concluded", grading=str(row.id), status=row.status)
+
+
+async def _checked(
+    ctx: Context, row: Grading, plan: RunPlan, publication: Publication, result: dict[str, Any]
+) -> str | None:
+    """Fill in whether each check of a save's `result` got what it expects,
+    and the sentences of what it did not, from the publication's
+    `task.yaml` and runs, each keeping only the runs worth reading
+    (`checks.keep_runs`); the first fault of a check's steps, for the row
+    to end on and be tried again, none when there is none. A check that
+    faulted got nothing. A publication whose settings or runs do not read
+    fails every check, saying so."""
+    entries: list[dict[str, Any]] = result.get("checks") or []
+    if not entries:
+        return None
+    task = TaskId(row.task_id)
+    try:
+        found = await ctx.forge.content.read_file(PLATFORM, task, TASK_FILE, at=publication.version)
+        definition = parse_task(found.content)
+        held = await ctx.forge.content.read_file(PLATFORM, task, RUNS_PATH, at=publication.version)
+        runs = RunsFile.from_bytes(held.content).runs
+    except (NotFound, InvalidDefinition, ValueError) as exc:
+        log.warning("steps.checks_unread", grading=str(row.id), error=type(exc).__name__)
+        for entry in entries:
+            entry["failing"] = [CHECKS_UNREAD]
+            keep_runs(entry, None)
+        return None
+    scoring = definition.scoring
+    columns = {name: entry.column() for name, entry in plan.reports.items()}
+    faulted: str | None = None
+    for index, entry in zip(plan.checks(), entries, strict=True):
+        expect = definition.checks[index - 1].expect if index <= len(definition.checks) else {}
+        verdict = expect.get(VERDICT)
+        if entry["error"] is not None:
+            faulted = faulted or f"Check {index}: {entry['error']}"
+            entry["failing"] = [f"Its grading faulted: {entry['error']}"[:ERROR_LIMIT]]
+        elif scoring is None or not expect:
+            entry["failing"] = [CHECKS_UNREAD]
+        else:
+            failing = check_failing(scoring, runs, columns, compilers(plan), entry, expect)
+            entry["passed"] = not failing
+            entry["failing"] = failing
+        keep_runs(entry, verdict if isinstance(verdict, str) else None)
+    return faulted
+
+
+CHECKS_UNREAD = "The task's settings or runs at this publication do not read."
 
 
 async def _begin(ctx: Context, row: Grading, plan: RunPlan, pipeline: PipelineKind) -> None:
@@ -607,13 +693,16 @@ def _door(ctx: Context, grading: uuid.UUID, step: str) -> str:
 
 
 async def plan_of(ctx: Context, row: Grading) -> tuple[RunPlan, Publication]:
-    """The run plan of the publication the grading grades against."""
+    """The run plan of the publication the grading grades against, as the
+    split the grading was made with lays it out (`RunPlan.for_split`).
+    """
     try:
         publication = await gradings.publication_of(ctx, row)
         found = await ctx.forge.content.read_file(
             PLATFORM, TaskId(row.task_id), PLAN_PATH, at=publication.version
         )
-        return RunPlan.from_bytes(found.content), publication
+        plan = RunPlan.from_bytes(found.content).for_split(row.released_split)
+        return plan, publication
     except (NotFound, ValidationError) as exc:
         raise Misconfigured(f"The grading has no run plan: {type(exc).__name__}") from None
 
@@ -688,6 +777,9 @@ class _Reader:
         """Each entrant file read so far that is an upload, by its path."""
         self._own: dict[str, StepOutput] = {}
         self._pins: dict[str, uuid.UUID] = {}
+        self.runs_files: dict[str, bytes] = {}
+        """Each runs file a value's program reads, built so far, by its
+        SHA-256."""
 
     @classmethod
     async def load(cls, ctx: Context, row: Grading, held: GradingStep, plan: RunPlan) -> _Reader:
@@ -747,7 +839,8 @@ class _Reader:
                 inputs = run_step.inputs or {}
             else:
                 inputs = (run_step.items or {})[run].inputs
-            canonical = await self._ports(inputs, item[1])
+            check = run_step.check.index if run_step.check is not None else None
+            canonical = await self._ports(inputs, item[1], check)
             if canonical is STOPPED:
                 self._stopped.add(item)
             missing = canonical is MISSING or canonical is STOPPED
@@ -808,29 +901,31 @@ class _Reader:
                 return found
         return await ctx.db.get(StepOutput, pinned)
 
-    async def _ports(self, values: Mapping[str, Any], run: str | None) -> Any:
+    async def _ports(
+        self, values: Mapping[str, Any], run: str | None, check: int | None = None
+    ) -> Any:
         """Each of `values` by `canon`: `STOPPED` when one is, else
         `MISSING` when one is."""
         found: dict[str, Any] = {}
         for name, value in values.items():
-            found[name] = await self.canon(value, run)
+            found[name] = await self.canon(value, run, check)
             if found[name] is STOPPED:
                 return STOPPED
         return MISSING if any(value is MISSING for value in found.values()) else found
 
-    async def canon(self, value: Any, run: str | None) -> Any:
+    async def canon(self, value: Any, run: str | None, check: int | None = None) -> Any:
         """`value` with every file by its content; `MISSING` when an
         earlier step it reads has given nothing, `STOPPED` when what it
-        gave stops the run."""
+        gave stops the run. A check's copy reads that check's runs."""
         if not isinstance(value, dict):
             return value
         if "files" in value:
-            files = await self._ports(value["files"], run)
+            files = await self._ports(value["files"], run, check)
             return files if files is MISSING or files is STOPPED else {"files": files}
         if PROGRAMS in value:
             programs: dict[str, Any] = {}
             for program, inputs in value[PROGRAMS].items():
-                programs[program] = await self._ports(inputs, run)
+                programs[program] = await self._ports(inputs, run, check)
                 if programs[program] is STOPPED:
                     return STOPPED
             if any(found is MISSING for found in programs.values()):
@@ -838,6 +933,8 @@ class _Reader:
             return {PROGRAMS: programs}
         if set(value) == {"value"} or "links" in value or "secret" in value:
             return value
+        if set(value) == {"runs"}:
+            return await self._runs(value["runs"], check)
         if "task" in value:
             return _facts(self.plan.task_files, value["task"])
         if "workflow" in value:
@@ -850,6 +947,32 @@ class _Reader:
         if "step" in value:
             return await self._output(value, run)
         raise Misconfigured(f"The plan holds a value this forge cannot read: {sorted(value)}")
+
+    async def _runs(self, ids: list[str], check: int | None = None) -> Any:
+        """The runs file a value's program reads (`runs_file`), by its
+        content, kept to place; `MISSING` while an item one of the runs
+        goes through has given nothing. A check's copy of the program reads
+        that check's runs."""
+        order = step_order(self.plan, self.pipeline)
+        found: dict[Item, Found] = {}
+        for run in ids:
+            if run in self.skipped:
+                continue
+            for item in chain_of(self.plan, order, run, check):
+                got = await self.output_of(*item)
+                if got is None:
+                    return MISSING
+                found[item] = Found(str(got.id), got.outputs)
+                if got.outputs.get("outcome") != "accepted":
+                    break
+        content = runs_file(self.plan, self.pipeline, ids, self.skipped, found, check)
+        if content is None:
+            return MISSING
+        if len(content) > RUN_ENTRY_KB * 1024 * len(ids):
+            raise Misconfigured("A value's runs file is larger than its plan allows.")
+        sha256 = hashlib.sha256(content).hexdigest()
+        self.runs_files[sha256] = content
+        return {"file": sha256}
 
     def given(self, value: Mapping[str, Any]) -> Any:
         """What the submission gives for an entrant value, or its part."""
@@ -1042,7 +1165,8 @@ class _Job:
             "uploads": f"{self.door}/uploads",
             "done": f"{self.door}/done",
             "time_limit": Decimal(self.pipeline_step.limits.time_ms) / 1000,
-            "fail_on_non_accepted": self.step.once,
+            # A check's copy that stops its runs leaves the next check to run.
+            "fail_on_non_accepted": self.step.once and self.step.check is None,
         }
         if self.boxed:
             first = await _box_users(self.ctx, held)
@@ -1095,6 +1219,9 @@ class _Job:
         if "template" in value:
             parts = [self.reader.entrant_value(part) for part in value["parts"]]
             return value["template"].format(*[spelled(part) for part in parts])
+        if set(value) == {"runs"}:
+            check = self.step.check.index if self.step.check is not None else None
+            return self._runs(await self.reader.canon(value, run, check))
         if manifest and self.boxed and ("task" in value or "workflow" in value):
             return {"file": await self._manifest(value)}
         if "task" in value:
@@ -1171,6 +1298,20 @@ class _Job:
         if kind.endswith("task"):
             return {**source, "at": self.publication.version}
         return {**source, "workflow": self.plan.workflow.id, "commit": self.plan.workflow.commit}
+
+    def _runs(self, canonical: Any) -> dict[str, str]:
+        """A value's runs file, served through the door from what the job
+        keeps of it, since no store holds it."""
+        if not isinstance(canonical, dict):
+            raise Misconfigured("A value's program reads runs that have not all given.")
+        sha256 = canonical["file"]
+        content = self.reader.runs_files[sha256]
+        self.served[sha256] = {"kind": RUNS, "content": content.decode(), "sha256": sha256}
+        return {
+            "file": self._download(
+                (RUNS, sha256), lambda: f"{self.door}/files/{sha256}", sha256, len(content)
+            )
+        }
 
     async def _manifest(self, value: Mapping[str, Any]) -> str:
         """A `program.yaml` on a manifest port, served as the JSON the
@@ -1357,7 +1498,13 @@ async def _served(ctx: Context, row: Grading, source: Mapping[str, str]) -> byte
     """What the door serves a step for `source` (`_Job._source`): a task's
     or workflow's file, or a manifest's JSON from one, its YAML checked
     against the SHA-256 the plan pinned."""
-    kind, path = source["kind"], source["path"]
+    kind = source["kind"]
+    if kind == RUNS:
+        content = source["content"].encode()
+        if hashlib.sha256(content).hexdigest() != source["sha256"]:
+            raise Misconfigured("A file the forge serves a step is not what its job named.")
+        return content
+    path = source["path"]
     if kind.endswith("task"):
         content = (
             await ctx.forge.content.read_file(
@@ -1463,6 +1610,21 @@ async def _keep(ctx: Context, found: StepOutput, *, replace: bool) -> None:
     )
     if first.scalar_one_or_none() is None:
         await ctx.db.execute(insert(StepOutput).values(**{**values, "reusable": False}))
+
+
+def _program_answered(step: RunStep, written: Sequence[ItemOutputs]) -> None:
+    """`Fault` for a value's program that ended other than accepted, or
+    without its report: never the entrant's verdict, and nothing kept, so
+    the grading's retry runs it again."""
+    value = step.value
+    if value is None or value.report is None:
+        return
+    for item in written:
+        outcome = item.outputs.get("outcome")
+        if outcome != "accepted":
+            raise Fault(f"The program of {value.name} ended {outcome}.")
+        if value.report not in item.outputs:
+            raise Fault(f"The program of {value.name} reported no {value.report}.")
 
 
 def _result_problem(result: Mapping[str, Any]) -> str | None:

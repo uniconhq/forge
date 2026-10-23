@@ -6,8 +6,14 @@ one the rest, made only once the early one ends `done`; an early compile
 error gives every late run its verdict with no late pipeline; an early
 `system_error` is retried once and makes no late row, nor does a cancel;
 a late one is retried once, lost or failed, found so by its entrant's
-read, and told to no entrant until the reveal; a regrade stops a late
-row of the grading it replaces, and a late row that failed is not tried
+read, and told to no entrant until the reveal; islands' values are worked
+out from both rows as `show` lists them, organisers read each at once with
+what it read and the facts, an extension moving `seconds_late`; a fault is
+told "being checked" through an early run, and through a late one only
+once its runs show; an entrant reads only the texts their result shows,
+by where it shows them, never told the output; a staff retry of a late
+row takes nothing away while it runs; a regrade stops a late row of the
+grading it replaces, and a late row that failed is not tried
 again once a regrade replaced its early row; a late row reads what its
 early row read, and reuses as it did; an upload is linked only when the
 submission took it; a task with nothing early makes its late row at
@@ -23,27 +29,40 @@ publication is made leaves it held back until a save of the same files
 checks it; a lost save row is found by its organisers' read; a take-over
 whose work never ran is finished by the next read; and the platform
 answers a pipeline only while its row starts, and only for the variables
-it was started with.
+it was started with; a save's checks are graded by its own pipeline, and
+one that does not get what it expects refuses the save, saying why; and
+a run task's regrade is summed up by each value and verdict it changed,
+for a manager of the task, a save moving the pin asking first.
 """
 
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from fractions import Fraction
 from typing import Any
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 
 from forge.adapters.ci.fake import dispatch_of, pipeline_variables
-from forge.db.tables import Grading, GradingStep, StepOutput
+from forge.db.tables import Grading, GradingStep, Regrade, StepOutput
 from forge.db.tables import Upload as UploadRow
 from forge.db.tables.entrants import Entrant
+from forge.db.tables.gradings import PASSED
+from forge.domain import step_data
+from forge.domain.boards import Counted
 from forge.domain.content import Edit
-from forge.domain.errors import CiRequestRefused, Misconfigured, Rejected, Unavailable
+from forge.domain.errors import (
+    CiRequestRefused,
+    ConfirmationRequired,
+    Forbidden,
+    Misconfigured,
+    NotFound,
+    Rejected,
+    Unavailable,
+)
 from forge.domain.grading import (
     BOXED_SHAPE,
-    EARLY_LANE,
-    LATE_LANE,
     LOST_CHECK_AFTER,
     MACHINE_WAIT,
     NEVER_BEGAN,
@@ -52,28 +71,33 @@ from forge.domain.grading import (
     PipelineRun,
     Slot,
 )
-from forge.domain.identity import PLATFORM, AsOrgAccount
-from forge.domain.ids import OrgId, RunId
+from forge.domain.identity import PLATFORM, AsOrgAccount, User
+from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.keys import key_from_name
 from forge.domain.live import Nudge
 from forge.domain.names import EntrantOwner
-from forge.domain.roles import Role, Scope
+from forge.domain.regrades import ValueChange, VerdictChange
+from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.run_plan import PipelineKind
+from forge.domain.run_showing import TextAt
 from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import (
+    boards,
     gradings,
     pipelines,
     primitives,
     publications,
     published,
+    regrades,
     runs,
     steps,
     submissions,
     tasks,
 )
+from forge.services.access import Organiser
 from forge.services.gradings import START_RETRY_WAIT
 from forge.services.pipelines import USER_FIRST
 from forge.services.publications import Draft, Published
@@ -95,6 +119,7 @@ from tests.services.test_steps import (
     _mint,
     _report,
     _row,
+    _runs,
     _save,
     _step,
 )
@@ -106,6 +131,9 @@ ISLANDS = Scope("acme", "spring", "islands")
 NOTHING_EARLY = TASKS["islands"][0].replace(
     "now: [sample_score, sample_time, sample_tests, samples/]", "now: [samples/]"
 )
+LOG_SHOWN = TASKS["islands"][0].replace("sample_tests, samples/]", "sample_tests, samples/, log]")
+"""islands showing the compile log, a report of its step done once, with
+its runs."""
 
 
 @pytest.fixture
@@ -157,10 +185,12 @@ async def _v2(acme: Acme, islands: Islands) -> str:
     return TASKS["islands"][0].replace("unicon/islands@v1", "unicon/islands@v2")
 
 
-async def _checked(setup: Setup, acme: Acme, text: str = TASKS["islands"][0]) -> Islands:
+async def _checked(
+    setup: Setup, acme: Acme, text: str = TASKS["islands"][0], contest: str = LIVE
+) -> Islands:
     """islands published in a running contest, its save pipeline run and
     reported, so its publication has taken over."""
-    islands = await _islands(setup, acme, text=text, contest=LIVE)
+    islands = await _islands(setup, acme, text=text, contest=contest)
     [save] = await _rows(setup, "save")
     await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER))
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
@@ -247,8 +277,9 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     assert acme.fake.ci.runs[RunId(early.run_id)].task == dispatch_of("acme")
     assert await _rows(setup, "late") == []
     save, first = asked
-    assert (save["labels"], save["clone"]) == ([PLATFORM_POOL, SMALL, LATE_LANE], None)
-    assert first["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL, EARLY_LANE]
+    # Every pipeline takes any slot of its size, first come, first served.
+    assert (save["labels"], save["clone"]) == ([PLATFORM_POOL, SMALL], None)
+    assert first["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL]
     assert first["clone"]["image"] == setup.settings.plugin_git_image
     assert first["clone"]["submission"] == early.submission_id
     user = early.run_user
@@ -271,7 +302,7 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     assert (late.early_id, late.attempt, late.status) == (early.id, 1, GradingStatus.DISPATCHED)
     assert late.idempotency_key is None
     assert [step[0] for step in _steps(asked[-1])] == ["solution", "compare", "report"]
-    assert asked[-1]["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL, LATE_LANE]
+    assert asked[-1]["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL]
     await _step(setup, acme, late.id, "late", "solution", _batch())
     await _step(setup, acme, late.id, "late", "compare", _batch(score=True))
     assert await _report(setup, late.id, "late") is GradingStatus.DONE
@@ -320,7 +351,16 @@ async def test_the_entrant_reads_the_runs_of_the_groups_shown_now_and_after_the_
     grading = await _grading(setup, session, islands)
     assert grading.status == SubmissionState.GRADED
     assert _runs_seen(grading) == [("sample_tests", 1, "accepted"), ("sample_tests", 2, "accepted")]
-    assert set(grading.runs[0]) == {"group", "place", "key", "verdict", "passed", "reports"}
+    assert set(grading.runs[0]) == {
+        "group",
+        "place",
+        "key",
+        "verdict",
+        "passed",
+        "reports",
+        "texts",
+        "message",
+    }
     assert grading.runs[0]["key"] == {"input": "samples/1.in", "answer": "samples/1.ans"}
     # When the page reads it again, its late runs then shown.
     assert grading.reveal_at is not None and BEFORE_CLOSE < grading.reveal_at <= AFTER_CLOSE
@@ -393,7 +433,7 @@ VALUES_ONLY = (
     )
     .replace(
         "after_close: [st1, st2, total, all]",
-        "after_close: [total]\n    on_release: [st1_tests, st2_tests]",
+        "on_release: [total, st1_tests, st2_tests]",
     )
 )
 """islands showing values alone, and groups only on a release."""
@@ -449,6 +489,222 @@ async def test_organisers_read_every_run_of_both_rows_with_its_id(
         ("r3", 3),
         ("r4", 4),
     ]
+
+
+def _values(grading: submissions.Result) -> dict[str, Any]:
+    """Each value shown: its number, or `waiting`."""
+    return {
+        value.name: "waiting" if value.waiting else value.number for value in grading.run_values
+    }
+
+
+async def test_islands_values_are_worked_out_from_both_rows_as_show_lists_them(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme, LOG_SHOWN)
+    session = await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    await _early(setup, acme, early.id)
+    [late] = await _rows(setup, "late")
+    await _step(setup, acme, late.id, "late", "solution", _batch())
+    await _step(setup, acme, late.id, "late", "compare", _batch({"r4": "wrong_answer"}, score=True))
+    assert await _report(setup, late.id, "late") is GradingStatus.DONE
+
+    grading = await _grading(setup, session, islands)
+    assert _values(grading) == {"sample_score": 1, "sample_time": 12}
+    assert grading.compiled == 1 and set(grading.once["texts"]) == {"log"}
+    assert grading.facts == {}
+
+    clock.set(AFTER_CLOSE)
+    grading = await _grading(setup, session, islands)
+    # r4's wrong answer counts as score's worst bound, 0.
+    assert _values(grading) == {
+        "sample_score": 1,
+        "sample_time": 12,
+        "st1": 1,
+        "st2": 0,
+        "total": 40,
+    }
+    assert all(not value.self_reported for value in grading.run_values)
+
+
+async def test_organisers_read_every_value_at_once_with_what_it_read_and_the_facts(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(datetime(2026, 9, 26, 14, 30, tzinfo=UTC))
+    due = LIVE + "    due: 2026-09-26T14:00:00Z\n"
+    islands = await _checked(setup, acme, contest=due)
+    await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    await _early(setup, acme, early.id)
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    async with setup.unit_of_work() as ctx:
+        entrant = await ctx.db.scalar(select(Entrant.id))
+    assert entrant is not None
+
+    async def read() -> submissions.Result:
+        graded = await submissions.organised(setup, manager, islands.task, EntrantOwner(entrant), 1)
+        assert graded.grading is not None
+        return graded.grading
+
+    grading = await read()
+    # The late runs are still to come, so what reads them waits.
+    assert _values(grading) == {
+        "sample_score": 1,
+        "sample_time": 12,
+        "st1": "waiting",
+        "st2": "waiting",
+        "total": "waiting",
+    }
+    total = next(value for value in grading.run_values if value.name == "total")
+    assert (total.show, total.runs, total.values) == (
+        "after_close",
+        ("r3", "r4"),
+        ("st1", "st2"),
+    )
+    assert grading.facts == {
+        "seconds_late": 1800,
+        "seconds": 4 * 3600 + 1800,
+        "compiled": 1,
+    }
+    # An extension moves the row's due, and seconds_late with it, on read.
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Entrant).where(Entrant.id == entrant).values(time_extension_seconds=600)
+        )
+    assert (await read()).facts["seconds_late"] == Fraction(1200)
+
+
+async def test_an_early_fault_is_told_being_checked_with_its_runs(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme)
+    session = await _submit(setup, acme, islands)
+    [first] = await _rows(setup, "early")
+    await _fault(setup, acme, first.id, "early")
+    [_, retried] = await _rows(setup, "early")
+    await _fault(setup, acme, retried.id, "early")
+
+    grading = await _grading(setup, session, islands)
+    assert grading.status == SubmissionState.DELAYED
+    assert _values(grading) == {"sample_score": "waiting", "sample_time": "waiting"}
+    assert _runs_seen(grading) == [
+        ("sample_tests", 1, "system_error"),
+        ("sample_tests", 2, "system_error"),
+    ]
+
+
+async def test_a_late_fault_is_told_only_once_its_runs_are_shown(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme)
+    other = await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    await _early(setup, acme, early.id)
+    [late] = await _rows(setup, "late")
+    await _fault(setup, acme, late.id, "late")
+    [_, again] = await _rows(setup, "late")
+    await _fault(setup, acme, again.id, "late")
+    found = await _grading(setup, other, islands)
+    assert (found.status, _values(found)) == (
+        SubmissionState.GRADED,
+        {"sample_score": 1, "sample_time": 12},
+    )
+    clock.set(AFTER_CLOSE)
+    found = await _grading(setup, other, islands)
+    assert found.status == SubmissionState.DELAYED
+    assert _values(found) == {
+        "sample_score": 1,
+        "sample_time": 12,
+        "st1": "waiting",
+        "st2": "waiting",
+        "total": "waiting",
+    }
+
+
+async def test_an_entrant_reads_only_the_texts_their_result_shows_them_by_where(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, session = await _graded_both(setup, acme, LOG_SHOWN)
+    grading = await _grading(setup, session, islands)
+    # No stored output's id reaches the entrant: a text is read by where it is shown.
+    assert (grading.runs[0]["message"], grading.once["texts"]) == ({}, {"log": {}})
+    assert "output" not in repr((grading.runs, grading.once))
+    [late] = await _rows(setup, "late")
+    assert late.result is not None
+    hidden = late.result["runs"][0]["message"]
+    late_message = TextAt("all", 3, "message", None)
+
+    read = await submissions.read_text(
+        setup, session, islands.task, 1, TextAt("sample_tests", 1, "message", None)
+    )
+    assert read == "Right."
+    log = TextAt(None, None, "texts", "log")
+    assert await submissions.read_text(setup, session, islands.task, 1, log) == "built"
+    for at in (
+        late_message,
+        TextAt("sample_tests", 1, "texts", "score"),
+        TextAt("sample_tests", 9, "message", None),
+    ):
+        with pytest.raises(NotFound, match="no such text"):
+            await submissions.read_text(setup, session, islands.task, 1, at)
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    async with setup.unit_of_work() as ctx:
+        entrant = await ctx.db.scalar(select(Entrant.id))
+    assert entrant is not None
+    organised = await submissions.read_organised_text(
+        setup, manager, islands.task, EntrantOwner(entrant), 1, hidden["output"], "message"
+    )
+    assert organised == "Right."
+    with pytest.raises(NotFound, match="no such text"):
+        await submissions.read_organised_text(
+            setup, manager, islands.task, EntrantOwner(entrant), 1, hidden["output"], "score"
+        )
+    clock.set(AFTER_CLOSE)
+    assert await submissions.read_text(setup, session, islands.task, 1, late_message) == "Right."
+
+
+async def test_a_report_of_a_step_done_once_reaches_an_entrant_only_when_show_lists_it(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, session = await _graded_both(setup, acme)
+    log = TextAt(None, None, "texts", "log")
+
+    grading = await _grading(setup, session, islands)
+    assert grading.runs and grading.compiled == 1
+    assert grading.once == {"reports": {}, "texts": {}}
+    with pytest.raises(NotFound, match="no such text"):
+        await submissions.read_text(setup, session, islands.task, 1, log)
+    clock.set(AFTER_CLOSE)
+    assert (await _grading(setup, session, islands)).once == {"reports": {}, "texts": {}}
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    async with setup.unit_of_work() as ctx:
+        entrant = await ctx.db.scalar(select(Entrant.id))
+    assert entrant is not None
+    graded = await submissions.organised(setup, manager, islands.task, EntrantOwner(entrant), 1)
+    assert graded.grading is not None and set(graded.grading.once["texts"]) == {"log"}
+
+
+async def test_a_staff_retry_of_the_late_row_takes_nothing_away_while_it_runs(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, session = await _graded_both(setup, acme)
+    [late] = await _rows(setup, "late")
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+
+    await gradings.retry(setup, manager, late.id)
+
+    assert [row.attempt for row in await _rows(setup, "late")] == [1, 2]
+    clock.set(AFTER_CLOSE)
+    grading = await _grading(setup, session, islands)
+    assert grading.status == SubmissionState.GRADED
+    assert _values(grading)["total"] == 100
 
 
 async def test_an_early_compile_error_gives_every_late_run_its_verdict_and_no_late_pipeline(
@@ -1017,7 +1273,7 @@ async def test_a_pipeline_no_slot_holds_is_not_answered(
             None, pipeline_variables(run), now=clock.now(), org=run.org
         )
         with monkeypatch.context() as patched:
-            patched.setattr(setup.settings, "slot_sizes", (Slot("tiny", 64),))
+            patched.setattr(setup.settings, "slot_sizes", (Slot("tiny", 1, 64),))
             with pytest.raises(CiRequestRefused):
                 await runs.config(setup, request)
         return await start(as_, run)
@@ -1062,3 +1318,779 @@ async def test_the_platform_answers_a_pipeline_only_while_it_starts_with_its_own
     )
     with pytest.raises(CiRequestRefused):
         await runs.config(setup, request)
+
+
+# Checks
+
+
+CHECKS = """\
+checks:
+  - submit: {code: checks/good}
+    expect: {verdict: accepted, total: 100}
+  - submit: {code: checks/empty}
+    expect: {verdict: wrong_answer}
+  - submit: {code: checks/slow}
+    expect: {st1: 1, st2: 0}
+"""
+CHECK_FILES = {
+    "checks/good/main.cpp": b"int main() {}\n",
+    "checks/empty/main.cpp": b"int main() { return 0; }\n",
+    "checks/slow/main.cpp": b"int main() { for (;;); }\n",
+}
+EVERY = ("r1", "r2", "r3", "r4")
+
+
+def _tagged(write: Any, tag: bytes) -> Any:
+    """`write`, each file it writes but `outputs.json` ending in `tag`."""
+
+    def tagged(job: dict[str, Any]) -> dict[str, bytes]:
+        written: dict[str, bytes] = write(job)
+        return {path: content + tag * (path != "outputs.json") for path, content in written.items()}
+
+    return tagged
+
+
+async def _checks_run(
+    setup: Setup,
+    acme: Acme,
+    save: uuid.UUID,
+    good: dict[str, str] | None = None,
+    *,
+    diff: bool = True,
+) -> dict[str, dict[str, Any]]:
+    """A save row's diff, unless it was done before, and its three checks'
+    copies run as a machine would: the good one accepted on every run but
+    those `good` names, the empty one a wrong answer on every run, and the
+    slow one out of time on r4; each step's job. Each check's steps write
+    files of their own, so no copy reuses another's."""
+    jobs = {}
+    if diff:
+        jobs["diff"] = await _step(setup, acme, save, "save", "diff", _compiled(CHECKER))
+    compare = {
+        1: _batch(good, score=True),
+        2: _batch(dict.fromkeys(EVERY, "wrong_answer"), score=True),
+        3: _batch(score=True),
+    }
+    solution = {1: _batch(), 2: _batch(), 3: _batch({"r4": "time_limit"})}
+    for index in (1, 2, 3):
+        name = f"c{index}-"
+        tag = name.encode()
+        for step, write in (
+            ("compile", _compiled()),
+            ("solution", solution[index]),
+            ("compare", compare[index]),
+        ):
+            jobs[f"{name}{step}"] = await _step(
+                setup, acme, save, "save", f"{name}{step}", _tagged(write, tag)
+            )
+    return jobs
+
+
+async def test_a_saves_checks_are_graded_by_its_pipeline_and_each_gets_what_it_expects(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    text = TASKS["islands"][0] + CHECKS
+    islands = await _islands(setup, acme, text=text, contest=LIVE, files=CHECK_FILES)
+    [save] = await _rows(setup, "save")
+
+    jobs = await _checks_run(setup, acme, save.id)
+    assert await _report(setup, save.id, "save") is GradingStatus.DONE
+    await setup.settle()
+
+    compiled = jobs["c1-compile"]
+    assert compiled["fail_on_non_accepted"] is False
+    assert compiled["inputs"]["inputs"]["language"] == "cpp"
+    assert {entry["path"] for entry in compiled["files"]} == {
+        f"{compiled['inputs']['inputs']['source']['folder']}/main.cpp"
+    }
+    assert _runs(jobs["c3-compare"]) == ["r1", "r2", "r3"]
+    row = await _row(setup, save.id)
+    assert row.status == GradingStatus.DONE and row.result is not None
+    assert [(each["passed"], each["failing"]) for each in row.result["checks"]] == [
+        (True, []),
+        (True, []),
+        (True, []),
+    ]
+    # A check that passed keeps none of its runs in the save's result.
+    assert [each["runs"] for each in row.result["checks"]] == [[], [], []]
+    async with setup.unit_of_work() as ctx:
+        current = await published.task(ctx, islands.task)
+    assert current is not None and current.publication.id == islands.publication
+
+
+async def test_a_check_that_does_not_get_what_it_expects_refuses_its_save_saying_why(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands = await _checked(setup, acme)
+    text = TASKS["islands"][0] + CHECKS
+    saved = await _save(setup, acme, islands.task, {"task.yaml": text.encode(), **CHECK_FILES})
+    assert saved.check == "checking"
+    _, save = await _rows(setup, "save")
+
+    await _checks_run(setup, acme, save.id, good={"r4": "wrong_answer"}, diff=False)
+    assert await _report(setup, save.id, "save") is GradingStatus.DONE
+    await setup.settle()
+
+    async with setup.unit_of_work() as ctx:
+        current = await published.task(ctx, islands.task)
+    assert current is not None and current.publication.id == islands.publication
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    listed = await publications.list(setup, manager, islands.task)
+    assert [each.check for each in listed] == [None, "refused"]
+    [failed] = listed[1].failed_checks
+    assert (failed.index, failed.failing) == (
+        1,
+        ("The run r4 got wrong_answer, not accepted.", "total is 40, not 100."),
+    )
+    assert [(run.id, run.verdict) for run in failed.runs][-1] == ("r4", "wrong_answer")
+    assert failed.outcomes == {"compile": "accepted"} and failed.error is None
+    state = await tasks.state(setup, manager, islands.task)
+    assert state.latest is not None and state.latest.failed_checks == listed[1].failed_checks
+
+
+async def test_a_check_that_faults_ends_the_save_row_a_system_error_and_it_is_tried_again(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    text = TASKS["islands"][0] + CHECKS
+    islands = await _islands(setup, acme, text=text, contest=LIVE, files=CHECK_FILES)
+    [save] = await _rows(setup, "save")
+    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER))
+    for step, write in (
+        ("c1-compile", _compiled()),
+        ("c1-solution", _batch()),
+        ("c1-compare", _batch(score=True)),
+        ("c2-compile", lambda job: {"outputs.json": b"{"}),
+    ):
+        await _step(setup, acme, save.id, "save", step, _tagged(write, step[:3].encode()))
+
+    assert await _report(setup, save.id, "save") is GradingStatus.SYSTEM_ERROR
+    await setup.settle()
+    row = await _row(setup, save.id)
+    assert row.error is not None and row.error.startswith("Check 2: ")
+    assert row.result is not None
+    assert row.result["checks"][1]["failing"][0].startswith("Its grading faulted: ")
+    # The row is tried again, the steps done before not run again, and once
+    # its checks pass the save takes over.
+    [_, again] = await _rows(setup, "save")
+    assert again.attempt == 2
+    wrong = dict.fromkeys(EVERY, "wrong_answer")
+    for step, write in (
+        ("c2-compile", _compiled()),
+        ("c2-solution", _batch()),
+        ("c2-compare", _batch(wrong, score=True)),
+        ("c3-compile", _compiled()),
+        ("c3-solution", _batch({"r4": "time_limit"})),
+        ("c3-compare", _batch(score=True)),
+    ):
+        await _step(setup, acme, again.id, "save", step, _tagged(write, step[:3].encode()))
+    assert await _report(setup, again.id, "save") is GradingStatus.DONE
+    await setup.settle()
+    async with setup.unit_of_work() as ctx:
+        current = await published.task(ctx, islands.task)
+    assert current is not None and current.publication.id == islands.publication
+
+
+async def test_checks_at_a_publication_whose_settings_do_not_read_fail_saying_so(
+    setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    islands = await _checked(setup, acme)
+    text = TASKS["islands"][0] + CHECKS
+    await _save(setup, acme, islands.task, {"task.yaml": text.encode(), **CHECK_FILES})
+    _, save = await _rows(setup, "save")
+
+    def unread(content: bytes) -> Any:
+        raise ValueError("unread")
+
+    monkeypatch.setattr(steps, "parse_task", unread)
+    await _checks_run(setup, acme, save.id, diff=False)
+    assert await _report(setup, save.id, "save") is GradingStatus.DONE
+    await setup.settle()
+
+    row = await _row(setup, save.id)
+    assert row.result is not None
+    assert [(each["passed"], each["failing"]) for each in row.result["checks"]] == [
+        (False, [steps.CHECKS_UNREAD])
+    ] * 3
+    async with setup.unit_of_work() as ctx:
+        current = await published.task(ctx, islands.task)
+    assert current is not None and current.publication.id == islands.publication
+
+
+# A run task's regrade summary
+
+
+RUNS = {
+    "r1": {"input": "samples/1.in", "answer": "samples/1.ans"},
+    "r2": {"input": "samples/2.in", "answer": "samples/2.ans"},
+    "r3": {"input": "tests/3.in", "answer": "tests/3.ans"},
+    "r4": {"input": "tests/4.in", "answer": "tests/4.ans"},
+}
+
+
+def _result(runs: dict[str, str], compile: str = "accepted") -> dict[str, Any]:
+    """A result version 6 holding `runs`, each with its verdict, an accepted
+    run scoring 1, and the compile's outcome when it holds one."""
+    return {
+        "schema_version": 6,
+        "once": {
+            "texts": {},
+            "reports": {},
+            "outcomes": {"compile": compile} if "r1" in runs else {},
+        },
+        "runs": [
+            {
+                "id": run,
+                "key": RUNS[run],
+                "texts": {},
+                "passed": int(verdict == "accepted"),
+                "reports": {"score": 1, "time_ms": 12, "memory_kb": 1500}
+                if verdict == "accepted"
+                else {},
+                "verdict": verdict,
+            }
+            for run, verdict in runs.items()
+        ],
+        "error": None,
+        "staff": [],
+        "run_log": None,
+    }
+
+
+ACCEPTED_EARLY = _result({"r1": "accepted", "r2": "accepted"})
+ACCEPTED_LATE = _result({"r3": "accepted", "r4": "accepted"})
+
+
+async def _ended(
+    setup: Setup, early: Grading, result: dict[str, Any], late: dict[str, Any] | None
+) -> None:
+    """The early row `early` ended `done` with `result`, and its late row,
+    when `late` is given, made and ended `done` with it."""
+    async with setup.unit_of_work() as ctx:
+        row = await ctx.db.get(Grading, early.id)
+        assert row is not None
+        row.status, row.result, row.finished_at = GradingStatus.DONE, result, ctx.now
+        if late is not None:
+            made = await ctx.db.scalar(
+                select(func.count())
+                .select_from(Grading)
+                .where(Grading.submission_id == row.submission_id, Grading.pipeline == "late")
+            )
+            ctx.db.add(
+                Grading(
+                    task_id=row.task_id,
+                    workspace_id=row.workspace_id,
+                    submission_id=row.submission_id,
+                    submission_number=row.submission_number,
+                    submission_version=row.submission_version,
+                    submitted_at=row.submitted_at,
+                    publication_id=row.publication_id,
+                    pipeline="late",
+                    early_id=row.id,
+                    regrade_id=row.regrade_id,
+                    attempt=(made or 0) + 1,
+                    status=GradingStatus.DONE,
+                    queued_at=ctx.now,
+                    finished_at=ctx.now,
+                    result=late,
+                )
+            )
+
+
+GRADEBOOK = LIVE + (
+    "leaderboards:\n"
+    "  gradebook:\n"
+    "    title: Gradebook\n"
+    "    columns:\n"
+    "      picked: {block: latest, from: {results: islands}}\n"
+    "      st2: {block: otherwise, of: [{value: [{column: picked}, st2]}, 0]}\n"
+    "      total: {block: otherwise, of: [{value: [{column: picked}, total]}, 0]}\n"
+    "    sort: [{total: desc}]\n"
+    "    display: [st2, total]\n"
+)
+"""The running contest with a staff board reading islands' latest
+submission, ranked by its total."""
+
+
+async def _regraded(
+    setup: Setup, acme: Acme, count: int, contest: str = LIVE
+) -> tuple[Islands, uuid.UUID, list[Grading]]:
+    """islands with `count` submissions each graded every run accepted, then
+    rejudged; the regrade and its early rows, still to run."""
+    islands = await _checked(setup, acme, contest=contest)
+    for user in range(20, 20 + count):
+        acme.fake.add_user(user, f"entrant{user}")
+        await _submit(setup, acme, islands, user=user)
+    for row in await _rows(setup, "early"):
+        await _ended(setup, row, ACCEPTED_EARLY, ACCEPTED_LATE)
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    rejudged = await gradings.rejudge(setup, manager, islands.task)
+    assert rejudged.regrade is not None and rejudged.queued == count
+    async with setup.unit_of_work() as ctx:
+        rows = list(
+            await ctx.db.scalars(
+                select(Grading)
+                .where(Grading.regrade_id == rejudged.regrade)
+                .order_by(Grading.queued_at, Grading.submission_number, Grading.id)
+            )
+        )
+    return islands, rejudged.regrade, rows
+
+
+async def _staff(setup: Setup, acme: Acme) -> Any:
+    """A session of an observer of the contest."""
+    await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.OBSERVER)
+    return await signed_in(setup, acme.fake, 7)
+
+
+async def test_staff_read_every_row_of_a_staff_board_and_nobody_else_reads_it(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands = await _checked(setup, acme, contest=GRADEBOOK)
+    entrant = await _submit(setup, acme, islands)
+    await _submit(setup, acme, islands, user=9)
+    first, waiting = await _rows(setup, "early")
+    await _ended(setup, first, ACCEPTED_EARLY, ACCEPTED_LATE)
+    staff = await _staff(setup, acme)
+
+    [board] = await boards.seen(setup, staff, SPRING)
+
+    # A board with no audience is staff's, so an entrant and a visitor
+    # read none.
+    assert await boards.seen(setup, entrant, SPRING) == ()
+    assert await boards.seen(setup, None, SPRING) == ()
+    assert (board.key, board.title, board.audience.who) == ("gradebook", "Gradebook", "staff")
+    graded, grading = board.rows
+    assert (graded.place, grading.place) == (1, 2)
+    assert [(cell.column, cell.number) for cell in graded.cells] == [
+        ("st2", Fraction(1)),
+        ("total", Fraction(100)),
+    ]
+    assert graded.cells[1].counted == (Counted("islands", first.submission_number),)
+    # A submission still grading is left out as waiting, so its row has
+    # no total yet and otherwise gives 0.
+    assert [(cell.column, cell.number) for cell in grading.cells] == [
+        ("st2", Fraction(0)),
+        ("total", Fraction(0)),
+    ]
+    assert grading.cells[1].waiting == (Counted("islands", waiting.submission_number),)
+
+
+async def test_a_staff_read_of_a_board_starts_the_retry_of_a_failure_it_finds(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands = await _checked(setup, acme, contest=GRADEBOOK)
+    await _submit(setup, acme, islands)
+    [first] = await _rows(setup, "early")
+    async with setup.unit_of_work() as ctx:
+        row = await ctx.db.get(Grading, first.id)
+        assert row is not None
+        row.status, row.error = GradingStatus.SYSTEM_ERROR, "The step crashed."
+
+    await boards.seen(setup, await _staff(setup, acme), SPRING)
+    await setup.settle()
+
+    assert [(row.attempt, row.automatic) for row in await _rows(setup, "early")] == [
+        (1, False),
+        (2, True),
+    ]
+
+
+async def test_a_visitors_or_an_entrants_read_of_a_board_starts_no_retry(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    contest = GRADEBOOK.replace("    title: Gradebook\n", "    audience: {who: everyone}\n")
+    islands = await _checked(setup, acme, contest=contest)
+    entrant = await _submit(setup, acme, islands)
+    [first] = await _rows(setup, "early")
+    async with setup.unit_of_work() as ctx:
+        row = await ctx.db.get(Grading, first.id)
+        assert row is not None
+        row.status, row.error = GradingStatus.SYSTEM_ERROR, "The step crashed."
+
+    # Only staff's read sees to a failure: a read with no session writes
+    # nothing, and the entrant's own submission page sees to theirs.
+    assert len(await boards.seen(setup, None, SPRING)) == 1
+    assert len(await boards.seen(setup, entrant, SPRING)) == 1
+    await setup.settle()
+
+    assert [(row.attempt, row.automatic) for row in await _rows(setup, "early")] == [(1, False)]
+
+
+async def test_staff_read_a_rows_earlier_result_while_its_newest_submission_grades(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    islands = await _checked(setup, acme, contest=GRADEBOOK)
+    session = await _submit(setup, acme, islands)
+    [first] = await _rows(setup, "early")
+    await _ended(setup, first, ACCEPTED_EARLY, ACCEPTED_LATE)
+    clock.advance(timedelta(minutes=1))
+    made = await upload(setup, acme.fake, session, islands.task, CODE, input="code")
+    await submissions.submit(
+        setup,
+        session,
+        islands.task,
+        {"code": SubmittedInput(uploads=(made.id,)), "language": SubmittedInput(value="python")},
+        idempotency_key=uuid.uuid4().hex,
+    )
+    await setup.settle()
+
+    [board] = await boards.seen(setup, await _staff(setup, acme), SPRING)
+
+    # The latest submission's st2 and total still wait, so the pick passes
+    # over it to the one before, and says it is waiting.
+    [row] = board.rows
+    assert [(cell.column, cell.number) for cell in row.cells] == [
+        ("st2", Fraction(1)),
+        ("total", Fraction(100)),
+    ]
+    assert row.cells[1].counted == (Counted("islands", 1),)
+    assert row.cells[1].waiting == (Counted("islands", 2),)
+
+
+async def test_a_manager_or_observer_of_the_task_alone_reads_no_board(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands = await _checked(setup, acme, contest=GRADEBOOK)
+    await _submit(setup, acme, islands)
+
+    for user, role in ((11, Role.MANAGER), (12, Role.OBSERVER)):
+        acme.fake.add_user(user, f"staff{user}")
+        await acme.fake.orgs.grant_role(user, ISLANDS, role)
+        session = await signed_in(setup, acme.fake, user)
+        # A board reads other tasks, so a role at one task reads none.
+        assert await boards.seen(setup, session, SPRING) == ()
+        assert await boards.seen(setup, session, SPRING, "gradebook") == ()
+
+
+def _task_only(acme: Acme, role: Role) -> Any:
+    """Someone holding `role` at islands and nothing else."""
+    return Organiser(
+        user=User(id=9, username="eve"),
+        grants=(RoleGrant(ISLANDS, role),),
+        scope=ISLANDS,
+        role=role,
+        identity=acme.ada.identity,
+    )
+
+
+async def test_a_regrade_lists_each_submission_whose_values_it_changed_old_to_new(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands, regrade, rows = await _regraded(setup, acme, 5, GRADEBOOK)
+    wrong = _result({"r3": "accepted", "r4": "wrong_answer"})
+    for index, row in enumerate(rows):
+        await _ended(setup, row, ACCEPTED_EARLY, wrong if index < 4 else ACCEPTED_LATE)
+
+    summary = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
+
+    assert (summary.total, summary.running, summary.failed) == (5, 0, 0)
+    assert len(summary.changed) == 4
+    assert {each.grading for each in summary.changed} == {row.id for row in rows[:4]}
+    for each in summary.changed:
+        assert each.values == (
+            ValueChange("st2", Fraction(1), Fraction(0)),
+            ValueChange("total", Fraction(100), Fraction(40)),
+        )
+        assert each.verdicts == (VerdictChange("r4", "accepted", "wrong_answer"),)
+    # The contest's manager reads every row of the board reading islands,
+    # its places and cells before and after.
+    assert summary.boards is not None
+    [board] = summary.boards
+    assert (board.board, board.title, board.sort) == (
+        "gradebook",
+        "Gradebook",
+        (("total", "desc"),),
+    )
+    assert [header.name for header in board.headers] == ["st2", "total"]
+    # Every row tied first before; after, the one whose st2 held leads
+    # and the 4 tie second, listed by name.
+    assert [(row.place_before, row.place_after) for row in board.rows] == [(1, 1)] + [(1, 2)] * 4
+    dropped = [row.name for row in board.rows[1:]]
+    assert dropped == sorted(dropped) and len(set(dropped)) == 4
+    for dropped_row in board.rows[1:]:
+        assert [(cell.column, cell.before, cell.after) for cell in dropped_row.cells] == [
+            ("st2", Fraction(1), Fraction(0)),
+            ("total", Fraction(100), Fraction(40)),
+        ]
+    assert [cell.changed for cell in board.rows[0].cells] == [False, False]
+
+
+async def test_the_board_diff_reads_the_result_before_while_a_regrade_runs_or_was_cancelled(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands, regrade, rows = await _regraded(setup, acme, 3, GRADEBOOK)
+    # One regrade attempt done unchanged, one still queued, one cancelled.
+    await _ended(setup, rows[0], ACCEPTED_EARLY, ACCEPTED_LATE)
+    async with setup.unit_of_work() as ctx:
+        cancelled = await ctx.db.get(Grading, rows[2].id)
+        assert cancelled is not None
+        cancelled.status = GradingStatus.CANCELLED
+
+    summary = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
+    [board] = await boards.seen(setup, await _staff(setup, acme), SPRING)
+
+    assert (summary.running, summary.failed, summary.changed) == (1, 1, ())
+    assert summary.boards is not None
+    [diff] = summary.boards
+    # Each row reads as the live board does: the result from before counts
+    # until the regrade's own attempt finishes with one, so nothing drops.
+    live = {row.owner: [(cell.column, cell.number) for cell in row.cells] for row in board.rows}
+    for row in diff.rows:
+        assert [(cell.column, cell.after) for cell in row.cells] == live[row.owner]
+        assert [(cell.column, cell.before, cell.after) for cell in row.cells] == [
+            ("st2", Fraction(1), Fraction(1)),
+            ("total", Fraction(100), Fraction(100)),
+        ]
+        assert (row.place_before, row.place_after) == (1, 1)
+        assert all(cell.waiting == () for cell in row.cells)
+    # The row the regrade is still grading says so; the cancelled one is
+    # done with.
+    assert [row.regrading for row in diff.rows if row.regrading] == [
+        (Counted("islands", rows[1].submission_number),)
+    ]
+
+
+MIRRORED = GRADEBOOK + (
+    "  mirror:\n"
+    "    title: Mirror\n"
+    "    columns:\n"
+    "      total: {column: [gradebook, total]}\n"
+    "    sort: [{total: desc}]\n"
+    "    display: [total]\n"
+)
+"""The gradebook, and a board reading islands only through its total."""
+
+
+async def test_the_board_diff_covers_a_board_reading_the_task_through_another_alone(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    islands, regrade, rows = await _regraded(setup, acme, 2, MIRRORED)
+    wrong = _result({"r3": "accepted", "r4": "wrong_answer"})
+    await _ended(setup, rows[0], ACCEPTED_EARLY, wrong)
+    await _ended(setup, rows[1], ACCEPTED_EARLY, ACCEPTED_LATE)
+    # A submission made after the regrade began has no result that counted
+    # then, nor one of the regrade's, so it is on neither side.
+    clock.advance(timedelta(minutes=1))
+    acme.fake.add_user(30, "entrant30")
+    await _submit(setup, acme, islands, user=30)
+    newest = (await _rows(setup, "early"))[-1]
+    await _ended(setup, newest, ACCEPTED_EARLY, ACCEPTED_LATE)
+
+    summary = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
+
+    assert summary.boards is not None
+    assert [each.board for each in summary.boards] == ["gradebook", "mirror"]
+    mirror = summary.boards[1]
+    assert [
+        (row.name, row.place_before, row.place_after, row.cells[0].before, row.cells[0].after)
+        for row in mirror.rows
+    ] == [
+        (mirror.rows[0].name, 1, 1, Fraction(100), Fraction(100)),
+        (mirror.rows[1].name, 1, 2, Fraction(100), Fraction(40)),
+        ("entrant30", 3, 3, Fraction(0), Fraction(0)),
+    ]
+
+
+def test_a_regrades_sides_read_the_attempts_that_counted_when_it_began_and_its_own() -> None:
+    began = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
+    regrade, other = uuid.uuid4(), uuid.uuid4()
+
+    def attempt(number: int, queued: datetime, of: uuid.UUID | None = None) -> Grading:
+        return Grading(attempt=number, queued_at=queued, regrade_id=of)
+
+    earlier = attempt(1, began - timedelta(hours=1))
+    own = attempt(2, began, regrade)
+    later = attempt(3, began + timedelta(minutes=5), other)
+    newcomer = attempt(1, began + timedelta(minutes=1))
+    task: Any = None
+    before, after = boards.regrade_sides(regrade, began, TaskId("acme/spring/islands"), task, task)
+
+    assert before.attempts([earlier, own, later]) == [earlier]
+    assert after.attempts([earlier, own, later]) == [earlier, own]
+    # One made after the regrade began is on neither side.
+    assert before.attempts([newcomer]) == after.attempts([newcomer]) == []
+
+
+async def test_a_regrade_whose_earlier_publication_no_longer_reads_gives_boards_unread(
+    setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    islands, regrade, [row] = await _regraded(setup, acme, 1, GRADEBOOK)
+    await _ended(setup, row, ACCEPTED_EARLY, _result({"r3": "accepted", "r4": "wrong_answer"}))
+    as_of = regrades._as_of
+    calls: list[str] = []
+
+    async def unread(ctx: Context, current: Any, publication: Any) -> Any:
+        # The first read is of the publication the results counted under.
+        calls.append(publication)
+        return None if len(calls) == 1 else await as_of(ctx, current, publication)
+
+    monkeypatch.setattr(regrades, "_as_of", unread)
+
+    summary = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
+
+    assert summary.unread == 1
+    # The board is not worked out under the new scoring and called the
+    # board before: it says it cannot be compared, as the summary does.
+    assert summary.boards is not None
+    [board] = summary.boards
+    assert (board.board, board.title, board.unread, board.rows) == (
+        "gradebook",
+        "Gradebook",
+        True,
+        (),
+    )
+
+
+async def test_a_regrade_that_makes_a_submission_fail_to_compile_lists_its_verdicts(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands, regrade, [row, _] = await _regraded(setup, acme, 2)
+    # The late row takes the early compile's verdict for every run.
+    await _ended(
+        setup,
+        row,
+        _result({"r1": "compile_error", "r2": "compile_error"}, "compile_error"),
+        _result({"r3": "compile_error", "r4": "compile_error"}),
+    )
+
+    summary = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
+
+    assert (summary.total, summary.running) == (2, 1)
+    [changed] = summary.changed
+    assert changed.grading == row.id
+    # Every run changed alike, so one line says so.
+    assert changed.verdicts == (VerdictChange(None, "accepted", "compile_error", 4),)
+    assert ValueChange("total", Fraction(100), Fraction(0)) in changed.values
+
+
+async def test_a_regrade_counts_what_it_cannot_compare_and_lists_a_bounded_few(
+    setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    islands, regrade, rows = await _regraded(setup, acme, 4)
+    wrong = _result({"r3": "accepted", "r4": "wrong_answer"})
+    for row in rows:
+        await _ended(setup, row, ACCEPTED_EARLY, wrong)
+    monkeypatch.setattr(regrades, "CHANGED_SHOWN", 3)
+
+    bounded = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
+    as_of = regrades._as_of
+    calls: list[str] = []
+
+    async def unread(ctx: Context, current: Any, publication: Any) -> Any:
+        # The first read is of the publication the results counted under.
+        calls.append(publication)
+        return None if len(calls) == 1 else await as_of(ctx, current, publication)
+
+    monkeypatch.setattr(regrades, "_as_of", unread)
+    unreadable = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
+
+    assert [each.grading for each in bounded.changed] == [row.id for row in rows[:3]]
+    assert (bounded.more_changed, bounded.unread) == (1, 0)
+    # Results that counted under a publication that no longer reads are
+    # counted, never listed as changing every value.
+    assert (unreadable.unread, unreadable.changed, unreadable.more_changed) == (4, (), 0)
+
+
+async def test_a_task_manager_reads_its_regrades_values_and_an_observer_is_refused(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands, regrade, [row] = await _regraded(setup, acme, 1, GRADEBOOK)
+    await _ended(setup, row, ACCEPTED_EARLY, _result({"r3": "accepted", "r4": "wrong_answer"}))
+
+    summary = await regrades.run_summary(
+        setup, _task_only(acme, Role.MANAGER), islands.task, regrade
+    )
+
+    assert len(summary.changed) == 1 and summary.boards is None
+    with pytest.raises(Forbidden):
+        await regrades.run_summary(setup, _task_only(acme, Role.OBSERVER), islands.task, regrade)
+    with pytest.raises(NotFound):
+        await regrades.run_summary(setup, acme.ada, islands.task, uuid.uuid4())
+    # A regrade of another task is not found at this one.
+    with pytest.raises(NotFound):
+        await regrades.run_summary(setup, acme.ada, TaskId("acme/spring/other"), regrade)
+
+
+async def test_a_save_moving_the_pin_asks_first_and_its_regrade_is_summed_up(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands = await _checked(setup, acme)
+    await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    await _ended(setup, early, ACCEPTED_EARLY, ACCEPTED_LATE)
+    text = await _v2(acme, islands)
+    head = await acme.fake.content.list_files(PLATFORM, islands.task)
+    edits = {"task.yaml": Edit(text.encode(), head.tokens.get("task.yaml"))}
+
+    with pytest.raises(ConfirmationRequired) as asked:
+        await publications.save(setup, acme.ada, islands.task, edits)
+
+    assert publications.PIN_MOVED in asked.value.detail
+    assert asked.value.extra["regrades"] == 1
+    # Only the answer to the question that named the pin confirms it: a
+    # bare confirm, or an answer naming the version alone, asks again.
+    basis = asked.value.extra["asked"].rsplit(":", 1)[0]
+    for answer in (None, basis):
+        with pytest.raises(ConfirmationRequired):
+            await publications.save(
+                setup, acme.ada, islands.task, edits, confirm=True, asked=answer
+            )
+    saved = await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
+    _, save = await _rows(setup, "save")
+    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))
+    assert await _report(setup, save.id, "save") is GradingStatus.DONE
+    await setup.settle()
+    async with setup.unit_of_work() as ctx:
+        made = await ctx.db.scalar(select(Regrade).where(Regrade.task_id == islands.task))
+    assert made is not None and made.publication_id == saved.publication
+    summary = await regrades.run_summary(setup, acme.ada, islands.task, made.id)
+    assert (summary.total, summary.running) == (1, 1)
+
+
+TAKE_OVER_CASES: list[dict[str, Any]] = [
+    {"runs": [{"verdict": "accepted"}, {"verdict": "skipped"}]},
+    {"runs": [{"verdict": "accepted"}], "once": {"outcomes": {"build-mean": "accepted"}}},
+    {"runs": [{"verdict": "accepted"}], "once": {"outcomes": {"build-mean": "compile_error"}}},
+    {"runs": [{"verdict": "wrong_answer"}]},
+    {"runs": [{"id": "r1"}]},
+    {"runs": [], "checks": [{"passed": True}]},
+    {"runs": [], "checks": [{"passed": False}]},
+    {"runs": [], "checks": [{"failing": []}]},
+    {"runs": [], "checks": [{"passed": "true"}]},
+    {"runs": []},
+]
+
+
+async def test_the_take_over_in_sql_is_all_accepted_exactly(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    async with setup.unit_of_work() as ctx:
+        rows = [
+            Grading(
+                task_id="acme/spring/islands",
+                publication_id=f"acme/spring/islands#{number}",
+                pipeline="save",
+                status=GradingStatus.DONE,
+                result={"schema_version": 6, **case},
+            )
+            for number, case in enumerate(TAKE_OVER_CASES, start=1)
+        ]
+        ctx.db.add_all(rows)
+        await ctx.db.flush()
+        passed = set(await ctx.db.scalars(select(Grading.id).where(PASSED)))
+
+    assert [row.id in passed for row in rows] == [
+        step_data.all_accepted(row.result) for row in rows
+    ]
+    assert [row.id in passed for row in rows] == [
+        True,
+        True,
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+        False,
+        True,
+    ]

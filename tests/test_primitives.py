@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from forge.domain.blocks.numbers import Better
 from forge.domain.contracts import schema_text, violation
 from forge.domain.definitions import parse_task
 from forge.domain.grading import PLATFORM_MACHINE
@@ -27,7 +28,6 @@ from forge.domain.primitives import (
     PrimitiveDeclaration,
     parse_primitive,
 )
-from forge.domain.scoring import Better
 from forge.domain.types import Type
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml
 from forge.testing import PLACEHOLDER_DIGEST, PRIMITIVES

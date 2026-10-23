@@ -3,24 +3,32 @@ reads step by step as written; each step is placed by what it reads; a
 grading is an early and a late pipeline, never mixed; taint follows a
 hidden file into the steps that run the entrant's code beside it, and the
 save refuses or notes what is shown during the contest over such runs; each
-container holds the files it copies; and what a save changes is said.
+container holds the files it copies; what a save changes is said; and
+each check is graded at the save by copies of the graded steps, its files
+never a change in how the task grades.
 """
 
 import hashlib
 from collections.abc import Mapping
+from fractions import Fraction
 from typing import Any
 
 import pytest
 
 from forge.domain import exact_json
+from forge.domain.blocks.evaluate import Column
+from forge.domain.blocks.numbers import Better
+from forge.domain.checks import CHECKS_ROOM, RUNS_KEPT, check_room, keep_runs
 from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, parse_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine, Slot, run_machine
 from forge.domain.plans import PLAN_PATH, Snapshot, StepLimits
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
+from forge.domain.reports import RESULT_MAX
 from forge.domain.run_plan import (
     PRIMITIVE_ROOM_MB,
+    PROGRAM_USES,
     FileFact,
     PipelineStep,
     RunPlan,
@@ -48,6 +56,9 @@ from tests.test_run_task import (
     JUDGED,
     JUDGED_PATHS,
     JUDGED_TASK,
+    MEAN,
+    MEAN_MANIFEST,
+    MEAN_PATHS,
     TOUR,
     TOUR_FILES,
     TOUR_PATHS,
@@ -118,6 +129,7 @@ def planned(
     sizes: Mapping[str, int] | None = None,
     manifests: Mapping[str, bytes] | None = None,
     machine: Machine = PLATFORM_MACHINE,
+    programs: Mapping[str, PrimitiveDeclaration] | None = None,
 ) -> RunPlanCheck:
     """The plan of `task` over `workflow` and its `files`, each task file
     in `paths` 3 bytes long but those `sizes` gives, and hashed as if it held
@@ -161,6 +173,7 @@ def planned(
         task_files=task_files,
         workflow_files=workflow_files,
         machine=machine,
+        programs=programs or {use: primitives[use] for use in PROGRAM_USES},
     )
 
 
@@ -271,6 +284,17 @@ def test_islands_reads_as_written_step_by_step(primitives: dict[str, PrimitiveDe
     assert set(plan.task_files) == ISLANDS_PATHS - {"task.yaml", "statement.md"}
     assert plan.entrant["code"].max_size == 1048576
     assert plan.reports["score"].step == "compare"
+    # Each number's worse side is read from the plan: a wrong answer's score
+    # counts as 0, and its time has no bound to count as.
+    assert {
+        name: (each.better, each.at_least, each.at_most) for name, each in plan.reports.items()
+    } == {
+        "score": ("higher", 0, 1),
+        "time_ms": ("lower", 0, None),
+        "memory_kb": ("lower", 0, None),
+        "log": (None, None, None),
+    }
+    assert plan.reports["score"].column() == Column(Better.HIGHER, Fraction(0), Fraction(1))
     assert plan.steps["solution"].boxes == 1 and plan.steps["compile"].boxes is None
     assert violation(exact_json.loads(plan.to_bytes()), "plan") is None
     assert RunPlan.from_bytes(plan.to_bytes()) == plan
@@ -526,7 +550,7 @@ repeat:
     tuples: [1, 2]
 scoring:
   values:
-    total: {block: sum_runs, over: {runs: all}, of: {run: [all, time_ms]}}
+    total: {block: sum, over: {runs: all}, of: {run: [all, time_ms]}}
   show:
     after_close: [total]
 """
@@ -671,6 +695,19 @@ def test_nothing_shown_during_the_contest_is_one_late_pipeline(
     assert [step.name for step in plan.pipeline("late")] == ["compile", "solution", "compare"]
 
 
+def test_a_report_of_a_step_done_once_may_be_listed_and_one_given_for_each_run_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    ok(islands(primitives, ISLANDS.replace("samples/]", "samples/, log]")))
+
+    assert refused(islands(primitives, ISLANDS.replace("samples/]", "samples/, time_ms]"))) == {
+        "scoring.show.now[4]": [
+            "time_ms is reported for each run, so it is shown with the runs of the groups show "
+            "lists. Remove it."
+        ]
+    }
+
+
 # Taint
 
 
@@ -706,7 +743,7 @@ scoring:
   groups:
     shown: {input: [samples/1.in]}
   values:
-    fast: {block: max_runs, over: {runs: shown}, of: {run: [shown, time_ms]}}
+    fast: {block: max, over: {runs: shown}, of: {run: [shown, time_ms]}}
   show:
     now: [shown, samples/]
     after_close: [fast, all]
@@ -752,8 +789,8 @@ def test_on_release_makes_no_run_early_but_is_refused_as_if_shown(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     task = LINKED_TASK.replace(
-        "    now: [shown, samples/]\n",
-        "    now: [samples/]\n    on_release: [shown]\n",
+        "    now: [shown, samples/]\n    after_close: [fast, all]\n",
+        "    now: [samples/]\n    after_close: [all]\n    on_release: [shown]\n",
     )
 
     problems = refused(linked(primitives, task))
@@ -767,7 +804,7 @@ def test_on_release_is_noted_over_runs_with_their_own_hidden_input(
 ) -> None:
     text = ISLANDS.replace(
         "    after_close: [st1, st2, total, all]\n",
-        "    after_close: [st2, total, all]\n    on_release: [st1]\n",
+        "    after_close: [st2, all]\n    on_release: [st1]\n",
     )
 
     plan = ok(islands(primitives, text))
@@ -778,6 +815,8 @@ def test_on_release_is_noted_over_runs_with_their_own_hidden_input(
         "st1 reads runs whose own steps run the entrant's code beside what entrants are not "
         "shown during the contest, such as `solution` beside `tests/3.in` in the run r3, so "
         "the entrant's code can signal a little about it through what st1 shows.",
+        "all, shown at the reveal, holds runs st1 reads, so entrants see those runs before a "
+        "release shows st1.",
     )
 
 
@@ -814,7 +853,7 @@ repeat:
     tuples: [samples/1.in]
 scoring:
   values:
-    total: {block: sum_runs, over: {runs: all}, of: {run: [all, score]}}
+    total: {block: sum, over: {runs: all}, of: {run: [all, score]}}
   show:
     now: [total, samples/]
 """
@@ -874,8 +913,8 @@ def test_the_entrants_code_beside_a_workflow_file_is_tainted(
 
 
 BUILT_TASK = LINKED_TASK.replace(
-    "    fast: {block: max_runs",
-    "    built: {fact: compiled}\n    fast: {block: max_runs",
+    "    fast: {block: max",
+    "    built: {fact: compiled}\n    fast: {block: max",
 ).replace(
     "    now: [shown, samples/]\n    after_close: [fast, all]\n",
     "    now: [built, samples/]\n    after_close: [shown, fast, all]\n",
@@ -1107,7 +1146,7 @@ def test_a_step_over_the_machine_is_refused_at_what_gives_its_largest_file(
 # Slots
 
 
-SLOTS = run_machine([Slot("big", 28672), Slot("small", 8192)])
+SLOTS = run_machine([Slot("big", 4, 28672), Slot("small", 2, 8192)])
 SIDE_BY_SIDE = """\
 inputs:
   code: folder
@@ -1160,7 +1199,9 @@ scoring:
 
 
 def side_by_side_plan(
-    primitives: Mapping[str, PrimitiveDeclaration], memory: int = 3000
+    primitives: Mapping[str, PrimitiveDeclaration],
+    memory: int = 3000,
+    machine: Machine = SLOTS,
 ) -> RunPlanCheck:
     return planned(
         primitives,
@@ -1168,7 +1209,7 @@ def side_by_side_plan(
         SIDE_BY_SIDE,
         {"workflow.yaml": SIDE_BY_SIDE.encode()},
         frozenset({"task.yaml", "tests/1.in", "tests/2.in"}),
-        machine=SLOTS,
+        machine=machine,
     )
 
 
@@ -1193,7 +1234,7 @@ def test_steps_side_by_side_are_chained_to_fit_the_smallest_slot(
         ]
     }
     assert side_by_side(late) == 6640
-    assert slot_of(late, SLOTS.slots) == Slot("small", 8192)
+    assert slot_of(late, SLOTS.slots) == Slot("small", 2, 8192)
 
 
 def test_a_step_too_big_for_the_small_slot_runs_its_pipeline_in_the_big_one(
@@ -1212,7 +1253,23 @@ def test_a_step_too_big_for_the_small_slot_runs_its_pipeline_in_the_big_one(
         ("judge.r1", ("compile", "first", "second", "third")),
     ]
     assert side_by_side(late) == 20320 + 3320 + 3320
-    assert slot_of(late, SLOTS.slots) == Slot("big", 28672)
+    assert slot_of(late, SLOTS.slots) == Slot("big", 4, 28672)
+
+
+def test_a_stage_runs_no_more_boxes_than_its_slot_has_cores(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    """A slot of one core holds the memory of two boxed steps, but runs one
+    box at a time: each boxed step waits for the one before it."""
+    plan = ok(side_by_side_plan(primitives, machine=run_machine([Slot("small", 1, 8192)])))
+    late = plan.pipeline("late")
+
+    assert [(step.name, step.depends_on) for step in late[1:4]] == [
+        ("first", ("compile",)),
+        ("second", ("compile", "first")),
+        ("third", ("compile", "second")),
+    ]
+    assert side_by_side(late) == 3320
 
 
 def test_without_slots_a_pipeline_is_laid_out_as_wired(
@@ -1269,8 +1326,10 @@ def test_side_by_side_counts_each_step_with_every_one_it_is_not_ordered_with() -
     assert side_by_side(steps[:3]) == 400
     assert side_by_side(steps) == 750
     assert side_by_side([]) == 0
-    assert slot_of(steps[:3], [Slot("tiny", 399), Slot("small", 400)]) == Slot("small", 400)
-    assert slot_of(steps[:3], [Slot("tiny", 399)]) is None
+    assert slot_of(steps[:3], [Slot("tiny", 1, 399), Slot("small", 1, 400)]) == Slot(
+        "small", 1, 400
+    )
+    assert slot_of(steps[:3], [Slot("tiny", 1, 399)]) is None
 
 
 # The schema's versions
@@ -1366,3 +1425,425 @@ def test_a_save_says_which_steps_a_submission_runs_again(
         "solution",
         "compare",
     )
+
+
+# What a release shows
+
+
+RELEASING = ISLANDS.replace(
+    "after_close: [st1, st2, total, all]",
+    "after_close: [st1, all]\n    on_release: [st2, st2_tests]",
+)
+
+
+def test_the_plan_holds_the_split_a_grading_takes_while_results_are_released(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(islands(primitives, RELEASING))
+
+    assert plan.released is not None and plan.released.early == ("r1", "r2", "r3", "r4")
+    assert laid_out(plan) == laid_out(ok(islands(primitives)))
+    assert plan.for_split(False) is plan
+    released = plan.for_split(True)
+    assert [run.early for run in released.runs] == [True, True, True, True]
+    assert released.released is None
+    assert laid_out(released) == {
+        "save": [("diff", None, ())],
+        "early": [
+            ("compile", None, ()),
+            ("solution", ("r1", "r2", "r3", "r4"), ("compile",)),
+            ("compare", ("r1", "r2", "r3", "r4"), ("solution",)),
+        ],
+    }
+    assert RunPlan.from_bytes(plan.to_bytes()) == plan
+
+
+def test_a_plan_a_release_moves_nothing_in_holds_no_released_split(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(islands(primitives))
+
+    assert plan.released is None
+    assert plan.for_split(True) is plan
+
+
+def test_a_save_says_when_what_a_release_shows_moved(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    before = ok(islands(primitives))
+    after = ok(islands(primitives, RELEASING))
+
+    assert run_plan_changes(_snapshot(before), _snapshot(after)) == (
+        "What a release shows moved, so a grading made while results are released runs other "
+        "runs early.",
+    )
+    assert run_plan_changes(_snapshot(after), _snapshot(after)) == ()
+
+
+# A value's program
+
+PROGRAM_YAML = "programs/mean/program.yaml"
+
+
+def mean(primitives: Mapping[str, PrimitiveDeclaration], task: str = MEAN) -> RunPlanCheck:
+    workflow, files = deployed("unicon/classic@v3")
+    return planned(
+        primitives, task, workflow, files, MEAN_PATHS, manifests={PROGRAM_YAML: MEAN_MANIFEST}
+    )
+
+
+def test_a_values_program_compiles_at_the_save_and_runs_late_after_its_groups_runs(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(mean(primitives))
+
+    assert laid_out(plan)["save"] == [("diff", None, ()), ("build-mean", None, ("diff",))]
+    assert laid_out(plan)["late"][-1] == ("exec-mean", None, ("compare",))
+    assert "exec-mean" not in [step.name for step in plan.pipeline("early")]
+    built, ran = plan.steps["build-mean"], plan.steps["exec-mean"]
+    assert (built.class_, built.primitive, built.folders) == (
+        "save_once",
+        "unicon/compile@v3",
+        ("source",),
+    )
+    assert built.value is not None and (built.value.name, built.value.report) == ("mean", None)
+    assert exact_json.loads(exact_json.dumps(built.inputs)) == {
+        "source": {"task": "programs/mean/"},
+        "language": {"value": "python"},
+    }
+    assert (ran.class_, ran.primitive, ran.boxes) == ("grading_once", "unicon/exec@v1", 1)
+    assert ran.value is not None and (ran.value.name, ran.value.report) == ("mean", "mean")
+    assert ran.outputs["mean"] == "number"
+    assert exact_json.loads(exact_json.dumps(ran.inputs)) == {
+        "program": {"step": "build-mean", "output": "program"},
+        "files": {"files": {"runs.json": {"runs": ["r1", "r2", "r3", "r4"]}}},
+        "manifest": {"task": PROGRAM_YAML},
+        "time_limit": {"value": 2},
+        "memory_limit": {"value": 256},
+    }
+    assert {"programs/mean/mean.py", PROGRAM_YAML} <= set(plan.task_files)
+    # The program's box holds its memory limit, the program, its manifest
+    # and 16 KB a run.
+    assert held(plan, "exec-mean").limits.memory_mb >= 256 + PRIMITIVE_ROOM_MB
+
+
+def test_a_values_program_runs_early_when_its_value_is_shown_during_the_contest(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    shown = MEAN.replace(
+        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
+        "    now: [sample_score, sample_time, sample_tests, samples/, mean, all]\n",
+    ).replace("total, all, mean]", "total]")
+
+    plan = ok(mean(primitives, shown))
+
+    assert laid_out(plan)["early"][-1] == ("exec-mean", None, ("compare",))
+    assert "late" not in plan.pipelines
+
+
+def test_a_values_program_under_on_release_runs_early_only_once_released(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    released = MEAN.replace("total, all, mean]", "total, all]\n    on_release: [mean]")
+
+    plan = ok(mean(primitives, released))
+
+    assert laid_out(plan)["late"][-1][0] == "exec-mean"
+    assert plan.released is not None
+    assert plan.released.pipelines["early"][-1].name == "exec-mean"
+
+
+def test_a_workflow_step_named_as_a_values_program_step_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    workflow, files = deployed("unicon/classic@v3")
+    workflow = workflow.replace("id: diff", "id: build-mean").replace(
+        "steps.diff.program", "steps.build-mean.program"
+    )
+    found = planned(
+        primitives,
+        MEAN,
+        workflow,
+        {**files, "workflow.yaml": workflow.encode()},
+        MEAN_PATHS,
+        manifests={PROGRAM_YAML: MEAN_MANIFEST},
+    )
+
+    assert refused(found) == {
+        "scoring.values.mean": [
+            "The workflow has a step called build-mean, the name mean's program step takes. "
+            "Rename the value or the step."
+        ]
+    }
+
+
+# Checks
+
+
+CHECKED = ISLANDS.replace(
+    "submissions:",
+    """checks:
+  - submit: {code: checks/good}
+    expect: {verdict: accepted, total: 100}
+  - submit: {code: checks/empty, language: python}
+    expect: {verdict: wrong_answer}
+  - submit: {code: checks/slow}
+    expect: {st1: 1, st2: 0}
+submissions:""",
+)
+CHECKED_PATHS = ISLANDS_PATHS | {
+    "checks/good/main.cpp",
+    "checks/empty/main.py",
+    "checks/slow/main.cpp",
+}
+
+
+def checked(
+    primitives: Mapping[str, PrimitiveDeclaration], task: str = CHECKED, **kw: Any
+) -> RunPlanCheck:
+    workflow, files = deployed("unicon/classic@v3")
+    return planned(primitives, task, workflow, files, CHECKED_PATHS, **kw)
+
+
+def test_each_check_is_graded_at_the_save_by_copies_of_the_graded_steps(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(checked(primitives))
+    copies = [
+        f"c{index}-{step}" for index in (1, 2, 3) for step in ("compile", "solution", "compare")
+    ]
+    every = ("r1", "r2", "r3", "r4")
+
+    assert laid_out(plan)["save"] == [
+        ("diff", None, ()),
+        *[
+            (name, None if name.endswith("compile") else every, (before,))
+            for name, before in zip(copies, ["diff", *copies[:-1]], strict=True)
+        ],
+    ]
+    assert laid_out(plan)["early"] == laid_out(ok(islands(primitives)))["early"]
+    assert {name: plan.steps[name].class_ for name in copies[:3]} == {
+        "c1-compile": "save_once",
+        "c1-solution": "save_per_run",
+        "c1-compare": "save_per_run",
+    }
+    assert plan.steps["c2-compile"].check is not None
+    assert (plan.steps["c2-compile"].check.index, plan.steps["c2-compile"].check.of) == (
+        2,
+        "compile",
+    )
+    # The check's files and values stand where the entrant's would be, and
+    # each copy reads the copies of what its step reads.
+    assert plan.steps["c2-compile"].inputs == {
+        "source": {"task": "checks/empty/"},
+        "language": {"value": "python"},
+    }
+    assert plan.steps["c1-compile"].inputs == {
+        "source": {"task": "checks/good/"},
+        "language": {"value": "cpp"},
+    }
+    solution = plan.steps["c3-solution"].items or {}
+    assert solution["r3"].inputs["program"] == {"step": "c3-compile", "output": "program"}
+    compare = plan.steps["c3-compare"].items or {}
+    assert compare["r3"].inputs["program"] == {"step": "diff", "output": "program"}
+    assert compare["r3"].inputs["files"]["files"]["output"] == {
+        "step": "c3-solution",
+        "output": "output",
+    }
+    assert plan.checks() == (1, 2, 3)
+    assert violation(exact_json.loads(plan.to_bytes()), "plan") is None
+    assert RunPlan.from_bytes(plan.to_bytes()) == plan
+
+
+def test_a_file_only_a_check_reads_is_copied_but_never_a_grading_change(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(checked(primitives))
+    plain = ok(islands(primitives))
+    fewer = ok(
+        checked(
+            primitives,
+            CHECKED.split("  - submit: {code: checks/slow}")[0]
+            + "submissions:"
+            + CHECKED.split("submissions:")[1],
+        )
+    )
+
+    assert "checks/good/main.cpp" in plan.task_files
+    assert plan.task_paths() == plain.task_paths()
+    assert run_plan_changes(_snapshot(plain), _snapshot(plan)) == ()
+    assert run_plan_changes(_snapshot(plan), _snapshot(fewer)) == ()
+    assert steps_run_again(_snapshot(plain), _snapshot(plan)) == ()
+    assert steps_run_again(_snapshot(plan), _snapshot(fewer)) == ()
+
+
+def test_a_check_giving_more_than_the_entrant_may_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    found = checked(primitives, sizes={"checks/slow/main.cpp": 2 * 1048576})
+
+    assert refused(found) == {
+        "checks[2].submit.code": [
+            "checks/slow/ holds 2097152 bytes, more than the 1048576 the entrant may give as code."
+        ]
+    }
+
+
+def _long_keyed(stem: str) -> tuple[str, frozenset[str]]:
+    """CHECKED with 20 more runs whose files' names start with `stem`."""
+    runs = "".join(f"      - [tests/{stem}{n}.in, tests/{stem}{n}.ans]\n" for n in range(5, 25))
+    task = CHECKED.replace(
+        "      - {answer: tests/4.ans, input: tests/4.in}\n",
+        "      - {answer: tests/4.ans, input: tests/4.in}\n" + runs,
+    ).replace("time_limit: 2", "time_limit: 0.1")
+    paths = CHECKED_PATHS | {
+        f"tests/{stem}{n}.{end}" for n in range(5, 25) for end in ("in", "ans")
+    }
+    return task, paths
+
+
+def test_checks_that_could_keep_more_than_their_room_of_the_result_are_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    workflow, files = deployed("unicon/classic@v3")
+    task, paths = _long_keyed("a" * 1000)
+    within = planned(primitives, task, workflow, files, paths)
+    task, paths = _long_keyed("/".join(["a" * 200] * 20))
+    over = planned(primitives, task, workflow, files, paths)
+
+    assert ok(within).checks() == (1, 2, 3)
+    # Each failed check keeps 20 runs, each key over 8000 bytes long.
+    [message] = refused(over)["checks"]
+    assert message.startswith("A failed check keeps up to 20 of its runs in the save's result,")
+    assert message.endswith(f"more than the {CHECKS_ROOM} they may. Give fewer checks.")
+
+
+def _run(number: int, verdict: str) -> dict[str, Any]:
+    ref = {"output": "0" * 8 + "-0000-0000-0000-" + "0" * 12, "name": "message"}
+    return {
+        "id": f"r{number}",
+        "key": {"input": f"tests/{number}.in", "answer": f"tests/{number}.ans"},
+        "verdict": verdict,
+        "passed": int(verdict == "accepted"),
+        "reports": {"score": int(verdict == "accepted"), "time_ms": 1234, "memory_kb": 65536},
+        "texts": {},
+        "label": ref,
+        "message": ref,
+    }
+
+
+def _check_entry(verdicts: list[str], passed: bool) -> dict[str, Any]:
+    """A check's entry of a save's result over runs getting `verdicts`, each
+    step writing a staff message and extras for each run."""
+    runs = [_run(number, verdict) for number, verdict in enumerate(verdicts, 1)]
+    ref = runs[0]["message"]
+    return {
+        "runs": runs,
+        "once": {"reports": {}, "texts": {}, "outcomes": {"compile": "accepted"}},
+        "staff": [{"step": "c1-compile", "run": None, "staff_message": ref}]
+        + [
+            {"step": step, "run": run["id"], "staff_message": ref, "extras": ref}
+            for step in ("c1-solution", "c1-compare")
+            for run in runs
+        ],
+        "error": None,
+        "passed": passed,
+        "failing": []
+        if passed
+        else [f"The run r{n} got wrong_answer, not accepted." for n in range(20)],
+    }
+
+
+def test_three_checks_over_a_thousand_runs_keep_few_enough_runs_to_fit_the_result() -> None:
+    accepted = ["accepted"] * 1000
+    missed = ["wrong_answer" if number % 7 == 0 else "accepted" for number in range(1, 1001)]
+    timed_out = ["time_limit"] * 1000
+    entries = [
+        _check_entry(accepted, True),
+        _check_entry(missed, False),
+        _check_entry(timed_out, False),
+    ]
+    whole = {"schema_version": 6, "runs": [], "checks": entries}
+    assert len(exact_json.dumps(whole)) > RESULT_MAX
+
+    for entry, verdict in zip(entries, ("accepted", "accepted", "wrong_answer"), strict=True):
+        keep_runs(entry, verdict)
+
+    keys = [{"input": f"tests/{n}.in", "answer": f"tests/{n}.ans"} for n in range(1, 1001)]
+    assert len(exact_json.dumps(whole)) <= RESULT_MAX
+    for entry in entries:
+        assert len(exact_json.dumps(entry)) <= check_room(keys, 3, 3)
+    passed, failed, slow = entries
+    assert passed["runs"] == [] and passed["staff"] == [passed["staff"][0]]
+    # A failed check keeps the runs it missed first, in the task's order.
+    assert [run["id"] for run in failed["runs"]] == [f"r{7 * n}" for n in range(1, 21)]
+    assert {item["run"] for item in failed["staff"]} == {None} | {f"r{7 * n}" for n in range(1, 21)}
+    assert [run["id"] for run in slow["runs"]] == [f"r{n}" for n in range(1, 21)]
+    assert len(slow["runs"]) == RUNS_KEPT
+
+
+def test_a_failed_check_missing_few_runs_keeps_them_with_others_in_order() -> None:
+    entry = _check_entry(["accepted"] * 30 + ["wrong_answer"], False)
+
+    keep_runs(entry, None)
+
+    assert [run["id"] for run in entry["runs"]] == [f"r{n}" for n in range(1, 20)] + ["r31"]
+
+
+CARTPOLE_CHECKED = (
+    CARTPOLE_TASK
+    + "checks:\n  - submit: {weights: checks/w.bin}\n    expect: {verdict: accepted}\n"
+)
+
+
+def _cartpole_named(
+    primitives: Mapping[str, PrimitiveDeclaration], step: str, name: str
+) -> RunPlanCheck:
+    """The cartpole task, with a check, over its workflow with the step
+    `step` named `name`."""
+    workflow = CARTPOLE.replace(f"  - id: {step}\n", f"  - id: {name}\n").replace(
+        f"steps.{step}.", f"steps.{name}."
+    )
+    files = {**CARTPOLE_FILES, "workflow.yaml": workflow.encode()}
+    return planned(
+        primitives, CARTPOLE_CHECKED, workflow, files, frozenset({"task.yaml", "checks/w.bin"})
+    )
+
+
+def test_a_check_whose_copy_takes_a_step_s_name_or_is_too_long_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    # The runner is compiled once from the task's own files, so only the
+    # episode, run per submission, is copied, as c1-episode.
+    assert ok(_cartpole_named(primitives, "runner", "c1-runner")).checks() == (1,)
+    assert refused(_cartpole_named(primitives, "runner", "c1-episode")) == {
+        "checks[0]": [
+            "Unicon names this check's copy of a step c1-episode, which the workflow's step of "
+            "that name already takes. Remove the check, or use a workflow whose steps' ids are "
+            "shorter."
+        ]
+    }
+    assert ok(_cartpole_named(primitives, "episode", "e" * 37)).checks() == (1,)
+    assert refused(_cartpole_named(primitives, "episode", "e" * 38)) == {
+        "checks[0]": [
+            f"Unicon names this check's copy of a step c1-{'e' * 38}, which is longer than the "
+            "40 characters a step's name may be. Remove the check, or use a workflow whose "
+            "steps' ids are shorter."
+        ]
+    }
+
+
+def test_checks_taking_the_save_past_the_wall_are_refused_at_checks(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    slow = CHECKED.replace("time_limit: 2", "time_limit: 100")
+
+    # Each grading pipeline holds two runs of 100 s, but the save holds
+    # every run of each of three checks.
+    assert ok(islands(primitives, ISLANDS.replace("time_limit: 2", "time_limit: 100")))
+    assert refused(checked(primitives, slow)) == {
+        "checks": [
+            "The save's steps and its checks take 50 minutes, but a pipeline may take at most "
+            "25. Give fewer checks."
+        ]
+    }

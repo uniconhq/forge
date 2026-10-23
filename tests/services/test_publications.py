@@ -22,7 +22,7 @@ from typing import Any
 from unittest.mock import ANY
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from forge.db.tables import Grading
 from forge.domain import plans
@@ -170,7 +170,7 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
         results_change=False,
         summary="Nobody's result changes.",
         runs_again=("No submission runs again: this is the task's first publication.",),
-        scores=("Points: main is worth up to 100.", "sum now counts on the leaderboard Standings."),
+        scores=("Points: main is worth up to 100.",),
         reading=("Entrants read the task from its release.",),
     )
     (saved,) = acme.fake.calls_to("save_files")
@@ -1521,6 +1521,12 @@ async def test_the_confirmation_counts_the_submissions_the_save_regrades_and_no_
     assert confirmed.effect.runs_again == (
         "2 submissions are graded again: the way the task grades changed.",
     )
+    # The answer names the regrade it started, for its summary.
+    async with setup.unit_of_work() as ctx:
+        queued = await ctx.db.scalar(
+            select(func.count()).select_from(Grading).where(Grading.regrade_id == confirmed.regrade)
+        )
+    assert confirmed.regrade is not None and queued == 2
 
 
 async def test_a_grading_change_with_every_submission_cancelled_says_none_is_graded_again(
@@ -1662,19 +1668,11 @@ WORTH = RUNNING + "    worth: 50\n"
 DUE = RUNNING + "    due: 2026-09-26T14:00:00Z\n"
 
 
-@pytest.mark.parametrize(
-    ("contest", "line"),
-    [
-        (WORTH, "gives it a worth of 50"),
-        (DUE, "gives it a due time"),
-    ],
-    ids=["worth", "due"],
-)
 async def test_a_task_left_giving_no_points_is_refused_while_its_contest_entry_scores_it(
-    setup: Setup, acme: Acme, sum_task: TaskId, contest: str, line: str
+    setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     await _published(setup, acme, sum_task)
-    await write_contest(acme.fake, contest.format(state="draft"))
+    await write_contest(acme.fake, WORTH.format(state="draft"))
 
     result = await _save(setup, acme, sum_task, _with(acme, b"{each: 100}", b"{}"))
 
@@ -1682,12 +1680,24 @@ async def test_a_task_left_giving_no_points_is_refused_while_its_contest_entry_s
     assert [(error["path"], error["message"]) for error in result.errors] == [
         (
             "test_groups",
-            f"No test group gives points, so sum gives no points, but the contest {line}. Remove "
-            "that from the contest first.",
+            "No test group gives points, so sum gives no points, but the contest gives it a "
+            "worth of 50. Remove that from the contest first.",
         )
     ]
     await write_contest(acme.fake, RUNNING.format(state="draft"))
     assert isinstance(await _save(setup, acme, sum_task, {}), Published)
+
+
+async def test_a_task_left_giving_no_points_may_keep_its_due(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _published(setup, acme, sum_task)
+    await write_contest(acme.fake, DUE.format(state="draft"))
+
+    result = await _save(setup, acme, sum_task, _with(acme, b"{each: 100}", b"{}"))
+
+    # Any task may have a due (stage 5, phase 5.7).
+    assert isinstance(result, Published), result
 
 
 async def test_the_task_form_reads_the_inputs_and_test_fields_its_workflow_declares(

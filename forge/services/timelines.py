@@ -12,9 +12,10 @@ A contest save is checked against every row's submissions, read from the
 gradings, one per submission, at the moment it was taken:
 
 - C1 across files: every entry of `tasks` names a task of the contest.
-  `worth`, and `due` with `late_per_day`, are refused on a task whose latest
-  publication gives no points. A task with no publication yet is not
-  judged, since its first save says what it gives.
+  `worth` is refused on a task whose latest publication gives no points,
+  and `late_per_day` on a run task; any task may have a `due`, which a run
+  task's values read as `seconds_late`. A task with no publication yet is
+  not judged, since its first save says what it gives.
 - C2, for what happened: a task released under the settings saved before,
   its contest published and past its start and its `release_at` passed,
   withdrawn since or not, does not move its release later, nor lose its
@@ -98,6 +99,16 @@ async def hold_task(ctx: Context, task: TaskId, *, shared: bool = False) -> None
         text(f"SELECT {lock}(:space, hashtext(:task))"),
         {"space": TASK_LOCK, "task": task},
     )
+
+
+async def _released_held(ctx: Context, task: TaskId) -> bool:
+    """Whether the task's results are released, read under the task's hold
+    shared, so a release or a take-back in flight lands before the read or
+    after this unit of work, never between the read and what it decides
+    (stage 5 section 6 item 32).
+    """
+    await hold_task(ctx, task, shared=True)
+    return await published.results_released(ctx, task)
 
 
 def extension_of(length_seconds: int, tasks: Sequence[str] | None) -> Extension:
@@ -221,7 +232,9 @@ async def check_contest(
 ) -> list[Problem]:
     """C1 across files and C2 for a contest save from `before` to `after`,
     each problem at its path in `contest.yaml`; a dropped entry's at
-    `tasks`, since the file no longer has a line for it.
+    `tasks`, since the file no longer has a line for it. A task whose
+    results are released now may not close later, as after its reveal,
+    read under its hold shared (`_released_held`).
     """
     listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
     tasks = {each.name: TaskId(each.id) for each in listed}
@@ -264,6 +277,22 @@ async def check_contest(
         ):
             at = path if path in ("start", "end") else f"tasks[{index}].{path}"
             problems.append(Problem(path=at, message=message))
+        task = tasks.get(entry.id)
+        closes = f"tasks[{index}].closes" if entry.closes is not None else "end"
+        if (
+            old is not None
+            and task is not None
+            and after.closes_of(entry) > max(before.closes_of(old), ctx.now)
+            and not any(problem["path"] == closes for problem in problems)
+            and await _released_held(ctx, task)
+        ):
+            problems.append(
+                Problem(
+                    path=closes,
+                    message=f"{entry.id}'s results are released, so a later closing time "
+                    "would let entrants submit knowing them.",
+                )
+            )
     return problems
 
 
@@ -395,7 +424,10 @@ def _dropped(
 async def _points(
     ctx: Context, after: ContestDefinition, tasks: Mapping[str, TaskId]
 ) -> list[Problem]:
-    """C1 across files: no `worth` or `due` on a task that gives no points."""
+    """C1 across files: no `worth` on a task that gives no points, and no
+    `late_per_day` on a run task, which takes no share of points. Any task
+    may have a `due` (stage 5, phase 5.7): a run task's values read it as
+    `seconds_late`."""
     problems: list[Problem] = []
     for index, entry in enumerate(after.tasks):
         if entry.worth is None and entry.due is None:
@@ -412,13 +444,13 @@ async def _points(
                     "empty, and rank it by a value instead.",
                 )
             )
-        if entry.due is not None:
+        if entry.late_per_day is not None and found.definition.runs:
             problems.append(
                 Problem(
-                    path=f"tasks[{index}].due",
+                    path=f"tasks[{index}].late_per_day",
                     message=(
-                        f"{entry.id} gives no points, so a due time would change nothing. Give it "
-                        "a closing time instead."
+                        f"{entry.id} gives no points to take a share of. Leave this empty, and "
+                        "give the task a value that reads seconds_late instead."
                     ),
                 )
             )
@@ -503,8 +535,10 @@ async def refuse_extension(
     after: Extension,
 ) -> None:
     """`InvalidExtension` when changing a row's extension from `before` to
-    `after` would let it submit to a task whose reveal has passed, or leave
-    one of its submissions after the due or the close it was made before.
+    `after` would let it submit to a task whose reveal has passed or whose
+    results are released now (a take-back allows it again, stage 5 section
+    6 item 10), or leave one of its submissions after the due or the close
+    it was made before.
     """
     listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
     tasks = {each.name: TaskId(each.id) for each in listed}
@@ -517,6 +551,16 @@ async def refuse_extension(
                 raise InvalidExtension(
                     f"{entry.id}'s hidden results were shown on {in_words(revealed)}, so "
                     "extra time on it would let this entrant submit knowing them."
+                )
+            task = tasks.get(entry.id)
+            if (
+                task is not None
+                and close_of(settings, entry, after) > ctx.now
+                and await _released_held(ctx, task)
+            ):
+                raise InvalidExtension(
+                    f"{entry.id}'s results are released, so extra time on it would let this "
+                    "entrant submit knowing them."
                 )
         for number, at in own.get(entry.id, []):
             made = Made(after, number, at)

@@ -8,8 +8,9 @@ nothing early has an early row with nothing to run, which ends `done` at
 once, so the late row is made at once, and a plan with nothing late makes
 no late row. A publication whose plan holds steps done at the save is
 checked by a `save` row of its own before it takes over (`queue_save`):
-until that row ends `done` with every run accepted, the task's publication
-is the one before (`published.task`), so entrants keep being graded on it.
+until that row ends `done` with every run accepted and every check of the
+task given what it expects, the task's publication is the one before
+(`published.task`), so entrants keep being graded on it.
 
 Each row runs as a manual pipeline on its org's dispatch repository
 (`gradings.start`). `prepare` readies a row's start: only the steps the
@@ -33,10 +34,10 @@ wrapper's base image in its report mode, which runs whatever the steps
 before it ended with. The pipeline's labels are the platform's pool, the
 machine shape's when it holds an `exec` or `interact` step, since a label
 picks a machine for a whole pipeline, the size of the smallest slot that
-holds what its steps left to run can use at once (`run_plan.slot_of`),
-and its lane: `early` for an early row, whose slots no late row takes,
-`late` for the others. A pipeline no slot holds, as after the slots were
-made smaller than when its task was saved, is not answered.
+holds what its steps left to run can use at once (`run_plan.slot_of`).
+Every slot takes any pipeline, early, late or save, first come, first
+served. A pipeline no slot holds, as after the slots were made smaller
+than when its task was saved, is not answered.
 
 `concluded` follows a row's report: a `system_error` is tried again once by
 itself as any row is (`gradings.notice`); an early row that ends `done`
@@ -51,7 +52,8 @@ organiser's read of it finishes it, so a take-over whose work failed or
 never ran is not lost.
 
 `checks` reads a task's save rows for its organisers: where each
-publication not yet taken over stands (`Check`), the lost check and the
+publication not yet taken over stands (`Check`), and `failed` each check
+that refused one (`FailedCheck`, SIMPLER-CORE.md 9.6); the lost check and the
 retry by itself run over each publication's latest save row as over any
 row read, and a take-over still waiting is finished in the background. A
 save of the same files as a publication whose checking was refused, or
@@ -72,8 +74,6 @@ from forge.domain import exact_json
 from forge.domain.errors import CiRequestRefused, Misconfigured, NotFound, PortError, Unavailable
 from forge.domain.grading import (
     BOXED_SHAPE,
-    EARLY_LANE,
-    LATE_LANE,
     PLATFORM_POOL,
     SIZE_LABEL,
     UNFINISHED,
@@ -85,11 +85,11 @@ from forge.domain.grading import (
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import OrgId, PublicationId, SubmissionId, TaskId, VersionId
 from forge.domain.plans import PLAN_PATH
-from forge.domain.publications import Check, Publication
+from forge.domain.publications import Check, FailedCheck, Publication, failed_checks
 from forge.domain.regrades import RegradeCause
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.run_plan import BOXED, PipelineKind, RunPlan, slot_of
-from forge.domain.step_data import REPORT_STEP, all_accepted, runs_of, without
+from forge.domain.step_data import REPORT_STEP, all_accepted, without
 from forge.log import get_logger
 from forge.runtime.context import Context
 from forge.services import gradings, names, published, steps, timelines
@@ -254,7 +254,6 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
         PLATFORM_POOL,
         *((BOXED_SHAPE,) if boxed else ()),
         f"{SIZE_LABEL}:{slot.name}",
-        EARLY_LANE if pipeline == EARLY else LATE_LANE,
     )
     # A step reads the submission from the checkout only through an entrant
     # input, so a pipeline of compares alone clones nothing.
@@ -267,10 +266,16 @@ async def concluded(ctx: Context, row: Grading) -> None:
     that concluded it: its retry by itself for a `system_error`, the late
     row for an early row `done`, and the publication taking over for a
     save row `done` with every run accepted; and for a late row once its
-    task has revealed, a nudge to its entrant, whose result reads it then.
+    task has revealed, or while its results are released for a grading
+    that took the unreleased split, a nudge to its entrant, whose result
+    reads it then.
     """
     status = GradingStatus(row.status)
-    if row.pipeline == LATE and await _revealed(ctx, TaskId(row.task_id)):
+    task = TaskId(row.task_id)
+    if row.pipeline == LATE and (
+        await _revealed(ctx, task)
+        or (not row.released_split and await published.results_released(ctx, task))
+    ):
         gradings.told_late(ctx, row)
     if status is GradingStatus.SYSTEM_ERROR:
         await gradings.notice(ctx, [row])
@@ -279,7 +284,8 @@ async def concluded(ctx: Context, row: Grading) -> None:
         return
     if row.pipeline == EARLY:
         plan, _ = await steps.plan_of(ctx, row)
-        if runs_of(plan, "late"):
+        # A late pipeline may hold a value's program alone, its runs early.
+        if plan.pipeline("late"):
             made = await gradings.follow(ctx, row)
             log.info(
                 "pipelines.late_made",
@@ -392,6 +398,33 @@ async def checks(ctx: Context, task: TaskId, made: Sequence[Publication]) -> dic
     return found
 
 
+async def failed(
+    ctx: Context, task: TaskId, refused: Collection[str]
+) -> dict[str, tuple[FailedCheck, ...]]:
+    """Each check that refused each publication of the task in `refused`,
+    by the publication's id, from its latest save row, for its organisers;
+    none for one whose row graded no check."""
+    if not refused:
+        return {}
+    rows = (
+        (
+            await ctx.db.execute(
+                select(Grading)
+                .where(
+                    Grading.task_id == task,
+                    Grading.pipeline == SAVE,
+                    Grading.publication_id.in_(sorted(refused)),
+                )
+                .order_by(Grading.publication_id, Grading.attempt.desc())
+                .distinct(Grading.publication_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {row.publication_id: failed_checks(row.result) for row in rows}
+
+
 async def check_again(
     ctx: Context, task: TaskId, publication: PublicationId, plan: RunPlan, by: int | None
 ) -> Check | None:
@@ -416,6 +449,20 @@ async def check_again(
         log.info("pipelines.checked_again", task=task, publication=publication)
         return "checking"
     return check
+
+
+async def checking(ctx: Context, publication: PublicationId) -> bool:
+    """Whether a save row still checks `publication` before it takes over,
+    as `checks` tells its organisers: its latest row not finished, or a
+    system error its retry by itself may still follow. One refused,
+    replaced or with no row never takes over by itself."""
+    latest = await ctx.db.scalar(
+        select(Grading)
+        .where(Grading.pipeline == SAVE, Grading.publication_id == publication)
+        .order_by(Grading.attempt.desc())
+        .limit(1)
+    )
+    return latest is not None and _check_of(ctx, latest) == "checking"
 
 
 def _check_of(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> Check | None:

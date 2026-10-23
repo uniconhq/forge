@@ -3,37 +3,48 @@ tasks parse into their runs, keys and early runs; repeat crosses its axes,
 first outermost, keeps each tuple's values together and keys a run an
 entrant fills by its part; each refusal of 8.5 and 9.5 names its path; a
 run keeps its id across versions; what the entrant could set is marked
-self-reported; and what is shown when, and what was shown, is read from
-`show`.
+self-reported; what is shown when, and what was shown, is read from
+`show`; and a check gives what the entrant does and expects what the task
+can get, a file only a check names never shown.
 """
 
 import json
 from collections.abc import Mapping
+from datetime import UTC, datetime
+from decimal import Decimal
+from fractions import Fraction
 from typing import Any
 
 import pytest
 
+from forge.domain.blocks.numbers import Better
+from forge.domain.checks import check_only
 from forge.domain.definitions import Scoring, parse_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.run_task import (
     MOST_RUNS,
     Part,
+    ProgramValue,
     RunsFile,
     RunTask,
     RunTaskCheck,
     Shown,
     check_run_task,
+    fewer_runs,
     file_time,
     hidden_again,
     manifest_files,
     most_shown,
+    self_reported_question,
     shown_under,
+    unreleased,
 )
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.types import Type
 from forge.domain.workflow_definition import parse_run_workflow
 from forge.domain.yaml_models import InvalidDefinition
+from forge.services.published import shown_now
 from forge.testing import PLACEHOLDER_DIGEST, RUN_WORKFLOWS
 from tests.conftest import sibling
 
@@ -187,11 +198,11 @@ scoring:
     sample_score:
       block: div
       of:
-        - {block: sum_runs, over: {runs: sample_tests}, of: {run: [sample_tests, score]}}
-        - {block: count_runs, over: {runs: sample_tests}}
-    sample_time: {block: max_runs, over: {runs: sample_tests}, of: {run: [sample_tests, time_ms]}}
-    st1: {block: min_runs, over: {runs: st1_tests}, of: {run: [st1_tests, score]}}
-    st2: {block: min_runs, over: {runs: st2_tests}, of: {run: [st2_tests, score]}}
+        - {block: sum, over: {runs: sample_tests}, of: {run: [sample_tests, score]}}
+        - {block: count, over: {runs: sample_tests}}
+    sample_time: {block: max, over: {runs: sample_tests}, of: {run: [sample_tests, time_ms]}}
+    st1: {block: min, over: {runs: st1_tests}, of: {run: [st1_tests, score]}}
+    st2: {block: min, over: {runs: st2_tests}, of: {run: [st2_tests, score]}}
     total:
       block: add
       of:
@@ -235,13 +246,13 @@ scoring:
     reward:
       block: div
       of:
-        - {block: sum_runs, over: {runs: all}, of: {run: [all, reward]}}
-        - {block: count_runs, over: {runs: all}}
+        - {block: sum, over: {runs: all}, of: {run: [all, reward]}}
+        - {block: count, over: {runs: all}}
     windy:
       block: div
       of:
-        - {block: sum_runs, over: {runs: windy_runs}, of: {run: [windy_runs, reward]}}
-        - {block: count_runs, over: {runs: windy_runs}}
+        - {block: sum, over: {runs: windy_runs}, of: {run: [windy_runs, reward]}}
+        - {block: count, over: {runs: windy_runs}}
   show:
     now: [reward]
     after_close: [windy, all]
@@ -259,7 +270,7 @@ repeat:
       - [parts/2.in, entrant]
 scoring:
   values:
-    total: {block: sum_runs, over: {runs: all}, of: {run: [all, score]}}
+    total: {block: sum, over: {runs: all}, of: {run: [all, score]}}
   show:
     now: [total, all, parts/]
 """
@@ -389,6 +400,9 @@ def test_cartpole_marks_what_the_entrants_weights_could_set(
     }
     assert task.self_reported_values() == {"reward", "windy"}
     assert task.runs_file().self_reported == task.self_reported
+    # The save keeps the values it checked, which a result marks.
+    read = RunsFile.from_bytes(task.runs_file().to_bytes())
+    assert read.self_reported_values == {"reward", "windy"}
 
 
 def test_tour_asks_for_one_route_per_part(primitives: dict[str, PrimitiveDeclaration]) -> None:
@@ -414,8 +428,7 @@ def test_a_number_the_entrant_gives_in_parts_is_a_self_reported_column(
         .replace("entrant]", "entrant, entrant]")
         .replace(
             "  values:\n",
-            "  values:\n    claimed: {block: sum_runs, over: {runs: all}, "
-            "of: {run: [all, best]}}\n",
+            "  values:\n    claimed: {block: sum, over: {runs: all}, of: {run: [all, best]}}\n",
         )
     )
 
@@ -735,7 +748,7 @@ inputs:
   judge_time_limit: 3
 scoring:
   values:
-    moves: {block: max_runs, over: {runs: all}, of: {run: [all, moves]}}
+    moves: {block: max, over: {runs: all}, of: {run: [all, moves]}}
   show: {now: [moves]}
 """
 JUDGED_PATHS = frozenset({"task.yaml", "judge/judge.py", "judge/program.yaml"})
@@ -1014,10 +1027,16 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "no column called points",
         ),
         (
+            "{block: count, over: {runs: sample_tests}}",
+            "{block: count, over: {runs: sample_tests}, colour: red}",
+            "scoring.values.sample_score.of[1].colour",
+            "no input called colour",
+        ),
+        (
             "of: {run: [st1_tests, score]}",
             "of: {run: [st1_tests, score]}, colour: red",
-            "scoring.values.st1.colour",
-            "no input called colour",
+            "scoring.values.st1",
+            "min is given numbers or a group's runs, and these inputs fit no form of it",
         ),
         (
             "of: {run: [st1_tests, score]}",
@@ -1026,26 +1045,26 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "skip",
         ),
         (
-            "{block: count_runs, over: {runs: sample_tests}}",
-            "{block: count_runs}",
+            "{block: count, over: {runs: sample_tests}}",
+            "{block: count}",
             "scoring.values.sample_score.of[1].over",
             "needs its input over",
         ),
         (
-            "{block: count_runs, over: {runs: sample_tests}}",
-            "{block: count_runs, over: {runs: sample_tests}, weights: {input: {tests/9.in: 2}}}",
+            "{block: count, over: {runs: sample_tests}}",
+            "{block: count, over: {runs: sample_tests}, weights: {input: {tests/9.in: 2}}}",
             "scoring.values.sample_score.of[1].weights.input.tests/9.in",
             "No run has input",
         ),
         (
-            "{block: count_runs, over: {runs: sample_tests}}",
-            "{block: count_runs, over: {runs: sample_tests}, weights: {code: {a: 2}}}",
+            "{block: count, over: {runs: sample_tests}}",
+            "{block: count, over: {runs: sample_tests}, weights: {code: {a: 2}}}",
             "scoring.values.sample_score.of[1].weights.code",
             "cannot weigh",
         ),
         (
-            "{block: count_runs, over: {runs: sample_tests}}",
-            "{block: count_runs, over: {runs: sample_tests}, weights: {input: {samples/1.in: 0}}}",
+            "{block: count, over: {runs: sample_tests}}",
+            "{block: count, over: {runs: sample_tests}, weights: {input: {samples/1.in: 0}}}",
             "scoring.values.sample_score.of[1].weights.input.samples/1.in",
             "more than 0",
         ),
@@ -1053,7 +1072,7 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "now: [sample_score",
             "now: [sample_scor",
             "scoring.show.now[0]",
-            "names no group, value, file or folder",
+            "names no group, value, report, file or folder",
         ),
         (
             "now: [sample_score",
@@ -1123,7 +1142,7 @@ def test_a_value_cannot_read_itself_through_others(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     text = ISLANDS.replace(
-        "st2: {block: min_runs, over: {runs: st2_tests}, of: {run: [st2_tests, score]}}",
+        "st2: {block: min, over: {runs: st2_tests}, of: {run: [st2_tests, score]}}",
         "st2: {block: add, of: [{value: total}, 1]}",
     )
 
@@ -1153,7 +1172,7 @@ def test_a_value_shown_now_reading_compiled_makes_the_compile_early(
 def test_on_release_is_late_until_a_release(primitives: dict[str, PrimitiveDeclaration]) -> None:
     text = ISLANDS.replace(
         "    after_close: [st1, st2, total, all]\n",
-        "    after_close: [st2, total, all]\n    on_release: [st1]\n",
+        "    after_close: [st2, all]\n    on_release: [st1]\n",
     )
 
     task = ok(islands(primitives, text))
@@ -1192,6 +1211,28 @@ def test_a_file_shown_sooner_than_its_folder_is_shown_sooner(
 
     assert file_time(_scoring(text), "tests/3.in") == "now"
     assert file_time(_scoring(text), "tests/4.in") == "after_close"
+
+
+def test_show_lists_a_report_by_its_name_but_not_one_also_a_file_of_the_task(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    text = ISLANDS.replace("samples/]", "samples/, log]")
+
+    ok(islands(primitives, text))
+    assert at(islands(primitives, text, paths=ISLANDS_PATHS | {"log"}), "scoring.show.now[4]") == [
+        "log names both a report of the workflow and a file of the task, so show cannot tell "
+        "which it lists. Rename the file."
+    ]
+    # A report listed is a name, so taking it out of show is hiding it.
+    before = shown_under(_scoring(text), ISLANDS_PATHS)
+    assert before.names["log"] == "now"
+    assert hidden_again(before, _scoring(ISLANDS), ISLANDS_PATHS) == [
+        {
+            "path": "scoring.show",
+            "message": "Entrants have been shown log as soon as a grading ends, and what they "
+            "have been shown cannot be hidden again. List it as soon as before.",
+        }
+    ]
 
 
 def _scoring(text: str) -> Scoring:
@@ -1259,3 +1300,476 @@ def test_what_was_shown_is_the_soonest_any_publication_showed_it() -> None:
     assert most_shown([first, second]) == Shown(
         {"a": "now", "b": "after_close", "c": "after_close"}, {"x": ("now", "x")}
     )
+
+
+# What a release shows, and what a later save keeps
+
+
+RELEASING = ISLANDS.replace(
+    "after_close: [st1, st2, total, all]",
+    "after_close: [st1, all]\n    on_release: [st2, st2_tests, tests/4.in]",
+)
+
+
+def test_a_release_makes_what_on_release_reads_early(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = ok(islands(primitives, RELEASING))
+
+    assert task.shown() == ["sample_score", "sample_time", "sample_tests", "samples/"]
+    assert task.early() == {"r1", "r2"}
+    assert task.early(released=True) == {"r1", "r2", "r3", "r4"}
+    assert [run.early for run in task.runs_file().runs] == [True, True, False, False]
+
+
+def test_the_runs_file_keeps_the_runs_each_name_shown_during_the_contest_reads(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = ok(islands(primitives, RELEASING))
+
+    assert task.runs_read() == {
+        "sample_score": {"r1", "r2"},
+        "sample_time": {"r1", "r2"},
+        "sample_tests": {"r1", "r2"},
+        "st2": {"r3", "r4"},
+        "st2_tests": {"r3", "r4"},
+    }
+    assert task.runs_of("total") == frozenset({"r3", "r4"})
+    assert task.runs_of("samples/") is None
+    written = task.runs_file()
+    assert RunsFile.from_bytes(written.to_bytes()) == written
+    document = json.loads(written.to_bytes())
+    del document["reads"]
+    assert RunsFile.from_bytes(json.dumps(document).encode()).reads == {}
+
+
+def test_a_value_listed_sooner_than_what_it_reads_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    found = islands(
+        primitives,
+        ISLANDS.replace(
+            "after_close: [st1, st2, total, all]",
+            "after_close: [st1, total, all]\n    on_release: [st2, st2_tests, tests/4.in]",
+        ),
+    )
+
+    assert at(found, "scoring.show.after_close[1]") == [
+        f"total reads {name}, which is shown once results are released, so showing total at "
+        f"the reveal would give {name} away sooner. List total no sooner than {name}."
+        for name in ("st2", "st2_tests")
+    ]
+    # A name show does not list is free to read, and so is one listed as
+    # soon or sooner.
+    ok(islands(primitives, RELEASING))
+    ok(
+        islands(
+            primitives,
+            ISLANDS.replace(
+                "after_close: [st1, st2, total, all]",
+                "after_close: [st1, all]\n    on_release: [st2, total, st2_tests]",
+            ),
+        )
+    )
+
+
+def test_an_entered_mark_under_on_release_is_not_given_away_by_a_value_shown_sooner(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    marked = ISLANDS.replace(
+        "    total:\n",
+        "    review: {block: entered, at_least: 0, at_most: 10}\n"
+        "    reviewed: {block: add, of: [{value: sample_score}, {value: review}]}\n"
+        "    total:\n",
+    )
+    found = islands(
+        primitives,
+        marked.replace(
+            "after_close: [st1, st2, total, all]",
+            "after_close: [st1, st2, total, all]\n    on_release: [review]",
+        ).replace("now: [sample_score,", "now: [reviewed, sample_score,"),
+    )
+
+    assert at(found, "scoring.show.now[0]") == [
+        "reviewed reads review, which is shown once results are released, so showing "
+        "reviewed as soon as a grading ends would give review away sooner. List reviewed no "
+        "sooner than review."
+    ]
+    task = ok(
+        islands(
+            primitives,
+            marked.replace(
+                "after_close: [st1, st2, total, all]",
+                "after_close: [st1, st2, total, all]\n    on_release: [review, reviewed]",
+            ),
+        )
+    )
+    assert task.values.through("reviewed").blocks == {"entered"}
+
+
+def test_a_group_shown_sooner_that_holds_runs_a_release_shows_is_noted(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = ok(islands(primitives, RELEASING))
+
+    assert task.release_notes() == [
+        f"all, shown at the reveal, holds runs {name} reads, so entrants see those runs "
+        f"before a release shows {name}."
+        for name in ("st2", "st2_tests")
+    ]
+    assert ok(islands(primitives)).release_notes() == []
+
+
+def test_what_on_release_listed_counts_as_not_shown_without_a_release() -> None:
+    shown = Shown(
+        {"a": "now", "b": "on_release"}, {"x": ("on_release", "x"), "y": ("after_close", "./")}
+    )
+
+    assert unreleased(shown) == Shown({"a": "now"}, {"y": ("after_close", "./")})
+
+
+def test_a_name_shown_during_the_contest_may_not_read_fewer_of_the_runs_left(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    fewer = ok(
+        islands(
+            primitives,
+            RELEASING.replace(
+                "sample_tests: {input: [samples/1.in, samples/2.in]}",
+                ("sample_tests: {input: [samples/1.in]}"),
+            ),
+        )
+    )
+    shown = Shown({"sample_tests": "now", "st2_tests": "on_release", "st1": "after_close"})
+    reads = {
+        "sample_tests": frozenset({"r1", "r2"}),
+        "st2_tests": frozenset({"r3", "r4", "r9"}),
+        "st1": frozenset({"r1"}),
+    }
+
+    assert fewer_runs([(shown, reads)], fewer) == [
+        {
+            "path": "scoring.groups.sample_tests",
+            "message": "Entrants have been shown sample_tests during the contest over 2 runs "
+            "the task still has, and it would now read 1 fewer. What they have been shown "
+            "cannot be hidden again, so keep those runs in it.",
+        }
+    ]
+    # A run the task no longer has is not counted, nor what was shown at
+    # the reveal, nor a release taken back.
+    assert fewer_runs([(unreleased(shown), reads)], ok(islands(primitives, RELEASING))) == []
+
+
+# exec: a value a program of the task works out
+
+MEAN = ISLANDS.replace(
+    "  values:\n",
+    "  values:\n"
+    "    mean: {block: exec, program: programs/mean/, language: python, over: {runs: all}}\n",
+).replace(
+    "    after_close: [st1, st2, total, all]\n", "    after_close: [st1, st2, total, all, mean]\n"
+)
+MEAN_PATHS = ISLANDS_PATHS | {"programs/mean/mean.py", "programs/mean/program.yaml"}
+MEAN_MANIFEST = b"reports:\n  mean: {better: higher, at_least: 0, at_most: 1}\n"
+
+
+def mean(
+    primitives: dict[str, PrimitiveDeclaration],
+    task: str = MEAN,
+    manifest: bytes | None = MEAN_MANIFEST,
+    paths: frozenset[str] = MEAN_PATHS,
+) -> RunTaskCheck:
+    manifests = {} if manifest is None else {"programs/mean/program.yaml": manifest}
+    return islands(primitives, task, paths=paths, manifests=manifests)
+
+
+def test_an_exec_value_names_its_program_and_runs_late_unless_shown_during_the_contest(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    workflow, files = deployed("unicon/classic@v3")
+    checked = check_run_workflow(
+        parse_run_workflow(workflow), primitives, WorkflowFiles(frozenset(files), files)
+    )
+    assert manifest_files(parse_task(MEAN, runs=True), checked) == {"programs/mean/program.yaml"}
+
+    task = ok(mean(primitives))
+    assert task.programs["mean"] == ProgramValue(
+        "mean", "programs/mean/", "python", "all", 2, 256, "mean", Better.HIGHER
+    )
+    assert task.programs["mean"].manifest == "programs/mean/program.yaml"
+    assert task.early_programs() == frozenset()
+
+    shown = MEAN.replace(
+        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
+        "    now: [sample_score, sample_time, sample_tests, samples/, mean, all]\n",
+    ).replace("total, all, mean]", "total]")
+    assert ok(mean(primitives, shown)).early_programs() == {"mean"}
+
+    released = MEAN.replace("total, all, mean]", "total, all]\n    on_release: [mean]")
+    assert ok(mean(primitives, released)).early_programs() == frozenset()
+    assert ok(mean(primitives, released)).early_programs(released=True) == {"mean"}
+
+    limited = MEAN.replace("over: {runs: all}}", "over: {runs: all}, time_limit: 0.5}")
+    assert ok(mean(primitives, limited)).programs["mean"].time_limit == Decimal("0.5")
+
+
+@pytest.mark.parametrize(
+    ("manifest", "words"),
+    [
+        (
+            None,
+            "programs/mean/ holds no program.yaml, which declares the one number the program "
+            "reports.",
+        ),
+        (
+            b"reports:\n  a: {better: higher}\n  b: {better: lower}\n",
+            "programs/mean/program.yaml declares 2 reports, and a value's program reports one "
+            "number, the value's.",
+        ),
+        (
+            b"reports:\n  a: {type: text}\n",
+            "programs/mean/program.yaml declares a as text, with no better. A value's program "
+            "reports one number, never left out, saying which way is better.",
+        ),
+        (
+            b"reports:\n  a: {better: higher, optional: true}\n",
+            "programs/mean/program.yaml declares a as number, optional. A value's program reports "
+            "one number, never left out, saying which way is better.",
+        ),
+        (
+            b"reports:\n  a: {at_least: 0}\n",
+            "programs/mean/program.yaml declares a as number, with no better. A value's program "
+            "reports one number, never left out, saying which way is better.",
+        ),
+    ],
+)
+def test_an_exec_values_program_yaml_declares_one_number_with_better(
+    primitives: dict[str, PrimitiveDeclaration], manifest: bytes | None, words: str
+) -> None:
+    assert at(mean(primitives, manifest=manifest), "scoring.values.mean.program") == [words]
+
+
+def test_an_exec_values_folder_and_group_must_be_the_tasks_and_hold_runs(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    assert at(
+        mean(primitives, MEAN.replace("program: programs/mean/", "program: programs/other/")),
+        ("scoring.values.mean.program"),
+    ) == ["programs/other/ is not a folder of the task."]
+    assert at(mean(primitives, manifest=b"reports: [1]\n"), "scoring.values.mean.program")
+    empty = MEAN.replace("    st1_tests:", "    none_tests: {input: [tests/9.in]}\n    st1_tests:")
+    empty = empty.replace("over: {runs: all}}", "over: {runs: none_tests}}")
+    assert at(mean(primitives, empty), "scoring.values.mean.over") == [
+        "none_tests holds no runs, so the program would have none to read."
+    ]
+
+
+def test_a_program_reading_a_self_reported_column_is_self_reported(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    assert ok(mean(primitives)).self_reported_values() == frozenset()
+    text = (
+        TOUR_TASK.replace("inputs:\n  best: 1200\n", "")
+        .replace("inputs: [input, route]", "inputs: [input, route, best]")
+        .replace("entrant]", "entrant, entrant]")
+        .replace(
+            "  values:\n",
+            "  values:\n    mean: {block: exec, program: programs/mean/, language: python, "
+            "over: {runs: all}}\n",
+        )
+    )
+    task = ok(
+        tour(
+            primitives,
+            text,
+            paths=TOUR_PATHS | {"programs/mean/mean.py", "programs/mean/program.yaml"},
+            manifests={"programs/mean/program.yaml": MEAN_MANIFEST},
+        )
+    )
+    assert task.self_reported_values() == {"mean"}
+
+
+MEAN_BLOCK = "{block: exec, program: programs/mean/, language: python, over: {runs: all}}"
+
+
+@pytest.mark.parametrize(
+    ("block", "path", "words"),
+    [
+        (
+            "{block: exec, language: python, over: {runs: all}}",
+            "scoring.values.mean.program",
+            "exec needs its input program.",
+        ),
+        (
+            "{block: exec, program: programs/mean/, over: {runs: all}}",
+            "scoring.values.mean.language",
+            "exec needs its input language.",
+        ),
+        (
+            "{block: exec, program: 5, language: python, over: {runs: all}}",
+            "scoring.values.mean.program",
+            None,
+        ),
+        (
+            "{block: exec, program: programs/mean/, language: python, over: all}",
+            "scoring.values.mean.over",
+            None,
+        ),
+        (
+            "{block: exec, program: programs/mean/, language: python, over: {runs: nope}}",
+            "scoring.values.mean.over",
+            None,
+        ),
+    ],
+)
+def test_a_malformed_exec_block_is_one_problem_never_a_crash(
+    primitives: dict[str, PrimitiveDeclaration], block: str, path: str, words: str | None
+) -> None:
+    found = mean(primitives, MEAN.replace(MEAN_BLOCK, block))
+
+    assert found.task is None
+    [problem] = found.problems
+    assert problem["path"] == path
+    if words is not None:
+        assert problem["message"] == words
+
+
+# Checks
+
+
+CHECKS = """\
+checks:
+  - submit: {code: checks/good}
+    expect: {verdict: accepted, total: 100}
+  - submit: {code: checks/empty/, language: python}
+    expect: {verdict: wrong_answer}
+  - submit: {code: checks/slow}
+    expect: {st1: 1, st2: 0.5}
+"""
+CHECK_PATHS = ISLANDS_PATHS | {"checks/good/main.cpp", "checks/empty/main.py", "checks/slow/a.cpp"}
+
+
+def test_a_check_gives_what_the_entrant_does_and_expects_a_verdict_or_values(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = ok(islands(primitives, ISLANDS + CHECKS, paths=CHECK_PATHS))
+
+    good, empty, slow = task.checks
+    assert good.index == 1 and good.part("code", None) == "checks/good/"
+    # A language left out takes its form's default, as the entrant's would.
+    assert good.part("language", None) == "cpp"
+    assert good.verdict == "accepted" and dict(good.values) == {"total": Fraction(100)}
+    assert (empty.part("language", None), empty.verdict, dict(empty.values)) == (
+        "python",
+        "wrong_answer",
+        {},
+    )
+    assert slow.verdict is None and dict(slow.values) == {"st1": 1, "st2": Fraction(1, 2)}
+
+
+@pytest.mark.parametrize(
+    ("check", "path", "words"),
+    [
+        (
+            "{submit: {code: checks/good, time_limit: 3}, expect: {verdict: accepted}}",
+            "checks[0].submit.time_limit",
+            "The entrant gives no time_limit, so a check cannot. A check gives what the "
+            "entrant does: code and language.",
+        ),
+        (
+            "{submit: {language: cpp}, expect: {verdict: accepted}}",
+            "checks[0].submit",
+            "This check gives no code, which the entrant must give. Give it.",
+        ),
+        (
+            "{submit: {code: checks/none}, expect: {verdict: accepted}}",
+            "checks[0].submit.code",
+            "There is no folder checks/none/ in the task, or it holds no file.",
+        ),
+        (
+            "{submit: {code: checks/good, language: java}, expect: {verdict: accepted}}",
+            "checks[0].submit.language",
+            "This input takes one of cpp and python.",
+        ),
+        (
+            "{submit: {code: checks/good}, expect: {verdict: fine}}",
+            "checks[0].expect.verdict",
+            None,
+        ),
+        (
+            "{submit: {code: checks/good}, expect: {st3: 1}}",
+            "checks[0].expect.st3",
+            "There is no value st3 in the task's scoring, so a check cannot expect it. Its "
+            "values are sample_score, sample_time, st1, st2 and total, and verdict names the "
+            "verdict every run must get.",
+        ),
+        (
+            "{submit: {code: checks/good}, expect: {total: lots}}",
+            "checks[0].expect.total",
+            "Give the number total must be.",
+        ),
+    ],
+)
+def test_a_check_that_does_not_fit_the_task_is_refused_at_its_path(
+    primitives: dict[str, PrimitiveDeclaration], check: str, path: str, words: str | None
+) -> None:
+    found = islands(primitives, f"{ISLANDS}checks:\n  - {check}\n", paths=CHECK_PATHS)
+
+    messages = at(found, path)
+    assert len(messages) == 1
+    if words is not None:
+        assert messages == [words]
+
+
+def test_a_check_needs_something_to_expect() -> None:
+    with pytest.raises(InvalidDefinition) as raised:
+        parse_task(
+            f"{ISLANDS}checks:\n  - {{submit: {{code: checks/good}}, expect: {{}}}}\n", runs=True
+        )
+
+    assert any(problem["path"] == "checks[0].expect" for problem in raised.value.extra["errors"])
+
+
+def test_a_file_only_a_check_names_is_never_shown() -> None:
+    definition = parse_task(
+        (ISLANDS + CHECKS).replace("    now: [sample_score,", "    now: [checks/, sample_score,"),
+        runs=True,
+    )
+
+    assert check_only(definition, "checks/good/main.cpp")
+    now = datetime(2026, 10, 23, tzinfo=UTC)
+    assert not shown_now(definition, "checks/good/main.cpp", reveal=now, now=now)
+    assert shown_now(definition, "samples/1.in", reveal=None, now=now)
+    assert check_only(definition, "checks/slow/a.cpp")
+    assert not check_only(definition, "samples/1.in")
+    # A file the task gives a setting or a tuple is the task's as well.
+    shared = parse_task((ISLANDS + CHECKS).replace("checks/empty/", "samples/"), runs=True)
+    assert not check_only(shared, "samples/1.in")
+
+
+def test_a_self_reported_value_newly_shown_asks_again(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    text = (
+        TOUR_TASK.replace("inputs:\n  best: 1200\n", "")
+        .replace("inputs: [input, route]", "inputs: [input, route, best]")
+        .replace("entrant]", "entrant, entrant]")
+        .replace(
+            "  values:\n",
+            "  values:\n    claimed: {block: sum, over: {runs: all}, of: {run: [all, best]}}\n",
+        )
+    )
+    hidden = ok(tour(primitives, text))
+    shown = ok(tour(primitives, text.replace("now: [total,", "now: [claimed, total,")))
+
+    assert self_reported_question(hidden, hidden.runs_file()) is None
+    assert self_reported_question(shown, shown.runs_file()) is None
+    asked = self_reported_question(shown, hidden.runs_file())
+    assert asked is not None and asked.startswith("claimed reads best,")
+    assert "new or newly shown" in asked
+    # A runs file written before what is shown was kept reads as showing
+    # none, so its next save asks once.
+    document = json.loads(shown.runs_file().to_bytes())
+    del document["self_reported_shown"]
+    older = RunsFile.from_bytes(json.dumps(document).encode())
+    assert self_reported_question(shown, older) is not None
