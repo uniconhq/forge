@@ -39,6 +39,7 @@ from forge.domain.boards import (
     listed_now,
     read_boards,
     results_seen,
+    still_grading,
 )
 from forge.domain.definitions import (
     ContestDefinition,
@@ -440,6 +441,7 @@ def read_as(
             name,
             work_out_row(settings.leaderboards, found, lists, {}),
             (held or {}).get(entrant, {}),
+            still_grading(lists),
         )
         for entrant, name, lists in rows
     ]
@@ -790,6 +792,23 @@ def test_waiting_is_told_only_to_the_rows_own_entrant_and_staff() -> None:
     assert mine.cells[0].counted == (Counted("cartpole", 1),)
     assert not other.told and other.cells == (BoardCell("reward", Fraction(10)),)
     assert all(row.cells[0].waiting == (Counted("cartpole", 2),) for row in staff.rows)
+
+
+def test_the_own_row_and_staff_are_told_how_many_submissions_still_grade() -> None:
+    # Plan step 8: a count with no where reads no value, so no cell says
+    # a submission waits; the row's count of those still grading does, over
+    # the tasks the board reads.
+    text = (
+        "tasks: [{id: a}, {id: b}]\nleaderboards:\n  s:\n    audience: {who: everyone}\n"
+        "    columns:\n      tries: {block: count, over: {results: a}}\n    display: [tries]\n"
+    )
+    lists = {"a": [sub(1, score=1), sub(2, waiting=("score",))], "b": [sub(1, waiting=("x",))]}
+    rows = [(1, "r1", lists), (2, "r2", lists)]
+    entrant = one(read_as(text, "s", rows, Viewer(own=owner(1))))
+    staff = one(read_as(text, "s", rows))
+
+    assert [(row.grading, row.cells[0].waiting) for row in entrant.rows] == [(1, ()), (0, ())]
+    assert [row.grading for row in staff.rows] == [1, 1]
 
 
 def test_a_column_reading_only_tasks_not_released_is_not_listed() -> None:

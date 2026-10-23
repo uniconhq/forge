@@ -389,6 +389,7 @@ async def test_a_value_whose_late_runs_still_run_after_the_reveal_waits_for_ever
     assert grading.cells[1].waiting == waits
     assert own.rows[1].cells[1].waiting == waits
     assert not visitor.rows[1].told
+    assert [row.grading for row in (own.rows[1], grading, visitor.rows[1])] == [1, 1, 0]
 
 
 async def test_ending_a_hold_before_its_from_adds_nothing_and_it_still_holds_from_then(

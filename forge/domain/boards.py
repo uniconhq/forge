@@ -42,7 +42,8 @@ board's audience, never stored.
 - **A cell answered** is the column's number, missing as none, whether it
   is hidden, and, on the viewer's own row and for staff, the submissions it
   counted and those it left out as still waiting, each by task and number
-  (guarantee 6); a row answers how many of its submissions are held.
+  (guarantee 6); a row answers how many of its submissions are held, and,
+  told as that is, how many still grade (`still_grading`).
 - **A header** says what a listed column is, the same for every row: its
   name, the decimal places it is shown to, the least and most it can give
   where both are known (stage 5 section 6, item 5), and the self-reported
@@ -105,8 +106,10 @@ class BoardCell:
 class BoardRow:
     """One entrant's row: who, its name as shown, its place, none when the
     viewer is given none, its listed cells in order, how many of its
-    submissions the hold keeps from the viewer, and whether what each cell
-    counted and left out is told, on the viewer's own row and to staff."""
+    submissions the hold keeps from the viewer, whether what each cell
+    counted and left out is told, on the viewer's own row and to staff,
+    and, told as that is, 0 otherwise, how many of its submissions to the
+    tasks the board reads still grade."""
 
     owner: WorkspaceOwner
     name: str
@@ -114,6 +117,7 @@ class BoardRow:
     cells: tuple[BoardCell, ...]
     held: int = 0
     told: bool = True
+    grading: int = 0
 
     def cell(self, column: str) -> BoardCell | None:
         return next((each for each in self.cells if each.column == column), None)
@@ -161,12 +165,13 @@ class Loaded:
 class Row:
     """One entrant's row for a viewer: who, its name, every column of the
     boards read worked out for it, and how many of its submissions to each
-    task the hold keeps from the viewer."""
+    task the hold keeps from the viewer and how many still grade."""
 
     owner: WorkspaceOwner
     name: str
     cells: Mapping[BoardColumn, Cell]
     held: Mapping[str, int] = field(default_factory=dict)
+    grading: Mapping[str, int] = field(default_factory=dict)
 
 
 def sees(board: Leaderboard, viewer: Viewer) -> bool:
@@ -202,6 +207,12 @@ def held_back(
         found[task] = [replace(each, hidden=each.hidden | {MARKED}) for each in kept]
         held[task] = len(listed) - len(kept)
     return found, held
+
+
+def still_grading(lists: Mapping[str, Sequence[Submitted]]) -> dict[str, int]:
+    """How many of a row's submissions to each task, as the viewer reads
+    them, still wait on a value: still grading, or waiting for staff."""
+    return {task: sum(1 for each in listed if each.waiting) for task, listed in lists.items()}
 
 
 def listed_now(scoring: Scoring, times: Collection[str]) -> tuple[frozenset[str], bool]:
@@ -438,7 +449,10 @@ class _Read:
                 )
             )
         held = sum(count for task, count in row.held.items() if task in self.tasks)
-        return BoardRow(row.owner, row.name, place, tuple(cells), held, told)
+        grading = sum(count for task, count in row.grading.items() if task in self.tasks)
+        return BoardRow(
+            row.owner, row.name, place, tuple(cells), held, told, grading if told else 0
+        )
 
 
 def _counted(found: Collection[tuple[str, int]]) -> tuple[Counted, ...]:
@@ -530,4 +544,5 @@ __all__ = [
     "read_boards",
     "results_seen",
     "sees",
+    "still_grading",
 ]

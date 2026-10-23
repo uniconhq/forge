@@ -78,6 +78,7 @@ from forge.domain.boards import (
     read_boards,
     results_seen,
     sees,
+    still_grading,
 )
 from forge.domain.definitions import ContestDefinition, Hold
 from forge.domain.definitions import State as ContestState
@@ -249,6 +250,7 @@ async def read(
                 shown.get(owner, ""),
                 work_out_row(settings.leaderboards, checked, lists, trees),
                 held_counts,
+                still_grading(lists),
             )
         )
     every = list(dict.fromkeys(board for board, _ in checked.order))
