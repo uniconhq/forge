@@ -6,7 +6,9 @@ group, and no value reading itself through others. Group and value names
 are one set, none named like a fact, and `all` is every run's. A block with
 more than one form is checked against the one its node fits, by the inputs
 it is given and whether each is a group's runs; a node fitting none is
-refused naming the forms. A tree is at most `MOST_NODES` nodes and
+refused naming the forms. A form or a leaf only a board's column may use
+(`Scope.BOARD`, `BOARD_LEAVES`) is refused in a task's value, naming
+where it belongs. A tree is at most `MOST_NODES` nodes and
 `MOST_DEPTH` deep, measured before it is walked, since every read of a
 board works its trees out.
 
@@ -35,10 +37,12 @@ from forge.domain.blocks.catalogue import (
     LEAVES,
     SKIP,
     TASK_FACTS,
+    TASK_LEAVES,
     Block,
     BlockInput,
     Form,
     Kind,
+    Scope,
 )
 from forge.domain.definitions import VALUE_NAME
 from forge.domain.yaml_models import Path, is_number
@@ -261,6 +265,8 @@ class _Checker:
         match wanted.kind:
             case Kind.RUNS:
                 self._runs(at, node)
+            case Kind.RESULTS | Kind.NAME | Kind.DIRECTIONS:
+                self.refuse(at, ONLY_BOARDS)
             case Kind.WEIGHTS:
                 self._weights(at, node)
             case Kind.MISSING:
@@ -270,7 +276,7 @@ class _Checker:
                         f"Give what a missing report counts as: {SKIP}, to leave the run out, "
                         "or a number.",
                     )
-            case Kind.NUMBER:
+            case Kind.NUMBER | Kind.EITHER:
                 self._number(at, node, over)
             case Kind.PATH:
                 if not _folder(node):
@@ -295,11 +301,14 @@ class _Checker:
         if "block" in node:
             self._block(at, node, over)
             return
-        leaf = _leaf(node)
+        leaf = leaf_of(node)
         if leaf is None:
             self.refuse(at, _LEAF_WORDS)
             return
         kind, named = leaf
+        if kind not in TASK_LEAVES or (kind == "value" and isinstance(named, list)):
+            self.refuse(at, ONLY_BOARDS)
+            return
         match kind:
             case "runs":
                 self.refuse(
@@ -341,9 +350,14 @@ class _Checker:
                 f"{name} is not a block Unicon has. The blocks are {', '.join(CATALOGUE)}.",
             )
             return
-        form = form_of(block, node)
+        form = form_of(block, node, Scope.BOARD)
         if form is None:
-            self.refuse(at, _forms_words(block))
+            self.refuse(at, forms_words(block, Scope.BOARD))
+            return
+        if form.scope is Scope.BOARD:
+            self.refuse(
+                at, f"{block.name} given {form.given} is for a leaderboard's column. {ONLY_BOARDS}"
+            )
             return
         for key in node:
             if key != "block" and key not in form.inputs:
@@ -402,13 +416,13 @@ class _Checker:
             )
 
     def _fold_group(self, given: object) -> str | None:
-        leaf = _leaf(given) if isinstance(given, dict) else None
+        leaf = leaf_of(given) if isinstance(given, dict) else None
         if leaf is None or leaf[0] != "runs" or not isinstance(leaf[1], str):
             return None
         return leaf[1]
 
     def _runs(self, at: Path, node: object) -> None:
-        leaf = _leaf(node) if isinstance(node, dict) else None
+        leaf = leaf_of(node) if isinstance(node, dict) else None
         if leaf is None or leaf[0] != "runs":
             self.refuse(at, "Give the group whose runs this folds, as {runs: <group>}.")
             return
@@ -483,22 +497,30 @@ class _Checker:
                 self.refuse(where, "A weight is a number more than 0.")
 
 
+ONLY_BOARDS = (
+    "A task's value reads one submission's runs and facts; a task's results, a "
+    "submission's results and a leaderboard's columns are read on a leaderboard only."
+)
 _FACT_WHY = {
     "attempt": "depends on the entrant's other submissions",
     "marked": "changes until the task closes",
 }
 
 
-def form_of(block: Block, node: Mapping[str, object]) -> Form | None:
+def form_of(
+    block: Block, node: Mapping[str, object], leaving_out: Scope | None = None
+) -> Form | None:
     """The form of `block` a node means: the one its inputs fit, by name and
-    by whether each is a group's runs; the only form, when the block has one,
+    by whether each is a group's runs or a task's results; else the only
+    form usable where the block is, those whose scope is not `leaving_out`,
     so its inputs are checked one by one; none when they fit no form of
     several.
     """
     for form in block.forms:
         if _fits(form, node):
             return form
-    return block.forms[0] if len(block.forms) == 1 else None
+    usable = [form for form in block.forms if form.scope is not leaving_out]
+    return usable[0] if len(usable) == 1 else None
 
 
 def _fits(form: Form, node: Mapping[str, object]) -> bool:
@@ -513,23 +535,35 @@ def _fits(form: Form, node: Mapping[str, object]) -> bool:
         if isinstance(value, list) != (wanted.least is not None):
             return False
         for each in value if isinstance(value, list) else [value]:
-            runs = isinstance(each, dict) and _leaf(each) is not None and "runs" in each
-            if runs != (wanted.kind is Kind.RUNS):
+            leaf = leaf_of(each) if isinstance(each, dict) else None
+            gathered = leaf[0] if leaf is not None and leaf[0] in _GATHERED else None
+            if gathered != _GATHERED_BY.get(wanted.kind):
                 return False
     return True
 
 
-def _forms_words(block: Block) -> str:
+_GATHERED = ("runs", "results")
+"""The leaves that give many, which tell a fold's forms apart."""
+_GATHERED_BY = {Kind.RUNS: "runs", Kind.RESULTS: "results"}
+
+
+def forms_words(block: Block, leaving_out: Scope) -> str:
+    """What `block` takes, naming only the forms usable where the block is:
+    those whose scope is not `leaving_out`."""
+    forms = [form for form in block.forms if form.scope is not leaving_out]
+    if not forms:
+        where = "a leaderboard's column" if leaving_out is Scope.TASK else "a task's value"
+        return f"{block.name} is for {where} only."
     takes = "; ".join(
         f"given {form.given}, "
         + ", ".join(
             f"{key}{' (optional)' if wanted.optional else ''}"
             for key, wanted in form.inputs.items()
         )
-        for form in block.forms
+        for form in forms
     )
     return (
-        f"{block.name} is given {' or '.join(form.given for form in block.forms)}, and these "
+        f"{block.name} is given {' or '.join(form.given for form in forms)}, and these "
         f"inputs fit no form of it. It takes, {takes}."
     )
 
@@ -567,7 +601,7 @@ def _folder(node: object) -> bool:
     return all(segment not in ("", ".", "..") for segment in node[:-1].split("/"))
 
 
-def _leaf(node: Mapping[object, object]) -> tuple[str, object] | None:
+def leaf_of(node: Mapping[object, object]) -> tuple[str, object] | None:
     """A leaf's kind and what it names, when `node` is one."""
     if len(node) != 1:
         return None
@@ -618,6 +652,8 @@ __all__ = [
     "check_names",
     "check_values",
     "form_of",
+    "forms_words",
+    "leaf_of",
     "same_value",
     "tree_size",
 ]

@@ -58,8 +58,7 @@ async def test_a_manager_makes_the_contest_with_a_valid_starter(setup: Setup, ac
     assert [way.approval.value for way in settings.registration.ways] == ["manual"]
     assert settings.registration.ways[0].signup is not None
     assert (settings.description, settings.entrants.most, settings.tasks) == (None, 1, ())
-    (board,) = settings.leaderboards
-    assert (board.name, board.who.value) == ("Standings", "contestants")
+    assert settings.leaderboards == {}
     assert b"\ntasks:" not in starter.content
     repo = acme.fake.state.repos[("acme", "spring.contest")]
     assert repo.teams == {Scope("acme", "spring")}

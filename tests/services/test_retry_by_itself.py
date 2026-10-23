@@ -27,7 +27,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.showing import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import boards, contest_home, gradings, runs, submissions
+from forge.services import gradings, runs, submissions
 from forge.services.gradings import NO_ANSWER, NO_RUN, START_RETRY_WAIT
 from forge.settings import Settings
 from forge.testing import APP_URL, FORGE_URL, FakeClock
@@ -328,18 +328,15 @@ async def test_many_readers_finding_one_failure_together_start_one_retry(
     ]
 
 
-READERS = ["boards", "contest home", "task's gradings", "queue depth"]
+READERS = ["task's gradings", "queue depth"]
+"""A classic task's readers; a board reads run tasks alone, and starts the
+retry of a run task's failure it finds (`tests.services.test_pipelines`)."""
 
 
 async def _read(setup: Setup, acme: Acme, entered: Entered, reader: str) -> None:
     """The contest read the way `reader` reads it."""
     observer = await organiser(setup, acme.fake, 7, SUM, Role.OBSERVER)
     match reader:
-        case "boards":
-            assert await boards.seen(setup, entered.session, SPRING)
-        case "contest home":
-            (task,) = (await contest_home.home(setup, entered.session, SPRING)).tasks
-            assert task.points[0].points is not None
         case "task's gradings":
             assert await gradings.list(setup, observer, entered.task)
         case "queue depth":
@@ -353,8 +350,7 @@ async def test_each_reader_of_a_failure_starts_its_retry_by_itself(
 ) -> None:
     await write_contest(
         acme.fake,
-        RUNNING.format(visibility="everyone")
-        + "    worth: 100\nleaderboards:\n  - {name: All, who: contestants}\n",
+        RUNNING.format(visibility="everyone") + "    worth: 100\n",
     )
     await _submit(setup, acme, entered)
     (first,) = await _rows(setup)

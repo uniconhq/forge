@@ -7,9 +7,11 @@ back as.
 
 from forge.domain.regrades import (
     BoardDiff,
+    CellDiff,
     ChangeKind,
     Compared,
     RegradeCause,
+    RowDiff,
     Side,
     ValueChange,
     VerdictChange,
@@ -26,9 +28,11 @@ from forge.services.regrades import (
 
 __all__ = [
     "BoardDiff",
+    "CellDiff",
     "ChangeKind",
     "Compared",
     "RegradeCause",
+    "RowDiff",
     "RunSummary",
     "Side",
     "SubmissionChange",

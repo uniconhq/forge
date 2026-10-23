@@ -602,7 +602,8 @@ class EntrantChanged(ServiceError):
 
 
 class MarksOff(ServiceError):
-    """No board with `select: marked` covers the task, so it takes no marks."""
+    """No board reads which of the task's submissions an entrant marks, so it
+    takes no marks."""
 
     code = "marks_off"
 

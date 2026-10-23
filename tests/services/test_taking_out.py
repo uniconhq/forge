@@ -7,12 +7,11 @@ leaderboard, its submissions staying for the organisers, until it is put
 back and scores as before. The request names what the organiser
 confirmed, and is refused when it would now do the other; a removal waits
 for a submit in flight, so it never deletes a submission. A leaderboard
-naming a task keeps it from being removed. A save that writes `withdrawn`
+reading a task's results keeps it from being removed. A save that writes `withdrawn`
 by hand reads the same way.
 """
 
 import asyncio
-from fractions import Fraction
 from typing import Any
 
 import pytest
@@ -32,10 +31,8 @@ from forge.domain.ids import TaskId
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.domain.submissions import SubmittedInput
-from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import (
-    boards,
     contest_home,
     files,
     names,
@@ -58,7 +55,7 @@ from tests.services.conftest import (
 
 PRODUCT = TaskId("acme/spring/product")
 MAX = TaskId("acme/spring/max")
-STANDINGS = "leaderboards:\n  - {name: Standings, who: everyone}\n"
+STANDINGS = "leaderboards:\n  standings: {title: Standings, audience: {who: everyone}}\n"
 PASSED: dict[str, Any] = {
     "schema_version": 5,
     "stopped": None,
@@ -227,12 +224,11 @@ async def test_a_task_with_a_submission_is_withdrawn_and_hidden_from_entrants_un
     await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
     await _passed(setup, entered.task)
 
-    async def seen() -> tuple[list[str], Fraction | None]:
+    async def seen() -> list[str]:
         home = await contest_home.home(setup, entered.session, SPRING)
-        (board,) = await boards.seen(setup, entered.session, SPRING)
-        return [task.label for task in home.tasks], board.rows[0].keys[0]
+        return [task.label for task in home.tasks]
 
-    assert await seen() == (["A", "B", "C"], Fraction(100))
+    assert await seen() == ["A", "B", "C"]
     with pytest.raises(TakeOutChanged) as changed:
         await take_out(setup, manager, entered.task, TakeOut.REMOVE)
     assert changed.value.extra == {"submissions": 1, "take_out": "withdraw"}
@@ -245,8 +241,8 @@ async def test_a_task_with_a_submission_is_withdrawn_and_hidden_from_entrants_un
 
     assert done is TakeOut.WITHDRAW
     assert b"  - id: sum\n    withdrawn: true\n  - id: product\n" in await _settings(acme)
-    # B and C keep their letters; sum's points leave the board.
-    assert await seen() == (["B", "C"], Fraction(0))
+    # B and C keep their letters.
+    assert await seen() == ["B", "C"]
     with pytest.raises(NotFound):
         await contest_home.task(setup, entered.session, entered.task)
     with pytest.raises(NotFound):
@@ -265,8 +261,6 @@ async def test_a_task_with_a_submission_is_withdrawn_and_hidden_from_entrants_un
         ("product", "B", False, 0, TakeOut.REMOVE),
         ("max", "C", False, 0, TakeOut.REMOVE),
     ]
-    organised = await boards.organised(setup, manager, SPRING)
-    assert [task.name for task in organised[0].final.tasks] == ["product", "max"]
     # Withdrawing again changes nothing.
     assert await take_out(setup, manager, entered.task, TakeOut.WITHDRAW) is TakeOut.WITHDRAW
 
@@ -274,7 +268,7 @@ async def test_a_task_with_a_submission_is_withdrawn_and_hidden_from_entrants_un
 
     assert returned.notes == ()
     assert b"withdrawn" not in await _settings(acme)
-    assert await seen() == (["A", "B", "C"], Fraction(100))
+    assert await seen() == ["A", "B", "C"]
     assert len(await submissions.mine(setup, entered.session, entered.task)) == 1
 
 
@@ -344,10 +338,13 @@ async def test_a_task_the_settings_do_not_list_is_not_withdrawn_and_says_why(
     )
 
 
-async def test_a_task_a_leaderboard_names_is_not_removed_but_may_be_withdrawn(
+async def test_a_task_a_leaderboard_reads_is_not_removed_but_may_be_withdrawn(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    named = "leaderboards:\n  - {name: Practice, who: everyone, tasks: [product]}\n"
+    named = (
+        "leaderboards:\n  practice:\n    title: Practice\n    columns:\n"
+        "      p: {value: [{block: latest, from: {results: product}}, total]}\n"
+    )
     await three(setup, acme, named)
     manager = await _manager(setup, acme)
     before = await _settings(acme)
@@ -356,8 +353,8 @@ async def test_a_task_a_leaderboard_names_is_not_removed_but_may_be_withdrawn(
         await take_out(setup, manager, PRODUCT, TakeOut.REMOVE)
 
     assert refused.value.detail == (
-        "The leaderboard Practice counts product by name. Take product out of that leaderboard "
-        "first, then remove the task."
+        "The leaderboard Practice reads the results of product. Take product out of that "
+        "leaderboard's columns first, then remove the task."
     )
     assert await _settings(acme) == before
     assert ("acme", "spring.product.task") in acme.fake.state.repos
@@ -405,14 +402,12 @@ async def test_a_removed_tasks_name_leaves_every_extension_that_named_it(
 async def test_a_save_that_writes_withdrawn_by_hand_reads_as_the_action_does(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
-    """A withdrawn task is in no leaderboard's numbers and asks nothing of
-    one: a board ranking a value sum does not report saves while sum is
-    withdrawn, and putting sum back by hand is refused there."""
+    """A task withdrawn by hand leaves the entrants' read of the contest as
+    the action does, and is put back the same way."""
     await three(setup, acme)
     manager = await _manager(setup, acme)
     await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
-    by_time = "leaderboards:\n  - {name: Fastest, who: everyone, tasks: [sum], order: [speed]}\n"
-    withdrawn = contest(by_time).replace("  - id: sum\n", "  - id: sum\n    withdrawn: true\n")
+    withdrawn = contest().replace("  - id: sum\n", "  - id: sum\n    withdrawn: true\n")
     current = await acme.fake.content.read_file(PLATFORM, SPRING, "contest.yaml")
 
     written = await files.write(
@@ -422,6 +417,5 @@ async def test_a_save_that_writes_withdrawn_by_hand_reads_as_the_action_does(
     assert isinstance(written, files.Written) and written.notes == ()
     home = await contest_home.home(setup, entered.session, SPRING)
     assert [task.name for task in home.tasks] == ["product", "max"]
-    with pytest.raises(InvalidDefinition) as refused:
-        await put_back(setup, manager, entered.task)
-    assert [problem["path"] for problem in refused.value.errors] == ["leaderboards[0].order[0]"]
+    assert (await put_back(setup, manager, entered.task)).notes == ()
+    assert b"withdrawn" not in await _settings(acme)

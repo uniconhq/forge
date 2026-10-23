@@ -431,6 +431,13 @@ def _apply(name: str, got: Sequence[_Got]) -> _Got:
     if any(number is None for number in numbers):
         return read
     given = [number for number in numbers if number is not None]
+    return _Got(over_numbers(name, given)).reading(read)
+
+
+def over_numbers(name: str, given: Sequence[Fraction]) -> Fraction | None:
+    """The block `name` over numbers, every input a number: missing when
+    it divides by zero or passes `MOST_BITS`. A board's blocks over numbers
+    are worked out by it too."""
     first = given[0]
     found: Fraction | None
     match name:
@@ -474,7 +481,7 @@ def _apply(name: str, got: Sequence[_Got]) -> _Got:
             found = Fraction(math.ceil(first))
         case _:
             raise ValueError(f"{name} is not a block over numbers")
-    return _Got(_kept(found)).reading(read)
+    return _kept(found)
 
 
 def _summed(numbers: Iterable[Fraction]) -> Fraction | None:
@@ -596,11 +603,13 @@ def _value_leaves(tree: object) -> set[str]:
 
 __all__ = [
     "ACCEPTED",
+    "MOST_BITS",
     "SYSTEM_ERROR",
     "Column",
     "Outcome",
     "RunResult",
     "blocks_in",
     "evaluate",
+    "over_numbers",
     "using",
 ]

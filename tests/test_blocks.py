@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from forge.domain import exact_json
-from forge.domain.blocks.catalogue import CATALOGUE
+from forge.domain.blocks.catalogue import CATALOGUE, Scope
 from forge.domain.blocks.check import MOST_DEPTH, MOST_NODES, Found, check_values, tree_size
 from forge.domain.blocks.evaluate import MOST_BITS, Column, Outcome, RunResult, evaluate, using
 from forge.domain.blocks.numbers import Better, decimal_of, exact, written
@@ -150,8 +150,14 @@ EACH_BLOCK: list[tuple[str, object, Fraction]] = [
 ]
 
 
-def test_every_block_has_an_evaluation_test() -> None:
-    assert {name for name, _, _ in EACH_BLOCK} == set(CATALOGUE)
+def test_every_block_a_task_may_use_has_an_evaluation_test() -> None:
+    for_tasks = {
+        name
+        for name, block in CATALOGUE.items()
+        if any(form.scope is not Scope.BOARD for form in block.forms)
+    }
+
+    assert {name for name, _, _ in EACH_BLOCK} == for_tasks
 
 
 @pytest.mark.parametrize(

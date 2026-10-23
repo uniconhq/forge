@@ -15,11 +15,10 @@ or when it moves a task's timeline behind what rows already did, puts a
 worth or a due on a task that gives no points, or opens the contest while a
 task it lists is not published or its statement is not written
 (`timelines.check_contest`),
-or when a board asks what a covered task's latest publication does not give
-or a task's marks fall below what a row holds (`boards.check_contest`),
-and a manager's change to one of its admin-only keys is refused naming each.
-One that is written answers with what C4 reports of its boards beside the
-version, as a task's save answers T9's (`Written`). A
+or when a board breaks the board check or a task's marks fall below what a
+row holds (`boards.check_contest`), and a manager's change to one of its
+admin-only keys is refused naming each. One that is written answers with
+what the check notes beside the version (`Written`). A
 write to a task is a save of the task, which publishes it when it is valid
 (`publications.save`). A rollback is not an undo: the file as it was at the
 chosen version is written back as a new change through the same write, so a

@@ -49,6 +49,8 @@ from sqlalchemy import select
 
 from forge.db.tables import Grading, Regrade
 from forge.db.tables.gradings import FRONT
+from forge.domain.blocks.board_check import BoardsCheck
+from forge.domain.board_checks import boards_of
 from forge.domain.definitions import TASK_FILE, ContestDefinition, parse_task
 from forge.domain.errors import NotFound, PortError
 from forge.domain.grading import UNFINISHED, GradingStatus
@@ -63,6 +65,7 @@ from forge.domain.regrades import (
     Side,
     ValueChange,
     VerdictChange,
+    board_diff,
     change_of,
     counted,
     counted_under,
@@ -74,7 +77,16 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import entrants, entries, gradings, names, published, scores, timelines
+from forge.services import (
+    boards,
+    entrants,
+    entries,
+    gradings,
+    names,
+    published,
+    scores,
+    timelines,
+)
 from forge.services.access import Organiser, require
 from forge.services.gradings import FeedEntry, GradingRecord
 
@@ -409,7 +421,7 @@ async def run_summary(
             )
         )
     boards = (
-        await _board_diffs(ctx, row, settings)
+        await _board_diffs(ctx, contest, settings, row, then or now, now)
         if holds(organiser.grants, contest_scope(contest), Role.MANAGER)
         else None
     )
@@ -449,12 +461,42 @@ async def _as_of(
 
 
 async def _board_diffs(
-    ctx: Context, regrade: Regrade, settings: ContestDefinition
+    ctx: Context,
+    contest: ContestId,
+    settings: ContestDefinition,
+    regrade: Regrade,
+    then: published.PublishedTask,
+    now: published.PublishedTask,
 ) -> tuple[BoardDiff, ...]:
-    """Each board that reads the regrade's task, before and after. Phase
-    5.5 works a board's rows out from a run task's values; until then no
-    board reads one, so there is none."""
-    return ()
+    """Each board that reads the regrade's task, directly or through
+    another board's column, worked out for staff before the regrade and
+    after (`boards.regrade_sides`), in the file's order: `then` the task as
+    it scored before, the live publication when that one no longer reads
+    (stage 5 section 6, item 71), and `now` as the regrade grades it."""
+    keys = _reading(boards_of(settings), now.name)
+    if not keys:
+        return ()
+    before_side, after_side = boards.regrade_sides(regrade.id, now.id, then, now)
+    before = await boards.worked_out(ctx, contest, settings, keys, before_side)
+    after = await boards.worked_out(ctx, contest, settings, keys, after_side)
+    return tuple(board_diff(was, now_) for was, now_ in zip(before, after, strict=True))
+
+
+def _reading(checked: BoardsCheck, task: str) -> set[str]:
+    """The boards reading `task`'s results, directly or through a column of
+    another board that does."""
+    found = set(checked.reading(task))
+    grown = True
+    while grown:
+        more = {
+            board
+            for board, columns in checked.shapes.items()
+            if board not in found
+            and any(other in found for shape in columns.values() for other, _ in shape.columns)
+        }
+        found |= more
+        grown = bool(more)
+    return found
 
 
 async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition | None:

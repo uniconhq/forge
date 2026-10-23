@@ -1,674 +1,162 @@
-"""A board, one ranking over a fixed scope, computed on read from the scored
-gradings (TASK-FORMAT.md sections 1.1, 1.7 and 3.6), never stored, and the
-same for every viewer: what differs between viewers is only which rows they
-are given, and between moments only what is shown.
+"""A leaderboard as it is read (SIMPLER-CORE.md 10, the leaderboards note's
+5.5 and 5.7): its columns' headers and its rows, each row's cells worked
+out from its own results (`forge.domain.blocks.board_evaluate`), ranked by
+the board's `sort`, never stored.
 
-- **Scope**, from each group's declared `show`: `all`, every group; `live`,
-  `always` and `verdict`; `after_close`, `after_close`. A cell counts, for
-  points, the scope's groups whose verdict is shown, and for values the
-  tests of the scope's groups whose tests are shown.
-- **Which submission counts** (`select`): `best`, the candidate ranking the
-  row highest under `order`, key by key, a missing value worse than any,
-  the earliest of equals; `best_per_group`, each group's most points over
-  the candidates, the earliest reaching it counted for that group;
-  `marked`, the best of the marked candidates, or, with none, the one
-  `best` picks over what the `live` scope showed before the reveal.
-- **Keys** (`order`): `points`, higher is better; a value, its own
-  direction; `penalty`, whole minutes from the contest's start to the
-  counted submission (the latest of them under `best_per_group`), plus
-  `per_attempt` for each earlier attempt that is not itself counted.
-- **Rows**: a cell counts when its counted submission earned something on
-  the first key, points above 0 or a value present; a row's number on a
-  key is the sum over its counting cells, without a value when a counting
-  cell lacks one, and with 0 points and nothing else when no cell counts.
-  Rows are ordered key by key, a row without a value after every row with
-  one; rows equal on every key share a rank (1, 2, 2, 4) and are listed by
-  name. A cell's `attempts` is what `penalty` charges for, or every attempt
-  when it does not count.
-
-A task not yet released is not on the board's view; organisers' `final`
-counts every task as revealed. A board whose scope shows nothing yet is
-given as the time it is shown from. `rows` and the viewer's own row only
-cut what is handed over (`for_viewer`).
+- **A header** says what a displayed column is, the same for every row:
+  its name, the decimal places it is shown to, the least and most it can
+  give where both are known (stage 5 section 6, item 5), and the
+  self-reported values it reads, each by task (item 7).
+- **A cell** is the column's number, missing when it has none, with the
+  submissions it counted and those it left out as still waiting, each by
+  task and number.
+- **Ranking.** Rows are ordered key by key, `desc` the highest first and
+  `asc` the lowest, a missing key after every row with one; rows equal on
+  every key share a place, 1, 1, 3 (guarantee 7), and are listed by name.
+  A board with no `sort` gives no places.
 """
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
-from datetime import datetime
-from enum import IntEnum, StrEnum
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from fractions import Fraction
 
-from forge.domain.blocks.numbers import Better
-from forge.domain.definitions import Leaderboard, Over, Penalty, Select, Show, Who
-from forge.domain.meanings import ValueMeaning
+from forge.domain.blocks.board_evaluate import Cell
+from forge.domain.blocks.bounds import Bounds
+from forge.domain.definitions import BoardAudience, Leaderboard
 from forge.domain.names import WorkspaceOwner
-from forge.domain.scoring import (
-    BEFORE_REVEAL,
-    EVERYTHING,
-    ZERO,
-    Points,
-    Scored,
-    Seen,
-)
-
-POINTS = "points"
-PENALTY = "penalty"
-
-
-class State(StrEnum):
-    """Where one submission stands on a board: still `grading` to its row,
-    pending (a delayed one, in `system_error`, among them); `void`, no
-    attempt, cancelled or
-    stopped by a step that is not sealed; an `attempt` a sealed step
-    stopped; or a `candidate`, an attempt whose run was not stopped.
-    """
-
-    GRADING = "grading"
-    VOID = "void"
-    ATTEMPT = "attempt"
-    CANDIDATE = "candidate"
 
 
 @dataclass(frozen=True, slots=True)
-class Entry:
-    """One of a row's submissions to a task: its number, when it was taken,
-    where it stands, its scored grading when it is a candidate or an
-    attempt a sealed step stopped (which only `task_points` reads), and
-    whether the row marked it.
-    """
+class Header:
+    """A displayed column: its name, its decimal places, none when the
+    board gives none, its least and most, both none unless both are known,
+    and each self-reported value it reads, by task."""
 
+    name: str
+    places: int | None = None
+    at_least: Fraction | None = None
+    at_most: Fraction | None = None
+    self_reported: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class Counted:
+    """A submission a cell counted or left out, by its task and number."""
+
+    task: str
     number: int
-    at: datetime
-    state: State
-    scored: Scored | None = None
-    marked: bool = False
 
 
 @dataclass(frozen=True, slots=True)
-class Column:
-    """A covered task: its name, label, worth, every group of its latest
-    publication with its declared `show`, when it is released and reveals,
-    and whether those have passed.
-    """
+class BoardCell:
+    """One displayed column of a row: its number, none when missing; the
+    submissions it counted; and those it left out as still waiting."""
 
-    name: str
-    label: str
-    worth: Fraction | None
-    shows: Mapping[str, Show]
-    release_at: datetime
-    released: bool
-    reveal_at: datetime
-    revealed: bool
+    column: str
+    number: Fraction | None
+    counted: tuple[Counted, ...] = ()
+    waiting: tuple[Counted, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
-class Row:
-    """An entrant, by whose workspace it is, the name it is shown under, and
-    its submissions to each covered task, by task name.
-    """
+class BoardRow:
+    """One entrant's row: who, its name as shown, its place, none on a
+    board with no `sort`, and its displayed cells in order."""
 
     owner: WorkspaceOwner
     name: str
-    entries: Mapping[str, tuple[Entry, ...]]
+    place: int | None
+    cells: tuple[BoardCell, ...]
+
+    def cell(self, column: str) -> BoardCell | None:
+        return next((each for each in self.cells if each.column == column), None)
 
 
 @dataclass(frozen=True, slots=True)
-class Key:
-    """One key rows are compared on: what it ranks by, which way is better,
-    none for a value no covered task gives a direction, the minutes a
-    `penalty` charges per attempt, and, on a value, the title and unit its
-    column is named by, none where no covered task gives them.
-    """
+class Board:
+    """A leaderboard as read: its key, its title, who it is for, its
+    displayed columns' headers, the keys it sorts by, and its rows in
+    order."""
 
-    by: str
-    better: Better | None
-    per_attempt: int | None = None
-    title: str | None = None
-    unit: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class Cell:
-    """A row's cell on a task: whether it counts, its number on each key it
-    has one for, while it counts, its attempts, and, given only in the
-    viewer's own row, how many of its submissions are still grading and
-    which it counts.
-    """
-
-    counting: bool
-    numbers: Mapping[str, Fraction]
-    attempts: int
-    grading: int | None
-    submissions: tuple[int, ...] | None
+    key: str
+    title: str
+    audience: BoardAudience
+    headers: tuple[Header, ...]
+    sort: tuple[tuple[str, str], ...]
+    rows: tuple[BoardRow, ...]
 
 
 @dataclass(frozen=True, slots=True)
-class Ranked:
-    """A row on the board: its rank, whose it is, its name, its number on
-    each key, none where it has none, and its cell on each task.
-    """
+class Unranked:
+    """One row before ranking: who, its name, and each of the board's
+    columns as worked out for it."""
 
-    rank: int
     owner: WorkspaceOwner
     name: str
-    keys: tuple[Fraction | None, ...]
     cells: Mapping[str, Cell]
 
 
-@dataclass(frozen=True, slots=True)
-class NotInView:
-    """What of a task is in the board's scope and not yet in its numbers:
-    the groups whose verdict is not shown, and, on a board ranking a value,
-    the `verdict` groups whose tests are not shown, with when they join.
-    """
-
-    task: str
-    groups: tuple[str, ...]
-    tests_of: tuple[str, ...]
-    shown_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class Standings:
-    """A board at a moment: its keys, the tasks on its view, what is not in
-    view yet, its rows in rank order, and, when its scope shows nothing yet,
-    the time it is shown from, with no rows.
-    """
-
-    board: Leaderboard
-    keys: tuple[Key, ...]
-    tasks: tuple[Column, ...]
-    not_in_view: tuple[NotInView, ...]
-    rows: tuple[Ranked, ...]
-    shown_at: datetime | None = None
-    nothing_shown: bool = False
-
-
-class Audience(IntEnum):
-    """Who is reading a board, among those who may see the contest."""
-
-    EVERYONE = 0
-    CONTESTANTS = 1
-    ORGANISERS = 2
-
-
-LEAST = {Who.EVERYONE: Audience.EVERYONE, Who.CONTESTANTS: Audience.CONTESTANTS}
-
-
-def sees(board: Leaderboard, audience: Audience) -> bool:
-    """Whether `audience` sees the board: a higher one sees every board a
-    lower one sees.
-    """
-    return audience >= LEAST.get(board.who, Audience.ORGANISERS)
-
-
-def in_scope(over: Over) -> Callable[[Show], bool]:
-    """Which declared `show` a board over `over` reads."""
-    if over is Over.LIVE:
-        return lambda show: show is not Show.AFTER_CLOSE
-    if over is Over.AFTER_CLOSE:
-        return lambda show: show is Show.AFTER_CLOSE
-    return lambda show: True
-
-
-def keys_of(
+def headers_of(
+    key: str,
     board: Leaderboard,
-    directions: Mapping[str, Better | None],
-    words: Mapping[str, ValueMeaning] | None = None,
-) -> tuple[Key, ...]:
-    """The board's keys, each value's direction as its covered tasks give it,
-    and its title and unit as `words` give them.
-    """
-    found: list[Key] = []
-    for key in board.order:
-        if isinstance(key, Penalty):
-            found.append(Key(PENALTY, Better.LOWER, key.per_attempt))
-        elif key == PENALTY:
-            found.append(Key(PENALTY, Better.LOWER, 0))
-        elif key == POINTS:
-            found.append(Key(POINTS, Better.HIGHER))
-        else:
-            named = (words or {}).get(key)
-            found.append(
-                Key(
-                    key,
-                    directions.get(key),
-                    title=named.title if named is not None else None,
-                    unit=named.unit if named is not None else None,
-                )
-            )
+    bounds: Mapping[tuple[str, str], Bounds],
+    reported: Mapping[tuple[str, str], tuple[tuple[str, str], ...]],
+) -> tuple[Header, ...]:
+    """The headers of `board`'s displayed columns, in order."""
+    found: list[Header] = []
+    for name, places in board.display:
+        held = bounds.get((key, name))
+        least, most = held if held is not None else (None, None)
+        found.append(Header(name, places, least, most, reported.get((key, name), ())))
     return tuple(found)
 
 
-def ranks_a_value(keys: Sequence[Key]) -> bool:
-    return any(key.by not in (POINTS, PENALTY) for key in keys)
+def ranked(
+    key: str, board: Leaderboard, headers: tuple[Header, ...], rows: Sequence[Unranked]
+) -> Board:
+    """`board` with `rows` in order, each with its place and its displayed
+    cells."""
+    keys = board.sort
 
-
-def rank(
-    board: Leaderboard,
-    keys: tuple[Key, ...],
-    start: datetime,
-    columns: Sequence[Column],
-    rows: Sequence[Row],
-    *,
-    final: bool,
-) -> Standings:
-    """The board as its audience sees it now, or, `final`, as it will read
-    once every task has revealed, with every row.
-    """
-    view = [column for column in columns if final or column.released]
-    seen = {column.name: EVERYTHING if final else Seen(column.revealed) for column in view}
-    scope = in_scope(board.over)
-    first = keys[0]
-    if not final and not any(
-        _shows_some(column, scope, seen[column.name], first) for column in view
-    ):
-        return Standings(
-            board,
-            keys,
-            tuple(view),
-            (),
-            (),
-            shown_at=_first_shown(view, scope, first),
-            nothing_shown=True,
-        )
-    not_in_view = () if final else _not_in_view(view, scope, seen, keys)
-    scored = [
-        (
-            row,
-            {
-                column.name: _cell(
-                    board.select,
-                    keys,
-                    start,
-                    scope,
-                    seen[column.name],
-                    row.entries.get(column.name, ()),
-                )
-                for column in view
-            },
-        )
-        for row in rows
-    ]
-    totals = [(row, cells, _totals(keys, cells.values())) for row, cells in scored]
-    totals.sort(key=lambda found: (_order(keys, found[2]), found[0].name.casefold(), found[0].name))
-    ranked: list[Ranked] = []
-    for index, (row, cells, numbers) in enumerate(totals):
-        tied = ranked and ranked[-1].keys == numbers
-        ranked.append(
-            Ranked(ranked[-1].rank if tied else index + 1, row.owner, row.name, numbers, cells)
-        )
-    return Standings(board, keys, tuple(view), not_in_view, tuple(ranked))
-
-
-def for_viewer(
-    standings: Standings, rows: str | int, own: WorkspaceOwner | None, *, every_row: bool = False
-) -> Standings:
-    """What one viewer is given of the board: the rows `rows` names, and the
-    viewer's own row below them when it is not among them; which submission
-    counts and how many are still grading only in their own row, or, for
-    organisers (`every_row`), in every row and every row given.
-    """
-    if every_row:
-        return standings
-    listed = list(standings.rows)
-    if rows == "own":
-        kept = [row for row in listed if row.owner == own]
-    elif isinstance(rows, int):
-        cutoff = listed[rows - 1].rank if len(listed) >= rows else None
-        kept = [row for row in listed if cutoff is None or row.rank <= cutoff]
-        mine = next((row for row in listed if row.owner == own), None)
-        if mine is not None and mine not in kept:
-            kept.append(mine)
-    else:
-        kept = listed
-    return replace(standings, rows=tuple(row if row.owner == own else _bare(row) for row in kept))
-
-
-def _bare(row: Ranked) -> Ranked:
-    return replace(
-        row,
-        cells={
-            task: replace(cell, grading=None, submissions=None) for task, cell in row.cells.items()
-        },
-    )
-
-
-def _shows_some(column: Column, scope: Callable[[Show], bool], seen: Seen, first: Key) -> bool:
-    """Whether some group of the task in scope shows what the first key
-    reads: its verdict for points, its tests for a value.
-    """
-    reads = seen.verdict if first.by == POINTS else seen.tests
-    return any(scope(show) and reads(show) for show in column.shows.values())
-
-
-def _first_shown(
-    columns: Sequence[Column], scope: Callable[[Show], bool], first: Key
-) -> datetime | None:
-    """When the board's scope first shows something on the tasks of its
-    view: a task's release, for a group shown before its reveal, otherwise
-    its reveal; none while no covered task is released, since a task not
-    yet released is not on the board, nor its times.
-    """
-    reads = BEFORE_REVEAL.verdict if first.by == POINTS else BEFORE_REVEAL.tests
-    times = [
-        column.release_at if reads(show) else column.reveal_at
-        for column in columns
-        for show in column.shows.values()
-        if scope(show)
-    ]
-    return min(times) if times else None
-
-
-def _not_in_view(
-    view: Sequence[Column],
-    scope: Callable[[Show], bool],
-    seen: Mapping[str, Seen],
-    keys: Sequence[Key],
-) -> tuple[NotInView, ...]:
-    found: list[NotInView] = []
-    values = ranks_a_value(keys)
-    for column in view:
-        shown = seen[column.name]
-        groups = tuple(
-            name for name, show in column.shows.items() if scope(show) and not shown.verdict(show)
-        )
-        tests_of = tuple(
-            name
-            for name, show in column.shows.items()
-            if values and scope(show) and shown.verdict(show) and not shown.tests(show)
-        )
-        if groups or tests_of:
-            found.append(NotInView(column.name, groups, tests_of, column.reveal_at))
-    return tuple(found)
-
-
-def _minutes(start: datetime, at: datetime) -> Fraction:
-    return Fraction(max(0, int((at - start).total_seconds() // 60)))
-
-
-def _when(entry: Entry) -> tuple[datetime, int]:
-    return entry.at, entry.number
-
-
-def _order(
-    keys: Sequence[Key], numbers: Sequence[Fraction | None]
-) -> tuple[tuple[int, Fraction], ...]:
-    """A sort key putting the better first on each key in turn, a missing
-    number after every present one.
-    """
-    found: list[tuple[int, Fraction]] = []
-    for key, number in zip(keys, numbers, strict=True):
-        if number is None or key.better is None:
-            found.append((1, ZERO))
-        else:
-            found.append((0, -number if key.better is Better.HIGHER else number))
-    return tuple(found)
-
-
-def _counts(first: Key, number: Fraction | None) -> bool:
-    """Whether a cell earned something on the first key."""
-    if number is None:
-        return False
-    return number > 0 if first.by == POINTS else True
-
-
-def _cell(
-    select: Select,
-    keys: Sequence[Key],
-    start: datetime,
-    scope: Callable[[Show], bool],
-    seen: Seen,
-    entries: Sequence[Entry],
-) -> Cell:
-    ordered = sorted(entries, key=_when)
-    attempts = [entry for entry in ordered if entry.state in (State.ATTEMPT, State.CANDIDATE)]
-    candidates = [
-        entry for entry in ordered if entry.state is State.CANDIDATE and entry.scored is not None
-    ]
-    grading = sum(1 for entry in ordered if entry.state is State.GRADING)
-    if select is Select.BEST_PER_GROUP:
-        return _per_group(keys, start, scope, seen, candidates, attempts, grading)
-
-    def numbers(
-        entry: Entry, reading: Callable[[Show], bool], at: Seen
-    ) -> tuple[Fraction | None, ...]:
-        assert entry.scored is not None
-        earlier = sum(1 for attempt in attempts if _when(attempt) < _when(entry))
-        found: list[Fraction | None] = []
-        for key in keys:
-            if key.by == POINTS:
-                found.append(entry.scored.points(reading, at))
-            elif key.by == PENALTY:
-                found.append(_minutes(start, entry.at) + (key.per_attempt or 0) * earlier)
+    def order(row: Unranked) -> tuple[object, ...]:
+        found: list[object] = []
+        for name, way in keys:
+            number = row.cells[name].number
+            if number is None:
+                found.append((1, Fraction(0)))
             else:
-                found.append(entry.scored.value(key.by, reading, at))
+                found.append((0, -number if way == "desc" else number))
         return tuple(found)
 
-    def best(pool: Sequence[Entry], reading: Callable[[Show], bool], at: Seen) -> Entry | None:
-        if not pool:
-            return None
-        return min(
-            pool, key=lambda entry: (_order(keys, numbers(entry, reading, at)), _when(entry))
-        )
+    listed = sorted(rows, key=lambda row: (order(row), row.name, str(row.owner)))
+    shown: list[BoardRow] = []
+    place = 0
+    last: tuple[object, ...] | None = None
+    for index, row in enumerate(listed, start=1):
+        current = order(row)
+        if current != last:
+            place, last = index, current
+        cells = tuple(_cell(name, row.cells[name]) for name, _ in board.display)
+        shown.append(BoardRow(row.owner, row.name, place if keys else None, cells))
+    return Board(key, board.title_or(key), board.audience, headers, keys, tuple(shown))
 
-    if select is Select.MARKED:
-        marked = [entry for entry in candidates if entry.marked]
-        picked = (
-            best(marked, scope, seen)
-            if marked
-            else best(candidates, in_scope(Over.LIVE), BEFORE_REVEAL)
-        )
-    else:
-        picked = best(candidates, scope, seen)
-    if picked is None:
-        return Cell(False, {}, len(attempts), grading, ())
-    got = numbers(picked, scope, seen)
-    if not _counts(keys[0], got[0]):
-        return Cell(False, {}, len(attempts), grading, ())
-    before = sum(1 for attempt in attempts if _when(attempt) < _when(picked))
-    return Cell(
-        True,
-        {key.by: number for key, number in zip(keys, got, strict=True) if number is not None},
-        before,
-        grading,
-        (picked.number,),
+
+def _cell(name: str, cell: Cell) -> BoardCell:
+    return BoardCell(
+        name,
+        cell.number,
+        tuple(Counted(task, number) for task, number in sorted(cell.counted)),
+        tuple(Counted(task, number) for task, number in sorted(cell.waiting)),
     )
 
 
-def task_points(
-    board: Leaderboard,
-    keys: Sequence[Key],
-    start: datetime,
-    column: Column,
-    entries: Sequence[Entry],
-) -> Points | None:
-    """A row's points on one task as `board` counts the task now
-    (TASK-FORMAT.md sections 1.7 and 3.6), read by the same cell as the
-    board's own row (`_cell`): the groups of its scope, the submissions its
-    `select` counts under its `order`, and, of those, the points (`points`
-    on a board ranking it, the counted submission's points on its scope on
-    one that does not), so `shown` counts only the groups whose verdict is
-    shown, 0 while the cell does not count, and none while the board shows
-    nothing of the task yet. `pending` is the most the scope's groups not
-    shown yet could still add to it, until `pending_until`, the task's
-    reveal: each submission read as its own row reads it, a group's points
-    once shown and its most points while not (section 1.7), and of those,
-    the best sum (`best`), the best sum over the marked ones or, with none
-    marked, the one the board counts (`marked`), or each group's most added
-    up (`best_per_group`), less `shown`, so the number once every group is
-    shown lies between the two. A run a sealed step stopped reads, until
-    the reveal, as one whose every group is still hidden, so it counts all
-    its points as pending, as its row reads it, and its stop is not told
-    by this number either. None on a task that gives no points.
-    """
-    if column.worth is None:
-        return None
-    seen = Seen(column.revealed)
-    scope = in_scope(board.over)
-    cell = _cell(board.select, keys, start, scope, seen, entries)
-    counted = _cell_points(cell, scope, seen, entries)
-    within = [
-        (entry, most)
-        for entry in entries
-        if (most := _most(entry, column.revealed, scope)) is not None
-    ]
-    if board.select is Select.MARKED:
-        within = _marked_reach(within, cell.submissions)
-    if board.select is Select.BEST_PER_GROUP:
-        groups = {name for _, most in within for name in most}
-        reach = sum((max(most.get(name, ZERO) for _, most in within) for name in groups), ZERO)
-    else:
-        reach = max((sum(most.values(), ZERO) for _, most in within), default=ZERO)
-    # With nothing of the scope left to show, nothing is to come, though a
-    # board ranking a value may count a submission that earned fewer points;
-    # but a run held back until the reveal is still to come, even on a board
-    # whose own groups are all shown.
-    waiting = _not_in_view([column], scope, {column.name: seen}, keys) or any(
-        entry.state is State.ATTEMPT and not column.revealed for entry in entries
-    )
-    pending = max(reach, counted) - counted if waiting else ZERO
-    shown = counted if _shows_some(column, scope, seen, keys[0]) else None
-    return Points(shown, pending, column.reveal_at if pending else None)
-
-
-def _cell_points(
-    cell: Cell, scope: Callable[[Show], bool], seen: Seen, entries: Sequence[Entry]
-) -> Fraction:
-    """The points a cell counts: its number on `points`, or, on a board that
-    does not rank by points, its counted submission's points on the scope;
-    0 while it does not count.
-    """
-    if not cell.counting:
-        return ZERO
-    if POINTS in cell.numbers:
-        return cell.numbers[POINTS]
-    counted = set(cell.submissions or ())
-    return sum(
-        (
-            entry.scored.points(scope, seen) or ZERO
-            for entry in entries
-            if entry.number in counted and entry.scored is not None
-        ),
-        ZERO,
-    )
-
-
-def _most(
-    entry: Entry, revealed: bool, scope: Callable[[Show], bool]
-) -> dict[str, Fraction] | None:
-    """What each group of a submission in `scope` can still come to as its
-    own row reads it: its points once its verdict is shown, its most points
-    with the late factor while not; none for a submission that counts
-    nothing.
-    """
-    held = entry.state is State.ATTEMPT and not revealed
-    scored = entry.scored
-    if scored is None or not scored.gives_points or not (entry.state is State.CANDIDATE or held):
-        return None
-    at = Seen(revealed, held=held)
-    return {
-        group.group: (group.points or ZERO)
-        if at.verdict(group.show)
-        else (group.max or ZERO) * scored.factor
-        for group in scored.groups
-        if scope(group.show)
-    }
-
-
-def _marked_reach(
-    within: Sequence[tuple[Entry, dict[str, Fraction]]],
-    counted: Sequence[int] | None,
-) -> list[tuple[Entry, dict[str, Fraction]]]:
-    """The submissions a `marked` board can still count: the marked ones,
-    or, with none marked, the one it counts (`counted`, its cell's), with
-    any run held back beside it; while its cell counts none, the one with
-    the most points shown before the reveal.
-    """
-    marked = [(entry, most) for entry, most in within if entry.marked]
-    if marked:
-        return marked
-    if counted:
-        return [
-            (entry, most)
-            for entry, most in within
-            if entry.number in counted or entry.state is State.ATTEMPT
-        ]
-    live = in_scope(Over.LIVE)
-    candidates = [
-        entry for entry, _ in within if entry.state is State.CANDIDATE and entry.scored is not None
-    ]
-    picked = min(
-        candidates,
-        key=lambda entry: (-(_live_points(entry, live)), _when(entry)),
-        default=None,
-    )
-    return [
-        (entry, most) for entry, most in within if entry is picked or entry.state is State.ATTEMPT
-    ]
-
-
-def _live_points(entry: Entry, live: Callable[[Show], bool]) -> Fraction:
-    assert entry.scored is not None
-    return entry.scored.points(live, BEFORE_REVEAL) or ZERO
-
-
-def _per_group(
-    keys: Sequence[Key],
-    start: datetime,
-    scope: Callable[[Show], bool],
-    seen: Seen,
-    candidates: Sequence[Entry],
-    attempts: Sequence[Entry],
-    grading: int,
-) -> Cell:
-    """`best_per_group`: each group's most points over the candidates, the
-    earliest reaching it counted for that group.
-    """
-    best: dict[str, Fraction] = {}
-    counted: dict[str, Entry] = {}
-    gives = False
-    for entry in candidates:
-        assert entry.scored is not None
-        gives = gives or entry.scored.gives_points
-        for group in entry.scored.groups:
-            if not (scope(group.show) and seen.verdict(group.show)) or group.points is None:
-                continue
-            if group.points > best.get(group.group, ZERO):
-                best[group.group] = group.points
-                counted[group.group] = entry
-    points = sum(best.values(), ZERO) if gives else None
-    if not _counts(keys[0], points):
-        return Cell(False, {}, len(attempts), grading, ())
-    assert points is not None
-    chosen = sorted({entry.number: entry for entry in counted.values()}.values(), key=_when)
-    latest = chosen[-1]
-    numbers = {entry.number for entry in chosen}
-    before = sum(
-        1
-        for attempt in attempts
-        if _when(attempt) < _when(latest) and attempt.number not in numbers
-    )
-    found: dict[str, Fraction] = {}
-    for key in keys:
-        if key.by == POINTS:
-            found[POINTS] = points
-        elif key.by == PENALTY:
-            found[PENALTY] = _minutes(start, latest.at) + (key.per_attempt or 0) * before
-    return Cell(True, found, before, grading, tuple(entry.number for entry in chosen))
-
-
-def _totals(keys: Sequence[Key], cells: Iterable[Cell]) -> tuple[Fraction | None, ...]:
-    """A row's number on each key: the sum over its counting cells, none
-    where a counting cell has none; 0 points and nothing else when no cell
-    counts.
-    """
-    counting = [cell for cell in cells if cell.counting]
-    found: list[Fraction | None] = []
-    for key in keys:
-        if not counting:
-            found.append(ZERO if key.by == POINTS else None)
-            continue
-        present = [cell.numbers[key.by] for cell in counting if key.by in cell.numbers]
-        found.append(sum(present, ZERO) if len(present) == len(counting) else None)
-    return tuple(found)
+__all__ = [
+    "Board",
+    "BoardCell",
+    "BoardRow",
+    "Counted",
+    "Header",
+    "Unranked",
+    "headers_of",
+    "ranked",
+]

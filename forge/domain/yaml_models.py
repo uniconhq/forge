@@ -279,6 +279,9 @@ class Model(BaseModel):
 
 ANY = object()
 """A part of a `Retired` path that matches any key or index."""
+ANY_KEY = object()
+"""A part of a `Retired` path that matches any key of a mapping, never a
+list's index."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,7 +313,8 @@ def _at(node: object, pattern: tuple[object, ...], path: Path) -> list[tuple[Pat
         return [(path, node)]
     head, rest = pattern[0], pattern[1:]
     if isinstance(node, dict):
-        keys = [key for key in node if isinstance(key, str | int)] if head is ANY else [head]
+        every = head is ANY or head is ANY_KEY
+        keys = [key for key in node if isinstance(key, str | int)] if every else [head]
         return [
             found
             for key in keys
@@ -568,7 +572,7 @@ def _iso_time(text: str) -> datetime | None:
         return None
 
 
-def _aware_time(value: object) -> datetime:
+def aware_time(value: object) -> datetime:
     if isinstance(value, str):
         read = read_time(value)
         if read is None:
@@ -603,7 +607,7 @@ Number = Annotated[int | Decimal, PlainValidator(_number)]
 """A whole number as an int or a decimal one as its exact `Decimal`, and
 never true or false."""
 
-AwareTime = Annotated[datetime, PlainValidator(_aware_time)]
+AwareTime = Annotated[datetime, PlainValidator(aware_time)]
 """A date and time with a timezone, written as YAML writes one or as ISO 8601 text."""
 
 _SIZE = re.compile(r"^\s*(\d+)\s*(B|KB|MB|GB)\s*$", re.IGNORECASE)

@@ -1,36 +1,39 @@
-"""The contest's boards, computed on every read from the stored gradings, the
-latest publication of each covered task and the contest's settings
-(`forge.domain.boards`), and handed to each viewer as their audience may see
-them (TASK-FORMAT.md sections 1.1 and 3.6).
+"""The contest's leaderboards (SIMPLER-CORE.md 10), worked out on every read
+from each row's results and never stored, and the check a save of the
+contest's settings runs over them.
 
-- **Who reads.** A board's `who` names the least audience that sees it:
-  `everyone`, anyone the contest's visibility admits, a visitor with no
-  session included; `contestants`, the members of approved entrants and
-  organisers;
-  `organisers`, observers of the contest and above. A person holding a role
-  only at one of the contest's tasks reads as a contestant would without a
-  row, since they observe no board.
-- **One ranking.** Every viewer of a board sees the same rows in the same
-  order: the board's `rows` only cuts which they are given, with the
-  viewer's own row below the top `n`; which submission a cell counts and
-  how many are still grading are given in the viewer's own row only.
-- **Organisers** read every board as `now`, exactly what its audience sees,
-  every row given, and `final`, as it will read once every task has
-  revealed; picking a row gives each board it sees, `now` as it sees it.
-  Beside them, what the boards ask of the covered tasks that does not hold
-  (C4), and each board ranking `points` that counts nothing from a task.
-- **An archived contest** is read by those who could read it published,
-  and by the members of its approved entrants.
+- **Who reads.** Until stage 5's phase 5.6 decides who sees what, a board
+  is read by staff alone, an observer of the contest or above: every
+  board the check reads, every row and every displayed cell, with no hold.
+  Anyone else, a visitor among them, reads no board, so nothing is shown
+  wider than a board's `audience` will let it be.
+- **A row** is an approved entrant (`timelines.rows`), named as its
+  entrant is shown. Its results for a task are its submissions to it,
+  oldest first, each by the attempt of it that counts (`scores.usable`):
+  one cancelled or ended over the limit with no result is left out, and
+  one still grading has its values and `compiled` waiting. Each value is
+  worked out by the shared scoring (`scores.run_scored`), staff reading
+  `organised`, every value; any other reader is given `whole`, which
+  leaves out each value reading an entered mark (stage 5 section 6, item
+  45), so a board never shows more than the task's own page.
+- **Facts:** `attempt` counts the row's submissions to the task that are
+  read, 1 the oldest; `seconds` and `seconds_late` are from the contest's
+  start and the row's due on the task, its extension included; `marked`
+  is 1 for a submission the row marked; `compiled` is the grading's.
+- **Tasks.** A board reads a run task's results; a task graded test by
+  test, a withdrawn one, or one with no publication gives none (item 70).
+- **A regrade's board diff** works the boards out twice, the regraded
+  task's submissions read once by the attempts before the regrade and
+  once by its own (`Side`).
 
-A row is an approved entrant: the rows a contest's reveal waits for
-(`timelines.rows`). Each row is named as its entrant is shown: its own
-name, or its member's username when it has none.
+A save of the contest's settings is checked by `check_contest`: each board
+against the catalogue (`board_checks`), and a task's marks not lowered
+below the marks a row holds on it.
 """
 
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from fractions import Fraction
 
 from sqlalchemy import select
@@ -38,49 +41,34 @@ from sqlalchemy import select
 from forge.db.tables import Entrant, Grading
 from forge.db.tables.gradings import FRONT
 from forge.domain import release as rules
-from forge.domain.blocks.numbers import Better, exact
-from forge.domain.board_checks import (
-    Breach,
-    Covered,
-    breaches,
-    counts_nothing,
-    counts_nothing_message,
-    covered,
-    covered_tasks,
-    group_max,
-)
-from forge.domain.boards import (
-    Audience,
-    Column,
-    Entry,
-    Row,
-    Standings,
-    State,
-    for_viewer,
-    in_scope,
-    keys_of,
-    rank,
-    sees,
-    task_points,
-)
-from forge.domain.definitions import ContestDefinition, Leaderboard, Select
+from forge.domain.blocks.board_check import BoardsCheck
+from forge.domain.blocks.board_evaluate import Submitted, work_out_row
+from forge.domain.blocks.bounds import Bounds, column_bounds, self_reported_parts, value_bounds
+from forge.domain.blocks.catalogue import ALL
+from forge.domain.blocks.evaluate import RunResult
+from forge.domain.board_checks import boards_of, marks_of
+from forge.domain.board_checks import check_contest as check_boards
+from forge.domain.boards import Board, Unranked, headers_of, ranked
+from forge.domain.definitions import ContestDefinition
 from forge.domain.definitions import State as ContestState
 from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import ContestId, PublicationId, TaskId, WorkspaceId
-from forge.domain.meanings import ValueMeaning
+from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
-from forge.domain.release import Extension, reveal_of
+from forge.domain.release import Extension, due_of
 from forge.domain.roles import Role, contest_scope, holds
-from forge.domain.scoring import ZERO, Points
+from forge.domain.run_results import facts_of
+from forge.domain.run_task import holds as run_holds
+from forge.domain.scoring import State
 from forge.domain.sessions import Session
-from forge.domain.yaml_models import Problem
+from forge.domain.yaml_models import Problem, path_text
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
     entrants,
+    entries,
     gradings,
     marks,
     names,
@@ -89,163 +77,213 @@ from forge.services import (
     scores,
     timelines,
 )
-from forge.services.access import Organiser, require
 from forge.services.published import PublishedTask
 
 log = get_logger(__name__)
 
-NO_SUCH_ROW = "There is no such entrant on this contest's leaderboards."
-
 
 @dataclass(frozen=True, slots=True)
-class OrganisedBoard:
-    """A board as organisers read it: `now`, every row, or as the picked row
-    sees it; `final`; and what it asks of its tasks that does not hold.
-    """
+class Side:
+    """How a regrade's board diff reads its task on one side: the task as
+    it scores there, and the attempts of one submission it reads."""
 
-    now: Standings
-    final: Standings
-    notes: tuple[str, ...]
+    task: TaskId
+    current: PublishedTask
+    attempts: Callable[[Sequence[Grading]], Sequence[Grading]]
 
 
 @action
 async def seen(
     ctx: Context, session: Session | None, contest: ContestId, board: str | None = None
-) -> tuple[Standings, ...]:
-    """Every board of the contest the reader's audience sees, in the order
-    the file gives, each as they are given it, or only the one named
-    `board`. A visitor reads with no session. `NotFound` for a contest the
-    reader may not see.
+) -> tuple[Board, ...]:
+    """Every board of the contest the reader reads, in the file's order, or
+    only the one keyed `board`: staff read each board the check reads, and
+    anyone else none until phase 5.6. A visitor reads with no session.
+    `NotFound` for a contest the reader may not see.
     """
-    settings, audience, own = await _reader(ctx, session, contest)
-    boards = [
-        each
-        for each in settings.leaderboards
-        if sees(each, audience) and (board is None or each.name == board)
-    ]
-    if not boards:
+    settings, staff = await _reader(ctx, session, contest)
+    if not staff:
         return ()
-    read = await _read(ctx, contest, settings, await _covered_tasks(ctx, contest, settings, boards))
-    every_row = audience is Audience.ORGANISERS
-    return tuple(
-        for_viewer(standings, standings.board.rows, own, every_row=every_row)
-        for standings in _ranked(settings, boards, read, final=False)
-    )
+    keys = [key for key in settings.leaderboards if board is None or key == board]
+    return await worked_out(ctx, contest, settings, keys)
 
 
-@action
-async def organised(
-    ctx: Context, organiser: Organiser, contest: ContestId, row: WorkspaceOwner | None = None
-) -> tuple[OrganisedBoard, ...]:
-    """Every board of the contest as `now` and `final`, every row given, or
-    each board `row` sees, `now` as it sees it. Needs the observer role at
-    the contest; `NotFound` for a `row` that is not one of the contest's.
-    """
-    require(organiser, contest_scope(contest), Role.OBSERVER)
-    settings = await published.contest(ctx, contest)
-    boards = [
-        board for board in settings.leaderboards if row is None or sees(board, Audience.CONTESTANTS)
-    ]
-    if row is not None and row not in await timelines.rows(ctx, contest):
-        raise NotFound(NO_SUCH_ROW)
-    if not boards:
-        return ()
-    tasks = await _covered_tasks(ctx, contest, settings, boards)
-    read = await _read(ctx, contest, settings, tasks)
-    now = _ranked(settings, boards, read, final=False)
-    final = _ranked(settings, boards, read, final=True)
-    shapes = {task.name: _covered(task) for task in tasks}
-    found: list[OrganisedBoard] = []
-    for board, current, last in zip(boards, now, final, strict=True):
-        if row is not None:
-            current = for_viewer(current, board.rows, row)
-        found.append(OrganisedBoard(current, last, tuple(_notes(settings, board, shapes))))
-    return tuple(found)
-
-
-@dataclass(frozen=True, slots=True)
-class BoardPoints:
-    """A row's points on a task as one board counts them: the board's name,
-    whether it covers the task, and, when it does and the task gives
-    points, the points now (`task_points`) and the most the board can
-    count from the task, its scope's groups' most points; none otherwise.
-    """
-
-    board: str
-    covers: bool
-    points: Points | None = None
-    most: Fraction | None = None
-
-
-def entrants_boards(settings: ContestDefinition) -> tuple[Leaderboard, ...]:
-    """The boards a member of an approved entrant sees, in the file's order."""
-    return tuple(board for board in settings.leaderboards if sees(board, Audience.CONTESTANTS))
-
-
-async def own_points(
+async def worked_out(
     ctx: Context,
     contest: ContestId,
     settings: ContestDefinition,
-    tasks: Sequence[PublishedTask],
-    owner: WorkspaceOwner,
-) -> dict[str, tuple[BoardPoints, ...]]:
-    """Each of `tasks`' points for the row `owner`, by task name, one for
-    each board an entrant sees (`entrants_boards`), in its order, as that
-    board counts the task now (`task_points`): its scope, the submissions
-    its `select` counts under its `order`, read as every board reads them
-    (`_entries`), so each number agrees with its board and holds back what
-    it holds back, a group not shown yet counting only as pending until
-    the task's reveal. A board that does not cover the task says so; a
-    task the contest does not list has no points on any board.
-    """
-    seen = entrants_boards(settings)
-    extensions = await timelines.of_owners(ctx, contest, await timelines.rows(ctx, contest))
-    extension = (
-        extensions[owner] if owner in extensions else await timelines.of_owner(ctx, contest, owner)
-    )
-    listed = [task for task in tasks if task.entry is not None]
-    entries = (await _entries(ctx, contest, settings, listed, [owner], {owner: extension})).get(
-        owner, {}
-    )
-    found: dict[str, tuple[BoardPoints, ...]] = {
-        task.name: tuple(BoardPoints(board.name, board.covers(task.name)) for board in seen)
-        for task in tasks
-    }
-    for task in listed:
-        column = _column(ctx, settings, task, list(extensions.values()))
-        mosts = (
-            group_max(task.definition.test_groups, column.worth) if column.worth is not None else {}
+    keys: Collection[str],
+    side: Side | None = None,
+) -> tuple[Board, ...]:
+    """The boards `keys` of those the check reads, in the file's order, as
+    staff read them: every row, every value, no hold; with `side`, its task
+    read as it says."""
+    checked = boards_of(settings)
+    wanted = [key for key in settings.leaderboards if key in keys and key in checked.readable]
+    if not wanted:
+        return ()
+    read = _tasks_read(checked)
+    tasks = [
+        task
+        for task in await published.tasks(ctx, contest, settings)
+        if task.name in read
+        and task.entry is not None
+        and task.definition.scoring is not None
+        and not rules.withdrawn(settings, task.name)
+    ]
+    if side is not None:
+        tasks = [side.current if task.id == side.task else task for task in tasks]
+    owners = await timelines.rows(ctx, contest)
+    extensions = await timelines.of_owners(ctx, contest, owners)
+    shown = await _names(ctx, owners)
+    marked = await marks.of_tasks(ctx, [task.id for task in tasks])
+    results: dict[WorkspaceOwner, dict[str, list[Submitted]]] = {owner: {} for owner in owners}
+    trees: dict[str, Mapping[str, object]] = {}
+    bounds: dict[str, Mapping[str, Bounds]] = {}
+    reported: dict[str, frozenset[str]] = {}
+    for task in tasks:
+        scoring = task.definition.scoring
+        assert scoring is not None
+        held = await published.runs_held(ctx, task)
+        trees[task.name] = scoring.values
+        groups = {ALL: [RunResult(run.id, "", run.key) for run in held.runs]}
+        for name, picked in scoring.groups.items():
+            groups[name] = [
+                RunResult(run.id, "", run.key) for run in held.runs if run_holds(picked, run.key)
+            ]
+        bounds[task.name] = value_bounds(scoring.values, groups, held.columns)
+        reported[task.name] = held.self_reported
+        attempts = side.attempts if side is not None and side.task == task.id else None
+        found = await _results(
+            ctx, contest, settings, task, owners, extensions, marked, organised=True, pick=attempts
         )
-        counted: list[BoardPoints] = []
-        for board in seen:
-            if not board.covers(task.name):
-                counted.append(BoardPoints(board.name, False))
-                continue
-            covering = [each for each in listed if board.covers(each.name)]
-            keys = keys_of(board, _directions(covering))
-            points = task_points(board, keys, settings.start, column, entries.get(task.name, ()))
-            scope = in_scope(board.over)
-            most = sum(
-                (
-                    most
-                    for name, most in mosts.items()
-                    if scope(task.definition.test_groups[name].shown)
-                ),
-                ZERO,
+        for owner, listed in found.items():
+            results[owner][task.name] = listed
+    most = {task.name: task.definition.submissions.max for task in tasks}
+    columns = column_bounds(settings.leaderboards, checked, bounds, most)
+    parts = self_reported_parts(checked, reported)
+    cells = {
+        owner: work_out_row(settings.leaderboards, checked, results[owner], trees)
+        for owner in owners
+    }
+    found_boards: list[Board] = []
+    for key in wanted:
+        board = settings.leaderboards[key]
+        headers = headers_of(key, board, columns, parts)
+        rows = [
+            Unranked(
+                owner,
+                shown.get(owner, ""),
+                {name: cells[owner][(key, name)] for name in board.columns},
             )
-            counted.append(
-                BoardPoints(board.name, True, points, most if points is not None else None)
+            for owner in owners
+        ]
+        found_boards.append(ranked(key, board, headers, rows))
+    return tuple(found_boards)
+
+
+def _tasks_read(checked: BoardsCheck) -> set[str]:
+    """Every task whose results a readable board reads."""
+    return {
+        task
+        for board in checked.readable
+        for shape in checked.shapes[board].values()
+        for task in shape.tasks
+    }
+
+
+async def _results(
+    ctx: Context,
+    contest: ContestId,
+    settings: ContestDefinition,
+    task: PublishedTask,
+    owners: Sequence[WorkspaceOwner],
+    extensions: Mapping[WorkspaceOwner, Extension],
+    marked: Mapping[tuple[WorkspaceId, TaskId], set[int]],
+    *,
+    organised: bool,
+    pick: Callable[[Sequence[Grading]], Sequence[Grading]] | None = None,
+) -> dict[WorkspaceOwner, list[Submitted]]:
+    """Each row's submissions to a run task as a board reads them, oldest
+    first: `organised` every value, as staff read them, else as an entrant
+    reads them; `pick` the attempts of each submission read, all when none.
+    """
+    workspaces = {ctx.forge.workspaces.workspace_of(contest, owner): owner for owner in owners}
+    rows = (
+        await ctx.db.scalars(
+            select(Grading).where(
+                Grading.task_id == task.id,
+                Grading.workspace_id.in_(sorted(workspaces)),
+                FRONT,
             )
-        found[task.name] = tuple(counted)
+        )
+    ).all()
+    grouped: dict[tuple[str, int], list[Grading]] = {}
+    for row in rows:
+        grouped.setdefault((row.workspace_id, row.submission_number), []).append(row)
+    latest = [max(each, key=lambda row: row.attempt) for each in grouped.values()]
+    lost = await gradings.lost(ctx, latest)
+    await gradings.notice(ctx, latest, lost)
+    await gradings.notice_late(ctx, latest)
+    read: list[tuple[str, int, Grading, Grading | None]] = []
+    for (workspace, number), attempts in sorted(grouped.items()):
+        chosen = pick(attempts) if pick is not None else attempts
+        if not chosen:
+            continue
+        usable = scores.usable(ctx, chosen, lost)
+        if usable.state is State.VOID:
+            continue
+        first = min(chosen, key=lambda row: row.attempt)
+        read.append((workspace, number, first, usable.row))
+    good = [row for _, _, _, row in read if row is not None]
+    lates = await scores.lates_of(ctx, good)
+    entered = await entries.entered_for(ctx, task.id, [row.submission_id for row in good])
+    entry = task.entry
+    assert entry is not None
+    scoring = task.definition.scoring
+    assert scoring is not None
+    found: dict[WorkspaceOwner, list[Submitted]] = {}
+    for workspace, number, first, counted in read:
+        owner = workspaces[WorkspaceId(workspace)]
+        extension = extensions[owner]
+        listed = found.setdefault(owner, [])
+        own = {
+            "attempt": Fraction(len(listed) + 1),
+            "marked": Fraction(number in marked.get((WorkspaceId(workspace), task.id), set())),
+        }
+        if counted is None:
+            facts = facts_of(
+                due_of(settings, entry, extension), settings.start, first.submitted_at, 1
+            )
+            numbers = {**{name: facts[name] for name in ("seconds", "seconds_late")}, **own}
+            waiting = frozenset({*scoring.values, "compiled"})
+            listed.append(Submitted(number, numbers, waiting))
+            continue
+        scored = await scores.run_scored(
+            ctx,
+            task,
+            settings,
+            extension,
+            counted,
+            lates.get(counted.id),
+            entered[counted.submission_id],
+        )
+        worked = scored.organised if organised else scored.whole
+        values = {
+            name: outcome.number
+            for name, outcome in worked.outcomes.items()
+            if outcome.number is not None
+        }
+        waits = frozenset(name for name, outcome in worked.outcomes.items() if outcome.waiting)
+        listed.append(Submitted(number, {**values, **worked.facts, **own}, waits))
     return found
 
 
 @dataclass(frozen=True, slots=True)
 class ContestCheck:
-    """What C4 and C1 found of a save of the contest's settings: each
-    refusal, and, for a save none refuses, what each board reports of its
-    tasks, the notes the organisers' reading carries beside it.
-    """
+    """What a save of the contest's settings is refused for: each board's
+    problems, and a task's marks below what a row holds; and the notes the
+    save carries, none since the boards report none of their own."""
 
     problems: list[Problem]
     notes: list[str]
@@ -254,22 +292,13 @@ class ContestCheck:
 async def check_contest(
     ctx: Context, contest: ContestId, settings: ContestDefinition
 ) -> ContestCheck:
-    """C4 for a save of the contest's settings, what each board asks of the
-    latest publication of every task it covers, each refusal at the
-    board's line, and each board's notes; and C1's last rule, a task's marks
-    not lowered below the marks a row holds on it.
-    """
-    problems = await _held_marks(ctx, contest, settings)
-    if not settings.leaderboards:
-        return ContestCheck(problems, [])
-    tasks = await _covered_tasks(ctx, contest, settings, settings.leaderboards)
-    shapes = {task.name: _covered(task) for task in tasks}
-    notes: list[str] = []
-    for index, board in enumerate(settings.leaderboards):
-        for breach in _breaches(settings, board, shapes):
-            problems.append(Problem(path=_board_path(index, board, breach), message=breach.message))
-        notes += _notes(settings, board, shapes)
-    return ContestCheck(problems, notes)
+    """The boards' check for a save of the contest's settings, each refusal
+    at its path; and C1's last rule, a task's marks not lowered below the
+    marks a row holds on it."""
+    found, _ = check_boards(settings)
+    problems = [Problem(path=path_text(path), message=message) for path, message in found]
+    problems += await _held_marks(ctx, contest, settings)
+    return ContestCheck(problems, [])
 
 
 async def _held_marks(
@@ -279,7 +308,7 @@ async def _held_marks(
     ids = {each.name: TaskId(each.id) for each in listed}
     problems: list[Problem] = []
     for index, entry in enumerate(settings.tasks):
-        allowed = settings.marks_of(entry)
+        allowed = marks_of(settings, entry)
         if allowed is None or entry.id not in ids:
             continue
         most, rows = await marks.most_held(ctx, ids[entry.id])
@@ -294,104 +323,18 @@ async def _held_marks(
     return problems
 
 
-async def check_task(
-    ctx: Context, contest: ContestId, settings: ContestDefinition, name: str, shape: Covered
-) -> list[Problem]:
-    """T8 for a save of the task `name` that leaves it as `shape`: what each
-    board covering it asks of it beside the other covered tasks as their
-    latest publications stand, each refusal at the line of `task.yaml` that
-    would mend it. A task the contest does not list yet is checked against
-    the boards that cover every task, which its appended entry joins; a
-    withdrawn one against none, since no board counts it until it is put
-    back, which the contest's save checks.
-    """
-    boards = [board for board in settings.leaderboards if board.tasks is None or board.covers(name)]
-    if not boards or rules.withdrawn(settings, name):
-        return []
-    tasks = await _covered_tasks(ctx, contest, settings, boards)
-    others = {task.name: _covered(task) for task in tasks if task.name != name}
-    problems: list[Problem] = []
-    for board in boards:
-        names = [*covered_tasks(settings, board)]
-        if name not in names:
-            names.append(name)
-        shapes = {each: others[each] for each in names if each in others}
-        shapes[name] = shape
-        ordered = {each: shapes[each] for each in names if each in shapes}
-        for breach in breaches(board, ordered, many=len(names) > 1, only=name):
-            problems.append(Problem(path=breach.mended_in, message=breach.message))
-    return problems
-
-
-def task_notes(settings: ContestDefinition, name: str, shape: Covered) -> list[str]:
-    """T9's report of each board ranking `points` that counts nothing from
-    the task `name` as it is saved; none for a withdrawn task, which no
-    board counts.
-    """
-    found: list[str] = []
-    if rules.withdrawn(settings, name):
-        return found
-    for board in settings.leaderboards:
-        if board.tasks is not None and not board.covers(name):
-            continue
-        if counts_nothing(board, {name: shape}):
-            found.append(counts_nothing_message(board, name))
-    return found
-
-
-def _board_path(index: int, board: Leaderboard, breach: Breach) -> str:
-    if breach.key is not None:
-        return f"leaderboards[{index}].order[{breach.key}]"
-    if breach.mended_in == "scoring":
-        # A board that names no tasks covers every task, so the board
-        # itself is where one is left out.
-        if board.tasks is None:
-            return f"leaderboards[{index}]"
-        return f"leaderboards[{index}].tasks"
-    if breach.mended_in == "test_groups" and board.select is Select.MARKED:
-        return f"leaderboards[{index}].select"
-    return f"leaderboards[{index}].over"
-
-
-def _breaches(
-    settings: ContestDefinition, board: Leaderboard, shapes: Mapping[str, Covered]
-) -> list[Breach]:
-    names = covered_tasks(settings, board)
-    ordered = {name: shapes[name] for name in names if name in shapes}
-    return breaches(board, ordered, many=len(names) > 1)
-
-
-def _notes(
-    settings: ContestDefinition, board: Leaderboard, shapes: Mapping[str, Covered]
-) -> list[str]:
-    names = covered_tasks(settings, board)
-    ordered = {name: shapes[name] for name in names if name in shapes}
-    found = [breach.message for breach in _breaches(settings, board, shapes)]
-    found += [counts_nothing_message(board, task) for task in counts_nothing(board, ordered)]
-    return found
-
-
-def _covered(task: PublishedTask) -> Covered:
-    return covered(
-        task.publication.measures,
-        task.definition.test_groups,
-        task.publication.meanings,
-        runs=task.definition.runs,
-    )
-
-
 async def _reader(
     ctx: Context, session: Session | None, contest: ContestId
-) -> tuple[ContestDefinition, Audience, WorkspaceOwner | None]:
-    """The contest's settings, the reader's audience and their own row."""
+) -> tuple[ContestDefinition, bool]:
+    """The contest's settings, and whether the reader is staff: an observer
+    of the contest or above. `NotFound` for a contest they may not see."""
+    settings = await published.contest(ctx, contest)
     if session is None:
-        settings = await published.contest(ctx, contest)
         if not rules.contest_visible_to(
             settings, has_session=False, is_contestant=False, is_organiser=False
         ):
             raise NotFound(published.NO_SUCH_CONTEST)
-        return settings, Audience.EVERYONE, None
-    settings = await published.contest(ctx, contest)
+        return settings, False
     person = await release.reader(ctx, session, contest)
     approved = person.entrant is not None and person.entrant.status == Status.APPROVED
     entered = settings.state is ContestState.ARCHIVED and approved
@@ -403,114 +346,8 @@ async def _reader(
         except NotFound:
             grants = ()
         if holds(grants, contest_scope(contest), Role.OBSERVER):
-            return settings, Audience.ORGANISERS, None
-    if approved:
-        assert person.entrant is not None
-        return settings, Audience.CONTESTANTS, EntrantOwner(person.entrant.id)
-    if person.organises:
-        return settings, Audience.CONTESTANTS, None
-    return settings, Audience.EVERYONE, None
-
-
-async def _covered_tasks(
-    ctx: Context,
-    contest: ContestId,
-    settings: ContestDefinition,
-    boards: Sequence[Leaderboard],
-) -> list[PublishedTask]:
-    """Every task the contest lists that one of `boards` covers and that has
-    a publication, in the contest's order.
-    """
-    wanted = {name for board in boards for name in covered_tasks(settings, board)}
-    return [
-        task
-        for task in await published.tasks(ctx, contest, settings)
-        if task.entry is not None and task.name in wanted
-    ]
-
-
-@dataclass(frozen=True, slots=True)
-class _Read:
-    """What the boards are ranked from, read once for every board and both
-    of organisers' readings: the covered tasks, their columns, and every row
-    with its submissions.
-    """
-
-    tasks: Sequence[PublishedTask]
-    columns: Mapping[str, Column]
-    rows: Sequence[Row]
-
-
-async def _read(
-    ctx: Context, contest: ContestId, settings: ContestDefinition, tasks: Sequence[PublishedTask]
-) -> _Read:
-    owners = await timelines.rows(ctx, contest)
-    extensions = await timelines.of_owners(ctx, contest, owners)
-    columns = {task.name: _column(ctx, settings, task, list(extensions.values())) for task in tasks}
-    names = await _names(ctx, owners)
-    entries = await _entries(ctx, contest, settings, tasks, owners, extensions)
-    rows = [Row(owner, names.get(owner, ""), entries.get(owner, {})) for owner in owners]
-    return _Read(tasks, columns, rows)
-
-
-def _ranked(
-    settings: ContestDefinition, boards: Sequence[Leaderboard], read: _Read, *, final: bool
-) -> list[Standings]:
-    """Every one of `boards` ranked now, or `final`, every row given."""
-    found: list[Standings] = []
-    for board in boards:
-        covering = [
-            read.columns[name] for name in covered_tasks(settings, board) if name in read.columns
-        ]
-        shown = {column.name for column in covering}
-        covered = [task for task in read.tasks if task.name in shown]
-        keys = keys_of(board, _directions(covered), _words(covered))
-        found.append(rank(board, keys, settings.start, covering, read.rows, final=final))
-    return found
-
-
-def _directions(tasks: Sequence[PublishedTask]) -> dict[str, Better | None]:
-    """Each value key's direction, as the first covered task giving it
-    one says; the checks keep every covered task agreeing.
-    """
-    found: dict[str, Better | None] = {}
-    for task in tasks:
-        for name, measure in task.publication.measures.items():
-            if found.get(name) is None and measure.better is not None:
-                found[name] = measure.better
-    return found
-
-
-def _words(tasks: Sequence[PublishedTask]) -> dict[str, ValueMeaning]:
-    """Each value's title and unit, as the first covered task naming it
-    with either says.
-    """
-    found: dict[str, ValueMeaning] = {}
-    for task in tasks:
-        for meaning in task.publication.meanings:
-            if meaning.name not in found and (
-                meaning.title is not None or meaning.unit is not None
-            ):
-                found[meaning.name] = meaning
-    return found
-
-
-def _column(
-    ctx: Context, settings: ContestDefinition, task: PublishedTask, extensions: Sequence[Extension]
-) -> Column:
-    entry = task.entry
-    assert entry is not None
-    reveal_at = reveal_of(settings, entry, extensions)
-    return Column(
-        name=task.name,
-        label=task.label or task.name,
-        worth=exact(task.worth),
-        shows={name: group.shown for name, group in task.definition.test_groups.items()},
-        release_at=settings.release_of(entry),
-        released=rules.released(settings, task.name, ctx.now),
-        reveal_at=reveal_at,
-        revealed=ctx.now >= reveal_at,
-    )
+            return settings, True
+    return settings, False
 
 
 async def _names(ctx: Context, owners: Sequence[WorkspaceOwner]) -> dict[WorkspaceOwner, str]:
@@ -523,83 +360,24 @@ async def _names(ctx: Context, owners: Sequence[WorkspaceOwner]) -> dict[Workspa
     return {EntrantOwner(entrant): name for entrant, name in shown.items()}
 
 
-async def _entries(
-    ctx: Context,
-    contest: ContestId,
-    settings: ContestDefinition,
-    tasks: Sequence[PublishedTask],
-    owners: Sequence[WorkspaceOwner],
-    extensions: Mapping[WorkspaceOwner, Extension],
-) -> dict[WorkspaceOwner, dict[str, tuple[Entry, ...]]]:
-    """Every row's submissions to each task, each where it stands on a
-    board, scored when it is a candidate or an attempt a sealed step
-    stopped.
-    """
-    workspaces = {ctx.forge.workspaces.workspace_of(contest, owner): owner for owner in owners}
-    marked = await marks.of_tasks(ctx, [task.id for task in tasks])
-    found: dict[WorkspaceOwner, dict[str, tuple[Entry, ...]]] = {}
-    for task in tasks:
-        rows = (
-            await ctx.db.scalars(
-                select(Grading).where(
-                    Grading.task_id == task.id,
-                    Grading.workspace_id.in_(sorted(workspaces)),
-                    FRONT,
-                )
-            )
-        ).all()
-        grouped: dict[tuple[str, int], list[Grading]] = {}
-        for row in rows:
-            grouped.setdefault((row.workspace_id, row.submission_number), []).append(row)
-        latest = [max(each, key=lambda row: row.attempt) for each in grouped.values()]
-        lost = await gradings.lost(ctx, latest)
-        await gradings.notice(ctx, latest, lost)
-        await gradings.notice_late(ctx, latest)
-        scorer = scores.Scorer(ctx, task)
-        by_owner: dict[WorkspaceOwner, list[Entry]] = {}
-        for (workspace, number), attempts in grouped.items():
-            owner = workspaces[WorkspaceId(workspace)]
-            at = min(row.submitted_at for row in attempts)
-            entry = await _entry(
-                ctx,
-                scorer,
-                settings,
-                task,
-                number,
-                at,
-                attempts,
-                lost,
-                extensions[owner],
-                number in marked.get((WorkspaceId(workspace), task.id), set()),
-            )
-            by_owner.setdefault(owner, []).append(entry)
-        for owner, listed in by_owner.items():
-            found.setdefault(owner, {})[task.name] = tuple(listed)
-    return found
+def regrade_sides(
+    regrade: uuid.UUID, task: TaskId, then: PublishedTask, now: PublishedTask
+) -> tuple[Side, Side]:
+    """How a regrade's board diff reads its task before and after: before,
+    each submission by its attempts made before the regrade's first of it,
+    under the publication then the task's latest; after, by the regrade's
+    own attempts of it, under the one it grades against. A submission the
+    regrade did not take reads the same on both sides."""
+
+    def before(attempts: Sequence[Grading]) -> Sequence[Grading]:
+        own = [row.attempt for row in attempts if row.regrade_id == regrade]
+        return [row for row in attempts if row.attempt < min(own)] if own else attempts
+
+    def after(attempts: Sequence[Grading]) -> Sequence[Grading]:
+        own = [row for row in attempts if row.regrade_id == regrade]
+        return own or attempts
+
+    return Side(task, then, before), Side(task, now, after)
 
 
-async def _entry(
-    ctx: Context,
-    scorer: scores.Scorer,
-    settings: ContestDefinition,
-    task: PublishedTask,
-    number: int,
-    at: datetime,
-    attempts: Sequence[Grading],
-    lost: frozenset[uuid.UUID],
-    extension: Extension,
-    marked: bool,
-) -> Entry:
-    usable = scores.usable(ctx, attempts, lost)
-    if usable.state is not State.CANDIDATE or usable.row is None:
-        return Entry(number, at, usable.state, marked=marked)
-    graded = await scorer.graded(PublicationId(usable.row.publication_id))
-    if graded is None:
-        return Entry(number, at, State.VOID, marked=marked)
-    state = scores.stands(usable.row, graded)
-    if state is State.VOID:
-        return Entry(number, at, state, marked=marked)
-    # An attempt a sealed step stopped is scored too, for what its row reads
-    # of it before the reveal (`task_points`); no board ranks by it.
-    late = scores.factor(settings, task, extension, at)
-    return Entry(number, at, state, await scorer.scored(usable.row, graded, late), marked)
+__all__ = ["ContestCheck", "Side", "check_contest", "regrade_sides", "seen", "worked_out"]

@@ -125,7 +125,7 @@ def test_a_decimal_is_written_as_its_digits() -> None:
 def contest_starting(start: str) -> bytes:
     return (
         f"name: Spring\nstart: {start}\nend: 2027-01-01T00:00:00Z\nstate: draft\n"
-        "visibility: signed-in\nleaderboards: []\n"
+        "visibility: signed-in\n"
     ).encode()
 
 

@@ -9,14 +9,14 @@ manager's key.
   named it goes with it: an entrant's extension that names it no longer
   does, an invite to one of its roles still waiting is withdrawn, and each
   entrant's place to submit it goes with any upload waiting there. A
-  leaderboard that names it in its `tasks` refuses it
+  leaderboard with a column reading its results refuses it
   (`take_out_refused`): taking it out of the board is the organisers' call.
 - **Withdrawn**, once anyone has: its entry stays, marked `withdrawn: true`,
   so it keeps its place and its letter, and every reader of the contest's
   tasks skips it for entrants (`forge.domain.release`): they no longer see
   it, its statement, its announcements or their own submissions to it, and
-  a submit to it is refused as `task_withdrawn`; no leaderboard counts it,
-  so the totals drop its points (`board_checks.covered_tasks`). Its
+  a submit to it is refused as `task_withdrawn`; its results on every
+  leaderboard are empty (SIMPLER-CORE.md 10.2, rule 8). Its
   submissions, gradings and history stay for the organisers, who see it in
   their task list as withdrawn and can **put it back** (`put_back`), after
   which it scores exactly as before. Putting back is a save of the
@@ -45,6 +45,7 @@ from sqlalchemy import delete, func, select, update
 from forge.db.tables import Entrant, Grading, Name, Upload
 from forge.db.tables import Invite as InviteRow
 from forge.db.tables.gradings import FRONT
+from forge.domain.board_checks import boards_of
 from forge.domain.content import File
 from forge.domain.contest_entries import NoEntry, Unlisted, with_withdrawn, without_entry
 from forge.domain.definitions import CONTEST_FILE, parse_contest
@@ -249,15 +250,12 @@ async def _remove(
     before a step that fails is put back, as `create` undoes a try.
     """
     settings = parse_contest(found.content)
-    naming = [
-        board.name
-        for board in settings.leaderboards
-        if board.tasks is not None and name in board.tasks
-    ]
+    keys = boards_of(settings).reading(name)
+    naming = [board.title_or(key) for key, board in settings.leaderboards.items() if key in keys]
     if naming:
         raise TakeOutRefused(
-            f"The leaderboard {naming[0]} counts {name} by name. Take {name} out of that "
-            "leaderboard first, then remove the task.",
+            f"The leaderboard {naming[0]} reads the results of {name}. Take {name} out of that "
+            "leaderboard's columns first, then remove the task.",
             boards=naming,
         )
     made = making.undo_on_rollback(ctx, "tasks", task=task)

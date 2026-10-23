@@ -14,12 +14,9 @@ contest's dates, the person's registration panel (`entrants.panel`): their
 entrant and whether and how they may register; the server's clock so a
 countdown agrees with it, and the tasks released to them, the ones visible
 now, each with its label, its worth and when it falls due and closes for
-their entrant, its extension on it included, and, for a member of an
-approved entrant, the entrant's points on it on each board an entrant sees,
-in the file's order (`boards`), each as that board counts the task, from the
-same scoring every board reads (`boards.own_points`): a group whose results
-are not shown yet counts only as pending, with the time it is shown, so the
-home never shows a number a board holds back.
+their entrant, its extension on it included. A row's standing is read on
+the leaderboards, which until stage 5's phase 5.6 only staff read, so the
+home shows no number a board holds back.
 A task's page gives its statement, its submission caps and the form of the
 inputs a contestant gives, and nothing else of what the task holds, only
 once the task is visible. A task that is not, or a contest the person may
@@ -40,10 +37,11 @@ from decimal import Decimal
 
 from forge.db.tables import Entrant
 from forge.domain import release as rules
+from forge.domain.board_checks import marks_of
 from forge.domain.definitions import ContestDefinition, ContestVisibility, State, Submissions
 from forge.domain.errors import NotFound
 from forge.domain.ids import ContestId, TaskId
-from forge.domain.names import EntrantOwner, ScopeNames
+from forge.domain.names import ScopeNames
 from forge.domain.registration import Status
 from forge.domain.release import Closed, Extension, close_of, due_of
 from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_scope
@@ -51,8 +49,7 @@ from forge.domain.sessions import Session
 from forge.domain.submissions import Field
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, entrants, invites, names, published, release, timelines
-from forge.services.boards import BoardPoints
+from forge.services import entrants, invites, names, published, release, timelines
 from forge.services.entrants import Mine
 from forge.services.published import PublicFile, PublishedTask
 from forge.services.release import TaskRelease
@@ -78,11 +75,8 @@ class ContestSummary:
 class TaskEntry:
     """A task released to the person, as the contest's home lists it: its
     name, the label its place in the contest gives it, its title, its worth,
-    whether they may submit to it now, when it falls due, if it does, and
-    closes for their row, and, for a member of an approved entrant, their
-    row's points on it on each board of the home's `boards`, in that order
-    (`boards.own_points`): shown now, as that board counts the task, and
-    pending until the task's reveal; empty for anyone else.
+    whether they may submit to it now, and when it falls due, if it does,
+    and closes for their row.
     """
 
     task: TaskId
@@ -93,7 +87,6 @@ class TaskEntry:
     release: TaskRelease
     due: datetime | None
     closes: datetime | None
-    points: tuple[BoardPoints, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,9 +95,7 @@ class ContestHome:
     the contest, which keeps them from entering it; `registration` is their
     registration panel: their entrant, if any, and whether and how they may
     register; `now` is the server's clock when this was read. `where` is the
-    contest by the names of its org and itself. `boards` names the
-    leaderboards a member of an approved entrant sees, in the file's order,
-    which each task's `points` follow; empty for anyone else.
+    contest by the names of its org and itself.
     """
 
     contest: ContestId
@@ -118,7 +109,6 @@ class ContestHome:
     organises: bool
     now: datetime
     tasks: tuple[TaskEntry, ...]
-    boards: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,9 +116,9 @@ class TaskPage:
     """A task as a person reads it: its statement, the caps a submit is
     counted against, the inputs a contestant gives, which the submit panel
     is built from, when it falls due and closes for the person's row, and
-    how many of the row's submissions it may mark for the `marked` boards,
-    none unless such a board covers the task and the person is an approved
-    contestant.
+    how many of the row's submissions it may mark, none unless the entry
+    gives `marks` or a board reads the task's `marked`, and the person is
+    an approved contestant.
     """
 
     task: TaskId
@@ -193,12 +183,6 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
         for task in await published.tasks(ctx, contest, settings)
         if rules.visible(settings, task.name, now)
     ]
-    points: dict[str, tuple[BoardPoints, ...]] = {}
-    seen: tuple[str, ...] = ()
-    if person.entrant is not None and _approved(person.entrant):
-        owner = EntrantOwner(person.entrant.id)
-        points = await boards.own_points(ctx, contest, settings, shown, owner)
-        seen = tuple(board.name for board in boards.entrants_boards(settings))
     tasks = tuple(
         TaskEntry(
             task=task.id,
@@ -209,7 +193,6 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
             release=_to(person, release.of(settings, task.name, now, extension)),
             due=_due(settings, task, extension),
             closes=_closes(settings, task, extension),
-            points=points.get(task.name, ()),
         )
         for task in shown
     )
@@ -226,7 +209,6 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
         organises=person.organises,
         now=now,
         tasks=tasks,
-        boards=seen,
     )
 
 
@@ -253,7 +235,7 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
         due=_due(settings, found, extension),
         closes=_closes(settings, found, extension),
         marks=(
-            settings.marks_of(found.entry)
+            marks_of(settings, found.entry)
             if found.entry is not None and _approved(person.entrant)
             else None
         ),

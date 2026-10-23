@@ -27,12 +27,28 @@ it.
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from fractions import Fraction
 from typing import Any
 
 from forge.domain.blocks.numbers import Better, exact, written
 from forge.domain.definitions import Group, Relative, Show
 from forge.domain.workflow_definition import Fold
+
+
+class State(StrEnum):
+    """Where one submission stands by the attempt of it that counts: still
+    `grading` to its row, pending (a delayed one, in `system_error`, among
+    them); `void`, no attempt, cancelled or stopped by a step that is not
+    sealed; an `attempt` a sealed step stopped; or a `candidate`, an
+    attempt whose run was not stopped.
+    """
+
+    GRADING = "grading"
+    VOID = "void"
+    ATTEMPT = "attempt"
+    CANDIDATE = "candidate"
+
 
 ACCEPTED = "accepted"
 
@@ -471,3 +487,13 @@ def best_of(
             ):
                 found[test] = value
     return found
+
+
+def group_max(groups: Mapping[str, Group], worth: Fraction) -> dict[str, Fraction]:
+    """`max_g` of each group: `worth * R_g / W`, none on a task that gives
+    no points.
+    """
+    total = sum((rule_weight(group) for group in groups.values()), ZERO)
+    if total <= 0:
+        return {}
+    return {name: worth * rule_weight(group) / total for name, group in groups.items()}

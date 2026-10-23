@@ -50,6 +50,7 @@ from forge.db.tables import Upload as UploadRow
 from forge.db.tables.entrants import Entrant
 from forge.db.tables.gradings import PASSED
 from forge.domain import step_data
+from forge.domain.boards import Counted
 from forge.domain.content import Edit
 from forge.domain.errors import (
     CiRequestRefused,
@@ -86,6 +87,7 @@ from forge.domain.submissions import SubmittedInput
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import (
+    boards,
     gradings,
     pipelines,
     primitives,
@@ -1570,12 +1572,27 @@ async def _ended(
             )
 
 
+GRADEBOOK = LIVE + (
+    "leaderboards:\n"
+    "  gradebook:\n"
+    "    title: Gradebook\n"
+    "    columns:\n"
+    "      picked: {block: latest, from: {results: islands}}\n"
+    "      st2: {block: otherwise, of: [{value: [{column: picked}, st2]}, 0]}\n"
+    "      total: {block: otherwise, of: [{value: [{column: picked}, total]}, 0]}\n"
+    "    sort: [{total: desc}]\n"
+    "    display: [st2, total]\n"
+)
+"""The running contest with a staff board reading islands' latest
+submission, ranked by its total."""
+
+
 async def _regraded(
-    setup: Setup, acme: Acme, count: int
+    setup: Setup, acme: Acme, count: int, contest: str = LIVE
 ) -> tuple[Islands, uuid.UUID, list[Grading]]:
     """islands with `count` submissions each graded every run accepted, then
     rejudged; the regrade and its early rows, still to run."""
-    islands = await _checked(setup, acme)
+    islands = await _checked(setup, acme, contest=contest)
     for user in range(20, 20 + count):
         acme.fake.add_user(user, f"entrant{user}")
         await _submit(setup, acme, islands, user=user)
@@ -1595,6 +1612,65 @@ async def _regraded(
     return islands, rejudged.regrade, rows
 
 
+async def _staff(setup: Setup, acme: Acme) -> Any:
+    """A session of an observer of the contest."""
+    await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.OBSERVER)
+    return await signed_in(setup, acme.fake, 7)
+
+
+async def test_staff_read_every_row_of_a_board_and_nobody_else_reads_one_yet(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands = await _checked(setup, acme, contest=GRADEBOOK)
+    entrant = await _submit(setup, acme, islands)
+    await _submit(setup, acme, islands, user=9)
+    first, waiting = await _rows(setup, "early")
+    await _ended(setup, first, ACCEPTED_EARLY, ACCEPTED_LATE)
+    staff = await _staff(setup, acme)
+
+    [board] = await boards.seen(setup, staff, SPRING)
+
+    # Until audiences come, an entrant and a visitor read no board, and
+    # the board with no audience is staff's.
+    assert await boards.seen(setup, entrant, SPRING) == ()
+    assert await boards.seen(setup, None, SPRING) == ()
+    assert (board.key, board.title, board.audience.who) == ("gradebook", "Gradebook", "staff")
+    graded, grading = board.rows
+    assert (graded.place, grading.place) == (1, 2)
+    assert [(cell.column, cell.number) for cell in graded.cells] == [
+        ("st2", Fraction(1)),
+        ("total", Fraction(100)),
+    ]
+    assert graded.cells[1].counted == (Counted("islands", first.submission_number),)
+    # A submission still grading is left out as waiting, so its row has
+    # no total yet and otherwise gives 0.
+    assert [(cell.column, cell.number) for cell in grading.cells] == [
+        ("st2", Fraction(0)),
+        ("total", Fraction(0)),
+    ]
+    assert grading.cells[1].waiting == (Counted("islands", waiting.submission_number),)
+
+
+async def test_a_staff_read_of_a_board_starts_the_retry_of_a_failure_it_finds(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands = await _checked(setup, acme, contest=GRADEBOOK)
+    await _submit(setup, acme, islands)
+    [first] = await _rows(setup, "early")
+    async with setup.unit_of_work() as ctx:
+        row = await ctx.db.get(Grading, first.id)
+        assert row is not None
+        row.status, row.error = GradingStatus.SYSTEM_ERROR, "The step crashed."
+
+    await boards.seen(setup, await _staff(setup, acme), SPRING)
+    await setup.settle()
+
+    assert [(row.attempt, row.automatic) for row in await _rows(setup, "early")] == [
+        (1, False),
+        (2, True),
+    ]
+
+
 def _task_only(acme: Acme, role: Role) -> Any:
     """Someone holding `role` at islands and nothing else."""
     return Organiser(
@@ -1609,7 +1685,7 @@ def _task_only(acme: Acme, role: Role) -> Any:
 async def test_a_regrade_lists_each_submission_whose_values_it_changed_old_to_new(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
-    islands, regrade, rows = await _regraded(setup, acme, 5)
+    islands, regrade, rows = await _regraded(setup, acme, 5, GRADEBOOK)
     wrong = _result({"r3": "accepted", "r4": "wrong_answer"})
     for index, row in enumerate(rows):
         await _ended(setup, row, ACCEPTED_EARLY, wrong if index < 4 else ACCEPTED_LATE)
@@ -1625,9 +1701,27 @@ async def test_a_regrade_lists_each_submission_whose_values_it_changed_old_to_ne
             ValueChange("total", Fraction(100), Fraction(40)),
         )
         assert each.verdicts == (VerdictChange("r4", "accepted", "wrong_answer"),)
-    # No board reads a run task until phase 5.5, so the contest's manager
-    # is given none.
-    assert summary.boards == ()
+    # The contest's manager reads every row of the board reading islands,
+    # its places and cells before and after.
+    assert summary.boards is not None
+    [board] = summary.boards
+    assert (board.board, board.title, board.sort) == (
+        "gradebook",
+        "Gradebook",
+        (("total", "desc"),),
+    )
+    assert [header.name for header in board.headers] == ["st2", "total"]
+    # Every row tied first before; after, the one whose st2 held leads
+    # and the 4 tie second, listed by name.
+    assert [(row.place_before, row.place_after) for row in board.rows] == [(1, 1)] + [(1, 2)] * 4
+    dropped = [row.name for row in board.rows[1:]]
+    assert dropped == sorted(dropped) and len(set(dropped)) == 4
+    for dropped_row in board.rows[1:]:
+        assert [(cell.column, cell.before, cell.after) for cell in dropped_row.cells] == [
+            ("st2", Fraction(1), Fraction(0)),
+            ("total", Fraction(100), Fraction(40)),
+        ]
+    assert [cell.changed for cell in board.rows[0].cells] == [False, False]
 
 
 async def test_a_regrade_that_makes_a_submission_fail_to_compile_lists_its_verdicts(
@@ -1683,7 +1777,7 @@ async def test_a_regrade_counts_what_it_cannot_compare_and_lists_a_bounded_few(
 async def test_a_task_manager_reads_its_regrades_values_and_an_observer_is_refused(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
-    islands, regrade, [row] = await _regraded(setup, acme, 1)
+    islands, regrade, [row] = await _regraded(setup, acme, 1, GRADEBOOK)
     await _ended(setup, row, ACCEPTED_EARLY, _result({"r3": "accepted", "r4": "wrong_answer"}))
 
     summary = await regrades.run_summary(

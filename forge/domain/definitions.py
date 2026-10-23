@@ -40,6 +40,7 @@ from forge.domain.names import validate_contest_or_task_name
 from forge.domain.workflow_definition import Options, Ref
 from forge.domain.yaml_models import (
     ANY,
+    ANY_KEY,
     AwareTime,
     InvalidDefinition,
     Line,
@@ -50,6 +51,7 @@ from forge.domain.yaml_models import (
     Retired,
     Size,
     already_listed,
+    aware_time,
     fail,
     is_number,
     load_mapping,
@@ -72,6 +74,7 @@ __all__ = [
     "TASK_FILE",
     "Approval",
     "Axis",
+    "BoardAudience",
     "Check",
     "ContestDefinition",
     "ContestTask",
@@ -79,17 +82,15 @@ __all__ = [
     "Entrants",
     "Form",
     "Group",
+    "Hold",
     "InvalidDefinition",
     "InviteWay",
     "Leaderboard",
     "Locks",
-    "Over",
-    "Penalty",
     "Rate",
     "Registration",
     "Relative",
     "Scoring",
-    "Select",
     "Show",
     "ShowTimes",
     "SignupWay",
@@ -97,7 +98,6 @@ __all__ = [
     "Submissions",
     "TaskDefinition",
     "Way",
-    "Who",
     "admin_only_changes",
     "admin_only_refusal",
     "parse_contest",
@@ -136,30 +136,6 @@ class ContestVisibility(StrEnum):
 class Approval(StrEnum):
     AUTO = "auto"
     MANUAL = "manual"
-
-
-class Over(StrEnum):
-    """Which test groups a board counts, by each group's declared `show`."""
-
-    ALL = "all"
-    LIVE = "live"
-    AFTER_CLOSE = "after_close"
-
-
-class Select(StrEnum):
-    """Which of a row's submissions to a task a board counts."""
-
-    BEST = "best"
-    BEST_PER_GROUP = "best_per_group"
-    MARKED = "marked"
-
-
-class Who(StrEnum):
-    """Who sees a board, among those who may see the contest."""
-
-    ORGANISERS = "organisers"
-    CONTESTANTS = "contestants"
-    EVERYONE = "everyone"
 
 
 class Show(StrEnum):
@@ -375,27 +351,11 @@ class Entrants(Model):
         return self
 
 
-class Penalty(Model):
-    """`penalty` with its one setting: minutes charged for each earlier
-    attempt that does not count.
-    """
-
-    by: Literal["penalty"]
-    per_attempt: Annotated[int, Field(strict=True, ge=0)] = 0
-
-
-def _order_key(value: object) -> str | Penalty:
-    if isinstance(value, dict):
-        return Penalty.model_validate(value)
-    if not isinstance(value, str) or not VALUE_NAME.match(value):
-        raise ValueError(
-            "Rank by points, by penalty minutes, or by a value the tasks report, "
-            "named as they report it."
-        )
-    return value
-
-
-OrderKey = Annotated[str | Penalty, PlainValidator(_order_key)]
+BOARD_NAME = re.compile(r"^[a-z][a-z0-9_-]*$")
+"""A board's column's name: lower case letters, digits, hyphens and
+underscores, starting with a letter, as a formula reads it once each `-`
+is written `_`."""
+COLUMN_LONGEST = 40
 
 
 def _rows(value: object) -> Literal["all", "own"] | int:
@@ -408,67 +368,121 @@ def _rows(value: object) -> Literal["all", "own"] | int:
     )
 
 
-def key_name(key: str | Penalty) -> str:
-    """The name an `order` key ranks on: `points`, `penalty` or a value's."""
-    return key if isinstance(key, str) else "penalty"
-
-
-class Leaderboard(Model):
-    """One board: the tasks it covers, every task when left out; the groups
-    it counts; which submission counts per row and task; the keys rows are
-    ranked on in turn; who sees it; and which rows they see.
+class BoardAudience(Model):
+    """Who reads a board (SIMPLER-CORE.md 10.2 rule 9): `who`, staff,
+    entrants or everyone, and which `rows` they are given: every row, each
+    entrant's own, or a number of top rows, those tied with the last and
+    the viewer's own added.
     """
 
-    name: Line
-    tasks: tuple[TaskHandle, ...] | None = None
-    over: Over = Over.ALL
-    select: Select = Select.BEST
-    order: tuple[OrderKey, ...] = Field(default=("points",), min_length=1)
-    who: Who = Who.ORGANISERS
+    who: Literal["staff", "entrants", "everyone"] = "staff"
     rows: Annotated[Literal["all", "own"] | int, PlainValidator(_rows)] = "all"
 
     @model_validator(mode="after")
-    def _check(self) -> Leaderboard:
-        problems = Problems()
-        names = [key_name(key) for key in self.order]
-        for index, name in enumerate(names):
-            if name in names[:index]:
-                problems.add(
-                    ("order", index),
-                    f"This leaderboard already ranks by {name} above. Remove this one.",
-                )
-        if names[0] == "penalty":
-            problems.add(
-                ("order", 0),
-                "Penalty minutes cannot come first: they only break ties between entrants "
-                "equal on what comes before them. Rank by something else first.",
+    def _check(self) -> BoardAudience:
+        if self.rows == "own" and self.who == "everyone":
+            fail(
+                [
+                    (
+                        ("rows",),
+                        "A leaderboard shown to everyone cannot show each entrant only their "
+                        "own row, since a guest has none. Show every row or the top rows.",
+                    )
+                ]
             )
-        if self.select is Select.BEST_PER_GROUP:
-            if names[0] != "points":
-                problems.add(
-                    ("select",),
-                    "Counting the best submission on each group ranks by points first. "
-                    "Put points first, or count another submission.",
-                )
-            values = [name for name in names if name not in ("points", "penalty")]
-            if values:
-                problems.add(
-                    ("select",),
-                    f"The best submission on each group adds up groups from different "
-                    f"submissions, so it cannot rank by {values[0]}, which belongs to one "
-                    f"submission. Count another submission, or stop ranking by {values[0]}.",
-                )
-        if self.rows == "own" and self.who is Who.EVERYONE:
-            problems.add(
-                ("rows",),
-                "A leaderboard shown to everyone cannot show each entrant only their own row, "
-                "since a guest has none. Show every row or the top rows.",
-            )
-        problems.raise_any()
         return self
 
-    def covers(self, task: str) -> bool:
-        return self.tasks is None or task in self.tasks
+
+STAFF_ONLY = BoardAudience()
+"""A board with no `audience`: staff's alone (#512)."""
+
+
+def _column_name(value: object) -> str:
+    if not isinstance(value, str) or not BOARD_NAME.match(value) or len(value) > COLUMN_LONGEST:
+        raise ValueError(
+            f"{value!r} cannot be a column's name. Use at most {COLUMN_LONGEST} lower case "
+            "letters, digits, hyphens (-) and underscores (_), starting with a letter."
+        )
+    return value
+
+
+ColumnName = Annotated[str, PlainValidator(_column_name)]
+
+
+def _sort_key(value: object) -> tuple[str, Literal["desc", "asc"]]:
+    if isinstance(value, dict) and len(value) == 1:
+        [(name, way)] = value.items()
+        if way in ("desc", "asc"):
+            return _column_name(name), way
+    raise ValueError(
+        "Give one column and which way it sorts, such as {total: desc}: desc puts the "
+        "highest first, asc the lowest."
+    )
+
+
+def _shown(value: object) -> tuple[str, int | None]:
+    if isinstance(value, str):
+        return _column_name(value), None
+    if isinstance(value, dict) and len(value) == 1:
+        [(name, how)] = value.items()
+        places = how.get("places") if isinstance(how, dict) and set(how) == {"places"} else None
+        if isinstance(places, int) and not isinstance(places, bool) and 0 <= places <= 10:
+            return _column_name(name), places
+    raise ValueError(
+        "Give a column's name, or its name with how many decimal places it is shown, such "
+        "as {total: {places: 2}}, from 0 to 10."
+    )
+
+
+class Leaderboard(Model):
+    """One board (SIMPLER-CORE.md 10, the leaderboards note's 5.10): its
+    `title`, the key when left out; who reads it, staff alone when left
+    out; its `columns`, each a tree of blocks, checked against the
+    catalogue at the contest's save (`forge.domain.board_checks`); the
+    columns it `sort`s by, in turn, each `desc` or `asc`; and those it
+    `display`s, in order, each with how many decimal `places` it is shown
+    to, a column's number itself kept exact.
+    """
+
+    title: Line | None = None
+    audience: BoardAudience = STAFF_ONLY
+    columns: dict[Annotated[str, PlainValidator(_column_name)], Any] = Field(default_factory=dict)
+    sort: tuple[Annotated[tuple[str, str], PlainValidator(_sort_key)], ...] = ()
+    display: tuple[Annotated[tuple[str, int | None], PlainValidator(_shown)], ...] = ()
+
+    def title_or(self, key: str) -> str:
+        return self.title if self.title is not None else key
+
+    @property
+    def shown(self) -> tuple[str, ...]:
+        """The columns displayed, in order."""
+        return tuple(name for name, _ in self.display)
+
+    def places(self, column: str) -> int | None:
+        return next((places for name, places in self.display if name == column), None)
+
+
+def _hold_end(value: object) -> datetime | Literal["staff"]:
+    if value == "staff":
+        return "staff"
+    try:
+        return aware_time(value)
+    except ValueError as wrong:
+        raise ValueError(f"{wrong} Or give staff, for a hold staff end themselves.") from None
+
+
+class Hold(Model):
+    """The contest's hold, the freeze (SIMPLER-CORE.md 10.2 rule 10): from
+    `from`, a time, until `until`, a time or `staff`, who end it."""
+
+    from_: AwareTime = Field(alias="from")
+    until: Annotated[datetime | Literal["staff"], PlainValidator(_hold_end)]
+
+    @model_validator(mode="after")
+    def _check(self) -> Hold:
+        if not isinstance(self.until, str) and self.until <= self.from_:
+            fail([(("until",), "The hold must end after it starts.")])
+        return self
 
 
 class ContestTask(Model):
@@ -507,8 +521,10 @@ DEFAULT_LATE_PER_DAY = 1
 
 class ContestDefinition(Model):
     """A `contest.yaml`. `registration` defaults to open, anyone signing up
-    and an organiser approving each, `entrants` to one person each, and
-    `leaderboards` and `tasks` to none.
+    and an organiser approving each, `entrants` to one person each,
+    `leaderboards` and `tasks` to none, and there is no `hold`. Boards are
+    keyed by a name tasks and boards share, so a column reads `a.b`
+    knowing which `a` is.
     """
 
     name: Line
@@ -519,7 +535,8 @@ class ContestDefinition(Model):
     visibility: ContestVisibility
     registration: Registration = Registration()
     entrants: Entrants = Entrants()
-    leaderboards: tuple[Leaderboard, ...] = ()
+    leaderboards: dict[TaskHandle, Leaderboard] = Field(default_factory=dict)
+    hold: Hold | None = None
     tasks: tuple[ContestTask, ...] = ()
 
     @model_validator(mode="after")
@@ -531,16 +548,14 @@ class ContestDefinition(Model):
         if opens is not None and closes is not None and closes <= opens:
             problems.add(("registration", "closes"), "Registration must close after it opens.")
         problems.duplicates([task.id for task in self.tasks], ("tasks",))
-        problems.duplicates([board.name for board in self.leaderboards], ("leaderboards",), "name")
         known = {task.id for task in self.tasks}
-        for index, board in enumerate(self.leaderboards):
-            for position, task in enumerate(board.tasks or ()):
-                if task not in known:
-                    problems.add(
-                        ("leaderboards", index, "tasks", position),
-                        f"{task!r} is not one of the contest's tasks. Add it to the contest, "
-                        "or remove it here.",
-                    )
+        for key in self.leaderboards:
+            if key in known:
+                problems.add(
+                    ("leaderboards", key),
+                    f"{key} is a task of the contest, and tasks and leaderboards share one set "
+                    "of names, so a column can read either. Name the leaderboard otherwise.",
+                )
         for index, entry in enumerate(self.tasks):
             for path, message in self._entry_problems(entry):
                 problems.add(("tasks", index, *path), message)
@@ -548,8 +563,9 @@ class ContestDefinition(Model):
         return self
 
     def _entry_problems(self, entry: ContestTask) -> list[tuple[tuple[str, ...], str]]:
-        """C1 as far as the file alone says: the four times in order, a
-        fraction a late day takes, and marks only under a marked board.
+        """C1 as far as the file alone says: the four times in order and a
+        fraction a late day takes. Marks only under a board reading the
+        task's `marked` is the board check's (`board_checks`).
         """
         found: list[tuple[tuple[str, ...], str]] = []
         # An absent release_at or closes is read at its default and named as
@@ -599,16 +615,6 @@ class ContestDefinition(Model):
                         "taken off for each late day.",
                     )
                 )
-        if entry.marks is not None and not any(
-            board.select is Select.MARKED and board.covers(entry.id) for board in self.leaderboards
-        ):
-            found.append(
-                (
-                    ("marks",),
-                    "This applies only when a leaderboard covering this task counts the "
-                    "submissions an entrant marks.",
-                )
-            )
         return found
 
     def entry(self, task: str) -> ContestTask | None:
@@ -638,17 +644,6 @@ class ContestDefinition(Model):
             if entry.id == task:
                 return letters(index)
         return None
-
-    def marks_of(self, entry: ContestTask) -> int | None:
-        """How many submissions a row may mark: the entry's, or 1 when a
-        marked board covers the task, or none.
-        """
-        if entry.marks is not None:
-            return entry.marks
-        marked = any(
-            board.select is Select.MARKED and board.covers(entry.id) for board in self.leaderboards
-        )
-        return 1 if marked else None
 
 
 def letters(index: int) -> str:
@@ -1087,12 +1082,19 @@ def _is_text(value: object) -> bool:
     return isinstance(value, str)
 
 
-def _old_select(value: object) -> bool:
-    return value in ("latest", "selected", "first_accepted")
+def _is_list(value: object) -> bool:
+    return isinstance(value, list)
 
 
-def _old_order(value: object) -> bool:
-    return isinstance(value, dict) and bool({"metric", "key", "direction"} & set(value))
+_OLD_BOARDS = (
+    "Leaderboards are now keyed by name, each with its columns written as blocks, such as "
+    "standings: {columns: {...}, sort: [...], display: [...]}. Write each board under its "
+    "name."
+)
+_OLD_BOARD_KEY = (
+    "A leaderboard is now its columns, written as blocks, with sort, display and audience. "
+    "Write which submission counts and how rows rank as columns, and remove this."
+)
 
 
 WAYS_REPLACED = (
@@ -1133,37 +1135,28 @@ CONTEST_RETIRED = (
         ("tasks", ANY, "points"),
         "This is now called worth. Give the task's worth instead, and remove this.",
     ),
-    Retired(
-        ("leaderboards", ANY, "stage"),
-        "This setting is no longer used: a leaderboard counts test groups, chosen by which "
-        "results it counts. Remove this.",
+    Retired(("leaderboards",), _OLD_BOARDS, _is_list),
+    *(
+        Retired(("leaderboards", ANY_KEY, key), _OLD_BOARD_KEY)
+        for key in (
+            "name",
+            "tasks",
+            "over",
+            "select",
+            "order",
+            "who",
+            "rows",
+            "stage",
+            "combine",
+            "visibility",
+            "freeze_at",
+            "team_only",
+        )
     ),
     Retired(
-        ("leaderboards", ANY, "combine"),
-        "This setting is no longer used: a leaderboard adds up its tasks. Remove this.",
-    ),
-    Retired(
-        ("leaderboards", ANY, "visibility"),
-        "This is now who the leaderboard is shown to: organisers, entrants or everyone. "
-        "Set that instead, and remove this.",
-    ),
-    Retired(("leaderboards", ANY, "freeze_at"), "Leaderboards no longer freeze. Remove this."),
-    Retired(
-        ("leaderboards", ANY, "team_only"),
-        "This setting is no longer used: a leaderboard always ranks the contest's entrants. "
-        "Remove this.",
-    ),
-    Retired(
-        ("leaderboards", ANY, "select"),
-        "Choose which submission counts: the best submission, the best submission on each "
-        "group, or the best of the submissions an entrant marks.",
-        _old_select,
-    ),
-    Retired(
-        ("leaderboards", ANY, "order", ANY),
-        "Rank by points, by penalty minutes, or by a value the tasks report. Which way a "
-        "value ranks is set by its workflow, not here.",
-        _old_order,
+        ("freeze_at",),
+        "Leaderboards no longer freeze: give the contest a hold, from a time until a time "
+        "or until staff end it. Remove this.",
     ),
 )
 
@@ -1211,21 +1204,32 @@ TASK_RETIRED = (
 )
 
 
-IGNORED_ON_READ = ("on_system_error",)
+IGNORED_ON_READ = ("on_system_error", "freeze_at")
 """Retired contest keys that nothing took the place of, so a stored file that
 still holds one reads with it ignored, and only a save that has it is
-refused, naming it."""
+refused, naming it. Leaderboards written in the old list form are ignored
+on read the same way (`_old_boards`): a stored contest reads with no boards
+until a save writes them as columns."""
+
+
+def _old_boards(document: dict[str, Any]) -> bool:
+    return isinstance(document.get("leaderboards"), list)
 
 
 def parse_contest(text: bytes | str, *, saved: bool = False) -> ContestDefinition:
     """The `contest.yaml` in `text`, read, or, `saved`, as a save of it is
-    checked: a key of `IGNORED_ON_READ` is ignored on read and refused in a
-    save. Raises `InvalidDefinition` listing every problem with its YAML
-    path.
+    checked: a key of `IGNORED_ON_READ`, or leaderboards in the old list
+    form, is ignored on read and refused in a save. Raises
+    `InvalidDefinition` listing every problem with its YAML path.
     """
     document = load_mapping(CONTEST_FILE, text)
     if not saved:
-        document = {key: value for key, value in document.items() if key not in IGNORED_ON_READ}
+        old = _old_boards(document)
+        document = {
+            key: value
+            for key, value in document.items()
+            if key not in IGNORED_ON_READ and not (old and key == "leaderboards")
+        }
     return validate(ContestDefinition, CONTEST_FILE, document, CONTEST_RETIRED)
 
 
@@ -1373,7 +1377,8 @@ def starter_contest(name: str, now: datetime) -> bytes:
     """The `contest.yaml` a new contest is created with: titled `name`, a
     draft seen by anyone signed in, open to register with manual approval,
     starting on the first full hour at least seven days after `now` and
-    running five hours, with one board shown to contestants and no tasks.
+    running five hours, with no leaderboards and no tasks, since a board's
+    columns read tasks the contest does not have yet.
     """
     week_on = now.astimezone(UTC) + timedelta(days=7)
     start = week_on.replace(minute=0, second=0, microsecond=0)
@@ -1387,9 +1392,6 @@ start: {stamp(start)}
 end: {stamp(end)}
 state: draft
 visibility: signed-in
-leaderboards:
-  - name: Standings
-    who: contestants
 """.encode()
 
 

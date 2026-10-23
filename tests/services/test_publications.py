@@ -170,7 +170,7 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
         results_change=False,
         summary="Nobody's result changes.",
         runs_again=("No submission runs again: this is the task's first publication.",),
-        scores=("Points: main is worth up to 100.", "sum now counts on the leaderboard Standings."),
+        scores=("Points: main is worth up to 100.",),
         reading=("Entrants read the task from its release.",),
     )
     (saved,) = acme.fake.calls_to("save_files")

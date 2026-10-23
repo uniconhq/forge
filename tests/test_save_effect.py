@@ -24,9 +24,14 @@ tasks:
   - id: sum
   - id: other
 leaderboards:
-  - {name: Standings}
-  - {name: Live, over: live}
-  - {name: Other, tasks: [other]}
+  standings:
+    title: Standings
+    columns:
+      sum_total: {value: [{block: latest, from: {results: sum}}, total]}
+  other_board:
+    title: Other
+    columns:
+      other_total: {value: [{block: latest, from: {results: other}}, total]}
 """
 )
 
@@ -74,13 +79,13 @@ def test_a_save_that_changes_nothing_says_so_in_each_part() -> None:
     )
 
 
-def test_a_moved_total_names_the_group_with_its_old_points_and_scores_every_board_again() -> None:
+def test_a_moved_total_names_the_group_with_its_old_points_and_scores_every_result_again() -> None:
     effect = _effect(_task("  main: {each: 110}\n  large: {pass: 50, show: after_close}\n"))
 
     assert effect.results_change is True
     assert effect.scores == (
         "Points: main is now worth up to 110 (was 100).",
-        "Every result is scored again, and the leaderboards Standings and Live with them.",
+        "Every result is scored again.",
     )
 
 
@@ -94,7 +99,7 @@ def test_a_mix_whose_parts_move_together_says_its_points_alone() -> None:
 
     assert effect.scores == (
         "Points: main is now worth up to 110 (was 100).",
-        "Every result is scored again, and the leaderboards Standings and Live with them.",
+        "Every result is scored again.",
     )
 
 
@@ -142,9 +147,7 @@ def test_a_new_mix_of_rules_says_how_the_group_earns_now_and_before() -> None:
     )
 
 
-def test_credit_weights_and_show_are_each_said_and_a_show_change_moves_a_live_boards_count() -> (
-    None
-):
+def test_credit_weights_and_show_are_each_said() -> None:
     after = _task(
         "  main: {each: 100, test_weights: {'1': 2}}\n  large: {pass: 50}\n",
         extra="credit: fraction\n",
@@ -157,8 +160,7 @@ def test_credit_weights_and_show_are_each_said_and_a_show_change_moves_a_live_bo
         "What each test earns: the fraction it reports, from 0 to 1 (was all or nothing, as it "
         "passes or fails).",
         "Results of large shown right away (was once the task closes).",
-        "Every result is scored again, and the leaderboards Standings and Live with them.",
-        "A change to when entrants see results changes what the leaderboard Live counts of sum.",
+        "Every result is scored again.",
     )
     assert effect.results_change is True
 
@@ -218,9 +220,7 @@ def test_a_removed_group_and_the_submission_limits_are_said_and_the_limits_move_
         (12, "12 submissions are graded again: the input of test 1 in the group main changed."),
     ],
 )
-def test_a_grading_change_counts_what_runs_again_and_counts_the_boards_again(
-    regrades: int, said: str
-) -> None:
+def test_a_grading_change_counts_what_runs_again(regrades: int, said: str) -> None:
     effect = _effect(
         BEFORE,
         changes=("The input of test 1 in the group main changed.",),
@@ -229,7 +229,7 @@ def test_a_grading_change_counts_what_runs_again_and_counts_the_boards_again(
     )
 
     assert (effect.summary, effect.runs_again) == ("Results change.", (said,))
-    assert effect.scores == ("The leaderboards Standings and Live are counted again.",)
+    assert effect.scores == ("No score changes.",)
 
 
 def test_a_grading_change_that_regrades_none_of_the_submissions_made_says_so() -> None:
@@ -272,7 +272,7 @@ def test_a_latest_publication_that_no_longer_reads_is_not_taken_for_a_first_one(
     assert effect.scores == (
         "The latest publication's settings no longer read, so its scores cannot be compared: "
         "every result is scored as this save says.",
-        "Every result is scored again, and the leaderboards Standings and Live with them.",
+        "Every result is scored again.",
     )
     assert effect.reading == ("The statement changes.",)
     assert effect.results_change is True
@@ -292,18 +292,14 @@ def test_what_entrants_read_is_the_title_the_statement_and_the_files_beside_it()
     assert effect.results_change is False
 
 
-def test_a_first_publication_lists_each_groups_points_and_the_boards_it_joins() -> None:
+def test_a_first_publication_lists_each_groups_points() -> None:
     effect = _effect(BEFORE, before=None, graded=False)
 
     assert effect == SaveEffect(
         results_change=False,
         summary="Nobody's result changes.",
         runs_again=("No submission runs again: this is the task's first publication.",),
-        scores=(
-            "Points: main is worth up to 100 and large up to 50.",
-            "sum now counts on the leaderboard Standings.",
-            "sum now counts on the leaderboard Live.",
-        ),
+        scores=("Points: main is worth up to 100 and large up to 50.",),
         reading=("Entrants read the task from its release.",),
     )
 
@@ -389,7 +385,7 @@ def test_a_run_tasks_values_are_named_as_they_change_with_what_they_read() -> No
         "The value tries is new.",
         "The value st2 changes with st2_tests.",
         "The value total is worked out another way.",
-        "Every result is scored again, and the leaderboards Standings and Live with them.",
+        "Every result is scored again, and the leaderboard Standings with it.",
     )
 
 
@@ -410,7 +406,7 @@ def test_a_value_gone_a_group_gone_and_what_is_shown_when_are_each_said() -> Non
         "The value st1 is gone.",
         "Entrants see total as soon as a grading ends (was at the reveal).",
         "Entrants no longer see st1 (was at the reveal).",
-        "Every result is scored again, and the leaderboards Standings and Live with them.",
+        "Every result is scored again, and the leaderboard Standings with it.",
     )
 
 
@@ -427,10 +423,7 @@ def test_a_run_task_moving_only_what_is_shown_scores_nothing_again() -> None:
     assert not any("scored again" in line for line in effect.scores)
     assert (untouched.results_change, untouched.scores) == (False, ("No score changes.",))
     assert not ungraded.results_change
-    assert first.scores == (
-        "sum now counts on the leaderboard Standings.",
-        "sum now counts on the leaderboard Live.",
-    )
+    assert first.scores == ("sum now counts on the leaderboard Standings.",)
 
 
 def test_a_task_file_shown_at_another_time_is_said_under_what_entrants_read_alone() -> None:

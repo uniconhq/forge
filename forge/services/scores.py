@@ -38,7 +38,6 @@ from sqlalchemy import select
 from forge.db.tables import Grading
 from forge.db.tables.gradings import FRONT, LATE
 from forge.domain.blocks.numbers import Better
-from forge.domain.boards import State
 from forge.domain.definitions import (
     TASK_FILE,
     ContestDefinition,
@@ -60,7 +59,7 @@ from forge.domain.run_results import (
     run_grading,
     worked_out,
 )
-from forge.domain.scoring import ONE, Scored, best_of, late_factor, rule_weight, score
+from forge.domain.scoring import ONE, Scored, State, best_of, late_factor, rule_weight, score
 from forge.domain.showing import Graded, under
 from forge.domain.step_data import unreported
 from forge.domain.yaml_models import InvalidDefinition

@@ -23,9 +23,8 @@ steps in order, and refuses before anything is written.
    graded submission ran under nor is left unsaid on a group added once the
    task has a graded submission (T7, T10); and a task that gives no points
    is refused while its contest's entry for it gives it a `worth` or a
-   `due`; and every board covering the task gets what it asks of it, beside
-   the other covered tasks as their latest publications stand (check 10,
-   T8, `boards.check_task`). A workflow is named `<owner>/<name>`, the owner an org by its name or a
+   `due`. What a leaderboard asks of the task is checked across files in
+   stage 5's phase 5.7. A workflow is named `<owner>/<name>`, the owner an org by its name or a
    person by their username; when the latest publication used a workflow of
    that name and it is now another workflow, by the forge's own id for it,
    the state is refused at that line, since the owner may have been renamed
@@ -44,8 +43,8 @@ steps in order, and refuses before anything is written.
    (`run_task.check_run_task`), reading each `program.yaml` the task gives
    and keeping its runs' ids from the latest publication's runs file; what
    its `show` listed under a publication a graded submission ran under is
-   not listed later or dropped; and its contest gives it no `worth`, `due`
-   or board until leaderboards come.
+   not listed later or dropped; and its contest gives it no `worth` or
+   late share, since a leaderboard reads its values instead.
 3. What the save changes about how the task grades is worked out against
    the latest publication: its plan and the digests of the task's files the
    plan names. Groups, rule weights, `show`, `credit` and `submissions` are
@@ -75,10 +74,9 @@ steps in order, and refuses before anything is written.
    workflow each workflow name was, what the task's sealed steps hold back
    until its reveal, and what each value it reports means. The save answers
    with what it did, in the same words a running contest asks with (M66):
-   each group's most points where they moved, the boards it joins or counts
-   again, and those whose scope a `show` change moves; and notes the task's
-   reveal and each board ranking `points` that counts nothing from it (T9).
-   When another
+   each group's most points where they moved, and the boards reading a value
+   it moves or, on a first publication, reading the task; and notes the
+   task's reveal. When another
    save landed between the check and the write, the change holds files this
    save never checked, so it is kept as a draft instead, saying so, and the
    next save checks and publishes the task as it then stands.
@@ -110,7 +108,6 @@ from forge.db.tables import Grading
 from forge.db.tables.gradings import FRONT
 from forge.domain.blocks.catalogue import EXEC
 from forge.domain.blocks.evaluate import blocks_in
-from forge.domain.board_checks import Covered, covered
 from forge.domain.content import (
     ConflictToken,
     Edit,
@@ -225,7 +222,6 @@ from forge.port.uploads import TaskPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
-    boards,
     entries,
     gradings,
     names,
@@ -752,9 +748,6 @@ async def check(
         )
     except InvalidDefinition as invalid:
         return Checked(definition, None, tuple(invalid.errors), pins)
-    refused = await _boards(ctx, task, definition, compiled)
-    if refused:
-        return Checked(definition, None, tuple(refused), pins)
     return Checked(definition, compiled, (), pins)
 
 
@@ -802,7 +795,7 @@ async def _check_runs(
     the task against it (`check_run_task`), each manifest the task gives
     read from the saved state, the ids of its runs kept from the latest
     publication's runs file; then what was shown is not hidden again, and
-    the contest's entry and boards ask nothing a run task cannot give yet;
+    the contest's entry asks nothing a run task cannot give;
     then its plan (`plan_runs`, SIMPLER-CORE.md 11), pinned to that commit,
     with the size and hash of every file a step is given.
     """
@@ -852,9 +845,6 @@ async def _check_runs(
     if problems:
         return Checked(definition, None, tuple(problems), pins)
     assert found.task is not None, "check_run_task gives a task whenever it finds nothing wrong"
-    refused = await _boards(ctx, task, definition, None)
-    if refused:
-        return Checked(definition, None, tuple(refused), pins)
     named = files_named(workflow, found.task)
     planned = plan_runs(
         definition,
@@ -1038,33 +1028,13 @@ async def _format_kept(
     ]
 
 
-async def _boards(
-    ctx: Context, task: TaskId, definition: TaskDefinition, compiled: Compiled | None
-) -> builtins.list[Problem]:
-    """T8: what each board covering the task asks of it as saved."""
-    contest = await _contest(ctx, task)
-    name = (await names.names_of(ctx, [task])).get(task)
-    if contest is None or name is None:
-        return []
-    return await boards.check_task(
-        ctx, contest_id_of(task_scope(task)), contest, name, _shape(definition, compiled)
-    )
-
-
-def _shape(definition: TaskDefinition, compiled: Compiled | None) -> Covered:
-    """The task as a board reads it; a run task gives a board nothing yet."""
-    if compiled is None:
-        return covered({}, {}, runs=definition.runs)
-    return covered(compiled.measures, definition.test_groups, compiled.meanings)
-
-
 async def _report(
     ctx: Context, task: TaskId, definition: TaskDefinition, checked: Checked
 ) -> builtins.list[str]:
-    """T9 beside what the save's effect says: the task's reveal in words
-    when it hides anything (a group not shown at once, or a sealed step),
-    and each board ranking `points` that counts nothing from the task. Each
-    group's most points, and the boards the save moves, are the effect's.
+    """The note beside what the save's effect says: the task's reveal in words
+    when it hides anything (a group not shown at once, or a sealed step).
+    Each group's most points, and the boards the save moves, are the
+    effect's.
     """
     contest = await _contest(ctx, task)
     name = (await names.names_of(ctx, [task])).get(task)
@@ -1085,7 +1055,6 @@ async def _report(
         found.append(
             f"{name} shows its hidden results on {in_words(reveal_of(contest, entry, extensions))}."
         )
-    found += boards.task_notes(contest, name, _shape(definition, compiled))
     return found
 
 
@@ -1399,9 +1368,9 @@ async def _contest_points(
             problems.extend(
                 Problem(
                     path="scoring",
-                    message=f"{name} is scored by its runs, and gives no points until "
-                    f"leaderboards come, but the contest {line}. Remove that from the contest "
-                    "first.",
+                    message=f"{name} is scored by its runs and gives no points, since a "
+                    f"leaderboard reads its values, but the contest {line}. Remove that from the "
+                    "contest first.",
                 )
                 for line in said
             )
