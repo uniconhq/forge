@@ -63,8 +63,6 @@ from forge.domain.errors import (
 )
 from forge.domain.grading import (
     BOXED_SHAPE,
-    EARLY_LANE,
-    LATE_LANE,
     LOST_CHECK_AFTER,
     MACHINE_WAIT,
     NEVER_BEGAN,
@@ -279,8 +277,9 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     assert acme.fake.ci.runs[RunId(early.run_id)].task == dispatch_of("acme")
     assert await _rows(setup, "late") == []
     save, first = asked
-    assert (save["labels"], save["clone"]) == ([PLATFORM_POOL, SMALL, LATE_LANE], None)
-    assert first["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL, EARLY_LANE]
+    # Every pipeline takes any slot of its size, first come, first served.
+    assert (save["labels"], save["clone"]) == ([PLATFORM_POOL, SMALL], None)
+    assert first["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL]
     assert first["clone"]["image"] == setup.settings.plugin_git_image
     assert first["clone"]["submission"] == early.submission_id
     user = early.run_user
@@ -303,7 +302,7 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     assert (late.early_id, late.attempt, late.status) == (early.id, 1, GradingStatus.DISPATCHED)
     assert late.idempotency_key is None
     assert [step[0] for step in _steps(asked[-1])] == ["solution", "compare", "report"]
-    assert asked[-1]["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL, LATE_LANE]
+    assert asked[-1]["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL]
     await _step(setup, acme, late.id, "late", "solution", _batch())
     await _step(setup, acme, late.id, "late", "compare", _batch(score=True))
     assert await _report(setup, late.id, "late") is GradingStatus.DONE
