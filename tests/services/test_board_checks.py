@@ -276,6 +276,27 @@ async def test_each_refusal_at_a_tasks_save(
     assert isinstance(await _save(setup, acme, task, MARKED), Published)
 
 
+async def test_a_tasks_save_says_each_refusal_once_when_a_column_reads_the_value_twice(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    task = await _live(setup, acme)
+    twice = _column(
+        "{block: add, of: [{value: [{block: latest, from: {results: islands}}, review]}, "
+        "{value: [{block: first, from: {results: islands}}, review]}]}"
+    )
+    await _write(setup, acme, DRAFT + twice)
+
+    saved = await _save(setup, acme, task, TASKS["islands"][0])
+
+    assert _errors(saved) == [
+        (
+            "scoring.values",
+            "The leaderboard s reads review of islands in its column c, so islands must keep a "
+            "value called review. Take it out of that column first.",
+        )
+    ]
+
+
 async def test_the_holds_from_stays_inside_the_contest_and_is_never_set_to_a_time_passed(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
@@ -335,6 +356,17 @@ async def test_a_board_reading_a_value_a_save_still_checked_drops_is_refused_unt
             "islands has no value called graded. Its values are sample_score, sample_time, st1, "
             "st2 and total. A leaderboard also reads the facts attempt, seconds, seconds_late, "
             "marked and compiled. " + boards.CHECKING.format(task="islands"),
+        )
+    ]
+    # A value neither gives is refused once, as the live one says it.
+    assert await _refused(
+        setup, acme, DRAFT + _column("{value: [{block: latest, from: {results: islands}}, nope]}")
+    ) == [
+        (
+            "leaderboards.s.columns.c.value[1]",
+            "islands has no value called nope. Its values are graded, review, sample_score, "
+            "sample_time, st1, st2 and total. A leaderboard also reads the facts attempt, "
+            "seconds, seconds_late, marked and compiled.",
         )
     ]
     # Once its check is refused it never takes over, and the live one gives

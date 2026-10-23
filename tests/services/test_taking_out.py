@@ -12,6 +12,7 @@ by hand reads the same way.
 """
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -289,6 +290,21 @@ async def test_a_task_is_put_back_in_a_contest_stored_with_old_leaderboards(
     settings = await _settings(acme)
     assert b"withdrawn" not in settings
     assert settings.endswith(old.encode())
+
+
+async def test_a_task_is_put_back_while_a_hold_saved_before_its_from_holds(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    """The hold is checked against the settings before, so a `from` that
+    has come since it was saved is not one the put-back sets."""
+    await three(setup, acme, STANDINGS + "hold: {from: 2026-09-26T13:00:00Z, until: staff}\n")
+    manager = await _manager(setup, acme)
+    await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
+    await take_out(setup, manager, entered.task, TakeOut.WITHDRAW)
+    clock.advance(timedelta(hours=1, minutes=30))
+
+    assert (await put_back(setup, manager, entered.task)).notes == ()
+    assert b"withdrawn" not in await _settings(acme)
 
 
 async def test_a_removal_waits_for_a_submit_in_flight_and_then_withdraws_nothing(

@@ -1452,6 +1452,8 @@ def test_a_hold_set_or_moved_to_a_time_passed_is_refused_and_one_left_as_it_was_
 
     assert hold_problems(standing, _hold("12:00"), now) == []
     assert hold_problems(standing, _hold("13:00"), now) == []
+    # A from at this very moment has passed too.
+    assert [path for path, _ in hold_problems(None, _hold("12:30"), now)] == [("hold", "from")]
     for before in (None, contest(""), _hold("13:00")):
         found = hold_problems(before, _hold("12:00"), now)
         assert found == [
@@ -1509,8 +1511,21 @@ LATEST = {"block": "latest", "from": results("a")}
         ),
         ({"p": PICK, "c": read("p", "nope")}, "leaderboards.s.columns.c.value.1", "nope"),
         ({"c": read(LATEST, "nope")}, "leaderboards.s.columns.c.value.1", "nope"),
+        # Through a pick column read as a column, and through otherwise of
+        # picks.
+        (
+            {"p": PICK, "c": read({"column": "p"}, "nope")},
+            "leaderboards.s.columns.c.value.1",
+            "nope",
+        ),
+        (
+            {"c": read({"block": "otherwise", "of": [LATEST, PICK]}, "nope")},
+            "leaderboards.s.columns.c.value.1",
+            "nope",
+        ),
         # A choice reading a mark: a pick's by and where, directly, through
-        # a value or through another column; a fold's where; max's and sum's of.
+        # a value or through columns; a fold's where; max's, min's and sum's
+        # of.
         (
             {"p": {"block": "highest", "from": results("a"), "by": read("a", "review")}},
             "leaderboards.s.columns.p.by",
@@ -1541,6 +1556,20 @@ LATEST = {"block": "latest", "from": results("a")}
             "leaderboards.s.columns.p.where",
             "by graded",
         ),
+        # Through a column reading another column that reads the mark.
+        (
+            {
+                "g": {"block": "otherwise", "of": [read(LATEST, "graded"), 0]},
+                "h": {"column": "g"},
+                "p": {
+                    "block": "first",
+                    "from": results("a"),
+                    "where": {"block": "gt", "of": [{"column": "h"}, 1]},
+                },
+            },
+            "leaderboards.s.columns.p.where",
+            "by graded",
+        ),
         (
             {"c": {"block": "count", "over": results("a"), "where": read("a", "review")}},
             "leaderboards.s.columns.c.where",
@@ -1551,11 +1580,28 @@ LATEST = {"block": "latest", "from": results("a")}
             "leaderboards.s.columns.c.of",
             "max chooses",
         ),
+        (
+            {"c": {"block": "min", "over": results("a"), "of": read("a", "review")}},
+            "leaderboards.s.columns.c.of",
+            "min chooses",
+        ),
         # A sum leaves out each submission whose of is missing, so one not
         # yet marked would never be counted.
         (
             {"c": {"block": "sum", "over": results("a"), "of": read("a", "review")}},
             "leaderboards.s.columns.c.of",
+            "sum chooses",
+        ),
+        (
+            {
+                "c": {
+                    "block": "sum",
+                    "over": results("a"),
+                    "of": read("a", "total"),
+                    "where": read("a", "review"),
+                }
+            },
+            "leaderboards.s.columns.c.where",
             "sum chooses",
         ),
         # best_each: a value reading a fact, runs, or a mark directly; a
