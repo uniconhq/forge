@@ -1492,10 +1492,10 @@ class _Planner:
     def _early_once(self, any_early: bool, *, released: bool = False) -> set[str]:
         """The steps done once per grading in the early pipeline: every one
         when a run is early, since every run's verdict reads each; when none
-        is but a value shown `now` reads `compiled`, those that can give a
-        compile error, which `compiled` reads, and the steps done once per
-        grading they read, a tainted one among them refused (`refusals`);
-        otherwise none.
+        is but `compiled`, or a value reading it, is shown `now`, those
+        that can give a compile error, which `compiled` reads, and the steps
+        done once per grading they read, a tainted one among them refused
+        (`refusals`); otherwise none.
         """
         once = [step.id for step in self.workflow.steps if self.classes[step.id] == "grading_once"]
         if any_early:
@@ -1678,8 +1678,8 @@ class _Planner:
     def refusals(self) -> list[Problem]:
         """A value or group shown during the contest that reads runs behind
         a tainted step done once per grading, which every run reads (11.4);
-        and a value shown then that reads `compiled` when it cannot be known
-        before the hidden runs, or tells of a tainted compile.
+        and `compiled`, or a value reading it, shown then when it cannot be
+        known before the hidden runs, or tells of a tainted compile.
         """
         tainted = next(
             (
@@ -1697,10 +1697,7 @@ class _Planner:
                 why = "every run reads " + ", which reads ".join(f"`{step}`" for step in chain)
                 why += f", which runs the entrant's code beside {_words(beside)}"
                 why += _UNSHOWN.format(entry=entry)
-            elif (
-                entry in self.task.values.reads
-                and COMPILED in self.task.values.through(entry).facts
-            ):
+            elif self.task.reads_compiled(entry):
                 why = self._compiled_problem(entry)
             else:
                 continue
@@ -1715,11 +1712,12 @@ class _Planner:
         return problems
 
     def _compiled_problem(self, entry: str) -> str:
-        """Why `compiled`, which `entry` reads, cannot be shown during the
-        contest: the step that can give a compile error runs once per run,
-        or there is no such step done once per grading, so it would wait
-        for the hidden runs; or that step is tainted. None when it can.
+        """Why `compiled`, which `entry` is or reads, cannot be shown during
+        the contest: the step that can give a compile error runs once per
+        run, or there is no such step done once per grading, so it would
+        wait for the hidden runs; or that step is tainted. None when it can.
         """
+        but = "" if entry == COMPILED else f"it reads `{COMPILED}`, but "
         per_run = [
             step.id
             for step in self.workflow.steps
@@ -1728,23 +1726,21 @@ class _Planner:
         ]
         if per_run:
             return (
-                f"it reads `{COMPILED}`, but `{per_run[0]}`, which can give a compile error, runs "
-                f"once per run, so `{COMPILED}` is known only once every run has run, the hidden "
-                "ones too"
+                f"{but}`{per_run[0]}`, which can give a compile error, runs once per run, so "
+                f"`{COMPILED}` is known only once every run has run, the hidden ones too"
             )
         once = self._compilers()
         if not once:
             return (
-                f"it reads `{COMPILED}`, but no step done once per grading can give a compile "
-                f"error, so `{COMPILED}` is known only once the whole grading ends, its hidden "
-                "runs too"
+                f"{but}no step done once per grading can give a compile error, so `{COMPILED}` "
+                "is known only once the whole grading ends, its hidden runs too"
             )
         tainted = next((step for step in once if self.bound[(step, None)].tainted), None)
         if tainted is None:
             return ""
         chain, beside = self._chain(tainted, None)
         return (
-            f"it reads `{COMPILED}`, from "
+            ("it comes from " if entry == COMPILED else f"it reads `{COMPILED}`, from ")
             + ", which reads ".join(f"`{step}`" for step in chain)
             + f", which runs the entrant's code beside {_words(beside)}"
             + _UNSHOWN.format(entry=entry)

@@ -988,6 +988,34 @@ def test_compiled_with_no_step_done_once_that_can_fail_to_compile_is_refused(
     }
 
 
+def test_compiled_shown_by_its_name_is_refused_as_a_value_reading_it_is(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = BUILT_TASK.replace("now: [built, samples/]", "now: [compiled, samples/]")
+
+    problems = refused(built(primitives, task))
+
+    assert problems == {
+        "scoring.show.now[0]": [
+            "compiled cannot be shown as soon as a grading ends: it comes from `compile`, which "
+            "runs the entrant's code beside `grader/`, which entrants are not shown during the "
+            "contest, so compiled could tell them about it. Show compiled after_close instead."
+        ]
+    }
+    shown = BUILT_TASK.replace("now: [built, samples/]", "now: [compiled, samples/, grader/]")
+    assert laid_out(ok(built(primitives, shown))) == {
+        "early": [("compile", None, ())],
+        "late": [("run", ("r1", "r2"), ())],
+    }
+    assert refused(built(primitives, shown, LINKED)) == {
+        "scoring.show.now[0]": [
+            "compiled cannot be shown as soon as a grading ends: no step done once per grading "
+            "can give a compile error, so `compiled` is known only once the whole grading ends, "
+            "its hidden runs too. Show compiled after_close instead."
+        ]
+    }
+
+
 PER_LANGUAGE = """\
 inputs:
   code: folder

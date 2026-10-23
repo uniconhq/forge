@@ -695,6 +695,24 @@ def test_a_value_reading_an_entered_mark_waits_by_show_and_compiled_with_no_grou
     assert column("p", "c", {"a": [grading]}, tries).waiting == {("a", 1)}
 
 
+def test_compiled_listed_by_its_name_reads_on_a_board_with_no_group_shown() -> None:
+    # Item 124: show lists compiled by its name, so a board reads it, and
+    # it waits while the submission grades, with no group shown.
+    text = ISLANDS_TASK.replace(
+        "now: [sample_score, sample_time, sample_tests, samples/]", "now: [compiled, sample_score]"
+    )
+    scoring = parse_task(text).scoring
+    assert scoring is not None
+    values, compiled = listed_now(scoring, ("now",))
+    grading = grading_seen(1, {}, scoring.values, values, compiled)
+    graded = results_seen(1, {}, [], 0, scoring.values, values, compiled)
+
+    assert compiled and "compiled" in grading.waiting
+    assert graded.numbers["compiled"] == 0 and "compiled" not in graded.hidden
+    tries = {"block": "count", "over": results("a"), "where": read("a", "compiled")}
+    assert column("p", "c", {"a": [graded]}, tries).number == 0
+
+
 def test_what_the_cells_counted_is_listed_by_row_number_board_and_column() -> None:
     # What the grading queue lists, and when an entry may show (#505).
     text = GRADEBOOK + (

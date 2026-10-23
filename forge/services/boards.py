@@ -403,7 +403,7 @@ async def _results(
     revealed = ctx.now >= reveal_of(settings, entry, extensions.values())
     released = not viewer.staff and await published.results_released(ctx, task.id)
     times = run_showing.times_of(revealed=revealed, released=released)
-    values_listed, runs_listed = listed_now(scoring, times)
+    values_listed, compiled_listed = listed_now(scoring, times)
     found: dict[WorkspaceOwner, list[Loaded]] = {}
     for workspace, number, first, counted in read:
         owner = workspaces[WorkspaceId(workspace)]
@@ -422,7 +422,9 @@ async def _results(
                 waiting = frozenset({*scoring.values, "compiled"})
                 results = Submitted(number, numbers, waiting)
             else:
-                results = grading_seen(number, numbers, scoring.values, values_listed, runs_listed)
+                results = grading_seen(
+                    number, numbers, scoring.values, values_listed, compiled_listed
+                )
             listed_of.append(Loaded(first.submitted_at, results))
             continue
         scored = await scores.run_scored(
@@ -462,7 +464,7 @@ async def _results(
                 shown.compiled,
                 scoring.values,
                 values_listed,
-                runs_listed,
+                compiled_listed,
             )
         listed_of.append(Loaded(first.submitted_at, results))
     return found

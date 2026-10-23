@@ -158,7 +158,17 @@ SKIP = "skip"
 """A fold's `missing` that leaves out a run whose report is missing."""
 ALL = "all"
 """The group every task has, every run, built in."""
-FACTS = ("attempt", "seconds", "seconds_late", "marked", "compiled")
+ROW_FACTS = ("attempt", "seconds", "seconds_late", "marked")
+"""The facts every viewer of a row reads with it, which a task's `show`
+needs no entry for, since none is a grading's: which of the row's
+submissions it is, when it was made and how late by the task's due, all
+known as it is made, and whether the row marked it (stage 5 section 6,
+item 124)."""
+SHOWN_FACTS = ("compiled",)
+"""The facts a grading gives, each listed in a task's `show` by its name,
+as a value is, so that anything a board reads of a task its `show` can
+show (item 124)."""
+FACTS = (*ROW_FACTS, *SHOWN_FACTS)
 """A submission's facts (the leaderboards note's 5.2), which a board's
 column reads beside its values."""
 TASK_FACTS = ("seconds_late", "seconds", "compiled")

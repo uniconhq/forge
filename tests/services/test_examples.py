@@ -186,9 +186,9 @@ def _judged(title: str, values: str, show: str, after: str = "") -> str:
 SOLVED = _judged(
     "Task",
     "    solved: {block: min, over: {runs: all}, of: {run: [all, score]}}\n",
-    "    now: [solved]\n",
+    "    now: [solved, compiled]\n",
 )
-"""ICPC's `a` and `b`: shows solved, the min of score, now."""
+"""ICPC's `a` and `b`: shows solved, the min of score, and compiled now."""
 SCORED = "    score: {block: sum, over: {runs: all}, of: {run: [all, score]}}\n"
 HOMEWORK = _judged("Homework", SCORED, "    now: [score]\n")
 FINAL = _judged("Final", SCORED, "    now: [score]\n", "submissions: {max: 1}\n")
@@ -403,23 +403,16 @@ async def test_ana_and_ben_rank_over_a_and_b_as_the_note_writes_through_the_hold
         "b_tries": 0,
         "b_time": 270,
     }
-    # Ben reads both rows live, one solve each, Ana first. The task shows
-    # solved and no runs, so `compiled` is not shown, and the tries, the
-    # times and the penalty that read it are hidden from anyone but
-    # staff (stage 5 section 6, items 82 and 93, left as the spec writes
-    # them): the penalty is no sort key for him, so no places.
-    assert _places(as_ben) == [("ana", None, 0), ("ben", None, 0)]
-    assert [_hidden(row) for row in as_ben.rows] == [
-        ["penalty", "a_tries", "a_time"],
-        ["penalty", "b_tries", "b_time"],
-    ]
-    assert [_numbers(row)["solved"] for row in as_ben.rows] == [1, 1]
-    assert [_numbers(row)["last_solve"] for row in as_ben.rows] == [21, 270]
-    assert as_ben.dropped == ("penalty",)
+    # Ben reads both rows live as staff do: the task shows compiled, so
+    # the tries, the times and the penalty that read it are shown to
+    # everyone (stage 5 section 6, item 124).
+    assert _places(as_ben) == _places(as_staff)
+    assert [_numbers(row) for row in as_ben.rows] == [_numbers(row) for row in as_staff.rows]
+    assert [_hidden(row) for row in as_ben.rows] == [[], []]
     # Ana sees Ben's `b` results empty: 0 solved and one held, and herself
     # first.
-    assert _places(as_ana) == [("ana", None, 0), ("ben", None, 1)]
-    assert _numbers(as_ana.rows[1])["solved"] == 0
+    assert _places(as_ana) == [("ana", 1, 0), ("ben", 2, 1)]
+    assert _numbers(as_ana.rows[1]) == dict.fromkeys(_numbers(as_ana.rows[1]), 0)
     assert as_ana.held_from == at(14, 0)
 
     manager = await organiser(setup, acme.fake, 7, CONTEST, Role.MANAGER)

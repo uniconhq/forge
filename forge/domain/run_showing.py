@@ -34,8 +34,9 @@ group to `now` (phase 4.10).
   the rows the entrant reads: each report `show` lists, by its name, once
   any run is shown (stage 5 section 6 item 30); one not listed never, nor
   one named like a group or a value, since the entry names that.
-  `compiled` is shown once any run is, since the shown runs' verdicts
-  already tell it.
+- **`compiled`** is shown from the time `show` lists it under, by its
+  name as a value is, and once any run is shown, since the shown runs'
+  verdicts already tell it (stage 5 section 6 item 124).
 - `staff` outputs never.
 
 A text is a reference to a stored output, which may be another entrant's
@@ -61,7 +62,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any, NamedTuple
 
-from forge.domain.blocks.catalogue import ALL
+from forge.domain.blocks.catalogue import ALL, SHOWN_FACTS
 from forge.domain.blocks.evaluate import SYSTEM_ERROR
 from forge.domain.content import named_by
 from forge.domain.definitions import Scoring
@@ -184,7 +185,7 @@ def shown(
         _once(
             [grading.once_early, grading.once_late] if seen else [], listed - show_names(scoring)
         ),
-        grading.compiled if seen else None,
+        grading.compiled if seen or listed & set(SHOWN_FACTS) else None,
         later(scoring, released=released) and not revealed,
     )
 

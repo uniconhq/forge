@@ -24,14 +24,16 @@ once anyone has submitted, the entrant's inputs and their types as they
 were. Then `scoring`: each group picks runs by values of repeated inputs the
 task fills and holds at least one; group and value names one set, none a
 path in the task; each value's blocks (`forge.domain.blocks.check`); and
-each `show` entry naming a group, a value, a report, a file or a folder, at
-one time only; the planner refuses a report done for each run, since only
-what the steps done once report is listed by itself (stage 5 section 6
-item 30).
+each `show` entry naming a group, a value, a fact a grading gives
+(`compiled`), a report, a file or a folder, at one time only, `compiled`
+no later than a group, whose runs' verdicts tell it; the planner refuses a
+report done for each run, since only what the steps done once report is
+listed by itself (stage 5 section 6 item 30).
 
 A run is early when a group shown `now` holds it, or a value shown `now`
-reads a group holding it, directly or through other values (11.3); a value
-shown `now` reading `compiled` makes the compile early even when no run is.
+reads a group holding it, directly or through other values (11.3);
+`compiled` shown `now`, or a value shown `now` reading it, makes the
+compile early even when no run is.
 `on_release` is late until staff release the task's results, so
 `RunTask.early` takes whether they are, and the plan holds both splits
 (`run_plan.ReleasedSplit`). A report is
@@ -56,7 +58,13 @@ from decimal import Decimal
 from typing import Any
 
 from forge.domain import exact_json
-from forge.domain.blocks.catalogue import ALL, EXEC, EXEC_MEMORY_LIMIT, EXEC_TIME_LIMIT
+from forge.domain.blocks.catalogue import (
+    ALL,
+    EXEC,
+    EXEC_MEMORY_LIMIT,
+    EXEC_TIME_LIMIT,
+    SHOWN_FACTS,
+)
 from forge.domain.blocks.check import ValuesCheck, check_names, check_values, same_value
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.blocks.numbers import Better
@@ -185,9 +193,10 @@ class RunsFile:
     """`plans/runs.json`: the id of every key the task has had, its runs as
     the version saved them, its entrant inputs' types and parts, the
     columns self-reported with the entrant inputs that make them so,
-    whether a value shown `now` reads `compiled`, and the values that read
-    a self-reported column, directly or through others, as the save
-    checked them (`RunTask.self_reported_values`), which a result marks;
+    whether `compiled`, or a value reading it, is shown `now`, and the
+    values that read a self-reported column, directly or through others,
+    as the save checked them (`RunTask.self_reported_values`), which a
+    result marks;
     and the runs each group or value listed under `now` or `on_release`
     reads (`RunTask.runs_read`), which a later save may not shrink once
     shown (SIMPLER-CORE.md 16); and of those values, the ones `show`
@@ -330,13 +339,16 @@ class RunTask:
         return frozenset(run for group in groups for run in self.groups.get(group, ()))
 
     def compile_early(self, *, released: bool = False) -> bool:
-        """Whether a value shown during the contest reads `compiled`, which
-        makes the compile early even when no run is.
+        """Whether `compiled` is shown during the contest, or a value shown
+        then reads it, which makes the compile early even when no run is.
         """
-        return any(
-            "compiled" in self.values.through(entry).facts
-            for entry in self.shown(released=released)
-            if entry in self.values.reads
+        return any(self.reads_compiled(entry) for entry in self.shown(released=released))
+
+    def reads_compiled(self, entry: str) -> bool:
+        """Whether the `show` entry `entry` is `compiled`, or a value that
+        reads it, directly or through others."""
+        return entry in SHOWN_FACTS or (
+            entry in self.values.reads and "compiled" in self.values.through(entry).facts
         )
 
     def early_programs(self, *, released: bool = False) -> frozenset[str]:
@@ -496,9 +508,11 @@ def canonical(key: Mapping[str, object]) -> str:
 
 
 def show_names(scoring: Scoring) -> set[str]:
-    """The entries of `scoring`'s `show` that name a group or a value, `all`
-    among them, rather than a task file."""
-    return {ALL, *scoring.groups, *scoring.values}
+    """The entries of `scoring`'s `show` that name a group, a value or a
+    fact a grading gives, `all` and `compiled` among them, rather than a
+    task file: every result a board reads of the task, beside the facts
+    that go with the row (`ROW_FACTS`, stage 5 section 6 item 124)."""
+    return {ALL, *scoring.groups, *scoring.values, *SHOWN_FACTS}
 
 
 def file_time(scoring: Scoring, path: str) -> str | None:
@@ -515,9 +529,10 @@ def file_time(scoring: Scoring, path: str) -> str | None:
 
 def read_later(scoring: Scoring, values: ValuesCheck) -> list[tuple[Path, str]]:
     """Each value `show` lists that reads, directly or through other
-    values, a value listed later than itself, or a group listed under
-    `on_release` while it is listed sooner, at its entry, since showing it
-    would give away what is shown later (stage 5 section 6 item 39). A
+    values, a value or `compiled` listed later than itself, or a group
+    listed under `on_release` while it is listed sooner, at its entry, since
+    showing it would give away what is shown later (stage 5 section 6 items
+    39 and 124). A
     value shown before the reveal may sum up runs a group shows at the
     reveal, as `reward` does over `all` (SIMPLER-CORE.md 9), which is why
     its runs run early. A name `show` does not list is free to read.
@@ -531,10 +546,12 @@ def read_later(scoring: Scoring, values: ValuesCheck) -> list[tuple[Path, str]]:
             reads = values.through(entry)
             later = sorted(
                 name
-                for name in (reads.values - {entry}) | reads.groups
+                for name in (reads.values - {entry})
+                | reads.groups
+                | (reads.facts & set(SHOWN_FACTS))
                 if name in listed
                 and OPENNESS[listed[name]] < OPENNESS[time]
-                and (name in reads.values or listed[name] == "on_release")
+                and (name not in reads.groups or listed[name] == "on_release")
             )
             for name in later:
                 found.append(
@@ -561,6 +578,22 @@ def _under_sooner(entry: str, time: str, show: ShowTimes) -> str | None:
                 return (
                     f"{entry} is in {folder}, which is shown {SHOWN_WORDS[folder_time]}, so "
                     f"{entry} is shown then too. Remove it here, or list {folder} later."
+                )
+    return None
+
+
+def _compiled_later(entry: str, time: str, scoring: Scoring) -> str | None:
+    """Why `compiled`, listed under `time`, cannot be: a group listed
+    under a sooner time shows it then, since its runs' verdicts tell it.
+    """
+    for group_time, entries in scoring.show.lists().items():
+        if OPENNESS[group_time] <= OPENNESS[time]:
+            continue
+        for group in entries:
+            if group == ALL or group in scoring.groups:
+                return (
+                    f"{group}, shown {SHOWN_WORDS[group_time]}, shows {entry} with its runs, "
+                    f"since their verdicts tell it. Remove {entry} here, or list {group} later."
                 )
     return None
 
@@ -1284,6 +1317,11 @@ class _Binder:
                     )
                     continue
                 seen[entry] = time
+                if entry in SHOWN_FACTS:
+                    problem = _compiled_later(entry, time, scoring)
+                    if problem is not None:
+                        self.refuse(at, problem)
+                    continue
                 if entry in names:
                     continue
                 if entry in self.checked.reports:
@@ -1308,8 +1346,8 @@ class _Binder:
         if problem is not None or not (folder or "/" in entry or entry in self.paths):
             return (
                 f"{entry} names no group, value, report, file or folder of the task. Give a "
-                "group, a value or a report by its name, a file by its path, or a folder with "
-                "a / at its end."
+                "group, a value, compiled or a report by its name, a file by its path, or a "
+                "folder with a / at its end."
             )
         if is_reserved(entry):
             return f"Unicon writes the files in {PLANS_FOLDER} itself, and serves none of them."

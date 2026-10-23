@@ -68,7 +68,7 @@ from fractions import Fraction
 from forge.domain.blocks.board_check import BoardColumn, BoardsCheck
 from forge.domain.blocks.board_evaluate import Cell, Submitted
 from forge.domain.blocks.bounds import Bounds
-from forge.domain.blocks.catalogue import ALL
+from forge.domain.blocks.catalogue import ALL, SHOWN_FACTS
 from forge.domain.definitions import BoardAudience, Hold, Leaderboard, Scoring
 from forge.domain.names import WorkspaceOwner
 from forge.domain.run_showing import ValueShown
@@ -232,11 +232,13 @@ def listed_now(scoring: Scoring, times: Collection[str]) -> tuple[frozenset[str]
     """What `show` lists of a task at the `times` that have come, as anyone
     but staff may read it on a board: its values, one reading an entered
     mark among them, since a cell reads a mark only on a submission it
-    counted (item 117), and whether it lists a group, which shows
-    `compiled` with its runs (item 82)."""
+    counted (item 117), and whether it lists `compiled`, or a group, which
+    shows `compiled` with its runs (items 82 and 124)."""
     listed = {name for time in times for name in scoring.show.lists()[time]}
     values = frozenset(name for name in scoring.values if name in listed)
-    return values, any(name == ALL or name in scoring.groups for name in listed)
+    return values, any(
+        name == ALL or name in scoring.groups or name in SHOWN_FACTS for name in listed
+    )
 
 
 def counted_in(
@@ -288,15 +290,15 @@ def results_seen(
     compiled: int | None,
     every: Collection[str],
     listed: Collection[str],
-    runs_listed: bool,
+    compiled_listed: bool,
 ) -> Submitted:
     """A graded submission as anyone but staff reads it: `own` the facts
     shown with the row, `values` what its entrant is shown of the task's
     `every` value now, a value waiting for staff among them, and `compiled`
     none while not shown. A value `listed` now that is not shown waits on
     runs still running or faulted, so it is waiting, as `compiled` is while
-    a group is listed, `runs_listed`: none tells which rows still grade
-    (item 97). Every other value is held back."""
+    it or a group is listed, `compiled_listed`: none tells which rows still
+    grade (item 97). Every other value is held back."""
     numbers = dict(own)
     waiting: set[str] = set()
     for value in values:
@@ -310,7 +312,7 @@ def results_seen(
     if compiled is not None:
         numbers["compiled"] = Fraction(compiled)
     else:
-        (waiting if runs_listed else hidden).add("compiled")
+        (waiting if compiled_listed else hidden).add("compiled")
     return Submitted(number, numbers, frozenset(waiting), frozenset(hidden))
 
 
@@ -319,14 +321,14 @@ def grading_seen(
     own: Mapping[str, Fraction],
     every: Collection[str],
     listed: Collection[str],
-    runs_listed: bool,
+    compiled_listed: bool,
 ) -> Submitted:
     """A submission still grading as anyone but staff reads it: each value
-    `listed` at a time that has come waiting, and `compiled` too when a
-    group is, `runs_listed`; every other value held back."""
+    `listed` at a time that has come waiting, and `compiled` too when it
+    or a group is, `compiled_listed`; every other value held back."""
     waiting = {name for name in every if name in listed}
     hidden = {name for name in every if name not in listed}
-    (waiting if runs_listed else hidden).add("compiled")
+    (waiting if compiled_listed else hidden).add("compiled")
     return Submitted(number, dict(own), frozenset(waiting), frozenset(hidden))
 
 
