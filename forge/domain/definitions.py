@@ -141,8 +141,8 @@ class Approval(StrEnum):
 
 class Show(StrEnum):
     """When contestants see a test group's results: as soon as a grading
-    ends; its outcome and points now and its tests at the task's reveal; or
-    everything but its name and its most points at the reveal.
+    ends; its outcome now and its tests at the task's reveal; or, but for
+    its name, everything at the reveal.
     """
 
     ALWAYS = "always"

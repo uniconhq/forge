@@ -33,9 +33,9 @@ retry, and a second failure waits for staff. A retry that never starts is
 started by the next read that finds the failure.
 
 Of a submission's attempts the latest that finished with a result counts,
-on the boards, for relative credit, to its row and against
-`submissions.max`, until a newer attempt finishes with one: a failure or a
-cancel never takes a result away (`scores.usable`).
+on the leaderboards, to its row and against `submissions.max`, until a
+newer attempt finishes with one: a failure or a cancel never takes a
+result away (`scores.usable`).
 
 A delayed submission, one with no result whose latest attempt reads as a
 system error, holds no place under `submissions.max` while it waits, so the
