@@ -5,23 +5,18 @@ publishes a change to how it grades are each one regrade, by what started
 it (`RegradeCause`). Each submission's latest attempt of it is compared with
 the result that counted for that submission when the regrade began, the
 latest earlier attempt that finished with one, both as organisers see
-results: every group, nothing held back, the late factor applied
-(`Side`). The earlier one is scored as it counted just before the regrade
-began: with the scoring of the publication then the task's latest
-(`counted_under`), and under relative credit against the best among the
-results that counted then. What it changed is one `ChangeKind`:
+results: every group, nothing held back (`Side`). The earlier one is read
+as it counted just before the regrade began, with the test groups of the
+publication then the task's latest (`counted_under`). Nothing is scored, so
+what it changed is told by its tests' verdicts alone (stage 5 section 6,
+item 123), as one `ChangeKind`:
 
-- `up` and `down`, its points went up or down; on a task that gives no
-  points, a larger or smaller share of its tests accepted, or with the same
-  share, its values with a declared direction: down when any got worse, up
-  when none did and one got better, so a regrade that makes anything worse
-  is never read as an improvement; a value one side has and the other has
-  not is the worst where it is missing, as a board reads it;
+- `up` and `down`, a larger or smaller share of its tests accepted;
 - `stopped`, it now stops before its tests where the result it replaced did
   not: in the classic workflow, it now fails to compile;
 - `unchanged`, all of that the same;
 - `new`, it had no result to compare with, or one of the two could not be
-  scored, its publication no longer reading;
+  read, its publication no longer reading;
 - `running`, still being graded; `failed`, no result yet, its latest
   attempt a system error or cancelled; and `over_limit`, ended without
   being graded since its entrant had no room left under `submissions.max`.
@@ -41,12 +36,11 @@ reads the task gives its rows before and after (`BoardDiff`, from phase
 
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from fractions import Fraction
 
 from forge.domain.blocks.evaluate import RunResult
-from forge.domain.blocks.numbers import Better
 from forge.domain.boards import Board, Counted, Header
 from forge.domain.ids import PublicationId
 from forge.domain.names import WorkspaceOwner
@@ -83,19 +77,14 @@ GRADED = (ChangeKind.UP, ChangeKind.DOWN, ChangeKind.STOPPED, ChangeKind.UNCHANG
 @dataclass(frozen=True, slots=True)
 class Side:
     """One result a regrade compares, as organisers see it: its attempt,
-    its points, none on a task that gives no points, how many of its tests
-    were accepted of how many it has, the outcome that stopped its run
-    before its tests, none when nothing did, each value with a fold and a
-    declared direction, folded over every test, and that direction.
+    how many of its tests were accepted of how many it has, and the outcome
+    that stopped its run before its tests, none when nothing did.
     """
 
     attempt: int
-    points: Fraction | None
     accepted: int
     tests: int
     stopped: str | None = None
-    values: Mapping[str, Fraction] = field(default_factory=dict)
-    better: Mapping[str, Better] = field(default_factory=dict)
 
     @property
     def share(self) -> Fraction | None:
@@ -106,8 +95,8 @@ class Side:
 @dataclass(frozen=True, slots=True)
 class Compared:
     """What a regrade did to one submission: the change, the result it
-    replaced, none when there was none or it could not be scored, and its
-    own, none while it has none or it could not be scored.
+    replaced, none when there was none or it could not be read, and its
+    own, none while it has none or it could not be read.
     """
 
     change: ChangeKind
@@ -122,7 +111,7 @@ def counted_under(
     against `against` began, of the task's `publications`: `against` itself
     for a rejudge, which publishes nothing; for a save's regrade, the latest
     publication before the one the save made, or `against` when there is
-    none. A result that counted then is scored as that publication scored it
+    none. A result that counted then is read as that publication showed it
     (`showing.under`).
     """
     if cause is RegradeCause.REJUDGE:
@@ -135,39 +124,14 @@ def counted_under(
 def change_of(earlier: Side | None, now: Side | None) -> ChangeKind:
     """What a regrade's result `now` changed against `earlier`, the result it
     replaced; `new` when there is no earlier one, or either could not be
-    scored (none). Only a finished result is asked about here.
+    read (none). Only a finished result is asked about here.
     """
     if earlier is None or now is None:
         return ChangeKind.NEW
     if now.stopped is not None and earlier.stopped is None:
         return ChangeKind.STOPPED
-    if now.points is not None and earlier.points is not None:
-        return _by(now.points - earlier.points)
     if now.share is not None and earlier.share is not None and now.share != earlier.share:
-        return _by(now.share - earlier.share)
-    worse = better = False
-    for name in now.values.keys() | earlier.values.keys():
-        before, value = earlier.values.get(name), now.values.get(name)
-        direction = now.better.get(name) or earlier.better.get(name)
-        if direction is None or before == value:
-            continue
-        if before is None or value is None:
-            # A missing value is the worst, as a board reads it.
-            improved = before is None
-        else:
-            improved = value > before if direction is Better.HIGHER else value < before
-        better |= improved
-        worse |= not improved
-    if worse:
-        return ChangeKind.DOWN
-    return ChangeKind.UP if better else ChangeKind.UNCHANGED
-
-
-def _by(difference: Fraction) -> ChangeKind:
-    if difference > 0:
-        return ChangeKind.UP
-    if difference < 0:
-        return ChangeKind.DOWN
+        return ChangeKind.UP if now.share > earlier.share else ChangeKind.DOWN
     return ChangeKind.UNCHANGED
 
 

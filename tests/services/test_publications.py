@@ -10,8 +10,8 @@ contest has started such a save asks to be confirmed; a change to how it
 scores changes nothing that grades, and a published change to how it grades
 queues every submission to be graded again. Once the task has a done
 grading, a group's `show` neither hides what any graded publication showed
-nor is left unsaid on a new group. A task left giving no points is refused
-while its contest's entry gives it a worth or a due.
+nor is left unsaid on a new group. A task left giving no points may keep
+its due.
 """
 
 import asyncio
@@ -170,7 +170,7 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
         results_change=False,
         summary="Nobody's result changes.",
         runs_again=("No submission runs again: this is the task's first publication.",),
-        scores=("Points: main is worth up to 100.",),
+        scores=("No score changes.",),
         reading=("Entrants read the task from its release.",),
     )
     (saved,) = acme.fake.calls_to("save_files")
@@ -1103,13 +1103,8 @@ async def test_a_confirmation_stands_only_for_the_files_and_publication_it_was_a
     ("files", "scores", "reading"),
     [
         (
-            (b"{each: 100}", b"{each: 60, pass: 50}"),
-            [
-                "Points: main is now worth up to 110 (was 100).",
-                "How main earns its points: 60 shared over its tests and 50 when every test "
-                "passes (was 100 shared over its tests).",
-                "Every result is scored again.",
-            ],
+            (b"{each: 100}", b"{each: 100, show: after_close}"),
+            ["Results of main shown once the task closes (was right away)."],
             ["Nothing entrants read changes."],
         ),
         (
@@ -1129,7 +1124,7 @@ async def test_a_confirmation_stands_only_for_the_files_and_publication_it_was_a
             ],
         ),
     ],
-    ids=["points", "limits", "statement"],
+    ids=["show", "limits", "statement"],
 )
 async def test_every_save_that_publishes_once_the_contest_has_started_asks_first(
     setup: Setup,
@@ -1603,13 +1598,13 @@ async def test_a_save_that_picks_up_a_moved_image_names_it_beside_the_regrade_co
     }
 
 
-async def test_a_published_grading_change_regrades_every_submission_and_a_scoring_one_none(
+async def test_a_published_grading_change_regrades_every_submission_and_a_points_one_none(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await _graded(setup, acme, entered)
     (graded,) = await _attempts(setup)
 
-    scoring = await _save(
+    points = await _save(
         setup, acme, entered.task, _with(acme, b"{each: 100}", b"{pass: 100}"), confirm=True
     )
     unchanged = await _attempts(setup)
@@ -1617,11 +1612,12 @@ async def test_a_published_grading_change_regrades_every_submission_and_a_scorin
         setup, acme, entered.task, _with(acme, b"time_limit: 2", b"time_limit: 1"), confirm=True
     )
 
-    assert isinstance(scoring, Published) and isinstance(grading, Published)
-    assert (scoring.regraded, unchanged) == (0, [graded])
-    # Nothing runs again, but the graded submission's points move.
-    assert (scoring.effect.results_change, scoring.effect.runs_again) == (
-        True,
+    assert isinstance(points, Published) and isinstance(grading, Published)
+    assert (points.regraded, unchanged) == (0, [graded])
+    # Nothing runs again, and a task graded test by test scores nothing, so
+    # no result moves (stage 5 section 6, item 123).
+    assert (points.effect.results_change, points.effect.runs_again) == (
+        False,
         ("No submission runs again: the tests and how they run are the same.",),
     )
     assert grading.regraded == 1
@@ -1664,28 +1660,7 @@ async def test_a_grading_change_whose_save_stopped_before_its_regrade_is_regrade
     assert regraded[:3] == (1, 2, again.publication)
 
 
-WORTH = RUNNING + "    worth: 50\n"
 DUE = RUNNING + "    due: 2026-09-26T14:00:00Z\n"
-
-
-async def test_a_task_left_giving_no_points_is_refused_while_its_contest_entry_scores_it(
-    setup: Setup, acme: Acme, sum_task: TaskId
-) -> None:
-    await _published(setup, acme, sum_task)
-    await write_contest(acme.fake, WORTH.format(state="draft"))
-
-    result = await _save(setup, acme, sum_task, _with(acme, b"{each: 100}", b"{}"))
-
-    assert isinstance(result, Draft)
-    assert [(error["path"], error["message"]) for error in result.errors] == [
-        (
-            "test_groups",
-            "No test group gives points, so sum gives no points, but the contest gives it a "
-            "worth of 50. Remove that from the contest first.",
-        )
-    ]
-    await write_contest(acme.fake, RUNNING.format(state="draft"))
-    assert isinstance(await _save(setup, acme, sum_task, {}), Published)
 
 
 async def test_a_task_left_giving_no_points_may_keep_its_due(

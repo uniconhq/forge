@@ -156,12 +156,7 @@ class TestItsOwnRetry:
         assert (await _told(setup, entered, 1)).status is SubmissionState.DELAYED
         told = await _told(setup, entered, 1)
 
-        assert (told.status, told.limit, told.groups, told.points) == (
-            SubmissionState.OVER_LIMIT,
-            1,
-            (),
-            None,
-        )
+        assert (told.status, told.limit, told.groups) == (SubmissionState.OVER_LIMIT, 1, ())
         over = _latest(await _rows(setup), 1)
         assert (over.attempt, over.status, over.automatic, over.submission_limit) == (
             2,

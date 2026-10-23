@@ -21,8 +21,7 @@ steps in order, and refuses before anything is written.
    to the workflow's inputs, its sealed steps found and its fit checked; and
    a group's `show` neither hides what was shown under any publication a
    graded submission ran under nor is left unsaid on a group added once the
-   task has a graded submission (T7, T10); a task that gives no points is
-   refused while its contest's entry for it gives it a `worth`. A workflow
+   task has a graded submission (T7, T10). A workflow
    is named `<owner>/<name>`, the owner an org by its name or a person by their
    username; when the latest publication used a workflow of
    that name and it is now another workflow, by the forge's own id for it,
@@ -42,8 +41,7 @@ steps in order, and refuses before anything is written.
    (`run_task.check_run_task`), reading each `program.yaml` the task gives
    and keeping its runs' ids from the latest publication's runs file; what
    its `show` listed under a publication a graded submission ran under is
-   not listed later or dropped; its contest gives it no `worth` or late
-   share, since a leaderboard reads its values instead; and the task keeps
+   not listed later or dropped; and the task keeps
    every value a leaderboard of its contest reads, by its name, and gives
    no column a reason to be refused across files, such as a value a pick
    chooses by now reading a mark (`board_checks.across`), each problem
@@ -51,7 +49,7 @@ steps in order, and refuses before anything is written.
 3. What the save changes about how the task grades is worked out against
    the latest publication: its plan and the digests of the task's files the
    plan names. Groups, rule weights, `show`, `credit` and `submissions` are
-   scoring, read on every read, and change nothing that grades. A save asked
+   read on every read, and change nothing that grades. A save asked
    to be kept as a draft is written as one here, saying what it held back,
    and publishes nothing, whatever else holds. Once the contest has started,
    and until it is archived (`release.has_started`), every save that would
@@ -77,8 +75,8 @@ steps in order, and refuses before anything is written.
    workflow each workflow name was, what the task's sealed steps hold back
    until its reveal, and what each value it reports means. The save answers
    with what it did, in the same words a running contest asks with (M66):
-   each group's most points where they moved, and the boards reading a value
-   it moves or, on a first publication, reading the task; and notes the
+   each scoring change, and the boards reading a value it moves or, on a
+   first publication, reading the task; and notes the
    task's reveal. When another
    save landed between the check and the write, the change holds files this
    save never checked, so it is kept as a draft instead, saying so, and the
@@ -163,7 +161,6 @@ from forge.domain.plans import (
     group_problems,
     is_reserved,
     read_tests,
-    spelled,
     test_yaml_paths,
 )
 from forge.domain.primitives import PrimitiveDeclaration
@@ -492,9 +489,7 @@ async def save(
                 limit=checked.definition.submissions.max,
             )
             regraded, started = regrading.queued, regrading.regrade
-        effect = await _effect(
-            ctx, task, checked.definition, latest, (), regraded, ReadChanges(), checked.compiled
-        )
+        effect = await _effect(ctx, task, checked.definition, latest, (), regraded, ReadChanges())
         again = (
             await pipelines.check_again(ctx, task, newest.id, checked.run_plan, organiser.user.id)
             if checked.run_plan is not None
@@ -572,7 +567,6 @@ async def save(
         changed,
         counting,
         read,
-        checked.compiled,
         steps=rerun,
         checked_first=_checked_first(checked),
         programs=_programs_again(checked, rerun),
@@ -656,7 +650,6 @@ async def _ask(
         changed,
         regrades,
         read,
-        checked.compiled,
         steps=again,
         checked_first=_checked_first(checked),
         programs=_programs_again(checked, again),
@@ -736,7 +729,6 @@ async def check(
     tests, problems = read_tests(present, workflow.test, yamls)
     problems.extend(group_problems(definition, tests, present))
     problems.extend(await _shown_before(ctx, task, definition))
-    problems.extend(await _contest_points(ctx, task, definition))
     if problems:
         return Checked(definition, None, tuple(problems), pins)
     try:
@@ -844,7 +836,6 @@ async def _check_runs(
     problems = [
         *found.problems,
         *await _shown_before_runs(ctx, task, definition, present, found.task),
-        *await _contest_points(ctx, task, definition),
         *await _board_reads(ctx, task, definition),
     ]
     if problems:
@@ -1038,8 +1029,7 @@ async def _report(
 ) -> builtins.list[str]:
     """The note beside what the save's effect says: the task's reveal in words
     when it hides anything (a group not shown at once, or a sealed step).
-    Each group's most points, and the boards the save moves, are the
-    effect's.
+    The scoring changes, and the boards the save moves, are the effect's.
     """
     contest = await _contest(ctx, task)
     name = (await names.names_of(ctx, [task])).get(task)
@@ -1071,7 +1061,6 @@ async def _effect(
     changed: tuple[str, ...],
     regrades: int,
     read: ReadChanges,
-    compiled: Compiled | None,
     *,
     steps: tuple[str, ...] | None = None,
     checked_first: bool = False,
@@ -1079,19 +1068,12 @@ async def _effect(
 ) -> SaveEffect:
     """What saving `definition` over the latest publication does, in the
     words a running contest asks with before a save and a save that
-    published answers with, each reported value named by its title in the
-    save or, where the save no longer reports it, in the latest publication;
-    for a run task, the steps a submission runs again, whether that waits
-    for the save's check, and the values whose program runs again.
+    published answers with; for a run task, the steps a submission runs
+    again, whether that waits for the save's check, and the values whose
+    program runs again.
     """
     name = (await names.names_of(ctx, [task])).get(task)
     before = await _definition_of(ctx, task, latest) if latest is not None else None
-    meanings = compiled.meanings if compiled is not None else ()
-    titles = {
-        meaning.name: meaning.title
-        for meaning in (*(latest.meanings if latest is not None else ()), *meanings)
-        if meaning.title is not None
-    }
     return effect_of(
         name or definition.name,
         before,
@@ -1101,7 +1083,6 @@ async def _effect(
         regrades=regrades,
         graded=bool(await _graded_under(ctx, task)),
         read=read,
-        titles=titles,
         submitted=await _submitted(ctx, task),
         unread=latest is not None and before is None,
         steps=steps,
@@ -1341,52 +1322,6 @@ async def _definition_of(
 
     key = f"publications.definition.{task}.{publication.version}"
     return await ctx.memo.remembered(key, GROUPS_KEPT, read)
-
-
-async def _contest_points(
-    ctx: Context, task: TaskId, definition: TaskDefinition
-) -> builtins.list[Problem]:
-    """Check 10's last part: a task that gives no points is refused while
-    its contest's entry for it gives it a `worth`, naming the contest's
-    line, since every save of the contest would be refused there from then
-    on; a run task may not take a `late_per_day` either. Any task may have
-    a `due` (stage 5, phase 5.7).
-    """
-    if definition.gives_points:
-        return []
-    contest = await _contest(ctx, task)
-    name = (await names.names_of(ctx, [task])).get(task)
-    if contest is None or name is None:
-        return []
-    problems: builtins.list[Problem] = []
-    for entry in contest.tasks:
-        if entry.id != name:
-            continue
-        said = []
-        if entry.worth is not None:
-            said.append(f"gives it a worth of {spelled(entry.worth)}")
-        if entry.late_per_day is not None and definition.runs:
-            said.append("takes a share of its points for each late day")
-        if definition.runs:
-            problems.extend(
-                Problem(
-                    path="scoring",
-                    message=f"{name} is scored by its runs and gives no points, since a "
-                    f"leaderboard reads its values, but the contest {line}. Remove that from the "
-                    "contest first.",
-                )
-                for line in said
-            )
-            continue
-        problems.extend(
-            Problem(
-                path="test_groups",
-                message=f"No test group gives points, so {name} gives no points, but the "
-                f"contest {line}. Remove that from the contest first.",
-            )
-            for line in said
-        )
-    return problems
 
 
 async def _board_reads(

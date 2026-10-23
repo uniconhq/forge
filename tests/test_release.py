@@ -19,7 +19,6 @@ from forge.domain.release import (
     has_started,
     in_words,
     is_running,
-    late_days,
     openness,
     reached,
     released,
@@ -146,28 +145,6 @@ def test_a_rows_due_is_the_entrys_due_with_its_extension() -> None:
         due + timedelta(hours=1)
     )
     assert due_of(TIMELINE, b, Extension(timedelta(hours=1), frozenset({"a"}))) == due
-
-
-@pytest.mark.parametrize(
-    ("after", "days"),
-    [
-        (timedelta(0), 0),
-        (-timedelta(hours=3), 0),
-        (SECOND, 1),
-        (timedelta(days=1), 1),
-        (timedelta(days=1) + SECOND, 2),
-        (timedelta(days=2, seconds=1), 3),
-    ],
-    ids=["at-the-due", "early", "a-second-late", "a-day-late", "a-day-and-a-second", "over-two"],
-)
-def test_a_submission_is_late_by_its_started_days(after: timedelta, days: int) -> None:
-    due = END - timedelta(hours=1)
-
-    assert late_days(due, due + after) == days
-
-
-def test_a_task_without_a_due_is_never_late() -> None:
-    assert late_days(None, AFTER) == 0
 
 
 def test_a_task_reveals_when_it_has_closed_for_every_row() -> None:

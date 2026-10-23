@@ -104,7 +104,6 @@ from forge.domain.release import Extension, due_of, in_words, reveal_of
 from forge.domain.roles import Role, contest_scope, holds
 from forge.domain.run_results import facts_of
 from forge.domain.run_task import holds as run_holds
-from forge.domain.scoring import State
 from forge.domain.sessions import Session
 from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
 from forge.log import get_logger
@@ -124,6 +123,7 @@ from forge.services import (
 )
 from forge.services.access import Organiser, require
 from forge.services.published import PublishedTask
+from forge.services.scores import State
 
 log = get_logger(__name__)
 

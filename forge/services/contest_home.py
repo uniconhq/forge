@@ -13,8 +13,8 @@ organisers see their own contests whatever their state. The home carries the
 contest's dates, the person's registration panel (`entrants.panel`): their
 entrant and whether and how they may register; the server's clock so a
 countdown agrees with it, and the tasks released to them, the ones visible
-now, each with its label, its worth and when it falls due and closes for
-their entrant, its extension on it included. A member of an approved
+now, each with its label and when it falls due and closes for their
+entrant, its extension on it included. A member of an approved
 entrant also reads its standing: their own row on each leaderboard they
 read, as that board shows it to them (`boards.own_rows`), so the home shows
 no number a board holds back.
@@ -34,7 +34,6 @@ is being written.
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from decimal import Decimal
 
 from forge.db.tables import Entrant
 from forge.domain import release as rules
@@ -76,7 +75,7 @@ class ContestSummary:
 @dataclass(frozen=True, slots=True)
 class TaskEntry:
     """A task released to the person, as the contest's home lists it: its
-    name, the label its place in the contest gives it, its title, its worth,
+    name, the label its place in the contest gives it, its title,
     whether they may submit to it now, and when it falls due, if it does,
     and closes for their row.
     """
@@ -85,7 +84,6 @@ class TaskEntry:
     name: str
     label: str
     title: str
-    worth: int | Decimal | None
     release: TaskRelease
     due: datetime | None
     closes: datetime | None
@@ -130,7 +128,6 @@ class TaskPage:
     name: str
     label: str
     title: str
-    worth: int | Decimal | None
     statement: str
     submissions: Submissions
     inputs: tuple[Field, ...]
@@ -198,7 +195,6 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
             name=task.name,
             label=task.label or task.name,
             title=task.definition.name,
-            worth=task.worth,
             release=_to(person, release.of(settings, task.name, now, extension)),
             due=_due(settings, task, extension),
             closes=_closes(settings, task, extension),
@@ -237,7 +233,6 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
         name=found.name,
         label=found.label or found.name,
         title=found.definition.name,
-        worth=found.worth,
         statement=await published.statement(ctx, found),
         submissions=found.definition.submissions,
         inputs=form.fields,

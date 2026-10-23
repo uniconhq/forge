@@ -11,11 +11,9 @@ entrants; a removed or rejected entrant's moves nothing.
 A contest save is checked against every row's submissions, read from the
 gradings, one per submission, at the moment it was taken:
 
-- C1 across files: every entry of `tasks` names a task of the contest.
-  `worth` is refused on a task whose latest publication gives no points,
-  and `late_per_day` on a run task; any task may have a `due`, which a run
-  task's values read as `seconds_late`. A task with no publication yet is
-  not judged, since its first save says what it gives.
+- C1 across files: every entry of `tasks` names a task of the contest. Any
+  task may have a `due`, which a run task's values read as
+  `seconds_late`.
 - C2, for what happened: a task released under the settings saved before,
   its contest published and past its start and its `release_at` passed,
   withdrawn since or not, does not move its release later, nor lose its
@@ -247,7 +245,6 @@ async def check_contest(
         for index, entry in enumerate(after.tasks)
         if entry.id not in tasks
     ]
-    problems += await _points(ctx, after, tasks)
     if after.state is State.PUBLISHED and (before is None or before.state is State.DRAFT):
         problems += await _not_ready(ctx, after, tasks)
     if before is None:
@@ -419,42 +416,6 @@ def _dropped(
             "card instead, which deletes the task too."
         )
     return None
-
-
-async def _points(
-    ctx: Context, after: ContestDefinition, tasks: Mapping[str, TaskId]
-) -> list[Problem]:
-    """C1 across files: no `worth` on a task that gives no points, and no
-    `late_per_day` on a run task, which takes no share of points. Any task
-    may have a `due` (stage 5, phase 5.7): a run task's values read it as
-    `seconds_late`."""
-    problems: list[Problem] = []
-    for index, entry in enumerate(after.tasks):
-        if entry.worth is None and entry.due is None:
-            continue
-        task = tasks.get(entry.id)
-        found = await published.task(ctx, task, after, entry.id) if task is not None else None
-        if found is None or found.definition.gives_points:
-            continue
-        if entry.worth is not None:
-            problems.append(
-                Problem(
-                    path=f"tasks[{index}].worth",
-                    message=f"{entry.id} gives no points, so it cannot have a worth. Leave this "
-                    "empty, and rank it by a value instead.",
-                )
-            )
-        if entry.late_per_day is not None and found.definition.runs:
-            problems.append(
-                Problem(
-                    path=f"tasks[{index}].late_per_day",
-                    message=(
-                        f"{entry.id} gives no points to take a share of. Leave this empty, and "
-                        "give the task a value that reads seconds_late instead."
-                    ),
-                )
-            )
-    return problems
 
 
 def _moved(

@@ -2,9 +2,10 @@
 and a save that published answers with: the first line, what runs again, the
 scores and what entrants read. Results change when a submission is graded
 again, or when the task has a graded submission and the save moves what one
-earns or shows; the rate alone, the statement and the title move none. A
-run task's groups and values are named as they change, a value with what
-it reads, and what `show` shows when.
+earns or shows; the rate alone, the statement and the title move none, and
+on a task graded test by test so do its points. A run task's groups and
+values are named as they change, a value with what it reads, and what
+`show` shows when.
 """
 
 import pytest
@@ -79,111 +80,21 @@ def test_a_save_that_changes_nothing_says_so_in_each_part() -> None:
     )
 
 
-def test_a_moved_total_names_the_group_with_its_old_points_and_scores_every_result_again() -> None:
-    effect = _effect(_task("  main: {each: 110}\n  large: {pass: 50, show: after_close}\n"))
-
-    assert effect.results_change is True
-    assert effect.scores == (
-        "Points: main is now worth up to 110 (was 100).",
-        "Every result is scored again.",
-    )
-
-
-def test_a_mix_whose_parts_move_together_says_its_points_alone() -> None:
-    # Raising a hand-set mix's points, each part in step, changes no rule:
-    # only the points line is said, never how the group earns.
-    before = _task("  main: {each: 60, pass: 40, pass_at: 0.5}\n")
-    after = _task("  main: {each: 66, pass: 44, pass_at: 0.5}\n")
-
-    effect = _effect(after, before=before)
-
-    assert effect.scores == (
-        "Points: main is now worth up to 110 (was 100).",
-        "Every result is scored again.",
-    )
-
-
-def test_a_task_with_a_set_worth_names_each_groups_share_of_it() -> None:
-    worth = parse_contest(
-        """\
-name: Spring
-start: 2026-09-26T10:00:00Z
-end: 2026-09-26T15:00:00Z
-state: published
-visibility: everyone
-tasks:
-  - {id: sum, worth: 300}
-"""
-    )
-    effect = effect_of(
-        "sum",
-        parse_task(BEFORE),
-        parse_task(_task("  main: {each: 100}\n  large: {pass: 100, show: after_close}\n")),
-        worth,
-        changes=(),
-        regrades=0,
-        graded=False,
-        read=ReadChanges(),
-    )
-
-    assert effect.scores[:2] == (
-        "Points: main is now worth up to 150 (was 200).",
-        "Points: large is now worth up to 150 (was 100).",
-    )
-    # Nobody has a result yet, so nobody's result changes.
-    assert effect.summary == "Nobody's result changes."
-
-
-def test_a_new_mix_of_rules_says_how_the_group_earns_now_and_before() -> None:
+def test_a_classic_tasks_points_credit_and_weights_move_no_result() -> None:
+    # A task graded test by test gives a board nothing and scores nothing
+    # (stage 5 section 6, item 123): only when a group shows is said.
     effect = _effect(
         _task(
-            "  main: {each: 60, pass: 40, pass_at: 0.5}\n  large: {pass: 50, show: after_close}\n"
+            "  main: {each: 60, pass: 50, pass_at: 0.5, test_weights: {'1': 2}}\n"
+            "  large: {pass: 50, show: always}\n",
+            extra="credit: fraction\n",
         )
     )
 
-    assert effect.scores[0] == (
-        "How main earns its points: 60 shared over its tests and 40 when 50% of its tests pass "
-        "(was 100 shared over its tests)."
-    )
-
-
-def test_credit_weights_and_show_are_each_said() -> None:
-    after = _task(
-        "  main: {each: 100, test_weights: {'1': 2}}\n  large: {pass: 50}\n",
-        extra="credit: fraction\n",
-    )
-
-    effect = _effect(after)
-
-    assert effect.scores == (
-        "main weighs its tests differently.",
-        "What each test earns: the fraction it reports, from 0 to 1 (was all or nothing, as it "
-        "passes or fails).",
-        "Results of large shown right away (was once the task closes).",
-        "Every result is scored again.",
-    )
+    assert effect.scores == ("Results of large shown right away (was once the task closes).",)
     assert effect.results_change is True
-
-
-def test_what_a_test_earns_names_the_value_by_its_title() -> None:
-    before = _task("  main: {each: 100}\n", extra="credit: {relative: memory_kb}\n")
-    after = _task("  main: {each: 100}\n", extra="credit: {relative: time_ms}\n")
-
-    effect = effect_of(
-        "sum",
-        parse_task(before),
-        parse_task(after),
-        CONTEST,
-        changes=(),
-        regrades=0,
-        graded=True,
-        read=NOTHING_READ,
-        titles={"time_ms": "Run time", "memory_kb": "Memory used"},
-    )
-
-    assert effect.scores[0] == (
-        "What each test earns: its run time against the best any entrant reached (was its "
-        "memory used against the best any entrant reached)."
+    assert _effect(_task("  main: {each: 110}\n  large: {pass: 5, show: after_close}\n")) == (
+        _effect(BEFORE)
     )
 
 
@@ -202,7 +113,7 @@ def test_a_removed_group_and_the_submission_limits_are_said_and_the_limits_move_
         )
     )
 
-    assert gone.scores[0] == "Points: large is gone (was worth up to 50)."
+    assert gone.scores == ("No score changes.",)
     assert gone.runs_again == (
         "No submission runs again: there are none yet.",
         "The tests of large were removed.",
@@ -292,14 +203,14 @@ def test_what_entrants_read_is_the_title_the_statement_and_the_files_beside_it()
     assert effect.results_change is False
 
 
-def test_a_first_publication_lists_each_groups_points() -> None:
+def test_a_first_publication_of_a_classic_task_changes_no_score() -> None:
     effect = _effect(BEFORE, before=None, graded=False)
 
     assert effect == SaveEffect(
         results_change=False,
         summary="Nobody's result changes.",
         runs_again=("No submission runs again: this is the task's first publication.",),
-        scores=("Points: main is worth up to 100 and large up to 50.",),
+        scores=("No score changes.",),
         reading=("Entrants read the task from its release.",),
     )
 

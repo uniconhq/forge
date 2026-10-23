@@ -29,7 +29,6 @@ from collections.abc import Callable, Coroutine
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
-from fractions import Fraction
 from typing import Any
 
 import pytest
@@ -762,9 +761,8 @@ async def test_a_valid_result_lands_on_the_row_with_its_log_and_the_contestant_r
     assert (main.group, main.outcome, main.tests) == (
         "main",
         "accepted",
-        ({"test": "main/1", "outcome": "accepted", "values": {"time_ms": 12}, "credit": 1},),
+        ({"test": "main/1", "outcome": "accepted", "values": {"time_ms": 12}},),
     )
-    assert (main.points, main.max) == (Fraction(100), Fraction(100))
 
 
 async def test_a_results_numbers_are_kept_exactly_as_the_run_wrote_them(
@@ -1101,7 +1099,7 @@ async def test_a_failed_regrade_leaves_the_submission_at_its_last_result(
     )
     assert (listed[1].latest, listed[1].last_good) == (False, None)
     assert told is not None and (told.attempt, told.status) == (1, SubmissionState.GRADED)
-    assert told.points is not None
+    assert told.groups
     seen = await submissions.organised(
         setup, manager, entered.task, EntrantOwner(entered.entrant), 1
     )
@@ -1122,12 +1120,11 @@ async def test_a_submission_with_no_result_whose_grading_failed_is_delayed_and_n
     (listed,) = await _listed(setup, manager, entered.task)
 
     assert told is not None
-    assert (told.attempt, told.status, told.reason, told.groups, told.points) == (
+    assert (told.attempt, told.status, told.reason, told.groups) == (
         1,
         SubmissionState.DELAYED,
         None,
         (),
-        None,
     )
     assert (listed.status, listed.error, listed.last_good) == (
         GradingStatus.SYSTEM_ERROR,

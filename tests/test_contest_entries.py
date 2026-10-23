@@ -46,7 +46,7 @@ def test_a_block_list_gets_one_more_item_at_its_own_indent() -> None:
         HEAD + "tasks:\n"
         "    # Easiest first.\n"
         "    - id: product\n"
-        "      worth: 50\n"
+        "      marks: 5\n"
         "\n"
         "# The boards.\n"
         "leaderboards: {}\n"
@@ -56,21 +56,21 @@ def test_a_block_list_gets_one_more_item_at_its_own_indent() -> None:
 
     assert updated is not None
     text = updated.decode()
-    assert "      worth: 50\n    - id: sum\n\n# The boards.\n" in text
+    assert "      marks: 5\n    - id: sum\n\n# The boards.\n" in text
     assert "    # Easiest first.\n" in text
     contest = parse_contest(updated)
     assert ids(updated) == ["product", "sum"]
     assert [contest.label_of(task) for task in ("product", "sum")] == ["A", "B"]
-    assert contest.tasks[1].worth is None
+    assert contest.tasks[1].marks is None
 
 
 def test_items_at_no_indent_get_one_at_no_indent() -> None:
-    content = (HEAD + "tasks:\n- id: product\n  worth: 50\n").encode()
+    content = (HEAD + "tasks:\n- id: product\n  marks: 5\n").encode()
 
     updated = with_entry(content, "sum")
 
     assert updated is not None
-    assert updated.decode().endswith("- id: product\n  worth: 50\n- id: sum\n")
+    assert updated.decode().endswith("- id: product\n  marks: 5\n- id: sum\n")
 
 
 def test_a_file_without_the_key_gets_one_at_the_end() -> None:
@@ -113,13 +113,13 @@ def test_a_name_yaml_reads_as_something_else_is_quoted() -> None:
 
 
 def test_a_task_the_list_holds_already_leaves_the_file_alone() -> None:
-    content = (HEAD + "tasks:\n  - id: sum\n    worth: 5\n").encode()
+    content = (HEAD + "tasks:\n  - id: sum\n    marks: 3\n").encode()
 
     assert with_entry(content, "sum") is None
 
 
 def test_a_flow_list_with_items_is_not_edited() -> None:
-    content = (HEAD + "tasks: [{id: product, worth: 50}]\n").encode()
+    content = (HEAD + "tasks: [{id: product, marks: 5}]\n").encode()
 
     with pytest.raises(Unlisted):
         with_entry(content, "sum")
@@ -135,12 +135,12 @@ def test_a_file_that_is_not_a_contest_yaml_is_refused() -> None:
 THREE = (
     HEAD + "tasks:  # In the order entrants see them.\n"
     "  - id: product\n"
-    "    worth: 50\n"
+    "    marks: 5\n"
     "  # The hard one.\n"
     "  - id: sum\n"
     "    # Due before the rest.\n"
     "    due: 2026-10-01T12:00:00Z\n"
-    "  - {id: max, worth: 20}  # Last.\n"
+    "  - {id: max, marks: 2}  # Last.\n"
     "\n"
     "leaderboards:\n"
     "  standings: {audience: {who: everyone}}\n"
@@ -187,7 +187,7 @@ def test_an_entry_on_one_line_is_withdrawn_inside_its_braces() -> None:
     withdrawn = with_withdrawn(THREE.encode(), "max", True)
 
     assert withdrawn is not None
-    assert "  - {id: max, worth: 20, withdrawn: true}  # Last.\n" in withdrawn.decode()
+    assert "  - {id: max, marks: 2, withdrawn: true}  # Last.\n" in withdrawn.decode()
     assert with_withdrawn(withdrawn, "max", False) == THREE.encode()
 
 
@@ -200,7 +200,7 @@ def test_windows_line_endings_stay_when_an_entry_is_withdrawn_or_removed() -> No
 
 
 def test_a_flow_list_cannot_be_withdrawn_from_or_removed_from() -> None:
-    content = (HEAD + "tasks: [{id: product, worth: 50}]\n").encode()
+    content = (HEAD + "tasks: [{id: product, marks: 5}]\n").encode()
 
     with pytest.raises(Unlisted):
         with_withdrawn(content, "product", True)

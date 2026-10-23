@@ -115,7 +115,7 @@ async def test_each_new_task_goes_at_the_end_of_the_list_and_a_listed_one_is_lef
 ) -> None:
     await write_contest(
         acme.fake,
-        CONTEST_HEAD + "tasks:\n  # Ordered by difficulty.\n  - id: product\n    worth: 50\n",
+        CONTEST_HEAD + "tasks:\n  # Ordered by difficulty.\n  - id: product\n    marks: 2\n",
     )
 
     for name in ("product", "sum", "power"):
@@ -123,8 +123,8 @@ async def test_each_new_task_goes_at_the_end_of_the_list_and_a_listed_one_is_lef
 
     written = acme.fake.state.repos[("acme", "spring.contest")].files["contest.yaml"]
     contest = parse_contest(written)
-    assert [(entry.id, entry.worth, entry.release_at) for entry in contest.tasks] == [
-        ("product", 50, None),
+    assert [(entry.id, entry.marks, entry.release_at) for entry in contest.tasks] == [
+        ("product", 2, None),
         ("sum", None, None),
         ("power", None, None),
     ]
@@ -146,7 +146,7 @@ async def test_a_task_made_in_a_published_contest_opens_and_closes_at_its_end(
     )
     (entry,) = parse_contest(written).tasks
     assert entry.release_at == entry.closes == parse_contest(written).end
-    assert (entry.worth, entry.due) == (None, None)
+    assert (entry.marks, entry.due) == (None, None)
 
 
 async def test_a_contest_yaml_that_does_not_read_is_left_alone_and_the_task_is_made(
@@ -416,7 +416,6 @@ async def test_a_task_whose_activation_the_ci_refuses_signs_the_org_account_in_a
 STANDING = CONTEST_HEAD + (
     "tasks:\n"
     "  - id: max\n"
-    "    worth: 50\n"
     "    release_at: 2026-10-01T11:00:00Z\n"
     "    closes: 2026-10-01T14:00:00Z\n"
     "  - id: sum\n"
@@ -450,19 +449,15 @@ async def test_the_contests_tasks_stand_in_its_order_with_drafts_and_timelines(
     assert on_max.state.latest is not None and on_max.state.latest.number == first.number
     assert on_max.state.draft and on_max.state.errors
     assert on_max.timeline == tasks.Timeline(
-        worth=50,
         release_at=datetime(2026, 10, 1, 11, tzinfo=UTC),
         due=None,
-        late_per_day=None,
         closes=datetime(2026, 10, 1, 14, tzinfo=UTC),
     )
     assert on_sum.state.latest is not None
     assert (on_sum.state.draft, on_sum.state.errors) == (False, ())
     assert on_sum.timeline == tasks.Timeline(
-        worth=100,
         release_at=datetime(2026, 10, 1, 10, tzinfo=UTC),
         due=datetime(2026, 10, 1, 13, tzinfo=UTC),
-        late_per_day=1,
         closes=datetime(2026, 10, 1, 15, tzinfo=UTC),
     )
     with pytest.raises(Forbidden):

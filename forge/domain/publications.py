@@ -9,10 +9,10 @@ when the same name has come to mean another workflow, what the task's
 sealed steps hold back until its reveal (`forge.domain.showing.Sealed`):
 the sealed steps that run once, whose stop is held back, and the values
 reported from sealed steps; and what each per-test number the workflow
-reports means for the task (`forge.domain.scoring.Measure`), its fold, its
+reports means for the task (`forge.domain.meanings.Measure`), its fold, its
 direction with the task's values in and its bounds, as the workflow at its
-pinned version said when the task published, so a grading is scored and a
-board is checked without reading the workflow again; and every value the
+pinned version said when the task published, so a page says how each value
+folds without reading the workflow again; and every value the
 workflow reports, in its order, with the title and unit a page names it by
 (`forge.domain.meanings.ValueMeaning`), so no page reads the workflow for
 those either; and, for a run task's publication whose plan holds steps done
@@ -34,7 +34,7 @@ whether or not that row was ever written (`forge.services.published.live`).
     checked_first: true
 
 A publication made before values were noted has none: its numbers are shown
-on their tests and fold into nothing until the task publishes again. One
+on their tests with no fold until the task publishes again. One
 made before the reported values' words were noted lists its per-test
 numbers by name alone, and a page names each by its key.
 """
@@ -47,8 +47,13 @@ from typing import Literal
 import yaml
 
 from forge.domain.ids import PublicationId, VersionId
-from forge.domain.meanings import ValueMeaning, meanings_noted, with_measures
-from forge.domain.scoring import Measure, measure_noted
+from forge.domain.meanings import (
+    Measure,
+    ValueMeaning,
+    meanings_noted,
+    measure_noted,
+    with_measures,
+)
 from forge.domain.showing import NOTHING_SEALED, Sealed
 
 Check = Literal["checking", "refused", "replaced"]

@@ -9,8 +9,8 @@ submitted; a self-reported report asks once, and the save is refused
 until that question is answered; what was shown is not hidden again; the
 files `show` lists are served from their time on, and no other, the
 reveal's from its instant and a release's not yet; the contest gives a
-run task a due but no worth, share taken per late day or board; and an
-entrant submits to one in parts.
+run task a due and a board, and a stored worth or late share is ignored;
+and an entrant submits to one in parts.
 """
 
 import hashlib
@@ -491,37 +491,23 @@ BOARD = (
 async def test_a_contest_gives_a_run_task_a_due_and_a_board_but_no_worth_or_late_share(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    text = await _ready(acme, "tour", DRAFT + "    worth: 50\n")
+    # A stored contest still giving a worth or a late share reads with them
+    # ignored, so the task saves; a save of the contest that has either is
+    # refused.
+    late = DRAFT + "    worth: 50\n    due: 2026-09-26T14:00:00Z\n    late_per_day: 0.5\n"
+    text = await _ready(acme, "tour", late)
     contents = {"task.yaml": text.encode(), **TOUR_DATA}
 
-    worth = await _save(setup, acme, sum_task, contents, confirm=True)
-    late = DRAFT + "    due: 2026-09-26T14:00:00Z\n    late_per_day: 0.5\n"
-    await write_contest(acme.fake, late)
-    share = await _save(setup, acme, sum_task, contents, confirm=True)
+    assert isinstance(await _save(setup, acme, sum_task, contents, confirm=True), Published)
     await write_contest(acme.fake, DRAFT + BOARD)
     assert isinstance(await _save(setup, acme, sum_task, contents, confirm=True), Published)
     await checked(setup, sum_task)
 
-    assert _errors(worth) == [
-        (
-            "scoring",
-            "sum is scored by its runs and gives no points, since a leaderboard reads its "
-            "values, but the contest gives it a worth of 50. Remove that from the contest first.",
-        )
-    ]
-    assert _errors(share) == [
-        (
-            "scoring",
-            "sum is scored by its runs and gives no points, since a leaderboard reads its "
-            "values, but the contest takes a share of its points for each late day. Remove that "
-            "from the contest first.",
-        )
-    ]
     current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
     for content, path in (
         (DRAFT + "    worth: 50\n", "tasks[0].worth"),
         (DRAFT + "leaderboards:\n  - {name: Standings}\n", "leaderboards"),
-        (late, "tasks[0].late_per_day"),
+        (DRAFT + "    due: 2026-09-26T14:00:00Z\n    late_per_day: 0.5\n", "tasks[0].late_per_day"),
     ):
         with pytest.raises(InvalidDefinition) as refused:
             await files.write(

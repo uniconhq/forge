@@ -18,10 +18,52 @@ value, and `ReportMeaning` says which one that was.
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
+from fractions import Fraction
 
-from forge.domain.blocks.numbers import Better
-from forge.domain.scoring import Measure
+from forge.domain.blocks.numbers import Better, written
 from forge.domain.workflow_definition import Fold
+
+
+@dataclass(frozen=True, slots=True)
+class Measure:
+    """What a per-test number means, as its workflow declares it with the
+    task's values in: how it folds over tests, which way is better, and its
+    bounds.
+    """
+
+    fold: Fold | None = None
+    better: Better | None = None
+    at_least: Fraction | None = None
+    at_most: Fraction | None = None
+
+    def noted(self) -> dict[str, str]:
+        """The measure as a publication's note keeps it."""
+        found: dict[str, str] = {}
+        if self.fold is not None:
+            found["fold"] = self.fold.value
+        if self.better is not None:
+            found["better"] = self.better.value
+        if self.at_least is not None:
+            found["at_least"] = written(self.at_least)
+        if self.at_most is not None:
+            found["at_most"] = written(self.at_most)
+        return found
+
+
+def measure_noted(value: object) -> Measure | None:
+    """A measure as a publication's note keeps it, or none for one that does
+    not read.
+    """
+    if not isinstance(value, dict):
+        return None
+    try:
+        fold = Fold(value["fold"]) if "fold" in value else None
+        better = Better(value["better"]) if "better" in value else None
+        at_least = Fraction(str(value["at_least"])) if "at_least" in value else None
+        at_most = Fraction(str(value["at_most"])) if "at_most" in value else None
+    except ValueError:
+        return None
+    return Measure(fold, better, at_least, at_most)
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,10 +174,12 @@ def meanings_noted(value: object) -> tuple[ValueMeaning, ...]:
 
 
 __all__ = [
+    "Measure",
     "ReportMeaning",
     "ValueMeaning",
     "in_sentence",
     "meanings_noted",
+    "measure_noted",
     "shown_meanings",
     "with_measures",
 ]

@@ -6,14 +6,12 @@ each kept as one `Regrade` (`gradings.regrade`), and every attempt one
 makes, and each retry of those, points at it. A regrade is read per
 submission by its latest attempt of it, compared with the result that
 counted for the submission when the regrade began: the latest earlier
-attempt that finished with one. Both are scored as organisers see them,
-every group, nothing held back, the late factor applied, by the scoring the
-boards use (`scores.Scorer`), the earlier one as it counted just before the
-regrade began (`scores.Before`, `forge.domain.regrades.counted_under`), the
-new one under the publication the regrade grades against, against the
-results that counted by its last attempt, so a later save of points or a
-later better best leaves a finished regrade reading as it did; and
-`forge.domain.regrades.change_of` says what changed.
+attempt that finished with one. Both are read as organisers see them,
+every group, nothing held back (`scores.GradedOf`), the earlier one as it
+counted just before the regrade began
+(`forge.domain.regrades.counted_under`), the new one under the publication
+the regrade grades against; and `forge.domain.regrades.change_of` says
+what changed, by the tests' verdicts alone.
 
 - `latest` gives, for each task of the contest the organiser observes, its
   latest regrade with its counts by change, how many it graded, and whether
@@ -43,7 +41,6 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
-from fractions import Fraction
 
 from sqlalchemy import select
 
@@ -73,7 +70,7 @@ from forge.domain.regrades import (
     run_changes,
 )
 from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_scope
-from forge.domain.scoring import ACCEPTED, EVERYTHING, everywhere
+from forge.domain.showing import ACCEPTED, group_of
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
@@ -532,35 +529,24 @@ async def _read(
     attempts, ours, newest, gone = await _attempts(ctx, mine)
     task = TaskId(regrade.task_id)
     current = await published.task(ctx, task, settings) if settings is not None else None
-    scorer = (
-        scores.Scorer(
-            ctx,
-            current,
-            scores.Before(
-                PublicationId(regrade.publication_id), max(row.queued_at for row in mine)
-            ),
-        )
+    graded = (
+        scores.GradedOf(ctx, current, PublicationId(regrade.publication_id))
         if current is not None
         else None
     )
     stood = (
-        scores.Scorer(
+        scores.GradedOf(
             ctx,
             current,
-            scores.Before(
-                counted_under(
-                    RegradeCause(regrade.cause),
-                    PublicationId(regrade.publication_id),
-                    current.publications,
-                ),
-                regrade.started_at,
-                regrade.id,
+            counted_under(
+                RegradeCause(regrade.cause),
+                PublicationId(regrade.publication_id),
+                current.publications,
             ),
         )
         if current is not None
         else None
     )
-    factors = await _factors(ctx, current, settings, builtins.list(newest.values()))
     found: builtins.list[_Read] = []
     for submission, row in newest.items():
         first = min(each.attempt for each in ours[submission])
@@ -568,7 +554,7 @@ async def _read(
             each for each in attempts[submission] if each.attempt < first
         )
         status = gradings.status_of(ctx, row, gone)
-        before = await _side(stood, earlier, factors) if earlier is not None else None
+        before = await _side(stood, earlier) if earlier is not None else None
         if status in UNFINISHED:
             compared = Compared(ChangeKind.RUNNING, before, None)
         elif status is GradingStatus.OVER_LIMIT:
@@ -576,7 +562,7 @@ async def _read(
         elif not gradings.good(row):
             compared = Compared(ChangeKind.FAILED, before, None)
         else:
-            now = await _side(scorer, row, factors)
+            now = await _side(graded, row)
             compared = Compared(change_of(before, now), before, now)
         found.append(_Read(row, compared))
     return found
@@ -621,59 +607,22 @@ async def _attempts(
     return attempts, ours, newest, gone
 
 
-async def _factors(
-    ctx: Context,
-    current: published.PublishedTask | None,
-    settings: ContestDefinition | None,
-    rows: Sequence[Grading],
-) -> dict[str, Fraction]:
-    """The late factor of each of the rows' submissions, by workspace and
-    number, as organisers see it, none while the task does not read.
-    """
-    if current is None or settings is None or not rows:
-        return {}
-    contest = contest_id_of(task_scope(current.id))
-    owners = {
-        row.workspace_id: ctx.forge.workspaces.owner_of(WorkspaceId(row.workspace_id))
-        for row in rows
-    }
-    extensions = await timelines.of_owners(ctx, contest, set(owners.values()))
-    return {
-        row.submission_id: scores.factor(
-            settings, current, extensions[owners[row.workspace_id]], row.submitted_at
-        )
-        for row in rows
-    }
-
-
-async def _side(
-    scorer: scores.Scorer | None, row: Grading, factors: Mapping[str, Fraction]
-) -> Side | None:
+async def _side(graded_of: scores.GradedOf | None, row: Grading) -> Side | None:
     """A finished attempt as a regrade compares it, or none when it cannot
-    be scored: the task or the publication it ran under does not read.
+    be read: the task or the publication it ran under does not read. Its
+    tests are those of its plan in the groups it is shown with.
     """
-    if scorer is None:
+    if graded_of is None:
         return None
-    graded = await scorer.graded(PublicationId(row.publication_id))
+    graded = await graded_of.graded(PublicationId(row.publication_id))
     if graded is None:
         return None
-    factor = factors.get(row.submission_id)
-    if factor is None:
-        return None
-    scored = await scorer.scored(row, graded, factor)
-    tests = [test for group in scored.groups for test in group.tests]
-    values = scored.values(EVERYTHING)
-    better = {
-        name: measure.better
-        for name, measure in scored.measures.items()
-        if measure.better is not None and name in values
-    }
+    result = row.result or {}
+    outcomes = {str(test["test"]): test.get("outcome") for test in result.get("tests") or ()}
+    tests = [test for test in graded.tests if group_of(test) in graded.groups]
     return Side(
         attempt=row.attempt,
-        points=scored.points(everywhere, EVERYTHING),
-        accepted=sum(1 for test in tests if test.outcome == ACCEPTED),
+        accepted=sum(1 for test in tests if outcomes.get(test) == ACCEPTED),
         tests=len(tests),
-        stopped=(row.result or {}).get("stopped"),
-        values={name: values[name] for name in better},
-        better=better,
+        stopped=result.get("stopped"),
     )

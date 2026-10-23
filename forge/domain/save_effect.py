@@ -4,21 +4,23 @@ publishes (#449), and answer a save that published (M66).
 
 - The first line says whether anyone's result changes. Results change when
   the save grades a submission again, or when the task has a graded
-  submission and the save moves what one earns or shows: a group's points,
-  how a group earns them, a test's weight, what a test earns (`credit`), or
-  when a group's results are shown; for a run task, its groups, its values
-  or when `show` shows a group or value. A change to the submission limits
+  submission and the save moves what one shows: when a group's results are
+  shown; for a run task, its groups, its values or when `show` shows a
+  group or value. A task graded test by test gives no points since stage 5
+  (section 6, item 123), so its rule weights, test weights and `credit`
+  move nothing. A change to the submission limits
   moves no result: a lowered `max` takes no result away and a raised one
   grades nothing by itself (#445), so they change only what entrants may
   still submit; nor does anything said under what entrants read.
 - **Runs again:** how many submissions are graded again, and why, from what
   changed how the task grades; for a run task, which of its steps run
   again, and that they wait for the save's check when it has one.
-- **Scores:** each scoring change, new and old, and each leaderboard counted
-  again with it. For a run task, each group and value added, removed or
+- **Scores:** for a run task, each group and value added, removed or
   changed, a value changed with what it reads, and each entry `show`
-  shows at another time; a value is named, never written out, since the
-  editor shows its tree.
+  shows at another time, then each leaderboard counted again with it; a
+  value is named, never written out, since the editor shows its tree. For
+  a task graded test by test, each group shown at another time and the
+  submission limits.
 - **What entrants read:** whether the statement, the task's title or the
   files beside the statement change; for a run task, each task file or
   folder `show` lists at another time, never one only a check names.
@@ -31,25 +33,11 @@ its title where the workflow gives one (M58).
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from fractions import Fraction
 
 from forge.domain.blocks.board_check import BoardsCheck, check_boards
-from forge.domain.blocks.numbers import exact, written
 from forge.domain.checks import check_only
-from forge.domain.definitions import (
-    ContestDefinition,
-    ContestTask,
-    Group,
-    Rate,
-    Relative,
-    Scoring,
-    Show,
-    TaskDefinition,
-    worth_of,
-)
-from forge.domain.meanings import in_sentence
+from forge.domain.definitions import ContestDefinition, Rate, Scoring, Show, TaskDefinition
 from forge.domain.run_task import SHOWN_WORDS, show_names, shown_times
-from forge.domain.scoring import ZERO, group_max, rule_weight
 
 RESULTS_CHANGE = "Results change."
 NO_RESULT_CHANGES = "Nobody's result changes."
@@ -111,7 +99,6 @@ def effect_of(
     regrades: int,
     graded: bool,
     read: ReadChanges,
-    titles: Mapping[str, str] | None = None,
     submitted: bool = False,
     unread: bool = False,
     steps: Sequence[str] | None = None,
@@ -122,15 +109,14 @@ def effect_of(
     a first publication, or `unread` when the latest publication's settings
     no longer read) does to the task named `task` in `contest`, given what
     changed how it grades, how many submissions that grades again, whether
-    the task has a graded submission, and whether it has any; `titles` are
-    what the workflow calls the values it reports, by key. For a run task,
+    the task has a graded submission, and whether it has any. For a run task,
     `steps` are the steps a submission runs again, `checked_first` that
     the regrade waits for the save's check to pass, and `programs` the
     values whose `exec` program runs again, each in a container per
     submission, which the save says the cost of.
     """
     first = before is None and not unread
-    scores, moves = _scores(task, before, after, contest, bool(changes), titles or {}, unread)
+    scores, moves = _scores(task, before, after, contest, unread)
     changes_results = (bool(changes) and regrades > 0) or (graded and moves)
     return SaveEffect(
         results_change=changes_results,
@@ -218,12 +204,10 @@ def _scores(
     before: TaskDefinition | None,
     after: TaskDefinition,
     contest: ContestDefinition | None,
-    grading_changed: bool,
-    titles: Mapping[str, str],
     unread: bool,
 ) -> tuple[list[str], bool]:
     """Each scoring change in words, then the boards it counts again, and
-    whether any of it moves what a result earns or shows.
+    whether any of it moves what a result is or shows.
     """
     entry = contest.entry(task) if contest is not None else None
     # No board counts a withdrawn task, so a save of one moves none; and a
@@ -241,28 +225,14 @@ def _scores(
     if after.scoring is not None:
         return _run_scores(task, before, after.scoring, contest, checked)
     if before is None:
-        return _points_first(after, _worth(entry, after)), False
-    worth_before, worth_after = _worth(entry, before), _worth(entry, after)
-    points = _points(before, after, worth_before, worth_after)
-    scales = (_scale(before, worth_before), _scale(after, worth_after))
-    earning = [
-        line
-        for name, group in after.test_groups.items()
-        if name in before.test_groups
-        for line in _earning(name, before.test_groups[name], group, *scales)
-    ]
-    credit = _credit(before, after, titles)
+        return [], False
     shown = [
         f"Results of {name} shown {SHOWN[group.shown]} (was {SHOWN[then.shown]})."
         for name, group in after.test_groups.items()
         if (then := before.test_groups.get(name)) is not None and then.shown != group.shown
     ]
     limit, rate = _submissions(before, after)
-    rescored = bool(points or earning or credit)
-    found = [*points, *earning, *credit, *shown, *limit, *rate]
-    if rescored:
-        found.append(_scored_again([]))
-    return found, bool(rescored or shown)
+    return [*shown, *limit, *rate], bool(shown)
 
 
 def _titles(
@@ -430,139 +400,6 @@ def _file_moves(before: TaskDefinition | None, after: TaskDefinition) -> list[st
         if entry not in now
     ]
     return found
-
-
-def _worth(entry: ContestTask | None, definition: TaskDefinition) -> Fraction | None:
-    if entry is None:
-        return None
-    worth = worth_of(entry, definition)
-    return exact(worth) if worth is not None else None
-
-
-def _points_first(after: TaskDefinition, worth: Fraction | None) -> list[str]:
-    """Each group's most points, at a first publication."""
-    if worth is None:
-        return []
-    listed = [
-        f"{name} up to {written(points)}"
-        for name, points in group_max(after.test_groups, worth).items()
-        if points
-    ]
-    if not listed:
-        return []
-    listed[0] = listed[0].replace(" up to ", " is worth up to ", 1)
-    return [f"Points: {_joined(listed)}."]
-
-
-def _points(
-    before: TaskDefinition,
-    after: TaskDefinition,
-    worth_before: Fraction | None,
-    worth_after: Fraction | None,
-) -> list[str]:
-    """One line per group whose most points moved, the old number with it."""
-    was = group_max(before.test_groups, worth_before) if worth_before is not None else {}
-    now = group_max(after.test_groups, worth_after) if worth_after is not None else {}
-    found: list[str] = []
-    for name in after.test_groups:
-        points, then = now.get(name, ZERO), was.get(name, ZERO)
-        if name not in before.test_groups:
-            if points:
-                found.append(f"Points: {name} is new, worth up to {written(points)}.")
-        elif points != then:
-            found.append(
-                f"Points: {name} gives no points now (was up to {written(then)})."
-                if not points
-                else f"Points: {name} is now worth up to {written(points)} (was {written(then)})."
-            )
-    for name in before.test_groups:
-        if name not in after.test_groups and was.get(name):
-            found.append(f"Points: {name} is gone (was worth up to {written(was[name])}).")
-    return found
-
-
-def _scale(definition: TaskDefinition, worth: Fraction | None) -> Fraction:
-    """What one unit of rule weight is worth in points: the task's worth over
-    its groups' total, or 1 where the task is in no contest that says.
-    """
-    total = sum((rule_weight(group) for group in definition.test_groups.values()), ZERO)
-    return worth / total if worth is not None and total else Fraction(1)
-
-
-def _parts(group: Group) -> list[tuple[str, Fraction]]:
-    """Each way the group earns, with its rule weight, in the file's order."""
-    parts: list[tuple[str, Fraction]] = []
-    for kind, value in (("each", group.each), ("worst", group.worst), ("pass", group.pass_)):
-        weight = exact(value)
-        if weight:
-            parts.append((kind, weight))
-    return parts
-
-
-def _part_words(kind: str, group: Group) -> str:
-    if kind == "each":
-        return "shared over its tests"
-    if kind == "worst":
-        return "by its lowest test score"
-    share = exact(group.pass_at)
-    if share is None or share >= 1:
-        return "when every test passes"
-    return f"when {written(share * 100)}% of its tests pass"
-
-
-def _rule_words(group: Group, scale: Fraction) -> str:
-    """How the group earns, part by part, each with its points."""
-    return _joined(
-        [f"{written(weight * scale)} {_part_words(kind, group)}" for kind, weight in _parts(group)]
-    )
-
-
-def _earning(
-    name: str, before: Group, after: Group, scale_before: Fraction, scale_after: Fraction
-) -> list[str]:
-    """How the group earns its points, when its rules moved other than by
-    its total alone, and its tests' weights when those moved.
-    """
-    found: list[str] = []
-    then, now = rule_weight(before), rule_weight(after)
-    if then and now:
-        shape_before = [(kind, weight / then) for kind, weight in _parts(before)]
-        shape_after = [(kind, weight / now) for kind, weight in _parts(after)]
-        moved = shape_before != shape_after or (
-            any(kind == "pass" for kind, _ in shape_after)
-            and exact(before.pass_at) != exact(after.pass_at)
-        )
-        if moved:
-            found.append(
-                f"How {name} earns its points: {_rule_words(after, scale_after)} "
-                f"(was {_rule_words(before, scale_before)})."
-            )
-    if (before.test_weights or {}) != (after.test_weights or {}):
-        found.append(f"{name} weighs its tests differently.")
-    return found
-
-
-def _credit_words(credit: str | Relative | None, titles: Mapping[str, str]) -> str:
-    """What each test earns, the value it reads named by its title, "its run
-    time against the best any entrant reached", or by its key where it has
-    none.
-    """
-    if credit is None:
-        return "all or nothing, as it passes or fails"
-    name = credit.relative if isinstance(credit, Relative) else credit
-    said = in_sentence(titles[name]) if name in titles else name
-    if isinstance(credit, Relative):
-        return f"its {said} against the best any entrant reached"
-    return f"the {said} it reports, from 0 to 1"
-
-
-def _credit(before: TaskDefinition, after: TaskDefinition, titles: Mapping[str, str]) -> list[str]:
-    if before.credit == after.credit:
-        return []
-    now, then = _credit_words(after.credit, titles), _credit_words(before.credit, titles)
-    if now == then:
-        return ["What each test earns is now read from another value the workflow reports."]
-    return [f"What each test earns: {now} (was {then})."]
 
 
 def _rate_words(rate: Rate) -> str:

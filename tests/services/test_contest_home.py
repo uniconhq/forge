@@ -1,8 +1,8 @@
 """What a signed-in person reads of a contest. The home of a contest they see
 carries its dates, their registration panel and the server's clock, and
 lists only the tasks released to them, in the contest's order, each with the
-label its place gives it, its worth, and its due and close for the person's
-entrant, its extension on it included. A task's page gives the statement its
+label its place gives it, and its due and close for the person's entrant,
+its extension on it included. A task's page gives the statement its
 latest publication froze, its submission caps and the form of the inputs a
 contestant gives, read from the plan, and nothing for a task that is not
 visible. A hidden contest is seen by the members of its approved entrants
@@ -49,7 +49,6 @@ visibility: {visibility}
 tasks:
   - id: diff
   - id: sum
-    worth: 50
     due: 2026-09-26T13:00:00Z
     closes: 2026-09-26T14:00:00Z
   - id: later
@@ -87,9 +86,9 @@ async def test_the_home_lists_only_the_released_tasks_in_the_contests_order(
 
     home = await contest_home.home(setup, bob, SPRING)
 
-    assert [(task.name, task.label, task.worth, task.due, task.closes) for task in home.tasks] == [
-        ("diff", "A", 100, None, at(15)),
-        ("sum", "B", 50, at(13), at(14)),
+    assert [(task.name, task.label, task.due, task.closes) for task in home.tasks] == [
+        ("diff", "A", None, at(15)),
+        ("sum", "B", at(13), at(14)),
     ]
     assert all(
         (task.release.released, task.release.open, task.release.closed)
@@ -168,7 +167,7 @@ async def test_a_task_page_gives_the_published_statement_caps_and_form(
 
     page = await contest_home.task(setup, bob, sum_task)
 
-    assert (page.name, page.label, page.worth) == ("sum", "B", 50)
+    assert (page.name, page.label) == ("sum", "B")
     assert page.statement == statement.content.decode()
     assert (page.submissions.max, page.submissions.rate) == (50, Rate(count=1, per=30))
     assert [(field.id, field.type, field.label, field.options) for field in page.inputs] == [
@@ -214,25 +213,8 @@ async def test_a_task_page_reads_the_caps_its_publication_gives(
 
     page = await contest_home.task(setup, bob, diff)
 
-    assert (page.label, page.worth, page.due, page.closes) == ("A", 100, None, at(15))
+    assert (page.label, page.due, page.closes) == ("A", None, at(15))
     assert (page.submissions.max, page.submissions.rate) == (5, Rate(count=2, per=60))
-
-
-async def test_a_task_its_entry_gives_no_worth_is_worth_its_groups_total(
-    setup: Setup, acme: Acme, published: list[TaskId]
-) -> None:
-    diff = TaskId("acme/spring/diff")
-    head = await acme.fake.content.list_files(PLATFORM, diff)
-    current = await acme.fake.content.read_file(PLATFORM, diff, "task.yaml")
-    seven_and_three = current.content.replace(b"{each: 100}", b"{each: 7, pass: 3}")
-    edit = Edit(seven_and_three, head.tokens["task.yaml"])
-    saved = await publications.save(setup, acme.ada, diff, {"task.yaml": edit}, confirm=True)
-    assert isinstance(saved, Published)
-    bob = await signed_in(setup, acme.fake, 8)
-
-    page = await contest_home.task(setup, bob, diff)
-
-    assert (page.label, page.worth) == ("A", 10)
 
 
 @pytest.mark.parametrize("name", ["later", "unsaved", "unlisted", "nothing"])

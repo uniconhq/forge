@@ -11,10 +11,9 @@ needs the observer role at the place and writing the manager role.
 Every write carries the token the file was read with, and a file that has
 moved since is `Conflict`, with nothing written. A write to a contest's
 `contest.yaml` is validated first and refused whole when it is not valid,
-or when it moves a task's timeline behind what rows already did, puts a
-worth on a task that gives no points, or opens the contest while a task it
-lists is not published or its statement is not written
-(`timelines.check_contest`),
+or when it moves a task's timeline behind what rows already did, or opens
+the contest while a task it lists is not published or its statement is not
+written (`timelines.check_contest`),
 or when a board breaks the board check, reads what a task it reads does not
 give, or chooses by a mark, the hold's `from` leaves the contest or is set
 to a time passed, or a task's marks fall below what a row holds

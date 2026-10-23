@@ -17,7 +17,7 @@ published until the first save.
 
 A contest's tasks are the tasks there are at the forge. The `tasks` list in
 `contest.yaml` orders them, a task's label being its place in it, and gives
-each its timeline and its worth. A new task is added to the end of that list
+each its timeline. A new task is added to the end of that list
 by the platform as `{id: <name>}`, and in a published contest with its
 `release_at` and `closes` at the contest's end, so work in progress shows
 nothing until the organisers move them (`forge.domain.contest_entries`).
@@ -43,19 +43,16 @@ contest does not list is not on it.
 
 import builtins
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
-from decimal import Decimal
+from datetime import datetime
 
 from forge.domain.contest_entries import Unlisted, with_entry
 from forge.domain.definitions import (
     CONTEST_FILE,
     STATEMENT_FILE,
-    TASK_FILE,
     ContestDefinition,
     ContestTask,
     letters,
     parse_contest,
-    parse_task,
     starter_task,
     title_of,
 )
@@ -87,9 +84,6 @@ from forge.services.taking_out import TakeOut
 log = get_logger(__name__)
 
 LIST_TRIES = 3
-POINTS_KEPT = timedelta(hours=1)
-"""How long this process keeps a publication's total rule weight: a
-publication never changes, so the time only bounds what is held."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,19 +112,14 @@ class TaskState:
 @dataclass(frozen=True, slots=True)
 class Timeline:
     """A task's timeline in its contest, from its entry in `contest.yaml`,
-    each time at its default where the entry gives none: `worth`, the most
-    points it gives, its groups' total unless the entry says, and none on a task whose
-    latest publication gives no points or that has none; `release_at`, the
+    each time at its default where the entry gives none: `release_at`, the
     contest's start unless the entry says; `due`, after which a submission
-    is late, and `late_per_day`, the fraction a started late day takes off,
-    1 unless the entry says, both none on a task with no due; and `closes`,
-    the contest's end unless the entry says.
+    is late, none on a task with no due; and `closes`, the contest's end
+    unless the entry says.
     """
 
-    worth: int | Decimal | None
     release_at: datetime
     due: datetime | None
-    late_per_day: int | Decimal | None
     closes: datetime
 
 
@@ -294,9 +283,7 @@ async def standing(
     save of them would be refused, and `NotFound` for no such contest.
 
     Each task costs the forge what `state` does, its head and its
-    publications, a check of its head when that is a draft, and the
-    `task.yaml` of its latest publication once per process, for whether it
-    gives points.
+    publications and a check of its head when that is a draft.
     """
     require(organiser, contest_scope(contest), Role.OBSERVER)
     settings = await _settings(ctx, contest)
@@ -315,7 +302,7 @@ async def standing(
                 task=Named(task, entry.id),
                 label=letters(index),
                 state=where,
-                timeline=await _timeline(ctx, settings, entry, task, where.latest),
+                timeline=_timeline(settings, entry),
                 withdrawn=entry.withdrawn,
                 submissions=count,
                 take_out=None if entry.withdrawn else taking_out.take_out_of(count),
@@ -337,37 +324,12 @@ async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition:
     return parse_contest(found.content)
 
 
-async def _timeline(
-    ctx: Context,
-    settings: ContestDefinition,
-    entry: ContestTask,
-    task: TaskId,
-    latest: Publication | None,
-) -> Timeline:
-    total = None if latest is None else await _total_weight(ctx, task, latest)
+def _timeline(settings: ContestDefinition, entry: ContestTask) -> Timeline:
     return Timeline(
-        worth=None if total is None else entry.worth if entry.worth is not None else total,
         release_at=settings.release_of(entry),
         due=due_of(settings, entry, NONE),
-        late_per_day=settings.late_per_day_of(entry),
         closes=settings.closes_of(entry),
     )
-
-
-async def _total_weight(ctx: Context, task: TaskId, latest: Publication) -> int | Decimal | None:
-    """The task's groups' total rule weight as `latest` froze it, none when
-    it gives no points, read once per process for each publication.
-    """
-
-    async def read() -> int | Decimal | None:
-        found = await ctx.forge.content.read_file(PLATFORM, task, TASK_FILE, at=latest.version)
-        try:
-            definition = parse_task(found.content)
-        except InvalidDefinition:
-            return None
-        return definition.total_weight if definition.gives_points else None
-
-    return await ctx.memo.remembered(f"tasks.total_weight.{latest.id}", POINTS_KEPT, read)
 
 
 @action

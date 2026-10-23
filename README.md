@@ -110,7 +110,6 @@ forge/api/
                 they return, with its Status, WayKind and Locks
   contest_home.py  contests, home, task, public_file, and the ContestSummary,
                 ContestHome, TaskEntry, TaskPage and PublicFile they return,
-                the BoardPoints and Points a task's points per board are,
                 PUBLIC_MOST, the most of a public file served, with the Limits and Rate a
                 page carries, the ContestantInput entries and their InputType
                 a submit panel is built from, and the State and
@@ -133,11 +132,11 @@ forge/api/
                 the proxy is answered with
   submissions.py  submit, mine, one, organised, files, download, the
                 SubmittedInput submit takes, and the Submission, Result,
-                SubmissionState, GroupShown, Points, ValueMeaning, Fold,
+                SubmissionState, GroupShown, ValueShown, ValueMeaning, Fold,
                 SubmittedFiles, GradingStatus and Show they return
-  boards.py     seen, organised, held, mark, unmark, written, and the
-                Standings, Key, Column, NotInView, Ranked, Cell,
-                OrganisedBoard, Marks, Points and EntrantOwner they return
+  boards.py     seen, hold_state, end_hold, held, mark, unmark, written, and
+                the Board, BoardAudience, BoardRow, BoardCell, Header,
+                Counted, HoldState, Marks and EntrantOwner they return
   blocks.py     CATALOGUE, every block a value may use, LEAVES, TASK_FACTS
                 and SKIP, and the Block, Form, BlockInput and Kind it is
                 made of
@@ -222,16 +221,16 @@ rules of an upload's slot and parts. `grading.py` holds what a grading run
 is, its two secrets, its clock and the machine a plan must fit,
 `reports.py` what a run reports back and which results are kept,
 `exact_json.py` the JSON that keeps a result's numbers exactly as written,
-`showing.py` what a contestant is shown of a result and when,
-`scoring.py` a result's credit, points and folded values, exact,
-`boards.py` a board ranked from scored results, `board_checks.py` what a
-board asks of the tasks it covers (T8, C4), and
+`showing.py` what a contestant is shown of a result graded test by test
+and when, `boards.py` a board worked out for each viewer from its block
+columns, `board_checks.py` what a board asks of `contest.yaml` and of the
+tasks it reads, and
 `contracts.py` checks a document against `schemas/`, a copy of the five
 contract files of the runner release the package pins, which the tests
 check against the runner's own when that repo is checked out beside this
 one. `release.py` works out from `contest.yaml` and the clock whether a task
-is released, visible and open to one row, when a submission is late, when a
-task reveals, and who sees a contest at all.
+is released, visible and open to one row, when a task falls due and closes
+for a row, when it reveals, and who sees a contest at all.
 
 ## The port
 
@@ -778,8 +777,7 @@ has submitted, it is withdrawn instead: its entry stays, marked `withdrawn:
 true`, so it keeps its place and its letter; entrants no longer see it, its
 announcements or their own submissions to it, a submit or an upload to it
 is refused as `task_withdrawn`, and no leaderboard counts it or asks
-anything of it, so the totals drop its points and no save is refused for
-it. Its submissions and gradings stay for the organisers, and
+anything of it, so its cells are missing and no save is refused for it. Its submissions and gradings stay for the organisers, and
 `tasks.put_back(organiser, task)` takes the key out again, checked as a save
 of the settings is, after which it scores exactly as before. The request
 names what the organiser confirmed, `remove` or `withdraw`, and is refused as
@@ -899,9 +897,8 @@ such file. Every path is checked first, and one
 that is not a plain path inside the place is `InvalidPath`, unread and
 unwritten. A write carries the token the file was read with, and one that has moved is `Conflict`. A write to `contest.yaml`
 is validated first and refused whole as `InvalidDefinition` when it is not
-valid, when an entry of `tasks` names no task of the contest, when it puts a
-`worth` or a `due` on a task whose latest publication gives no points, or
-when it moves a task's timeline behind what rows already did (C2,
+valid, when an entry of `tasks` names no task of the contest, or when it
+moves a task's timeline behind what rows already did (C2,
 `services/timelines.py`): the release of a task that has opened moved later,
 the entry of a task that has opened, withdrawn since or not, or has
 submissions dropped (it is taken out with `tasks.take_out` instead), a `due`
@@ -997,9 +994,7 @@ each file under it, named one by one.
    against `test_groups`; once the task has a graded submission, a group
    shown `always` or `verdict` under any publication a graded submission
    ran under is not hidden again and a group the save adds says its `show`
-   (T7, T10); a task left giving no points is refused at `test_groups`
-   while its contest's entry gives it a `worth` or a `due`, naming that
-   line; and the plan compiles over the files of that state. When the latest publication used a workflow of the same
+   (T7, T10); and the plan compiles over the files of that state. When the latest publication used a workflow of the same
    `<owner>/<name>` and that name is now another workflow, by the forge's own
    id for it, the state is refused at that line: the owner may have been
    renamed and the name taken by someone else. A state that fails is a `Draft`: the organiser's
@@ -1035,17 +1030,17 @@ each file under it, named one by one.
    change." or "Nobody's result changes."; `runs_again`, "12 submissions
    are graded again: the input of test 1 in the group main changed." or
    "No submission runs again: the tests and how they run are the same.";
-   `scores`, each scoring change with its old value ("Points: main is now
-   worth up to 110 (was 100).", "Results of main shown once the task
-   closes (was right away).", "Submission limit: 10 per entrant (was
+   `scores`, each scoring change with its old value ("Results of main
+   shown once the task closes (was right away).", "Submission limit: 10 per entrant (was
    50).") and the boards counted again ("Every result is scored again, and
    the leaderboard Standings with it.", "The leaderboard Standings is
    counted again."), or "No score changes."; and `reading`, the task's
    title, "The statement changes." and the pictures and files under
    `public/`, or "Nothing entrants read changes.". Results change when the
    save grades a submission again, or when the task has a graded
-   submission and the save moves a group's points or how it earns them, a
-   test's weight, `credit` or a group's `show`; the submission limits
+   submission and the save moves what a value works out or a group's
+   `show`; a task graded test by test scores nothing, so its groups'
+   points, rule weights and `credit` move no result; the submission limits
    change only what entrants may still submit (a lowered `max` takes no
    result away, a raised one grades nothing by itself), and they and what
    entrants read move no result. A save with
@@ -1078,11 +1073,8 @@ it, and whether the statement the latest publication holds is written,
 blank, and not the starter's placeholder, `STARTER_STATEMENT` in
 `forge.domain.definitions`, the one copy of it (M57; false when nothing is
 published), each read once per process for each publication or file, and its `Timeline` from its entry, each time at its default where the
-entry gives none: `worth` its groups' total, the sum of their rule
-weights, and none on a task whose latest publication gives no points or
-that has none, `release_at` the contest's start,
-`due` none, `late_per_day` 1 with a due and none without, and `closes` the
-contest's end; and whether it is `withdrawn`, its `submissions`, every
+entry gives none: `release_at` the contest's start, `due` none, and
+`closes` the contest's end; and whether it is `withdrawn`, its `submissions`, every
 entrant's, and `take_out`, what taking it out would do, `remove` while it
 has none and `withdraw` once it has, none while it is withdrawn. A
 withdrawn task keeps its place and its letter. A task of the org the
@@ -1090,17 +1082,15 @@ contest does not list is not on it. A
 `contest.yaml` that does not read is `InvalidDefinition` naming the file
 with every problem and its path, as a save of it is refused, so the page
 can show what to mend; a contest that is not there is `NotFound`.
-Each task costs what `state` does, its head and its publications, a check
-of its head when that is a draft, and the `task.yaml` of its latest
-publication once per process, for whether it gives points.
+Each task costs what `state` does, its head and its publications, and a
+check of its head when that is a draft.
 
 A valid save comes back as `Published`, with the publication, its number,
 whether it changed how the task grades and what, its notes (the task's
 reveal, the sealed steps, a bounded value the task's `credit` does not
 name, a board that counts nothing from the task), how many submissions it
 queued to be graded again, and its `effect`: what it did, in the same
-words and parts as the question a running contest asks before it, so a
-group's most points are named only where they moved, with the old number.
+words and parts as the question a running contest asks before it.
 `publications.list`
 gives every publication with its flag and its changes, for the task's
 history.
@@ -1338,22 +1328,11 @@ What a signed-in person reads of a contest is `contest_home`: `contests`,
 every contest they see with the status of their entrant; `home`, a
 contest's dates, their registration panel as `entrants.mine` gives it, the
 server's clock and the tasks released to them in the contest's order, each
-with its label, its place as a letter, its worth, when it falls due and
-closes for their entrant, and, for a member of an approved entrant, its
-`points` (`boards.own_points`): one for each leaderboard an entrant sees,
-in the contest's file's order, the home's `boards` naming them, so a page
-draws a column per board under one header. Each says whether the board
-covers the task, and, where it does and the task gives points, the
-entrant's points on the task as that board counts it: its scope (`over`),
-the submissions its `select` counts under its `order`, read by the same
-cell as the board's own row, so the two never disagree; `shown` over the
-scope's groups whose results are shown, 0 while the board's cell does not
-count, none while the board shows nothing of the task yet, so a shown 0
-reads apart from nothing shown; `pending`, the most the scope's groups not
-shown yet could still add, until `pending_until`, the task's reveal, so
-the home never shows a number a board holds back; and `most`, the most
-the board can count from the task. Anyone else gets `boards` and every
-task's `points` empty, and reads the task's worth; and `task`, a
+with its label, its place as a letter, and when it falls due and closes
+for their entrant; and, for a member of an approved entrant, its
+`standing` (`boards.own_rows`): their own row on each leaderboard they
+read, as that board shows it to them, so the home never shows a number a
+board holds back. Anyone else gets no standing; and `task`, a
 visible task's statement, its
 submission caps and the inputs a contestant gives, read from its plan with
 the task's form details, the labels, options, bounds and sizes a submit
@@ -1676,21 +1655,18 @@ submission named at the forge whose rows never landed is one the contestant
 saw fail, and submitting again with the same key finishes it.
 
 `mine` lists the signed-in person's own submissions of a task, newest first,
-`one` gives one by its number, each with how many started days after their
-row's due it was and the latest attempt of its grading, as the task's test
-groups show it (`domain/showing.py`): a group shown `always` with its
+`one` gives one by its number, each with the latest attempt of its
+grading, as the task's test groups show it (`domain/showing.py`): a group shown `always` with its
 outcome and its tests, one shown as a `verdict` with its outcome and its
 tests at the task's reveal, one shown `after_close` with its name and when
-it is shown; the outcome over the groups shown; the values reported once,
-and each value folded over the tests shown (`folded`); and what stopped the
-run. A run that a sealed step stopped, as the result's `stopped_by` names
+it is shown; the outcome over the groups shown; the values reported once;
+and what stopped the run. A run that a sealed step stopped, as the result's `stopped_by` names
 it, is held whole until the reveal: no stop, every group hidden as if it
-ran, its points all pending and no folds, so nothing tells it from a run
-that has not stopped. A grading is shown
+ran, so nothing tells it from a run that has not stopped. A grading is shown
 with the publication it ran under: that publication's sealed facts always,
 and the latest publication's `test_groups` when the two plans list the
-same tests, its own otherwise, so its rows are folded with the tests they
-ran on; a group with no rows did not run on it (`ran` false) and adds
+same tests, its own otherwise, so its rows are grouped with the tests
+they ran on; a group with no rows did not run on it (`ran` false) and adds
 nothing to the outcome. A past publication's `task.yaml` and plan are read
 once per process. A contestant is told where a submission stands in
 TASK-FORMAT.md section 1.7's words (`SubmissionState`): `queued` until its
@@ -1716,9 +1692,8 @@ names every test, the hidden ones too, so it is the organisers'
 row, picked as the boards pick one (an entrant's `EntrantOwner`) and its
 number, as its row reads it with everything filled in
 (TASK-FORMAT.md section 1.7): the same attempt, the same publication and
-the same scoring, shown as once the task has revealed, so a hidden group's
-outcome, tests and points and every sealed value are there, the points all
-shown and none pending; each group's `shown_at` is kept from the row's own
+the same groups, shown as once the task has revealed, so a hidden group's
+outcome and tests and every sealed value are there; each group's `shown_at` is kept from the row's own
 view now, null once the row sees the group's tests, so it says when the row
 sees what it does not yet; and `status` is the grading's own
 (`GradingStatus`). A row with no such submission is `NotFound`, and an
@@ -1917,8 +1892,7 @@ organisers cancelled this grading.", so it reads and counts the same.
 
 **A result stays until a newer one replaces it.** Of a submission's
 attempts the latest that finished with a result counts (`scores.counted`,
-`scores.usable`): on every board, for relative credit, to its contestant
-and against `submissions.max`, until a newer attempt finishes with one. A
+`scores.usable`): on every board, to its contestant and against `submissions.max`, until a newer attempt finishes with one. A
 regrade under way, a `system_error` and a staff cancel never take a result
 away. A submission none of whose attempts has a result is still grading on
 a board while its latest attempt is queued, running or a `system_error`,
@@ -2054,22 +2028,19 @@ retry of one of those, by itself or by staff, names it in
 `gradings.regrade_id`, so a regrade's result for a submission is its latest
 attempt of it (`GradingRecord.regrade`, `Rejudged.regrade`). Each is
 compared with the result that counted for the submission when the regrade
-began, the latest earlier attempt that finished with one, both scored as
-organisers see results, every group, nothing held back, the late factor
-applied, by the boards' scoring, the earlier one as it counted just before
-the regrade began: under the scoring of the publication then the latest
-(the regrade's own for a rejudge, the one before the save's for a save's,
-`counted_under`), and under relative credit against the best among the
-results that counted then (`scores.Before`). What changed
-(`forge.domain.regrades.change_of`) is `up`
-or `down` in points; `stopped`, now stopped before its tests where that
-result was not (a compile error, on the classic workflow); `unchanged`;
-`new`, no earlier result, or one of the two not scored since its
-publication no longer reads; `running`; `failed`, no result yet, its latest
-attempt a system error or cancelled; and `over_limit`. On a task that gives
-no points, the share of its tests accepted decides, then the values with a
-direction: down when any got worse, so a regrade that makes anything worse
-is never read as an improvement. `regrades.latest(contest)` gives each task's
+began, the latest earlier attempt that finished with one, both read as
+organisers see results, every group, nothing held back, the earlier one
+under the groups of the publication then the latest (the regrade's own for
+a rejudge, the one before the save's for a save's, `counted_under`). On a
+task graded test by test, what changed (`forge.domain.regrades.change_of`)
+is `up` or `down` in the share of its plan's tests in its groups accepted;
+`stopped`, now stopped before its tests where that result was not (a
+compile error, on the classic workflow); `unchanged`; `new`, no earlier
+result, or one of the two not read since its publication no longer reads;
+`running`; `failed`, no result yet, its latest attempt a system error or
+cancelled; and `over_limit`. A run task's regrade is summed up instead by
+the board diff and the values and verdicts it changed
+(`regrades.run_summary`). `regrades.latest(contest)` gives each task's
 latest regrade the organiser observes as a `Summary`, newest first, with its
 counts by change (every change named, 0 where none), how many it `graded`
 (finished with a result), its `total` and whether it is `running`, until a
@@ -2079,54 +2050,50 @@ would hide a broken checker from an organiser who was away.
 `regrades.gradings_of(contest, regrade, change=, user=, entrant=, limit=)`
 gives its gradings as the feed does, one per submission, each with
 `change`, a `Compared` holding the change and both results as `Side`s:
-attempt, points, tests accepted of how many, what stopped it, and the
-values with a direction. Nothing stores a comparison: each read scores
-again. Migration 0021 adds the table and the column.
+attempt, tests accepted of how many, and what stopped it. Nothing stores a
+comparison: each read works it out again. Migration 0021 adds the table and the column.
 
 ## Scores and boards
 
 Nothing scored is stored. A result keeps the run's raw facts, and every read
-scores it again (`services/scores.py`, `domain/scoring.py`, TASK-FORMAT.md
-sections 3.1 to 3.5): each test's credit, each group's points
-`worth * late * E_g / W` and most `worth * R_g / W`, and each reported value
-folded over the tests, all as exact rationals, a value written `0.1` read
-as one tenth. A test that was not accepted has no value for a fold,
-whatever it reported, and counts as the value's worst declared bound or
-leaves the fold with none, the same on a submission's page and on every
-board: a wrong answer has no time, so it never ranks as fast. Each test's
-row still shows what it reported. A grading is scored with the latest publication's groups,
-credit and value meanings while no grading change came between them, and
-with its own otherwise. The value meanings carry each reported value's
-`title` and `unit` (`domain/meanings.py`), which the publication's note
-keeps in the workflow's order: a result is served them (`meanings`, a
-value a sealed step holds back left out until the reveal), a board's key
-on a value takes them from the first covered task that gives them, and
-a listed publication carries them, so no page reads the workflow to name
-a value. Relative credit's best is taken over the
-candidates the boards count, each row's of the task graded under the same
-plan. A submission is read with its points shown and those still decided
-at the reveal.
+works a run task's values out again from its `scoring` blocks
+(`scores.run_scored`, `forge/domain/blocks/`, SIMPLER-CORE.md 9), all as
+exact rationals, a value written `0.1` read as one tenth: the runs, an
+`exec` block's number kept in the step store, and the marks staff enter
+are all that is kept (stage 5 section 6, item 1). A task graded test by
+test gives no values and no points: it is shown group by group as its
+`show` allows (`domain/showing.py`) and a board reads nothing of it (stage
+5 section 6, items 70 and 123). The value meanings carry each reported
+value's `title` and `unit` (`domain/meanings.py`), which the publication's
+note keeps in the workflow's order, so no page reads the workflow to name a
+value.
 
-`boards.seen(session, contest)` gives every board the reader's audience
-sees, a visitor reading with no session, and an archived contest's to the
-members of its approved entrants alone; `boards.organised(organiser, contest, row=)`
-gives every board as `now` and `final`, every row, or, for a row of the
-contest, `now` of each board shown to contestants as that row sees it,
-beside what the boards ask of their tasks that does not hold. A board is
-ranked on read (`domain/boards.py`) over the contest's rows, each approved
-entrant, named as it is shown, read once a request: which submission counts per row and task (`best`,
-`best_per_group`, `marked`), its keys in turn, ties sharing a rank. A
-submission still grading, stopped by a step that is not sealed, or
-cancelled is no attempt; a submission counts its latest attempt that
-finished with a result, so a regrade in progress, a failure or a cancel
-leaves its result counting. `marks.mark`, `unmark` and `held` keep a row's marks for the
-`marked` boards in `marks`, at most the task's `marks`, frozen at the row's
-close; the task page says how many (`TaskPage.marks`) to an approved
-contestant alone, and to anyone else an open task reads closed as
-`not_approved`. A task's save is refused where a board covering it asks what it does
-not give (T8) and reports the boards it moves (T9); a contest's save is
-refused where a board asks what its tasks do not give (C4), or lowers a
-task's `marks` below what a row holds (C1), and answers the notes C4 reports.
+`boards.seen(session, contest, board=)` gives every board of the contest
+the reader reads, or only the one keyed `board`, worked out on read for
+that viewer (`domain/boards.py`, SIMPLER-CORE.md 10): staff, an observer of
+the contest or above, read every board, row and cell with no hold; the
+members of an approved entrant read `entrants` boards with their row as
+their own, and anyone, a visitor with no session among them, reads
+`everyone` boards. A row is an approved entrant, its results for a task
+its submissions to it, each by the attempt of it that counts
+(`scores.usable`). Each cell is a column's blocks over the row's results
+and facts (`attempt`, `seconds`, `seconds_late`, `marked`, `compiled`); a
+viewer other than staff reads each value as the row's own entrant is shown
+it now, so a board never shows more than the task's own page, a cell
+reading a value still hidden shows as hidden, and a sort key reading one
+is dropped for that viewer. The hold holds rows from its `from` until its
+`until`, or until a manager ends it early (`boards.end_hold`), and its
+state is `boards.hold_state`. `boards.own_rows` gives the contest home a
+member's own row of each board they read, and `boards.chosen` the
+submissions a row's cells counted, which serves an entered mark no sooner
+than a cell counting it is shown. `marks.mark`, `unmark` and `held` keep a
+row's marks, at most the task's `marks`, frozen at the row's close. A
+contest's save is refused where a board breaks the catalogue, reads what a
+task does not give, chooses by a mark, or gives `best_each` a value it
+cannot work out again, where the hold's `from` leaves the contest or is
+set to a time passed, or where a task's `marks` fall below what a row
+holds (`boards.check_contest`); a task's save is refused where it would
+break a board that reads it (`publications`).
 
 ## Errors
 

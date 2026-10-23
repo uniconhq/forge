@@ -1,17 +1,13 @@
 """What a regrade did to one submission, without a database (#448,
-TASK-FORMAT.md section 3.5): its points went up or down, it now stops
-before its tests, or nothing changed; on a task that gives no points, the
-share of its tests accepted and then its values with a direction decide,
-any value worse reading as down; with nothing to compare, it is newly
-graded.
+TASK-FORMAT.md section 3.5): it now stops before its tests, the share of
+its tests accepted went up or down, or nothing changed; with nothing to
+compare, it is newly graded.
 """
 
 from datetime import UTC, datetime
-from fractions import Fraction
 from types import SimpleNamespace
 from typing import cast
 
-from forge.domain.blocks.numbers import Better
 from forge.domain.ids import PublicationId, VersionId
 from forge.domain.publications import Publication
 from forge.domain.regrades import (
@@ -28,71 +24,30 @@ from forge.domain.regrades import (
 from forge.domain.run_results import Worked
 
 
-def _points(points: int, *, stopped: str | None = None) -> Side:
-    return Side(1, Fraction(points), 1 if points else 0, 1, stopped)
+def _side(accepted: int, tests: int, *, stopped: str | None = None) -> Side:
+    return Side(1, accepted, tests, stopped)
 
 
-def _valued(accepted: int, tests: int, **values: tuple[str, Better]) -> Side:
-    return Side(
-        1,
-        None,
-        accepted,
-        tests,
-        values={name: Fraction(value) for name, (value, _) in values.items()},
-        better={name: better for name, (_, better) in values.items()},
-    )
+def test_the_share_accepted_says_up_down_or_unchanged() -> None:
+    assert change_of(_side(8, 10), _side(9, 12)) is ChangeKind.DOWN
+    assert change_of(_side(1, 2), _side(3, 4)) is ChangeKind.UP
+    assert change_of(_side(1, 2), _side(2, 4)) is ChangeKind.UNCHANGED
 
 
-def test_points_say_up_down_or_unchanged() -> None:
-    assert change_of(_points(40), _points(100)) is ChangeKind.UP
-    assert change_of(_points(100), _points(40)) is ChangeKind.DOWN
-    assert change_of(_points(100), _points(100)) is ChangeKind.UNCHANGED
-
-
-def test_a_run_now_stopped_before_its_tests_is_told_apart_whatever_its_points() -> None:
-    assert change_of(_points(0), _points(0, stopped="compile_error")) is ChangeKind.STOPPED
-    assert change_of(_points(100), _points(0, stopped="compile_error")) is ChangeKind.STOPPED
-    # Stopped before and after is read by its points.
-    assert (
-        change_of(_points(0, stopped="compile_error"), _points(0, stopped="compile_error"))
-        is ChangeKind.UNCHANGED
-    )
-    assert change_of(_points(0, stopped="compile_error"), _points(100)) is ChangeKind.UP
+def test_a_run_now_stopped_before_its_tests_is_told_apart_whatever_its_share() -> None:
+    stopped = _side(0, 2, stopped="compile_error")
+    assert change_of(_side(0, 2), stopped) is ChangeKind.STOPPED
+    assert change_of(_side(2, 2), stopped) is ChangeKind.STOPPED
+    # Stopped before and after is read by its share, of its plan's tests.
+    assert change_of(stopped, stopped) is ChangeKind.UNCHANGED
+    assert change_of(stopped, _side(2, 2)) is ChangeKind.UP
+    # A task with no tests in its groups has no share to compare.
+    assert change_of(_side(0, 0), _side(0, 0)) is ChangeKind.UNCHANGED
 
 
 def test_with_nothing_to_compare_it_is_newly_graded() -> None:
-    assert change_of(None, _points(100)) is ChangeKind.NEW
-    assert change_of(_points(100), None) is ChangeKind.NEW
-
-
-def test_with_no_points_the_share_accepted_decides_first() -> None:
-    assert change_of(_valued(8, 10), _valued(9, 12)) is ChangeKind.DOWN
-    assert change_of(_valued(1, 2), _valued(3, 4)) is ChangeKind.UP
-
-
-def test_with_the_same_share_any_value_worse_is_down() -> None:
-    lower, higher = Better.LOWER, Better.HIGHER
-    before = _valued(2, 2, time_ms=("100", lower), score=("7", higher))
-
-    assert change_of(before, _valued(2, 2, time_ms=("90", lower), score=("7", higher))) is (
-        ChangeKind.UP
-    )
-    assert change_of(before, _valued(2, 2, time_ms=("90", lower), score=("6", higher))) is (
-        ChangeKind.DOWN
-    )
-    assert change_of(before, _valued(2, 2, time_ms=("100", lower), score=("7", higher))) is (
-        ChangeKind.UNCHANGED
-    )
-
-
-def test_a_value_on_one_side_only_reads_as_worst_where_it_is_missing() -> None:
-    # A board reads a missing value as the worst (#441): losing one is
-    # worse, even beside one that improved; gaining one is better.
-    lower, higher = Better.LOWER, Better.HIGHER
-    both = _valued(2, 2, time_ms=("100", lower), score=("7", higher))
-
-    assert change_of(both, _valued(2, 2, score=("8", higher))) is ChangeKind.DOWN
-    assert change_of(_valued(2, 2, score=("7", higher)), both) is ChangeKind.UP
+    assert change_of(None, _side(1, 1)) is ChangeKind.NEW
+    assert change_of(_side(1, 1), None) is ChangeKind.NEW
 
 
 def test_every_change_is_counted_zero_where_none() -> None:

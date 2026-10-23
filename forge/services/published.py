@@ -30,7 +30,6 @@ answer as one that is not there, so its errors reach nobody but the log.
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from decimal import Decimal
 
 from sqlalchemy import select
 
@@ -50,7 +49,6 @@ from forge.domain.definitions import (
     parse_contest,
     parse_task,
     statement_written,
-    worth_of,
 )
 from forge.domain.errors import InvalidPath, NotFound, PortError, PublicFileTooLarge, Rejected
 from forge.domain.identity import PLATFORM
@@ -99,17 +97,6 @@ class PublishedTask:
             [(each.number, each.grading_changed) for each in self.publications],
             publication.number,
         )
-
-    @property
-    def worth(self) -> int | Decimal | None:
-        """The most points the task gives in the contest: its entry's `worth`,
-        its groups' total on a task that gives points when the entry says
-        none, and none on a task that gives no points or that the contest
-        does not list.
-        """
-        if self.entry is None:
-            return None
-        return worth_of(self.entry, self.definition)
 
 
 async def contest(ctx: Context, contest: ContestId) -> ContestDefinition:

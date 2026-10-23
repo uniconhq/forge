@@ -32,7 +32,8 @@ contest's save and at the save of every task a board reads.
   resolved there; its first save is checked against the boards instead, so
   every name is resolved by one save or the other. A task graded test by
   test is not resolved at all: it gives a board no results, so its cells are
-  missing (stage 5 section 6, item 70), and its format goes in phase 5.9.
+  missing (stage 5 section 6, item 70), and its format goes with the rest
+  of today's path (stage 4 open 132).
 
 Each refusal across files names its board and column and carries its path
 from the top of `contest.yaml`, so the editor can point at it, and the

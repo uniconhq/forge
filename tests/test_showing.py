@@ -6,26 +6,23 @@ a grading is shown with.
 """
 
 from datetime import UTC, datetime
-from fractions import Fraction
 from typing import Any
 
 import pytest
 
-from forge.domain.blocks.numbers import Better
 from forge.domain.definitions import Group, Show
 from forge.domain.grading import GradingStatus
-from forge.domain.scoring import Measure, Points, group_of, score
 from forge.domain.showing import (
     NOTHING_SEALED,
     Graded,
     GroupShown,
     Sealed,
     SubmissionState,
+    group_of,
     shown,
     told,
     under,
 )
-from forge.domain.workflow_definition import Fold
 
 REVEAL = datetime(2026, 6, 1, 14, tzinfo=UTC)
 
@@ -181,7 +178,7 @@ def test_a_group_a_sealed_stop_kept_from_running_reads_as_hidden_until_the_revea
     assert after.groups[1] == GroupShown("second", Show.AFTER_CLOSE, None, (), None, ran=False)
 
 
-def test_a_held_stop_holds_back_every_group_its_points_and_its_folds_until_the_reveal() -> None:
+def test_a_held_stop_holds_back_every_group_until_the_reveal() -> None:
     """Showing alone, on groups T5 would refuse beside a sealed step: a held
     stop shows nothing of any group until the reveal, where the same groups
     of a run not stopped show what their `show` allows."""
@@ -191,7 +188,6 @@ def test_a_held_stop_holds_back_every_group_its_points_and_its_folds_until_the_r
         "second": Group.model_validate({"each": 1, "show": "after_close"}),
     }
     tests = ("open/1", "first/1", "second/1")
-    time = {"time_ms": Measure(Fold.MAX, Better.LOWER, Fraction(0), Fraction(1000))}
     ran = {**RESULT, "tests": [row(test, time_ms=5) for test in tests]}
     cut = {
         **RESULT,
@@ -201,28 +197,18 @@ def test_a_held_stop_holds_back_every_group_its_points_and_its_folds_until_the_r
     }
 
     def seen(result: dict[str, Any], revealed: bool) -> Any:
-        scored = score(result, tests, groups, None, time, worth=90)
-        return shown(result, groups, SEALED, revealed=revealed, reveal_at=REVEAL, scored=scored)
+        return shown(result, groups, SEALED, revealed=revealed, reveal_at=REVEAL)
 
     held, plain = seen(cut, False), seen(ran, False)
     assert held.stopped is None and held.outcome is None
     assert held.groups == tuple(
-        GroupShown(name, group.shown, None, None, REVEAL, max=Fraction(30))
-        for name, group in groups.items()
+        GroupShown(name, group.shown, None, None, REVEAL) for name, group in groups.items()
     )
-    assert held.points == Points(None, Fraction(90), REVEAL)
-    assert held.folded == {}
-    assert (plain.points, plain.folded) == (
-        Points(Fraction(60), Fraction(30), REVEAL),
-        {"time_ms": Fraction(5)},
-    )
+    assert [group.outcome for group in plain.groups] == ["accepted", "accepted", None]
 
     after = seen(cut, True)
-    assert (after.stopped, after.points) == (
-        "runtime_error",
-        Points(Fraction(0), Fraction(0), None),
-    )
-    assert after.folded == {"time_ms": Fraction(1000)}
+    assert after.stopped == "runtime_error"
+    assert after.groups[0].outcome == "runtime_error"
 
 
 def test_a_sealed_per_test_value_is_held_on_its_rows_until_the_reveal() -> None:

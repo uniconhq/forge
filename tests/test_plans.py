@@ -44,7 +44,6 @@ from forge.domain.plans import (
 )
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.publications import read_note, write_note
-from forge.domain.scoring import fold
 from forge.domain.showing import NOTHING_SEALED, Sealed
 from forge.domain.workflow_definition import Fold, WorkflowDefinition, parse_workflow
 from forge.domain.yaml_models import InvalidDefinition, Problem
@@ -1592,7 +1591,7 @@ THIRTY_DIGITS = "-12345678901234.5678901234567891"
 """A bound of 30 significant digits, more than a float holds."""
 
 
-def test_a_bound_of_thirty_significant_digits_survives_from_the_file_to_a_score() -> None:
+def test_a_bound_of_thirty_significant_digits_survives_from_the_file_to_the_note() -> None:
     workflow = parse_workflow(
         CHECKED_TEXT.replace(
             "fold: sum, better: higher}", f"fold: sum, better: higher, at_least: {THIRTY_DIGITS}}}"
@@ -1606,11 +1605,8 @@ def test_a_bound_of_thirty_significant_digits_survives_from_the_file_to_a_score(
         THIRTY_DIGITS
     )
     noted = read_note(write_note(False, (), measures=built.measures)).measures["reward"]
-    # A test without the value counts as the bound, to the last digit.
-    assert fold(noted, [None]) == Fraction(THIRTY_DIGITS)
-    assert written(fold(noted, [None, Fraction(1)]) or Fraction(0)) == (
-        "-12345678901233.5678901234567891"
-    )
+    assert noted.at_least == Fraction(THIRTY_DIGITS)
+    assert written(noted.at_least) == THIRTY_DIGITS
 
 
 # Fit

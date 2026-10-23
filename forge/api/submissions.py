@@ -11,7 +11,6 @@ from forge.domain.definitions import Show
 from forge.domain.grading import GradingStatus
 from forge.domain.meanings import ValueMeaning
 from forge.domain.run_showing import TextAt, ValueShown
-from forge.domain.scoring import Points
 from forge.domain.showing import GroupShown, SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.domain.workflow_definition import Fold
@@ -33,7 +32,6 @@ __all__ = [
     "Fold",
     "GradingStatus",
     "GroupShown",
-    "Points",
     "Result",
     "Show",
     "Submission",

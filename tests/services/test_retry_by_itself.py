@@ -348,10 +348,7 @@ async def _read(setup: Setup, acme: Acme, entered: Entered, reader: str) -> None
 async def test_each_reader_of_a_failure_starts_its_retry_by_itself(
     setup: Setup, acme: Acme, entered: Entered, reader: str
 ) -> None:
-    await write_contest(
-        acme.fake,
-        RUNNING.format(visibility="everyone") + "    worth: 100\n",
-    )
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     await _submit(setup, acme, entered)
     (first,) = await _rows(setup)
     await _broken(setup, first)

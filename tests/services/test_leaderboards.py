@@ -10,7 +10,6 @@ import contextlib
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from fractions import Fraction
 from typing import Any
 
 import pytest
@@ -101,11 +100,9 @@ EVERY_TEST: dict[str, Any] = {
 }
 
 
-def contest(extra: str = "", entry: str = "", worth: str = "    worth: 100\n") -> str:
-    """The running contest with `sum` worth 100, as the arithmetic here
-    reads it, though its groups total 200.
-    """
-    return RUNNING.format(visibility="everyone") + worth + entry + extra
+def contest(extra: str = "", entry: str = "") -> str:
+    """The running contest, with `entry` on sum's entry and `extra` after."""
+    return RUNNING.format(visibility="everyone") + entry + extra
 
 
 async def _task_yaml(acme: Acme, task: TaskId) -> bytes:
@@ -303,7 +300,7 @@ def _observer_of(acme: Acme, scope: Scope) -> Organiser:
     )
 
 
-async def test_an_organiser_reads_a_hidden_groups_points_and_tests_before_the_reveal(
+async def test_an_organiser_reads_a_hidden_groups_outcome_and_tests_before_the_reveal(
     setup: Setup, acme: Acme, ranked: Entered
 ) -> None:
     observer = _observer_of(acme, Scope("acme", "spring", "sum"))
@@ -318,28 +315,14 @@ async def test_an_organiser_reads_a_hidden_groups_points_and_tests_before_the_re
     assert own.grading.status is SubmissionState.GRADED
     by_group = {group.group: group for group in seen.grading.groups}
     large = by_group["large"]
-    assert (large.outcome, large.points, large.max) == ("wrong_answer", Fraction(0), Fraction(35))
+    assert large.outcome == "wrong_answer"
     assert large.tests is not None and [test["test"] for test in large.tests] == ["large/1"]
     assert large.shown_at == END
     small = by_group["small"]
     assert small.tests is not None and small.shown_at == END
     assert by_group["main"].shown_at is None
     assert seen.grading.outcome == "wrong_answer"
-    assert seen.grading.points is not None
-    assert (seen.grading.points.shown, seen.grading.points.pending) == (Fraction(65), Fraction(0))
-    # Its large test was not accepted, so it has no time at all; the second,
-    # which passed every test, has large's 30 among its own.
-    assert "time_ms" not in seen.grading.folded
-    every = await submissions.organised(
-        setup, observer, ranked.task, EntrantOwner(ranked.entrant), 2
-    )
-    assert every.grading is not None
-    assert every.grading.folded["time_ms"] == Fraction(30)
-    assert (seen.number, seen.submitted_at, seen.late_days) == (
-        own.number,
-        own.submitted_at,
-        own.late_days,
-    )
+    assert (seen.number, seen.submitted_at) == (own.number, own.submitted_at)
 
 
 async def test_a_contestants_own_read_is_unchanged_by_an_organisers(
@@ -359,9 +342,7 @@ async def test_a_contestants_own_read_is_unchanged_by_an_organisers(
     assert after == before
     assert before.grading is not None
     large = next(group for group in before.grading.groups if group.group == "large")
-    assert (large.outcome, large.tests, large.points, large.shown_at) == (None, None, None, END)
-    assert before.grading.points is not None
-    assert before.grading.points.pending == Fraction(35)
+    assert (large.outcome, large.tests, large.shown_at) == (None, None, END)
 
 
 async def test_an_organiser_without_the_observer_role_at_the_task_is_refused(

@@ -67,7 +67,7 @@ from forge.domain.definitions import (
     form_problems,
 )
 from forge.domain.grading import WALL_CEILING, Machine, wall_seconds
-from forge.domain.meanings import ValueMeaning, in_sentence, with_measures
+from forge.domain.meanings import Measure, ValueMeaning, in_sentence, with_measures
 from forge.domain.primitives import (
     BATCH_SCALED,
     IMAGE,
@@ -76,7 +76,6 @@ from forge.domain.primitives import (
     Port,
     PrimitiveDeclaration,
 )
-from forge.domain.scoring import Measure
 from forge.domain.showing import NOTHING_SEALED, Sealed
 from forge.domain.types import FILES, SCALARS, Type
 from forge.domain.workflow_definition import (

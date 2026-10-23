@@ -1,56 +1,43 @@
-"""Scoring a task's gradings on read (`forge.domain.scoring`), the same way
-for a contestant's own submissions and for the boards; and a run task's
-values, worked out on every read from both its rows (`run_scored`).
+"""Which attempt of a submission counts, the one rule for its row, the
+boards and `submissions.max` (`counted`); what a task graded test by test
+is shown with (`GradedOf`); and a run task's values, worked out on every
+read from both its rows (`run_scored`).
 
-A grading is scored with the publication it ran under as `showing.under`
-says: its own tests and sealed facts, and the latest `test_groups`,
-`credit` and value meanings while no grading change was published since. A
-past publication's `task.yaml` and plan are read once per process, since a
-publication never changes.
+A grading graded test by test is shown with the publication it ran under as
+`showing.under` says: its own tests and sealed facts, and the latest
+`test_groups` and value meanings while no grading change was published
+since. A past publication's `task.yaml` and plan are read once per process,
+since a publication never changes. Nothing of it is scored: since stage 5
+only a run task has values (stage 5 section 6, item 123).
 
-Under relative credit a test's `B` is the best value any candidate reached
-on it among the task's gradings of the same generation, the publications
-that grade the same test content: over the contest's rows, each
-submission's attempt a board reads (`usable`), a candidate by it, its run
-not stopped, accepted on the test.
-
-One rule says which of a submission's attempts counts, on a board, for
-relative credit, to its row and against `submissions.max`: the latest that
-finished with a result, until a newer attempt finishes with one, so a
-regrade under way, a system error and a staff cancel never take a result
-away (`counted`). Finished, that attempt is a candidate when its run was
-not stopped, an attempt when a sealed step stopped it, and nothing
-otherwise. A submission none of whose attempts finished with a result is
-still grading while its latest attempt is queued, running or a system
-error, and nothing once that attempt is cancelled or ended over the limit
-(`forge.domain.grading.room`): it then counts on no board.
+One rule says which of a submission's attempts counts, on a board, to its
+row and against `submissions.max`: the latest that finished with a result,
+until a newer attempt finishes with one, so a regrade under way, a system
+error and a staff cancel never take a result away (`counted`). A submission
+none of whose attempts finished with a result is still grading while its
+latest attempt is queued, running or a system error, and nothing once that
+attempt is cancelled or ended over the limit (`forge.domain.grading.room`):
+it then counts on no board.
 """
 
 import uuid
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from enum import StrEnum
 from fractions import Fraction
 
 from pydantic import ValidationError
 from sqlalchemy import select
 
 from forge.db.tables import Grading
-from forge.db.tables.gradings import FRONT, LATE
-from forge.domain.blocks.numbers import Better
-from forge.domain.definitions import (
-    TASK_FILE,
-    ContestDefinition,
-    Relative,
-    parse_task,
-)
+from forge.db.tables.gradings import LATE
+from forge.domain.definitions import TASK_FILE, ContestDefinition, parse_task
 from forge.domain.errors import NotFound
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import PublicationId
 from forge.domain.plans import PLAN_PATH, Plan
-from forge.domain.release import Extension, due_of, late_days
-from forge.domain.roles import contest_id_of, task_scope
+from forge.domain.release import Extension, due_of
 from forge.domain.run_results import (
     RunGrading,
     Worked,
@@ -58,13 +45,12 @@ from forge.domain.run_results import (
     run_grading,
     worked_out,
 )
-from forge.domain.scoring import ONE, Scored, State, best_of, late_factor, rule_weight, score
 from forge.domain.showing import Graded, under
 from forge.domain.step_data import unreported
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import entries, gradings, published, timelines
+from forge.services import entries, gradings, published
 from forge.services.published import PublishedTask, RunsHeld
 
 log = get_logger(__name__)
@@ -73,24 +59,25 @@ FINISHED_WITH_RESULT = (GradingStatus.DONE, GradingStatus.SYSTEM_ERROR)
 """Where a run task's row stands when its result is read: done, or failed
 with the runs it gave, its faulted ones waiting for staff."""
 GRADED_KEPT = published.FORM_KEPT
-"""How long this process keeps what a past publication scores its gradings
+"""How long this process keeps what a past publication shows its gradings
 with: a publication never changes, so the time only bounds what is held."""
 
 
-def factor(
-    settings: ContestDefinition, current: PublishedTask, extension: Extension, at: datetime
-) -> Fraction:
-    """The late factor of a submission taken `at` by a row with `extension`."""
-    entry = current.entry
-    if entry is None:
-        return ONE
-    days = late_days(due_of(settings, entry, extension), at)
-    return late_factor(days, settings.late_per_day_of(entry))
+class State(StrEnum):
+    """Where one submission stands by the attempt of it that counts: still
+    `grading` to its row, pending (a delayed one, in `system_error`, among
+    them); `void`, no attempt, cancelled or ended over the limit; or a
+    `candidate`, an attempt that finished with a result.
+    """
+
+    GRADING = "grading"
+    VOID = "void"
+    CANDIDATE = "candidate"
 
 
 @dataclass(frozen=True, slots=True)
 class Usable:
-    """The attempt of a submission a score reads, with where it stands."""
+    """The attempt of a submission a board reads, with where it stands."""
 
     state: State
     row: Grading | None
@@ -105,10 +92,10 @@ def counted(rows: Sequence[Grading]) -> Grading:
 
 def usable(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -> Usable:
     """Which of one submission's attempts a board reads, and where the
-    submission stands by it, before its run's stop is read: the latest
-    attempt that finished with a result, a candidate; with none, still
-    grading while the latest attempt is queued, running or a system error,
-    and nothing once it is cancelled or ended over the limit.
+    submission stands by it: the latest attempt that finished with a
+    result, a candidate; with none, still grading while the latest attempt
+    is queued, running or a system error, and nothing once it is cancelled
+    or ended over the limit.
     """
     row = counted(rows)
     if gradings.good(row):
@@ -118,43 +105,20 @@ def usable(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -
     return Usable(State.GRADING, None)
 
 
-def stands(row: Grading, graded: Graded) -> State:
-    """A finished attempt's place on a board by what stopped its run."""
-    result = row.result or {}
-    if result.get("stopped") is None:
-        return State.CANDIDATE
-    if result.get("stopped_by") in graded.sealed.steps:
-        return State.ATTEMPT
-    return State.VOID
-
-
-@dataclass(frozen=True, slots=True)
-class Before:
-    """A moment a result is scored as it stood: `publication` was then the
-    task's latest, only attempts queued by `at` counted, and none of the
-    attempts of `regrade` when one is given: just before that regrade began.
+class GradedOf:
+    """What one task's gradings graded test by test are shown with, for one
+    read (`showing.Graded`). Given `stood`, the publication that was the
+    task's latest at a moment, it reads as things stood then, that
+    publication standing for the task's latest.
     """
 
-    publication: PublicationId
-    at: datetime
-    regrade: uuid.UUID | None = None
-
-
-class Scorer:
-    """Scores one task's gradings for one read, `B` worked out once for
-    each generation, value and direction it is asked for (two publications
-    of one generation may name different values in `relative`), by the
-    attempt of each submission a board reads (`usable`). Given `before`, it
-    scores as things stood then: its publication standing for the task's
-    latest, and `B` read from the attempts that counted then.
-    """
-
-    def __init__(self, ctx: Context, current: PublishedTask, before: Before | None = None) -> None:
+    def __init__(
+        self, ctx: Context, current: PublishedTask, stood: PublicationId | None = None
+    ) -> None:
         self.ctx = ctx
         self.current = current
-        self.before = before
+        self.stood = stood
         self._latest: Graded | None = None
-        self._bests: dict[tuple[int, str, Better | None], Mapping[str, Fraction]] = {}
 
     async def latest(self) -> Graded:
         if self._latest is None:
@@ -164,19 +128,17 @@ class Scorer:
                 form.tests,
                 current.definition.test_groups,
                 current.publication.sealed,
-                current.definition.credit,
-                current.publication.measures,
                 current.generation(current.publication),
                 current.publication.meanings,
             )
         return self._latest
 
     async def graded(self, publication: PublicationId) -> Graded | None:
-        """What a grading made under `publication` is scored with, or none
-        when that publication does not read. Scoring as things stood before a
-        regrade, the publication then the latest stands for the latest.
+        """What a grading made under `publication` is shown with, or none
+        when that publication does not read. Read as things stood at a
+        moment, the publication then the latest stands for the latest.
         """
-        stood = self.current.publication.id if self.before is None else self.before.publication
+        stood = self.current.publication.id if self.stood is None else self.stood
         latest = await self.latest() if stood == self.current.publication.id else None
         if latest is None:
             latest = await self._own(stood)
@@ -186,84 +148,6 @@ class Scorer:
         if own is None:
             return None
         return under(own, latest) if latest is not None else own
-
-    async def scored(self, row: Grading, graded: Graded, late: Fraction) -> Scored:
-        """The finished grading `row` scored under `graded` with its late
-        factor.
-        """
-        best = None
-        if isinstance(graded.credit, Relative):
-            best = await self._best(graded, graded.credit.relative)
-        worth: object = self.current.worth
-        entry = self.current.entry
-        if worth is not None and entry is not None and entry.worth is None:
-            # Worth its groups' total by default: the groups it is scored
-            # with, an earlier generation's included, so each group's
-            # numbers stay its points.
-            worth = sum((rule_weight(group) for group in graded.groups.values()), Fraction(0))
-        return score(
-            row.result or {},
-            graded.tests,
-            graded.groups,
-            graded.credit,
-            graded.measures,
-            worth=worth,
-            factor=late,
-            best=best,
-        )
-
-    async def _best(self, graded: Graded, name: str) -> Mapping[str, Fraction]:
-        measure = graded.measures.get(name)
-        better = measure.better if measure is not None else None
-        key = (graded.generation, name, better)
-        if key in self._bests:
-            return self._bests[key]
-        generations = {each.id: self.current.generation(each) for each in self.current.publications}
-        results = [
-            row.result
-            for row in await self._candidates()
-            if row.result is not None
-            and row.result.get("stopped") is None
-            and generations.get(PublicationId(row.publication_id)) == graded.generation
-        ]
-        found = best_of(results, name, better)
-        self._bests[key] = found
-        return found
-
-    async def _candidates(self) -> list[Grading]:
-        """The attempt a board reads of every submission of the contest's
-        rows to the task, for each that is a candidate by it; scoring as
-        things stood at a moment, of the attempts that counted then.
-        """
-        before = self.before
-        ctx = self.ctx
-        contest = contest_id_of(task_scope(self.current.id))
-        workspaces = sorted(
-            ctx.forge.workspaces.workspace_of(contest, owner)
-            for owner in await timelines.rows(ctx, contest)
-        )
-        if not workspaces:
-            return []
-        grouped: dict[tuple[str, int], list[Grading]] = {}
-        for row in await ctx.db.scalars(
-            select(Grading).where(
-                Grading.task_id == self.current.id, Grading.workspace_id.in_(workspaces), FRONT
-            )
-        ):
-            if before is not None and (
-                (before.regrade is not None and row.regrade_id == before.regrade)
-                or row.queued_at > before.at
-            ):
-                continue
-            grouped.setdefault((row.workspace_id, row.submission_number), []).append(row)
-        found: list[Grading] = []
-        for attempts in grouped.values():
-            # A submission is a candidate by its latest attempt that finished
-            # with a result, whatever its later ones read as.
-            good = gradings.latest_good(attempts)
-            if good is not None:
-                found.append(good)
-        return found
 
     async def _own(self, publication: PublicationId) -> Graded | None:
         current = self.current
@@ -291,13 +175,7 @@ class Scorer:
                 )
                 return None
             return Graded(
-                plan.tests,
-                definition.test_groups,
-                found.sealed,
-                definition.credit,
-                found.measures,
-                generation,
-                found.meanings,
+                plan.tests, definition.test_groups, found.sealed, generation, found.meanings
             )
 
         key = f"scores.graded.{current.id}.{publication}"

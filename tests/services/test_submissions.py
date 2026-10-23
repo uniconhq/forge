@@ -11,8 +11,8 @@ per-test input one file per test, named `<group>/<test>`, the files under an
 input within its `max_size` together. The contestant reads their own
 submissions back, each grading with its test groups as their `show` allows
 before and after the task's reveal, with the publication it ran under when
-the tests have changed since, a run in `system_error` as delayed, how
-many days late each was, and nobody else's.
+the tests have changed since, a run in `system_error` as delayed, and
+nobody else's.
 """
 
 import hashlib
@@ -21,7 +21,6 @@ import re
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from fractions import Fraction
 from typing import Any
 
 import pytest
@@ -54,7 +53,6 @@ from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner
 from forge.domain.publications import write_note
 from forge.domain.roles import Role, Scope
-from forge.domain.scoring import Points
 from forge.domain.showing import GroupShown, Sealed, SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import pointer_text
@@ -173,7 +171,6 @@ async def test_a_submit_commits_as_the_contestant_names_it_and_queues_one_gradin
         1,
         clock.now(),
     )
-    assert submission.late_days == 0
     assert submission.grading is not None
     assert (submission.grading.attempt, submission.grading.status) == (1, SubmissionState.QUEUED)
     repo = acme.fake.state.repos[("acme", f"spring.sum.{segment(entered.entrant)}.sub")]
@@ -1043,10 +1040,9 @@ async def _three_groups(setup: Setup, acme: Acme, task: TaskId) -> None:
     await _save(setup, acme, task, files)
 
 
-def _credited(index: int) -> dict[str, Any]:
-    """RESULT's test row as shown, with the credit it earned."""
-    row = RESULT["tests"][index]
-    return {**row, "credit": 1 if row["outcome"] == "accepted" else 0}
+def _shown(index: int) -> dict[str, Any]:
+    """RESULT's test row as shown."""
+    return dict(RESULT["tests"][index])
 
 
 async def _graded(setup: Setup, result: dict[str, Any], status: str = "done") -> None:
@@ -1074,8 +1070,6 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
         ValueMeaning("memory_kb", "Memory used", "KB", Fold.MAX, Better.LOWER),
         ValueMeaning("log", "Compile log"),
     )
-    # No worth in the contest, so the task is worth its groups' total, 200:
-    # main 100, small 30 and large's 70 decided at the reveal.
     assert before.grading.groups == (
         GroupShown(
             group="main",
@@ -1086,12 +1080,9 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
                     "test": "main/1",
                     "outcome": "accepted",
                     "values": {"time_ms": 10, "memory_kb": 7},
-                    "credit": 1,
                 },
             ),
             shown_at=None,
-            points=Fraction(100),
-            max=Fraction(100),
         ),
         GroupShown(
             group="small",
@@ -1099,8 +1090,6 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
             outcome="accepted",
             tests=None,
             shown_at=END,
-            points=Fraction(30),
-            max=Fraction(30),
         ),
         GroupShown(
             group="large",
@@ -1108,11 +1097,7 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
             outcome=None,
             tests=None,
             shown_at=END,
-            max=Fraction(70),
         ),
-    )
-    assert before.grading.points == Points(
-        shown=Fraction(130), pending=Fraction(70), pending_until=END
     )
 
     clock.set(END)
@@ -1126,12 +1111,8 @@ async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
         ("small", "accepted", None),
         ("large", "wrong_answer", None),
     ]
-    assert after.grading.groups[2].tests == (_credited(0),)
-    assert after.grading.groups[1].tests == (_credited(2),)
-    assert after.grading.points == Points(
-        shown=Fraction(130), pending=Fraction(0), pending_until=None
-    )
-    assert after.grading.groups[2].points == 0
+    assert after.grading.groups[2].tests == (_shown(0),)
+    assert after.grading.groups[1].tests == (_shown(2),)
 
 
 MAIN_ONLY: dict[str, Any] = {**RESULT, "tests": [RESULT["tests"][1]]}
@@ -1219,7 +1200,7 @@ async def test_a_change_to_show_alone_shows_a_grading_with_the_latest_groups(
 
     assert submission.grading is not None
     small = submission.grading.groups[1]
-    assert (small.show, small.tests) == (Show.ALWAYS, (_credited(2),))
+    assert (small.show, small.tests) == (Show.ALWAYS, (_shown(2),))
 
 
 async def test_a_grading_whose_tests_changed_since_is_shown_with_its_own_publication(
@@ -1249,7 +1230,7 @@ async def test_a_grading_whose_tests_changed_since_is_shown_with_its_own_publica
     assert submission.grading is not None
     assert submission.grading.outcome == "accepted"
     assert [(group.group, group.show, group.tests) for group in submission.grading.groups] == [
-        ("main", Show.ALWAYS, (_credited(1),)),
+        ("main", Show.ALWAYS, (_shown(1),)),
         ("small", Show.VERDICT, None),
         ("large", Show.AFTER_CLOSE, None),
     ]
@@ -1277,7 +1258,6 @@ async def test_an_extension_holds_the_reveal_back_for_everyone(
         outcome=None,
         tests=None,
         shown_at=END + timedelta(hours=1),
-        max=Fraction(70),
     )
 
 
@@ -1324,33 +1304,6 @@ async def test_a_system_error_is_read_by_its_contestant_as_delayed(
         submission.grading.groups,
         submission.grading.values,
     ) == (None, None, (), {})
-
-
-async def test_a_submission_after_the_rows_due_is_late_by_its_started_days(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
-) -> None:
-    await write_contest(
-        acme.fake,
-        RUNNING.format(visibility="everyone")
-        + "    due: 2026-09-26T11:00:00Z\n    late_per_day: 0.5\n",
-    )
-    first = await _submit(setup, acme, entered)
-    assert first.late_days == 1  # an hour after the due is a started day
-
-    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await entrants.extend(
-        setup, manager, SPRING, entered.entrant, timedelta(hours=2), tasks=["sum"]
-    )
-    clock.advance(timedelta(minutes=30))
-    second = await _submit(setup, acme, entered, key="key-0002-bbbb", content=b"print(2)\n")
-    clock.advance(timedelta(hours=1))
-    third = await _submit(setup, acme, entered, key="key-0003-cccc", content=b"print(3)\n")
-
-    # The extension moves bob's due to 13:00: the first, at noon, is on time
-    # now, and the third, at 13:30, is late.
-    assert (second.late_days, third.late_days) == (0, 1)
-    listed = await submissions.mine(setup, entered.session, entered.task)
-    assert [(made.number, made.late_days) for made in listed] == [(3, 1), (2, 0), (1, 0)]
 
 
 async def test_a_place_to_submit_a_try_left_half_made_is_finished_by_the_next_submit(

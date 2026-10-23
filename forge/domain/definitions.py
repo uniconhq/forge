@@ -9,7 +9,9 @@ What each file says of itself is checked here: a contest's times in order,
 each task entry's timeline in order (C1, the part that needs no task), each
 board's own rules (C3); a task's test groups, their rule weights, test
 weights and `show` words, and its `credit` (T1, T2 and T6, and the parts of
-T3 that need no workflow). What needs another file, the workflow a task
+T3 that need no workflow), kept until today's format goes (stage 4 open
+132), though since stage 5 its rule weights and `credit` score nothing
+(stage 5 section 6, item 123). What needs another file, the workflow a task
 names, its tests, an earlier publication or the rows' submissions, is the
 save's (`forge.domain.plans`, `forge.services.publications`,
 `forge.services.timelines`).
@@ -105,7 +107,6 @@ __all__ = [
     "starter_contest",
     "starter_task",
     "title_of",
-    "worth_of",
 ]
 
 CONTEST_FILE = "contest.yaml"
@@ -489,20 +490,17 @@ class Hold(Model):
 
 
 class ContestTask(Model):
-    """A task's whole timeline in the contest: what it is worth, when it is
-    released, falls due and closes, how much a late day takes off, and how
-    many of its submissions a row may mark. Every time but `due` defaults to
-    the contest's own. A `withdrawn` task stays in the list, keeping its
+    """A task's whole timeline in the contest: when it is released, falls
+    due and closes, and how many of its submissions a row may mark. Every
+    time but `due` defaults to the contest's own. A `withdrawn` task stays in the list, keeping its
     place and so its letter, but entrants no longer see it or submit to it
     and no leaderboard counts it; its submissions stay for the organisers,
     and taking the key out puts it back as it was (#450).
     """
 
     id: TaskHandle
-    worth: Annotated[Number, Field(ge=0)] | None = None
     release_at: AwareTime | None = None
     due: AwareTime | None = None
-    late_per_day: Number | None = None
     closes: AwareTime | None = None
     marks: Annotated[int, Field(strict=True, ge=1, le=10)] | None = None
     withdrawn: Annotated[bool, Field(strict=True)] = False
@@ -516,10 +514,6 @@ _TIMES = {
     "end": "The contest's end",
 }
 """A task's times as a person names them, each starting a sentence."""
-
-DEFAULT_LATE_PER_DAY = 1
-"""The fraction a started late day takes off a task whose entry gives a
-`due` and no `late_per_day`: all of it, so a late submission earns nothing."""
 
 
 class ContestDefinition(Model):
@@ -566,9 +560,9 @@ class ContestDefinition(Model):
         return self
 
     def _entry_problems(self, entry: ContestTask) -> list[tuple[tuple[str, ...], str]]:
-        """C1 as far as the file alone says: the four times in order and a
-        fraction a late day takes. Marks only under a board reading the
-        task's `marked` is the board check's (`board_checks`).
+        """C1 as far as the file alone says: the four times in order. Marks
+        only under a board reading the task's `marked` is the board check's
+        (`board_checks`).
         """
         found: list[tuple[tuple[str, ...], str]] = []
         # An absent release_at or closes is read at its default and named as
@@ -601,23 +595,6 @@ class ContestDefinition(Model):
                         "falls due and closes in that order, within the contest.",
                     )
                 )
-        if entry.late_per_day is not None:
-            if entry.due is None:
-                found.append(
-                    (
-                        ("late_per_day",),
-                        "This applies only to a task with a due time. Give the task a due "
-                        "time, or leave this empty.",
-                    )
-                )
-            if not 0 < entry.late_per_day <= 1:
-                found.append(
-                    (
-                        ("late_per_day",),
-                        "This must be more than 0 and at most 1: the share of the points "
-                        "taken off for each late day.",
-                    )
-                )
         return found
 
     def entry(self, task: str) -> ContestTask | None:
@@ -629,15 +606,6 @@ class ContestDefinition(Model):
 
     def closes_of(self, entry: ContestTask) -> datetime:
         return entry.closes if entry.closes is not None else self.end
-
-    def late_per_day_of(self, entry: ContestTask) -> int | Decimal | None:
-        """The fraction a started late day takes off: the entry's, or
-        `DEFAULT_LATE_PER_DAY` when it gives a `due` and none, and none on a
-        task with no due, which has no late submissions.
-        """
-        if entry.due is None:
-            return None
-        return entry.late_per_day if entry.late_per_day is not None else DEFAULT_LATE_PER_DAY
 
     def label_of(self, task: str) -> str | None:
         """The task's label, its position as a letter, A, B, ..., Z, AA, ...;
@@ -1046,15 +1014,6 @@ class TaskDefinition(Model):
         """Whether some group carries a rule weight, `W > 0`."""
         return any(group.weight > 0 for group in self.test_groups.values())
 
-    @property
-    def total_weight(self) -> int | Decimal:
-        """`W`, every group's rule weight summed: what the task is worth in a
-        contest whose entry gives no `worth`, so a group's numbers are its
-        points unless the contest says otherwise; to the digit, as every
-        number is.
-        """
-        return exact_sum(group.weight for group in self.test_groups.values())
-
 
 def exact_sum(values: Iterable[int | Decimal]) -> int | Decimal:
     """The numbers summed with no rounding: a sum of finite decimals is one,
@@ -1065,16 +1024,6 @@ def exact_sum(values: Iterable[int | Decimal]) -> int | Decimal:
         for value in values:
             total += value
     return total
-
-
-def worth_of(entry: ContestTask, definition: TaskDefinition) -> int | Decimal | None:
-    """The most points a task gives in its contest: the entry's `worth`, or
-    the task's groups' total when the entry gives none, and none on a task
-    that gives no points.
-    """
-    if not definition.gives_points:
-        return None
-    return entry.worth if entry.worth is not None else definition.total_weight
 
 
 def _is_public(value: object) -> bool:
@@ -1097,6 +1046,12 @@ _OLD_BOARDS = (
 _OLD_BOARD_KEY = (
     "A leaderboard is now its columns, written as blocks, with sort, display and audience. "
     "Write which submission counts and how rows rank as columns, and remove this."
+)
+
+
+_NO_WORTH = (
+    "A task no longer gives points: what each task counts for is said by a leaderboard's "
+    "columns, such as a total that weighs each task's value. Remove this."
 )
 
 
@@ -1134,9 +1089,12 @@ CONTEST_RETIRED = (
         "A task's label is now its place in the contest's list of tasks, A, B and so on. "
         "Remove this.",
     ),
+    Retired(("tasks", ANY, "points"), _NO_WORTH),
+    Retired(("tasks", ANY, "worth"), _NO_WORTH),
     Retired(
-        ("tasks", ANY, "points"),
-        "This is now called worth. Give the task's worth instead, and remove this.",
+        ("tasks", ANY, "late_per_day"),
+        "A task no longer takes a share off per late day: a late penalty is a value of the "
+        "task that reads seconds_late, or a leaderboard column that reads it. Remove this.",
     ),
     Retired(("leaderboards",), _OLD_BOARDS, _is_list),
     *(
@@ -1213,6 +1171,10 @@ still holds one reads with it ignored, and only a save that has it is
 refused, naming it. Leaderboards written in the old list form are ignored
 on read the same way (`_old_boards`): a stored contest reads with no boards
 until a save writes them as columns."""
+ENTRY_IGNORED_ON_READ = ("worth", "late_per_day")
+"""Retired keys of a task's entry, ignored on read and refused in a save the
+same way: a task gives no points since stage 5 (stage 5 section 6, item
+123)."""
 
 
 def _old_boards(document: dict[str, Any]) -> bool:
@@ -1221,8 +1183,9 @@ def _old_boards(document: dict[str, Any]) -> bool:
 
 def parse_contest(text: bytes | str, *, saved: bool = False) -> ContestDefinition:
     """The `contest.yaml` in `text`, read, or, `saved`, as a save of it is
-    checked: a key of `IGNORED_ON_READ`, or leaderboards in the old list
-    form, is ignored on read and refused in a save. Raises
+    checked: a key of `IGNORED_ON_READ`, a task entry's key of
+    `ENTRY_IGNORED_ON_READ`, or leaderboards in the old list form, is
+    ignored on read and refused in a save. Raises
     `InvalidDefinition` listing every problem with its YAML path.
     """
     document = load_mapping(CONTEST_FILE, text)
@@ -1233,6 +1196,13 @@ def parse_contest(text: bytes | str, *, saved: bool = False) -> ContestDefinitio
             for key, value in document.items()
             if key not in IGNORED_ON_READ and not (old and key == "leaderboards")
         }
+        if isinstance(tasks := document.get("tasks"), list):
+            document["tasks"] = [
+                {key: value for key, value in each.items() if key not in ENTRY_IGNORED_ON_READ}
+                if isinstance(each, dict)
+                else each
+                for each in tasks
+            ]
     return validate(ContestDefinition, CONTEST_FILE, document, CONTEST_RETIRED)
 
 

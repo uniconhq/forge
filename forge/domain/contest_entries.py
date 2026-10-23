@@ -2,8 +2,7 @@
 `contest.yaml` so the rest of the file stays as the organisers wrote it,
 comments and layout included.
 
-The entry is `{id: <task>}`: the task's label is its place in the list, and
-its worth by default its groups' total once it gives points
+The entry is `{id: <task>}`: the task's label is its place in the list
 (TASK-FORMAT.md section 1.1). In a contest already published, the entry also
 sets `release_at` and `closes` at the contest's `end`, so work in progress
 shows nothing until the organisers move them. It goes at the end of the list: a `tasks: []`
