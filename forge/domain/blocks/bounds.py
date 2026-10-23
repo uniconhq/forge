@@ -188,7 +188,10 @@ def value_bounds(
             )
         given = tree.get("of")
         listed = given if isinstance(given, list) else [given]
-        return _over_numbers(block.name, [node(each, runs, missing) for each in listed])
+        got = [node(each, runs, missing) for each in listed]
+        if block.name == "otherwise":
+            return widest(*got)
+        return _over_numbers(block.name, got)
 
     return {name: value(name) for name in values}
 

@@ -1104,6 +1104,8 @@ def test_a_header_names_no_self_reported_value_of_a_task_not_released() -> None:
 
 
 def test_every_board_block_has_a_test() -> None:
+    # otherwise is a task value's too (item 128), its board meaning tested
+    # in test_otherwise_and_sum_best_and_missing_spreading.
     board = {
         name
         for name, block in CATALOGUE.items()
@@ -1115,7 +1117,6 @@ def test_every_board_block_has_a_test() -> None:
         "highest",
         "lowest",
         "best_each",
-        "otherwise",
         "sum_best",
         "min",
         "max",
@@ -1395,7 +1396,6 @@ def test_a_task_value_using_a_board_block_or_leaf_is_refused() -> None:
     for tree in (
         {"block": "first", "from": results("a")},
         {"block": "max", "over": results("a"), "of": 1},
-        {"block": "otherwise", "of": [1, 2]},
         {"column": "x"},
         {"value": ["a", "x"]},
     ):

@@ -5,7 +5,10 @@ with what it read, every number an exact fraction.
 - A test is true when it isn't 0; the comparisons, `and`, `or` and `not`
   give 1 or 0; `if` reads only the branch it takes.
 - Missing in, missing out, and dividing by zero is missing. `and` and `or`
-  read every input, so a missing one makes them missing too.
+  read every input, so a missing one makes them missing too. `otherwise`
+  is the way round: it gives its second input when its first is missing,
+  reading the second only then, and a first that waits waits (stage 5
+  section 6, item 128).
 - A fold reads a group's runs, its `of` and `where` once for each run
   through `{run: [<group>, <column>]}`. `weights` gives a run a weight by
   one repeated input's value, 1 when it names none; `sum` adds each run's
@@ -316,6 +319,14 @@ class _Walk:
                 return test
             branch = yield (node["then"] if test.number != 0 else node["else"], scope)
             return branch.reading(test)
+        if block.name == "otherwise":
+            given = node["of"]
+            assert isinstance(given, list)
+            first = yield (given[0], scope)
+            if first.waiting or first.skip or first.number is not None:
+                return first
+            instead = yield (given[1], scope)
+            return instead.reading(first)
         given = node["of"]
         got: list[_Got] = []
         for each in given if isinstance(given, list) else [given]:

@@ -827,3 +827,46 @@ async def test_an_unmarked_submission_keeps_a_sum_missing_and_is_queued_until_ma
         (Counted("islands", 1), Counted("islands", 2)),
     )
     assert summed.number == 9
+
+
+DEFAULTED = REVIEWED.replace(
+    "    total:\n",
+    "    review_or_0: {block: otherwise, of: [{value: review}, 0]}\n    total:\n",
+).replace("review, reviewed]", "review, reviewed, review_or_0]")
+"""REVIEWED with a value giving the mark, or 0 while none is entered."""
+DEFAULTED_SUM = LIVE + (
+    "leaderboards:\n"
+    "  reviews:\n"
+    "    audience: {who: entrants, rows: own}\n"
+    "    columns:\n"
+    "      defaulted: {block: sum, over: {results: islands}, of: {value: [islands, review_or_0]}}\n"
+    "      first: {block: otherwise, of: [{value: [{block: first, from: {results: islands}}, "
+    "review]}, -1]}\n"
+    "    display: [defaulted, first]\n"
+)
+"""A leaderboard adding up the task's value that counts a mark still to
+come as 0, beside the first submission's review, or -1 while it has none."""
+
+
+async def test_otherwise_counts_a_mark_still_to_come_in_a_task_value_and_on_a_leaderboard(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    # Item 128: otherwise works in a task's value as on a leaderboard.
+    clock.set(datetime(2026, 9, 26, 13, 0, tzinfo=UTC))
+    islands = await _checked(setup, acme, DEFAULTED, DEFAULTED_SUM)
+    session, owner = await _entrant(setup, acme, 20)
+    for _ in range(2):
+        await _submitted(setup, acme, clock, islands, session)
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    clock.set(datetime(2026, 9, 26, 15, 5, tzinfo=UTC))
+
+    async def numbers() -> list[Fraction | None]:
+        [board] = await boards.seen(setup, session, SPRING)
+        return [cell.number for cell in board.rows[0].cells]
+
+    unmarked = await numbers()
+    await entries.enter(setup, manager, islands.task, owner, 1, "review", "4")
+    one = await numbers()
+
+    assert unmarked == [0, -1]
+    assert one == [4, 4]

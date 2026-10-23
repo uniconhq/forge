@@ -32,7 +32,8 @@ Each form says where it may be used (`Form.scope`): a task's value, a
 board's column, or both. `min` and `max` of numbers are both's, a fold
 over a group's runs is a value's, and a fold over a task's results is a
 column's; `exec` and `entered` are a value's alone, so a board has no
-`exec` (14.2).
+`exec` (14.2). `otherwise` is both's: in a value it gives its second
+number when its first is missing (stage 5 section 6, item 128).
 
 A board's column reads, besides numbers (the leaderboards note's 5.10):
 
@@ -350,7 +351,7 @@ CATALOGUE: Mapping[str, Block] = {
                 Form(
                     SUBMISSIONS,
                     {"of": BlockInput(Kind.EITHER, least=2, most=2)},
-                    Scope.BOARD,
+                    Scope.BOTH,
                     Kind.EITHER,
                 ),
             ),

@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from forge.domain import exact_json
+from forge.domain.blocks.bounds import value_bounds
 from forge.domain.blocks.catalogue import CATALOGUE, Scope
 from forge.domain.blocks.check import MOST_DEPTH, MOST_NODES, Found, check_values, tree_size
 from forge.domain.blocks.evaluate import MOST_BITS, Column, Outcome, RunResult, evaluate, using
@@ -133,6 +134,7 @@ EACH_BLOCK: list[tuple[str, object, Fraction]] = [
     ("or", many("or", 0, 0, 2), Fraction(1)),
     ("not", one("not", 0), Fraction(1)),
     ("if", {"block": "if", "test": 2, "then": 7, "else": 8}, Fraction(7)),
+    ("otherwise", many("otherwise", many("div", 1, 0), 4), Fraction(4)),
     ("min", many("min", 3, Decimal("0.5"), 2), Fraction(1, 2)),
     ("max", many("max", 3, Decimal("0.5"), 2), Fraction(3)),
     ("floor", one("floor", Decimal("-1.5")), Fraction(-2)),
@@ -211,6 +213,37 @@ def test_if_reads_only_the_branch_it_takes() -> None:
     assert outcomes["v"].values == frozenset()
     assert outcomes["taken"].missing
     assert outcomes["unsure"].missing
+
+
+def test_otherwise_gives_its_second_number_only_when_its_first_is_missing() -> None:
+    values = {
+        "gone": many("div", 1, 0),
+        "search": entered(),
+        "kept": many("otherwise", 3, value("gone")),
+        "instead": many("otherwise", value("gone"), 5),
+        "mark": many("otherwise", value("search"), 0),
+        "all_score": fold("min", "all", "score"),
+        "waits": many("otherwise", value("all_score"), 0),
+    }
+
+    outcomes = worked(values)
+
+    assert outcomes["kept"].number == 3
+    assert outcomes["kept"].values == frozenset()
+    assert outcomes["instead"].number == 5
+    assert outcomes["instead"].values == {"gone"}
+    assert outcomes["mark"].number == 0
+    assert worked(values, entered={"search": Fraction(6)})["mark"].number == 6
+    assert worked(values, runs=[run("r1", "system_error")])["waits"].waiting
+
+
+def test_otherwise_in_a_value_takes_two_numbers_and_its_bounds_are_both_inputs() -> None:
+    assert not problems({"v": many("otherwise", entered(0, 10), fold("min", "st1", "score"))})
+    assert problems({"v": many("otherwise", 1)})
+    assert problems({"v": many("otherwise", 1, 2, 3)})
+    runs = {"all": [run("r1")]}
+    bounds = value_bounds({"v": many("otherwise", entered(2, 10), -1)}, runs, COLUMNS)
+    assert bounds["v"] == (Fraction(-1), Fraction(10))
 
 
 def test_and_and_or_read_every_input_so_missing_spreads_through_them() -> None:
