@@ -462,7 +462,7 @@ def _apply(name: str, got: Sequence[_Got]) -> _Got:
 
 def over_numbers(name: str, given: Sequence[Fraction]) -> Fraction | None:
     """The block `name` over numbers, every input a number: missing when
-    it divides by zero or passes `MOST_BITS`. A board's blocks over numbers
+    it divides by zero or passes `MOST_BITS`. A leaderboard's blocks over numbers
     are worked out by it too."""
     first = given[0]
     found: Fraction | None

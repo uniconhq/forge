@@ -16,8 +16,8 @@ countdown agrees with it, and the tasks released to them, the ones visible
 now, each with its label and when it falls due and closes for their
 entrant, its extension on it included. A member of an approved
 entrant also reads its standing: their own row on each leaderboard they
-read, as that board shows it to them (`boards.own_rows`), so the home shows
-no number a board holds back.
+read, as that leaderboard shows it to them (`leaderboards.own_rows`), so the home shows
+no number a leaderboard holds back.
 A task's page gives its statement, its submission caps and the form of the
 inputs a contestant gives, and nothing else of what the task holds, only
 once the task is visible. A task that is not, or a contest the person may
@@ -120,7 +120,7 @@ class TaskPage:
     counted against, the inputs a contestant gives, which the submit panel
     is built from, when it falls due and closes for the person's row, and
     how many of the row's submissions it may mark, none unless the entry
-    gives `marks` or a board reads the task's `marked`, and the person is
+    gives `marks` or a leaderboard reads the task's `marked`, and the person is
     an approved contestant.
     """
 

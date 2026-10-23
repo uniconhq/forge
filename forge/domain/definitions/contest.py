@@ -23,7 +23,7 @@ class Hold(Model):
     """The contest's hold, the freeze (SIMPLER-CORE.md 10.2 rule 10): from
     `from`, a time, until `until`, a time or `staff`, who end it. That
     `from` lies inside the contest, and is not set to a time passed, is the
-    save's (`forge.domain.board_checks.hold_problems`)."""
+    save's (`forge.domain.leaderboard_checks.hold_problems`)."""
 
     from_: AwareTime = Field(alias="from")
     until: Annotated[datetime | Literal["staff"], PlainValidator(_hold_end)]
@@ -65,8 +65,8 @@ _TIMES = {
 class ContestDefinition(Model):
     """A `contest.yaml`. `registration` defaults to open, anyone signing up
     and an organiser approving each, `entrants` to one person each,
-    `leaderboards` and `tasks` to none, and there is no `hold`. Boards are
-    keyed by a name tasks and boards share, so a column reads `a.b`
+    `leaderboards` and `tasks` to none, and there is no `hold`. Leaderboards are
+    keyed by a name tasks and leaderboards share, so a column reads `a.b`
     knowing which `a` is.
     """
 
@@ -107,8 +107,8 @@ class ContestDefinition(Model):
 
     def _entry_problems(self, entry: ContestTask) -> list[tuple[tuple[str, ...], str]]:
         """C1 as far as the file alone says: the four times in order. Marks
-        only under a board reading the task's `marked` is the board check's
-        (`board_checks`).
+        only under a leaderboard reading the task's `marked` is the leaderboard check's
+        (`leaderboard_checks`).
         """
         found: list[tuple[tuple[str, ...], str]] = []
         # An absent release_at or closes is read at its default and named as

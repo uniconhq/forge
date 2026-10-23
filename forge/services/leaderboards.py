@@ -1,14 +1,14 @@
 """The contest's leaderboards (SIMPLER-CORE.md 10), worked out on every read
 from each row's results, for each viewer as SIMPLER-CORE.md 10.2 says
-(`forge.domain.boards`), never stored; the contest's hold ended early; and
+(`forge.domain.leaderboards`), never stored; the contest's hold ended early; and
 the check a save of the contest's settings runs over them.
 
 - **Who reads.** Staff, an observer of the contest or above, read every
-  board, every row and every cell, with no hold. Anyone else who sees the
-  contest, a visitor with no session among them, reads each board whose
+  leaderboard, every row and every cell, with no hold. Anyone else who sees the
+  contest, a visitor with no session among them, reads each leaderboard whose
   `who` lets them, as the leaderboards note's 6.3 works it out: the
-  members of an approved entrant read `entrants` boards with their row as
-  their own, and anyone reads `everyone` boards. A person holding a role
+  members of an approved entrant read `entrants` leaderboards with their row as
+  their own, and anyone reads `everyone` leaderboards. A person holding a role
   only at one of the contest's tasks reads as anyone in no entrant would.
 - **A row** is an approved entrant (`timelines.rows`), named as its
   entrant is shown. Its results for a task are its submissions to it,
@@ -19,7 +19,7 @@ the check a save of the contest's settings runs over them.
   section 6, item 100). Each value is
   worked out by the shared scoring (`scores.run_scored`): staff read
   every value (`whole`); anyone else reads what the row's own entrant
-  is shown now (`run_showing.shown`), so a board never shows more than the
+  is shown now (`run_showing.shown`), so a leaderboard never shows more than the
   task's own page: a value reading an entered mark by `show` alone, since
   a cell reads one only on a submission it counted, and the page serves
   it there once such a cell is shown (stage 5 section 6, item 117); on a
@@ -29,28 +29,28 @@ the check a save of the contest's settings runs over them.
   read, 1 the oldest; `seconds` and `seconds_late` are from the contest's
   start and the row's due on the task, its extension included; `marked`
   is 1 for a submission the row marked; `compiled` is the grading's.
-- **Tasks.** A board reads a run task's results; a task graded test by
+- **Tasks.** A leaderboard reads a run task's results; a task graded test by
   test, a withdrawn one, or one with no publication gives none (item 70).
 - **The hold** holds from its `from` until its `until`, or until a manager
   or admin of the contest ends it early (`end_hold`), a `hold_ends` row
   naming the hold by its `from`.
-- **A regrade's board diff** works the boards out twice for staff, the
+- **A regrade's leaderboard diff** works the leaderboards out twice for staff, the
   regraded task's submissions read once by the attempts that counted when
   the regrade began and once with its own added (`Side`, `regrade_sides`).
-- **A read works out** only the boards asked for, the boards their columns
+- **A read works out** only the leaderboards asked for, the leaderboards their columns
   read, and the columns of those (`BoardsCheck.needed`), and loads only the
   tasks those read.
 - **What a row's cells counted** of one task (`chosen`): those a cell
   shown to its own entrant counted, which the task's page reads to serve
   an entered mark only once such a cell counts it (SIMPLER-CORE.md 14).
 
-A save of the contest's settings is checked by `check_contest`: each board
+A save of the contest's settings is checked by `check_contest`: each leaderboard
 against the catalogue and against the live publication of each task it
-reads (`board_checks`), and against its newest while a save row still
+reads (`leaderboard_checks`), and against its newest while a save row still
 checks that one, the hold's `from` inside the contest and never set or
 moved to a time passed, and a task's marks not lowered below the marks a
-row holds on it. A save of a task a board reads is checked against the
-boards by the save itself (`publications`).
+row holds on it. A save of a task a leaderboard reads is checked against the
+leaderboards by the save itself (`publications`).
 """
 
 import uuid
@@ -139,7 +139,7 @@ publication, which a save row still checks."""
 
 @dataclass(frozen=True, slots=True)
 class Chosen:
-    """A row's submissions to one task that the boards' cells counted, by
+    """A row's submissions to one task that the leaderboards' cells counted, by
     number: `shown`, those a cell shown to the row's own entrant counted."""
 
     shown: frozenset[int] = frozenset()
@@ -147,7 +147,7 @@ class Chosen:
 
 @dataclass(frozen=True, slots=True)
 class Side:
-    """How a regrade's board diff reads its task on one side: the task as
+    """How a regrade's leaderboard diff reads its task on one side: the task as
     it scores there, and the attempts of one submission it reads."""
 
     task: TaskId
@@ -159,9 +159,9 @@ class Side:
 async def seen(
     ctx: Context, session: Session | None, contest: ContestId, leaderboard: str | None = None
 ) -> tuple[LeaderboardView, ...]:
-    """Every board of the contest the reader reads, in the file's order, or
-    only the one keyed `board`, each as they read it: staff every board the
-    check reads, every row and cell; anyone else each board whose `who`
+    """Every leaderboard of the contest the reader reads, in the file's order, or
+    only the one keyed `leaderboard`, each as they read it: staff every leaderboard the
+    check reads, every row and cell; anyone else each leaderboard whose `who`
     lets them. A visitor reads with no session. `NotFound` for a contest
     the reader may not see.
     """
@@ -177,7 +177,7 @@ async def seen(
 async def own_rows(
     ctx: Context, contest: ContestId, settings: ContestDefinition, owner: WorkspaceOwner
 ) -> tuple[LeaderboardView, ...]:
-    """Each board a member of the approved entrant `owner` reads, in the
+    """Each leaderboard a member of the approved entrant `owner` reads, in the
     file's order, with their own row alone, as they read it: the contest
     home's standing."""
     viewer = Viewer(own=owner)
@@ -202,7 +202,7 @@ async def chosen(
     ctx: Context, contest: ContestId, settings: ContestDefinition, owner: WorkspaceOwner, task: str
 ) -> Chosen:
     """The submissions of the row `owner` to the task named `task` that
-    the boards' cells counted (`Chosen`): its own row of each board its
+    the leaderboards' cells counted (`Chosen`): its own row of each leaderboard its
     entrant reads, as they read it. A row not approved has none."""
     if not settings.leaderboards:
         return Chosen()
@@ -219,7 +219,7 @@ async def worked_out(
     keys: Collection[str],
     side: Side | None = None,
 ) -> tuple[LeaderboardView, ...]:
-    """The boards `keys` of those the check reads, in the file's order, as
+    """The leaderboards `keys` of those the check reads, in the file's order, as
     staff read them: every row, every value, no hold, a failure found seen
     to; with `side`, its task read as it says."""
     return await read(ctx, contest, settings, keys, STAFF, side, notice=True)
@@ -236,11 +236,11 @@ async def read(
     *,
     notice: bool = False,
 ) -> tuple[LeaderboardView, ...]:
-    """The boards `keys` of those the check reads, in the file's order, as
+    """The leaderboards `keys` of those the check reads, in the file's order, as
     `viewer` reads them now; with `side`, staff's, its task read as it
     says; with `only`, that row alone, its cells as they read on every
-    board; with `notice`, a failure found seen to, which only staff's
-    board read does (item 100)."""
+    leaderboard; with `notice`, a failure found seen to, which only staff's
+    leaderboard read does (item 100)."""
     checked = leaderboards_of(settings)
     wanted = [key for key in settings.leaderboards if key in keys and key in checked.readable]
     if not wanted:
@@ -490,9 +490,9 @@ async def _results(
 
 @dataclass(frozen=True, slots=True)
 class ContestCheck:
-    """What a save of the contest's settings is refused for: each board's
+    """What a save of the contest's settings is refused for: each leaderboard's
     problems, and a task's marks below what a row holds; and the notes the
-    save carries, none since the boards report none of their own."""
+    save carries, none since the leaderboards report none of their own."""
 
     problems: list[Problem]
     notes: list[str]
@@ -504,12 +504,12 @@ async def check_contest(
     before: ContestDefinition | None,
     settings: ContestDefinition,
 ) -> ContestCheck:
-    """The boards' check for a save of the contest's settings from
-    `before`, each refusal at its path: each board against the catalogue
+    """The leaderboards' check for a save of the contest's settings from
+    `before`, each refusal at its path: each leaderboard against the catalogue
     and against the live publication of each task it reads, a task with
-    none yet left to its first save (`board_checks.across`), and against
+    none yet left to its first save (`leaderboard_checks.across`), and against
     its newest while a save row still checks that one, since it then takes
-    over with no save to check the boards again (`_checking`); the hold's
+    over with no save to check the leaderboards again (`_checking`); the hold's
     `from` inside the contest, and never set or moved to a time passed;
     and C1's last rule, a task's marks not lowered below the marks a row
     holds on it."""
@@ -528,7 +528,7 @@ async def check_contest(
 async def _scored(
     ctx: Context, settings: ContestDefinition, ids: Mapping[str, TaskId]
 ) -> dict[str, Scored]:
-    """Each task scored by its runs that a board reads a value of, by name,
+    """Each task scored by its runs that a leaderboard reads a value of, by name,
     as its live publication gives its values; a task with no live
     publication, or graded test by test, is left out."""
     read = {task for task, _ in _values_read(leaderboards_of(settings))}
@@ -547,7 +547,7 @@ async def _scored(
 async def _checking(
     ctx: Context, settings: ContestDefinition, ids: Mapping[str, TaskId]
 ) -> dict[str, Scored]:
-    """Each task scored by its runs that a board reads a value of, by name,
+    """Each task scored by its runs that a leaderboard reads a value of, by name,
     as its newest publication gives its values while that one is not live
     and a save row still checks it (`pipelines.checking`). Only the newest
     can be, since each save stops the checking of the one before."""
@@ -576,7 +576,7 @@ async def _checking(
 
 
 def _values_read(checked: LeaderboardsCheck) -> set[tuple[str, str]]:
-    """Every task's value or fact a column of any board reads directly."""
+    """Every task's value or fact a column of any leaderboard reads directly."""
     return {
         each
         for columns in checked.shapes.values()
@@ -608,7 +608,7 @@ async def _held_marks(
 async def _reader(
     ctx: Context, session: Session | None, contest: ContestId
 ) -> tuple[ContestDefinition, Viewer]:
-    """The contest's settings, and who the reader is to its boards: staff,
+    """The contest's settings, and who the reader is to its leaderboards: staff,
     an observer of the contest or above; the member of an approved entrant,
     with that row as their own; or anyone else. `NotFound` for a contest
     they may not see."""
@@ -654,14 +654,14 @@ def regrade_sides(
     then: PublishedTask,
     now: PublishedTask,
 ) -> tuple[Side, Side]:
-    """How a regrade's board diff reads its task before and after (stage
+    """How a regrade's leaderboard diff reads its task before and after (stage
     5 section 6, item 71): before, each submission by the attempts queued
     by the time the regrade began, but its own, under the publication then
     the task's latest; after, by those and the regrade's own, under the one
-    it grades against. Each side counts the attempt every board does
+    it grades against. Each side counts the attempt every leaderboard does
     (`scores.usable`), so while a regrade's attempt of a submission is
     still to finish, or once it was cancelled or ended over the limit, the
-    after side reads the attempt before it, as the live board does. A
+    after side reads the attempt before it, as the live leaderboard does. A
     submission made after the regrade began has neither, and is on
     neither side."""
 

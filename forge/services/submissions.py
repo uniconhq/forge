@@ -54,7 +54,7 @@ it again.
 A contestant reads their own submissions back, newest first, each with the
 attempt of its grading that counts as the task's test groups show it
 (`forge.domain.showing`). The
-attempt that counts is the one the boards count (`scores.counted`): the
+attempt that counts is the one the leaderboards count (`scores.counted`): the
 latest that finished with a result, so a regrade under way, a system error
 and a staff cancel leave the result read as it was; and while none has, the
 latest, of which a run in `system_error` is read as `delayed` and nothing
@@ -79,9 +79,9 @@ person, so its bytes, two gigabytes or two, never pass through the
 platform. A run's log names every test, hidden ones too, so it is the
 organisers' alone. A run task's result is read through
 `forge.domain.run_showing`, its values worked out on read
-(`scores.run_scored`), a mark entered for it counted only once a board
+(`scores.run_scored`), a mark entered for it counted only once a leaderboard
 cell shown to the entrant counted the submission, before the reveal or
-after it (`boards.chosen`, SIMPLER-CORE.md 14): until then, and always
+after it (`leaderboards.chosen`, SIMPLER-CORE.md 14): until then, and always
 when none does, it is worked out as if none were entered. A text it
 shows is read one at a time, only while the result shows it to that
 reader: an entrant's by where it is shown (`read_text`), never by the
@@ -425,7 +425,7 @@ async def _uncounted(ctx: Context, workspace: WorkspaceId, task: TaskId) -> set[
     `submissions.max`, by the rule a delayed one is graded again by
     (`gradings.place_of`): those none of whose attempts finished with a
     result and whose latest is a cancel or over the limit, void as on the
-    boards, or reads as a system error, delayed. Whether the CI lost a run
+    leaderboards, or reads as a system error, delayed. Whether the CI lost a run
     is not asked here, under the submit's holds: such a run counts until a
     read finds it lost and its retry starts.
     """
@@ -917,7 +917,7 @@ async def _read(
 
 
 async def _chosen_by_leaderboards(ctx: Context, reading: Reading) -> leaderboards.Chosen | None:
-    """What the boards' cells counted of the row's submissions to the task,
+    """What the leaderboards' cells counted of the row's submissions to the task,
     which its values reading an entered mark wait on; none when the task
     has no such value."""
     scoring = reading.published.definition.scoring
@@ -951,7 +951,7 @@ async def _submission(
 ) -> Submission:
     """The submission as its owner reads it, by the attempt of its grading
     that counts (`scores.counted`), with `lost` naming the gradings whose
-    runs the CI has lost and `chosen` what the boards' cells counted of
+    runs the CI has lost and `chosen` what the leaderboards' cells counted of
     the row's submissions; with `everything`, as organisers read it.
     """
     settings = reading.settings
@@ -1064,7 +1064,7 @@ async def _runs(
     by what the task's latest publication shows now, `on_release` while
     its results are released (`run_showing.shown`, 9.4), so a group moved
     to `now` shows its runs even where they ran late. Its values are
-    worked out as if no mark were entered until a board cell shown to the
+    worked out as if no mark were entered until a leaderboard cell shown to the
     entrant counted the submission, of those `chosen` gives, and never when
     none did (14), so a mark held back tells nothing a submission with none
     does not. Before the reveal,

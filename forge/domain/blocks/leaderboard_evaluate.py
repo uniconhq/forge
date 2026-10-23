@@ -1,5 +1,5 @@
 """Working a row of a contest's leaderboards out (SIMPLER-CORE.md 10.1, the
-leaderboards note's 5.3 and 5.4): every column of the boards the check
+leaderboards note's 5.3 and 5.4): every column of the leaderboards the check
 reads (`BoardsCheck.order`), for one row, from that row's results, each
 task's submissions oldest first, every number an exact fraction.
 
@@ -35,23 +35,23 @@ task's submissions oldest first, every number an exact fraction.
   missing when that tree reads anything but those values and numbers
   through blocks over numbers (`check.direct_reads`), or a direction is
   not given, which the save refuses across files by the same rule
-  (`forge.domain.board_checks`), so only a task's version still to be
+  (`forge.domain.leaderboard_checks`), so only a task's version still to be
   checked could give it.
 - **Waiting.** A value of a submission still being worked out, or waiting
   for staff, is left out of every block that reads it, and the submission
   is recorded as left out waiting (guarantee 5). A
   pick reads every value and fact read through it, so it passes over a
   submission waiting on any of them, among those its `where` keeps: a
-  pick column what any column of any board reads through it
+  pick column what any column of any leaderboard reads through it
   (`BoardsCheck.through`), a pick read in place, `{value: [<pick>, v]}`,
   its `v`.
 - **Hidden.** A name a submission's results hold back from the reader
   (`Submitted.hidden`) gives no number, and every cell that reads it is
   hidden, the values a pick or a fold compares or tests included, and
   every column reading through such a pick (guarantee 2): a pick is hidden
-  when anything the boards worked out read through it
+  when anything the leaderboards worked out read through it
   (`BoardsCheck.hiding`) is hidden on a submission it looked at. Which
-  cells the reader is shown is `forge.domain.boards`'.
+  cells the reader is shown is `forge.domain.leaderboards`'.
 
 Each cell records the submissions it counted (the leaderboards note's
 5.3): a pick its one; `max` and `min` the oldest that reached the result;
@@ -77,7 +77,7 @@ SubmissionAt = tuple[str, int]
 
 @dataclass(frozen=True, slots=True)
 class Submitted:
-    """One submission's results as a board reads them: its number, each
+    """One submission's results as a leaderboard reads them: its number, each
     value and fact that has a number, by name, the names still waiting, and
     the names held back from the reader. A name in none is missing."""
 
@@ -133,7 +133,7 @@ def work_out_row(
     results: Mapping[str, Sequence[Submitted]],
     trees: Mapping[str, Mapping[str, object]],
 ) -> dict[ColumnRef, Cell]:
-    """Every column of the boards the check reads, for one row: `results`
+    """Every column of the leaderboards the check reads, for one row: `results`
     the row's submissions to each task, oldest first, a task with none left
     out, and `trees` each task's values' trees, which `best_each` reads."""
     row = _Row(results, trees)
@@ -171,7 +171,7 @@ class _Row:
     ) -> Cell:
         """What `tree` gives, `scope` the submissions the blocks around it
         are looking at by task, and, when it gives a submission's results,
-        `through` what is read through it and `hides` what the boards
+        `through` what is read through it and `hides` what the leaderboards
         worked out read through it."""
         if not isinstance(tree, dict | list):
             number = exact(tree)

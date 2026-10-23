@@ -7,7 +7,7 @@ column reading a value not shown yet hidden before the reveal; cartpole with
 the course's `gradebook` and `cartpole_ranking`, the `search` mark entered
 from the grading queue and reaching its row only as its cell does;
 Kaggle's `house-prices`, one axis over its public and private split, each
-split's RMSE reported by the checker, ranked lowest first on two boards,
+split's RMSE reported by the checker, ranked lowest first on two leaderboards,
 a malformed submission ranking nowhere while the rest still count; and a
 course keeping the best two of three homework with `sum_best`, beside a
 final that takes one submission.
@@ -568,7 +568,7 @@ async def test_kaggle_ranks_each_split_lowest_first_and_a_malformed_file_nowhere
     await marks.mark(setup, ana, house, 1)
     await marks.mark(setup, ana, house, malformed)
 
-    # The public board ranks by each row's best public RMSE, lowest first:
+    # The public leaderboard ranks by each row's best public RMSE, lowest first:
     # Ana's second, at 12:00, then Ben's. Cy's only submission has no
     # RMSE, so no pick, and his row sorts last with nothing in it.
     public = await _leaderboard(setup, None, "public_board")
@@ -579,7 +579,7 @@ async def test_kaggle_ranks_each_split_lowest_first_and_a_malformed_file_nowhere
         {"public": None, "public_at": None},
     ]
     assert [row.place for row in public.rows[:2]] == [1, 2]
-    # The private board picks by the private RMSE, shown only after the
+    # The private leaderboard picks by the private RMSE, shown only after the
     # close, so before it no row has a number there and nothing is placed.
     private = await _leaderboard(setup, None, "private_board")
     assert [_numbers(row) for row in private.rows] == [{"private": None, "at": None}] * 3

@@ -208,12 +208,12 @@ def _scores(
     contest: ContestDefinition | None,
     unread: bool,
 ) -> tuple[list[str], bool]:
-    """Each scoring change in words, then the boards it counts again, and
+    """Each scoring change in words, then the leaderboards it counts again, and
     whether any of it moves what a result is or shows.
     """
     entry = contest.entry(task) if contest is not None else None
-    # No board counts a withdrawn task, so a save of one moves none; and a
-    # board reads no task graded test by test (stage 5 section 6, item 70).
+    # No leaderboard counts a withdrawn task, so a save of one moves none; and a
+    # leaderboard reads no task graded test by test (stage 5 section 6, item 70).
     checked = (
         check_leaderboards(contest.leaderboards, [each.id for each in contest.tasks])
         if contest is not None
@@ -240,7 +240,7 @@ def _scores(
 def _titles(
     contest: ContestDefinition | None, checked: LeaderboardsCheck | None, keys: Sequence[str]
 ) -> list[str]:
-    """The titles of the boards `keys`, in the file's order."""
+    """The titles of the leaderboards `keys`, in the file's order."""
     if contest is None or checked is None:
         return []
     return [
@@ -260,8 +260,8 @@ def _run_scores(
     """A run task's scoring changes in words: each group and value added,
     removed or changed, a value changed when its tree is or when a group or
     value it reads, directly or through others, changed; each entry `show`
-    shows at another time; then the boards reading a value that changed,
-    which count again, or at a first publication each board reading the
+    shows at another time; then the leaderboards reading a value that changed,
+    which count again, or at a first publication each leaderboard reading the
     task. Whether any of it moves what a result is or shows. A value is
     named, never written out: the editor shows its tree."""
     if before is None:

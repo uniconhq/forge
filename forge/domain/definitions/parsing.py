@@ -197,7 +197,7 @@ def starter_contest(name: str, now: datetime) -> bytes:
     """The `contest.yaml` a new contest is created with: titled `name`, a
     draft seen by anyone signed in, open to register with manual approval,
     starting on the first full hour at least seven days after `now` and
-    running five hours, with no leaderboards and no tasks, since a board's
+    running five hours, with no leaderboards and no tasks, since a leaderboard's
     columns read tasks the contest does not have yet.
     """
     week_on = now.astimezone(UTC) + timedelta(days=7)

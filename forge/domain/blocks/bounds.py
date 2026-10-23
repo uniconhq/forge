@@ -1,4 +1,4 @@
-"""The most and the least a task's value or a board's column can give
+"""The most and the least a task's value or a leaderboard's column can give
 (stage 5 section 6, item 5; the leaderboards note's 9.2), the same for
 every row, and which self-reported values a column reads (item 7).
 
@@ -238,8 +238,8 @@ def column_bounds(
     most: Mapping[str, int | None],
     trees: Mapping[str, Mapping[str, object]],
 ) -> dict[ColumnRef, Bounds]:
-    """Each number column's bounds, of the boards worked out on read:
-    `tasks` each task's values' bounds, a task the board reads with none
+    """Each number column's bounds, of the leaderboards worked out on read:
+    `tasks` each task's values' bounds, a task the leaderboard reads with none
     there giving none, `most` each task's `submissions.max`, and `trees`
     each task's values' trees, which `best_each` with a `missing` number
     works out again."""

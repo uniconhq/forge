@@ -5,9 +5,9 @@ missing until a mark is entered; every entry is kept and the latest
 counts; a regrade never touches one; a manager of the task, a role at its
 contest included, enters one and an observer is refused; a value the live
 version gives no `entered` block takes none. The grading queue lists, for
-each row once the task has closed for it, the submissions the boards'
+each row once the task has closed for it, the submissions the leaderboards'
 cells counted with their marks, for an observer of the task, who enters
-nothing; and an entry reaches its entrant only once a board cell shown to
+nothing; and an entry reaches its entrant only once a leaderboard cell shown to
 them counted the submission, and never when none did, after the reveal
 too (#505, SIMPLER-CORE.md 14).
 """
@@ -212,7 +212,7 @@ async def test_an_entry_no_cell_counted_never_reaches_its_entrant(
     clock.set(AFTER_CLOSE)
     after = _values(await _grading(setup, session, islands))
 
-    # The contest has no board, so no cell counted it: it reads as no mark,
+    # The contest has no leaderboard, so no cell counted it: it reads as no mark,
     # after the reveal too. Organisers read it at once.
     assert (before["review"], before["reviewed"]) == (None, None)
     assert (after["review"], after["reviewed"]) == (None, None)
@@ -291,7 +291,7 @@ async def test_a_value_kept_through_a_save_keeps_its_marks(
 async def test_the_shared_scoring_works_out_what_reads_a_mark_for_every_reader(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
-    # An entrant's page works it out with no mark while what the boards'
+    # An entrant's page works it out with no mark while what the leaderboards'
     # cells counted holds the mark back (`submissions._runs`).
     clock.set(BEFORE_CLOSE)
     islands, _ = await _graded_both(setup, acme, REVIEWED)
@@ -547,7 +547,7 @@ async def test_an_entry_a_cell_never_shown_counted_stays_hidden_after_the_reveal
         if each.grading
     ]
 
-    # The board chose the first by a total no entrant is ever shown, so its
+    # The leaderboard chose the first by a total no entrant is ever shown, so its
     # mark waits for that cell; the second's, which no cell counted, stays
     # back too, else the one with no mark would be the hidden choice.
     assert leaderboard.rows[0].cells[0].hidden
@@ -605,12 +605,12 @@ async def _page(setup: Setup, session: Any, islands: Any) -> dict[int, dict[str,
 async def test_a_mark_held_back_reads_as_no_mark_at_all(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock, leaderboard: str, chosen: int
 ) -> None:
-    # Each board chooses by a total no entrant is ever shown: BEST the
+    # Each leaderboard chooses by a total no entrant is ever shown: BEST the
     # highest, the oldest of a tie (1); LATEST_BY_TOTAL the latest with a
     # total (2). Its mark held back, the chosen submission reads as the
     # other, which no cell counted and has no mark: the mark missing, and
     # `given`, which reads it only on a branch not taken, 1, so nothing
-    # tells which one the board chose.
+    # tells which one the leaderboard chose.
     clock.set(datetime(2026, 9, 26, 13, 0, tzinfo=UTC))
     islands = await _checked(setup, acme, GIVEN, leaderboard)
     session, owner = await _entrant(setup, acme, 20)
@@ -677,14 +677,14 @@ async def test_the_hold_hides_a_mark_on_a_row_it_holds_and_a_staff_leaderboards_
         page = await _page(setup, session, islands)
 
         # Item 117: the hold leaves only 1 on the row for anyone else, so
-        # its mark would tell what the staff board chose; the cell is hidden,
+        # its mark would tell what the staff leaderboard chose; the cell is hidden,
         # as one reading `marked` is. The entrant's own row counts 2.
         for leaderboard in (visitor, as_other):
             [row] = [row for row in leaderboard.rows if row.owner == owner]
             assert row.cells[0] == LeaderboardCell("review", None)
         [mine] = [row for row in own.rows if row.owner == owner]
         assert mine.cells[0] == LeaderboardCell("review", Fraction(0), (Counted("islands", 2),))
-        # Item 118: only the staff board counted 1, so its mark stays back,
+        # Item 118: only the staff leaderboard counted 1, so its mark stays back,
         # past the reveal too, reading as no mark.
         assert (page[1]["review"], page[1]["reviewed"]) == (None, None)
     [queued] = await entries.queue(setup, manager, islands.task)
@@ -715,8 +715,8 @@ staff board reading that pick's total, shown only after the close."""
 async def test_a_leaderboard_the_entrant_never_reads_keeps_back_no_mark_their_own_cell_counted(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
-    # Item 118: the entrant's own cells are read on the boards they read
-    # alone, so the staff board's read of the total through their board's
+    # Item 118: the entrant's own cells are read on the leaderboards they read
+    # alone, so the staff leaderboard's read of the total through their leaderboard's
     # pick hides nothing of it (item 98), and the mark of the submission
     # their cell counted shows before the reveal.
     clock.set(datetime(2026, 9, 26, 13, 0, tzinfo=UTC))
@@ -804,7 +804,7 @@ async def test_an_observer_of_the_task_alone_is_listed_only_the_cells_reading_it
 async def test_the_queue_starts_no_retry_of_a_failure_it_finds(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Item 100: only staff's board read sees to a failure, so reading the
+    # Item 100: only staff's leaderboard read sees to a failure, so reading the
     # queue, which an observer of one task may, retries nothing on any task.
     monkeypatch.setattr(setup.settings, "retry_failed", True)
     clock.set(datetime(2026, 9, 26, 13, 0, tzinfo=UTC))

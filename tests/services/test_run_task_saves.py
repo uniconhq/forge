@@ -9,7 +9,7 @@ submitted; a self-reported report asks once, and the save is refused
 until that question is answered; what was shown is not hidden again; the
 files `show` lists are served from their time on, and no other, the
 reveal's from its instant and a release's not yet; the contest gives a
-run task a due and a board, and a stored worth or late share is ignored;
+run task a due and a leaderboard, and a stored worth or late share is ignored;
 and an entrant submits to one in parts.
 """
 

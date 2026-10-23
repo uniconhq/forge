@@ -32,7 +32,7 @@ def canonical(key: Mapping[str, object]) -> str:
 def show_names(scoring: Scoring) -> set[str]:
     """The entries of `scoring`'s `show` that name a group, a value or a
     fact a grading gives, `all` and `compiled` among them, rather than a
-    task file: every result a board reads of the task, beside the facts
+    task file: every result a leaderboard reads of the task, beside the facts
     that go with the row (`ROW_FACTS`, stage 5 section 6 item 124)."""
     return {ALL, *scoring.groups, *scoring.values, *SHOWN_FACTS}
 

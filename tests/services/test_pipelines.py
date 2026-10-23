@@ -1751,7 +1751,7 @@ async def test_staff_read_every_row_of_a_staff_leaderboard_and_nobody_else_reads
 
     [leaderboard] = await leaderboards.seen(setup, staff, SPRING)
 
-    # A board with no audience is staff's, so an entrant and a visitor
+    # A leaderboard with no audience is staff's, so an entrant and a visitor
     # read none.
     assert await leaderboards.seen(setup, entrant, SPRING) == ()
     assert await leaderboards.seen(setup, None, SPRING) == ()
@@ -1858,7 +1858,7 @@ async def test_a_manager_or_observer_of_the_task_alone_reads_no_leaderboard(
         acme.fake.add_user(user, f"staff{user}")
         await acme.fake.orgs.grant_role(user, ISLANDS, role)
         session = await signed_in(setup, acme.fake, user)
-        # A board reads other tasks, so a role at one task reads none.
+        # A leaderboard reads other tasks, so a role at one task reads none.
         assert await leaderboards.seen(setup, session, SPRING) == ()
         assert await leaderboards.seen(setup, session, SPRING, "gradebook") == ()
 
@@ -1893,7 +1893,7 @@ async def test_a_regrade_lists_each_submission_whose_values_it_changed_old_to_ne
             ValueChange("total", Fraction(100), Fraction(40)),
         )
         assert each.verdicts == (VerdictChange("r4", "accepted", "wrong_answer"),)
-    # The contest's manager reads every row of the board reading islands,
+    # The contest's manager reads every row of the leaderboard reading islands,
     # its places and cells before and after.
     assert summary.leaderboards is not None
     [leaderboard] = summary.leaderboards
@@ -1935,7 +1935,7 @@ async def test_the_leaderboard_diff_reads_the_result_before_while_a_regrade_runs
     assert (summary.running, summary.failed, summary.changed) == (1, 1, ())
     assert summary.leaderboards is not None
     [diff] = summary.leaderboards
-    # Each row reads as the live board does: the result from before counts
+    # Each row reads as the live leaderboard does: the result from before counts
     # until the regrade's own attempt finishes with one, so nothing drops.
     live = {
         row.owner: [(cell.column, cell.number) for cell in row.cells] for row in leaderboard.rows
@@ -2036,8 +2036,8 @@ async def test_a_regrade_whose_earlier_publication_no_longer_reads_gives_leaderb
     summary = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
 
     assert summary.unread == 1
-    # The board is not worked out under the new scoring and called the
-    # board before: it says it cannot be compared, as the summary does.
+    # The leaderboard is not worked out under the new scoring and called the
+    # leaderboard before: it says it cannot be compared, as the summary does.
     assert summary.leaderboards is not None
     [leaderboard] = summary.leaderboards
     assert (leaderboard.leaderboard, leaderboard.title, leaderboard.unread, leaderboard.rows) == (

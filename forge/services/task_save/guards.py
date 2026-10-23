@@ -197,11 +197,11 @@ async def _leaderboard_reads(
     """What the contest's leaderboards ask of the task (stage 5, phase 5.7),
     against the values the save would give it: every value a column reads
     of it is kept, by its name, and no column would be refused across files
-    for what the task's values now read (`board_checks.across`). Each
-    problem names the board and the column, at the value it is about when
-    the task still gives it, else at `scoring.values`. A board whose own
+    for what the task's values now read (`leaderboard_checks.across`). Each
+    problem names the leaderboard and the column, at the value it is about when
+    the task still gives it, else at `scoring.values`. A leaderboard whose own
     check finds anything is the contest's to mend, and asks nothing here.
-    A run task's save calls it; a task graded test by test gives a board
+    A run task's save calls it; a task graded test by test gives a leaderboard
     no results, and is not checked (stage 5 section 6, item 103).
     """
     if definition.scoring is None:

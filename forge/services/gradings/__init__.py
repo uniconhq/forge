@@ -45,7 +45,7 @@ submissions with a result, those waiting that are not delayed, and the
 delayed ones made before it are fewer than the most
 (`forge.domain.grading.room`), read under the task's hold. Otherwise the
 new attempt ends `over_limit` at once, run by nothing, with the most it
-reached; the submission then counts on no board and against nothing. One
+reached; the submission then counts on no leaderboard and against nothing. One
 over the limit is checked again the same way by a staff retry or a
 regrade, and a regrade leaves one still without room as it is. No one
 grades one past the most; the organisers' list says when a retry would end

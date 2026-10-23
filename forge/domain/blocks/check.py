@@ -6,12 +6,12 @@ group, and no value reading itself through others. Group and value names
 are one set, none named like a fact, and `all` is every run's. A block with
 more than one form is checked against the one its node fits, by the inputs
 it is given and whether each is a group's runs; a node fitting none is
-refused naming the forms. A form or a leaf only a board's column may use
+refused naming the forms. A form or a leaf only a leaderboard's column may use
 (`Scope.BOARD`, `BOARD_LEAVES`) is refused in a task's value, naming
 where it belongs. A tree is at most `MOST_NODES` nodes and
 `MOST_DEPTH` deep, and a task has at most `MOST_VALUES` values and
 `MOST_GROUPS` groups, each measured before anything is walked, since every
-read of a board works every value of every submission out.
+read of a leaderboard works every value of every submission out.
 
 A value holds one `entered` block at most, its bounds numbers written
 out, the lower first, and one `exec` block at most, its program a folder,
@@ -632,7 +632,7 @@ def leaf_of(node: Mapping[object, object]) -> tuple[str, object] | None:
 def direct_reads(tree: object) -> tuple[set[str], str | None]:
     """The values a task's value's tree reads directly, and the first thing
     it reads directly that is not another value or a number, in words, if
-    any: a fact, a group's runs, a program, a mark or a fallback. A board's
+    any: a fact, a group's runs, a program, a mark or a fallback. A leaderboard's
     `best_each` works out again only a tree with none (the leaderboards
     note's 5.4), which the save checks and a read follows alike."""
     found: set[str] = set()

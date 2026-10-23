@@ -1,5 +1,5 @@
 """Which attempt of a submission counts, the one rule for its row, the
-boards and `submissions.max` (`counted`); what a task graded test by test
+leaderboards and `submissions.max` (`counted`); what a task graded test by test
 is shown with (`GradedOf`); and a run task's values, worked out on every
 read from both its rows (`run_scored`).
 
@@ -10,14 +10,14 @@ since. A past publication's `task.yaml` and plan are read once per process,
 since a publication never changes. Nothing of it is scored: since stage 5
 only a run task has values (stage 5 section 6, item 123).
 
-One rule says which of a submission's attempts counts, on a board, to its
+One rule says which of a submission's attempts counts, on a leaderboard, to its
 row and against `submissions.max`: the latest that finished with a result,
 until a newer attempt finishes with one, so a regrade under way, a system
 error and a staff cancel never take a result away (`counted`). A submission
 none of whose attempts finished with a result is still grading while its
 latest attempt is queued, running or a system error, and nothing once that
 attempt is cancelled or ended over the limit (`forge.domain.grading.room`):
-it then counts on no board.
+it then counts on no leaderboard.
 """
 
 import uuid
@@ -78,7 +78,7 @@ class State(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Usable:
-    """The attempt of a submission a board reads, with where it stands."""
+    """The attempt of a submission a leaderboard reads, with where it stands."""
 
     state: State
     row: Grading | None
@@ -92,7 +92,7 @@ def counted(rows: Sequence[Grading]) -> Grading:
 
 
 def usable(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -> Usable:
-    """Which of one submission's attempts a board reads, and where the
+    """Which of one submission's attempts a leaderboard reads, and where the
     submission stands by it: the latest attempt that finished with a
     result, a candidate; with none, still grading while the latest attempt
     is queued, running or a system error, and nothing once it is cancelled
@@ -257,7 +257,7 @@ async def run_scored(
     for the submission's `entered` values are read with them (`entries`),
     unless the caller read them already, as `marks`. Every value is worked
     out, one reading a mark among them: an entrant's page gives no marks
-    while what the boards' cells counted holds them back (`submissions`).
+    while what the leaderboards' cells counted holds them back (`submissions`).
     A program waits while its row is to give it, and for staff once its
     row ended with a fault and no number for it; `compiled` waits while the
     row whose plan holds its compile is to give it. Worked out on every

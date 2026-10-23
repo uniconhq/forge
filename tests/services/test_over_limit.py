@@ -6,7 +6,7 @@ rejudge, only while the entrant's submissions with a result and those
 waiting that are not delayed, with the delayed ones made before it, are
 fewer than the most. Otherwise its new attempt ends over the limit at once,
 run by nothing: its contestant reads "over_limit" with the most they had
-reached, and it counts on no board and against nothing. The organisers'
+reached, and it counts on no leaderboard and against nothing. The organisers'
 list says beforehand when a retry would end so, a staff retry is held to the
 same rule, and room that opens, the most raised, lets a staff retry grade
 it.

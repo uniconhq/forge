@@ -1,4 +1,4 @@
-"""Every block a task's value or a board's column may use, with its inputs
+"""Every block a task's value or a leaderboard's column may use, with its inputs
 and the kind each takes (SIMPLER-CORE.md 10.1 and 14, #511 and #512; the
 leaderboards note's 5.3 and 6.1). It is the
 one allowlist: the editor offers these and nothing else, and the forge runs
@@ -29,23 +29,23 @@ does not name weighing 1, and `missing` says what a missing report counts
 as, `skip` to leave the run out, or a number.
 
 Each form says where it may be used (`Form.scope`): a task's value, a
-board's column, or both. `min` and `max` of numbers are both's, a fold
+leaderboard's column, or both. `min` and `max` of numbers are both's, a fold
 over a group's runs is a value's, and a fold over a task's results is a
-column's; `exec` and `entered` are a value's alone, so a board has no
+column's; `exec` and `entered` are a value's alone, so a leaderboard has no
 `exec` (14.2). `otherwise` is both's: in a value it gives its second
 number when its first is missing (stage 5 section 6, item 128).
 
-A board's column reads, besides numbers (the leaderboards note's 5.10):
+A leaderboard's column reads, besides numbers (the leaderboards note's 5.10):
 
 - `{results: <task>}`, the row's results for a task, one per submission
   that counts, oldest first, for a pick's `from`, a fold's `over` and
   `best_each`'s `from`;
 - `{value: [<of>, <name>]}`, value or fact `name` of one submission's
   results: `<of>` a task, meaning the submission a `where`, a `by` or a
-  fold's `of` is looking at, a pick column of the board, or a node giving
+  fold's `of` is looking at, a pick column of the leaderboard, or a node giving
   a submission's results;
 - `{column: <name>}`, another column of the same row, or `{column:
-  [<board>, <name>]}`, a column of another board's;
+  [<leaderboard>, <name>]}`, a column of another leaderboard's;
 - `{name: <value>}`, the value `best_each` works out again.
 
 A pick, a fold over a task's results and `best_each` take `missing`, as
@@ -57,7 +57,7 @@ the number; with none, such a submission makes the block missing (stage
 A pick (`first`, `latest`, `highest`, `lowest`) gives one submission's
 results, or none; `otherwise` gives what it is given, a number or a
 submission's results; every other block gives a number. `if`'s test may
-be a submission's results on a board: true when there is one.
+be a submission's results on a leaderboard: true when there is one.
 
 `entered` reads no node: it is the mark a manager of the task enters for
 the submission, its bounds numbers written out, and a value holds one at
@@ -94,7 +94,7 @@ class Kind(StrEnum):
 
 
 class Scope(StrEnum):
-    """Where a form may be used: a task's value, a board's column, or both."""
+    """Where a form may be used: a task's value, a leaderboard's column, or both."""
 
     TASK = "task"
     LEADERBOARD = "leaderboard"
@@ -246,7 +246,7 @@ _MISSING = BlockInput(Kind.MISSING, optional=True)
 
 
 def _over_results(*, of: bool) -> Form:
-    """A fold over a task's results, a board's: `of` read for each result
+    """A fold over a task's results, a leaderboard's: `of` read for each result
     `where` keeps."""
     inputs = {"over": BlockInput(Kind.RESULTS)}
     if of:

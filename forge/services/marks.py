@@ -1,7 +1,7 @@
-"""The submissions a row marks, which a board reads as each submission's
+"""The submissions a row marks, which a leaderboard reads as each submission's
 `marked` (TASK-FORMAT.md section 1.1, Marks; SIMPLER-CORE.md 10.1): up to
 the task's `marks` of the row's own submissions, graded or not, one set
-shared by every board and by every member of the entrant. Marks change
+shared by every leaderboard and by every member of the entrant. Marks change
 until the row's close on the task, its extension included, and are frozen
 after it. Marking grades nothing.
 
@@ -63,7 +63,7 @@ class Marks:
 @action
 async def held(ctx: Context, session: Session, task: TaskId) -> Marks:
     """The marks the signed-in person's entrant holds on the task.
-    `MarksOff` for a task no marked board covers, and `NotApproved` for a
+    `MarksOff` for a task no marked leaderboard covers, and `NotApproved` for a
     person in no approved entrant.
     """
     person = await submitters.person(ctx, session, task)

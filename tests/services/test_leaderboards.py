@@ -1,5 +1,5 @@
 """The contest's leaderboards as each viewer reads them (SIMPLER-CORE.md
-10.2, the leaderboards note's 6.3): a visitor and an entrant read a board
+10.2, the leaderboards note's 6.3): a visitor and an entrant read a leaderboard
 for everyone with each row's values as that row's entrant is shown them,
 and only their own row of the gradebook; a withdrawn task's columns are
 listed to no entrant, and a header tells a task's bounds only once it is
@@ -7,7 +7,7 @@ released; the hold keeps every row but the viewer's own as it stood at
 its `from`, counting the rest held, until its `until` or a manager of the
 contest ends it early, asked first, the end kept with who and when, a
 hold written again with a later `from` holding afresh; and the contest
-home shows an entrant their own row of each board they read.
+home shows an entrant their own row of each leaderboard they read.
 """
 
 import uuid
@@ -135,7 +135,7 @@ async def test_everyone_reads_each_row_as_its_own_entrant_is_shown_it(
     entrant = await leaderboards.seen(setup, first, SPRING)
     [everyone, staffs] = await leaderboards.seen(setup, staff, SPRING)
 
-    # A visitor reads the board for everyone and no gradebook. The total
+    # A visitor reads the leaderboard for everyone and no gradebook. The total
     # is shown only after the close, so it has no number on any row, and
     # why, and what each cell counted, is told to nobody but the row's own
     # entrant (item 127).
@@ -161,7 +161,7 @@ async def test_everyone_reads_each_row_as_its_own_entrant_is_shown_it(
         None,
         (LeaderboardCell("total", None, hidden=True),),
     )
-    # Staff read every value, of both boards.
+    # Staff read every value, of both leaderboards.
     assert [cell.number for cell in everyone.rows[0].cells] == [1, 100, 1]
     assert [len(staffs.rows), staffs.rows[0].cells[0].number] == [2, 100]
 
@@ -382,7 +382,7 @@ async def test_a_value_whose_late_runs_still_run_after_the_reveal_waits_for_ever
 
     # The grading row's total still waits on its late runs, so the latest
     # pick passes over its submission and the total falls back to 0, as
-    # staff read it; it is hidden from nobody, so the board keeps its
+    # staff read it; it is hidden from nobody, so the leaderboard keeps its
     # places.
     assert visitor.dropped == ()
     assert _rows_of(visitor) == [(graded.name, 1, 0), (grading.name, 2, 0)]

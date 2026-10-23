@@ -1,8 +1,8 @@
 """Leaderboards written as block trees (SIMPLER-CORE.md 10 and 10.1, the
 leaderboards note's 5.3 to 5.10): SIMPLER-CORE.md 10's gradebook, olympiad
-and ICPC boards parse, pass the check and work out their rows; each board
+and ICPC leaderboards parse, pass the check and work out their rows; each leaderboard
 block works out as 5.3 and 5.4 say, ties to the oldest and missing
-skipped; each refusal of the board check; a column's bounds and its
+skipped; each refusal of the leaderboard check; a column's bounds and its
 self-reported parts; and the hold.
 """
 
@@ -247,7 +247,7 @@ def cells(
 
 
 def column(leaderboard: str, name: str, results: dict[str, list[Submitted]], tree: object) -> Cell:
-    """One column `name` of a board over tasks a and b, worked out."""
+    """One column `name` of a leaderboard over tasks a and b, worked out."""
     settings = contest("tasks: [{id: a}, {id: b}]\n")
     defined = Leaderboard.model_validate({"columns": {name: tree}})
     leaderboards = {leaderboard: defined}
@@ -264,7 +264,7 @@ def read(of: object, name: str) -> dict[str, list[object]]:
     return {"value": [of, name]}
 
 
-# SIMPLER-CORE.md 10's boards
+# SIMPLER-CORE.md 10's leaderboards
 
 
 def test_the_gradebook_works_out_a_marked_or_latest_score_and_the_best_reward() -> None:
@@ -380,7 +380,7 @@ def test_a_pick_passes_over_a_newest_submission_whose_value_read_through_it_wait
     assert mark.counted == {("search", 1)}
     assert mark.waiting == {("search", 2)}
     # A pick column counts as reading what every column reads through it,
-    # another board's among them, so both boards pass over submission 2.
+    # another leaderboard's among them, so both leaderboards pass over submission 2.
     assert found[("one", "total")].number == 50
     assert found[("one", "total")].waiting == {("a", 2)}
     assert found[("two", "total")].number == 5
@@ -424,7 +424,7 @@ def test_a_column_read_from_another_leaderboard_works_out_and_names_the_task() -
 
     assert found[("two", "half")].number == 40
     assert found[("two", "half")].counted == {("a", 2)}
-    # A board reading a task only through another board's column reads it.
+    # A leaderboard reading a task only through another leaderboard's column reads it.
     assert leaderboards.reading("a") == ["one", "two"]
     assert leaderboards.reads("a", "total") == ["one", "two"]
     assert leaderboards.reading("b") == ["one", "three"]
@@ -445,7 +445,7 @@ def read_as(
     released: list[str] | None = None,
     held: Mapping[int, Mapping[str, int]] | None = None,
 ) -> tuple[LeaderboardView, ...]:
-    """The board `key` as `viewer` reads it, each row given by its entrant,
+    """The leaderboard `key` as `viewer` reads it, each row given by its entrant,
     name and results as the viewer reads them; empty when they see none."""
     settings = contest(text)
     found = checked(settings)
@@ -712,7 +712,7 @@ def test_a_value_reading_an_entered_mark_waits_by_show_and_compiled_with_no_grou
 
 
 def test_compiled_listed_by_its_name_reads_on_a_leaderboard_with_no_group_shown() -> None:
-    # Item 124: show lists compiled by its name, so a board reads it, and
+    # Item 124: show lists compiled by its name, so a leaderboard reads it, and
     # it waits while the submission grades, with no group shown.
     text = ISLANDS_TASK.replace(
         "now: [sample_score, sample_time, sample_tests, samples/]", "now: [compiled, sample_score]"
@@ -822,9 +822,9 @@ staff's reading the private score through that pick."""
 def test_a_staff_leaderboard_reading_through_a_public_leaderboards_pick_hides_nothing_of_it() -> (
     None
 ):
-    # Item 98: only what the boards read for a viewer read through a pick
+    # Item 98: only what the leaderboards read for a viewer read through a pick
     # hides it, so staff's private read hides no public cell, while the
-    # pick takes the same submission on every board.
+    # pick takes the same submission on every leaderboard.
     settings = contest(THROUGH_PUBLIC)
     found = checked(settings)
     assert not found.problems, found.problems
@@ -858,10 +858,10 @@ def test_a_staff_leaderboard_reading_through_a_public_leaderboards_pick_hides_no
         ("r1", 1, Fraction(80)),
         ("r2", 2, Fraction(70)),
     ]
-    # Read with staff's board worked out too, its private read hides the pick.
+    # Read with staff's leaderboard worked out too, its private read hides the pick.
     assert public(found).dropped == ("score",)
     # Once private is listed, a newest submission whose private still waits
-    # is passed over on the public board as on staff's.
+    # is passed over on the public leaderboard as on staff's.
     newest = results_seen(
         2,
         {},
@@ -900,7 +900,7 @@ def test_waiting_is_told_only_to_the_rows_own_entrant_and_staff() -> None:
 def test_the_own_row_and_staff_are_told_how_many_submissions_still_grade() -> None:
     # Plan step 8: a count with no where reads no value, so no cell says
     # a submission waits; the row's count of those still grading does, over
-    # the tasks the board reads.
+    # the tasks the leaderboard reads.
     text = (
         "tasks: [{id: a}, {id: b}]\nleaderboards:\n  s:\n    audience: {who: everyone}\n"
         "    columns:\n      tries: {block: count, over: {results: a}}\n    display: [tries]\n"
@@ -1017,7 +1017,7 @@ def test_top_3_keeps_the_rows_tied_at_3_and_the_viewers_own() -> None:
 
 
 def test_a_public_column_reading_the_gradebook_shows_only_on_the_viewers_own_row() -> None:
-    # Rule 5: a column is shown no wider than the board it reads.
+    # Rule 5: a column is shown no wider than the leaderboard it reads.
     text = GRADEBOOK + (
         "  mine:\n    audience: {who: everyone}\n"
         "    columns:\n      total: {column: [gradebook, total]}\n"
@@ -1035,7 +1035,7 @@ def test_a_public_column_reading_the_gradebook_shows_only_on_the_viewers_own_row
 def test_leaderboards_reading_each_other_read_a_leaderboard_not_read_yet_as_serving_no_row() -> (
     None
 ):
-    # Item 89: neither board can be read first, so the first in the file
+    # Item 89: neither leaderboard can be read first, so the first in the file
     # reads the other's column hidden on every row; the second reads the
     # first once it is read.
     text = (
@@ -1119,11 +1119,11 @@ def test_a_header_names_no_self_reported_value_of_a_task_not_released() -> None:
     assert header(STAFF).self_reported == (("a", "score"), ("b", "reward"))
 
 
-# Each board block
+# Each leaderboard block
 
 
 def test_every_leaderboard_block_has_a_test() -> None:
-    # otherwise is a task value's too (item 128), its board meaning tested
+    # otherwise is a task value's too (item 128), its leaderboard meaning tested
     # in test_otherwise_and_sum_best_and_missing_spreading.
     leaderboard = {
         name
@@ -1316,7 +1316,7 @@ def test_a_missing_pick_stays_missing_through_otherwise_so_an_if_testing_it_is_m
 
 
 def test_otherwise_over_a_value_still_grading_leaves_its_submission_out() -> None:
-    # A task's otherwise waits when its first waits (item 128); on a board
+    # A task's otherwise waits when its first waits (item 128); on a leaderboard
     # the block looking at the submission leaves it out, so it is never
     # both counted and waiting, and the fallback is never taken for it.
     listed = {"a": [sub(1, time=5, attempt=1), sub(2, attempt=2, waiting=("time",))]}
@@ -1365,7 +1365,7 @@ def test_otherwise_over_a_value_held_back_leaves_its_submission_out_and_hides() 
     assert least.number == 5 and least.counted == {("a", 1)}
 
 
-# The board check
+# The leaderboard check
 
 
 def test_the_three_leaderboards_of_simpler_core_10_pass_the_check() -> None:
@@ -1429,7 +1429,7 @@ COUNT = {"block": "count", "over": results("a")}
         # A task's value's blocks.
         ({"c": {"block": "count", "over": {"runs": "all"}}}, {}, "leaderboards.s.columns.c"),
         ({"c": {"block": "entered", "at_least": 0, "at_most": 1}}, {}, "leaderboards.s.columns.c"),
-        # Names shared with a task, a board, or alike once - is _.
+        # Names shared with a task, a leaderboard, or alike once - is _.
         ({"a": COUNT}, {}, "leaderboards.s.columns.a"),
         ({"s": COUNT}, {}, "leaderboards.s.columns.s"),
         ({"b_c": COUNT}, {}, "leaderboards.s.columns.b_c"),

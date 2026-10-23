@@ -1,40 +1,40 @@
-"""The board half of the structural check (SIMPLER-CORE.md 10.1, the
+"""The leaderboard half of the structural check (SIMPLER-CORE.md 10.1, the
 leaderboards note's 5.3 to 5.5 and 6.2): a contest's leaderboards against
 the catalogue, as far as `contest.yaml` alone says. What needs a task's own
 file, such as whether `islands.solved` is one of its values, is checked
-across files (`forge.domain.board_checks`).
+across files (`forge.domain.leaderboard_checks`).
 
-- **Kinds.** Every node is a block the catalogue has in a form a board may
-  use (`Scope`), or a leaf a board reads; each input is given what it
+- **Kinds.** Every node is a block the catalogue has in a form a leaderboard may
+  use (`Scope`), or a leaf a leaderboard reads; each input is given what it
   takes: a number, a task's results (`{results: <task>}`), a submission's
   results, either, or `best_each`'s value and directions. A pick gives a
   submission's results, `otherwise` what both its inputs give, and every
   other block a number.
-- **Names.** The contest's tasks, its board keys and a board's columns are
+- **Names.** The contest's tasks, its leaderboard keys and a leaderboard's columns are
   one set of names, so `a` in `a.b` is always known; two names that read
   the same once each `-` is written `_` are refused too, since formula
   text writes them so.
 - **`t.v`,** `{value: [<task>, <name>]}`, is read only inside a `where`, a
   `by` or a fold's `of` of a block over that task's results, and means the
   submission the innermost such block is looking at.
-- **No loops,** within a board or across boards, and a column read from
-  another board is one that board has.
-- **`sort` and `display`:** each names a column of the board, once, never
+- **No loops,** within a leaderboard or across leaderboards, and a column read from
+  another leaderboard is one that leaderboard has.
+- **`sort` and `display`:** each names a column of the leaderboard, once, never
   a pick column, and every sort key is displayed.
 
-A board whose check finds anything, or that reads a column of such a
-board, is not worked out on read (`BoardsCheck.readable`); the contest's
+A leaderboard whose check finds anything, or that reads a column of such a
+leaderboard, is not worked out on read (`BoardsCheck.readable`); the contest's
 save refuses it first. `BoardsCheck.order` gives every column of the
-readable boards after each column it reads, so they are worked out in one
+readable leaderboards after each column it reads, so they are worked out in one
 pass with no recursion between them. `BoardsCheck.through` gives, for each
 column giving a submission's results, every value and fact any column of
-any board reads through it, which its picks read as well (guarantee 5);
-`BoardsCheck.hiding` gives the same read by the boards a read works out
+any leaderboard reads through it, which its picks read as well (guarantee 5);
+`BoardsCheck.hiding` gives the same read by the leaderboards a read works out
 alone, which hide its picks where held back (stage 5 section 6, item 98).
 
 Each column's tree is at most `MOST_NODES` nodes and `MOST_DEPTH` deep,
-as a task's value is, a board has at most `MOST_COLUMNS` columns, and a
-contest at most `MOST_LEADERBOARDS` boards, since every read of a board
+as a task's value is, a leaderboard has at most `MOST_COLUMNS` columns, and a
+contest at most `MOST_LEADERBOARDS` leaderboards, since every read of a leaderboard
 works out each column for each row.
 """
 
@@ -85,7 +85,7 @@ class ColumnShape:
     or a submission's results, and for the latter which tasks' submissions;
     each task's value or fact it reads directly, through a pick or a
     `best_each` included, by task; the tasks whose results it reads; and
-    the columns it reads, by board.
+    the columns it reads, by leaderboard.
     """
 
     kind: Kind = Kind.NUMBER
@@ -98,12 +98,12 @@ class ColumnShape:
 @dataclass(frozen=True, slots=True)
 class LeaderboardsCheck:
     """Every problem with a contest's leaderboards, each at its path from
-    the top of `contest.yaml`; each column's shape, by board; the boards
+    the top of `contest.yaml`; each column's shape, by leaderboard; the leaderboards
     that are worked out on read; their columns in an order that has each
     after every column it reads; for each column giving a submission's
     results, the values and facts any column reads through it, from any
-    board, which its picks pass over a submission still waiting on
-    (guarantee 5); and the same by the board whose columns read them.
+    leaderboard, which its picks pass over a submission still waiting on
+    (guarantee 5); and the same by the leaderboard whose columns read them.
     """
 
     problems: Found
@@ -114,11 +114,11 @@ class LeaderboardsCheck:
     through_by: Mapping[str, Mapping[ColumnRef, frozenset[str]]] = field(default_factory=dict)
 
     def hiding(self) -> dict[ColumnRef, frozenset[str]]:
-        """What the boards `order` works out read through each column giving
+        """What the leaderboards `order` works out read through each column giving
         a submission's results: a pick is hidden where one of these is held
-        back, so a board not read, staff's among them, hides no pick of a
-        board that is (item 98). Its picks still pass over a submission
-        waiting on anything in `through`, the same on every board."""
+        back, so a leaderboard not read, staff's among them, hides no pick of a
+        leaderboard that is (item 98). Its picks still pass over a submission
+        waiting on anything in `through`, the same on every leaderboard."""
         leaderboards = {leaderboard for leaderboard, _ in self.order}
         found: dict[ColumnRef, set[str]] = {}
         for leaderboard in leaderboards:
@@ -127,18 +127,18 @@ class LeaderboardsCheck:
         return {column: frozenset(names) for column, names in found.items()}
 
     def reads(self, task: str, name: str) -> list[str]:
-        """The boards with a column reading `name` of `task`, directly or
-        through the columns it reads, another board's among them."""
+        """The leaderboards with a column reading `name` of `task`, directly or
+        through the columns it reads, another leaderboard's among them."""
         return self._leaderboards(lambda shape: (task, name) in shape.reads)
 
     def reading(self, task: str) -> list[str]:
-        """The boards with a column reading the results of `task`, directly
-        or through the columns it reads, another board's among them."""
+        """The leaderboards with a column reading the results of `task`, directly
+        or through the columns it reads, another leaderboard's among them."""
         return self._leaderboards(lambda shape: task in shape.tasks)
 
     def needed(self, leaderboards: Collection[str]) -> LeaderboardsCheck:
-        """This, its `order` cut to the columns of `boards` and every column
-        they read, so a read of some boards works out no other."""
+        """This, its `order` cut to the columns of `leaderboards` and every column
+        they read, so a read of some leaderboards works out no other."""
         wanted = {
             (leaderboard, name)
             for leaderboard in leaderboards
@@ -154,7 +154,7 @@ class LeaderboardsCheck:
         return replace(self, order=tuple(each for each in self.order if each in wanted))
 
     def _leaderboards(self, hit: Callable[[ColumnShape], bool]) -> list[str]:
-        """The boards with a column that `hit`s, or reads one that does."""
+        """The leaderboards with a column that `hit`s, or reads one that does."""
         found = {
             (leaderboard, name)
             for leaderboard, columns in self.shapes.items()
@@ -179,8 +179,8 @@ class LeaderboardsCheck:
 
 
 def column_at(leaderboard: str, named: object) -> ColumnRef:
-    """The column a `{column: ...}` leaf of `board` names: one of its own,
-    or `[<board>, <name>]` another's."""
+    """The column a `{column: ...}` leaf of `leaderboard` names: one of its own,
+    or `[<leaderboard>, <name>]` another's."""
     if isinstance(named, list) and len(named) == 2:
         return (str(named[0]), str(named[1]))
     return (leaderboard, str(named))
@@ -194,7 +194,7 @@ def name_in_formula(name: str) -> str:
 def check_leaderboards(
     leaderboards: Mapping[str, Leaderboard], tasks: Sequence[str]
 ) -> LeaderboardsCheck:
-    """Check a contest's `boards`, by key, against its `tasks`, by id."""
+    """Check a contest's `leaderboards`, by key, against its `tasks`, by id."""
     if len(leaderboards) > MOST_LEADERBOARDS:
         return LeaderboardsCheck(
             [
@@ -252,7 +252,7 @@ def column_label(leaderboard: str, column: ColumnRef) -> str:
 
 
 def _contest_names(leaderboards: Mapping[str, Leaderboard], tasks: Sequence[str]) -> Found:
-    """Board keys that read like a task or another key once `-` is `_`."""
+    """Leaderboard keys that read like a task or another key once `-` is `_`."""
     found: Found = []
     seen: dict[str, str] = {}
     for task in tasks:
@@ -820,7 +820,7 @@ def _loops(
 
 
 def _submission_columns(tree: object, leaderboard: str) -> list[ColumnRef]:
-    """The columns a tree of `board` gives the submission of as it is: a
+    """The columns a tree of `leaderboard` gives the submission of as it is: a
     `{column: ...}` leaf, or one among `otherwise`'s inputs, at any depth."""
     if not isinstance(tree, dict):
         return []
@@ -859,7 +859,7 @@ def _through(
 def _readable(
     shapes: Mapping[str, Mapping[str, ColumnShape]], troubled: Collection[str]
 ) -> frozenset[str]:
-    """The boards with no problem that read only such boards' columns."""
+    """The leaderboards with no problem that read only such leaderboards' columns."""
     good = {leaderboard for leaderboard in shapes if leaderboard not in troubled}
     grown = True
     while grown:
@@ -875,7 +875,7 @@ def _readable(
 def _order(
     shapes: Mapping[str, Mapping[str, ColumnShape]], readable: Collection[str]
 ) -> tuple[ColumnRef, ...]:
-    """Every column of the `readable` boards, each after those it reads."""
+    """Every column of the `readable` leaderboards, each after those it reads."""
     reads = {
         (leaderboard, name): shape.columns
         for leaderboard in shapes

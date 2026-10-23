@@ -29,7 +29,7 @@ A run task's regrade is summed up by what it changed, not by a direction
 submission whose number changed, old to new, and each run whose verdict
 changed, so a submission that now fails to compile is told
 (`run_changes`). Its values have no direction (#490): up and down are a
-row's place on a board, which the board's sort says, and each board that
+row's place on a leaderboard, which the leaderboard's sort says, and each leaderboard that
 reads the task gives its rows before and after (`BoardDiff`, from phase
 5.5).
 """
@@ -177,7 +177,7 @@ counted."""
 class CellDiff:
     """One displayed cell of a row, its number before the regrade and
     after, none for missing, and the submissions it left out after as
-    still waiting, as the live board says."""
+    still waiting, as the live leaderboard says."""
 
     column: str
     before: Fraction | None
@@ -191,8 +191,8 @@ class CellDiff:
 
 @dataclass(frozen=True, slots=True)
 class RowDiff:
-    """One row of a board before the regrade and after: who, its name, its
-    place on each side, none on a board with no `sort`, its displayed
+    """One row of a leaderboard before the regrade and after: who, its name, its
+    place on each side, none on a leaderboard with no `sort`, its displayed
     cells, and its submissions the regrade is still grading, whose result
     from before it the after side reads meanwhile, so the row may still
     move."""
@@ -207,7 +207,7 @@ class RowDiff:
 
 @dataclass(frozen=True, slots=True)
 class LeaderboardDiff:
-    """One board that reads a regraded task, as staff read it, every row
+    """One leaderboard that reads a regraded task, as staff read it, every row
     and cell and no hold (stage 5 section 6, items 4 and 71): its key and
     title, its displayed columns' headers as they stand after, the keys it
     sorts by, and each row in its order after the regrade, with its place
@@ -228,7 +228,7 @@ def leaderboard_diff(
     after: LeaderboardView,
     regrading: Mapping[WorkspaceOwner, tuple[Counted, ...]],
 ) -> LeaderboardDiff:
-    """A board worked out before a regrade and after, row by row,
+    """A leaderboard worked out before a regrade and after, row by row,
     `regrading` each row's submissions the regrade is still grading."""
     was = {row.owner: row for row in before.rows}
     rows: list[RowDiff] = []

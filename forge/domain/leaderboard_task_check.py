@@ -1,12 +1,12 @@
 """What a contest's leaderboards ask of `contest.yaml` and of each task they
 read (SIMPLER-CORE.md 10.1, the leaderboards note's 6.2), checked at the
-contest's save and at the save of every task a board reads.
+contest's save and at the save of every task a leaderboard reads.
 
-- **Within `contest.yaml`** (`check_contest`): each board against the
-  catalogue (`forge.domain.blocks.leaderboard_shape_check`), a loop across boards
-  among it; and a task's `marks` given only while a board reads that
+- **Within `contest.yaml`** (`check_contest`): each leaderboard against the
+  catalogue (`forge.domain.blocks.leaderboard_shape_check`), a loop across leaderboards
+  among it; and a task's `marks` given only while a leaderboard reads that
   task's `marked`, since a mark changes nothing else. A row may mark the
-  entry's `marks` submissions of a task, or one when a board reads its
+  entry's `marks` submissions of a task, or one when a leaderboard reads its
   `marked` and the entry gives none (`marks_of`).
 - **The hold** (`hold_problems`): its `from` after the contest's `start`
   and before its `end`, checked again whenever either moves, so neither
@@ -28,16 +28,16 @@ contest's save and at the save of every task a board reads.
   waiting (guarantee 5) is no choice. The contest's save resolves each task
   against its live publication, and against its newest too while a save row
   still checks that one, since it then takes over with no save to check the
-  boards again (`forge.services.boards`). A task with neither is not
-  resolved there; its first save is checked against the boards instead, so
+  leaderboards again (`forge.services.leaderboards`). A task with neither is not
+  resolved there; its first save is checked against the leaderboards instead, so
   every name is resolved by one save or the other. A task graded test by
-  test is not resolved at all: it gives a board no results, so its cells are
+  test is not resolved at all: it gives a leaderboard no results, so its cells are
   missing (stage 5 section 6, item 70), and its format goes with the rest
   of today's path (stage 4 open 132).
 
-Each refusal across files names its board and column and carries its path
+Each refusal across files names its leaderboard and column and carries its path
 from the top of `contest.yaml`, so the editor can point at it, and the
-words a task's save says when the task would break the board (`Across`).
+words a task's save says when the task would break the leaderboard (`Across`).
 Nothing is stored from the checks.
 """
 
@@ -70,7 +70,7 @@ from forge.domain.yaml_models import Path
 
 @dataclass(frozen=True, slots=True)
 class Scored:
-    """A task scored by its runs as a board's names resolve against it: its
+    """A task scored by its runs as a leaderboard's names resolve against it: its
     values' trees in one publication of it, by name."""
 
     values: Mapping[str, object]
@@ -78,10 +78,10 @@ class Scored:
 
 @dataclass(frozen=True, slots=True)
 class Across:
-    """One refusal across files: the board and column it is in, by key and
+    """One refusal across files: the leaderboard and column it is in, by key and
     name; its path from the top of `contest.yaml`; the task, and the value
     of it, it is about; what the contest's save says; and what the task's
-    save says, when it is the task that would break the board."""
+    save says, when it is the task that would break the leaderboard."""
 
     leaderboard: str
     column: str
@@ -93,16 +93,16 @@ class Across:
 
 
 def leaderboards_of(settings: ContestDefinition) -> LeaderboardsCheck:
-    """The contest's boards checked, as they are read."""
+    """The contest's leaderboards checked, as they are read."""
     return check_leaderboards(settings.leaderboards, [task.id for task in settings.tasks])
 
 
 def check_contest(
     settings: ContestDefinition, tasks: Mapping[str, Scored] | None = None
 ) -> tuple[Found, LeaderboardsCheck]:
-    """Every problem with the contest's boards, each at its path, and a
-    task's `marks` that no board reads; with `tasks`, each refusal across
-    files against them (`across`); and the boards as checked."""
+    """Every problem with the contest's leaderboards, each at its path, and a
+    task's `marks` that no leaderboard reads; with `tasks`, each refusal across
+    files against them (`across`); and the leaderboards as checked."""
     checked = leaderboards_of(settings)
     found = list(checked.problems)
     for index, entry in enumerate(settings.tasks):
@@ -165,7 +165,7 @@ def hold_problems(
 def across(
     settings: ContestDefinition, checked: LeaderboardsCheck, tasks: Mapping[str, Scored]
 ) -> list[Across]:
-    """Each refusal across files of the boards whose own check found
+    """Each refusal across files of the leaderboards whose own check found
     nothing, against `tasks`, by name; a task not among them is not
     resolved."""
     marked = {name: using(scored.values, ENTERED) for name, scored in tasks.items()}
@@ -441,7 +441,7 @@ def _values_of(values: Mapping[str, object]) -> str:
 
 
 def marks_of(settings: ContestDefinition, entry: ContestTask) -> int | None:
-    """How many submissions a row may mark: the entry's, or 1 when a board
+    """How many submissions a row may mark: the entry's, or 1 when a leaderboard
     reads the task's `marked`, or none."""
     if entry.marks is not None:
         return entry.marks

@@ -29,7 +29,7 @@ what changed, by the tests' verdicts alone.
   on read as every value is, the earlier attempt under the publication
   it counted under then, a bounded few and the rest counted; how many
   are still running, and how many it cannot compare; and, for a
-  manager or admin of the contest alone, each board that reads the task
+  manager or admin of the contest alone, each leaderboard that reads the task
   before and after (`BoardDiff`, from phase 5.5).
 
 Each reads where an attempt stands as every read does, so a failure it
@@ -145,7 +145,7 @@ class RunSummary:
     are still running, how many ended with no result, and how many it
     cannot compare since the publication their result counted under no
     longer reads; the first `CHANGED_SHOWN` submissions it changed, and
-    how many more it did; and each board that reads the task before and
+    how many more it did; and each leaderboard that reads the task before and
     after, none for an organiser who does not manage the contest."""
 
     id: uuid.UUID
@@ -325,8 +325,8 @@ async def run_summary(
     of those changed. Both are worked out on read, every value as
     organisers read it, the extensions and marks as they stand now on both
     sides, so nothing is stored (stage 5 section 6 items 1 and 67). The
-    late rows and marks of every submission are read in one go. The boards that
-    read the task are a contest manager's or admin's alone, since a board
+    late rows and marks of every submission are read in one go. The leaderboards that
+    read the task are a contest manager's or admin's alone, since a leaderboard
     diff shows every cell. `Forbidden` below a manager of the task,
     `NotFound` for a regrade of another task, or none, and for a task
     graded test by test or whose publication does not read.
@@ -478,12 +478,12 @@ async def _leaderboard_diffs(
     now: entrant_view.PublishedTask,
     regrading: Mapping[WorkspaceOwner, tuple[Counted, ...]],
 ) -> tuple[LeaderboardDiff, ...]:
-    """Each board that reads the regrade's task, directly or through
-    another board's column, worked out for staff before the regrade and
-    after (`boards.regrade_sides`), in the file's order: `then` the task as
+    """Each leaderboard that reads the regrade's task, directly or through
+    another leaderboard's column, worked out for staff before the regrade and
+    after (`leaderboards.regrade_sides`), in the file's order: `then` the task as
     it scored before, `now` as the regrade grades it, and `regrading` each
     row's submissions the regrade is still grading. When `then` no longer
-    reads, each board is given `unread`, with no rows, as the summary
+    reads, each leaderboard is given `unread`, with no rows, as the summary
     counts its submissions (stage 5 section 6, item 71)."""
     checked = leaderboards_of(settings)
     keys = [key for key in checked.reading(now.name) if key in checked.readable]

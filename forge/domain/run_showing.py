@@ -22,9 +22,9 @@ section 6, item 134).
   every run it waits on is early, or shown; otherwise it is left out until
   they are. Each carries whether it reads, directly or through others, a
   column the entrant could set (#504). A value reading an entered mark is
-  worked out by the caller as if no mark were entered until a board cell
+  worked out by the caller as if no mark were entered until a leaderboard cell
   shown to the entrant counted the submission, and never when none did
-  (`forge.domain.boards.entries_open`, SIMPLER-CORE.md 14), so it reads
+  (`forge.domain.leaderboards.entries_open`, SIMPLER-CORE.md 14), so it reads
   then as on a submission with no mark.
 - **A group** listed shows its runs that a row holds: each with the
   group's name and its place in the group from 1 ("Test 3"), never its id,

@@ -7,7 +7,7 @@ YAML path it is at.
 
 What each file says of itself is checked here: a contest's times in order,
 each task entry's timeline in order (C1, the part that needs no task), each
-board's own rules (C3); a task's test groups, their rule weights, test
+leaderboard's own rules (C3); a task's test groups, their rule weights, test
 weights and `show` words, and its `credit` (T1, T2 and T6, and the parts of
 T3 that need no workflow), kept until today's format goes (stage 4 open
 132), though since stage 5 its rule weights and `credit` score nothing

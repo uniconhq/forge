@@ -602,7 +602,7 @@ class EntrantChanged(ServiceError):
 
 
 class MarksOff(ServiceError):
-    """No board reads which of the task's submissions an entrant marks, so it
+    """No leaderboard reads which of the task's submissions an entrant marks, so it
     takes no marks."""
 
     code = "marks_off"

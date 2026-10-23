@@ -23,7 +23,7 @@ def _rows(value: object) -> Literal["all", "own"] | int:
 
 
 class LeaderboardAudience(Model):
-    """Who reads a board (SIMPLER-CORE.md 10.2 rule 9): `who`, staff,
+    """Who reads a leaderboard (SIMPLER-CORE.md 10.2 rule 9): `who`, staff,
     entrants or everyone, and which `rows` they are given: every row, each
     entrant's own, or a number of top rows, those tied with the last and
     the viewer's own added.
@@ -89,11 +89,11 @@ def _shown(value: object) -> tuple[str, int | None]:
 
 
 class Leaderboard(Model):
-    """One board (SIMPLER-CORE.md 10, the leaderboards note's 5.10): its
+    """One leaderboard (SIMPLER-CORE.md 10, the leaderboards note's 5.10): its
     `title`, the key when left out; who reads it, staff alone when left
     out; its `columns`, each a tree of blocks, checked against the
     catalogue and the tasks they read at the contest's save and at a
-    task's (`forge.domain.board_checks`); the
+    task's (`forge.domain.leaderboard_checks`); the
     columns it `sort`s by, in turn, each `desc` or `asc`; and those it
     `display`s, in order, each with how many decimal `places` it is shown
     to, a column's number itself kept exact.

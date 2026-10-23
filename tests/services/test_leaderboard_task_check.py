@@ -1,14 +1,14 @@
 """The checks across files (stage 5, phase 5.7; the leaderboards note's
-6.2): a save of the contest's settings refuses a board reading a value a
+6.2): a save of the contest's settings refuses a leaderboard reading a value a
 task's live publication does not give, choosing which submission counts by
 a value reading a mark, or giving `best_each` a value it cannot work out
-again, each at its path, as it refuses a loop across boards and a pick
+again, each at its path, as it refuses a loop across leaderboards and a pick
 column sorted by; a task with no live publication yet is checked at its
-first save instead; a task's save refuses dropping a value a board reads,
-or making one a board chooses by read a mark, naming the board and the
+first save instead; a task's save refuses dropping a value a leaderboard reads,
+or making one a leaderboard chooses by read a mark, naming the leaderboard and the
 column; a save of the contest made while a task's newest save is still
 being checked is checked against that one too, since it takes over with no
-save to check the boards again; and the hold's `from` stays inside the
+save to check the leaderboards again; and the hold's `from` stays inside the
 contest, a save moving the end before it refused, and is never set to a
 time passed.
 """
@@ -156,7 +156,7 @@ def _column(tree: str, sort: str = "") -> str:
             ),
             "leaderboards.s.columns.c.directions",
         ),
-        # A loop across boards, and a pick column sorted by.
+        # A loop across leaderboards, and a pick column sorted by.
         (
             "leaderboards:\n  s: {columns: {c: {column: [t, d]}}}\n"
             "  t: {columns: {d: {column: [s, c]}}}\n",

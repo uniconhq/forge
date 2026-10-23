@@ -1,7 +1,7 @@
 """The two definition files, `contest.yaml` and `task.yaml`: the format's own
 examples and the starters validate, every key the format no longer has is
 refused at that key with the sentence that says what replaced it, the checks
-each file makes of itself (a task entry's timeline, C1; a board's rules, C3;
+each file makes of itself (a task entry's timeline, C1; a leaderboard's rules, C3;
 a test group's rule weights, test weights and `show`, T1, T2 and T6; credit
 on a task that gives no points, T3) refuse at the path that is wrong, and a
 save names the admin-only keys it changes.

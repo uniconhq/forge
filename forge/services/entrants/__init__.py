@@ -3,7 +3,7 @@ it together (`forge.domain.entrants` and `forge.domain.registration` hold the
 rules). An entrant is an `entrants` row, with a row in `entrant_members` for
 each time someone was in it; nothing about it is a forge role. Its
 registration, the organisers' decision on it, its extension, its workspace
-and its row on a board are the entrant's, never a member's.
+and its row on a leaderboard are the entrant's, never a member's.
 
 A contestant's actions each need a session, and are refused once the contest
 has ended or is archived, since an entrant stands as it is from then on:

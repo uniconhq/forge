@@ -8,7 +8,7 @@ only a rational that is no finite decimal, such as 1/3.
 
 A decimal written with an exponent past `MOST_EXPONENT` is no number:
 `1e2000000` is nine characters an entrant can report, and its rational a
-whole number of two million digits, which every read of a board would
+whole number of two million digits, which every read of a leaderboard would
 build again. A long number written out digit by digit costs only as much
 as its text, so it is read.
 """

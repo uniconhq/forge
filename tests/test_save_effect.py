@@ -81,7 +81,7 @@ def test_a_save_that_changes_nothing_says_so_in_each_part() -> None:
 
 
 def test_a_classic_tasks_points_credit_and_weights_move_no_result() -> None:
-    # A task graded test by test gives a board nothing and scores nothing
+    # A task graded test by test gives a leaderboard nothing and scores nothing
     # (stage 5 section 6, item 123): only when a group shows is said.
     effect = _effect(
         _task(

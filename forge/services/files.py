@@ -14,10 +14,10 @@ moved since is `Conflict`, with nothing written. A write to a contest's
 or when it moves a task's timeline behind what rows already did, or opens
 the contest while a task it lists is not published or its statement is not
 written (`timelines.check_contest`),
-or when a board breaks the board check, reads what a task it reads does not
+or when a leaderboard breaks the leaderboard check, reads what a task it reads does not
 give, or chooses by a mark, the hold's `from` leaves the contest or is set
 to a time passed, or a task's marks fall below what a row holds
-(`boards.check_contest`), and a manager's change to one of its
+(`leaderboards.check_contest`), and a manager's change to one of its
 admin-only keys is refused naming each. One that is written answers with
 what the check notes beside the version (`Written`). A
 write to a task is a save of the task, which publishes it when it is valid
@@ -80,8 +80,8 @@ NO_SUCH_VERSION = "The task has no such version."
 @dataclass(frozen=True, slots=True)
 class Written:
     """A contest's file written: the version the change made, and, for
-    `contest.yaml`, each board's notes on the tasks it covers, such as one
-    that counts nothing from a task; the organisers' reading of the boards
+    `contest.yaml`, each leaderboard's notes on the tasks it covers, such as one
+    that counts nothing from a task; the organisers' reading of the leaderboards
     carries the same notes beside each.
     """
 
@@ -240,7 +240,7 @@ async def write(
 ) -> Written | Published | Draft:
     """Write one file, `expected` being the token it was read with or none
     for a new file. A contest's file comes back as the version written, with
-    its boards' notes; a task's as the save's publication or draft,
+    its leaderboards' notes; a task's as the save's publication or draft,
     `confirm`, `asked` and `keep_as_draft` doing what they do for a save.
     """
     scope = scope_of_place(place)

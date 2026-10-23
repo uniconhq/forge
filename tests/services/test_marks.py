@@ -164,7 +164,7 @@ async def _graded(setup: Setup, number: int, result: dict[str, Any]) -> None:
 
 @pytest.fixture
 async def ranked(setup: Setup, acme: Acme, entered: Entered, clock: FakeClock) -> Entered:
-    """bob's two graded submissions to sum, under the board: the first,
+    """bob's two graded submissions to sum, under the leaderboard: the first,
     at 12:00, passes main and small; the second, at 12:01, everything.
     """
     await write_contest(acme.fake, contest(LEADERBOARDS))

@@ -122,8 +122,8 @@ def without_entry(content: bytes, task: str) -> bytes | None:
     it has no entry. A list left empty is written `tasks: []`.
     `InvalidDefinition` when the file is not a valid `contest.yaml`, or
     would not be without the entry; `Unlisted` when the entry's lines
-    cannot be told apart. A board reading the task is refused by the
-    caller, which checks the boards (`forge.services.taking_out`).
+    cannot be told apart. A leaderboard reading the task is refused by the
+    caller, which checks the leaderboards (`forge.services.taking_out`).
     """
     contest = parse_contest(content)
     index = _index(contest.tasks, task)

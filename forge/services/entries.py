@@ -18,21 +18,21 @@ again never takes back its old marks.
 the task and above, who read it and nothing more: entering a mark from it
 stays a manager's or admin's. For each row once the task has closed for
 it, its extension included, it lists the row's submissions to the task
-that a cell of any leaderboard counted, as staff read every board, every
-row and no hold (`boards.read`), each with the boards and columns that
+that a cell of any leaderboard counted, as staff read every leaderboard, every
+row and no hold (`leaderboards.read`), each with the leaderboards and columns that
 counted it and the mark of each `entered` value, or none while missing.
 It is worked out from what each cell counted on every read; no task
-names a board. A row with nothing counted is left out. A caller with no
+names a leaderboard. A row with nothing counted is left out. A caller with no
 role at the contest, an observer of the task alone, is listed only the
 cells reading this task and no other (`alone`), since which submission a
 cell reading another task counted can tell of that task's values; and
-the read starts no retry of a failure it finds, which only staff's board
+the read starts no retry of a failure it finds, which only staff's leaderboard
 read does (stage 5 section 6, items 100 and 119).
 
-**When an entry shows.** A mark reaches an entrant only once a board
+**When an entry shows.** A mark reaches an entrant only once a leaderboard
 cell shown to them counted the submission, and `show` lists the value
 then, before the reveal or after it; one no shown cell counted never
-does (`forge.domain.boards.entries_open`, which the submission's page
+does (`forge.domain.leaderboards.entries_open`, which the submission's page
 reads). Until then the submission's values are worked out as if no mark
 were entered, so it reads as one with none. So a mark appearing on one
 submission, or held back from it, never tells its entrant which
@@ -92,7 +92,7 @@ class Entered:
 
 @dataclass(frozen=True, slots=True)
 class Queued:
-    """A submission a row's cells counted: its number, the board and column
+    """A submission a row's cells counted: its number, the leaderboard and column
     of each cell that counted it, and each `entered` value of the task with
     its mark, none while missing, in the task's order."""
 
@@ -116,7 +116,7 @@ class QueueRow:
 async def queue(ctx: Context, organiser: Organiser, task: TaskId) -> tuple[QueueRow, ...]:
     """The grading queue of the task (#505): each row the task has closed
     for, its extension included, by name, with the submissions to it that
-    a cell of any of the contest's boards counted, as staff read them, each
+    a cell of any of the contest's leaderboards counted, as staff read them, each
     with the marks of the task's `entered` values; for a caller with no
     role at the contest, only the cells reading this task alone. Needs the
     observer role at the task. `NotFound` for a task with no publication,

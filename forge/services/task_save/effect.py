@@ -22,7 +22,7 @@ async def _report(
 ) -> list[str]:
     """The note beside what the save's effect says: the task's reveal in words
     when it hides anything (a group not shown at once, or a sealed step).
-    The scoring changes, and the boards the save moves, are the effect's.
+    The scoring changes, and the leaderboards the save moves, are the effect's.
     """
     contest = await _contest(ctx, task)
     name = (await names.names_of(ctx, [task])).get(task)

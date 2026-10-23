@@ -10,7 +10,7 @@ manager's key.
   does, an invite to one of its roles still waiting is withdrawn, and each
   entrant's place to submit it goes with any upload waiting there. A
   leaderboard with a column reading its results refuses it
-  (`take_out_refused`): taking it out of the board is the organisers' call.
+  (`take_out_refused`): taking it out of the leaderboard is the organisers' call.
 - **Withdrawn**, once anyone has: its entry stays, marked `withdrawn: true`,
   so it keeps its place and its letter, and every reader of the contest's
   tasks skips it for entrants (`forge.domain.release`): they no longer see
@@ -96,7 +96,7 @@ def take_out_of(submissions: int) -> TakeOut:
 
 @dataclass(frozen=True, slots=True)
 class PutBack:
-    """A withdrawn task put back: what each board reports of its tasks now,
+    """A withdrawn task put back: what each leaderboard reports of its tasks now,
     as a save of the contest's settings reports it.
     """
 

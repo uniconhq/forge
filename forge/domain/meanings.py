@@ -5,7 +5,7 @@ which way is better, so a page can say "Run time (ms), the longest".
 
 The words are frozen with a publication, in its note beside what each
 per-test number means, in the order the workflow reports the values, so a
-result, a board or a form never reads the workflow again. A publication
+result, a leaderboard or a form never reads the workflow again. A publication
 made before they were frozen lists its per-test numbers by name alone, and
 a page names each by its key.
 

@@ -44,8 +44,8 @@ steps in order, and refuses before anything is written.
    not listed later or dropped; and the task keeps
    every value a leaderboard of its contest reads, by its name, and gives
    no column a reason to be refused across files, such as a value a pick
-   chooses by now reading a mark (`board_checks.across`), each problem
-   naming the board and the column.
+   chooses by now reading a mark (`leaderboard_checks.across`), each problem
+   naming the leaderboard and the column.
 3. What the save changes about how the task grades is worked out against
    the latest publication: its plan and the digests of the task's files the
    plan names. Groups, rule weights, `show`, `credit` and `submissions` are
@@ -60,7 +60,7 @@ steps in order, and refuses before anything is written.
    the changes to how it grades, how many submissions it would grade again,
    counted as the regrade (6) chooses them, and what the save does
    (`domain.save_effect`): whether anyone's result changes, what runs
-   again, each scoring change, old and new, with the boards counted again,
+   again, each scoring change, old and new, with the leaderboards counted again,
    and what entrants read that changes. A save of a run task asks before it
    publishes, whether or not the contest runs, when a column the entrant
    could set is new or set through other inputs than under the latest
@@ -75,7 +75,7 @@ steps in order, and refuses before anything is written.
    workflow each workflow name was, what the task's sealed steps hold back
    until its reveal, and what each value it reports means. The save answers
    with what it did, in the same words a running contest asks with (M66):
-   each scoring change, and the boards reading a value it moves or, on a
+   each scoring change, and the leaderboards reading a value it moves or, on a
    first publication, reading the task; and notes the
    task's reveal. When another
    save landed between the check and the write, the change holds files this

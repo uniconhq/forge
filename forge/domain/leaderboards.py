@@ -1,13 +1,13 @@
 """A leaderboard as one viewer reads it (SIMPLER-CORE.md 10.2, the
 leaderboards note's 5.1, 5.7 and 6.3): its columns' headers and its rows,
 each row's cells worked out from its own results
-(`forge.domain.blocks.board_evaluate`), hidden where the viewer may not see
+(`forge.domain.blocks.leaderboard_evaluate`), hidden where the viewer may not see
 what they read, ranked by the keys the viewer is shown, and cut to the
-board's audience, never stored.
+leaderboard's audience, never stored.
 
 - **Who reads.** Staff, an observer of the contest or above, read every
-  board, every row and every cell at once, with no hold. Anyone else reads
-  a board whose `who` lets them (`sees`): `everyone`, anyone the contest
+  leaderboard, every row and every cell at once, with no hold. Anyone else reads
+  a leaderboard whose `who` lets them (`sees`): `everyone`, anyone the contest
   shows itself to; `entrants`, the members of an approved entrant;
   `staff`, nobody else.
 - **What a row holds for a viewer** (`results_seen`, `grading_seen`): each
@@ -25,8 +25,8 @@ board's audience, never stored.
   submission than the entrant's own row does, and its mark would tell
   what a cell hidden from the entrant chose (stage 5 section 6, item 117).
 - **A cell is hidden** when it read anything held back (guarantee 2), and
-  when it reads another board's column, directly or through others, on a
-  row that board does not serve the viewer (rule 5), so `rows: own` and
+  when it reads another leaderboard's column, directly or through others, on a
+  row that leaderboard does not serve the viewer (rule 5), so `rows: own` and
   staff's carry through. A hidden cell gives no number.
 - **A column is not listed** for anyone but staff when it reads results
   and every task it reads, directly or through other columns, is withdrawn
@@ -37,7 +37,7 @@ board's audience, never stored.
   every key share a place, 1, 1, 3 (guarantee 7), and are listed by name. A
   sort key hidden on a row served, or not listed, is dropped for that
   viewer: the rows are sorted by the rest and given no places (rule 4). A
-  board with no `sort`, or one showing anyone but staff only their own row,
+  leaderboard with no `sort`, or one showing anyone but staff only their own row,
   gives no places, since a place among rows not served would tell of them.
 - **The audience cut:** `rows: own` keeps the viewer's own row; a number
   keeps that many from the top, those tied with the last on the keys left,
@@ -83,7 +83,7 @@ from forge.domain.run_showing import ValueShown
 
 @dataclass(frozen=True, slots=True)
 class Header:
-    """A listed column: its name, its decimal places, none when the board
+    """A listed column: its name, its decimal places, none when the leaderboard
     gives none, its least and most, both none unless both are known, and
     each self-reported value it reads, by task."""
 
@@ -124,7 +124,7 @@ class LeaderboardViewRow:
     submissions the hold keeps from the viewer, whether what each cell
     counted and left out is told, on the viewer's own row and to staff,
     and, told as that is, 0 otherwise, how many of its submissions to the
-    tasks the board reads still grade."""
+    tasks the leaderboard reads still grade."""
 
     owner: WorkspaceOwner
     name: str
@@ -157,7 +157,7 @@ class LeaderboardView:
 
 @dataclass(frozen=True, slots=True)
 class Viewer:
-    """Who reads a board: staff, or anyone else, with the row of the
+    """Who reads a leaderboard: staff, or anyone else, with the row of the
     approved entrant they are in, none when they are in none."""
 
     staff: bool = False
@@ -169,7 +169,7 @@ STAFF = Viewer(staff=True)
 
 @dataclass(frozen=True, slots=True)
 class Loaded:
-    """One submission of a row as a board loads it: when it was made, and
+    """One submission of a row as a leaderboard loads it: when it was made, and
     its results as the viewer reads them before the hold."""
 
     made: datetime
@@ -179,7 +179,7 @@ class Loaded:
 @dataclass(frozen=True, slots=True)
 class Row:
     """One entrant's row for a viewer: who, its name, every column of the
-    boards read worked out for it, and how many of its submissions to each
+    leaderboards read worked out for it, and how many of its submissions to each
     task the hold keeps from the viewer and how many still grade."""
 
     owner: WorkspaceOwner
@@ -190,7 +190,7 @@ class Row:
 
 
 def sees(leaderboard: Leaderboard, viewer: Viewer) -> bool:
-    """Whether the viewer reads the board at all (rule 9)."""
+    """Whether the viewer reads the leaderboard at all (rule 9)."""
     who = leaderboard.audience.who
     return viewer.staff or who == "everyone" or (who == "entrants" and viewer.own is not None)
 
@@ -236,7 +236,7 @@ def still_grading(lists: Mapping[str, Sequence[Submitted]]) -> dict[str, int]:
 
 def listed_now(scoring: Scoring, times: Collection[str]) -> tuple[frozenset[str], bool]:
     """What `show` lists of a task at the `times` that have come, as anyone
-    but staff may read it on a board: its values, one reading an entered
+    but staff may read it on a leaderboard: its values, one reading an entered
     mark among them, since a cell reads a mark only on a submission it
     counted (item 117), and whether it lists `compiled`, or a group, which
     shows `compiled` with its runs (items 82 and 124)."""
@@ -270,9 +270,9 @@ def seen_bounds(
 def counted_in(
     found: Sequence[LeaderboardView], task: str, cells: Collection[ColumnRef] | None = None
 ) -> dict[WorkspaceOwner, dict[int, tuple[tuple[str, str], ...]]]:
-    """Each row's submissions to `task` that a cell of the boards `found`
-    counted, by number, each with the board and column of every cell that
-    counted it, in the boards' order: what each cell is told counting, so
+    """Each row's submissions to `task` that a cell of the leaderboards `found`
+    counted, by number, each with the leaderboard and column of every cell that
+    counted it, in the leaderboards' order: what each cell is told counting, so
     a hidden cell, and a row whose counts are not told, count nothing;
     with `cells`, only those cells count."""
     counted: dict[WorkspaceOwner, dict[int, tuple[tuple[str, str], ...]]] = {}
@@ -363,7 +363,7 @@ def headers_of(
     bounds: Mapping[tuple[str, str], Bounds],
     reported: Mapping[tuple[str, str], tuple[tuple[str, str], ...]],
 ) -> tuple[Header, ...]:
-    """The headers of `board`'s displayed columns, in order."""
+    """The headers of `leaderboard`'s displayed columns, in order."""
     found: list[Header] = []
     for name, places in leaderboard.display:
         held = bounds.get((key, name))
@@ -383,11 +383,11 @@ def read_leaderboards(
     headers: Mapping[str, tuple[Header, ...]],
     held_from: datetime | None = None,
 ) -> tuple[LeaderboardView, ...]:
-    """The boards `wanted` as `viewer` reads them, in that order: `rows`
+    """The leaderboards `wanted` as `viewer` reads them, in that order: `rows`
     every row with every column the check orders worked out for this
     viewer, `released` the tasks released and not withdrawn, `headers` each
-    board's displayed columns', and `held_from` when the hold holds other
-    rows from. A board the viewer does not see is left out. The boards a
+    leaderboard's displayed columns', and `held_from` when the hold holds other
+    rows from. A leaderboard the viewer does not see is left out. The leaderboards a
     wanted one reads are read first, so what each serves the viewer bounds
     the columns reading it (rule 5)."""
     tasks, others = _what_columns_read(checked)
@@ -405,7 +405,7 @@ def read_leaderboards(
 
 
 class _Read:
-    """One board read by one viewer."""
+    """One leaderboard read by one viewer."""
 
     def __init__(
         self,
@@ -550,7 +550,7 @@ def _what_columns_read(
     checked: LeaderboardsCheck,
 ) -> tuple[dict[ColumnRef, frozenset[str]], dict[ColumnRef, frozenset[str]]]:
     """For each column the check orders, every task whose results it reads
-    and every other board whose column it reads, directly or through the
+    and every other leaderboard whose column it reads, directly or through the
     columns it reads. The order has each column after those it reads, so
     one pass gathers both."""
     tasks: dict[ColumnRef, frozenset[str]] = {}
@@ -570,9 +570,9 @@ def _what_columns_read(
 
 
 def leaderboards_read(checked: LeaderboardsCheck, wanted: Collection[str]) -> list[str]:
-    """`wanted` and every board a column of theirs reads, directly or
-    through other boards, in the file's order: each read whole, since what
-    a board serves a viewer bounds a column reading it (rule 5)."""
+    """`wanted` and every leaderboard a column of theirs reads, directly or
+    through other leaderboards, in the file's order: each read whole, since what
+    a leaderboard serves a viewer bounds a column reading it (rule 5)."""
     found = set(wanted)
     waiting = list(wanted)
     while waiting:
@@ -586,9 +586,9 @@ def leaderboards_read(checked: LeaderboardsCheck, wanted: Collection[str]) -> li
 
 
 def _leaderboard_order(checked: LeaderboardsCheck) -> list[str]:
-    """The boards the check orders, each after the boards its columns read,
+    """The leaderboards the check orders, each after the leaderboards its columns read,
     those reading each other last in the file's order: a column reading a
-    board not read yet is hidden from anyone but staff, which errs towards
+    leaderboard not read yet is hidden from anyone but staff, which errs towards
     hiding."""
     leaderboards = list(dict.fromkeys(leaderboard for leaderboard, _ in checked.order))
     reads = {

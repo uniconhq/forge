@@ -276,7 +276,7 @@ async def test_a_task_with_a_submission_is_withdrawn_and_hidden_from_entrants_un
 async def test_a_task_is_put_back_in_a_contest_stored_with_old_leaderboards(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    """A read ignores boards in the old list form, which a save refuses, so
+    """A read ignores leaderboards in the old list form, which a save refuses, so
     withdrawing and putting back each leave them as they are."""
     old = "leaderboards:\n  - {title: Standings, who: everyone}\n"
     await three(setup, acme, old)

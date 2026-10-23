@@ -1,4 +1,4 @@
-"""Which of a submission's attempts a board reads, by one rule: the latest
+"""Which of a submission's attempts a leaderboard reads, by one rule: the latest
 that finished with a result, until a newer attempt finishes with one, so a
 regrade in progress, a system error and a staff cancel never take a result
 away; with none, still grading while the latest attempt is queued, running
