@@ -13,7 +13,8 @@ Bounds are carried where every part has one and are none otherwise:
   a division whose divisor's bounds hold 0 has none;
 - a fold over a group by its number of runs and their weights, and a fold
   over a task's results by the task's `submissions.max`, none without
-  one; a `where`, or a `missing: skip`, may leave out all but one;
+  one, a `missing` number widening them; a `where`, or a `missing: skip`,
+  may leave out all but one;
 - a pick's value is the value's bounds, `best_each` its value's, and `if`
   and `otherwise` the widest of their branches; `sum_best` the sum of the
   `k` greatest least and most bounds.
@@ -330,6 +331,9 @@ class _ColumnBounds:
             if block.name == "count":
                 return (Fraction(0), Fraction(most)) if most is not None else None
             each = self.node(tree.get("of"), inner)
+            instead = exact(tree.get("missing"))
+            if instead is not None:
+                each = widest(each, (instead, instead))
             if block.name == "sum":
                 if most is None:
                     return None

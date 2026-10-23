@@ -42,11 +42,13 @@ board's audience, never stored.
 - **The audience cut:** `rows: own` keeps the viewer's own row; a number
   keeps that many from the top, those tied with the last on the keys left,
   and the viewer's own.
-- **A cell answered** is the column's number, missing as none, whether it
-  is hidden, and, on the viewer's own row and for staff, the submissions it
-  counted and those it left out as still waiting, each by task and number
-  (guarantee 6); a row answers how many of its submissions are held, and,
-  told as that is, how many still grade (`still_grading`).
+- **A cell answered** is the column's number, missing as none, and, on
+  the viewer's own row and for staff, whether it is hidden, the
+  submissions it counted and those it left out as still waiting, each by
+  task and number (guarantee 6), so on another row a cell with no number
+  reads the same whether it is hidden, waiting or missing (item 127); a
+  row answers how many of its submissions are held, and, told as that
+  is, how many still grade (`still_grading`).
 - **What the cells counted** of a task, row by row (`counted_in`), is
   what the grading queue lists, and says when a mark entered for a
   submission reaches its entrant (`entries_open`): once a cell shown to
@@ -106,8 +108,10 @@ class Counted:
 @dataclass(frozen=True, slots=True)
 class BoardCell:
     """One listed column of a row: its number, none when missing or hidden;
-    whether it is hidden from the viewer; the submissions it counted; and
-    those it left out as still waiting, both empty unless told."""
+    whether it is hidden from the viewer, told as its counts are, so a
+    cell with no number on another row says no more; the submissions it
+    counted; and those it left out as still waiting, both empty unless
+    told."""
 
     column: str
     number: Fraction | None
@@ -520,7 +524,10 @@ class _Read:
         for name in self.listed:
             cell = row.cells[(self.key, name)]
             if self.hidden(row, name):
-                cells.append(BoardCell(name, None, hidden=True))
+                # Why a cell has no number is told only where its counts
+                # are, so on another row hidden, waiting and missing read
+                # alike (item 127).
+                cells.append(BoardCell(name, None, hidden=told))
                 continue
             cells.append(
                 BoardCell(

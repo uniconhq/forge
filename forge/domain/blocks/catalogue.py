@@ -47,6 +47,12 @@ A board's column reads, besides numbers (the leaderboards note's 5.10):
   [<board>, <name>]}`, a column of another board's;
 - `{name: <value>}`, the value `best_each` works out again.
 
+A pick, a fold over a task's results and `best_each` take `missing`, as
+a fold over runs does: `skip` leaves out a submission whose `where`,
+`by`, `of` or value read is missing, and a number counts that input as
+the number; with none, such a submission makes the block missing (stage
+5 section 6, item 127).
+
 A pick (`first`, `latest`, `highest`, `lowest`) gives one submission's
 results, or none; `otherwise` gives what it is given, a number or a
 submission's results; every other block gives a number. `if`'s test may
@@ -233,6 +239,7 @@ def _fold(*, of: bool, weights: bool) -> Form:
 
 
 _WHERE = BlockInput(Kind.NUMBER, optional=True, per_run=True)
+_MISSING = BlockInput(Kind.MISSING, optional=True)
 
 
 def _over_results(*, of: bool) -> Form:
@@ -242,6 +249,7 @@ def _over_results(*, of: bool) -> Form:
     if of:
         inputs["of"] = BlockInput(Kind.NUMBER, per_run=True)
     inputs["where"] = _WHERE
+    inputs["missing"] = _MISSING
     return Form(RESULTS, inputs, Scope.BOARD)
 
 
@@ -250,6 +258,7 @@ def _pick(name: str, words: str, *, by: bool) -> Block:
     if by:
         inputs["by"] = BlockInput(Kind.NUMBER, per_run=True)
     inputs["where"] = _WHERE
+    inputs["missing"] = _MISSING
     return Block(name, words, (Form(RESULTS, inputs, Scope.BOARD, Kind.SUBMISSION),))
 
 
@@ -328,6 +337,7 @@ CATALOGUE: Mapping[str, Block] = {
                         "from": BlockInput(Kind.RESULTS),
                         "value": BlockInput(Kind.NAME),
                         "directions": BlockInput(Kind.DIRECTIONS),
+                        "missing": _MISSING,
                     },
                     Scope.BOARD,
                 ),

@@ -46,6 +46,7 @@ from forge.domain.blocks.catalogue import (
     DESC,
     FACTS,
     PICKS,
+    SKIP,
     BlockInput,
     Kind,
     Scope,
@@ -472,6 +473,14 @@ class _Checker:
                 return None
             case Kind.DIRECTIONS:
                 self._directions(at, node)
+                return None
+            case Kind.MISSING:
+                if node != SKIP and (isinstance(node, bool) or not is_number(node)):
+                    self.refuse(
+                        at,
+                        f"Give what a missing input counts as: {SKIP}, to leave the submission "
+                        "out, or a number.",
+                    )
                 return None
             case Kind.RESULTS:
                 self._results(at, node)

@@ -10,9 +10,14 @@ task's submissions oldest first, every number an exact fraction.
 - **A fold over a task's results** folds its `of` over those that meet its
   `where`; over nothing left `sum`, `max` and `min` are missing and
   `count` is 0.
-- **Picks, folds and `best_each` skip:** a submission whose `where` is
-  missing does not meet it, and one whose `by` or folded `of` is missing
-  is left out.
+- **Missing passes through picks, folds and `best_each`:** a submission
+  whose `where`, `by`, folded `of` or value `best_each` reads is missing
+  makes the block missing, a pick giving no submission and an `if` testing
+  it missing, and the block counts it, so a mark still to be entered keeps
+  a sum missing and its submission in the grading queue. The block's
+  `missing`, written by the organiser, is the way round: `skip` leaves
+  such a submission out, and a number counts the missing input as that
+  number (stage 5 section 6, item 127).
 - **Missing and none spread** through arithmetic, the comparisons, `and`,
   `or`, `not`, `r.v` and `sum_best`; `if` reads only the branch its test
   takes, a submission's results as its test true when there is one and a
@@ -26,8 +31,8 @@ task's submissions oldest first, every number an exact fraction.
   (`forge.domain.board_checks`), so only a task's version still to be
   checked could give it.
 - **Waiting.** A value of a submission still being worked out, or waiting
-  for staff, is left out of every block that reads it, as a missing one
-  is, and the submission is recorded as left out waiting (guarantee 5). A
+  for staff, is left out of every block that reads it, and the submission
+  is recorded as left out waiting (guarantee 5). A
   pick reads every value and fact read through it, so it passes over a
   submission waiting on any of them, among those its `where` keeps: a
   pick column what any column of any board reads through it
@@ -44,7 +49,8 @@ task's submissions oldest first, every number an exact fraction.
 Each cell records the submissions it counted (the leaderboards note's
 5.3): a pick its one; `max` and `min` the oldest that reached the result;
 `best_each` one for each value; `sum` and `count` every one they kept; a
-block reading other cells theirs.
+block made missing by a submission every one that made it so, and, for a
+fold, every one it kept; a block reading other cells theirs.
 """
 
 from collections.abc import Mapping, Sequence
@@ -52,7 +58,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 
 from forge.domain.blocks.board_check import BoardColumn, BoardsCheck, column_at
-from forge.domain.blocks.catalogue import ASC, CATALOGUE, NUMBERS, PICKS
+from forge.domain.blocks.catalogue import ASC, CATALOGUE, NUMBERS, PICKS, SKIP
 from forge.domain.blocks.check import form_of, leaf_of
 from forge.domain.blocks.evaluate import over_numbers
 from forge.domain.blocks.numbers import exact
@@ -79,8 +85,10 @@ class Cell:
     """What one column gave a row: its number, or for a column giving a
     submission's results, the submission with its task, none for none;
     whether it gives a submission's results; the submissions it counted;
-    those it left out as still waiting; and whether it read anything held
-    back from the reader."""
+    those it left out as still waiting; whether it read anything held
+    back from the reader; and, for a pick giving no submission, whether
+    that is because a submission it looked at was missing what it chose
+    by, rather than none being left."""
 
     number: Fraction | None = None
     picked: tuple[str, Submitted] | None = None
@@ -88,6 +96,7 @@ class Cell:
     counted: frozenset[SubmissionAt] = frozenset()
     waiting: frozenset[SubmissionAt] = frozenset()
     hidden: bool = False
+    missing: bool = False
 
     def having(self, *others: Cell) -> Cell:
         """This, with what `others` counted, left out and read added."""
@@ -206,6 +215,8 @@ class _Row:
             return self.fold(block.name, tree, task, listed, scope)
         if block.name == "if":
             test = self.node(tree["test"], scope)
+            if test.submission and test.missing:
+                return _MISSING.having(test)
             if test.submission:
                 truth = test.picked is not None
             elif test.number is None:
@@ -252,29 +263,47 @@ class _Row:
     ) -> Cell:
         waiting: set[SubmissionAt] = set()
         hidden = False
+        lacking: set[SubmissionAt] = set()
         kept: list[tuple[Submitted, Fraction]] = []
         for each in listed:
+            at = (task, each.number)
             where = self._looked_at(tree, "where", task, each, scope)
             if where is not None:
                 waiting |= where.waiting
                 hidden = hidden or where.hidden
-                if where.number is None or where.number == 0:
+                test = _given(where, tree)
+                if test is None:
+                    lacking.add(at)
                     continue
+                if test is _LEFT_OUT or test == 0:
+                    continue
+            number = Fraction(0)
             by = self._looked_at(tree, "by", task, each, scope)
             if by is not None:
                 waiting |= by.waiting
                 hidden = hidden or by.hidden
-                if by.number is None:
+                given = _given(by, tree)
+                if given is None:
+                    lacking.add(at)
                     continue
+                if not isinstance(given, Fraction):
+                    continue
+                number = given
             # What is read through the pick is read of each submission it
             # looks at, so a name held back there hides the pick.
             hidden = hidden or bool(hides & each.hidden)
             if through & each.waiting:
                 # What is read through the pick still waits: pass it over.
-                waiting.add((task, each.number))
+                waiting.add(at)
                 continue
-            kept.append(
-                (each, by.number if by is not None and by.number is not None else Fraction(0))
+            kept.append((each, number))
+        if lacking:
+            return Cell(
+                submission=True,
+                counted=frozenset(lacking),
+                waiting=frozenset(waiting),
+                hidden=hidden,
+                missing=True,
             )
         found: Submitted | None = None
         if kept:
@@ -309,24 +338,37 @@ class _Row:
     ) -> Cell:
         waiting: set[SubmissionAt] = set()
         hidden = False
+        lacking: set[SubmissionAt] = set()
         kept: list[tuple[Submitted, Fraction]] = []
         for each in listed:
+            at = (task, each.number)
             where = self._looked_at(tree, "where", task, each, scope)
             if where is not None:
                 waiting |= where.waiting
                 hidden = hidden or where.hidden
-                if where.number is None or where.number == 0:
+                test = _given(where, tree)
+                if test is None:
+                    lacking.add(at)
                     continue
+                if test is _LEFT_OUT or test == 0:
+                    continue
+            number = Fraction(1)
             of = self._looked_at(tree, "of", task, each, scope)
             if of is not None:
                 waiting |= of.waiting
                 hidden = hidden or of.hidden
-                if of.number is None:
+                given = _given(of, tree)
+                if given is None:
+                    lacking.add(at)
                     continue
-            kept.append(
-                (each, of.number if of is not None and of.number is not None else Fraction(1))
-            )
+                if not isinstance(given, Fraction):
+                    continue
+                number = given
+            kept.append((each, number))
         left = frozenset(waiting)
+        if lacking:
+            counted = frozenset({*lacking, *((task, each.number) for each, _ in kept)})
+            return Cell(counted=counted, waiting=left, hidden=hidden)
         if name == "count":
             counted = frozenset((task, each.number) for each, _ in kept)
             return Cell(Fraction(len(kept)), counted=counted, waiting=left, hidden=hidden)
@@ -351,8 +393,10 @@ class _Row:
         hidden = any(name in each.hidden for each in listed for name in {value, *(reads or ())})
         if own is None or reads is None or not reads <= set(directions):
             return Cell(hidden=hidden)
+        missing = tree.get("missing")
         waiting: set[SubmissionAt] = set()
         counted: set[SubmissionAt] = set()
+        lacking: set[SubmissionAt] = set()
         bests: dict[str, Fraction | None] = {}
         for each in sorted(reads):
             best: tuple[Submitted, Fraction] | None = None
@@ -361,6 +405,10 @@ class _Row:
                     waiting.add((task, submitted.number))
                     continue
                 number = submitted.numbers.get(each)
+                if number is None and missing != SKIP:
+                    number = exact(missing) if missing is not None else None
+                    if number is None:
+                        lacking.add((task, submitted.number))
                 if number is None:
                     continue
                 if (
@@ -372,12 +420,34 @@ class _Row:
             bests[each] = best[1] if best is not None else None
             if best is not None:
                 counted.add((task, best[0].number))
+        if lacking:
+            return Cell(counted=frozenset(lacking), waiting=frozenset(waiting), hidden=hidden)
         return Cell(
             _again(own, bests),
             counted=frozenset(counted),
             waiting=frozenset(waiting),
             hidden=hidden,
         )
+
+
+_LEFT_OUT = object()
+"""A submission a block leaves out: what it read of it is hidden or still
+waits, or is missing and the block's `missing` is `skip`."""
+
+
+def _given(read: Cell, tree: Mapping[str, object]) -> Fraction | object | None:
+    """What a block reads of one submission it looks at, its `where`, `by`
+    or `of` as `read`: its number; `_LEFT_OUT` when that is hidden or still
+    waits, or is missing and the block's `missing` is `skip`; the number
+    `missing` gives for a missing one; or none, missing."""
+    if read.number is not None:
+        return read.number
+    if read.hidden or read.waiting:
+        return _LEFT_OUT
+    missing = tree.get("missing")
+    if missing == SKIP:
+        return _LEFT_OUT
+    return exact(missing) if missing is not None else None
 
 
 def _read(picked: tuple[str, Submitted], name: str) -> Cell:

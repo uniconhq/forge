@@ -117,7 +117,11 @@ leaderboards:
     title: Public
     audience: {who: everyone}
     columns:
-      pub: {block: lowest, from: {results: house-prices}, by: {value: [house-prices, public]}}
+      pub:
+        block: lowest
+        from: {results: house-prices}
+        by: {value: [house-prices, public]}
+        missing: skip
       public: {value: [{column: pub}, public]}
       public_at: {value: [{column: pub}, seconds]}
     sort: [{public: asc}, {public_at: asc}]
@@ -133,7 +137,11 @@ leaderboards:
             from: {results: house-prices}
             by: {value: [house-prices, private]}
             where: {value: [house-prices, marked]}
-          - {block: lowest, from: {results: house-prices}, by: {value: [house-prices, public]}}
+            missing: skip
+          - block: lowest
+            from: {results: house-prices}
+            by: {value: [house-prices, public]}
+            missing: skip
       private: {value: [{column: pick}, private]}
       at: {value: [{column: pick}, seconds]}
     sort: [{private: asc}, {at: asc}]
@@ -142,7 +150,8 @@ leaderboards:
 """The leaderboards note's two Kaggle boards, lowest first: the public
 one by each row's best public RMSE, the private one by the better of
 its marked submissions' private RMSE, or, with none marked, the private
-RMSE of its best public submission."""
+RMSE of its best public submission; each pick skipping a submission
+with no RMSE, as its `missing` says (stage 5 section 6, item 127)."""
 
 GRADES = """\
 tasks:
@@ -452,13 +461,14 @@ async def test_islands_with_its_checks_ranks_on_the_olympiad_board_by_the_best_o
     staff = await _staff(setup, acme)
 
     # Before the reveal the total, st1 and st2 are shown to no entrant, so
-    # the column reading them is hidden on every row, not points so far, and
-    # no sort key: no places.
+    # the column reading them has no number on any row, not points so far,
+    # and is no sort key: no places. Ana is told why on her own row alone.
     clock.set(at(14, 50))
     before = await _board(setup, ana, "results")
     assert _places(before) == [("ana", None, 0), ("ben", None, 0)]
     assert [_numbers(row) for row in before.rows] == [{"islands_score": None}] * 2
-    assert [_hidden(row) for row in before.rows] == [["islands_score"]] * 2
+    assert [_hidden(row) for row in before.rows] == [["islands_score"], []]
+    assert before.dropped == ("islands_score",)
     # Staff read every value at once.
     assert [_numbers(row) for row in (await _board(setup, staff, "results")).rows] == [
         {"islands_score": 100},
@@ -570,12 +580,11 @@ async def test_kaggle_ranks_each_split_lowest_first_and_a_malformed_file_nowhere
     ]
     assert [row.place for row in public.rows[:2]] == [1, 2]
     # The private board picks by the private RMSE, shown only after the
-    # close, so before it Ana's and Ben's cells are hidden and nothing is
-    # placed. Cy's pick compared no private RMSE, having no mark and no
-    # public one, so his row hides nothing.
+    # close, so before it no row has a number there and nothing is placed.
     private = await _board(setup, None, "private_board")
-    assert [_hidden(row) for row in private.rows] == [["private", "at"]] * 2 + [[]]
+    assert [_numbers(row) for row in private.rows] == [{"private": None, "at": None}] * 3
     assert {row.place for row in private.rows} == {None}
+    assert private.dropped == ("private", "at")
 
     # After the close: Ben's best public submission, being marked by
     # nobody, gives his private 0.35; Ana's marks give 0.4, her malformed

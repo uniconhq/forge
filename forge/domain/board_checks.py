@@ -54,6 +54,7 @@ from forge.domain.blocks.catalogue import (
     NUMBERS,
     PICKS,
     RESULTS,
+    SKIP,
 )
 from forge.domain.blocks.check import Found, form_of, leaf_of
 from forge.domain.blocks.evaluate import using
@@ -179,10 +180,14 @@ def across(
 _CHOOSE = {
     "max": ("where", "of"),
     "min": ("where", "of"),
-    "sum": ("where", "of"),
+    "sum": ("where",),
     "count": ("where",),
 }
-"""What a fold over a task's results chooses the submissions it counts by."""
+"""What a fold over a task's results chooses the submissions it counts by:
+a sum counts every submission its `where` keeps, a missing `of` making it
+missing and counting the submission too, so it may add up marks (stage 5
+section 6, item 127), but not with `missing: skip`, which leaves out a
+submission whose mark is still to come."""
 
 
 class _Walk:
@@ -234,6 +239,8 @@ class _Walk:
             chooses = ("where", "by")
         elif form is not None and form.given == RESULTS and name in _CHOOSE:
             chooses = _CHOOSE[name]
+            if node.get("missing") == SKIP:
+                chooses = ("where", "of")
         for key in chooses:
             if key in node:
                 self.choice(name, (*at, key), node[key])

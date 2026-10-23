@@ -645,7 +645,7 @@ async def test_the_hold_hides_a_mark_on_a_row_it_holds_and_a_staff_boards_count_
         # as one reading `marked` is. The entrant's own row counts 2.
         for board in (visitor, as_other):
             [row] = [row for row in board.rows if row.owner == owner]
-            assert row.cells[0] == BoardCell("review", None, hidden=True)
+            assert row.cells[0] == BoardCell("review", None)
         [mine] = [row for row in own.rows if row.owner == owner]
         assert mine.cells[0] == BoardCell("review", Fraction(0), (Counted("islands", 2),))
         # Item 118: only the staff board counted 1, so its mark stays back,
@@ -783,3 +783,47 @@ async def test_the_queue_starts_no_retry_of_a_failure_it_finds(
     await setup.settle()
 
     assert [(row.attempt, row.automatic) for row in await _rows(setup, "early")] == [(1, False)]
+
+
+SUMMED = LIVE + (
+    "leaderboards:\n"
+    "  reviews:\n"
+    "    audience: {who: entrants, rows: own}\n"
+    "    columns:\n"
+    "      reviewed: {block: sum, over: {results: islands}, of: {value: [islands, review]}}\n"
+    "    display: [reviewed]\n"
+)
+"""A leaderboard each entrant reads alone, adding up the review of every
+submission of islands."""
+
+
+async def test_an_unmarked_submission_keeps_a_sum_missing_and_is_queued_until_marked(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    # Item 127: one missing state passes through, so a sum of marks is
+    # missing while one is still to come, and counts that submission, so
+    # the queue lists it for marking.
+    clock.set(datetime(2026, 9, 26, 13, 0, tzinfo=UTC))
+    islands = await _checked(setup, acme, REVIEWED, SUMMED)
+    session, owner = await _entrant(setup, acme, 20)
+    for _ in range(2):
+        await _submitted(setup, acme, clock, islands, session)
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    clock.set(datetime(2026, 9, 26, 15, 5, tzinfo=UTC))
+
+    async def reviews() -> BoardCell:
+        [board] = await boards.seen(setup, session, SPRING)
+        return board.rows[0].cells[0]
+
+    await entries.enter(setup, manager, islands.task, owner, 1, "review", "4")
+    [row] = await entries.queue(setup, manager, islands.task)
+    missing = await reviews()
+    await entries.enter(setup, manager, islands.task, owner, 2, "review", "5")
+    summed = await reviews()
+
+    assert _seen((row,)) == [("entrant20", [(1, 4), (2, None)])]
+    assert (missing.number, missing.counted) == (
+        None,
+        (Counted("islands", 1), Counted("islands", 2)),
+    )
+    assert summed.number == 9

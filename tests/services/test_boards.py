@@ -139,15 +139,16 @@ async def test_everyone_reads_each_row_as_its_own_entrant_is_shown_it(
     [everyone, staffs] = await boards.seen(setup, staff, SPRING)
 
     # A visitor reads the board for everyone and no gradebook. The total
-    # is shown only after the close, so it is hidden on every row, and
-    # what each cell counted is told to nobody but the row's own entrant.
+    # is shown only after the close, so it has no number on any row, and
+    # why, and what each cell counted, is told to nobody but the row's own
+    # entrant (item 127).
     assert [board.key for board in visitor] == ["standings"]
     [standings] = visitor
     assert _rows_of(standings) == [("entrant20", 1, 0), ("entrant21", 1, 0)]
     for row in standings.rows:
         assert _cells(row) == [
             ("sample", Fraction(1), False),
-            ("total", None, True),
+            ("total", None, False),
             ("tries", Fraction(1), False),
         ]
         assert not row.told and row.cells[0].counted == ()

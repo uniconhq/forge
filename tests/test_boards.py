@@ -357,7 +357,8 @@ leaderboards:
 
 def test_a_pick_passes_over_a_newest_submission_whose_value_read_through_it_waits() -> None:
     gradebook = cells(
-        GRADEBOOK, {"search": [sub(1, score=0.9), sub(2, waiting=("score", "compiled"))]}
+        GRADEBOOK,
+        {"search": [sub(1, score=0.9, marked=0), sub(2, marked=0, waiting=("score", "compiled"))]},
     )
     grading = {"a": [sub(1, total=50, score=5), sub(2, score=6, waiting=("total",))]}
     found = cells(LAST, grading)
@@ -528,7 +529,8 @@ def test_a_cell_is_hidden_when_a_pick_compared_a_value_not_shown() -> None:
     seen = one(read_as(GRADEBOOK, "cartpole_ranking", [(1, "r1", lists)], Viewer()))
     staff = one(read_as(GRADEBOOK, "cartpole_ranking", [(1, "r1", lists)]))
 
-    assert seen.rows[0].cells == (BoardCell("reward", None, hidden=True),)
+    # Why it has no number is told on no row but the viewer's own (item 127).
+    assert seen.rows[0].cells == (BoardCell("reward", None),)
     assert staff.rows[0].cells[0].number == 10
 
 
@@ -612,7 +614,7 @@ def test_the_kaggle_private_board_is_hidden_until_private_is_shown() -> None:
         read_as(KAGGLE, "public", [(1, "r1", {"k": [kaggle(1, 80, 70, shown=False)]})], Viewer())
     )
 
-    assert before.rows[0].cells == (BoardCell("score", None, hidden=True),)
+    assert before.rows[0].cells == (BoardCell("score", None),)
     assert after.rows[0].cell("score") == BoardCell("score", Fraction(60))
     # A hidden key is no sort key: no places until it is shown.
     assert before.dropped == ("score",) and before.sort == ()
@@ -929,7 +931,7 @@ def test_the_hold_keeps_what_was_made_before_from_and_counts_the_rest_held() -> 
         "search": [
             made(12, 0, sub(1, score=0.5, marked=1)),
             made(13, 5, sub(2, score=0.9, marked=0)),
-            made(13, 10, sub(3, compiled=0)),
+            made(13, 10, sub(3, compiled=0, marked=0)),
         ]
     }
     open_text = GRADEBOOK.replace("{who: entrants, rows: own}", "{who: everyone}")
@@ -941,7 +943,7 @@ def test_the_hold_keeps_what_was_made_before_from_and_counts_the_rest_held() -> 
     assert counts == {"search": 2} and none == {}
     assert others.rows[0].held == 2
     # The search mark reads `marked`, which may change under the hold.
-    assert others.rows[0].cell("search_mark") == BoardCell("search_mark", None, hidden=True)
+    assert others.rows[0].cell("search_mark") == BoardCell("search_mark", None)
     assert others.rows[0].cell("cartpole_best") == BoardCell("cartpole_best", Fraction(0))
     assert own.rows[0].held == 0
     assert own.rows[0].cell("search_mark") == BoardCell(
@@ -1012,7 +1014,7 @@ def test_a_public_column_reading_the_gradebook_shows_only_on_the_viewers_own_row
     staff = one(read_as(text, "mine", rows))
 
     assert entrant.rows[0].cells[0].number == Fraction(1, 2)
-    assert entrant.rows[1].cells[0] == BoardCell("total", None, hidden=True)
+    assert entrant.rows[1].cells[0] == BoardCell("total", None)
     assert [row.cells[0].number for row in staff.rows] == [Fraction(1, 2), Fraction(0)]
 
 
@@ -1034,7 +1036,7 @@ def test_boards_reading_each_other_read_a_board_not_read_yet_as_serving_no_row()
     second = one(read_as(text, "two", rows, Viewer()))
     staff = one(read_as(text, "one", rows))
 
-    assert first.rows[0].cells == (BoardCell("n", Fraction(1)), BoardCell("x", None, hidden=True))
+    assert first.rows[0].cells == (BoardCell("n", Fraction(1)), BoardCell("x", None))
     assert second.rows[0].cells == (BoardCell("m", Fraction(1)), BoardCell("y", Fraction(1)))
     assert [cell.number for cell in staff.rows[0].cells] == [1, 1]
 
@@ -1141,30 +1143,50 @@ def test_each_pick_takes_its_submission_ties_to_the_oldest(block: str, expected:
     assert picked.counted == {("a", expected)}
 
 
-def test_a_missing_by_is_skipped_and_a_pick_over_nothing_is_none() -> None:
+def test_a_missing_by_makes_a_pick_missing_unless_its_missing_says_otherwise() -> None:
+    # Item 127: one missing state passes through, the way round written.
     highest = {"block": "highest", "from": results("a"), "by": read("a", "score")}
+    skip = {**highest, "missing": "skip"}
+    as_ten = {**highest, "missing": 10}
+    listed = {"a": [sub(1, score=3), sub(2)]}
 
-    skipped = column("p", "c", {"a": [sub(1, score=3), sub(2)]}, read(highest, "score"))
-    none = column("p", "c", {"a": [sub(1)]}, read(highest, "score"))
+    missing = column("p", "c", listed, read(highest, "score"))
+    skipped = column("p", "c", listed, read(skip, "score"))
+    ten = column("p", "c", listed, {"block": "if", "test": as_ten, "then": 1, "else": 0})
+    tested = column("p", "c", listed, {"block": "if", "test": highest, "then": 1, "else": 0})
     test = column("p", "c", {}, {"block": "if", "test": highest, "then": 1, "else": 0})
 
+    # The pick counts the submission that made it missing.
+    assert (missing.number, missing.counted) == (None, frozenset({("a", 2)}))
     assert (skipped.number, skipped.counted) == (Fraction(3), frozenset({("a", 1)}))
-    assert (none.number, none.counted) == (None, frozenset())
-    # A pick over nothing is none, so as a test it is false.
+    assert (ten.number, ten.counted) == (Fraction(1), frozenset({("a", 2)}))
+    # A missing pick tested is missing; a pick over nothing is none, so as
+    # a test it is false.
+    assert tested.number is None
     assert test.number == 0
 
 
-def test_count_over_nothing_is_0_and_the_other_folds_missing() -> None:
+def test_count_over_nothing_is_0_and_a_missing_input_makes_a_fold_missing() -> None:
     count = {"block": "count", "over": results("a")}
     where = {**count, "where": read("a", "score")}
 
+    listed = {"a": [sub(1, score=2), sub(2)]}
     assert column("p", "c", {}, count).number == 0
-    # A missing where does not meet it.
-    assert column("p", "c", {"a": [sub(1)]}, where).number == 0
-    for block in ("sum", "max", "min"):
-        # A missing of is left out, leaving nothing.
+    # Item 127: a missing where makes the count missing, counting the
+    # submission, unless missing says to leave it out or what it counts as.
+    missing = column("p", "c", listed, where)
+    assert missing.number is None
+    assert missing.counted == {("a", 1), ("a", 2)}
+    assert column("p", "c", listed, {**where, "missing": "skip"}).number == 1
+    assert column("p", "c", listed, {**where, "missing": 0}).number == 1
+    for block, skipped, two in (("sum", 2, 4), ("max", 2, 2), ("min", 2, 2)):
         tree = {"block": block, "over": results("a"), "of": read("a", "score")}
-        assert column("p", "c", {"a": [sub(1)]}, tree).number is None
+        assert column("p", "c", {"a": []}, tree).number is None
+        found = column("p", "c", listed, tree)
+        assert found.number is None
+        assert found.counted == {("a", 1), ("a", 2)}
+        assert column("p", "c", listed, {**tree, "missing": "skip"}).number == skipped
+        assert column("p", "c", listed, {**tree, "missing": 2}).number == two
 
 
 def test_max_given_a_tasks_results_and_max_given_two_numbers_in_one_column() -> None:
@@ -1705,10 +1727,17 @@ LATEST = {"block": "latest", "from": results("a")}
             "leaderboards.s.columns.c.of",
             "min chooses",
         ),
-        # A sum leaves out each submission whose of is missing, so one not
-        # yet marked would never be counted.
+        # A sum told to skip a submission whose of is missing would never
+        # count one not yet marked (item 127).
         (
-            {"c": {"block": "sum", "over": results("a"), "of": read("a", "review")}},
+            {
+                "c": {
+                    "block": "sum",
+                    "over": results("a"),
+                    "of": read("a", "review"),
+                    "missing": "skip",
+                }
+            },
             "leaderboards.s.columns.c.of",
             "sum chooses",
         ),
@@ -1770,6 +1799,9 @@ def test_what_reads_a_mark_without_choosing_by_it_and_a_task_not_resolved_pass()
         # A mark read through a pick chosen by marked, as the gradebook does.
         "picked": {"block": "otherwise", "of": [read(marked_pick, "graded"), 0]},
         "best": best_each("total"),
+        # A sum of marks, missing while one is still to come, every
+        # submission counted (item 127).
+        "marks": {"block": "sum", "over": results("a"), "of": read("a", "review")},
         # Facts of any task, and b-c, whose live publication is not known.
         "tries": {"block": "count", "over": results("a"), "where": read("a", "compiled")},
         "other": read({"block": "first", "from": results("b-c")}, "anything"),
