@@ -26,8 +26,12 @@ group to `now` (phase 4.10).
   and its texts, `label` and `message`. A run in two groups listed is
   shown in each. **A run no group listed holds is never shown,** early or
   not: a run can be early only because a value shown then reads it.
-- **What the steps done once reported,** the compile log among them, and
-  `compiled`, once any run is shown, of the rows the entrant reads.
+- **What the steps done once reported,** the compile log among them, of
+  the rows the entrant reads: each report `show` lists, by its name, once
+  any run is shown (stage 5 section 6 item 30); one not listed never, nor
+  one named like a group or a value, since the entry names that.
+  `compiled` is shown once any run is, since the shown runs' verdicts
+  already tell it.
 - `staff` outputs never.
 
 A text is a reference to a stored output, which may be another entrant's
@@ -176,7 +180,9 @@ def shown(
     return Shown(
         tuple(values),
         tuple(entry for _, entry in held),
-        _once([grading.once_early, grading.once_late] if seen else []),
+        _once(
+            [grading.once_early, grading.once_late] if seen else [], listed - show_names(scoring)
+        ),
         grading.compiled if seen else None,
         later(scoring, released=released) and not revealed,
     )
@@ -323,13 +329,19 @@ def _seen(result: Mapping[str, Any]) -> dict[str, Any]:
     return {name: result[name] for name in SHOWN_RUN if name in result}
 
 
-def _once(parts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """The reports and texts of the steps done once in `parts`."""
+def _once(
+    parts: Sequence[Mapping[str, Any]], listed: Collection[str] | None = None
+) -> dict[str, Any]:
+    """The reports and texts of the steps done once in `parts`, only those
+    `listed` names when given."""
     reports: dict[str, Any] = {}
     named: dict[str, Any] = {}
     for part in parts:
         reports |= part.get("reports") or {}
         named |= part.get("texts") or {}
+    if listed is not None:
+        reports = {name: each for name, each in reports.items() if name in listed}
+        named = {name: each for name, each in named.items() if name in listed}
     return {"reports": reports, "texts": named}
 
 

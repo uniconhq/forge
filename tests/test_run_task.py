@@ -1072,7 +1072,7 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "now: [sample_score",
             "now: [sample_scor",
             "scoring.show.now[0]",
-            "names no group, value, file or folder",
+            "names no group, value, report, file or folder",
         ),
         (
             "now: [sample_score",
@@ -1211,6 +1211,28 @@ def test_a_file_shown_sooner_than_its_folder_is_shown_sooner(
 
     assert file_time(_scoring(text), "tests/3.in") == "now"
     assert file_time(_scoring(text), "tests/4.in") == "after_close"
+
+
+def test_show_lists_a_report_by_its_name_but_not_one_also_a_file_of_the_task(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    text = ISLANDS.replace("samples/]", "samples/, log]")
+
+    ok(islands(primitives, text))
+    assert at(islands(primitives, text, paths=ISLANDS_PATHS | {"log"}), "scoring.show.now[4]") == [
+        "log names both a report of the workflow and a file of the task, so show cannot tell "
+        "which it lists. Rename the file."
+    ]
+    # A report listed is a name, so taking it out of show is hiding it.
+    before = shown_under(_scoring(text), ISLANDS_PATHS)
+    assert before.names["log"] == "now"
+    assert hidden_again(before, _scoring(ISLANDS), ISLANDS_PATHS) == [
+        {
+            "path": "scoring.show",
+            "message": "Entrants have been shown log as soon as a grading ends, and what they "
+            "have been shown cannot be hidden again. List it as soon as before.",
+        }
+    ]
 
 
 def _scoring(text: str) -> Scoring:

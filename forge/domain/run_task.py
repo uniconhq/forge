@@ -24,8 +24,10 @@ once anyone has submitted, the entrant's inputs and their types as they
 were. Then `scoring`: each group picks runs by values of repeated inputs the
 task fills and holds at least one; group and value names one set, none a
 path in the task; each value's blocks (`forge.domain.blocks.check`); and
-each `show` entry naming a group, a value, a file or a folder, at one time
-only.
+each `show` entry naming a group, a value, a report, a file or a folder, at
+one time only; the planner refuses a report done for each run, since only
+what the steps done once report is listed by itself (stage 5 section 6
+item 30).
 
 A run is early when a group shown `now` holds it, or a value shown `now`
 reads a group holding it, directly or through other values (11.3); a value
@@ -59,7 +61,7 @@ from forge.domain.blocks.check import ValuesCheck, check_names, check_values, sa
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.blocks.numbers import Better
 from forge.domain.checks import TaskCheck, check_checks
-from forge.domain.content import names_path, path_problem
+from forge.domain.content import named_by, names_path, path_problem
 from forge.domain.definitions import (
     ENTRANT,
     TASK_FILE,
@@ -585,9 +587,9 @@ def shown_times(show: ShowTimes) -> dict[str, str]:
 
 @dataclass(frozen=True, slots=True)
 class Shown:
-    """What a `show` lists, each with its time: the groups and values by
-    name, and each task file by path, with the entry that lists it, a
-    folder's entry standing for every file under it.
+    """What a `show` lists, each with its time: the groups, values and
+    reports by name, and each task file by path, with the entry that lists
+    it, a folder's entry standing for every file under it.
     """
 
     names: Mapping[str, str] = field(default_factory=dict)
@@ -596,7 +598,8 @@ class Shown:
 
 def shown_under(scoring: Scoring, paths: Collection[str]) -> Shown:
     """What `scoring`'s `show` lists, its files those of `paths`, the task's
-    files as the same save left them.
+    files as the same save left them. An entry naming none of them is a
+    name: a group, a value or a report, which the save checked.
     """
     names = show_names(scoring)
     files: dict[str, tuple[str, str]] = {}
@@ -610,7 +613,14 @@ def shown_under(scoring: Scoring, paths: Collection[str]) -> Shown:
                 files[path] = (time, entry)
                 break
     listed = shown_times(scoring.show)
-    return Shown({entry: time for entry, time in listed.items() if entry in names}, files)
+    return Shown(
+        {
+            entry: time
+            for entry, time in listed.items()
+            if entry in names or not named_by(paths, entry)
+        },
+        files,
+    )
 
 
 def openness(*, released: bool, revealed: bool) -> Mapping[str, int]:
@@ -1276,6 +1286,14 @@ class _Binder:
                 seen[entry] = time
                 if entry in names:
                     continue
+                if entry in self.checked.reports:
+                    if entry in self.paths:
+                        self.refuse(
+                            at,
+                            f"{entry} names both a report of the workflow and a file of the task, "
+                            "so show cannot tell which it lists. Rename the file.",
+                        )
+                    continue
                 problem = self._shown_path_problem(entry)
                 if problem is not None:
                     self.refuse(at, problem)
@@ -1289,8 +1307,9 @@ class _Binder:
         problem = path_problem(entry, folder=folder)
         if problem is not None or not (folder or "/" in entry or entry in self.paths):
             return (
-                f"{entry} names no group, value, file or folder of the task. Give a group or "
-                "a value by its name, a file by its path, or a folder with a / at its end."
+                f"{entry} names no group, value, report, file or folder of the task. Give a "
+                "group, a value or a report by its name, a file by its path, or a folder with "
+                "a / at its end."
             )
         if is_reserved(entry):
             return f"Unicon writes the files in {PLANS_FOLDER} itself, and serves none of them."

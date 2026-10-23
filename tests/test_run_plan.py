@@ -695,6 +695,19 @@ def test_nothing_shown_during_the_contest_is_one_late_pipeline(
     assert [step.name for step in plan.pipeline("late")] == ["compile", "solution", "compare"]
 
 
+def test_a_report_of_a_step_done_once_may_be_listed_and_one_given_for_each_run_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    ok(islands(primitives, ISLANDS.replace("samples/]", "samples/, log]")))
+
+    assert refused(islands(primitives, ISLANDS.replace("samples/]", "samples/, time_ms]"))) == {
+        "scoring.show.now[4]": [
+            "time_ms is reported for each run, so it is shown with the runs of the groups show "
+            "lists. Remove it."
+        ]
+    }
+
+
 # Taint
 
 

@@ -109,7 +109,7 @@ from forge.domain.primitives import (
     Port,
     PrimitiveDeclaration,
 )
-from forge.domain.run_task import RUN_ID, SHOWN_WORDS, Part, RunTask, file_time
+from forge.domain.run_task import RUN_ID, SHOWN_WORDS, Part, RunTask, file_time, show_names
 from forge.domain.run_workflow import ResolvedStep, RunWorkflowCheck
 from forge.domain.types import FILES, Type
 from forge.domain.workflow_definition import (
@@ -716,7 +716,11 @@ def plan_runs(
     )
     for step in workflow.steps:
         planner.bind(step.id, step.with_)
-    problems = [*cache_problems(checked), *order_problems(planner.classes, planner.reads)]
+    problems = [
+        *cache_problems(checked),
+        *order_problems(planner.classes, planner.reads),
+        *planner.shown_reports(),
+    ]
     if task.programs:
         assert programs is not None, "a save reads the program primitives when a value has one"
         problems += planner.programs(programs[COMPILE_USE], programs[EXEC_USE])
@@ -1802,6 +1806,27 @@ class _Planner:
             tainted = self.bound[(step_id, key)].tainted
             assert tainted is not None
         return chain, tainted["beside"]
+
+    def shown_reports(self) -> list[Problem]:
+        """A report `show` lists by itself that a step gives for each run,
+        which is shown with the runs of the groups `show` lists (stage 5
+        section 6 item 30). An entry naming a group or a value names that.
+        """
+        names = show_names(self.scoring)
+        problems: list[Problem] = []
+        for time, entries in self.scoring.show.lists().items():
+            for index, entry in enumerate(entries):
+                report = self.checked.reports.get(entry)
+                if report is None or entry in names or self.classes[report.step] in ONCE:
+                    continue
+                problems.append(
+                    Problem(
+                        path=path_text(("scoring", "show", time, index)),
+                        message=f"{entry} is reported for each run, so it is shown with the runs "
+                        "of the groups show lists. Remove it.",
+                    )
+                )
+        return problems
 
     def _shown(self) -> Iterable[tuple[str, int, str]]:
         """Each entry of `show` during the contest, with its time and place."""

@@ -62,6 +62,8 @@ CARTPOLE_RUNS = tuple(
     )
 )
 LOG = {"output": "0199a2c1-0000-7000-8000-000000000001", "name": "log"}
+LOG_SHOWN = ISLANDS.replace("sample_tests, samples/]", "sample_tests, samples/, log]")
+"""islands showing the compile log with its runs."""
 
 
 def _scoring(text: str) -> Scoring:
@@ -322,7 +324,7 @@ def test_a_run_still_to_come_waits_and_one_never_run_is_missing() -> None:
 def test_until_the_reveal_an_entrant_reads_the_early_row_alone_whatever_the_late_row_does() -> None:
     # A later save added the sample r5, which neither row's plan holds: it
     # never waits, so a value reading it does not move with the late row.
-    text = ISLANDS.replace(
+    text = LOG_SHOWN.replace(
         "    sample_tests: {input: [samples/1.in, samples/2.in]}",
         "    sample_tests: {input: [samples/1.in, samples/2.in, samples/5.in]}",
     ).replace(
@@ -401,16 +403,24 @@ def test_compiled_and_the_compile_log_are_shown_once_a_run_is() -> None:
         _row({"r1": "accepted", "r2": "accepted"}, outcomes={"compile": "accepted"}, log=True),
         _row({"r3": "accepted", "r4": "accepted"}),
     )
-    values_only = ISLANDS.replace(
-        "now: [sample_score, sample_time, sample_tests, samples/]", "now: [sample_score]"
+    values_only = LOG_SHOWN.replace(
+        "now: [sample_score, sample_time, sample_tests, samples/, log]", "now: [sample_score, log]"
     ).replace("after_close: [st1, st2, total, all]", "after_close: [total]")
 
-    seen = _seen(scored)
+    seen = _seen(scored, text=LOG_SHOWN)
     unseen = _seen(scored, text=values_only, revealed=True)
+    unlisted = _seen(scored)
 
     assert (seen.compiled, seen.once["texts"]) == (1, {"log": LOG})
     assert (unseen.compiled, unseen.once, unseen.runs) == (None, {"reports": {}, "texts": {}}, ())
     assert texts(unseen.runs, unseen.once) == set()
+    # A report of a step done once that show does not list is never shown,
+    # though `compiled` is, with the runs.
+    assert (unlisted.compiled, unlisted.once) == (1, {"reports": {}, "texts": {}})
+    assert addresses(unlisted.runs, unlisted.once) == {
+        TextAt("sample_tests", 1, "message", None): ("out-r1", "message"),
+        TextAt("sample_tests", 2, "message", None): ("out-r2", "message"),
+    }
 
 
 def test_an_entrant_reads_a_text_by_where_it_is_shown_and_is_never_sent_its_output() -> None:
@@ -418,7 +428,7 @@ def test_an_entrant_reads_a_text_by_where_it_is_shown_and_is_never_sent_its_outp
         _row({"r1": "accepted", "r2": "accepted"}, outcomes={"compile": "accepted"}, log=True),
         _row({"r3": "accepted", "r4": "accepted"}),
     )
-    seen = _seen(scored)
+    seen = _seen(scored, text=LOG_SHOWN)
 
     assert addresses(seen.runs, seen.once) == {
         TextAt(None, None, "texts", "log"): (LOG["output"], "log"),
@@ -429,7 +439,7 @@ def test_an_entrant_reads_a_text_by_where_it_is_shown_and_is_never_sent_its_outp
     assert (runs[0]["message"], once["texts"]) == ({}, {"log": {}})
     assert "output" not in repr((runs, once))
     # What is not shown has no place to read it from.
-    unseen = _seen(scored, text=ISLANDS.replace("sample_tests, samples/]", "samples/]"))
+    unseen = _seen(scored, text=LOG_SHOWN.replace("sample_tests, samples/, log]", "samples/, log]"))
     assert addresses(unseen.runs, unseen.once) == {}
 
 

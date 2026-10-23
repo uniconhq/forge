@@ -133,6 +133,9 @@ ISLANDS = Scope("acme", "spring", "islands")
 NOTHING_EARLY = TASKS["islands"][0].replace(
     "now: [sample_score, sample_time, sample_tests, samples/]", "now: [samples/]"
 )
+LOG_SHOWN = TASKS["islands"][0].replace("sample_tests, samples/]", "sample_tests, samples/, log]")
+"""islands showing the compile log, a report of its step done once, with
+its runs."""
 
 
 @pytest.fixture
@@ -500,7 +503,7 @@ async def test_islands_values_are_worked_out_from_both_rows_as_show_lists_them(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands = await _checked(setup, acme)
+    islands = await _checked(setup, acme, LOG_SHOWN)
     session = await _submit(setup, acme, islands)
     [early] = await _rows(setup, "early")
     await _early(setup, acme, early.id)
@@ -627,7 +630,7 @@ async def test_an_entrant_reads_only_the_texts_their_result_shows_them_by_where(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, session = await _graded_both(setup, acme)
+    islands, session = await _graded_both(setup, acme, LOG_SHOWN)
     grading = await _grading(setup, session, islands)
     # No stored output's id reaches the entrant: a text is read by where it is shown.
     assert (grading.runs[0]["message"], grading.once["texts"]) == ({}, {"log": {}})
@@ -664,6 +667,28 @@ async def test_an_entrant_reads_only_the_texts_their_result_shows_them_by_where(
         )
     clock.set(AFTER_CLOSE)
     assert await submissions.read_text(setup, session, islands.task, 1, late_message) == "Right."
+
+
+async def test_a_report_of_a_step_done_once_reaches_an_entrant_only_when_show_lists_it(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, session = await _graded_both(setup, acme)
+    log = TextAt(None, None, "texts", "log")
+
+    grading = await _grading(setup, session, islands)
+    assert grading.runs and grading.compiled == 1
+    assert grading.once == {"reports": {}, "texts": {}}
+    with pytest.raises(NotFound, match="no such text"):
+        await submissions.read_text(setup, session, islands.task, 1, log)
+    clock.set(AFTER_CLOSE)
+    assert (await _grading(setup, session, islands)).once == {"reports": {}, "texts": {}}
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    async with setup.unit_of_work() as ctx:
+        entrant = await ctx.db.scalar(select(Entrant.id))
+    assert entrant is not None
+    graded = await submissions.organised(setup, manager, islands.task, EntrantOwner(entrant), 1)
+    assert graded.grading is not None and set(graded.grading.once["texts"]) == {"log"}
 
 
 async def test_a_staff_retry_of_the_late_row_takes_nothing_away_while_it_runs(
