@@ -1128,7 +1128,7 @@ def test_every_leaderboard_block_has_a_test() -> None:
     leaderboard = {
         name
         for name, block in CATALOGUE.items()
-        if any(form.scope is Scope.BOARD for form in block.forms)
+        if any(form.scope is Scope.LEADERBOARD for form in block.forms)
     }
     assert leaderboard == {
         "first",

@@ -47,7 +47,7 @@ MARKED = TASKS["islands"][0].replace(
 )
 """islands with a mark staff enter and a value reading it."""
 
-BOARD = """\
+LEADERBOARD = """\
 leaderboards:
   results:
     title: Results
@@ -182,10 +182,12 @@ async def test_a_leaderboard_reading_what_islands_gives_is_saved_and_names_resol
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     await _live(setup, acme)
-    await _write(setup, acme, DRAFT + BOARD)
+    await _write(setup, acme, DRAFT + LEADERBOARD)
 
     found = await _refused(
-        setup, acme, DRAFT + BOARD.replace("{value: [islands, st1]}", "{value: [islands, st3]}")
+        setup,
+        acme,
+        DRAFT + LEADERBOARD.replace("{value: [islands, st1]}", "{value: [islands, st3]}"),
     )
 
     assert found == [
@@ -260,7 +262,7 @@ async def test_each_refusal_at_a_tasks_save(
     setup: Setup, acme: Acme, spring: str, old: str, new: str, path: str, words: str
 ) -> None:
     task = await _live(setup, acme)
-    await _write(setup, acme, DRAFT + BOARD)
+    await _write(setup, acme, DRAFT + LEADERBOARD)
     assert old in MARKED
     changed = MARKED.replace(old, new)
     if old == "    total:\n":

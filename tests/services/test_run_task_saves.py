@@ -482,7 +482,7 @@ async def test_after_close_is_served_from_the_reveal_and_on_release_never_yet(
         await landing.public_file(setup, sum_task, "tests/4.in")
 
 
-BOARD = (
+LEADERBOARD = (
     "leaderboards:\n  standings:\n    columns:\n"
     "      score: {value: [{block: latest, from: {results: sum}}, total]}\n"
 )
@@ -499,7 +499,7 @@ async def test_a_contest_gives_a_run_task_a_due_and_a_leaderboard_but_no_worth_o
     contents = {"task.yaml": text.encode(), **TOUR_DATA}
 
     assert isinstance(await _save(setup, acme, sum_task, contents, confirm=True), Published)
-    await write_contest(acme.fake, DRAFT + BOARD)
+    await write_contest(acme.fake, DRAFT + LEADERBOARD)
     assert isinstance(await _save(setup, acme, sum_task, contents, confirm=True), Published)
     await checked(setup, sum_task)
 

@@ -371,11 +371,11 @@ class _Checker:
                 f"{name} is not a block Unicon has. The blocks are {', '.join(CATALOGUE)}.",
             )
             return
-        form = form_of(block, node, Scope.BOARD)
+        form = form_of(block, node, Scope.LEADERBOARD)
         if form is None:
-            self.refuse(at, forms_words(block, Scope.BOARD))
+            self.refuse(at, forms_words(block, Scope.LEADERBOARD))
             return
-        if form.scope is Scope.BOARD:
+        if form.scope is Scope.LEADERBOARD:
             self.refuse(
                 at,
                 f"{block.name} given {form.given} is for a leaderboard's column. "

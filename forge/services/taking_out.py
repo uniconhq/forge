@@ -278,7 +278,7 @@ async def _remove(
         raise TakeOutRefused(
             f"The leaderboard {naming[0]} reads the results of {name}. Take {name} out of that "
             "leaderboard's columns first, then remove the task.",
-            boards=naming,
+            leaderboards=naming,
         )
     made = making.undo_on_rollback(ctx, "tasks", task=task)
     try:

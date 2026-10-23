@@ -97,7 +97,7 @@ class Scope(StrEnum):
     """Where a form may be used: a task's value, a board's column, or both."""
 
     TASK = "task"
-    BOARD = "board"
+    LEADERBOARD = "leaderboard"
     BOTH = "both"
 
 
@@ -251,7 +251,7 @@ def _over_results(*, of: bool) -> Form:
         inputs["of"] = BlockInput(Kind.NUMBER, per_run=True)
     inputs["where"] = _WHERE
     inputs["missing"] = _MISSING
-    return Form(RESULTS, inputs, Scope.BOARD)
+    return Form(RESULTS, inputs, Scope.LEADERBOARD)
 
 
 def _pick(name: str, words: str, *, by: bool) -> Block:
@@ -260,7 +260,7 @@ def _pick(name: str, words: str, *, by: bool) -> Block:
         inputs["by"] = BlockInput(Kind.NUMBER, per_run=True)
     inputs["where"] = _WHERE
     inputs["missing"] = _MISSING
-    return Block(name, words, (Form(RESULTS, inputs, Scope.BOARD, Kind.SUBMISSION),))
+    return Block(name, words, (Form(RESULTS, inputs, Scope.LEADERBOARD, Kind.SUBMISSION),))
 
 
 CATALOGUE: Mapping[str, Block] = {
@@ -340,7 +340,7 @@ CATALOGUE: Mapping[str, Block] = {
                         "directions": BlockInput(Kind.DIRECTIONS),
                         "missing": _MISSING,
                     },
-                    Scope.BOARD,
+                    Scope.LEADERBOARD,
                 ),
             ),
         ),
@@ -366,7 +366,7 @@ CATALOGUE: Mapping[str, Block] = {
                         "k": BlockInput(Kind.NUMBER, plain=True),
                         "of": BlockInput(Kind.NUMBER, least=1),
                     },
-                    Scope.BOARD,
+                    Scope.LEADERBOARD,
                 ),
             ),
         ),

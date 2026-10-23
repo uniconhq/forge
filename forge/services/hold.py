@@ -105,7 +105,7 @@ async def end_hold(
         )
     )
     await ctx.db.flush()
-    log.info("boards.hold_ended", contest=contest, by=organiser.user.id)
+    log.info("hold.ended", contest=contest, by=organiser.user.id)
     return True
 
 

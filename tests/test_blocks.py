@@ -172,7 +172,7 @@ def test_every_block_a_task_may_use_has_an_evaluation_test() -> None:
     for_tasks = {
         name
         for name, block in CATALOGUE.items()
-        if any(form.scope is not Scope.BOARD for form in block.forms)
+        if any(form.scope is not Scope.LEADERBOARD for form in block.forms)
     }
 
     assert {name for name, _, _ in EACH_BLOCK} == for_tasks
