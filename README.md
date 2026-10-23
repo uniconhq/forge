@@ -134,9 +134,11 @@ forge/api/
                 SubmittedInput submit takes, and the Submission, Result,
                 SubmissionState, GroupShown, ValueShown, ValueMeaning, Fold,
                 SubmittedFiles, GradingStatus and Show they return
-  boards.py     seen, hold_state, end_hold, held, mark, unmark, written, and
-                the Board, BoardAudience, BoardRow, BoardCell, Header,
-                Counted, HoldState, Marks and EntrantOwner they return
+  leaderboards.py     seen, written, and the LeaderboardView,
+                LeaderboardAudience, LeaderboardViewRow, LeaderboardCell,
+                Header, Counted and EntrantOwner they return
+  hold.py       hold_state, end_hold, and the HoldState they return
+  marks.py      held, mark, unmark, and the Marks they return
   blocks.py     CATALOGUE, every block a value may use, LEAVES, TASK_FACTS
                 and SKIP, and the Block, Form, BlockInput and Kind it is
                 made of
@@ -191,7 +193,7 @@ the format does not know, refuses a key it no longer has at that key with the se
 `Retired` rule), and reports every problem as `InvalidDefinition`, whose
 `errors` pair a YAML path such as `test_groups.main.pass_at` with a sentence a
 form shows beside that field. What a file says of itself is checked there: a
-contest's times and each task entry's timeline in order (C1), each board's
+contest's times and each task entry's timeline in order (C1), each leaderboard's
 own rules (C3), a task's test groups, rule weights, test weights and `show`
 words (T1, T2, T6), a workflow's report (W1 to W5), and a primitive's
 `runs` marks (P1) and the `outcomes` its outcome port says the meaning of,
@@ -222,8 +224,8 @@ is, its two secrets, its clock and the machine a plan must fit,
 `reports.py` what a run reports back and which results are kept,
 `exact_json.py` the JSON that keeps a result's numbers exactly as written,
 `showing.py` what a contestant is shown of a result graded test by test
-and when, `boards.py` a board worked out for each viewer from its block
-columns, `board_checks.py` what a board asks of `contest.yaml` and of the
+and when, `leaderboards.py` a leaderboard worked out for each viewer from its block
+columns, `leaderboard_task_check.py` what a leaderboard asks of `contest.yaml` and of the
 tasks it reads, and
 `contracts.py` checks a document against `schemas/`, a copy of the five
 contract files of the runner release the package pins, which the tests
@@ -618,7 +620,7 @@ hosting process calls are actions, marked `@action` from
 | `roles` | `holders`, `grant`, `revoke` |
 | `uploads` | `slot`, `complete` |
 | `submissions` | `submit`, `mine`, `one`, `organised`, `files`, `download` |
-| `boards` | `seen`, `organised` |
+| `leaderboards` | `seen`, `organised` |
 | `marks` | `held`, `mark`, `unmark` |
 | `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
 | `regrades` | `latest`, `dismiss`, `gradings_of` |
@@ -927,9 +929,9 @@ the other's file, and against the marks rows hold, read what is there. A
 manager's change to one of its admin-only keys, `name`,
 `description`, `state`, `visibility` and `registration`, is refused as
 `AdminOnly`, naming each; nothing is written either way. A contest's file
-written answers `Written`, the version and, for `contest.yaml`, each board's
+written answers `Written`, the version and, for `contest.yaml`, each leaderboard's
 notes on the tasks it covers, such as one that counts nothing from a task:
-the same notes the organisers' reading carries beside each board, met at the
+the same notes the organisers' reading carries beside each leaderboard, met at the
 save that made them so, as a task's save answers T9's. A write to a task
 is a save of the task, below. A rollback reads the file at the chosen
 version and writes it back as a new change through `write`, so a task's
@@ -1032,7 +1034,7 @@ each file under it, named one by one.
    "No submission runs again: the tests and how they run are the same.";
    `scores`, each scoring change with its old value ("Results of main
    shown once the task closes (was right away).", "Submission limit: 10 per entrant (was
-   50).") and the boards counted again ("Every result is scored again, and
+   50).") and the leaderboards counted again ("Every result is scored again, and
    the leaderboard Standings with it.", "The leaderboard Standings is
    counted again."), or "No score changes."; and `reading`, the task's
    title, "The statement changes." and the pictures and files under
@@ -1088,7 +1090,7 @@ check of its head when that is a draft.
 A valid save comes back as `Published`, with the publication, its number,
 whether it changed how the task grades and what, its notes (the task's
 reveal, the sealed steps, a bounded value the task's `credit` does not
-name, a board that counts nothing from the task), how many submissions it
+name, a leaderboard that counts nothing from the task), how many submissions it
 queued to be graded again, and its `effect`: what it did, in the same
 words and parts as the question a running contest asks before it.
 `publications.list`
@@ -1179,7 +1181,7 @@ Nothing at the forge changes when a task becomes released.
 A contest has one kind of entry, the entrant: one or more people who enter
 together, from `entrants.fewest` to `entrants.most` in `contest.yaml`, one
 and one by default, so everyone enters alone. Registration, the organisers'
-decision, the extension, the workspace and the row on a board are the
+decision, the extension, the workspace and the row on a leaderboard are the
 entrant's. An entrant is an `entrants` row, with an `entrant_members` row
 for each time someone was in it; nothing about it is at the forge until its
 workspace is made. `services/entrants.py` holds the actions,
@@ -1330,9 +1332,9 @@ contest's dates, their registration panel as `entrants.mine` gives it, the
 server's clock and the tasks released to them in the contest's order, each
 with its label, its place as a letter, and when it falls due and closes
 for their entrant; and, for a member of an approved entrant, its
-`standing` (`boards.own_rows`): their own row on each leaderboard they
-read, as that board shows it to them, so the home never shows a number a
-board holds back. Anyone else gets no standing; and `task`, a
+`standing` (`leaderboards.own_rows`): their own row on each leaderboard they
+read, as that leaderboard shows it to them, so the home never shows a number a
+leaderboard holds back. Anyone else gets no standing; and `task`, a
 visible task's statement, its
 submission caps and the inputs a contestant gives, read from its plan with
 the task's form details, the labels, options, bounds and sizes a submit
@@ -1675,7 +1677,7 @@ has a result, `delayed` while it has none and its latest attempt failed,
 `over_limit` once it was to be graded again with no room left under
 `submissions.max` (`Result.limit` the most reached), and `cancelled` once
 staff end it; organisers read the grading's own
-status. A submission is told by the attempt the boards count
+status. A submission is told by the attempt the leaderboards count
 (`scores.counted`): the latest that finished with a result, so a regrade
 under way, a failure or a cancel leaves its result as it was; and while
 none has, its latest. A run in `system_error` is told as `delayed`, with
@@ -1689,7 +1691,7 @@ names every test, the hidden ones too, so it is the organisers'
 (`gradings.run_log`). Anyone else's submission is no such submission.
 
 `organised` gives organisers who observe the task one submission of any
-row, picked as the boards pick one (an entrant's `EntrantOwner`) and its
+row, picked as the leaderboards pick one (an entrant's `EntrantOwner`) and its
 number, as its row reads it with everything filled in
 (TASK-FORMAT.md section 1.7): the same attempt, the same publication and
 the same groups, shown as once the task has revealed, so a hidden group's
@@ -1892,10 +1894,10 @@ organisers cancelled this grading.", so it reads and counts the same.
 
 **A result stays until a newer one replaces it.** Of a submission's
 attempts the latest that finished with a result counts (`scores.counted`,
-`scores.usable`): on every board, to its contestant and against `submissions.max`, until a newer attempt finishes with one. A
+`scores.usable`): on every leaderboard, to its contestant and against `submissions.max`, until a newer attempt finishes with one. A
 regrade under way, a `system_error` and a staff cancel never take a result
 away. A submission none of whose attempts has a result is still grading on
-a board while its latest attempt is queued, running or a `system_error`,
+a leaderboard while its latest attempt is queued, running or a `system_error`,
 and void once staff cancel it or it ends over the limit; while its latest
 attempt is a `system_error` it is `delayed` to its contestant and is left
 out of `submissions.max`. Every `GradingRecord` of a latest attempt that has not finished
@@ -1915,7 +1917,7 @@ delayed ones made before it, are fewer than the most
 (`forge.domain.grading.room`, `gradings.place_of`; the submit's own count
 reads the same places). Without room the new attempt is made and ended at
 once `over_limit`, run by nothing, with the most it reached in
-`submission_limit`; the submission is then void on every board, left out
+`submission_limit`; the submission is then void on every leaderboard, left out
 of `submissions.max`, and served to its contestant as `over_limit` with
 that `limit`. No one grades one past the most: a staff retry is checked
 the same way, and the organisers' `GradingRecord` of a latest attempt with
@@ -1932,7 +1934,7 @@ over-the-limit attempt with a sentence saying why, which leaves it void.
 `system_error` is retried once without staff (`gradings.notice`,
 `gradings.retry_by_itself`), started by whatever finds it so: the CI's
 report, and every read that reads its status (a contestant's submissions,
-the boards, the contest home, the task's gradings, the feed and the queue
+the leaderboards, the contest home, the task's gradings, the feed and the queue
 depth), which finds it overdue or lost too. A start that fails waits
 `START_RETRY_WAIT`, a minute, for its retry, which the first read after
 starts (`gradings.start_waits`), so the one retry is not spent against a
@@ -2039,7 +2041,7 @@ compile error, on the classic workflow); `unchanged`; `new`, no earlier
 result, or one of the two not read since its publication no longer reads;
 `running`; `failed`, no result yet, its latest attempt a system error or
 cancelled; and `over_limit`. A run task's regrade is summed up instead by
-the board diff and the values and verdicts it changed
+the leaderboard diff and the values and verdicts it changed
 (`regrades.run_summary`). `regrades.latest(contest)` gives each task's
 latest regrade the organiser observes as a `Summary`, newest first, with its
 counts by change (every change named, 0 where none), how many it `graded`
@@ -2053,7 +2055,7 @@ gives its gradings as the feed does, one per submission, each with
 attempt, tests accepted of how many, and what stopped it. Nothing stores a
 comparison: each read works it out again. Migration 0021 adds the table and the column.
 
-## Scores and boards
+## Scores and leaderboards
 
 Nothing scored is stored. A result keeps the run's raw facts, and every read
 works a run task's values out again from its `scoring` blocks
@@ -2062,38 +2064,38 @@ exact rationals, a value written `0.1` read as one tenth: the runs, an
 `exec` block's number kept in the step store, and the marks staff enter
 are all that is kept (stage 5 section 6, item 1). A task graded test by
 test gives no values and no points: it is shown group by group as its
-`show` allows (`domain/showing.py`) and a board reads nothing of it (stage
+`show` allows (`domain/showing.py`) and a leaderboard reads nothing of it (stage
 5 section 6, items 70 and 123). The value meanings carry each reported
 value's `title` and `unit` (`domain/meanings.py`), which the publication's
 note keeps in the workflow's order, so no page reads the workflow to name a
 value.
 
-`boards.seen(session, contest, board=)` gives every board of the contest
-the reader reads, or only the one keyed `board`, worked out on read for
-that viewer (`domain/boards.py`, SIMPLER-CORE.md 10): staff, an observer of
-the contest or above, read every board, row and cell with no hold; the
-members of an approved entrant read `entrants` boards with their row as
+`leaderboards.seen(session, contest, leaderboard=)` gives every leaderboard of the contest
+the reader reads, or only the one keyed `leaderboard`, worked out on read for
+that viewer (`domain/leaderboards.py`, SIMPLER-CORE.md 10): staff, an observer of
+the contest or above, read every leaderboard, row and cell with no hold; the
+members of an approved entrant read `entrants` leaderboards with their row as
 their own, and anyone, a visitor with no session among them, reads
-`everyone` boards. A row is an approved entrant, its results for a task
+`everyone` leaderboards. A row is an approved entrant, its results for a task
 its submissions to it, each by the attempt of it that counts
 (`scores.usable`). Each cell is a column's blocks over the row's results
 and facts (`attempt`, `seconds`, `seconds_late`, `marked`, `compiled`); a
 viewer other than staff reads each value as the row's own entrant is shown
-it now, so a board never shows more than the task's own page, a cell
+it now, so a leaderboard never shows more than the task's own page, a cell
 reading a value still hidden shows as hidden, and a sort key reading one
 is dropped for that viewer. The hold holds rows from its `from` until its
-`until`, or until a manager ends it early (`boards.end_hold`), and its
-state is `boards.hold_state`. `boards.own_rows` gives the contest home a
-member's own row of each board they read, and `boards.chosen` the
+`until`, or until a manager ends it early (`leaderboards.end_hold`), and its
+state is `leaderboards.hold_state`. `leaderboards.own_rows` gives the contest home a
+member's own row of each leaderboard they read, and `leaderboards.chosen` the
 submissions a row's cells counted, which serves an entered mark no sooner
 than a cell counting it is shown. `marks.mark`, `unmark` and `held` keep a
 row's marks, at most the task's `marks`, frozen at the row's close. A
-contest's save is refused where a board breaks the catalogue, reads what a
+contest's save is refused where a leaderboard breaks the catalogue, reads what a
 task does not give, chooses by a mark, or gives `best_each` a value it
 cannot work out again, where the hold's `from` leaves the contest or is
 set to a time passed, or where a task's `marks` fall below what a row
-holds (`boards.check_contest`); a task's save is refused where it would
-break a board that reads it (`publications`).
+holds (`leaderboards.check_contest`); a task's save is refused where it would
+break a leaderboard that reads it (`publications`).
 
 ## Errors
 
@@ -2117,7 +2119,7 @@ structured members in `extra`:
 | `TaskClosed` | `task_closed` | `reason`, `closed` |
 | `TaskWithdrawn` | `task_withdrawn` | `reason`, `withdrawn` |
 | `TakeOutChanged` | `take_out_changed` | `submissions`, how many the task has now, and `take_out`, what taking it out would now do |
-| `TakeOutRefused` | `take_out_refused` | `boards`, each leaderboard naming the task, when one does |
+| `TakeOutRefused` | `take_out_refused` | `leaderboards`, each leaderboard naming the task, when one does |
 | `SubmissionLimit` | `submission_limit` | `limit`, the submissions allowed |
 | `RateLimited` | `rate_limited` | `rate`, such as `1 per 30s`, and `retry_at` |
 | `TooLarge` | `too_large` | `limit` in bytes, and `input`, or none for the task's |
@@ -2148,7 +2150,7 @@ already), `invite_limit` (with `retry_at`), `invite_expired` and
 being started), `invalid_token` (a report without its grading's token),
 `grading_closed` (the grading takes no envelope or report now) and
 `invalid_callback` (a report that is not one), and the marks' `marks_off`
-(no marked board covers the task) and `marks_frozen` (the row's close has
+(no marked leaderboard covers the task) and `marks_frozen` (the row's close has
 passed), carry nothing beyond the detail. The refusals of an upload or a submit share the base class
 `SubmitRefused`.
 
