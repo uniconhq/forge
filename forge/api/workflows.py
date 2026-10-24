@@ -1,8 +1,9 @@
 """Workflows for a signed-in person: making one, the ones they may read,
 one as its page shows it, its definition at a version, saving its draft,
 making a version, checking a definition on its own, who reads it, copying
-one and combining several; the platform's primitives at each version for
-the palette; and the types they come back as.
+one, and a version's inputs and outputs for drawing it as a box; the
+platform's primitives at each version for the palette; and the types they
+come back as.
 """
 
 from forge.domain.primitives import (
@@ -19,12 +20,15 @@ from forge.domain.yaml_models import Problem
 from forge.services.primitives import PrimitiveVersion
 from forge.services.primitives import listing as primitives
 from forge.services.workflows import (
+    Box,
+    BoxInput,
+    BoxOutput,
     Draft,
     NewWorkflow,
     WorkflowSummary,
     WorkflowView,
+    box,
     check,
-    combine,
     copy,
     create,
     create_version,
@@ -38,6 +42,9 @@ from forge.services.workflows import (
 )
 
 __all__ = [
+    "Box",
+    "BoxInput",
+    "BoxOutput",
     "Draft",
     "FromInput",
     "FromMax",
@@ -52,8 +59,8 @@ __all__ = [
     "Visibility",
     "WorkflowSummary",
     "WorkflowView",
+    "box",
     "check",
-    "combine",
     "copy",
     "create",
     "create_version",

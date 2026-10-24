@@ -18,7 +18,7 @@ from forge.domain.ids import WorkflowId
 from forge.domain.program_manifest import MAX_MANIFEST, TOO_LARGE
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
-from forge.domain.workflow_definition import parse_workflow, parse_workflow_ref
+from forge.domain.workflow_definition import parse_workflow_ref
 from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
@@ -435,36 +435,6 @@ async def test_a_copy_of_a_workflow_one_may_not_read_is_not_found(setup: Setup, 
     assert ("ada", "taken.workflow") not in acme.fake.state.repos
 
 
-async def test_two_workflows_combine_into_one_that_checks_on_its_own(
-    setup: Setup, acme: Acme
-) -> None:
-    bob = await _own(setup, acme)
-    await workflows.create_version(setup, bob, "bob", "tuned", "v1")
-
-    made = await workflows.combine(setup, bob, ["unicon/classic@v2", "bob/tuned@v1"], "bob", "both")
-
-    assert made.owner == "bob"
-    repo = acme.fake.state.repos[("bob", "both.workflow")]
-    assert repo.private is True
-    combined = parse_workflow(repo.files["workflow.yaml"])
-    assert [step.id for step in combined.steps] == [
-        "compile",
-        "compile-2",
-        "run",
-        "check",
-        "run-2",
-        "check-2",
-    ]
-    assert await workflows.check(setup, bob, repo.files["workflow.yaml"].decode()) == ()
-
-
-async def test_combine_takes_two_workflows_or_more(setup: Setup, acme: Acme) -> None:
-    bob = await signed_in(setup, acme.fake, 8)
-
-    with pytest.raises(Rejected, match="two workflows or more"):
-        await workflows.combine(setup, bob, ["unicon/classic@v2"], "bob", "one")
-
-
 # Listing and the newest version
 
 
@@ -612,9 +582,7 @@ async def test_a_capitalised_username_lists_and_opens_its_workflows_in_lower_cas
 
     assert (mine.owner, mine.name) == ("bob2", "tuned")
     assert (await workflows.view(setup, bob, mine.owner, mine.name)).summary.editable
-    made = await workflows.combine(
-        setup, bob, [f"{mine.owner}/tuned@v1", "unicon/classic@v2"], "bob2", "both"
-    )
+    made = await workflows.copy(setup, bob, f"{mine.owner}/tuned@v1", "bob2", "both")
     assert made.owner == "bob2"
 
 

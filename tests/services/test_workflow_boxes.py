@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from forge.domain.errors import NotFound
 from forge.domain.identity import AsUser
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.sessions import Session
@@ -16,6 +17,7 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import sessions, workflows
 from forge.services.workflow_boxes import Expanded, expand
+from forge.services.workflows import Box, BoxInput, BoxOutput
 from forge.testing import PLACEHOLDER_DIGEST
 from tests.conftest import sibling
 from tests.services.conftest import Acme, signed_in
@@ -405,6 +407,7 @@ async def test_a_loop_of_two_is_refused_at_the_outer_box_naming_the_path(
                 "`inner/back` uses bob/a@v1, and bob/a is already on that path, so the "
                 "workflow would hold itself."
             ),
+            "step": "inner/back",
         }
     ]
 
@@ -424,12 +427,12 @@ async def test_a_workflow_holding_itself_is_refused_when_the_check_names_it(
         "`again` uses bob/held@v1, and bob/held is already on that path, so the workflow "
         "would hold itself."
     )
-    assert found == ({"path": "steps[0].use", "message": message},)
+    assert found == ({"path": "steps[0].use", "message": message, "step": "again"},)
     repo = acme.fake.state.repos[("bob", "held.workflow")]
     acme.fake.state.commit(repo, {"workflow.yaml": draft.encode()}, "self", 8)
     with pytest.raises(InvalidDefinition) as refused:
         await workflows.create_version(setup, bob, "bob", "held", "v2")
-    assert refused.value.errors == [{"path": "steps[0].use", "message": message}]
+    assert refused.value.errors == [{"path": "steps[0].use", "message": message, "step": "again"}]
 
 
 async def test_a_box_that_cannot_be_opened_or_is_graded_test_by_test_is_refused(
@@ -626,3 +629,72 @@ async def test_the_cap_counts_every_use_of_the_expansion(setup: Setup, acme: Acm
             ),
         },
     )
+
+
+TIMED = """\
+inputs:
+  code: {type: folder, title: Solution}
+  language: {type: enum, options: [python], title: Language}
+  note: {type: text, optional: true, title: Note}
+steps:
+  - id: compile
+    use: unicon/compile@v3
+    with:
+      source: ${{ inputs.code }}
+      language: ${{ inputs.language }}
+      entry: ${{ inputs.note }}
+  - id: run
+    use: unicon/exec@v1
+    with:
+      program: ${{ steps.compile.program }}
+      time_limit: 1
+      memory_limit: 256
+outputs:
+  program: ${{ steps.compile.program }}
+  time_ms: ${{ steps.run.time_ms }}
+"""
+
+
+async def test_a_run_workflow_version_is_a_box_with_its_inputs_and_outputs(
+    setup: Setup, acme: Acme
+) -> None:
+    _run_primitives(acme)
+    bob = await _own(setup, acme)
+    await _version(setup, acme, bob, "timed", TIMED)
+    await _version(setup, acme, bob, "timed", TIMED + "\n", version="v2")
+
+    face = await workflows.box(setup, bob, "bob/timed@v1")
+    later = await workflows.box(setup, bob, "bob/timed@v2")
+
+    assert face == Box(
+        True,
+        (
+            BoxInput("code", "folder", None, False, "Solution", None),
+            BoxInput("language", "enum", ("python",), False, "Language", None),
+            BoxInput("note", "text", None, True, "Note", None),
+        ),
+        (
+            BoxOutput("program", "file", None, None, None, None, None),
+            BoxOutput("time_ms", "number", None, None, "lower", 0, None),
+        ),
+        "v2",
+    )
+    assert later.newer_version is None
+
+
+async def test_a_test_format_workflow_is_not_a_run_box(setup: Setup, acme: Acme) -> None:
+    bob = await _own(setup, acme)
+
+    face = await workflows.box(setup, bob, "unicon/classic@v2")
+
+    assert face == Box(False, (), (), None)
+
+
+async def test_a_box_the_caller_cannot_read_is_not_found(setup: Setup, acme: Acme) -> None:
+    _run_primitives(acme)
+    bob = await _own(setup, acme)
+    await _version(setup, acme, bob, "timed", TIMED)
+    ada = await signed_in(setup, acme.fake, 7)
+
+    with pytest.raises(NotFound, match="There is no workflow bob/timed@v1 that you can read"):
+        await workflows.box(setup, ada, "bob/timed@v1")

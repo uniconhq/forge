@@ -1,6 +1,6 @@
 """Workflows as things at the forge: making one, reading it, editing its
 `workflow.yaml`, freezing it under a version, who reads it, checking a
-definition on its own, copying one and combining several.
+definition on its own, and copying one.
 
 Who may change a workflow. Anyone signed in may make one under their own
 name, or under an org where they hold the manager role or above; an
@@ -33,17 +33,15 @@ public.
 
 The forge makes the place and the person writes its first commit, a
 `workflow.yaml` that is valid as written
-(`forge.domain.workflow_definition.starter_workflow`). A new workflow, a
-copy and a combination are private. A copy is the source's files at a
-version, with nothing written about where they came from; a combination is
-its sources inlined into one definition
-(`forge.domain.workflow_combine`). A draft with problems saves, so work can
+(`forge.domain.workflow_definition.starter_workflow`). A new workflow and a
+copy are private. A copy is the source's files at a version, with nothing
+written about where they came from. A draft with problems saves, so work can
 stop half done; a version is made only of a draft that passes every check a
 version must (TASK-FORMAT.md section 1.3), and a version never changes.
 """
 
-from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, PortError, Rejected
@@ -52,14 +50,14 @@ from forge.domain.ids import OrgId, WorkflowId
 from forge.domain.names import validate_name
 from forge.domain.plans import check_workflow, reserved_inputs, stray_report_units
 from forge.domain.port_values import natural, stray_units
-from forge.domain.primitives import PrimitiveDeclaration
+from forge.domain.primitives import Port, PrimitiveDeclaration
 from forge.domain.roles import Role, Scope, holds
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.sessions import Session
 from forge.domain.workflow_boxes import placed
-from forge.domain.workflow_combine import combinable, combine_workflows
 from forge.domain.workflow_definition import (
     WORKFLOW_FILE,
+    RunInput,
     RunWorkflow,
     WorkflowDefinition,
     WorkflowRef,
@@ -130,6 +128,51 @@ class WorkflowView:
     summary: WorkflowSummary
     draft: Draft | None = None
     readers: tuple[User, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class BoxInput:
+    """One input of a run workflow drawn as a box: its name, its type, the
+    options an enum takes, whether a task may leave it out, and the form's
+    title and unit.
+    """
+
+    name: str
+    type: str
+    options: tuple[str, ...] | None
+    optional: bool
+    title: str | None
+    unit: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class BoxOutput:
+    """One output of a run workflow drawn as a box, the port it resolves to.
+    `type` and the number's meaning are none while that port is not known,
+    as a report of a manifest the task gives is not. A port carries no title
+    and no unit, so those are none.
+    """
+
+    name: str
+    type: str | None
+    title: str | None
+    unit: str | None
+    better: str | None
+    at_least: int | Decimal | None
+    at_most: int | Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class Box:
+    """A workflow version as a box: whether it is a run workflow, its inputs
+    and outputs, and a later numbered version when it has one. A workflow of
+    the test format has `run` false and both lists empty.
+    """
+
+    run: bool
+    inputs: tuple[BoxInput, ...]
+    outputs: tuple[BoxOutput, ...]
+    newer_version: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,7 +352,13 @@ async def create_version(
 
 @action
 async def check(
-    ctx: Context, session: Session, text: str, *, workflow: str | None = None
+    ctx: Context,
+    session: Session,
+    text: str,
+    *,
+    workflow: str | None = None,
+    owner: str | None = None,
+    name: str | None = None,
 ) -> tuple[Problem, ...]:
     """Every problem a version of `text` would be refused for, each at its
     YAML path, checked against the primitives its steps use as the person
@@ -319,6 +368,7 @@ async def check(
     only for its form, and the reports of a `program.yaml` among them only
     when a version is made. `workflow`, the id of the workflow this text
     is a draft of, is put first on the path a box is refused for holding.
+    `owner` and `name` name that workflow when the id is not given.
     """
     definition_text = _sized(text)
     try:
@@ -326,6 +376,8 @@ async def check(
     except InvalidDefinition as invalid:
         return tuple(invalid.errors)
     own = WorkflowId(workflow) if workflow is not None else None
+    if own is None and owner is not None and name is not None:
+        own = await names.workflow_place(ctx, owner, name)
     return tuple(await _problems(ctx, await _as_user(ctx, session), definition, own=own))
 
 
@@ -409,42 +461,6 @@ async def copy(ctx: Context, session: Session, source: str, owner: str, name: st
     return NewWorkflow(workflow, writer.label, name)
 
 
-@action
-async def combine(
-    ctx: Context, session: Session, sources: Sequence[str], owner: str, name: str
-) -> NewWorkflow:
-    """A new private workflow `name` under `owner` that inlines every source,
-    each `<owner>/<name>@<version>` the caller reads, into one definition
-    (`forge.domain.workflow_combine`). `Rejected` for fewer than two
-    sources, one in a format no longer read, or a run workflow; `NotFound`
-    for one the caller may not read; otherwise refused as `create` refuses.
-    """
-    if len(sources) < 2:
-        raise Rejected("Combining needs two workflows or more. To start from one, copy it instead.")
-    refs = [parse_workflow_ref(source) for source in sources]
-    writer = await _writer(ctx, session, owner)
-    validate_name(name)
-    definitions: list[WorkflowDefinition] = []
-    for ref in refs:
-        text = await _read_at(ctx, writer.identity, ref)
-        try:
-            definitions.append(combinable(str(ref), read_workflow(text)))
-        except InvalidDefinition as invalid:
-            raise Rejected(
-                f"{ref} is written in an older form that Unicon no longer reads, so it cannot be "
-                f"combined. {invalid.detail}"
-            ) from None
-    files = {WORKFLOW_FILE: combine_workflows(definitions).encode()}
-    workflow = await _make(ctx, writer, name, files)
-    log.info(
-        "workflows.combined",
-        workflow=workflow,
-        sources=[str(ref) for ref in refs],
-        user_id=session.user_id,
-    )
-    return NewWorkflow(workflow, writer.label, name)
-
-
 async def newer_version(ctx: Context, as_: Identity, ref: WorkflowRef) -> str | None:
     """The workflow's version with the largest number when it is larger than
     the one `ref` names, read as `as_`, or none: when there is no larger
@@ -469,6 +485,72 @@ async def newer_version(ctx: Context, as_: Identity, ref: WorkflowRef) -> str | 
     if not numbered or max(numbered) <= pinned:
         return None
     return numbered[max(numbered)]
+
+
+@action
+async def box(ctx: Context, session: Session, ref: str) -> Box:
+    """The version `ref`, `<owner>/<name>@<version>`, as a box the editor
+    draws: its inputs, and each output as the port it resolves to, checked
+    as the caller. A workflow of the test format answers `run` false, with
+    both lists empty. `NotFound`, in the same words as reading the version,
+    when there is no such version or the caller may not read it.
+    """
+    found = parse_workflow_ref(ref)
+    as_ = await _as_user(ctx, session)
+    definition = read_workflow(await _read_at(ctx, as_, found))
+    newer = await newer_version(ctx, as_, found)
+    if not isinstance(definition, RunWorkflow):
+        return Box(False, (), (), newer)
+    workflow = await names.workflow_id(ctx, found)
+    expanded = await workflow_boxes.expand(ctx, as_, definition, own=workflow)
+    outputs: dict[str, BoxOutput] = {}
+    if expanded.flat is not None:
+        at = await ctx.forge.workflows.workflow_version(as_, workflow, found.version)
+        files = await workflow_boxes.files_at(ctx, as_, workflow, at, definition)
+        checked = check_run_workflow(
+            expanded.flat.workflow,
+            expanded.primitives,
+            files,
+            inner_files=expanded.inner_files,
+            boxes=expanded.flat.boxes,
+            flat=bool(expanded.flat.boxes),
+        )
+        resolved = placed(checked, expanded.flat) if expanded.flat.boxes else checked
+        outputs = {
+            name: _box_output(name, output.port) for name, output in resolved.outputs.items()
+        }
+    return Box(
+        True,
+        tuple(_box_input(name, declared) for name, declared in definition.inputs.items()),
+        tuple(outputs.get(name, _box_output(name, None)) for name in definition.outputs),
+        newer,
+    )
+
+
+def _box_input(name: str, declared: RunInput) -> BoxInput:
+    options = declared.options
+    return BoxInput(
+        name,
+        declared.type.value,
+        None if options is None else tuple(options),
+        declared.optional,
+        declared.title,
+        declared.unit,
+    )
+
+
+def _box_output(name: str, port: Port | None) -> BoxOutput:
+    if port is None:
+        return BoxOutput(name, None, None, None, None, None, None)
+    return BoxOutput(
+        name,
+        port.type.value,
+        None,
+        None,
+        None if port.better is None else port.better.value,
+        port.at_least,
+        port.at_most,
+    )
 
 
 # Building blocks

@@ -16,7 +16,6 @@ from typing import Any
 import pytest
 
 from forge.domain.blocks.numbers import Better
-from forge.domain.errors import Rejected
 from forge.domain.plans import check_workflow
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.program_manifest import MAX_MANIFEST
@@ -32,7 +31,6 @@ from forge.domain.run_workflow import (
     manifest_paths,
 )
 from forge.domain.types import Type
-from forge.domain.workflow_combine import combinable
 from forge.domain.workflow_definition import (
     PIPELINE_STEPS,
     SELF_REPORTED_GIVEN,
@@ -341,14 +339,6 @@ def test_a_program_setting_named_by_a_number_is_refused_beside_unknown_names(
             "message": "unicon/exec@v1 has no input called zeta. Remove it.",
         },
     ]
-
-
-def test_a_run_workflow_cannot_be_combined() -> None:
-    run = read_workflow((folder(CLASSIC_V3) / "workflow.yaml").read_bytes())
-
-    with pytest.raises(Rejected, match="unicon/classic@v3 has no test block"):
-        combinable(CLASSIC_V3, run)
-    assert combinable("unicon/classic@v2", parse_workflow(CLASSIC)) == parse_workflow(CLASSIC)
 
 
 # Steps and their ports

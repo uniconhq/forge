@@ -92,10 +92,10 @@ forge/api/
                 standing returns, the TakeOut and PutBack the last two
                 return, and task_id_of, the id of the task a scope names
   workflows.py  create, listing, view, read_version, save, create_version,
-                check, set_visibility, share, unshare, copy, combine,
+                check, set_visibility, share, unshare, copy, box,
                 primitives, and the NewWorkflow, WorkflowSummary,
-                WorkflowView, Draft, PrimitiveVersion and Problem they
-                return
+                WorkflowView, Draft, Box, BoxInput, BoxOutput,
+                PrimitiveVersion and Problem they return
   files.py      read, tree, history, write, rollback, write_upload, download,
                 and the File, TreeEntry, UploadInfo, EntryKind and Change
                 they return
@@ -625,7 +625,7 @@ hosting process calls are actions, marked `@action` from
 | `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
 | `regrades` | `latest`, `dismiss`, `gradings_of` |
 | `runs` | `config`, `envelope`, `callback` |
-| `workflows` | `create`, `listing`, `view`, `read_version`, `save`, `create_version`, `check`, `set_visibility`, `share`, `unshare`, `copy`, `combine` |
+| `workflows` | `create`, `listing`, `view`, `read_version`, `save`, `create_version`, `check`, `set_visibility`, `share`, `unshare`, `copy`, `box` |
 | `primitives` | `listing` |
 
 A hosting process reaches them through `forge.api`. An action is one unit of
@@ -837,13 +837,10 @@ private, shared or public: shared is private with a list of readers, and
 reads back as shared once the list holds someone; `set_visibility` to
 private or public empties the list, and `share` is refused while it is
 public. `copy` makes a private workflow of the source's files at a version,
-read as the caller, with nothing written about where it came from; `combine`
-inlines two or more versions into one new private definition
-(`domain/workflow_combine.py`): an input or test field an earlier source
-declared alike is one, anything else that clashes with an earlier source
-takes the first free `-2`, `-3` (`_2` for a reported name), free of every
-id already taken and of the source's own others, every reference follows, and the once steps of
-every source come before their per-test steps. `primitives.listing` is every
+read as the caller, with nothing written about where it came from. `box`
+reads a version as the caller and gives its inputs and outputs for drawing
+it as a box; a workflow of the test format answers that it is not a run
+workflow. `primitives.listing` is every
 primitive at every version with its declaration, for the editor's palette;
 a version in a format no longer read comes with the reason instead.
 

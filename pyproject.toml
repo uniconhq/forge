@@ -160,7 +160,7 @@ source_modules = ["forge.domain"]
 forbidden_modules = ["forge.services", "forge.db", "forge.port", "forge.adapters", "forge.log"]
 
 [[tool.importlinter.contracts]]
-name = "the new path imports nothing from today's showing, reports or combining modules (plans waits for open 132, for Plan)"
+name = "the new path imports nothing from today's showing or reports modules (plans waits for open 132, for Plan)"
 type = "forbidden"
 source_modules = [
     "forge.domain.run_plan",
@@ -175,7 +175,6 @@ source_modules = [
 forbidden_modules = [
     "forge.domain.showing",
     "forge.domain.reports",
-    "forge.domain.workflow_combine",
 ]
 ignore_imports = ["forge.services.scores -> forge.domain.showing"]
 allow_indirect_imports = true

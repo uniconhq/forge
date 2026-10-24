@@ -180,6 +180,7 @@ async def expand(
                             f"`{step_path}` uses {step.use}, and {step.use.owner}/{step.use.name} "
                             "is already on that path, so the workflow would hold itself."
                         ),
+                        step=step_path,
                     )
                 )
                 blocked = True
