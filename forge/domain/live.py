@@ -25,16 +25,18 @@ CHANNEL = "unicon_live"
 
 
 class NudgeKind(StrEnum):
-    """What a nudge names: a grading, an announcement, a clarification, or
-    a task whose results staff released or took back (`results`, its id the
-    task's). `resync` tells a page that nudges may have been missed, so it
-    should refetch what it shows.
+    """What a nudge names: a grading, an announcement, a clarification, a
+    task whose results staff released or took back (`results`, its id the
+    task's), or a save whose checks ended (`checks`, its id the
+    publication's). `resync` tells a page that nudges may have been missed,
+    so it should refetch what it shows.
     """
 
     GRADING = "grading"
     ANNOUNCEMENT = "announcement"
     CLARIFICATION = "clarification"
     RESULTS = "results"
+    CHECKS = "checks"
     RESYNC = "resync"
 
 

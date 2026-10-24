@@ -75,10 +75,10 @@ from forge.domain.identity import PLATFORM, AsOrgAccount, User
 from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.keys import key_from_name
 from forge.domain.leaderboards import Counted
-from forge.domain.live import Nudge
+from forge.domain.live import Audience, Nudge, NudgeKind, hears
 from forge.domain.names import EntrantOwner
 from forge.domain.regrades import ValueChange, VerdictChange
-from forge.domain.roles import Role, RoleGrant, Scope
+from forge.domain.roles import Role, RoleGrant, Scope, task_scope
 from forge.domain.run_plan import PipelineKind
 from forge.domain.run_showing import TextAt
 from forge.domain.submission_state import SubmissionState
@@ -100,6 +100,8 @@ from forge.services import (
 )
 from forge.services.access import Organiser
 from forge.services.gradings import START_RETRY_WAIT
+from forge.services.gradings.following import stop as stop_row
+from forge.services.gradings.lookups import finish as end_row
 from forge.services.pipelines import USER_FIRST
 from forge.services.task_save import Draft, Published
 from forge.settings import Settings
@@ -1520,17 +1522,27 @@ async def test_a_saves_checks_are_graded_by_its_pipeline_and_each_gets_what_it_e
 
 
 async def test_a_check_that_does_not_get_what_it_expects_refuses_its_save_saying_why(
-    setup: Setup, acme: Acme, spring: str
+    setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     islands = await _checked(setup, acme)
     text = TASKS["islands"][0] + CHECKS
     saved = await _save(setup, acme, islands.task, {"task.yaml": text.encode(), **CHECK_FILES})
     assert saved.check == "checking"
     _, save = await _rows(setup, "save")
+    told: list[Nudge] = []
+    nudge = Context.nudge
+
+    def heard(ctx: Context, made: Nudge) -> None:
+        told.append(made)
+        nudge(ctx, made)
+
+    monkeypatch.setattr(Context, "nudge", heard)
 
     await _checks_run(setup, acme, save.id, good={"r4": "wrong_answer"}, diff=False)
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
+    [checks] = [each for each in told if each.kind is NudgeKind.CHECKS]
+    assert checks.id == save.publication_id and checks.entrant is None
 
     async with setup.unit_of_work() as ctx:
         current = await entrant_view.task(ctx, islands.task)
@@ -1547,6 +1559,68 @@ async def test_a_check_that_does_not_get_what_it_expects_refuses_its_save_saying
     assert failed.outcomes == {"compile": "accepted"} and failed.error is None
     state = await tasks.state(setup, manager, islands.task)
     assert state.latest is not None and state.latest.failed_checks == listed[1].failed_checks
+
+
+async def test_each_end_of_a_save_row_nudges_the_tasks_organisers(
+    setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A save row that ends done, with a system error, or cancelled by a
+    later save each tells the task's organisers once, naming the
+    publication. An entrant is not told, and an early row's end is not
+    this nudge. A save whose checks refuse it ends done, and that path
+    sends the same nudge."""
+    islands = await _checked(setup, acme)
+    text = TASKS["islands"][0] + CHECKS
+    await _save(setup, acme, islands.task, {"task.yaml": text.encode(), **CHECK_FILES})
+    _, save = await _rows(setup, "save")
+    told: list[Nudge] = []
+    nudge = Context.nudge
+
+    def heard(ctx: Context, made: Nudge) -> None:
+        told.append(made)
+        nudge(ctx, made)
+
+    monkeypatch.setattr(Context, "nudge", heard)
+
+    async def ended(status: GradingStatus) -> Nudge:
+        told.clear()
+        async with setup.unit_of_work() as ctx:
+            row = await ctx.db.scalar(select(Grading).where(Grading.id == save.id))
+            assert row is not None
+            end_row(ctx, row, status)
+        checks = [each for each in told if each.kind is NudgeKind.CHECKS]
+        assert len(checks) == 1
+        return checks[0]
+
+    done = await ended(GradingStatus.DONE)
+    faulted = await ended(GradingStatus.SYSTEM_ERROR)
+    told.clear()
+    async with setup.unit_of_work() as ctx:
+        row = await ctx.db.scalar(select(Grading).where(Grading.id == save.id))
+        assert row is not None
+        stop_row(ctx, row)
+    [cancelled] = [each for each in told if each.kind is NudgeKind.CHECKS]
+    for each in (done, faulted, cancelled):
+        assert each.id == save.publication_id
+        assert (each.user, each.entrant, each.contest) == (None, None, None)
+        assert each.scope == task_scope(islands.task)
+    organiser = Audience(7, (RoleGrant(task_scope(islands.task), Role.OBSERVER),), frozenset())
+    member = Audience(8, (), frozenset({SPRING}), frozenset({"someone"}))
+    elsewhere = Audience(
+        9, (RoleGrant(Scope("acme", "spring", "other"), Role.OBSERVER),), frozenset()
+    )
+    assert hears(organiser, done)
+    assert not hears(member, done)
+    assert not hears(elsewhere, done)
+
+    await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    told.clear()
+    async with setup.unit_of_work() as ctx:
+        row = await ctx.db.scalar(select(Grading).where(Grading.id == early.id))
+        assert row is not None
+        end_row(ctx, row, GradingStatus.DONE)
+    assert [each for each in told if each.kind is NudgeKind.CHECKS] == []
 
 
 async def test_a_check_that_faults_ends_the_save_row_a_system_error_and_it_is_tried_again(

@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import select
 
 from forge.db.tables import Grading
-from forge.db.tables.gradings import EARLY
+from forge.db.tables.gradings import EARLY, SAVE
 from forge.domain.errors import NotFound
 from forge.domain.grading import (
     PLATFORM_POOL,
@@ -112,11 +112,22 @@ def org_of(row: Grading) -> OrgId:
 
 
 def finish(ctx: Context, row: Grading, status: GradingStatus, *, error: str | None = None) -> None:
-    """End the grading with `status`, waiting for nothing more."""
+    """End the grading with `status`, waiting for nothing more. A save row
+    also tells the task's organisers that its checks ended, naming the
+    publication, with no entrant and no contest.
+    """
     row.status = status
     row.finished_at = ctx.now
     row.error = error
     changed(ctx, row)
+    if row.pipeline == SAVE:
+        ctx.nudge(
+            Nudge(
+                NudgeKind.CHECKS,
+                row.publication_id,
+                scope=task_scope(TaskId(row.task_id)),
+            )
+        )
 
 
 def changed(ctx: Context, row: Grading, *, organisers_only: bool = False) -> None:

@@ -80,12 +80,12 @@ MOST_MARK_CHARACTERS: Final = 40
 @dataclass(frozen=True, slots=True)
 class Entered:
     """One mark entered for a submission's value: the value, the mark as
-    the plain decimal it was entered as, who entered it by user id, and
-    when.
+    the plain decimal it was entered as, or none when it was cleared, who
+    entered it by user id, and when.
     """
 
     value: str
-    mark: str
+    mark: str | None
     by: int
     at: datetime
 
@@ -181,10 +181,12 @@ async def enter(
     owner: WorkspaceOwner,
     number: int,
     value: str,
-    mark: str,
+    mark: str | None,
 ) -> Entered:
     """Enter `mark` for the value `value` of the submission numbered
-    `number` of the entrant `owner`. Needs the manager role at the task.
+    `number` of the entrant `owner`. None or "" clears it: the entry is
+    kept, with who and when, and the bounds are not read, even when the
+    value was already missing. Needs the manager role at the task.
     `InvalidMark` for a value the task's live publication gives no
     `entered` block, or a mark that is not a number within its bounds;
     `NotFound` for a task with no publication or a row with no such
@@ -204,14 +206,18 @@ async def enter(
         raise InvalidMark(
             f"{value} takes no entered mark: the task's live version gives it no entered block."
         )
-    number_of = _mark(mark)
-    least, most = exact(found[0]["at_least"]), exact(found[0]["at_most"])
-    assert least is not None and most is not None, "the save checks an entered block's bounds"
-    if number_of is None or not least <= number_of <= most:
-        raise InvalidMark(
-            f"Enter a number from {written(least)} to {written(most)} for {value}, such as "
-            f"{written(least)}."
-        )
+    if mark is None or mark == "":
+        kept: str | None = None
+    else:
+        number_of = _mark(mark)
+        least, most = exact(found[0]["at_least"]), exact(found[0]["at_most"])
+        assert least is not None and most is not None, "the save checks an entered block's bounds"
+        if number_of is None or not least <= number_of <= most:
+            raise InvalidMark(
+                f"Enter a number from {written(least)} to {written(most)} for {value}, such as "
+                f"{written(least)}."
+            )
+        kept = _stored(mark)
     workspace = ctx.forge.workspaces.workspace_of(contest_id_of(task_scope(task)), owner)
     submission = await ctx.db.scalar(
         select(Grading.submission_id)
@@ -224,7 +230,7 @@ async def enter(
     )
     if submission is None:
         raise NotFound(NO_SUCH_SUBMISSION)
-    entered = Entered(value, _stored(mark), organiser.user.id, ctx.now)
+    entered = Entered(value, kept, organiser.user.id, ctx.now)
     ctx.db.add(
         Entry(
             task_id=task,
