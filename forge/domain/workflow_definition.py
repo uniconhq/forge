@@ -456,6 +456,8 @@ class Reference:
     name: str
     output: str | None = None
     program: str | None = None
+    # 0 reads the outer workflow. 1 onwards reads the inner workflow that pin was given.
+    pin: int = 0
 
     @property
     def port(self) -> str | None:
@@ -468,7 +470,8 @@ class Reference:
 
     def __str__(self) -> str:
         tail = f".{self.port}" if self.port is not None else ""
-        return f"${{{{ {self.kind}.{self.name}{tail} }}}}"
+        kind = f"workflow@{self.pin}" if self.kind == "workflow" and self.pin else self.kind
+        return f"${{{{ {kind}.{self.name}{tail} }}}}"
 
 
 _WHOLE = re.compile(r"^\s*\$\{\{\s*([^{}]*?)\s*\}\}\s*$")
@@ -479,12 +482,33 @@ class BadReference(ValueError):
     """A `${{ }}` that is not one of the three a workflow makes."""
 
 
-def parse_reference(expression: str, *, runs: bool = False) -> Reference:
+def _step_id(step: str, *, flat: bool) -> bool:
+    """A written reference names a step by its id. A flat workflow's step id
+    is a path, so only that reading checks `FLAT_STEP_ID`. Imported here, not
+    at load, because `plan_basics` is built on this module.
+    """
+    if not flat:
+        return True
+    from forge.domain.plan_basics import FLAT_STEP_ID
+
+    return re.fullmatch(FLAT_STEP_ID, step) is not None
+
+
+def parse_reference(expression: str, *, runs: bool = False, flat: bool = False) -> Reference:
     """The reference inside `${{ ... }}`, read as a workflow of today's
-    format writes it, or as a run workflow does when `runs`. `BadReference`
-    saying what a reference may be in that format.
+    format writes it, or as a run workflow does when `runs`. `flat` reads a
+    workflow expanded into primitive steps: a step id may be a path, and
+    `workflow@<k>.<path>` names pin k. `BadReference` saying what a
+    reference may be in that format.
     """
     head, dot, path = expression.partition(".")
+    if flat and head.startswith("workflow@") and dot:
+        number = head.removeprefix("workflow@")
+        if number.isdigit() and int(number) >= 1 and path:
+            problem = path_problem(path, folder=None, of="workflow")
+            if problem is not None:
+                raise BadReference(f"Unicon cannot read ${{{{ {expression} }}}}. {problem}")
+            return Reference("workflow", path, pin=int(number))
     if head == "workflow" and dot:
         problem = path_problem(path, folder=None, of="workflow")
         if problem is not None:
@@ -496,9 +520,11 @@ def parse_reference(expression: str, *, runs: bool = False) -> Reference:
             return Reference("inputs", name)
         case ["test", field] if field:
             return Reference("test", field)
-        case ["steps", step, output] if step and output:
+        case ["steps", step, output] if step and output and _step_id(step, flat=flat):
             return Reference("steps", step, output)
-        case ["steps", step, program, output] if runs and step and program and output:
+        case ["steps", step, program, output] if (
+            runs and step and program and output and _step_id(step, flat=flat)
+        ):
             return Reference("steps", step, output, program)
     if runs:
         raise BadReference(
@@ -512,19 +538,24 @@ def parse_reference(expression: str, *, runs: bool = False) -> Reference:
     )
 
 
-def whole_reference(text: str, *, runs: bool = False) -> Reference | None:
+def whole_reference(text: str, *, runs: bool = False, flat: bool = False) -> Reference | None:
     """The reference `text` is exactly, or none when it is anything else.
     `BadReference` for a `${{ }}` that is not a reference in the format.
     """
     found = _WHOLE.match(text)
-    return parse_reference(found.group(1), runs=runs) if found is not None else None
+    return parse_reference(found.group(1), runs=runs, flat=flat) if found is not None else None
 
 
-def references(text: str, *, runs: bool = False) -> list[tuple[re.Match[str], Reference]]:
+def references(
+    text: str, *, runs: bool = False, flat: bool = False
+) -> list[tuple[re.Match[str], Reference]]:
     """Every reference written into `text`, with where it is. `BadReference`
     for a `${{ }}` that is not one, or a `${{` that is never closed.
     """
-    found = [(match, parse_reference(match.group(1), runs=runs)) for match in _ANY.finditer(text)]
+    found = [
+        (match, parse_reference(match.group(1), runs=runs, flat=flat))
+        for match in _ANY.finditer(text)
+    ]
     if text.count("${{") != len(found):
         raise BadReference(
             "A ${{ is not closed with }}, or has a brace inside it. Close each one, and "
@@ -661,11 +692,13 @@ class RunWorkflow(Model):
     """A run workflow's `workflow.yaml`: one run's inputs, its steps, at
     least one, and the reports it gives beside the `verdict` and `passed`
     every run has. Report names and input names are one set of columns.
+    `outputs` names what a workflow used as a box gives, each a step output.
     """
 
     inputs: dict[str, RunDeclared] = Field(default_factory=dict)
     steps: tuple[RunStep, ...] = Field(min_length=1)
     reports: dict[str, _RunReportEntry] = Field(default_factory=dict)
+    outputs: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check(self) -> RunWorkflow:
@@ -711,6 +744,31 @@ class RunWorkflow(Model):
                     f"{name} is an input of the workflow, and a report and an input are columns "
                     "of the same run. Report this under another name.",
                 )
+        for name, value in self.outputs.items():
+            at = ("outputs", name)
+            if not REPORT_NAME.fullmatch(name):
+                problems.add(
+                    at,
+                    "An output's name may use at most 64 lower case letters, digits and "
+                    "underscores (_), starting with a letter.",
+                )
+            elif name in RESERVED_NAMES or name in RUN_NAMES:
+                problems.add(at, reserved_message(name))
+            else:
+                found: Reference | None
+                if not isinstance(value, str):
+                    found = None
+                else:
+                    try:
+                        found = whole_reference(value, runs=True)
+                    except BadReference:
+                        found = None
+                if found is None or found.kind != "steps" or found.output is None:
+                    problems.add(
+                        at,
+                        "An output names a step output of this workflow, such as "
+                        "${{ steps.<id>.<output> }}.",
+                    )
         problems.raise_any()
         return self
 
@@ -721,11 +779,6 @@ _MEANT_BY_MAKER = (
 )
 RUN_RETIRED = (
     *_FILE_KEYS,
-    Retired(
-        ("outputs",),
-        "This is now called reports: each value a run reports, named, with the step output "
-        "it reads, such as ${{ steps.<id>.<output> }}. Move these there.",
-    ),
     Retired(
         ("report",),
         "A workflow without a test block, which describes one run, names this reports, and a "

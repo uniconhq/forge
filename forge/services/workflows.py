@@ -48,15 +48,15 @@ from dataclasses import dataclass
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, PortError, Rejected
 from forge.domain.identity import AsUser, Identity, User
-from forge.domain.ids import OrgId, VersionId, WorkflowId
+from forge.domain.ids import OrgId, WorkflowId
 from forge.domain.names import validate_name
 from forge.domain.plans import check_workflow, reserved_inputs, stray_report_units
 from forge.domain.port_values import natural, stray_units
 from forge.domain.primitives import PrimitiveDeclaration
-from forge.domain.program_manifest import MAX_MANIFEST
 from forge.domain.roles import Role, Scope, holds
-from forge.domain.run_workflow import WorkflowFiles, check_run_workflow, manifest_paths
+from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.sessions import Session
+from forge.domain.workflow_boxes import placed
 from forge.domain.workflow_combine import combinable, combine_workflows
 from forge.domain.workflow_definition import (
     WORKFLOW_FILE,
@@ -74,7 +74,7 @@ from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import access, making, names, primitives, sessions
+from forge.services import access, making, names, primitives, sessions, workflow_boxes
 
 log = get_logger(__name__)
 
@@ -288,11 +288,11 @@ async def create_version(
         )
     definition = read_workflow(file.content)
     files = (
-        await files_at(ctx, writer.identity, workflow, head, definition)
+        await workflow_boxes.files_at(ctx, writer.identity, workflow, head, definition)
         if isinstance(definition, RunWorkflow)
         else None
     )
-    problems = await _problems(ctx, writer.identity, definition, files)
+    problems = await _problems(ctx, writer.identity, definition, files, own=workflow)
     if problems:
         raise InvalidDefinition(WORKFLOW_FILE, problems)
     try:
@@ -308,21 +308,25 @@ async def create_version(
 
 
 @action
-async def check(ctx: Context, session: Session, text: str) -> tuple[Problem, ...]:
+async def check(
+    ctx: Context, session: Session, text: str, *, workflow: str | None = None
+) -> tuple[Problem, ...]:
     """Every problem a version of `text` would be refused for, each at its
     YAML path, checked against the primitives its steps use as the person
     reads them. Nothing is written, no version is made and no plan is
     produced; none means it would make a version. A run workflow's own
     files are the version's, so here a `${{ workflow.<path> }}` is checked
     only for its form, and the reports of a `program.yaml` among them only
-    when a version is made.
+    when a version is made. `workflow`, the id of the workflow this text
+    is a draft of, is put first on the path a box is refused for holding.
     """
     definition_text = _sized(text)
     try:
         definition = read_workflow(definition_text)
     except InvalidDefinition as invalid:
         return tuple(invalid.errors)
-    return tuple(await _problems(ctx, await _as_user(ctx, session), definition))
+    own = WorkflowId(workflow) if workflow is not None else None
+    return tuple(await _problems(ctx, await _as_user(ctx, session), definition, own=own))
 
 
 @action
@@ -475,76 +479,65 @@ async def _problems(
     as_: Identity,
     definition: WorkflowDefinition | RunWorkflow,
     files: WorkflowFiles | None = None,
+    *,
+    own: WorkflowId | None = None,
 ) -> list[Problem]:
     """Every problem a version of the definition would be refused for: an
     input named as a folder the task format reserves (`reserved_inputs`), a
     unit on an input or a reported value that is not a number
     (`stray_units`, `stray_report_units`), each `use:` that cannot be read
     as a primitive at its own path, then what `check_workflow` finds
-    against the ones that can. A run workflow has no folders reserved, and
-    `check_run_workflow` checks it, against `files`, its own at the
-    version's commit.
+    against the ones that can. A run workflow has no folders reserved. It
+    is expanded (`workflow_boxes.expand`), boxes and all, and
+    `check_run_workflow` checks the flat list against `files`, its own at
+    the version's commit. `own` is that workflow, first on the path a box
+    is refused for holding.
     """
-    found: dict[str, PrimitiveDeclaration] = {}
+    if isinstance(definition, RunWorkflow):
+        expanded = await workflow_boxes.expand(ctx, as_, definition, own=own)
+        if expanded.flat is None:
+            return [*stray_units(definition), *expanded.problems]
+        checked = check_run_workflow(
+            expanded.flat.workflow,
+            expanded.primitives,
+            files,
+            inner_files=expanded.inner_files,
+            boxes=expanded.flat.boxes,
+            flat=bool(expanded.flat.boxes),
+        )
+        found = placed(checked, expanded.flat).problems if expanded.flat.boxes else checked.problems
+        said = {problem["path"] for problem in expanded.problems}
+        return [
+            *stray_units(definition),
+            *expanded.problems,
+            *(problem for problem in found if problem["path"] not in said),
+        ]
     read: dict[str, str | None] = {}
     unread: list[Problem] = []
-    uses = [step.use for step in definition.steps]
-    for index, ref in enumerate(uses):
-        use = str(ref)
+    declarations: dict[str, PrimitiveDeclaration] = {}
+    for index, ref in enumerate(definition.steps):
+        use = str(ref.use)
         if use not in read:
-            declaration, problem = await primitives.declaration(ctx, as_, ref)
+            declaration, problem = await primitives.declaration(ctx, as_, ref.use)
             read[use] = problem
             if declaration is not None:
-                found[use] = declaration
+                declarations[use] = declaration
         problem = read[use]
         if problem is not None:
             unread.append(Problem(path=path_text(("steps", index, "use")), message=problem))
     said = {problem["path"] for problem in unread}
-    if isinstance(definition, RunWorkflow):
-        run = check_run_workflow(definition, found, files).problems
-        return [
-            *stray_units(definition),
-            *unread,
-            *(problem for problem in run if problem["path"] not in said),
-        ]
-    checked = [
-        problem for problem in check_workflow(definition, found) if problem["path"] not in said
+    reported = [
+        problem
+        for problem in check_workflow(definition, declarations)
+        if problem["path"] not in said
     ]
     return [
         *reserved_inputs(definition),
         *stray_units(definition),
-        *stray_report_units(definition, found),
+        *stray_report_units(definition, declarations),
         *unread,
-        *checked,
+        *reported,
     ]
-
-
-async def files_at(
-    ctx: Context, as_: Identity, workflow: WorkflowId, at: VersionId, definition: RunWorkflow
-) -> WorkflowFiles:
-    """The workflow's files at the commit `at`, read as `as_`, as making a
-    version checks them and a run task's save checks them again: every
-    path with its size, and each one wired into a manifest port that is
-    there. One listed that
-    does not read as a file is left out, so the check refuses it as missing
-    at the manifest port; one listed as over `MAX_MANIFEST` is never read.
-    """
-    listed = await ctx.forge.workflows.workflow_files(as_, workflow, at)
-    paths = set(listed.tokens)
-    manifests: dict[str, bytes] = {}
-    oversized: set[str] = set()
-    for path in sorted(manifest_paths(definition) & paths):
-        if listed.sizes.get(path, 0) > MAX_MANIFEST:
-            oversized.add(path)
-            continue
-        try:
-            read = await ctx.forge.workflows.read_workflow_at(as_, workflow, at, path)
-        except NotFound:
-            paths.discard(path)
-            continue
-        manifests[path] = read.content
-    sizes = {path: size for path, size in listed.sizes.items() if path in paths}
-    return WorkflowFiles(frozenset(paths), manifests, frozenset(oversized), sizes)
 
 
 async def _make(ctx: Context, writer: _Writer, name: str, files: dict[str, bytes]) -> WorkflowId:

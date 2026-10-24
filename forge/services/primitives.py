@@ -25,14 +25,15 @@ WITHDRAWN = (
 
 
 async def declaration(
-    ctx: Context, as_: Identity, use: WorkflowRef
+    ctx: Context, as_: Identity, use: WorkflowRef, *, workflows: bool = False
 ) -> tuple[PrimitiveDeclaration | None, str | None]:
     """The declaration a `use:` names, or what is wrong with it. A `use:` that
     names a workflow the reader can read is refused as not a primitive, and
     one they cannot read is refused naming it, the same whether it is not
-    there or not shared with them. A primitive whose image the platform has
-    withdrawn (`Settings.withdrawn_images`) is refused, so nothing new is
-    saved to run it.
+    there or not shared with them. With `workflows`, a workflow they can
+    read is a box and the answer is `(None, None)`. A primitive whose image
+    the platform has withdrawn (`Settings.withdrawn_images`) is refused, so
+    nothing new is saved to run it.
     """
     primitive = primitive_id_of(use)
     if primitive is not None:
@@ -60,6 +61,8 @@ async def declaration(
             f"Unicon cannot open {use}: there is no such primitive or workflow at that "
             "version, or it is not shared with you."
         )
+    if workflows:
+        return None, None
     return None, f"{use} is a workflow, and a step can only use a primitive."
 
 

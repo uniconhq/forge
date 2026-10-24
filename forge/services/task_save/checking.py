@@ -21,7 +21,7 @@ from forge.domain.save_effect import ReadChanges, as_extra
 from forge.domain.workflow_definition import RunWorkflow, parse_workflow_ref
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_mapping
 from forge.runtime.context import Context
-from forge.services import gradings, workflows
+from forge.services import gradings
 from forge.services.task_save import sources
 from forge.services.task_save.effect import _programs_again, _save_effect
 from forge.services.task_save.guards import (
@@ -47,6 +47,7 @@ from forge.services.task_save.stored_facts import (
     _workflow_problem,
 )
 from forge.services.task_save.writing import _contest_running
+from forge.services.workflow_boxes import files_at
 
 
 def _checked_first(checked: Checked) -> bool:
@@ -251,7 +252,7 @@ async def _check_runs(
         return Checked(definition, None, unresolved, pins)
     ref = definition.workflow
     try:
-        files = await workflows.files_at(ctx, as_, read.workflow, read.at, workflow)
+        files = await files_at(ctx, as_, read.workflow, read.at, workflow)
     except NotFound, Forbidden:
         return Checked(definition, None, (_unopened(ref),), pins)
     resolved = check_run_workflow(workflow, primitives, files)

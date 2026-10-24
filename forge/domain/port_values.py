@@ -100,7 +100,7 @@ class Refused(Exception):
 
 
 def literal_or_references(
-    raw: object, *, runs: bool = False
+    raw: object, *, runs: bool = False, flat: bool = False
 ) -> Kind | tuple[Reference | None, list[Reference]]:
     """The kind of `raw` when it is true or false or a number; for text,
     the reference it is whole, or else those written into it, in either
@@ -119,8 +119,10 @@ def literal_or_references(
     if not isinstance(raw, str):
         raise Refused("Give text, a number, true or false, or a ${{ }} reference.")
     try:
-        whole = whole_reference(raw, runs=runs)
-        written = [found for _, found in references(raw, runs=runs)] if whole is None else []
+        whole = whole_reference(raw, runs=runs, flat=flat)
+        written = (
+            [found for _, found in references(raw, runs=runs, flat=flat)] if whole is None else []
+        )
     except BadReference as bad:
         raise Refused(str(bad)) from None
     return whole, written

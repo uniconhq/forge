@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Annotated, Any, NoReturn, TypedDict
+from typing import Annotated, Any, NoReturn, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, PlainValidator, ValidationError
 from pydantic_core import ErrorDetails, PydanticCustomError
@@ -47,10 +47,14 @@ def joined(items: Sequence[str]) -> str:
 
 
 class Problem(TypedDict):
-    """One thing wrong with a definition file: where, and what."""
+    """One thing wrong with a definition file: where, and what. `step` is the
+    flat step a problem inside a box belongs to, when the path can only name
+    the box.
+    """
 
     path: str
     message: str
+    step: NotRequired[str]
 
 
 class InvalidDefinition(ServiceError):
