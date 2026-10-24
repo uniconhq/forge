@@ -8,13 +8,14 @@ one.
 
 A file with no `test` block is a run workflow instead (SIMPLER-CORE.md 7,
 `RunWorkflow`): it describes one run, so it has no test fields and nothing
-runs per test, no input says who gives it, and its `reports` add only a
+runs per test, no input says who gives it, and its `outputs` add only a
 title and a unit, since what a number means is the primitive's or the
-program's that made it. It reads its own files, `${{ workflow.<path> }}`, a
+program's that made it. A number or a text output is a column of the run;
+a file output is not. It reads its own files, `${{ workflow.<path> }}`, a
 trailing `/` naming a folder, and a programs-form step's outputs per program,
-`${{ steps.<id>.<program>.<output> }}`. Testing for `test` and not for
-`reports` tells the two apart, since a run workflow that reports only its
-verdict has no `reports` either. `read_workflow` reads either.
+`${{ steps.<id>.<program>.<output> }}`. Testing for `test` tells the two
+apart, since a run workflow that gives only its verdict has no `outputs`
+either. `read_workflow` reads either.
 
 What this module checks needs nothing but the file: ids and names unique and
 well formed, each declaration's keys fitting its type, every once step
@@ -645,11 +646,11 @@ class RunStep(Model):
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
 
 
-class RunReport(Model):
-    """A report with the words a page names it by: `from` the step output it
+class RunOutput(Model):
+    """An output with the words a page names it by: `from` the step output it
     reads, its `title`, and its `unit`, on a number only. Which way is
     better and its bounds are the primitive's or the program's that made
-    the number, never the report's.
+    the number, never the output's.
     """
 
     from_: str = Field(alias="from")
@@ -660,18 +661,18 @@ class RunReport(Model):
 RunDeclared = Annotated[RunInput, BeforeValidator(declared)]
 
 
-def _run_report(value: object) -> str | RunReport:
+def _run_output(value: object) -> str | RunOutput:
     if isinstance(value, dict):
-        return RunReport.model_validate(value)
+        return RunOutput.model_validate(value)
     if not isinstance(value, str):
         raise ValueError(
-            "Give the step output this reports, as ${{ steps.<id>.<output> }}, or that "
+            "Give the step output this gives, as ${{ steps.<id>.<output> }}, or that "
             "output with the words a page names it by: from, title and unit."
         )
     return value
 
 
-_RunReportEntry = Annotated[str | RunReport, PlainValidator(_run_report)]
+_RunOutputEntry = Annotated[str | RunOutput, PlainValidator(_run_output)]
 
 CLONE_STEP = "clone"
 PIPELINE_STEPS = (CLONE_STEP, "report")
@@ -690,15 +691,15 @@ SELF_REPORTED_GIVEN = (
 
 class RunWorkflow(Model):
     """A run workflow's `workflow.yaml`: one run's inputs, its steps, at
-    least one, and the reports it gives beside the `verdict` and `passed`
-    every run has. Report names and input names are one set of columns.
-    `outputs` names what a workflow used as a box gives, each a step output.
+    least one, and the outputs it gives beside the `verdict` and `passed`
+    every run has. Output names and input names are one set of columns. A
+    number or a text output is a column; a file output is not, and a box
+    may still wire it on.
     """
 
     inputs: dict[str, RunDeclared] = Field(default_factory=dict)
     steps: tuple[RunStep, ...] = Field(min_length=1)
-    reports: dict[str, _RunReportEntry] = Field(default_factory=dict)
-    outputs: dict[str, Any] = Field(default_factory=dict)
+    outputs: dict[str, _RunOutputEntry] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check(self) -> RunWorkflow:
@@ -728,23 +729,7 @@ class RunWorkflow(Model):
                 )
             if SELF_REPORTED in step.with_:
                 problems.add(("steps", index, "with", SELF_REPORTED), SELF_REPORTED_GIVEN)
-        for name in self.reports:
-            at = ("reports", name)
-            if not REPORT_NAME.fullmatch(name):
-                problems.add(
-                    at,
-                    "A report's name may use at most 64 lower case letters, digits and "
-                    "underscores (_), starting with a letter.",
-                )
-            elif name in RESERVED_NAMES or name in RUN_NAMES:
-                problems.add(at, reserved_message(name))
-            elif name in self.inputs:
-                problems.add(
-                    at,
-                    f"{name} is an input of the workflow, and a report and an input are columns "
-                    "of the same run. Report this under another name.",
-                )
-        for name, value in self.outputs.items():
+        for name in self.outputs:
             at = ("outputs", name)
             if not REPORT_NAME.fullmatch(name):
                 problems.add(
@@ -754,36 +739,28 @@ class RunWorkflow(Model):
                 )
             elif name in RESERVED_NAMES or name in RUN_NAMES:
                 problems.add(at, reserved_message(name))
-            else:
-                found: Reference | None
-                if not isinstance(value, str):
-                    found = None
-                else:
-                    try:
-                        found = whole_reference(value, runs=True)
-                    except BadReference:
-                        found = None
-                if found is None or found.kind != "steps" or found.output is None:
-                    problems.add(
-                        at,
-                        "An output names a step output of this workflow, such as "
-                        "${{ steps.<id>.<output> }}.",
-                    )
+            elif name in self.inputs:
+                problems.add(
+                    at,
+                    f"{name} is an input of the workflow, and an output and an input are columns "
+                    "of the same run. Give this under another name.",
+                )
         problems.raise_any()
         return self
 
 
 _MEANT_BY_MAKER = (
-    "What a number means comes from the primitive.yaml or program.yaml that made it, and a "
-    "report adds only a title and a unit. Remove this."
+    "What a number means comes from the primitive.yaml or program.yaml that made it, and an "
+    "output adds only a title and a unit. Remove this."
+)
+_RENAME_OUTPUTS = (
+    "A workflow names what it gives outputs, and an output gives only from, title and unit. "
+    "Rename it outputs."
 )
 RUN_RETIRED = (
     *_FILE_KEYS,
-    Retired(
-        ("report",),
-        "A workflow without a test block, which describes one run, names this reports, and a "
-        "report there gives only from, title and unit. Rename it reports.",
-    ),
+    Retired(("report",), _RENAME_OUTPUTS),
+    Retired(("reports",), _RENAME_OUTPUTS),
     *_OLD_INPUTS,
     Retired(
         ("inputs", ANY, "contestant"),
@@ -801,12 +778,12 @@ RUN_RETIRED = (
     ),
     Retired(("steps", ANY, "foreach"), "The task says what repeats. Remove this."),
     Retired(
-        ("reports", ANY, "fold"),
+        ("outputs", ANY, "fold"),
         "How runs add up is the task's scoring, not the workflow's. Remove this.",
     ),
-    Retired(("reports", ANY, "better"), _MEANT_BY_MAKER),
-    Retired(("reports", ANY, "at_least"), _MEANT_BY_MAKER),
-    Retired(("reports", ANY, "at_most"), _MEANT_BY_MAKER),
+    Retired(("outputs", ANY, "better"), _MEANT_BY_MAKER),
+    Retired(("outputs", ANY, "at_least"), _MEANT_BY_MAKER),
+    Retired(("outputs", ANY, "at_most"), _MEANT_BY_MAKER),
 )
 
 
@@ -928,7 +905,7 @@ __all__ = [
     "Meaning",
     "Reference",
     "RunInput",
-    "RunReport",
+    "RunOutput",
     "RunStep",
     "RunWorkflow",
     "TestField",

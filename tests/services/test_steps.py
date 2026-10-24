@@ -1054,7 +1054,7 @@ steps:
           time_limit: 1
           memory_limit: 64
       links: [first -> second, second -> first]
-reports:
+outputs:
   time: {from: "${{ steps.game.first.time_ms }}", unit: ms}
 """
 DUEL_TASK = """\

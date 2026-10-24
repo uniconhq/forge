@@ -96,7 +96,7 @@ steps:
       args: "--env ${{ inputs.env }} --seed ${{ inputs.seed }} --episodes ${{ inputs.episodes }}"
       time_limit: 60
       memory_limit: 1024
-reports:
+outputs:
   reward: ${{ steps.episode.reward }}
 """
 """An RL task's run workflow: the organiser's runner loads the entrant's
@@ -126,7 +126,7 @@ steps:
       args: "${{ inputs.best }}"
       time_limit: 5
       memory_limit: 256
-reports:
+outputs:
   length: ${{ steps.check.length }}
   score: ${{ steps.check.score }}
 """
@@ -169,7 +169,7 @@ steps:
           time_limit: ${{ inputs.judge_time_limit }}
           memory_limit: 256
       links: [entrant -> judge, judge -> entrant]
-reports:
+outputs:
   moves: {from: "${{ steps.game.judge.moves }}", unit: moves}
 """
 """An interactive workflow whose judge's manifest is the task's, so what
@@ -873,13 +873,13 @@ def test_a_manifest_the_task_gives_is_read_and_its_reports_checked(
     assert manifest_files(parse_task(JUDGED_TASK), checked) == {"judge/program.yaml"}
     assert ok(judged(primitives)).values.reads["moves"].columns == {("all", "moves")}
     assert at(judged(primitives, manifest=b"reports:\n  score: {}\n"), "inputs.judge_manifest") == [
-        "judge/program.yaml reports no moves, which the workflow reads at reports.moves."
+        "judge/program.yaml reports no moves, which the workflow reads at outputs.moves."
     ]
     assert at(
         judged(primitives, manifest=b"reports:\n  moves: {type: text}\n"), "inputs.judge_manifest"
     ) == [
         "judge/program.yaml reports moves as text, and the workflow gives it a unit at "
-        "reports.moves, which only a number takes."
+        "outputs.moves, which only a number takes."
     ]
     assert at(judged(primitives, manifest=b"reports: [1]\n"), "inputs.judge_manifest")
 
@@ -1163,7 +1163,7 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "now: [sample_score",
             "now: [sample_scor",
             "scoring.show.now[0]",
-            "names no group, value, report, file or folder",
+            "names no group, value, output, file or folder",
         ),
         (
             "now: [sample_score",
@@ -1369,7 +1369,7 @@ def test_show_lists_a_report_by_its_name_but_not_one_also_a_file_of_the_task(
 
     ok(islands(primitives, text))
     assert at(islands(primitives, text, paths=ISLANDS_PATHS | {"log"}), "scoring.show.now[4]") == [
-        "log names both a report of the workflow and a file of the task, so show cannot tell "
+        "log names both an output of the workflow and a file of the task, so show cannot tell "
         "which it lists. Rename the file."
     ]
     # A report listed is a name, so taking it out of show is hiding it.

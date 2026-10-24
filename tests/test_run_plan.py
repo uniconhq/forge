@@ -623,7 +623,7 @@ steps:
       stdin: ${{ steps.generate.output }}
       time_limit: 1
       memory_limit: 64
-reports:
+outputs:
   time_ms: ${{ steps.solution.time_ms }}
 """
 GENERATED_FILES = {"workflow.yaml": GENERATED.encode(), "gen/gen.py": b"print(1)\n"}
@@ -691,7 +691,7 @@ steps:
       stdin: ${{ inputs.input }}
       time_limit: 1
       memory_limit: 64
-reports:
+outputs:
   time_ms: ${{ steps.solution.time_ms }}
 """
 SELF_TESTED_TASK = """\
@@ -814,7 +814,7 @@ steps:
       stdin: ${{ inputs.input }}
       time_limit: 1
       memory_limit: 64
-reports:
+outputs:
   time_ms: ${{ steps.run.time_ms }}
 """
 LINKED_TASK = """\
@@ -926,7 +926,7 @@ steps:
       stdin: ${{ inputs.input }}
       time_limit: 1
       memory_limit: 64
-reports:
+outputs:
   score: ${{ steps.judge.score }}
 """
 SECRET_TASK = """\
@@ -1119,7 +1119,7 @@ steps:
       stdin: ${{ inputs.input }}
       time_limit: 1
       memory_limit: 64
-reports:
+outputs:
   time_ms: ${{ steps.run.time_ms }}
 """
 PER_LANGUAGE_TASK = """\
@@ -1188,7 +1188,7 @@ steps:
       stdin: ${{ inputs.input }}
       time_limit: ${{ inputs.time_limit }}
       memory_limit: 64
-reports:
+outputs:
   time_ms: ${{ steps.solution.time_ms }}
 """
 WARMED_TASK = """\
@@ -1295,7 +1295,7 @@ steps:
   - id: judge
     use: acme/judge@v1
     with: {program: "${{ steps.compile.program }}", data: "${{ inputs.input }}"}
-reports:
+outputs:
   time_ms: ${{ steps.third.time_ms }}
 """
 SIDE_BY_SIDE_TASK = """\

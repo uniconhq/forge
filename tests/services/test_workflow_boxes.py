@@ -89,7 +89,7 @@ steps:
     with:
       output: ${{ steps.solution.output }}
       answer: ${{ inputs.answer }}
-reports:
+outputs:
   score: ${{ steps.judge.score }}
   time_ms: {from: "${{ steps.solution.time_ms }}", title: Run time, unit: ms}
   memory_kb: {from: "${{ steps.solution.memory_kb }}", title: Memory used, unit: KB}
@@ -278,7 +278,7 @@ async def test_a_boxed_classic_matches_the_flat_one_but_for_paths_and_the_pin(
     assert diff["source"] == "${{ workflow@2.diff/ }}"
     assert flat.workflow.steps[3].with_["manifest"] == "${{ workflow@2.diff/program.yaml }}"
     assert flat.workflow.steps[1].with_["program"] == "${{ steps.build/compile.program }}"
-    assert flat.workflow.reports["score"] == "${{ steps.judge/compare.score }}"
+    assert flat.workflow.outputs["score"] == "${{ steps.judge/compare.score }}"
 
     classic = _held(CLASSIC)
     classic_files = WorkflowFiles(
@@ -375,7 +375,7 @@ def test_an_optional_input_left_out_of_text_reads_empty() -> None:
     inner = _run(TOLD)
     note = inner.inputs["note"].model_copy(update={"optional": True})
     inner = RunWorkflow.model_construct(
-        inputs={**inner.inputs, "note": note}, steps=inner.steps, reports={}, outputs={}
+        inputs={**inner.inputs, "note": note}, steps=inner.steps, outputs={}
     )
     outer = _run(
         "inputs:\n  code: {type: folder}\nsteps:\n  - id: build\n    use: bob/told@v1\n"

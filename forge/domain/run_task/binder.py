@@ -403,6 +403,8 @@ class _Binder:
             )
         for name, report in self.checked.reports.items():
             port = report.port or self._deferred_port(report, manifests)
+            if port is not None and port.type not in (Type.NUMBER, Type.TEXT):
+                continue
             if port is None or port.type is Type.NUMBER:
                 columns[name] = None
             else:
@@ -508,7 +510,7 @@ class _Binder:
 
     # 9.4: show
 
-    def show(self) -> None:
+    def show(self, manifests: Mapping[str, bytes]) -> None:
         scoring = self.task.scoring
         if scoring is None:
             return
@@ -535,13 +537,16 @@ class _Binder:
                 if entry in names:
                     continue
                 if entry in self.checked.reports:
-                    if entry in self.paths:
-                        self.refuse(
-                            at,
-                            f"{entry} names both a report of the workflow and a file of the task, "
-                            "so show cannot tell which it lists. Rename the file.",
-                        )
-                    continue
+                    report = self.checked.reports[entry]
+                    port = report.port or self._deferred_port(report, manifests)
+                    if port is None or port.type in (Type.NUMBER, Type.TEXT):
+                        if entry in self.paths:
+                            self.refuse(
+                                at,
+                                f"{entry} names both an output of the workflow and a file of the "
+                                "task, so show cannot tell which it lists. Rename the file.",
+                            )
+                        continue
                 problem = self._shown_path_problem(entry)
                 if problem is not None:
                     self.refuse(at, problem)
@@ -555,8 +560,8 @@ class _Binder:
         problem = path_problem(entry, folder=folder)
         if problem is not None or not (folder or "/" in entry or entry in self.paths):
             return (
-                f"{entry} names no group, value, report, file or folder of the task. Give a "
-                "group, a value, compiled or a report by its name, a file by its path, or a "
+                f"{entry} names no group, value, output, file or folder of the task. Give a "
+                "group, a value, compiled or an output by its name, a file by its path, or a "
                 "folder with a / at its end."
             )
         if is_reserved(entry):

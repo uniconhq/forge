@@ -1029,6 +1029,12 @@ class _Planner:
         found: dict[str, ReportEntry] = {}
         for name, report in self.checked.reports.items():
             port = report.port
+            resolved = port
+            if resolved is None:
+                key = f"{report.program}.{report.output}" if report.program else report.output
+                resolved = self.task.manifest_outputs.get(report.step, {}).get(key)
+            if resolved is not None and resolved.type not in (Type.NUMBER, Type.TEXT):
+                continue
             number = port is not None and port.type is Type.NUMBER
             found[name] = ReportEntry(
                 step=report.step,

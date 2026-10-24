@@ -54,10 +54,12 @@ from forge.domain.primitives import Port, PrimitiveDeclaration
 from forge.domain.roles import Role, Scope, holds
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.sessions import Session
+from forge.domain.types import Type
 from forge.domain.workflow_boxes import placed
 from forge.domain.workflow_definition import (
     WORKFLOW_FILE,
     RunInput,
+    RunOutput,
     RunWorkflow,
     WorkflowDefinition,
     WorkflowRef,
@@ -149,8 +151,8 @@ class BoxInput:
 class BoxOutput:
     """One output of a run workflow drawn as a box, the port it resolves to.
     `type` and the number's meaning are none while that port is not known,
-    as a report of a manifest the task gives is not. A port carries no title
-    and no unit, so those are none.
+    as an output of a manifest the task gives is not. `title` and `unit` are
+    the words the workflow gave the output, and a unit only on a number.
     """
 
     name: str
@@ -517,12 +519,16 @@ async def box(ctx: Context, session: Session, ref: str) -> Box:
         )
         resolved = placed(checked, expanded.flat) if expanded.flat.boxes else checked
         outputs = {
-            name: _box_output(name, output.port) for name, output in resolved.outputs.items()
+            name: _box_output(name, output.port, output.title, output.unit)
+            for name, output in resolved.outputs.items()
         }
     return Box(
         True,
         tuple(_box_input(name, declared) for name, declared in definition.inputs.items()),
-        tuple(outputs.get(name, _box_output(name, None)) for name in definition.outputs),
+        tuple(
+            outputs.get(name, _box_output(name, None, *_output_words(entry)))
+            for name, entry in definition.outputs.items()
+        ),
         newer,
     )
 
@@ -539,14 +545,21 @@ def _box_input(name: str, declared: RunInput) -> BoxInput:
     )
 
 
-def _box_output(name: str, port: Port | None) -> BoxOutput:
+def _output_words(entry: str | RunOutput) -> tuple[str | None, str | None]:
+    if isinstance(entry, RunOutput):
+        return entry.title, entry.unit
+    return None, None
+
+
+def _box_output(name: str, port: Port | None, title: str | None, unit: str | None) -> BoxOutput:
     if port is None:
-        return BoxOutput(name, None, None, None, None, None, None)
+        return BoxOutput(name, None, title, unit, None, None, None)
+    number = port.type is Type.NUMBER
     return BoxOutput(
         name,
         port.type.value,
-        None,
-        None,
+        title,
+        unit if number else None,
         None if port.better is None else port.better.value,
         port.at_least,
         port.at_most,

@@ -76,7 +76,7 @@ steps:
       files: {predictions: "${{ inputs.predictions }}", answers: "${{ inputs.answers }}"}
       time_limit: 60
       memory_limit: 1024
-reports:
+outputs:
   rmse: ${{ steps.score.rmse }}
 """
 """A prediction task's run workflow: the organiser's scorer reads the

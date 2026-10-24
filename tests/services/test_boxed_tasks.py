@@ -97,7 +97,7 @@ steps:
       stdin: ${{ inputs.input }}
       time_limit: 1
       memory_limit: 64
-reports:
+outputs:
   time_ms: ${{ steps.run.time_ms }}
 """
 LINK_TASK = """\
@@ -151,7 +151,7 @@ steps:
       program: ${{ steps.compile.program }}
       input: ${{ inputs.input }}
       time_limit: ${{ inputs.time_limit }}
-reports:
+outputs:
   time_ms: ${{ steps.run.time_ms }}
 """
 SLOW_TASK = """\

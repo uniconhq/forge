@@ -99,7 +99,7 @@ def check_run_task(
     runs = binder.make_runs(previous)
     groups = binder.groups(runs)
     values = binder.scoring(runs, manifests)
-    binder.show()
+    binder.show(manifests)
     if values is not None and definition.scoring is not None:
         for at, message in read_later(definition.scoring, values):
             binder.refuse(at, message)

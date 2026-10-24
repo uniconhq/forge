@@ -144,7 +144,7 @@ def test_a_file_without_a_test_block_is_a_run_workflow() -> None:
     assert isinstance(read_workflow(CLASSIC), WorkflowDefinition)
     run = read_workflow("steps:\n  - {id: a, use: unicon/compile@v3}\n")
     assert isinstance(run, RunWorkflow)
-    assert run.reports == {}
+    assert run.outputs == {}
 
 
 @pytest.mark.parametrize("ref", list(RUN_WORKFLOWS))
@@ -213,9 +213,9 @@ def test_a_bad_reference_lists_the_forms_its_format_has() -> None:
         (("inputs", "code"), "contestant"),
         (("inputs", "code"), "per_test"),
         (("steps", 0), "per_test"),
-        (("reports", "time_ms"), "fold"),
-        (("reports", "time_ms"), "better"),
-        (("reports", "time_ms"), "at_least"),
+        (("outputs", "time_ms"), "fold"),
+        (("outputs", "time_ms"), "better"),
+        (("outputs", "time_ms"), "at_least"),
     ],
 )
 def test_what_a_run_workflow_does_not_have_is_refused_at_its_path(
@@ -233,21 +233,38 @@ def test_what_a_run_workflow_does_not_have_is_refused_at_its_path(
     assert problem["path"] == f"{where.replace('.[', '[')}.{key}"
 
 
-def test_a_report_block_is_called_reports_here() -> None:
+@pytest.mark.parametrize("key", ["report", "reports"])
+def test_a_reports_key_is_named_outputs(key: str) -> None:
     given = document(CLASSIC_V3)
-    given["report"] = given.pop("reports")
+    given[key] = given.pop("outputs")
 
-    assert [problem["path"] for problem in refused(given)] == ["report"]
+    [problem] = refused(given)
+
+    assert problem["path"] == key
+    assert "Rename it outputs." in problem["message"]
+
+
+def test_a_file_output_is_not_a_column(primitives: dict[str, PrimitiveDeclaration]) -> None:
+    given = document(CLASSIC_V3)
+    given["outputs"]["program"] = "${{ steps.compile.program }}"
+
+    found = checked(primitives, given, files(CLASSIC_V3))
+
+    assert found.problems == []
+    assert "program" not in found.reports
+    assert found.outputs["program"].port is not None
+    assert found.outputs["program"].port.type is Type.FILE
+    assert "score" in found.reports
 
 
 @pytest.mark.parametrize("name", ["verdict", "passed", "time_limit"])
 def test_a_report_named_verdict_passed_or_like_an_input_is_refused(name: str) -> None:
     given = document(CLASSIC_V3)
-    given["reports"][name] = "${{ steps.solution.time_ms }}"
+    given["outputs"][name] = "${{ steps.solution.time_ms }}"
 
     [problem] = refused(given)
 
-    assert problem["path"] == f"reports.{name}"
+    assert problem["path"] == f"outputs.{name}"
     if name == "time_limit":
         assert "an input of the workflow" in problem["message"]
     else:
@@ -522,11 +539,11 @@ def test_an_output_neither_the_primitive_nor_the_manifest_gives_is_refused_namin
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     given = document(CLASSIC_V3)
-    given["reports"]["nope"] = "${{ steps.compare.nope }}"
+    given["outputs"]["nope"] = "${{ steps.compare.nope }}"
 
     assert problems(primitives, given) == [
         {
-            "path": "reports.nope",
+            "path": "outputs.nope",
             "message": "The step compare has no output called nope: neither unicon/exec@v1 "
             "gives it nor diff/program.yaml reports it.",
         }
@@ -569,7 +586,7 @@ def test_a_manifest_from_a_steps_output_is_refused(
 ) -> None:
     given = document(CLASSIC_V3)
     step(given, "compare")["with"]["manifest"] = "${{ steps.solution.output }}"
-    del given["reports"]["score"]
+    del given["outputs"]["score"]
 
     assert problems(primitives, given) == [
         {"path": "steps[3].with.manifest", "message": MANIFEST_FROM_STEP}
@@ -582,12 +599,12 @@ def test_a_manifest_from_an_input_leaves_its_reports_to_the_tasks_save(
     given = document(CLASSIC_V3)
     given["inputs"]["checker"] = "file"
     step(given, "compare")["with"]["manifest"] = "${{ inputs.checker }}"
-    given["reports"]["score"] = {"from": "${{ steps.compare.score }}", "unit": "points"}
+    given["outputs"]["score"] = {"from": "${{ steps.compare.score }}", "unit": "points"}
 
     found = checked(primitives, given, files(CLASSIC_V3))
 
     assert found.problems == []
-    assert found.deferred == [Deferred("reports.score", "compare", None, "score", None, True)]
+    assert found.deferred == [Deferred("outputs.score", "compare", None, "score", None, True)]
     assert found.reports["score"].port is None
     assert found.reports["score"].meaning("unicon/exec@v1") is None
     manifest = found.steps["compare"].program.manifest
@@ -619,7 +636,7 @@ def test_an_input_the_organisers_program_loads_makes_its_reports_self_reported(
     given = document(CLASSIC_V3)
     given["inputs"]["helper"] = {"type": "file"}
     step(given, "compare")["with"]["loads"] = {"helper.py": "${{ inputs.helper }}"}
-    given["reports"]["note"] = "${{ steps.compare.message }}"
+    given["outputs"]["note"] = "${{ steps.compare.message }}"
 
     found = checked(primitives, given, files(CLASSIC_V3))
 
@@ -635,7 +652,7 @@ def test_the_verdict_and_texts_of_the_organisers_programs_are_not_self_reported(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     given = document(CLASSIC_V3)
-    given["reports"]["note"] = "${{ steps.compare.message }}"
+    given["outputs"]["note"] = "${{ steps.compare.message }}"
 
     found = checked(primitives, given, files(CLASSIC_V3))
 
@@ -651,8 +668,8 @@ def test_a_text_the_entrants_program_writes_beside_its_reports_is_self_reported(
 ) -> None:
     given = document(CLASSIC_V3)
     step(given, "compare")["with"]["program"] = "${{ steps.compile.program }}"
-    given["reports"]["note"] = f"${{{{ steps.compare.{text} }}}}"
-    given["reports"]["solution_note"] = f"${{{{ steps.solution.{text} }}}}"
+    given["outputs"]["note"] = f"${{{{ steps.compare.{text} }}}}"
+    given["outputs"]["solution_note"] = f"${{{{ steps.solution.{text} }}}}"
 
     found = checked(primitives, given, files(CLASSIC_V3))
 
@@ -667,15 +684,15 @@ def test_a_report_never_names_what_only_staff_see(
     primitives: dict[str, PrimitiveDeclaration], output: str
 ) -> None:
     given = document(CLASSIC_V3)
-    given["reports"]["note"] = f"${{{{ steps.compare.{output} }}}}"
+    given["outputs"]["note"] = f"${{{{ steps.compare.{output} }}}}"
 
     found = checked(primitives, given, files(CLASSIC_V3))
 
     assert found.problems == [
         {
-            "path": "reports.note",
-            "message": f"{output} is only for staff to see, and a report is shown to "
-            "entrants. Report another output, or leave this one to staff.",
+            "path": "outputs.note",
+            "message": f"{output} is only for staff to see, and an output is read by a task and "
+            "by a box. Give another output, or leave this one to staff.",
         }
     ]
 
@@ -698,7 +715,7 @@ def test_a_programs_reports_are_its_outputs_and_may_be_missing(
     step(given, "game")["with"]["programs"]["judge"]["manifest"] = (
         "${{ workflow.judge/program.yaml }}"
     )
-    given["reports"]["score"] = "${{ steps.game.judge.score }}"
+    given["outputs"]["score"] = "${{ steps.game.judge.score }}"
     judge_files = files(
         INTERACTIVE_V1,
         {"judge/program.yaml": b"reports:\n  score: {better: higher, at_least: 0, at_most: 1}\n"},
@@ -711,14 +728,14 @@ def test_a_programs_reports_are_its_outputs_and_may_be_missing(
     assert (score.type, score.optional, score.better) == (Type.NUMBER, True, Better.HIGHER)
     assert found.reports["score"].self_reported_by == {"judge", "judge_language"}
     step(given, "decide")["with"]["time_limit"] = "${{ steps.game.judge.score }}"
-    given["reports"]["oops"] = "${{ steps.game.entrant.score }}"
+    given["outputs"]["oops"] = "${{ steps.game.entrant.score }}"
     assert checked(primitives, given, judge_files).problems == [
         {
             "path": "steps[4].with.time_limit",
             "message": "This value raises a limit, so it must be known when the task is saved.",
         },
         {
-            "path": "reports.oops",
+            "path": "outputs.oops",
             "message": "The step game has no output called entrant.score: unicon/exec@v1 "
             "gives no score of a program, and entrant is given no manifest that reports one.",
         },
@@ -729,7 +746,7 @@ def test_interactive_v1_records_the_entrant_input_reaching_only_the_entrant_prog
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     given = document(INTERACTIVE_V1)
-    given["reports"]["score"] = "${{ steps.game.judge.score }}"
+    given["outputs"]["score"] = "${{ steps.game.judge.score }}"
 
     found = checked(primitives, given, files(INTERACTIVE_V1))
 
@@ -743,7 +760,7 @@ def test_interactive_v1_records_the_entrant_input_reaching_only_the_entrant_prog
     assert "facts" in judge.manifest.own_names
     assert judge.self_reportable is False
     assert found.reports["score"].self_reported_by == {"judge", "judge_language"}
-    assert found.deferred == [Deferred("reports.score", "game", "judge", "score", None)]
+    assert found.deferred == [Deferred("outputs.score", "game", "judge", "score", None)]
     assert found.time_limits == [
         TimeLimitOrder(
             "steps[2].with.programs.judge.time_limit",

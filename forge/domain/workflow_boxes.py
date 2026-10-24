@@ -21,7 +21,7 @@ from forge.domain.workflow_definition import (
     BadReference,
     Reference,
     RunInput,
-    RunReport,
+    RunOutput,
     RunStep,
     RunWorkflow,
     references,
@@ -174,8 +174,8 @@ class _Rewrite:
             if reference.program is not None:
                 self._bad(f"A box gives only its outputs, as ${{{{ steps.{step_id}.<output> }}}}.")
                 return raw
-            named = self.inners[use].outputs.get(reference.output or "")
-            if not isinstance(named, str):
+            named = _from(self.inners[use].outputs.get(reference.output or ""))
+            if named is None:
                 listed = ", ".join(sorted(self.inners[use].outputs)) or "none"
                 self._bad(f"{self.step_path(step_id)} gives only the outputs of {use}: {listed}.")
                 return raw
@@ -294,18 +294,14 @@ def flatten(
                 steps.append(RunStep.model_construct(id=path, use=step.use, with_=copied))
 
     walk(outer, "", 0, None, 0, own=True)
-    report_writer = _Rewrite(outer, "", 0, None, inners, pins)
     output_writer = _Rewrite(outer, "", 0, None, inners, pins)
-    reports = _reports(outer, report_writer)
     outputs = _outputs(outer, output_writer)
-    problems.extend(report_writer.problems)
     problems.extend(output_writer.problems)
     if problems:
         return problems
     flat = RunWorkflow.model_construct(
         inputs=outer.inputs,
         steps=tuple(steps),
-        reports=reports,
         outputs=outputs,
     )
     order = tuple(use for use, _pin in sorted(pins.items(), key=lambda item: item[1]))
@@ -343,34 +339,30 @@ def _box_with(
     return problems, given
 
 
-def _reports(outer: RunWorkflow, writer: _Rewrite) -> dict[str, str | RunReport]:
-    reports: dict[str, str | RunReport] = {}
-    for name, entry in outer.reports.items():
+def _from(value: object) -> str | None:
+    """The step output an entry names, or none when it is not one."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, RunOutput):
+        return value.from_
+    return None
+
+
+def _outputs(outer: RunWorkflow, writer: _Rewrite) -> dict[str, str | RunOutput]:
+    outputs: dict[str, str | RunOutput] = {}
+    for name, entry in outer.outputs.items():
         raw = entry if isinstance(entry, str) else entry.from_
         start = len(writer.problems)
         rewritten = writer.text(raw)
-        _stamp(writer.problems, start, path_text(("reports", name)))
+        _stamp(writer.problems, start, path_text(("outputs", name)))
         if not isinstance(rewritten, str):
             continue
         if isinstance(entry, str):
-            reports[name] = entry if rewritten == raw else rewritten
+            outputs[name] = entry if rewritten == raw else rewritten
         elif rewritten == entry.from_:
-            reports[name] = entry
+            outputs[name] = entry
         else:
-            reports[name] = entry.model_copy(update={"from_": rewritten})
-    return reports
-
-
-def _outputs(outer: RunWorkflow, writer: _Rewrite) -> dict[str, str]:
-    outputs: dict[str, str] = {}
-    for name, raw in outer.outputs.items():
-        if not isinstance(raw, str):
-            continue
-        start = len(writer.problems)
-        rewritten = writer.text(raw)
-        _stamp(writer.problems, start, path_text(("outputs", name)))
-        if isinstance(rewritten, str):
-            outputs[name] = rewritten
+            outputs[name] = entry.model_copy(update={"from_": rewritten})
     return outputs
 
 
