@@ -829,6 +829,76 @@ async def organised(
 
 
 @action
+async def organised_files(
+    ctx: Context, organiser: Organiser, task: TaskId, owner: WorkspaceOwner, number: int
+) -> SubmittedFiles:
+    """The inputs the submission numbered `number` of the entrant `owner` was
+    made with, as its `submission.json` names them. Needs the observer role
+    at the task. Read as the organiser.
+    """
+    submission, user = await _organised_own(ctx, organiser, task, owner, number)
+    content = await _file(ctx, user, submission, SUBMISSION_FILE)
+    try:
+        document = _document(content)
+    except ValueError as exc:
+        raise NotFound(NO_SUCH_SUBMISSION) from exc
+    return SubmittedFiles(task, number, document)
+
+
+@action
+async def organised_download(
+    ctx: Context,
+    organiser: Organiser,
+    task: TaskId,
+    owner: WorkspaceOwner,
+    number: int,
+    path: str,
+) -> Door:
+    """Where one file of that submission is read, by the path `organised_files`
+    names it by. `NotFound` for a path it does not name. Read as the organiser.
+    """
+    submission, user = await _organised_own(ctx, organiser, task, owner, number)
+    content = await _file(ctx, user, submission, SUBMISSION_FILE)
+    try:
+        document = _document(content)
+    except ValueError as exc:
+        raise NotFound(NO_SUCH_SUBMISSION) from exc
+    if path not in _paths(document):
+        raise NotFound("The submission has no such file.")
+    door = await ctx.forge.workspaces.download(user, submission, path)
+    log.info(
+        "submissions.organised_download",
+        submission=submission,
+        user_id=organiser.user.id,
+    )
+    return door
+
+
+async def _organised_own(
+    ctx: Context, organiser: Organiser, task: TaskId, owner: WorkspaceOwner, number: int
+) -> tuple[SubmissionId, AsUser]:
+    """The entrant's submission, and the organiser's own identity to read it
+    as. `NotFound` when the task has no such submission.
+    """
+    require(organiser, task_scope(task), Role.OBSERVER)
+    workspace = ctx.forge.workspaces.workspace_of(contest_id_of(task_scope(task)), owner)
+    found = (
+        await ctx.db.execute(
+            select(Grading.submission_id)
+            .where(
+                Grading.workspace_id == workspace,
+                Grading.task_id == task,
+                Grading.submission_number == number,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if found is None:
+        raise NotFound(NO_SUCH_SUBMISSION)
+    return SubmissionId(found), organiser.identity
+
+
+@action
 async def read_text(ctx: Context, session: Session, task: TaskId, number: int, at: TextAt) -> str:
     """A text the signed-in person's own submission of the task shows them
     now, by where it shows it (`TextAt`): the stored output that holds it

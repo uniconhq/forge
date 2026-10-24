@@ -68,6 +68,27 @@ async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
     assert fake.calls_to("activate") == []
 
 
+async def test_a_tasks_observer_can_read_its_submission_repository(fake: FakeForge) -> None:
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
+    contest = await fake.content.create_contest(OrgId("acme"), "spring", {"contest.yaml": b"x"})
+    task = await fake.content.create_task(contest, "sum", {"task.yaml": b"y"})
+    workspace = await fake.workspaces.open_workspace(contest, EntrantOwner(uuid.UUID(int=8)), [8])
+    await fake.workspaces.open_submission_place(workspace, task, [8])
+    fake.add_user(9, "ada")
+    fake.add_user(10, "bea")
+    await fake.orgs.grant_role(9, Scope("acme", "spring", "sum"), Role.OBSERVER)
+    await fake.orgs.grant_role(10, Scope("acme", "spring", "other"), Role.OBSERVER)
+
+    submission = next(repo for name, repo in fake.state.repos.items() if name[1].endswith(".sub"))
+    desk = next(repo for name, repo in fake.state.repos.items() if name[1].endswith(".desk"))
+
+    assert Scope("acme", "spring", "sum") in submission.teams
+    assert Scope("acme", "spring") in submission.teams
+    assert fake.state.may_read(9, submission)
+    assert not fake.state.may_read(10, submission)
+    assert Scope("acme", "spring", "sum") not in desk.teams
+
+
 @pytest.mark.parametrize(
     "call",
     [

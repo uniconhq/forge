@@ -18,6 +18,7 @@ nobody else's.
 import hashlib
 import json
 import re
+import uuid
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -33,6 +34,7 @@ from forge.domain.content import Edit
 from forge.domain.definitions import Show
 from forge.domain.errors import (
     Archived,
+    Forbidden,
     InvalidIdempotencyKey,
     InvalidInputs,
     NotApproved,
@@ -47,12 +49,12 @@ from forge.domain.errors import (
     UploadNotYours,
 )
 from forge.domain.grading import LOST_CHECK_AFTER, RunState, callback_token, token_hash
-from forge.domain.identity import PLATFORM
+from forge.domain.identity import PLATFORM, User
 from forge.domain.ids import ContestId, RunId, TaskId
 from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner
 from forge.domain.publication_record import write_note
-from forge.domain.roles import Role, Scope
+from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.showing import GroupShown, Sealed
 from forge.domain.submission_state import SubmissionState
 from forge.domain.submissions import SubmittedInput
@@ -62,6 +64,7 @@ from forge.domain.workflows import Visibility
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
 from forge.services import entrants, gradings, identity, submissions, task_save, uploads
+from forge.services.access import Organiser
 from forge.testing import CLASSIC, FakeClock
 from tests.services.conftest import (
     RUNNING,
@@ -1006,6 +1009,54 @@ async def test_a_contestant_reads_their_own_submissions_and_their_files(
         await submissions.files(setup, cyd, entered.task, 1)
     with pytest.raises(NotFound):
         await submissions.download(setup, cyd, entered.task, 1, "files/submission/main.py")
+
+
+async def test_staff_list_and_download_an_entrants_submitted_files(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _submit(setup, acme, entered)
+    task = Scope("acme", "spring", "sum")
+    acme.fake.add_user(41, "eve")
+    await acme.fake.orgs.grant_role(41, task, Role.OBSERVER)
+    eve = await organiser(setup, acme.fake, 41, task)
+    owner = EntrantOwner(entered.entrant)
+    path = "files/submission/main.py"
+
+    listed = await submissions.organised_files(setup, eve, entered.task, owner, 1)
+    door = await submissions.organised_download(setup, eve, entered.task, owner, 1, path)
+
+    assert listed.inputs["submission"]["files"] == [path]
+    assert await acme.fake.workspaces.fetch(door) == SOURCE
+    with pytest.raises(NotFound, match="no such file"):
+        await submissions.organised_download(
+            setup, eve, entered.task, owner, 1, "files/submission/other.py"
+        )
+
+    elsewhere = Organiser(
+        user=User(id=42, username="finn"),
+        grants=(RoleGrant(Scope("acme", "spring", "product"), Role.OBSERVER),),
+        scope=Scope("acme", "spring", "product"),
+        role=Role.OBSERVER,
+        identity=eve.identity,
+    )
+    stranger = Organiser(
+        user=User(id=43, username="gus"),
+        grants=(),
+        scope=task,
+        role=Role.OBSERVER,
+        identity=eve.identity,
+    )
+    for who, error in ((elsewhere, Forbidden), (stranger, Forbidden)):
+        with pytest.raises(error):
+            await submissions.organised_files(setup, who, entered.task, owner, 1)
+        with pytest.raises(error):
+            await submissions.organised_download(setup, who, entered.task, owner, 1, path)
+    with pytest.raises(NotFound):
+        await submissions.organised_files(setup, eve, entered.task, EntrantOwner(uuid.uuid4()), 1)
+    with pytest.raises(NotFound):
+        await submissions.organised_download(
+            setup, eve, entered.task, EntrantOwner(uuid.uuid4()), 1, path
+        )
 
 
 GROUPS = b"""\

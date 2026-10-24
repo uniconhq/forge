@@ -1,6 +1,7 @@
 """The workspace area over Forgejo. A workspace is a desk repository plus one
-submission repository per task, each attached to the contest's role teams so
-its organisers can read it, with the members as collaborators: read on the
+submission repository per task, each attached to the contest's role teams
+and the task's, so its organisers can read it, with the members as
+collaborators: read on the
 desk, write on a submission repository, since a submit is recorded there as
 the contestant. Each is
 made on its own, and every part of making one checks before it acts, so a
@@ -86,7 +87,13 @@ class ForgejoWorkspaces:
         task_ref = parse_task(task)
         if (task_ref.org, task_ref.contest) != (ref.org, ref.contest):
             raise NotFound(f"{task} is not a task of the contest {workspace} is in")
-        await self._open(ref, ref.submission_repo(task_ref.task), member_ids, reserve=True)
+        await self._open(
+            ref,
+            ref.submission_repo(task_ref.task),
+            member_ids,
+            reserve=True,
+            scope=Scope(task_ref.org, task_ref.contest, task_ref.task),
+        )
 
     async def delete_submission_place(self, workspace: WorkspaceId, task: TaskId) -> None:
         ref = parse_workspace(workspace)
@@ -107,6 +114,7 @@ class ForgejoWorkspaces:
         *,
         reserve: bool = False,
         permission: str = WRITE,
+        scope: Scope | None = None,
     ) -> None:
         """Make one repository of the workspace, empty and private, unless it
         is there: only the platform makes repositories, so one of that name
@@ -124,7 +132,12 @@ class ForgejoWorkspaces:
         """
         usernames = await self._usernames(member_ids)
         await self._shed_former_members(ref.org, repo, usernames)
+        attached = scope or Scope(ref.org, ref.contest)
         if usernames and await self._finished(ref.org, repo, usernames, permission):
+            # A submission repository opened before it carried the task's
+            # teams gets them the next time, even when its members are done.
+            if scope is not None and await self._repos.exists(ref.org, repo):
+                await self._teams.attach_scope(attached, repo)
             return
         if not await self._repos.exists(ref.org, repo):
             try:
@@ -133,7 +146,7 @@ class ForgejoWorkspaces:
                 if not await self._repos.exists(ref.org, repo):
                     raise
         await self._repos.protect_branch(ref.org, repo)
-        await self._teams.attach_scope(Scope(ref.org, ref.contest), repo)
+        await self._teams.attach_scope(attached, repo)
         if reserve:
             await self._repos.reserve_versions(ref.org, repo, SUBMISSION_PREFIX)
         for username in usernames:

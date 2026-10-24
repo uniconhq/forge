@@ -56,6 +56,9 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
         recorder.on("GET", f"/api/v1/repos/acme/{repo}/branch_protections/main", ok({}, 404))
         for team in (1, 2, 3):
             recorder.on("GET", f"/api/v1/teams/{team}/repos/acme/{repo}", ok({}, 404))
+        if repo.endswith(".sub"):
+            for team in (4, 5, 6):
+                recorder.on("GET", f"/api/v1/teams/{team}/repos/acme/{repo}", ok({}, 404))
     recorder.on(
         "GET",
         "/api/v1/orgs/acme/teams/search",
@@ -65,6 +68,9 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
                     {"id": 1, "name": "acme.spring-admin"},
                     {"id": 2, "name": "acme.spring-manager"},
                     {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
                 ]
             }
         ),
@@ -81,6 +87,9 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
         assert f"PUT /api/v1/teams/1/repos/acme/{repo}" in calls
         assert f"PUT /api/v1/teams/2/repos/acme/{repo}" in calls
         assert f"PUT /api/v1/repos/acme/{repo}/collaborators/bob" in calls
+    for team in (4, 5, 6):
+        assert f"PUT /api/v1/teams/{team}/repos/acme/spring.sum.{U8}.sub" in calls
+        assert f"PUT /api/v1/teams/{team}/repos/acme/spring.{U8}.desk" not in calls
     assert f"POST /api/v1/repos/acme/spring.sum.{U8}.sub/tag_protections" in calls
     assert f"POST /api/v1/repos/acme/spring.{U8}.desk/tag_protections" not in calls
     assert calls.index(
@@ -123,6 +132,9 @@ async def test_a_workspace_opened_again_keeps_what_is_there(
                     {"id": 1, "name": "acme.spring-admin"},
                     {"id": 2, "name": "acme.spring-manager"},
                     {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
                 ]
             }
         ),
@@ -170,6 +182,9 @@ async def test_a_former_member_on_a_workspace_repo_is_taken_off_before_the_membe
                     {"id": 1, "name": "acme.spring-admin"},
                     {"id": 2, "name": "acme.spring-manager"},
                     {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
                 ]
             }
         ),
@@ -219,18 +234,38 @@ async def test_a_place_its_members_can_write_already_is_finished_and_left_alone(
         f"/api/v1/repos/acme/spring.sum.{U8}.sub/collaborators/bob/permission",
         ok({"permission": "write"}),
     )
+    recorder.on(
+        "GET",
+        "/api/v1/orgs/acme/teams/search",
+        ok(
+            {
+                "data": [
+                    {"id": 1, "name": "acme.spring-admin"},
+                    {"id": 2, "name": "acme.spring-manager"},
+                    {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
+                ]
+            }
+        ),
+    )
+    for team in (1, 2, 3, 4, 5, 6):
+        recorder.on("GET", f"/api/v1/teams/{team}/repos/acme/spring.sum.{U8}.sub", ok({"id": team}))
     workspace = forgejo.workspaces.workspace_of(
         ContestId("acme/spring"), EntrantOwner(uuid.UUID(int=8))
     )
 
     await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
 
-    assert recorder.calls() == [
+    calls = recorder.calls()
+    assert calls[:4] == [
         "GET /api/v1/users/search",
         f"GET /api/v1/repos/acme/spring.sum.{U8}.sub",
         f"GET /api/v1/repos/acme/spring.sum.{U8}.sub/collaborators",
         f"GET /api/v1/repos/acme/spring.sum.{U8}.sub/collaborators/bob/permission",
     ]
+    assert f"GET /api/v1/teams/4/repos/acme/spring.sum.{U8}.sub" in calls
 
 
 async def test_a_branch_protected_by_another_maker_meanwhile_counts_as_protected(
@@ -260,6 +295,9 @@ async def test_a_branch_protected_by_another_maker_meanwhile_counts_as_protected
                     {"id": 1, "name": "acme.spring-admin"},
                     {"id": 2, "name": "acme.spring-manager"},
                     {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
                 ]
             }
         ),
@@ -297,6 +335,9 @@ async def test_a_place_a_member_only_reads_is_made_up_to_writing(
                     {"id": 1, "name": "acme.spring-admin"},
                     {"id": 2, "name": "acme.spring-manager"},
                     {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
                 ]
             }
         ),
