@@ -289,7 +289,7 @@ class Check(Model):
     submission, `submit`, giving each entrant input by its name, a task
     path for a file or folder, a list of them in tuple order for one given
     in parts, a value otherwise; and what it must get, `expect`: a
-    `verdict` every run must get, a number for each value named, or both.
+    `verdict` every run must get, a number or text for each value named, or both.
     What each names is checked against the task at its save
     (`forge.domain.checks`).
     """

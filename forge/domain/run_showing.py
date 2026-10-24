@@ -108,6 +108,7 @@ class ValueShown:
     runs: tuple[str, ...] | None = None
     values: tuple[str, ...] | None = None
     facts: tuple[str, ...] | None = None
+    text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,7 +193,15 @@ def shown(
             waits = {run for run in outcome.runs if grading.read[run].verdict == SYSTEM_ERROR}
             if not waits <= grading.early | seen:
                 continue
-        values.append(ValueShown(name, outcome.number, outcome.waiting, name in self_reported))
+        values.append(
+            ValueShown(
+                name,
+                outcome.number,
+                outcome.waiting,
+                name in self_reported,
+                text=outcome.text,
+            )
+        )
     return Shown(
         tuple(values),
         tuple(entry for _, entry in held),
@@ -282,6 +291,7 @@ def _everything(
             tuple(run.id for run in runs if run.id in outcome.runs),
             tuple(sorted(outcome.values)),
             tuple(sorted(outcome.facts)),
+            text=outcome.text,
         )
         for name, outcome in ((name, outcomes[name]) for name in scoring.values)
     )

@@ -115,6 +115,7 @@ class LeaderboardCell:
     counted: tuple[Counted, ...] = ()
     waiting: tuple[Counted, ...] = ()
     hidden: bool = False
+    text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,12 +326,15 @@ def results_seen(
     it or a group is listed, `compiled_listed`: none tells which rows still
     grade (item 97). Every other value is held back."""
     numbers = dict(own)
+    texts: dict[str, str] = {}
     waiting: set[str] = set()
     for value in values:
         if value.waiting:
             waiting.add(value.name)
         elif value.number is not None:
             numbers[value.name] = value.number
+        elif value.text is not None:
+            texts[value.name] = value.text
     shown = {value.name for value in values}
     waiting |= {name for name in every if name in listed and name not in shown}
     hidden = {name for name in every if name not in shown and name not in listed}
@@ -338,7 +342,7 @@ def results_seen(
         numbers["compiled"] = Fraction(compiled)
     else:
         (waiting if compiled_listed else hidden).add("compiled")
-    return Submitted(number, numbers, frozenset(waiting), frozenset(hidden))
+    return Submitted(number, numbers, frozenset(waiting), frozenset(hidden), texts)
 
 
 def grading_seen(
@@ -533,6 +537,7 @@ class _Read:
                     cell.number,
                     _counted(cell.counted) if told else (),
                     _counted(cell.waiting) if told else (),
+                    text=None if cell.number is not None else cell.text,
                 )
             )
         held = sum(count for task, count in row.held.items() if task in self.tasks)

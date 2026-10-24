@@ -328,6 +328,8 @@ def _top_kind(tree: object, leaderboard: str) -> tuple[Kind, frozenset[str]] | _
     node = tree
     while isinstance(node, dict):
         if "block" not in node:
+            if set(node) == {"text"} and isinstance(node.get("text"), str):
+                return (Kind.TEXT, frozenset())
             leaf = leaf_of(node)
             if leaf is not None and leaf[0] == "column":
                 return _Same(column_at(leaderboard, leaf[1]))
@@ -453,9 +455,15 @@ class _Checker:
     def _sort_and_display(self) -> None:
         leaderboard = self.leaderboard
         shown: list[str] = []
-        for index, (name, _) in enumerate(leaderboard.display):
+        for index, (name, places) in enumerate(leaderboard.display):
             if self._listed(self.at("display", index), name, shown, "displays"):
                 shown.append(name)
+                shape = self.shapes.get(name)
+                if places is not None and shape is not None and shape.kind is Kind.TEXT:
+                    self.refuse(
+                        self.at("display", index),
+                        f"{name} is text, so it has no decimal places.",
+                    )
         sorted_by: list[str] = []
         for index, (name, _) in enumerate(leaderboard.sort):
             at = self.at("sort", index)
@@ -477,6 +485,12 @@ class _Checker:
             self.refuse(at, f"This leaderboard already {does} {name} above. Remove this one.")
             return False
         shape = self.shapes.get(name)
+        if shape is not None and shape.kind is Kind.TEXT and does == "sorts by":
+            self.refuse(
+                at,
+                f"{name} is text, and a leaderboard sorts on numbers. Display it.",
+            )
+            return False
         if shape is not None and shape.kind is Kind.SUBMISSION:
             self.refuse(
                 at,
@@ -521,6 +535,16 @@ class _Checker:
                 return None
         gives = self.gives(at, node, scope)
         if gives is None:
+            return None
+        if wanted.kind is Kind.NUMBER and gives.kind is Kind.TEXT:
+            self.refuse(at, "This is text, and this reads a number.")
+            return None
+        if wanted.kind is Kind.NUMBER_OR_TEXT and gives.kind is Kind.SUBMISSION:
+            self.refuse(
+                at,
+                "This gives a submission's results, not a number or text. Read one of its "
+                "values or facts, as {value: [<it>, <name>]}.",
+            )
             return None
         if wanted.kind is Kind.NUMBER and gives.kind is not Kind.NUMBER:
             self.refuse(
@@ -575,6 +599,11 @@ class _Checker:
         match kind:
             case "value":
                 return self._value(at, named, scope)
+            case "text":
+                if isinstance(named, str):
+                    return _Gives(Kind.TEXT)
+                self.refuse(at, 'Give text in quotes, such as "none".')
+                return None
             case "column":
                 return self._column(at, named)
             case "results":
@@ -709,6 +738,7 @@ class _Checker:
             task = self._results((*at, over), node[over])
             inner = (*scope, task) if task is not None else scope
         gave: list[_Gives] = []
+        branches: list[_Gives] = []
         ok = True
         for key, wanted in form.inputs.items():
             if key == over:
@@ -725,6 +755,14 @@ class _Checker:
                 ok = False
             else:
                 gave += got
+                if wanted.kind is Kind.NUMBER_OR_TEXT:
+                    branches += got
+                if key == "test" and any(each.kind is Kind.TEXT for each in got):
+                    self.refuse(
+                        (*at, key),
+                        "This is text, and a test reads a number or a submission's results.",
+                    )
+                    ok = False
         if over is not None and over not in node:
             self.refuse((*at, over), f"{block.name} needs its input {over}.")
             ok = False
@@ -735,6 +773,14 @@ class _Checker:
         if form.gives is Kind.SUBMISSION:
             task = inner[-1] if len(inner) > len(scope) else None
             return _Gives(Kind.SUBMISSION, frozenset({task}) if task is not None else frozenset())
+        if form.gives is Kind.NUMBER_OR_TEXT:
+            kinds = {each.kind for each in branches}
+            if Kind.TEXT in kinds and len(kinds) > 1:
+                self.refuse(at, "Give two numbers or two texts, not one of each.")
+                return None
+            if kinds == {Kind.TEXT}:
+                return _Gives(Kind.TEXT)
+            return _NUMBER
         if form.gives is Kind.EITHER:
             kinds = {each.kind for each in gave}
             if len(kinds) > 1:

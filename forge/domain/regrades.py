@@ -153,6 +153,8 @@ class ValueChange:
     before: Fraction | None
     after: Fraction | None
     waiting: bool = False
+    text_before: str | None = None
+    text_after: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,10 +185,12 @@ class CellDiff:
     before: Fraction | None
     after: Fraction | None
     waiting: tuple[Counted, ...] = ()
+    text_before: str | None = None
+    text_after: str | None = None
 
     @property
     def changed(self) -> bool:
-        return self.before != self.after
+        return self.before != self.after or self.text_before != self.text_after
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +244,8 @@ def leaderboard_diff(
                 old.number if then is not None and (old := then.cell(cell.column)) else None,
                 cell.number,
                 cell.waiting,
+                old.text if then is not None and (old := then.cell(cell.column)) else None,
+                cell.text,
             )
             for cell in row.cells
         )
@@ -283,9 +289,11 @@ def run_changes(before: Worked | None, after: Worked) -> RunChanges:
         was, now = then.get(name), after.outcomes.get(name)
         old = was.number if was is not None else None
         new = now.number if now is not None else None
+        old_text = was.text if was is not None else None
+        new_text = now.text if now is not None else None
         waits = now is not None and now.waiting
-        if old != new or (was is not None and was.waiting) != waits:
-            values.append(ValueChange(name, old, new, waits))
+        if old != new or old_text != new_text or (was is not None and was.waiting) != waits:
+            values.append(ValueChange(name, old, new, waits, old_text, new_text))
     read_before = before.grading.read if before is not None else {}
     read_after = after.grading.read
     verdicts: list[VerdictChange] = []

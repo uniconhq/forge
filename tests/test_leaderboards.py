@@ -1120,6 +1120,31 @@ def test_a_header_names_no_self_reported_value_of_a_task_not_released() -> None:
     assert header(STAFF).self_reported == (("a", "score"), ("b", "reward"))
 
 
+def test_a_text_column_is_shown_and_not_sorted_folded_or_given_places() -> None:
+    assert column("p", "medal", {}, {"text": "gold"}).text == "gold"
+    submitted = Submitted(1, texts={"medal": "gold"})
+    shown = column(
+        "p",
+        "medal",
+        {"a": [submitted]},
+        {"value": [{"block": "latest", "from": {"results": "a"}}, "medal"]},
+    )
+    assert shown.text == "gold"
+
+    def messages(text: str) -> str:
+        return " ".join(message for _, message in problems(text))
+
+    body = "tasks: [{id: a}]\nleaderboards:\n  s:\n    columns:\n      medal: {text: gold}\n"
+    assert "sorts on numbers" in messages(
+        body + "    sort: [{medal: desc}]\n    display: [medal]\n"
+    )
+    assert "decimal places" in messages(body + "    display: [{medal: {places: 2}}]\n")
+    folded = messages(
+        body + "      more: {block: add, of: [{column: medal}, 1]}\n" + "    display: [medal]\n"
+    )
+    assert "is text" in folded
+
+
 # Each leaderboard block
 
 

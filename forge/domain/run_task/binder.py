@@ -23,7 +23,7 @@ from forge.domain.port_values import is_reserved, scalar_to_text, type_in_words
 from forge.domain.primitives import PROGRAMS, Port
 from forge.domain.program_manifest import EXEC_OWN_NAMES, PROGRAM_FILE, parse_program
 from forge.domain.run_task.models import EntrantInput, ProgramValue, Run, RunsFile
-from forge.domain.run_task.records import MOST_RUNS, SECRETS_LATER, VERDICT_WORDS, Part
+from forge.domain.run_task.records import MOST_RUNS, SECRETS_LATER, Part
 from forge.domain.run_task.show_rules import (
     _compiled_later,
     _under_sooner,
@@ -379,28 +379,35 @@ class _Binder:
                 f"{ALL} is a path in the task, and the name of the group of every run, so "
                 "show could not tell them apart. Rename it in the task's files.",
             )
+        columns, texts = self._columns(manifests)
         found = check_values(
             scoring.values,
             groups=[*scoring.groups],
-            columns=self._columns(manifests),
+            columns=columns,
             keys=self.repeated,
+            texts=texts,
         )
         for path, message in found.problems:
             self.refuse(("scoring", *path), message)
         return found
 
-    def _columns(self, manifests: Mapping[str, bytes]) -> dict[str, str | None]:
+    def _columns(self, manifests: Mapping[str, bytes]) -> tuple[dict[str, str | None], set[str]]:
         """Each column of a run, none for a number a fold may read and the
-        reason for any other.
+        reason for any other, and the columns that are text a formula may
+        read: `verdict` and a repeated input's text. A step's text output
+        is shown with the run and is not among them.
         """
         columns: dict[str, str | None] = {}
+        texts: set[str] = set()
         for name in [*self.repeated, *(name for name, each in self.entrant.items() if each.parts)]:
             kind = self.workflow.inputs[name].type
-            columns[name] = (
-                None
-                if kind is Type.NUMBER
-                else f"{name} is {type_in_words(kind)}, and blocks read numbers only."
-            )
+            if kind is Type.NUMBER:
+                columns[name] = None
+            elif kind is Type.TEXT:
+                columns[name] = f"{name} is text, and this reads a number."
+                texts.add(name)
+            else:
+                columns[name] = f"{name} is {type_in_words(kind)}, and blocks read numbers only."
         for name, report in self.checked.reports.items():
             port = report.port or self._deferred_port(report, manifests)
             if port is not None and port.type not in (Type.NUMBER, Type.TEXT):
@@ -408,10 +415,14 @@ class _Binder:
             if port is None or port.type is Type.NUMBER:
                 columns[name] = None
             else:
-                columns[name] = f"{name} is text, and blocks read numbers only."
-        columns["verdict"] = VERDICT_WORDS
+                columns[name] = (
+                    f"{name} is text, shown with its run, and a formula reads verdict "
+                    "and a repeated input's text."
+                )
+        columns["verdict"] = "verdict is text, and this reads a number."
+        texts.add("verdict")
         columns["passed"] = None
-        return columns
+        return columns, texts
 
     def _deferred_port(self, report: ResolvedReport, manifests: Mapping[str, bytes]) -> Port | None:
         """The type a report of a manifest the task gives has, in the first

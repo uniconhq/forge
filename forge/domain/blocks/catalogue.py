@@ -74,16 +74,20 @@ from enum import StrEnum
 
 
 class Kind(StrEnum):
-    """What an input of a block takes: a number; a group's runs; a task's
-    results; one submission's results; a number or a submission's results
-    (`either`); `best_each`'s value by name and its directions; or what a
-    fold's `weights`, `missing` and an `exec` block's program and language
-    are written as."""
+    """What an input of a block takes, or what a form gives: a number;
+    text; a group's runs; one run of them; a task's results; one
+    submission's results; a number or text; a number or a submission's
+    results (`either`); `best_each`'s value by name and its directions;
+    or what a fold's `weights`, `missing` and an `exec` block's program
+    and language are written as."""
 
     NUMBER = "number"
+    TEXT = "text"
     RUNS = "runs"
+    RUN = "run"
     RESULTS = "results"
     SUBMISSION = "submission"
+    NUMBER_OR_TEXT = "number_or_text"
     EITHER = "either"
     NAME = "name"
     DIRECTIONS = "directions"
@@ -121,8 +125,9 @@ class BlockInput:
 @dataclass(frozen=True, slots=True)
 class Form:
     """One way a block is given its inputs: what it is given, in words, its
-    inputs, where it may be used, and what it gives: a number, a
-    submission's results, or, for `otherwise`, what it is given.
+    inputs, where it may be used, and what it gives: a number, text, a
+    run, a number or text, a submission's results, or, for `otherwise`
+    over submissions, what it is given.
     """
 
     given: str
@@ -184,8 +189,8 @@ TASK_FACTS = ("seconds_late", "seconds", "compiled")
 """The facts a task's value may read (SIMPLER-CORE.md 9.2): not `attempt`,
 which depends on the entrant's other submissions, nor `marked`, which
 changes until the close."""
-LEAVES = ("runs", "run", "value", "fact", "results", "column", "name")
-TASK_LEAVES = ("runs", "run", "value", "fact")
+LEAVES = ("runs", "run", "value", "fact", "text", "results", "column", "name")
+TASK_LEAVES = ("runs", "run", "value", "fact", "text")
 """The leaves a task's value may hold; a leaderboard's column holds `value`,
 `results`, `column` and `name`."""
 LEADERBOARD_LEAVES = ("value", "results", "column", "name")
@@ -200,8 +205,10 @@ RESULTS = "a task's results"
 SUBMISSIONS = "submissions' results"
 
 _PAIR = BlockInput(Kind.NUMBER, least=2, most=2)
+_VALUE_PAIR = BlockInput(Kind.NUMBER_OR_TEXT, least=2, most=2)
 _SOME = BlockInput(Kind.NUMBER, least=2)
 _ONE = BlockInput(Kind.NUMBER)
+_VALUE = BlockInput(Kind.NUMBER_OR_TEXT)
 _BOUND = BlockInput(Kind.NUMBER, plain=True)
 
 ENTERED = "entered"
@@ -256,13 +263,28 @@ def _over_results(*, of: bool) -> Form:
     return Form(RESULTS, inputs, Scope.LEADERBOARD)
 
 
-def _pick(name: str, words: str, *, by: bool) -> Block:
+def _task_pick(*, by: bool) -> Form:
+    """A pick of one of a group's runs, in a task's value: `by` in place of
+    `where` for `highest` and `lowest`."""
+    inputs: dict[str, BlockInput] = {"from": BlockInput(Kind.RUNS)}
+    if by:
+        inputs["by"] = BlockInput(Kind.NUMBER, per_run=True)
+    else:
+        inputs["where"] = BlockInput(Kind.NUMBER, optional=True, per_run=True)
+    return Form(RUNS, inputs, Scope.TASK, Kind.RUN)
+
+
+def _pick(name: str, words: str, *, by: bool, task: bool = False) -> Block:
     inputs = {"from": BlockInput(Kind.RESULTS)}
     if by:
         inputs["by"] = BlockInput(Kind.NUMBER, per_run=True)
     inputs["where"] = _WHERE
     inputs["missing"] = _MISSING
-    return Block(name, words, (Form(RESULTS, inputs, Scope.LEADERBOARD, Kind.SUBMISSION),))
+    forms = []
+    if task:
+        forms.append(_task_pick(by=by))
+    forms.append(Form(RESULTS, inputs, Scope.LEADERBOARD, Kind.SUBMISSION))
+    return Block(name, words, tuple(forms))
 
 
 CATALOGUE: Mapping[str, Block] = {
@@ -276,8 +298,8 @@ CATALOGUE: Mapping[str, Block] = {
         _number("le", "1 when the first input is at most the second, else 0", _PAIR),
         _number("gt", "1 when the first input is more than the second, else 0", _PAIR),
         _number("ge", "1 when the first input is at least the second, else 0", _PAIR),
-        _number("eq", "1 when the two inputs are equal, else 0", _PAIR),
-        _number("ne", "1 when the two inputs differ, else 0", _PAIR),
+        _number("eq", "1 when its two inputs are equal, else 0, numbers or text", _VALUE_PAIR),
+        _number("ne", "1 when its two inputs differ, else 0, numbers or text", _VALUE_PAIR),
         _number("and", "1 when no input is 0, else 0", _SOME),
         _number("or", "1 when some input is not 0, else 0", _SOME),
         _number("not", "1 when its input is 0, else 0", _ONE),
@@ -288,7 +310,8 @@ CATALOGUE: Mapping[str, Block] = {
             (
                 Form(
                     NUMBERS,
-                    {"test": BlockInput(Kind.EITHER), "then": _ONE, "else": _ONE},
+                    {"test": BlockInput(Kind.EITHER), "then": _VALUE, "else": _VALUE},
+                    gives=Kind.NUMBER_OR_TEXT,
                 ),
             ),
         ),
@@ -317,17 +340,31 @@ CATALOGUE: Mapping[str, Block] = {
             "many of a task's results there are, 0 over none",
             (_fold(of=False, weights=True), _over_results(of=False)),
         ),
-        _pick("first", "the oldest of a task's results that where keeps, or none", by=False),
+        _pick(
+            "first",
+            "the oldest of a task's results that where keeps, or the first of a group's runs",
+            by=False,
+            task=True,
+        ),
         _pick("latest", "the newest of a task's results that where keeps, or none", by=False),
         _pick(
             "highest",
-            "the one of a task's results with the highest by, the oldest on a tie, or none",
+            "the one of a task's results with the highest by, the oldest on a tie, or the "
+            "run of a group with the highest by, the earlier on a tie",
             by=True,
+            task=True,
         ),
         _pick(
             "lowest",
-            "the one of a task's results with the lowest by, the oldest on a tie, or none",
+            "the one of a task's results with the lowest by, the oldest on a tie, or the "
+            "run of a group with the lowest by, the earlier on a tie",
             by=True,
+            task=True,
+        ),
+        Block(
+            "last",
+            "the last in run order of a group's runs that where keeps, or none",
+            (_task_pick(by=False),),
         ),
         Block(
             "best_each",
@@ -350,6 +387,12 @@ CATALOGUE: Mapping[str, Block] = {
             "otherwise",
             "the first input, or the second when the first is missing or none",
             (
+                Form(
+                    "numbers or text",
+                    {"of": BlockInput(Kind.NUMBER_OR_TEXT, least=2, most=2)},
+                    Scope.BOTH,
+                    Kind.NUMBER_OR_TEXT,
+                ),
                 Form(
                     SUBMISSIONS,
                     {"of": BlockInput(Kind.EITHER, least=2, most=2)},

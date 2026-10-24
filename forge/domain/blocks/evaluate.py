@@ -113,9 +113,10 @@ class Column:
 
 @dataclass(frozen=True, slots=True)
 class Outcome:
-    """What a value worked out to: its number, none when it is missing or
-    waiting; whether it waits for staff; and the ids of the runs, the values
-    and the facts it read.
+    """What a value worked out to: its number, none when it is missing,
+    waiting or text; its text, none when it is a number, missing or
+    waiting; whether it waits for staff; and the ids of the runs, the
+    values and the facts it read.
     """
 
     number: Fraction | None
@@ -123,10 +124,11 @@ class Outcome:
     runs: frozenset[str] = frozenset()
     values: frozenset[str] = frozenset()
     facts: frozenset[str] = frozenset()
+    text: str | None = None
 
     @property
     def missing(self) -> bool:
-        return self.number is None and not self.waiting
+        return self.number is None and self.text is None and not self.waiting
 
 
 def evaluate(
@@ -157,7 +159,9 @@ def evaluate(
     for name in _in_order(values):
         walk.current = name
         got = walk.tree(values[name])
-        walk.done[name] = Outcome(got.number, got.waiting, got.runs, got.values, got.facts)
+        walk.done[name] = Outcome(
+            got.number, got.waiting, got.runs, got.values, got.facts, got.text
+        )
     return {name: walk.done[name] for name in values}
 
 
@@ -172,6 +176,7 @@ class _Got:
     runs: frozenset[str] = frozenset()
     values: frozenset[str] = frozenset()
     facts: frozenset[str] = frozenset()
+    text: str | None = None
 
     def reading(self, *others: _Got) -> _Got:
         """This, having read `others` too."""
@@ -182,6 +187,7 @@ class _Got:
             self.runs.union(*(other.runs for other in others)),
             self.values.union(*(other.values for other in others)),
             self.facts.union(*(other.facts for other in others)),
+            self.text,
         )
 
 
@@ -272,6 +278,10 @@ class _Walk:
             raise ValueError(f"{node!r} is not a node of a value's tree")
         [(kind, named)] = node.items()
         match kind:
+            case "text":
+                if not isinstance(named, str):
+                    raise ValueError(f"{node!r} gives no text")
+                return _Got(None, text=named)
             case "value":
                 done = self.done[named]
                 return _Got(
@@ -280,6 +290,7 @@ class _Walk:
                     runs=done.runs,
                     values=done.values | {named},
                     facts=done.facts,
+                    text=done.text,
                 )
             case "fact":
                 if named in self.facts_waiting:
@@ -289,8 +300,11 @@ class _Walk:
                     raise ValueError(f"the fact {named} is {given!r}, not a number")
                 return _Got(_kept(Fraction(given)), facts=frozenset({named}))
             case "run":
-                _, column = named
-                return self.column(column, scope)
+                source, column = named
+                if isinstance(source, dict):
+                    stack.append((self.picked(source, str(column), scope), None))
+                    return None
+                return self.column(str(column), scope)
         raise ValueError(f"{node!r} gives no number")
 
     def column(self, column: str, scope: _Scope) -> _Got:
@@ -298,6 +312,8 @@ class _Walk:
         run = scope.run
         if run is None:
             raise ValueError(f"the column {column} is read outside a fold")
+        if column == "verdict":
+            return _Got(None, text=run.verdict)
         if column == "passed":
             return _Got(Fraction(1 if run.verdict == ACCEPTED else 0))
         if column in self.columns:
@@ -309,7 +325,10 @@ class _Walk:
             if scope.missing is not None:
                 return _Got(exact(scope.missing))
             return _Got(self.columns[column].worst)
-        number = exact(run.key.get(column))
+        raw = run.key.get(column)
+        number = exact(raw)
+        if number is None and isinstance(raw, str):
+            return _Got(None, text=raw)
         if number is None:
             raise ValueError(f"the run {run.id} has no number for the column {column}")
         return _Got(_kept(number))
@@ -338,7 +357,7 @@ class _Walk:
             given = node["of"]
             assert isinstance(given, list)
             first = yield (given[0], scope)
-            if first.waiting or first.skip or first.number is not None:
+            if first.waiting or first.skip or first.number is not None or first.text is not None:
                 return first
             instead = yield (given[1], scope)
             return instead.reading(first)
@@ -347,6 +366,53 @@ class _Walk:
         for each in given if isinstance(given, list) else [given]:
             got.append((yield (each, scope)))
         return _apply(block.name, got)
+
+    def picked(self, pick: Mapping[str, object], column: str, scope: _Scope) -> _Asks:
+        """The column of the run `pick` chooses, missing when it chooses none."""
+        name = pick.get("block")
+        source = pick.get("from")
+        if not isinstance(name, str) or not isinstance(source, dict):
+            raise ValueError(f"{pick!r} is not a run pick")
+        group = source.get("runs")
+        runs = list(self.runs[group]) if isinstance(group, str) and group in self.runs else []
+        read = _Got(None, runs=frozenset(run.id for run in runs))
+        if any(run.verdict == SYSTEM_ERROR for run in runs):
+            return _Got(None, waiting=True).reading(read)
+        chosen: RunResult | None = None
+        best: Fraction | None = None
+        waiting = False
+        for run in runs:
+            one = _Scope(run, scope.missing)
+            if name in ("highest", "lowest"):
+                got = yield (pick["by"], one)
+                read = read.reading(got)
+                if got.waiting:
+                    waiting = True
+                    continue
+                if got.number is None:
+                    continue
+                better = chosen is None or (
+                    (name == "highest" and best is not None and got.number > best)
+                    or (name == "lowest" and best is not None and got.number < best)
+                )
+                if better:
+                    chosen, best = run, got.number
+            else:
+                where = pick.get("where")
+                if where is not None:
+                    test = yield (where, one)
+                    read = read.reading(test)
+                    if test.waiting:
+                        waiting = True
+                        continue
+                    if test.skip or test.number is None or test.number == 0:
+                        continue
+                chosen = run
+                if name == "first":
+                    break
+        if chosen is None:
+            return (_Got(None, waiting=True) if waiting else _Got(None)).reading(read)
+        return self.column(column, _Scope(chosen)).reading(read)
 
     def fold(self, name: str, form: Form, node: Mapping[str, object]) -> _Asks:
         over = node["over"]
@@ -453,6 +519,11 @@ def _apply(name: str, got: Sequence[_Got]) -> _Got:
     for each in got:
         if each.skip:
             return _Got(None, skip=True).reading(read)
+    if name in ("eq", "ne") and any(each.text is not None for each in got):
+        if any(each.text is None or each.number is not None for each in got):
+            return read
+        same = got[0].text == got[1].text
+        return _Got(_truth(same if name == "eq" else not same)).reading(read)
     numbers = [each.number for each in got]
     if any(number is None for number in numbers):
         return read
@@ -538,6 +609,9 @@ def _reading_runs(trees: Iterable[object]) -> set[int]:
         if "block" not in node:
             if "run" in node:
                 found.add(id(node))
+                named = node.get("run")
+                if isinstance(named, list) and named and isinstance(named[0], dict):
+                    waiting.append((named[0], False))
             continue
         given = _given(node)
         if not seen:

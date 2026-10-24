@@ -29,9 +29,6 @@ SECRETS_LATER = (
     "Secrets come with org secrets, which Unicon does not hold yet, so a task cannot give "
     "one. Give this input a value instead."
 )
-VERDICT_WORDS = (
-    "verdict is words, and blocks read numbers. Read passed, 1 when the run is accepted."
-)
 
 
 @dataclass(frozen=True, slots=True)

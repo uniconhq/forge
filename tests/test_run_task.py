@@ -1097,7 +1097,7 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "of: {run: [st1_tests, score]}",
             "of: {run: [st1_tests, verdict]}",
             "scoring.values.st1.of",
-            "verdict is words",
+            "verdict is text",
         ),
         (
             "of: {run: [st1_tests, score]}",

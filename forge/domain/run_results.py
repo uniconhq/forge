@@ -232,7 +232,10 @@ def check_failing(
         for name, raw in expect.items()
         if name != VERDICT and (number := exact(raw)) is not None
     }
-    if wanted:
+    wanted_text = {
+        name: raw for name, raw in expect.items() if name != VERDICT and isinstance(raw, str)
+    }
+    if wanted or wanted_text:
         facts = {
             "seconds_late": Fraction(0),
             "seconds": Fraction(0),
@@ -245,6 +248,12 @@ def check_failing(
                 found.append(f"{name} has no number, where {written(number)} is expected.")
             elif outcome.number != number:
                 found.append(f"{name} is {written(outcome.number)}, not {written(number)}.")
+        for name, text in wanted_text.items():
+            outcome = outcomes.get(name)
+            if outcome is None or outcome.text is None:
+                found.append(f"{name} has no text, where {text} is expected.")
+            elif outcome.text != text:
+                found.append(f"{name} is {outcome.text}, not {text}.")
     if len(found) > MOST_FAILING:
         more = len(found) - MOST_FAILING + 1
         found = [*found[: MOST_FAILING - 1], f"And {more} more like these."]

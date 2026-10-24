@@ -5,8 +5,8 @@ A check's `submit` gives every input the entrant gives, by the same name: a
 file or a folder by its path in the task, an input given in parts as a list
 of one per part in tuple order, and any other its value. An input the
 entrant may leave to its form's default may be left out, and takes it.
-`expect` is a `verdict` every run must get, a number for each of the
-scoring's values named, or both. Each is checked at the save
+`expect` is a `verdict` every run must get, a number or text for each of
+the scoring's values named, or both. Each is checked at the save
 (`check_checks`): an input the entrant does not give, a path the task does
 not hold, a value of the wrong type, and a value or verdict that does not
 exist are refused, each at its path in `task.yaml`, as is a value that
@@ -32,7 +32,7 @@ from fractions import Fraction
 from typing import Protocol
 
 from forge.domain import exact_json
-from forge.domain.blocks.catalogue import ENTERED
+from forge.domain.blocks.catalogue import ENTERED, Kind
 from forge.domain.blocks.evaluate import using
 from forge.domain.blocks.numbers import exact
 from forge.domain.content import has_path, names_path
@@ -85,12 +85,12 @@ class Given:
 class TaskCheck:
     """A check as its save checked it: its place in `checks`, from 1, what
     it gives each entrant input, the verdict every run must get, if any,
-    and the number each value named must be."""
+    and the number or text each value named must be."""
 
     index: int
     given: Mapping[str, Given]
     verdict: str | None
-    values: Mapping[str, Fraction]
+    values: Mapping[str, Fraction | str]
 
     def part(self, name: str, number: int | None) -> object:
         """What the check gives `name`, or its part `number`, from 1: a
@@ -110,6 +110,7 @@ def check_checks(
     entrant: Mapping[str, EntrantGiven],
     paths: Collection[str],
     values: Mapping[str, object],
+    kinds: Mapping[str, Kind] | None = None,
 ) -> tuple[list[Problem], tuple[TaskCheck, ...]]:
     """Every problem with a task's `checks` against its `entrant` inputs,
     the task's files `paths` and its scoring's `values`, each tree by its
@@ -148,7 +149,7 @@ def check_checks(
                 problems.append(Problem(path=path_text((*at, "submit", name)), message=read))
             else:
                 given[name] = read
-        verdict, numbers = _expected(check.expect, values, marked, at, problems)
+        verdict, numbers = _expected(check.expect, values, marked, at, problems, kinds or {})
         if len(problems) == before:
             found.append(TaskCheck(index + 1, given, verdict, numbers))
     return problems, tuple(found)
@@ -217,11 +218,12 @@ def _expected(
     marked: Collection[str],
     at: Path,
     problems: list[Problem],
-) -> tuple[str | None, dict[str, Fraction]]:
-    """The verdict and the numbers a check expects, each problem added,
-    `marked` the values reading a mark staff enter."""
+    kinds: Mapping[str, Kind],
+) -> tuple[str | None, dict[str, Fraction | str]]:
+    """The verdict and the number or text a check expects, each problem
+    added, `marked` the values reading a mark staff enter."""
     verdict: str | None = None
-    numbers: dict[str, Fraction] = {}
+    numbers: dict[str, Fraction | str] = {}
     for name, raw in expect.items():
         where = path_text((*at, "expect", name))
         if name == VERDICT:
@@ -256,9 +258,24 @@ def _expected(
                 )
             )
             continue
+        if isinstance(raw, str):
+            if kinds.get(name) is Kind.TEXT:
+                numbers[name] = raw
+            else:
+                problems.append(Problem(path=where, message=f"Give the number {name} must be."))
+            continue
         number = exact(raw) if is_number(raw) and not isinstance(raw, bool) else None
-        if number is None:
-            problems.append(Problem(path=where, message=f"Give the number {name} must be."))
+        if number is None or kinds.get(name) is Kind.TEXT:
+            problems.append(
+                Problem(
+                    path=where,
+                    message=(
+                        f"Give the text {name} must be."
+                        if kinds.get(name) is Kind.TEXT
+                        else f"Give the number {name} must be."
+                    ),
+                )
+            )
             continue
         numbers[name] = number
     return verdict, numbers

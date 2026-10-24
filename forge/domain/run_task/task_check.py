@@ -115,6 +115,7 @@ def check_run_task(
         binder.entrant,
         paths,
         definition.scoring.values if definition.scoring is not None else {},
+        values.kinds if values is not None else {},
     )
     binder.problems += refused
     if binder.problems:
