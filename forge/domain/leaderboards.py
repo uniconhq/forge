@@ -612,7 +612,6 @@ def _leaderboard_order(checked: LeaderboardsCheck) -> list[str]:
 
 
 __all__ = [
-    "MARKED",
     "STAFF",
     "Counted",
     "Header",

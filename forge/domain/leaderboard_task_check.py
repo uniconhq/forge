@@ -449,7 +449,6 @@ def marks_of(settings: ContestDefinition, entry: ContestTask) -> int | None:
 
 
 __all__ = [
-    "MARKED",
     "Across",
     "Scored",
     "across",
