@@ -1,7 +1,8 @@
 """Staff releasing a run task's results and taking a release back
 (SIMPLER-CORE.md 9.4, stage 5 section 6 items 2 and 10): what `on_release`
 lists is shown to entrants, its values, runs and files, only while the
-results are released; a take-back warns before it hides; each action is a
+results are released, and an entrant reads the early row alone until the
+reveal but while released; a take-back warns before it hides; each action is a
 row with who and when, added only when it changes the state; gradings
 made while released take the split that runs `on_release` early, and a
 grading keeps the split it was made with; an extension, or a later close,
@@ -39,14 +40,14 @@ from forge.services import (
     entrants,
     gradings,
     landing,
-    publications,
     results,
     steps,
+    task_save,
     tasks,
     timelines,
 )
-from forge.services.publications import Draft, Published
 from forge.services.results import ResultsState
+from forge.services.task_save import Draft, Published
 from forge.testing import FakeClock
 from tests.services.conftest import SPRING, Acme, Entered
 from tests.services.test_pipelines import (
@@ -110,6 +111,32 @@ async def test_what_on_release_lists_is_shown_only_while_the_results_are_release
     assert await seen() == (hidden, samples, None)
     await _release(setup, acme, islands.task)
     assert await seen() == ({**hidden, "st2": 1}, shown, b"4\n")
+
+
+async def test_an_entrant_reads_the_early_row_alone_until_the_reveal_or_while_released(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, session = await _graded_both(setup, acme, RELEASING)
+    # st1 moved to now runs r3 early for new gradings; this one ran it late.
+    sooner = RELEASING.replace("samples/]", "samples/, st1]").replace(
+        "after_close: [st1, all]", "after_close: [all]"
+    )
+    assert isinstance(await _try_save(setup, acme, islands.task, sooner), Published)
+    await setup.settle()
+
+    async def st1() -> Any:
+        return _values(await _grading(setup, session, islands))["st1"]
+
+    # From the early row alone st1 reads r3, which ran late, so it is
+    # missing (item 134); from both, 1.
+    assert await st1() is None
+    await _release(setup, acme, islands.task)
+    assert await st1() == 1
+    await _hide(setup, acme, islands.task)
+    assert await st1() is None
+    clock.set(AFTER_CLOSE)
+    assert await st1() == 1
 
 
 async def test_each_action_asks_first_and_changes_nothing_unconfirmed(
@@ -271,9 +298,9 @@ async def _try_save(setup: Setup, acme: Acme, task: TaskId, text: str) -> Publis
     head = await acme.fake.content.list_files(PLATFORM, task)
     edits = {"task.yaml": Edit(text.encode(), head.tokens.get("task.yaml"))}
     try:
-        return await publications.save(setup, acme.ada, task, edits, confirm=True)
+        return await task_save.save(setup, acme.ada, task, edits, confirm=True)
     except ConfirmationRequired as asked:
-        return await publications.save(
+        return await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
 

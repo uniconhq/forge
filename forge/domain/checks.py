@@ -9,7 +9,9 @@ entrant may leave to its form's default may be left out, and takes it.
 scoring's values named, or both. Each is checked at the save
 (`check_checks`): an input the entrant does not give, a path the task does
 not hold, a value of the wrong type, and a value or verdict that does not
-exist are refused, each at its path in `task.yaml`.
+exist are refused, each at its path in `task.yaml`, as is a value that
+reads a mark staff enter, directly or through other values, since a
+check's made-up submission never has one.
 
 The save grades a check through copies of the steps graded per submission
 (`copy_of`), given the check's files and values where the entrant's would
@@ -30,18 +32,18 @@ from fractions import Fraction
 from typing import Protocol
 
 from forge.domain import exact_json
+from forge.domain.blocks.catalogue import ENTERED
+from forge.domain.blocks.evaluate import using
 from forge.domain.blocks.numbers import exact
 from forge.domain.content import has_path, names_path
 from forge.domain.definitions import Check, Form, TaskDefinition
+from forge.domain.plan_basics import RESULT_MAX
 from forge.domain.primitives import STEP_OUTCOMES
-from forge.domain.reports import RESULT_MAX
 from forge.domain.types import FILES, Type
-from forge.domain.yaml_models import Path, Problem, is_number, path_text
+from forge.domain.yaml_models import Path, Problem, is_number, joined, path_text
 
 VERDICT = "verdict"
 """The key of `expect` that names the verdict every run must get."""
-COPY_MOST = 40
-"""The longest a copy's step id may be, as a step's name at the door is."""
 MOST_FAILING = 20
 """The most sentences a check's result keeps of what it did not get."""
 RUNS_KEPT = 20
@@ -107,13 +109,14 @@ def check_checks(
     checks: Sequence[Check],
     entrant: Mapping[str, EntrantGiven],
     paths: Collection[str],
-    values: Collection[str],
+    values: Mapping[str, object],
 ) -> tuple[list[Problem], tuple[TaskCheck, ...]]:
     """Every problem with a task's `checks` against its `entrant` inputs,
-    the task's files `paths` and its scoring's `values`, and each check as
-    read when there is none."""
+    the task's files `paths` and its scoring's `values`, each tree by its
+    name, and each check as read when there is none."""
     problems: list[Problem] = []
     found: list[TaskCheck] = []
+    marked = using(values, ENTERED) if checks else frozenset()
     for index, check in enumerate(checks):
         at: Path = ("checks", index)
         before = len(problems)
@@ -123,7 +126,7 @@ def check_checks(
                 Problem(
                     path=path_text((*at, "submit", name)),
                     message=f"The entrant gives no {name}, so a check cannot. A check gives "
-                    f"what the entrant does: {_joined(sorted(entrant))}.",
+                    f"what the entrant does: {joined(sorted(entrant))}.",
                 )
             )
         for name, wanted in entrant.items():
@@ -145,7 +148,7 @@ def check_checks(
                 problems.append(Problem(path=path_text((*at, "submit", name)), message=read))
             else:
                 given[name] = read
-        verdict, numbers = _expected(check.expect, values, at, problems)
+        verdict, numbers = _expected(check.expect, values, marked, at, problems)
         if len(problems) == before:
             found.append(TaskCheck(index + 1, given, verdict, numbers))
     return problems, tuple(found)
@@ -204,14 +207,19 @@ def _one(raw: object, wanted: EntrantGiven, paths: Collection[str]) -> tuple[obj
         return None, "This input takes text."
     options = form.options or wanted.options
     if kind is Type.ENUM and options is not None and raw not in options:
-        return None, f"This input takes one of {_joined(list(options))}."
+        return None, f"This input takes one of {joined(list(options))}."
     return raw, None
 
 
 def _expected(
-    expect: Mapping[str, object], values: Collection[str], at: Path, problems: list[Problem]
+    expect: Mapping[str, object],
+    values: Collection[str],
+    marked: Collection[str],
+    at: Path,
+    problems: list[Problem],
 ) -> tuple[str | None, dict[str, Fraction]]:
-    """The verdict and the numbers a check expects, each problem added."""
+    """The verdict and the numbers a check expects, each problem added,
+    `marked` the values reading a mark staff enter."""
     verdict: str | None = None
     numbers: dict[str, Fraction] = {}
     for name, raw in expect.items():
@@ -221,20 +229,30 @@ def _expected(
                 problems.append(
                     Problem(
                         path=where,
-                        message=f"A verdict is one of {_joined(list(STEP_OUTCOMES))}.",
+                        message=f"A verdict is one of {joined(list(STEP_OUTCOMES))}.",
                     )
                 )
             else:
                 verdict = raw
             continue
         if name not in values:
-            listed = _joined(sorted(values)) if values else "none"
+            listed = joined(sorted(values)) if values else "none"
             problems.append(
                 Problem(
                     path=where,
                     message=f"There is no value {name} in the task's scoring, so a check "
                     f"cannot expect it. Its values are {listed}, and verdict names the "
                     "verdict every run must get.",
+                )
+            )
+            continue
+        if name in marked:
+            problems.append(
+                Problem(
+                    path=where,
+                    message=f"{name} reads a mark staff enter, directly or through other "
+                    "values, and a check's made-up submission is never marked, so a check "
+                    "cannot expect it. Expect a value that reads no mark.",
                 )
             )
             continue
@@ -343,15 +361,8 @@ def failing_words(run: str, got: str, wanted: str) -> str:
     return f"The run {run} got {got}, not {wanted}."
 
 
-def _joined(items: Sequence[str]) -> str:
-    if len(items) == 1:
-        return items[0]
-    return f"{', '.join(items[:-1])} and {items[-1]}"
-
-
 __all__ = [
     "CHECKS_ROOM",
-    "COPY_MOST",
     "MOST_FAILING",
     "RUNS_KEPT",
     "VERDICT",

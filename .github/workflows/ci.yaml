@@ -41,7 +41,7 @@ jobs:
       # workflow with the one deploy seeds, the three seeded primitives'
       # declarations with the releases deploy's images.json pins, read at
       # their tags (so those checkouts fetch every tag), and the contract 6
-      # primitives' declarations and name rules with exec's, interact's and
+      # primitives' declarations and name rules with exec's and
       # compile's own. They fail in CI when a checkout is missing, so the
       # repos sit beside each other the way they do on a laptop. Until the
       # stage ships and is tagged (#513), every one is the branch this one
@@ -88,12 +88,6 @@ jobs:
           repository: uniconhq/primitive-exec
           ref: feat/simpler-core
           path: primitive-exec
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: uniconhq/primitive-interact
-          ref: feat/simpler-core
-          path: primitive-interact
           persist-credentials: false
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0

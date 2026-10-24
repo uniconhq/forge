@@ -8,7 +8,7 @@ only a rational that is no finite decimal, such as 1/3.
 
 A decimal written with an exponent past `MOST_EXPONENT` is no number:
 `1e2000000` is nine characters an entrant can report, and its rational a
-whole number of two million digits, which every read of a board would
+whole number of two million digits, which every read of a leaderboard would
 build again. A long number written out digit by digit costs only as much
 as its text, so it is read.
 """
@@ -20,7 +20,7 @@ from fractions import Fraction
 
 SIGNIFICANT = 30
 """The significant digits a rational that is no finite decimal is given in,
-far past any two numbers a board tells apart."""
+far past any two numbers a leaderboard tells apart."""
 MOST_EXPONENT = 1000
 """The largest exponent, up or down, of a decimal read as a number."""
 

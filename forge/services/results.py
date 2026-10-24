@@ -36,9 +36,9 @@ from forge.domain.roles import Role, contest_id_of, task_scope
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import entrants, published, timelines
+from forge.services import entrant_view, entrants, timelines
 from forge.services.access import Organiser, require
-from forge.services.published import PublishedTask
+from forge.services.entrant_view import PublishedTask
 
 log = get_logger(__name__)
 
@@ -143,7 +143,7 @@ async def _act(
     no publication, and `NotARunTask` for one that does not grade by runs.
     """
     require(organiser, task_scope(task), Role.MANAGER)
-    found = await published.task(ctx, task)
+    found = await entrant_view.task(ctx, task)
     if found is None:
         raise NotFound(NO_PUBLICATION)
     if not found.definition.runs:
@@ -151,7 +151,7 @@ async def _act(
     contest = contest_id_of(task_scope(task))
     heard = await _visible(ctx, contest, task)
     await timelines.hold_task(ctx, task)
-    if await published.results_released(ctx, task) == (act == RELEASED):
+    if await entrant_view.results_released(ctx, task) == (act == RELEASED):
         return False
     if not confirmed:
         if act == RELEASED:
@@ -171,8 +171,8 @@ async def _visible(ctx: Context, contest: ContestId, task: TaskId) -> bool:
     may hear of it. A forge that does not answer says no.
     """
     try:
-        settings = await published.contest(ctx, contest)
-        found = await published.task(ctx, task, settings)
+        settings = await entrant_view.contest(ctx, contest)
+        found = await entrant_view.task(ctx, task, settings)
     except PortError:
         return False
     return found is not None and rules.visible(settings, found.name, ctx.now)

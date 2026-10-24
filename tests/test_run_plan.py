@@ -23,9 +23,8 @@ from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, parse_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine, Slot, run_machine
-from forge.domain.plans import PLAN_PATH, Snapshot, StepLimits
+from forge.domain.plan_basics import PLAN_PATH, RESULT_MAX, Snapshot, StepLimits
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
-from forge.domain.reports import RESULT_MAX
 from forge.domain.run_plan import (
     PRIMITIVE_ROOM_MB,
     PROGRAM_USES,
@@ -44,7 +43,9 @@ from forge.domain.run_plan import (
 from forge.domain.run_task import check_run_task
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.workflow_definition import parse_run_workflow
+from forge.domain.yaml_models import load_yaml, one_line
 from forge.testing import PLACEHOLDER_DIGEST
+from tests.conftest import sibling
 from tests.test_program_manifest import primitive
 from tests.test_run_task import (
     CARTPOLE,
@@ -111,7 +112,6 @@ LINKC = _declared(
 def primitives() -> dict[str, PrimitiveDeclaration]:
     return {
         "unicon/exec@v1": mirrored("exec"),
-        "unicon/interact@v2": mirrored("interact"),
         "unicon/compile@v3": mirrored("compile"),
         "acme/link@v1": LINK,
         "acme/judge@v1": JUDGE,
@@ -217,6 +217,47 @@ def held(plan: RunPlan, name: str, kind: str = "late") -> PipelineStep:
 # Islands, step by step
 
 
+def test_each_plan_step_is_named_s_n_by_its_place(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(islands(primitives))
+    checked_plan = ok(checked(primitives))
+    program = ok(mean(primitives))
+
+    for made in (plan, checked_plan, program):
+        assert [step.woodpecker for step in made.steps.values()] == [
+            f"s{place}" for place in range(1, len(made.steps) + 1)
+        ]
+    assert [plan.steps[name].woodpecker for name in ("compile", "solution", "diff", "compare")] == [
+        "s1",
+        "s2",
+        "s3",
+        "s4",
+    ]
+    assert plan.woodpecker_name("compile") == "s1"
+    assert plan.woodpecker_name("solution.r3") == "s2.r3"
+    assert plan.woodpecker_name("c1-compare") == "c1-compare"
+    assert plan.woodpecker_name("report") == "report"
+    bare = plan.model_copy(
+        update={
+            "steps": {
+                name: step.model_copy(update={"woodpecker": None})
+                for name, step in plan.steps.items()
+            }
+        }
+    )
+    assert bare.woodpecker_name("compile") == "compile"
+    assert bare.woodpecker_name("solution.r3") == "solution.r3"
+    assert checked_plan.woodpecker_name("c1-solution.r2") == (
+        f"{checked_plan.steps['c1-solution'].woodpecker}.r2"
+    )
+    assert program.steps["build-mean"].woodpecker is not None
+    assert program.woodpecker_name("exec-mean") == program.steps["exec-mean"].woodpecker
+    document = exact_json.loads(plan.to_bytes())
+    document["steps"]["build/compile"] = document["steps"].pop("compile")
+    assert violation(document, "plan") is None
+
+
 def test_islands_reads_as_written_step_by_step(primitives: dict[str, PrimitiveDeclaration]) -> None:
     plan = ok(islands(primitives))
 
@@ -300,7 +341,7 @@ def test_islands_reads_as_written_step_by_step(primitives: dict[str, PrimitiveDe
     assert RunPlan.from_bytes(plan.to_bytes()) == plan
 
 
-@pytest.mark.parametrize("name", ["exec", "interact"])
+@pytest.mark.parametrize("name", ["exec"])
 def test_the_room_kept_for_a_boxed_primitive_is_what_it_keeps(name: str) -> None:
     assert primitive(name).STEP_MEMORY_KB == PRIMITIVE_ROOM_MB * 1024
 
@@ -372,7 +413,9 @@ def test_an_entrant_file_is_copied_at_the_most_its_input_may_hold(
     assert held(larger, "episode", "early").limits.memory_mb == 1024 + 256 + 64 + 500
 
 
-def test_interact_needs_a_box_per_program(primitives: dict[str, PrimitiveDeclaration]) -> None:
+def test_linked_programs_need_a_box_each(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
     task = JUDGED_TASK.replace("show: {now: [moves]}", "show: {after_close: [moves]}")
     plan = ok(
         planned(
@@ -386,7 +429,7 @@ def test_interact_needs_a_box_per_program(primitives: dict[str, PrimitiveDeclara
     )
 
     assert plan.steps["game"].boxes == 2
-    # Both programs' 256 MB and interact's room of 512 MB, with both
+    # Both programs' 256 MB and the programs form's room of 512 MB, with both
     # programs, each up to 64 MB, copied in on top.
     assert held(plan, "game").limits.memory_mb == 256 + 256 + 512 + 64 + 64
     assert plan.steps["game"].inputs == {
@@ -984,6 +1027,34 @@ def test_compiled_with_no_step_done_once_that_can_fail_to_compile_is_refused(
             "built cannot be shown as soon as a grading ends: it reads `compiled`, but no step "
             "done once per grading can give a compile error, so `compiled` is known only once "
             "the whole grading ends, its hidden runs too. Show built after_close instead."
+        ]
+    }
+
+
+def test_compiled_shown_by_its_name_is_refused_as_a_value_reading_it_is(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = BUILT_TASK.replace("now: [built, samples/]", "now: [compiled, samples/]")
+
+    problems = refused(built(primitives, task))
+
+    assert problems == {
+        "scoring.show.now[0]": [
+            "compiled cannot be shown as soon as a grading ends: it comes from `compile`, which "
+            "runs the entrant's code beside `grader/`, which entrants are not shown during the "
+            "contest, so compiled could tell them about it. Show compiled after_close instead."
+        ]
+    }
+    shown = BUILT_TASK.replace("now: [built, samples/]", "now: [compiled, samples/, grader/]")
+    assert laid_out(ok(built(primitives, shown))) == {
+        "early": [("compile", None, ())],
+        "late": [("run", ("r1", "r2"), ())],
+    }
+    assert refused(built(primitives, shown, LINKED)) == {
+        "scoring.show.now[0]": [
+            "compiled cannot be shown as soon as a grading ends: no step done once per grading "
+            "can give a compile error, so `compiled` is known only once the whole grading ends, "
+            "its hidden runs too. Show compiled after_close instead."
         ]
     }
 
@@ -1810,27 +1881,20 @@ def _cartpole_named(
     )
 
 
-def test_a_check_whose_copy_takes_a_step_s_name_or_is_too_long_is_refused(
+def test_a_check_whose_copy_takes_a_step_s_name_is_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     # The runner is compiled once from the task's own files, so only the
-    # episode, run per submission, is copied, as c1-episode.
+    # episode, run per submission, is copied, as c1-episode. A copy's name
+    # may be longer than a Woodpecker name: Woodpecker is named s<n>.
     assert ok(_cartpole_named(primitives, "runner", "c1-runner")).checks() == (1,)
     assert refused(_cartpole_named(primitives, "runner", "c1-episode")) == {
         "checks[0]": [
             "Unicon names this check's copy of a step c1-episode, which the workflow's step of "
-            "that name already takes. Remove the check, or use a workflow whose steps' ids are "
-            "shorter."
+            "that name already takes. Remove the check, or rename that step."
         ]
     }
-    assert ok(_cartpole_named(primitives, "episode", "e" * 37)).checks() == (1,)
-    assert refused(_cartpole_named(primitives, "episode", "e" * 38)) == {
-        "checks[0]": [
-            f"Unicon names this check's copy of a step c1-{'e' * 38}, which is longer than the "
-            "40 characters a step's name may be. Remove the check, or use a workflow whose "
-            "steps' ids are shorter."
-        ]
-    }
+    assert ok(_cartpole_named(primitives, "episode", "e" * 38)).checks() == (1,)
 
 
 def test_checks_taking_the_save_past_the_wall_are_refused_at_checks(
@@ -1847,3 +1911,30 @@ def test_checks_taking_the_save_past_the_wall_are_refused_at_checks(
             "25. Give fewer checks."
         ]
     }
+
+
+def unwrapped(name: str) -> PrimitiveDeclaration:
+    """`primitive-<name>` with `forms.one` lifted back to the top."""
+    document = load_yaml(sibling(f"primitive-{name}", "primitive.yaml").read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    document["image"] = f"ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}"
+    one = document.pop("forms")["one"]
+    document.pop("description", None)
+    if "description" in one:
+        document["description"] = one.pop("description")
+    document.update(one)
+    return parse_primitive(one_line(document))
+
+
+def test_lifting_execs_one_form_plans_the_same_bytes(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plain = {**primitives, "unicon/exec@v1": unwrapped("exec")}
+    workflow, files = deployed("unicon/classic@v3")
+    for task, paths, manifests in (
+        (ISLANDS, ISLANDS_PATHS, None),
+        (MEAN, MEAN_PATHS, {PROGRAM_YAML: MEAN_MANIFEST}),
+    ):
+        first = planned(primitives, task, workflow, files, paths, manifests=manifests)
+        second = planned(plain, task, workflow, files, paths, manifests=manifests)
+        assert ok(first).to_bytes() == ok(second).to_bytes()

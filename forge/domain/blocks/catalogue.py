@@ -1,4 +1,4 @@
-"""Every block a task's value or a board's column may use, with its inputs
+"""Every block a task's value or a leaderboard's column may use, with its inputs
 and the kind each takes (SIMPLER-CORE.md 10.1 and 14, #511 and #512; the
 leaderboards note's 5.3 and 6.1). It is the
 one allowlist: the editor offers these and nothing else, and the forge runs
@@ -29,28 +29,35 @@ does not name weighing 1, and `missing` says what a missing report counts
 as, `skip` to leave the run out, or a number.
 
 Each form says where it may be used (`Form.scope`): a task's value, a
-board's column, or both. `min` and `max` of numbers are both's, a fold
+leaderboard's column, or both. `min` and `max` of numbers are both's, a fold
 over a group's runs is a value's, and a fold over a task's results is a
-column's; `exec` and `entered` are a value's alone, so a board has no
-`exec` (14.2).
+column's; `exec` and `entered` are a value's alone, so a leaderboard has no
+`exec` (14.2). `otherwise` is both's: in a value it gives its second
+number when its first is missing (stage 5 section 6, item 128).
 
-A board's column reads, besides numbers (the leaderboards note's 5.10):
+A leaderboard's column reads, besides numbers (the leaderboards note's 5.10):
 
 - `{results: <task>}`, the row's results for a task, one per submission
   that counts, oldest first, for a pick's `from`, a fold's `over` and
   `best_each`'s `from`;
 - `{value: [<of>, <name>]}`, value or fact `name` of one submission's
   results: `<of>` a task, meaning the submission a `where`, a `by` or a
-  fold's `of` is looking at, a pick column of the board, or a node giving
+  fold's `of` is looking at, a pick column of the leaderboard, or a node giving
   a submission's results;
 - `{column: <name>}`, another column of the same row, or `{column:
-  [<board>, <name>]}`, a column of another board's;
+  [<leaderboard>, <name>]}`, a column of another leaderboard's;
 - `{name: <value>}`, the value `best_each` works out again.
+
+A pick, a fold over a task's results and `best_each` take `missing`, as
+a fold over runs does: `skip` leaves out a submission whose `where`,
+`by`, `of` or value read is missing, and a number counts that input as
+the number; with none, such a submission makes the block missing (stage
+5 section 6, item 127).
 
 A pick (`first`, `latest`, `highest`, `lowest`) gives one submission's
 results, or none; `otherwise` gives what it is given, a number or a
 submission's results; every other block gives a number. `if`'s test may
-be a submission's results on a board: true when there is one.
+be a submission's results on a leaderboard: true when there is one.
 
 `entered` reads no node: it is the mark a manager of the task enters for
 the submission, its bounds numbers written out, and a value holds one at
@@ -87,10 +94,10 @@ class Kind(StrEnum):
 
 
 class Scope(StrEnum):
-    """Where a form may be used: a task's value, a board's column, or both."""
+    """Where a form may be used: a task's value, a leaderboard's column, or both."""
 
     TASK = "task"
-    BOARD = "board"
+    LEADERBOARD = "leaderboard"
     BOTH = "both"
 
 
@@ -158,8 +165,20 @@ SKIP = "skip"
 """A fold's `missing` that leaves out a run whose report is missing."""
 ALL = "all"
 """The group every task has, every run, built in."""
-FACTS = ("attempt", "seconds", "seconds_late", "marked", "compiled")
-"""A submission's facts (the leaderboards note's 5.2), which a board's
+MARKED = "marked"
+"""The fact a hold hides on another row: a mark may change until the close."""
+ROW_FACTS = ("attempt", "seconds", "seconds_late", MARKED)
+"""The facts every viewer of a row reads with it, which a task's `show`
+needs no entry for, since none is a grading's: which of the row's
+submissions it is, when it was made and how late by the task's due, all
+known as it is made, and whether the row marked it (stage 5 section 6,
+item 124)."""
+SHOWN_FACTS = ("compiled",)
+"""The facts a grading gives, each listed in a task's `show` by its name,
+as a value is, so that anything a leaderboard reads of a task its `show` can
+show (item 124)."""
+FACTS = (*ROW_FACTS, *SHOWN_FACTS)
+"""A submission's facts (the leaderboards note's 5.2), which a leaderboard's
 column reads beside its values."""
 TASK_FACTS = ("seconds_late", "seconds", "compiled")
 """The facts a task's value may read (SIMPLER-CORE.md 9.2): not `attempt`,
@@ -167,9 +186,9 @@ which depends on the entrant's other submissions, nor `marked`, which
 changes until the close."""
 LEAVES = ("runs", "run", "value", "fact", "results", "column", "name")
 TASK_LEAVES = ("runs", "run", "value", "fact")
-"""The leaves a task's value may hold; a board's column holds `value`,
+"""The leaves a task's value may hold; a leaderboard's column holds `value`,
 `results`, `column` and `name`."""
-BOARD_LEAVES = ("value", "results", "column", "name")
+LEADERBOARD_LEAVES = ("value", "results", "column", "name")
 DESC = "desc"
 ASC = "asc"
 PICKS = ("first", "latest", "highest", "lowest")
@@ -223,16 +242,18 @@ def _fold(*, of: bool, weights: bool) -> Form:
 
 
 _WHERE = BlockInput(Kind.NUMBER, optional=True, per_run=True)
+_MISSING = BlockInput(Kind.MISSING, optional=True)
 
 
 def _over_results(*, of: bool) -> Form:
-    """A fold over a task's results, a board's: `of` read for each result
+    """A fold over a task's results, a leaderboard's: `of` read for each result
     `where` keeps."""
     inputs = {"over": BlockInput(Kind.RESULTS)}
     if of:
         inputs["of"] = BlockInput(Kind.NUMBER, per_run=True)
     inputs["where"] = _WHERE
-    return Form(RESULTS, inputs, Scope.BOARD)
+    inputs["missing"] = _MISSING
+    return Form(RESULTS, inputs, Scope.LEADERBOARD)
 
 
 def _pick(name: str, words: str, *, by: bool) -> Block:
@@ -240,7 +261,8 @@ def _pick(name: str, words: str, *, by: bool) -> Block:
     if by:
         inputs["by"] = BlockInput(Kind.NUMBER, per_run=True)
     inputs["where"] = _WHERE
-    return Block(name, words, (Form(RESULTS, inputs, Scope.BOARD, Kind.SUBMISSION),))
+    inputs["missing"] = _MISSING
+    return Block(name, words, (Form(RESULTS, inputs, Scope.LEADERBOARD, Kind.SUBMISSION),))
 
 
 CATALOGUE: Mapping[str, Block] = {
@@ -262,7 +284,7 @@ CATALOGUE: Mapping[str, Block] = {
         Block(
             "if",
             "then when test is not 0, else else, reading only the branch it takes; on a "
-            "board, a test that is a submission's results is true when there is one",
+            "leaderboard, a test that is a submission's results is true when there is one",
             (
                 Form(
                     NUMBERS,
@@ -318,8 +340,9 @@ CATALOGUE: Mapping[str, Block] = {
                         "from": BlockInput(Kind.RESULTS),
                         "value": BlockInput(Kind.NAME),
                         "directions": BlockInput(Kind.DIRECTIONS),
+                        "missing": _MISSING,
                     },
-                    Scope.BOARD,
+                    Scope.LEADERBOARD,
                 ),
             ),
         ),
@@ -330,7 +353,7 @@ CATALOGUE: Mapping[str, Block] = {
                 Form(
                     SUBMISSIONS,
                     {"of": BlockInput(Kind.EITHER, least=2, most=2)},
-                    Scope.BOARD,
+                    Scope.BOTH,
                     Kind.EITHER,
                 ),
             ),
@@ -345,7 +368,7 @@ CATALOGUE: Mapping[str, Block] = {
                         "k": BlockInput(Kind.NUMBER, plain=True),
                         "of": BlockInput(Kind.NUMBER, least=1),
                     },
-                    Scope.BOARD,
+                    Scope.LEADERBOARD,
                 ),
             ),
         ),

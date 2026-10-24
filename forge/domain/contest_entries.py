@@ -2,8 +2,7 @@
 `contest.yaml` so the rest of the file stays as the organisers wrote it,
 comments and layout included.
 
-The entry is `{id: <task>}`: the task's label is its place in the list, and
-its worth by default its groups' total once it gives points
+The entry is `{id: <task>}`: the task's label is its place in the list
 (TASK-FORMAT.md section 1.1). In a contest already published, the entry also
 sets `release_at` and `closes` at the contest's `end`, so work in progress
 shows nothing until the organisers move them. It goes at the end of the list: a `tasks: []`
@@ -123,8 +122,8 @@ def without_entry(content: bytes, task: str) -> bytes | None:
     it has no entry. A list left empty is written `tasks: []`.
     `InvalidDefinition` when the file is not a valid `contest.yaml`, or
     would not be without the entry; `Unlisted` when the entry's lines
-    cannot be told apart. A board reading the task is refused by the
-    caller, which checks the boards (`forge.services.taking_out`).
+    cannot be told apart. A leaderboard reading the task is refused by the
+    caller, which checks the leaderboards (`forge.services.taking_out`).
     """
     contest = parse_contest(content)
     index = _index(contest.tasks, task)

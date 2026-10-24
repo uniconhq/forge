@@ -29,7 +29,6 @@ from collections.abc import Callable, Coroutine
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
-from fractions import Fraction
 from typing import Any
 
 import pytest
@@ -77,19 +76,20 @@ from forge.domain.grading import (
 from forge.domain.identity import PLATFORM, AsOrgAccount, User
 from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.names import EntrantOwner
-from forge.domain.plans import PLAN_PATH, Plan
+from forge.domain.plan_basics import PLAN_PATH
+from forge.domain.plans import Plan
 from forge.domain.roles import Role, RoleGrant, Scope
-from forge.domain.showing import SubmissionState
+from forge.domain.submission_state import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
 from forge.services import (
     gradings,
     org_accounts,
     pipelines,
-    publications,
     reconcile,
     runs,
     submissions,
+    task_save,
 )
 from forge.services.access import Organiser
 from forge.testing import FakeClock, logged
@@ -175,12 +175,12 @@ def unstarted(monkeypatch: pytest.MonkeyPatch) -> Start:
     CI asks while a start is under way, and the start itself, run when the
     test says.
     """
-    real = gradings.start
+    real = gradings.starting.start
 
     async def later(ctx: Any, grading: uuid.UUID) -> None:
         return None
 
-    monkeypatch.setattr(gradings, "start", later)
+    monkeypatch.setattr(gradings.starting, "start", later)
 
     async def start(setup: Setup, row: Grading) -> None:
         async with setup.unit_of_work() as ctx:
@@ -195,7 +195,9 @@ async def _listed(
     """The task's gradings as `gradings.list` gives them, without who
     submitted each.
     """
-    return [entry.grading for entry in await gradings.list(setup, organiser, task, limit=limit)]
+    return [
+        entry.grading for entry in await gradings.list_gradings(setup, organiser, task, limit=limit)
+    ]
 
 
 def _held(acme: Acme, scope: Scope, role: Role) -> Organiser:
@@ -762,9 +764,8 @@ async def test_a_valid_result_lands_on_the_row_with_its_log_and_the_contestant_r
     assert (main.group, main.outcome, main.tests) == (
         "main",
         "accepted",
-        ({"test": "main/1", "outcome": "accepted", "values": {"time_ms": 12}, "credit": 1},),
+        ({"test": "main/1", "outcome": "accepted", "values": {"time_ms": 12}},),
     )
-    assert (main.points, main.max) == (Fraction(100), Fraction(100))
 
 
 async def test_a_results_numbers_are_kept_exactly_as_the_run_wrote_them(
@@ -1026,7 +1027,7 @@ async def _limit_to_one(setup: Setup, acme: Acme, entered: Entered) -> None:
     current = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
     limited = current.content.replace(b"test_groups:", b"submissions: {max: 1}\ntest_groups:")
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
-    await publications.save(
+    await task_save.save(
         setup,
         acme.ada,
         entered.task,
@@ -1101,7 +1102,7 @@ async def test_a_failed_regrade_leaves_the_submission_at_its_last_result(
     )
     assert (listed[1].latest, listed[1].last_good) == (False, None)
     assert told is not None and (told.attempt, told.status) == (1, SubmissionState.GRADED)
-    assert told.points is not None
+    assert told.groups
     seen = await submissions.organised(
         setup, manager, entered.task, EntrantOwner(entered.entrant), 1
     )
@@ -1122,12 +1123,11 @@ async def test_a_submission_with_no_result_whose_grading_failed_is_delayed_and_n
     (listed,) = await _listed(setup, manager, entered.task)
 
     assert told is not None
-    assert (told.attempt, told.status, told.reason, told.groups, told.points) == (
+    assert (told.attempt, told.status, told.reason, told.groups) == (
         1,
         SubmissionState.DELAYED,
         None,
         (),
-        None,
     )
     assert (listed.status, listed.error, listed.last_good) == (
         GradingStatus.SYSTEM_ERROR,

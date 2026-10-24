@@ -421,7 +421,7 @@ def test_withdrawn_images_are_listed_by_digest_comma_separated(
     environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     first = "ghcr.io/uniconhq/primitive-exec@sha256:" + "a" * 64
-    second = "ghcr.io/uniconhq/primitive-interact@sha256:" + "b" * 64
+    second = "ghcr.io/uniconhq/primitive-compile@sha256:" + "b" * 64
     assert load_settings().withdrawn_images == frozenset()
     monkeypatch.setenv("UNICON_WITHDRAWN_IMAGES", "")
     assert load_settings().withdrawn_images == frozenset()

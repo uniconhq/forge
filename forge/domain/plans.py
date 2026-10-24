@@ -48,13 +48,11 @@ import math
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
-from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, PlainValidator, model_validator
 
 from forge.domain import exact_json
-from forge.domain.blocks.evaluate import Column
 from forge.domain.blocks.numbers import Better, exact
 from forge.domain.content import path_problem
 from forge.domain.contracts import violation
@@ -67,23 +65,71 @@ from forge.domain.definitions import (
     form_problems,
 )
 from forge.domain.grading import WALL_CEILING, Machine, wall_seconds
-from forge.domain.meanings import ValueMeaning, in_sentence, with_measures
+from forge.domain.meanings import Measure, ValueMeaning, in_sentence, with_measures
+from forge.domain.plan_basics import (
+    FLAT_STEP_ID,
+)
+from forge.domain.plan_basics import (
+    PRIMITIVE as PRIMITIVE,
+)
+from forge.domain.plan_basics import (
+    SECRET_NAME as SECRET_NAME,
+)
+from forge.domain.plan_basics import (
+    STEP_ID as STEP_ID,
+)
+from forge.domain.plan_basics import (
+    Image as Image,
+)
+from forge.domain.plan_basics import (
+    ReportEntry as ReportEntry,
+)
+from forge.domain.plan_basics import (
+    Snapshot as Snapshot,
+)
+from forge.domain.plan_basics import (
+    StepLimits as StepLimits,
+)
+from forge.domain.port_values import (
+    Kind as Kind,
+)
+from forge.domain.port_values import (
+    Refused as Refused,
+)
+from forge.domain.port_values import (
+    check_value_fits_port as check_value_fits_port,
+)
+from forge.domain.port_values import (
+    check_written as check_written,
+)
+from forge.domain.port_values import (
+    escaped as escaped,
+)
+from forge.domain.port_values import (
+    literal_or_references as literal_or_references,
+)
+from forge.domain.port_values import (
+    natural as natural,
+)
+from forge.domain.port_values import (
+    scalar_to_text as scalar_to_text,
+)
+from forge.domain.port_values import (
+    type_in_words as type_in_words,
+)
 from forge.domain.primitives import (
     BATCH_SCALED,
-    IMAGE,
     LIMIT_NAMES,
     FromInput,
     Port,
     PrimitiveDeclaration,
 )
-from forge.domain.scoring import Measure
 from forge.domain.showing import NOTHING_SEALED, Sealed
 from forge.domain.types import FILES, SCALARS, Type
 from forge.domain.workflow_definition import (
     BadReference,
     Meaning,
     Reference,
-    RunWorkflow,
     WorkflowDefinition,
     WorkflowInput,
     references,
@@ -92,33 +138,17 @@ from forge.domain.workflow_definition import (
 from forge.domain.yaml_models import (
     InvalidDefinition,
     Model,
-    Number,
     Problem,
-    exact_number,
     is_number,
     load_mapping,
     path_text,
 )
 
 SCHEMA_VERSION: Literal[5] = 5
-PLANS_FOLDER = "plans/"
-PLAN_PATH = "plans/plan.json"
-STEP_ID = r"^[a-z0-9][a-z0-9_-]*$"
-PRIMITIVE = r"^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_-]*@[A-Za-z0-9][A-Za-z0-9._-]*$"
 TEST_ID = re.compile(r"^[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$")
 TEST_ID_MAX = 255
 NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 TEST_FILE = "test.yaml"
-SECRET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-
-
-def _image(value: object) -> str:
-    if not isinstance(value, str) or not IMAGE.match(value):
-        raise ValueError("must be an image by digest")
-    return value
-
-
-Image = Annotated[str, PlainValidator(_image)]
 
 
 def _scalar(value: object) -> bool:
@@ -164,15 +194,6 @@ Inputs = dict[str, Value]
 TestId = Annotated[str, Field(pattern=TEST_ID.pattern, max_length=TEST_ID_MAX)]
 
 
-class StepLimits(Model):
-    time_ms: Annotated[int, Field(ge=1)]
-    cpu_ms: Annotated[int, Field(ge=1)]
-    memory_mb: Annotated[int, Field(ge=1)]
-    pids: Annotated[int, Field(ge=1)]
-    output_mb: Annotated[int, Field(ge=1)]
-    gpus: Annotated[int, Field(ge=0)]
-
-
 class BatchItem(Model):
     test: TestId
     inputs: Inputs
@@ -183,7 +204,7 @@ class PlanStep(Model):
     `test`, or once for many tests with `batch`.
     """
 
-    id: Annotated[str, Field(pattern=STEP_ID)]
+    id: Annotated[str, Field(pattern=FLAT_STEP_ID)]
     primitive: Annotated[str, Field(pattern=PRIMITIVE)]
     image: Image
     network: bool
@@ -209,25 +230,6 @@ class ContestantInput(Model):
     type: Type
     options: tuple[str, ...] | None = None
     per_test: Literal[True] | None = None
-
-
-class ReportEntry(Model):
-    """One name a plan reports: the step and output it reads, and, for a
-    number of a run task's plan, which way is better and its bounds, so a
-    missing report's worst bound is read from the plan alone.
-    """
-
-    step: Annotated[str, Field(pattern=STEP_ID)]
-    output: Annotated[str, Field(min_length=1)]
-    better: Better | None = None
-    at_least: Number | None = None
-    at_most: Number | None = None
-
-    def column(self) -> Column:
-        """The entry as the blocks read a report: which way is better and
-        its bounds, exact.
-        """
-        return Column(self.better, exact(self.at_least), exact(self.at_most))
 
 
 class Plan(Model):
@@ -277,41 +279,6 @@ class Plan(Model):
             for item in step.batch or ():
                 found.update(value["task"] for value in item.inputs.values() if "task" in value)
         return tuple(sorted(found))
-
-
-def is_reserved(path: str) -> bool:
-    """Whether a path is inside the plans folder, which only the compiler
-    writes.
-    """
-    return path == PLANS_FOLDER.rstrip("/") or path.startswith(PLANS_FOLDER)
-
-
-def natural(text: str) -> tuple[tuple[int, int, str], ...]:
-    """A key that orders text with the numbers in it compared as numbers."""
-    return tuple(
-        (0, int(part), part) if part.isdigit() else (1, 0, part)
-        for part in re.split(r"(\d+)", text)
-        if part
-    )
-
-
-def spelled(value: object) -> str:
-    """A scalar's one spelling as text: a boolean as `true` or `false`, a
-    number as the shortest decimal equal to it, no exponent and no trailing
-    zeros, an integer without a point; text and an enum's word as they are.
-    """
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return str(Decimal(value))
-    if isinstance(value, float | Decimal):
-        # Every digit, never rounded to a context's precision, and never
-        # through an int's text, which Python refuses past 4300 digits.
-        text = format(Decimal(exact_number(value)), "f")
-        if "." in text:
-            text = text.rstrip("0").rstrip(".")
-        return "0" if text in ("-0", "") else text
-    return str(value)
 
 
 def has_path(paths: Collection[str], path: str) -> bool:
@@ -607,41 +574,6 @@ def group_problems(
 # Checking a workflow against its primitives
 
 
-@dataclass(frozen=True, slots=True)
-class Kind:
-    """What a value is, to check it against the port it is given to: its
-    type, the options it may take when it is an enum, and where it came from.
-    """
-
-    type: Type
-    options: frozenset[str] | None = None
-    source: Literal["literal", "input", "contestant", "test", "step", "text", "workflow"] = (
-        "literal"
-    )
-    optional: bool = False
-
-
-def stray_units(workflow: WorkflowDefinition | RunWorkflow) -> list[Problem]:
-    """A unit on an input that is not a number, refused where a version is
-    made or checked, naming the input and its type in words. A version
-    made with one before is read with it dropped (`shown_unit`), and a task
-    on it saves, since a version cannot be mended and a unit changes no
-    plan.
-    """
-    problems: list[Problem] = []
-    for key, declared in workflow.inputs.items():
-        if declared.unit is not None and declared.type is not Type.NUMBER:
-            kind = "one of a list" if declared.type is Type.ENUM else a_type(declared.type)
-            problems.append(
-                Problem(
-                    path=path_text(("inputs", key, "unit")),
-                    message=f"Only a number takes a unit, and {key} is {kind}. Remove the "
-                    f"unit, or make {key} a number.",
-                )
-            )
-    return problems
-
-
 def stray_report_units(
     workflow: WorkflowDefinition, primitives: Mapping[str, PrimitiveDeclaration]
 ) -> list[Problem]:
@@ -661,7 +593,8 @@ def stray_report_units(
             problems.append(
                 Problem(
                     path=path_text(("report", name, "unit")),
-                    message=f"Only a number takes a unit, and {name} is {a_type(port.type)}. "
+                    message=f"Only a number takes a unit, and {name} is "
+                    f"{type_in_words(port.type)}. "
                     "Remove the unit.",
                 )
             )
@@ -781,12 +714,6 @@ def check_workflow(
     return problems
 
 
-class Refused(Exception):
-    """One problem with a value, said in a sentence; the run workflow's
-    checks (`forge.domain.run_workflow`) say theirs with it too.
-    """
-
-
 def _kind_of(
     workflow: WorkflowDefinition,
     outputs: Mapping[str, tuple[PrimitiveDeclaration, bool]],
@@ -860,50 +787,7 @@ def _check_value(
                 "That output may be missing, so it can be given only to an optional port."
             )
         raise Refused("That input is optional, so it can be given only to an optional port.")
-    fits(kind, port, raw)
-
-
-def literal_or_references(
-    raw: object, *, runs: bool = False
-) -> Kind | tuple[Reference | None, list[Reference]]:
-    """The kind of `raw` when it is true or false or a number; for text,
-    the reference it is whole, or else those written into it, in either
-    format. `Refused` for anything else, and for a `${{ }}` that is no
-    reference.
-    """
-    if isinstance(raw, bool):
-        return Kind(Type.BOOLEAN)
-    if is_number(raw):
-        return Kind(Type.NUMBER)
-    if raw is None or isinstance(raw, list | dict):
-        raise Refused(
-            "Give text, a number, true or false, or a ${{ }} reference, not a list, a set "
-            "of settings or nothing."
-        )
-    if not isinstance(raw, str):
-        raise Refused("Give text, a number, true or false, or a ${{ }} reference.")
-    try:
-        whole = whole_reference(raw, runs=runs)
-        written = [found for _, found in references(raw, runs=runs)] if whole is None else []
-    except BadReference as bad:
-        raise Refused(str(bad)) from None
-    return whole, written
-
-
-def check_written(found: Reference, kind: Kind) -> None:
-    """Refuse `found`, of `kind`, written into text: only text, a number,
-    true or false or an enum, always given, may be.
-    """
-    if kind.type not in SCALARS:
-        raise Refused(
-            f"{found} is {a_type(kind.type)}, and only text, a number, true or false or an "
-            "enum can be written into text."
-        )
-    if kind.optional:
-        raise Refused(
-            f"{found} is optional, so it can be given only whole, to an optional port, not "
-            "written into text."
-        )
+    check_value_fits_port(kind, port, raw)
 
 
 def _raw_kind(
@@ -927,46 +811,6 @@ def _raw_kind(
     return Kind(Type.TEXT, source="text")
 
 
-def fits(kind: Kind, port: Port, raw: object) -> None:
-    """Refuse a value of `kind` given to `port`, under the two widenings: a
-    scalar fits a text port, and a file fits a folder port.
-    """
-    wanted = port.type
-    if wanted is Type.TEXT and kind.type in SCALARS:
-        return
-    if wanted is Type.FOLDER and kind.type is Type.FILE:
-        return
-    if wanted is Type.ENUM:
-        allowed = frozenset(port.options or ())
-        if kind.type is Type.TEXT and kind.source == "literal":
-            if raw in allowed:
-                return
-            raise Refused(f"This takes one of {', '.join(port.options or ())}.")
-        if kind.type is Type.ENUM and kind.options is not None:
-            extra = sorted(kind.options - allowed)
-            if not extra:
-                return
-            raise Refused(
-                f"This takes one of {', '.join(port.options or ())}, not {', '.join(extra)}."
-            )
-        raise Refused(f"This takes one of {', '.join(port.options or ())}.")
-    if kind.type is not wanted:
-        raise Refused(f"This takes {a_type(wanted)}, not {a_type(kind.type)}.")
-
-
-def a_type(kind: Type) -> str:
-    """A type as a sentence names one value of it."""
-    return {
-        Type.TEXT: "text",
-        Type.NUMBER: "a number",
-        Type.BOOLEAN: "true or false",
-        Type.ENUM: "an enum",
-        Type.FILE: "a file",
-        Type.FOLDER: "a folder",
-        Type.OUTCOME: "an outcome",
-    }.get(kind, str(kind))
-
-
 def _check_report(
     entry: str | Meaning, outputs: Mapping[str, tuple[PrimitiveDeclaration, bool]]
 ) -> None:
@@ -983,7 +827,8 @@ def _check_report(
         raise Refused(f"steps.{found.name}.{found.output} is not the output of any step.")
     if port.type not in (Type.TEXT, Type.NUMBER):
         raise Refused(
-            f"steps.{found.name}.{found.output} is {a_type(port.type)}, and only text or a number "
+            f"steps.{found.name}.{found.output} is {type_in_words(port.type)}, "
+            "and only text or a number "
             "can be reported."
         )
     if isinstance(entry, Meaning):
@@ -1385,7 +1230,7 @@ class _Compiler:
         self, raw: object, port: Port, test: TestCase | None
     ) -> tuple[dict[str, Any] | Absent, _Taint]:
         if isinstance(raw, bool) or is_number(raw):
-            return {"value": spelled(raw) if port.type is Type.TEXT else raw}, _Taint()
+            return {"value": scalar_to_text(raw) if port.type is Type.TEXT else raw}, _Taint()
         assert isinstance(raw, str)
         whole = whole_reference(raw)
         if whole is None:
@@ -1414,13 +1259,15 @@ class _Compiler:
                 if declared.type in FILES:
                     path = str(given)
                     return {"task": path}, _Taint(hidden=self._hidden(path))
-                return {"value": spelled(given) if port.type is Type.TEXT else given}, _Taint()
+                text = scalar_to_text(given) if port.type is Type.TEXT else given
+                return {"value": text}, _Taint()
             case "test":
                 assert test is not None
                 if found.name in test.entries:
                     return {"task": test.entries[found.name]}, _Taint()
                 scalar = test.scalars[found.name]
-                return {"value": spelled(scalar) if port.type is Type.TEXT else scalar}, _Taint()
+                text = scalar_to_text(scalar) if port.type is Type.TEXT else scalar
+                return {"value": text}, _Taint()
         taint = _Taint()
         taint.merge(self.taints.get(found.name, _Taint()))
         return {"step": found.name, "output": found.output}, taint
@@ -1439,18 +1286,18 @@ class _Compiler:
         parts: list[dict[str, str]] = []
         last = 0
         for match, found in references(raw):
-            text += _escaped(raw[last : match.start()])
+            text += escaped(raw[last : match.start()])
             last = match.end()
             declared = self.workflow.inputs.get(found.name) if found.kind == "inputs" else None
             if declared is not None and declared.contestant:
                 text += f"{{{len(parts)}}}"
                 parts.append({"submission": found.name})
             elif found.kind == "inputs":
-                text += _escaped(spelled(self.values.get(found.name)))
+                text += escaped(scalar_to_text(self.values.get(found.name)))
             else:
                 assert test is not None
-                text += _escaped(spelled(test.scalars[found.name]))
-        text += _escaped(raw[last:])
+                text += escaped(scalar_to_text(test.scalars[found.name]))
+        text += escaped(raw[last:])
         if not parts:
             return {"value": text.replace("{{", "{").replace("}}", "}")}
         return {"template": text, "parts": parts}
@@ -1470,6 +1317,7 @@ class _Compiler:
         what the workflow gives the step's ports.
         """
         raised: list[dict[str, int]] = []
+        assert declaration.limits is not None
         least = declaration.limits.as_mapping()
         for test, inputs in runs:
             # A sum or max over a programs port is contract 6's, which
@@ -1522,10 +1370,6 @@ def _origin_of(raw: object, port: str, number: object, test: TestCase | None) ->
     if found is not None and found.kind == "test" and test is not None:
         return _Origin("test", found.name, number, test)
     return _Origin("literal", port, number)
-
-
-def _escaped(text: str) -> str:
-    return text.replace("{", "{{").replace("}", "}}")
 
 
 def _described(kind: Type) -> str:
@@ -1662,7 +1506,7 @@ def _over_time(compiler: _Compiler, plan: Plan, said: str) -> Problem:
     tests = sorted({run.test.id for run in runs if run.test is not None}, key=natural)
     most = max(runs, key=lambda run: run.value)
     origin = most.origin
-    written = f"{origin.name} at {spelled(origin.value)}"
+    written = f"{origin.name} at {scalar_to_text(origin.value)}"
     if origin.kind == "test":
         assert origin.test is not None
         if len(tests) == 1:
@@ -1672,7 +1516,8 @@ def _over_time(compiler: _Compiler, plan: Plan, said: str) -> Problem:
             )
         return Problem(
             path=origin.path,
-            message=f"With {origin.name} up to {spelled(origin.value)} (in {origin.test.id}), "
+            message=f"With {origin.name} up to {scalar_to_text(origin.value)} "
+            f"(in {origin.test.id}), "
             f"{_tests(len(tests))} make a grading take {said}",
         )
     if origin.kind == "literal":
@@ -1703,7 +1548,7 @@ def _over_machine(
     )
     if origin is None:
         return Problem(path="workflow", message=f"As {step.primitive} sets it, {said}")
-    written = f"{origin.name} at {spelled(origin.value)}"
+    written = f"{origin.name} at {scalar_to_text(origin.value)}"
     if origin.kind == "test":
         assert origin.test is not None
         return Problem(
@@ -2019,16 +1864,6 @@ def _unique(problems: Sequence[Problem]) -> list[Problem]:
             seen.add(key)
             found.append(problem)
     return found
-
-
-@dataclass(frozen=True, slots=True)
-class Snapshot:
-    """What a publication's grading depends on: its plan by path in the task
-    repo, and a digest of each data file the plan names, by its path.
-    """
-
-    plans: Mapping[str, bytes]
-    data: Mapping[str, str]
 
 
 def _differences(

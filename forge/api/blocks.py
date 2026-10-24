@@ -1,4 +1,4 @@
-"""The blocks a task's values and a board's columns are built from
+"""The blocks a task's values and a leaderboard's columns are built from
 (SIMPLER-CORE.md 10.1 and 14): every block once, what it gives, and its
 forms with their inputs, kinds and where each may be used, the one list
 the editor offers and the forge runs; with the leaves a value and a
@@ -11,10 +11,10 @@ backend's workflow and publication schemas to read.
 """
 
 from forge.domain.blocks.catalogue import (
-    BOARD_LEAVES,
     CATALOGUE,
     FACTS,
     LANGUAGES,
+    LEADERBOARD_LEAVES,
     LEAVES,
     SKIP,
     TASK_FACTS,
@@ -28,10 +28,10 @@ from forge.domain.blocks.catalogue import (
 from forge.domain.blocks.numbers import Better
 
 __all__ = [
-    "BOARD_LEAVES",
     "CATALOGUE",
     "FACTS",
     "LANGUAGES",
+    "LEADERBOARD_LEAVES",
     "LEAVES",
     "SKIP",
     "TASK_FACTS",

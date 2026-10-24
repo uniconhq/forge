@@ -24,7 +24,7 @@ from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role
 from forge.runtime.setup import Setup
 from forge.services import entries, gradings, steps, submissions
-from forge.services.publications import Published
+from forge.services.task_save import Published
 from forge.settings import Settings
 from forge.testing import APP_URL, FORGE_URL, FakeClock
 from tests.services.conftest import Acme, organiser
@@ -53,6 +53,7 @@ from tests.services.test_steps import (
     _islands,
     _job,
     _mint,
+    _named,
     _outputs,
     _report,
     _row,
@@ -155,7 +156,7 @@ async def test_a_task_with_a_program_and_an_entered_value_saves_grades_and_score
     given = job["inputs"]["inputs"]
     runs = _download(job, given["files"]["files"]["runs.json"]["file"])
     sha256 = runs["url"].rpartition("/files/")[2]
-    served = await steps.step_file(setup, late.id, "exec-mean", sha256, _bearer(access))
+    served = await steps.step_file(setup, late.id, _named(access), sha256, _bearer(access))
     program = _download(job, given["program"]["file"])
     assert acme.fake.objects.get(program["url"]) == MEAN_PROGRAM
     assert (given["time_limit"], given["memory_limit"]) == (2, 256)
@@ -186,8 +187,11 @@ async def test_a_task_with_a_program_and_an_entered_value_saves_grades_and_score
         None,
         40,
     )
-    # The mean is shown after the close, and an entered mark to no entrant yet.
-    assert set(_values(await _grading(setup, session, islands))) == {"sample_score", "sample_time"}
+    # The mean is shown after the close, and an entered mark no cell counted
+    # from the reveal, read as no mark before it.
+    seen = _values(await _grading(setup, session, islands))
+    assert set(seen) == {"sample_score", "sample_time", "review", "reviewed"}
+    assert (seen["review"], seen["reviewed"]) == (None, None)
 
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
     await entries.enter(setup, manager, islands.task, await _owner(setup), 1, "review", "6")

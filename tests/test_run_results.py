@@ -5,9 +5,12 @@ sample leaving `sample_time` missing; cartpole shows `reward` at once and
 run that faulted makes its values wait, told through an early run and not
 through a late one; a run still to come waits, and one never run is
 missing; until the reveal an entrant reads the early row alone, whatever
-the late row does, and a run a later save added never waits; the facts
+the late row does, a run a later save added never waits, and a value a
+save moved to `now` is missing where it read a run the grading ran late;
+the facts
 count from the due and the start, 0 before, and `compiled` reads an
-untainted compile done once; what is shown before and after the reveal;
+untainted compile done once, waiting while a row is still to run it;
+what is shown before and after the reveal;
 an entrant's texts are read by where they are shown, never by the output
 that holds them; a key's file not yet shown is never named; a value
 reading a column the entrant could set is marked; a task with nothing
@@ -28,7 +31,6 @@ from forge.domain.run_results import (
     NOT_RUN,
     Worked,
     facts_of,
-    for_entrants,
     run_grading,
     worked_out,
 )
@@ -152,16 +154,18 @@ def _seen(
     runs: Sequence[Run] = ISLAND_RUNS,
     files: frozenset[str] = ISLAND_FILES,
     self_reported: frozenset[str] = frozenset(),
+    late: frozenset[str] = frozenset(),
 ) -> Shown:
     return shown(
         _scoring(text),
         runs,
         files,
         scored.whole,
-        scored.alone,
+        lambda: scored.alone,
         self_reported,
         revealed=revealed,
         everything=everything,
+        late=late,
     )
 
 
@@ -364,6 +368,51 @@ def test_until_the_reveal_an_entrant_reads_the_early_row_alone_whatever_the_late
         )
 
 
+MOVED = {
+    "groups": {"samples": {"input": "a"}},
+    "values": {"total": {"block": "sum", "over": {"runs": "all"}, "of": {"run": ["all", "score"]}}},
+    "show": {"now": ["total", "samples"]},
+}
+"""A total over every run, which a save moved to `now` after a grading that
+ran r2 late."""
+MOVED_RUNS = (Run("r1", {"input": "a"}, True), Run("r2", {"input": "b"}, False))
+
+
+def test_a_value_moved_to_now_is_missing_until_the_reveal_where_it_read_a_late_run() -> None:
+    scoring = Scoring.model_validate(MOVED)
+    early, late = _row({"r1": "accepted"}), _row({"r2": "accepted"})
+
+    def worked(first: Mapping[str, Any], then: Mapping[str, Any] | None) -> Worked:
+        grading = run_grading(MOVED_RUNS, first, then, waiting=(), compiling=())
+        return Worked(grading, worked_out(scoring, MOVED_RUNS, grading, FACTS, COLUMNS), FACTS)
+
+    whole, alone = worked(early, late), worked(early, None)
+
+    def seen(late_runs: frozenset[str], *, revealed: bool = False, everything: bool = False) -> Any:
+        found = shown(
+            scoring,
+            MOVED_RUNS,
+            (),
+            whole,
+            lambda: alone,
+            (),
+            revealed=revealed,
+            everything=everything,
+            late=late_runs,
+        )
+        return [(each.name, each.number, each.waiting) for each in found.values]
+
+    # Staff read 2; the entrant reads it missing until the reveal, not 1
+    # from r2 read as never run, and 2 from then on.
+    assert seen(frozenset({"r2"}), everything=True)[0][:2] == ("total", 2)
+    assert seen(frozenset({"r2"})) == [("total", None, False)]
+    assert seen(frozenset({"r2"}), revealed=True) == [("total", 2, False)]
+    # A grading made after the save ran every run early: nothing ran late.
+    both = _row({"r1": "accepted", "r2": "accepted"})
+    whole = alone = worked(both, None)
+    assert seen(frozenset()) == [("total", 2, False)]
+
+
 def test_seconds_late_counts_from_the_due_and_seconds_from_the_start_each_0_before() -> None:
     due = datetime(2026, 9, 26, 14, 0, tzinfo=UTC)
     start = datetime(2026, 9, 26, 10, 0, tzinfo=UTC)
@@ -396,6 +445,31 @@ def test_compiled_is_0_on_a_compile_error_of_an_untainted_step_done_once() -> No
         compiling={"compile"},
     )
     assert (stopped.compiled, tainted.compiled, built.compiled) == (0, 1, 1)
+
+
+def test_compiled_waits_while_a_row_whose_plan_compiles_is_still_to_give_it() -> None:
+    text = ISLANDS.replace("  values:\n", "  values:\n    built: {fact: compiled}\n")
+    start = datetime(2026, 9, 26, 10, 0, tzinfo=UTC)
+    early = _row({"r1": "accepted", "r2": "accepted"})
+
+    def worked(late: Mapping[str, Any] | None, coming: set[str]) -> tuple[Any, Any, bool]:
+        grading = run_grading(
+            ISLAND_RUNS, early, late, waiting=(), compiling={"compile"}, compiling_waiting=coming
+        )
+        facts = facts_of(None, start, start, grading.compiled)
+        built = _numbers(worked_out(_scoring(text), ISLAND_RUNS, grading, facts, COLUMNS))["built"]
+        return grading.compiled, built, "compiled" in facts
+
+    late = _row({"r3": "accepted", "r4": "accepted"}, outcomes={"compile": "accepted"})
+    failed = _row(
+        dict.fromkeys(("r3", "r4"), "compile_error"), outcomes={"compile": "compile_error"}
+    )
+    # The late row's plan compiles: until it gives the outcome, it waits.
+    assert worked(None, {"compile"}) == (None, "waiting", False)
+    assert worked(late, {"compile"}) == (1, 1, True)
+    assert worked(failed, {"compile"}) == (0, 0, True)
+    # A compile no row's plan holds still to give never waits.
+    assert worked(None, set()) == (1, 1, True)
 
 
 def test_compiled_and_the_compile_log_are_shown_once_a_run_is() -> None:
@@ -499,27 +573,3 @@ def test_organisers_see_every_value_and_run_at_once_with_what_each_read() -> Non
     assert seen.once["texts"] == {"log": LOG}
     # Organisers read a text by the output that holds it.
     assert ("out-r1", "message") in texts(seen.runs, seen.once)
-
-
-def test_what_reads_an_entered_mark_is_left_out_of_what_an_entrant_is_given() -> None:
-    text = ISLANDS.replace(
-        "    total:\n",
-        "    review: {block: entered, at_least: 0, at_most: 10}\n"
-        "    reviewed: {block: add, of: [{value: sample_score}, {value: review}]}\n"
-        "    twice: {block: mul, of: [2, {value: reviewed}]}\n"
-        "    total:\n",
-    ).replace("now: [sample_score,", "now: [review, reviewed, twice, sample_score,")
-    scoring = _scoring(text)
-    every = _worked(ISLAND_RUNS, text, _row({"r1": "accepted", "r2": "accepted"}), None)
-
-    given = for_entrants(scoring.values, every)
-
-    assert {"review", "reviewed", "twice"} <= set(every.outcomes)
-    assert set(given.outcomes) == set(every.outcomes) - {"review", "reviewed", "twice"}
-    assert given.grading is every.grading and given.facts == every.facts
-    seen = shown(scoring, ISLAND_RUNS, ISLAND_FILES, given, given, (), revealed=True)
-    assert {"review", "reviewed", "twice"}.isdisjoint(value.name for value in seen.values)
-    staff = shown(
-        scoring, ISLAND_RUNS, ISLAND_FILES, every, every, (), revealed=True, everything=True
-    )
-    assert {"review", "reviewed", "twice"} <= {value.name for value in staff.values}

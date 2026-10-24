@@ -47,8 +47,8 @@ from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import entrants, places, published, release, sessions, timelines
-from forge.services.published import PublishedTask
+from forge.services import entrant_view, entrants, places, release, sessions, timelines
+from forge.services.entrant_view import PublishedTask
 from forge.services.turns import Turns
 
 log = get_logger(__name__)
@@ -87,14 +87,14 @@ async def person(
     fresh = await sessions.authenticate(ctx, session.id)
     contest = contest_id_of(task_scope(task))
     try:
-        settings = await published.contest(ctx, contest)
+        settings = await entrant_view.contest(ctx, contest)
     except NotFound as exc:
-        raise NotFound(published.NO_SUCH_TASK) from exc
+        raise NotFound(entrant_view.NO_SUCH_TASK) from exc
     reader = await release.reader(ctx, fresh, contest)
     entered = settings.state is State.ARCHIVED and reader.entrant is not None
     if not release.sees(settings, reader) and not entered:
-        raise NotFound(published.NO_SUCH_TASK)
-    found = await published.task(ctx, task, settings)
+        raise NotFound(entrant_view.NO_SUCH_TASK)
+    found = await entrant_view.task(ctx, task, settings)
     if found is None or not (
         rules.released(settings, found.name, ctx.now)
         or (
@@ -103,7 +103,7 @@ async def person(
             and rules.reached(settings, found.name, ctx.now)
         )
     ):
-        raise NotFound(published.NO_SUCH_TASK)
+        raise NotFound(entrant_view.NO_SUCH_TASK)
     standing = await entrants.standing(ctx, contest, fresh.user_id)
     if standing is None:
         return Person(fresh, task, settings, found, None, None)
@@ -127,7 +127,7 @@ async def refuse(ctx: Context, person: Person) -> tuple[EntrantRow, WorkspaceId]
     openness = rules.openness(person.settings, person.published.name, ctx.now, extension(person))
     match openness.reason:
         case Closed.NOT_RELEASED:
-            raise NotFound(published.NO_SUCH_TASK)
+            raise NotFound(entrant_view.NO_SUCH_TASK)
         case Closed.WITHDRAWN:
             raise TaskWithdrawn(
                 "This task was withdrawn from the contest, so it takes no submissions.",
@@ -238,5 +238,5 @@ async def place_of(ctx: Context, task: TaskId, user_id: int) -> WorkspaceId:
     contest = contest_id_of(task_scope(task))
     found = await entrants.membership(ctx, contest, user_id)
     if found is None:
-        raise NotFound(published.NO_SUCH_TASK)
+        raise NotFound(entrant_view.NO_SUCH_TASK)
     return ctx.forge.workspaces.workspace_of(contest, EntrantOwner(found.entrant_id))

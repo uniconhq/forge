@@ -28,8 +28,9 @@ from forge.domain.grading import (
     run_deadline,
     wall_seconds,
 )
+from forge.domain.plan_basics import RESULT_MAX
 from forge.domain.plans import Plan
-from forge.domain.reports import RESULT_MAX, Event, read_report, result_problem
+from forge.domain.reports import Event, read_report, result_problem
 from tests.conftest import sibling
 
 GRADING = uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31")

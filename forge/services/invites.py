@@ -55,7 +55,6 @@ withdraw it again. Declining grants nothing. Both close the invite, and a
 lapsed invite can do neither; the person's list leaves lapsed ones out.
 """
 
-import builtins
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -89,7 +88,7 @@ from forge.log import get_logger
 from forge.port.mail import Mail
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import entrants, names, published, roles
+from forge.services import entrant_view, entrants, names, roles
 from forge.services.access import Organiser, require
 from forge.services.turns import Turns
 
@@ -270,7 +269,7 @@ async def at(ctx: Context, organiser: Organiser, scope: Scope) -> tuple[Invite, 
             .limit(LISTED_MAX)
         )
     ).scalars()
-    return await _views(ctx, builtins.list(rows))
+    return await _views(ctx, list(rows))
 
 
 @action
@@ -341,7 +340,7 @@ async def mine(ctx: Context, session: Session) -> tuple[Invite, ...]:
             .order_by(InviteRow.created_at.desc(), InviteRow.id)
         )
     ).scalars()
-    return await _views(ctx, builtins.list(rows))
+    return await _views(ctx, list(rows))
 
 
 @action
@@ -455,7 +454,7 @@ def _require_to_grant(organiser: Organiser, scope: Scope, grants: Grant) -> None
 
 async def _refuse_no_invite_way(ctx: Context, contest: ContestId) -> None:
     """`NoInviteWay` for a contest nobody invited could come in by."""
-    settings = await published.contest(ctx, contest)
+    settings = await entrant_view.contest(ctx, contest)
     if settings.registration.invite_way is None:
         raise NoInviteWay(
             "This contest has no way in by invite, so nobody invited could enter it. Add a way "
@@ -495,7 +494,7 @@ async def _refuse_full_entrant(ctx: Context, contest: ContestId, entrant: uuid.U
     `EntrantFull` when its members and the invites waiting to join it leave
     no room, counted with its row held.
     """
-    settings = await published.contest(ctx, contest)
+    settings = await entrant_view.contest(ctx, contest)
     row = (
         await ctx.db.execute(
             select(EntrantRow)
@@ -775,7 +774,7 @@ async def _contest_title(ctx: Context, contest: ContestId) -> str | None:
     or the forge did not answer: a title shown is never worth a refusal.
     """
     try:
-        return (await published.contest(ctx, contest)).name
+        return (await entrant_view.contest(ctx, contest)).name
     except PortError:
         return None
 
@@ -812,7 +811,7 @@ async def view(ctx: Context, row: InviteRow) -> Invite:
     return (await _views(ctx, [row]))[0]
 
 
-async def _views(ctx: Context, rows: builtins.list[InviteRow]) -> tuple[Invite, ...]:
+async def _views(ctx: Context, rows: list[InviteRow]) -> tuple[Invite, ...]:
     scopes = {row.scope: scope_of(row.scope) for row in rows}
     named = await names.scopes_named(ctx, scopes.values())
     wanted = sorted({row.entrant_id for row in rows if row.entrant_id is not None})

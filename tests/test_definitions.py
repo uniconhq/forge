@@ -1,7 +1,7 @@
 """The two definition files, `contest.yaml` and `task.yaml`: the format's own
 examples and the starters validate, every key the format no longer has is
 refused at that key with the sentence that says what replaced it, the checks
-each file makes of itself (a task entry's timeline, C1; a board's rules, C3;
+each file makes of itself (a task entry's timeline, C1; a leaderboard's rules, C3;
 a test group's rule weights, test weights and `show`, T1, T2 and T6; credit
 on a task that gives no points, T3) refuse at the path that is wrong, and a
 save names the admin-only keys it changes.
@@ -13,7 +13,6 @@ from typing import Any
 
 import pytest
 
-from forge.domain.board_checks import marks_of
 from forge.domain.definitions import (
     CONTEST_ADMIN_KEYS,
     DEFAULT_RATE,
@@ -38,9 +37,9 @@ from forge.domain.definitions import (
     starter_contest,
     starter_task,
     title_of,
-    worth_of,
 )
 from forge.domain.errors import ServiceError
+from forge.domain.leaderboard_task_check import marks_of
 from forge.domain.workflow_definition import WorkflowRef
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line, parse_size
 
@@ -82,12 +81,10 @@ leaderboards:
     display: [{score: {places: 2}}]
 hold: {from: 2026-06-01T13:00:00Z, until: staff}
 tasks:
-  - {id: sum-of-two, worth: 100}
+  - {id: sum-of-two}
   - id: shortest
-    worth: 100
     release_at: 2026-06-01T10:00:00Z
     due: 2026-06-01T12:00:00Z
-    late_per_day: 0.1
     closes: 2026-06-01T13:00:00Z
     marks: 2
 """
@@ -195,7 +192,7 @@ def test_the_format_documents_example_contest_parses() -> None:
         "staff",
     )
     shortest = contest.tasks[1]
-    assert shortest.late_per_day == Decimal("0.1")
+    assert shortest.due == datetime(2026, 6, 1, 12, tzinfo=UTC)
     assert marks_of(contest, shortest) == 2
     assert marks_of(contest, contest.tasks[0]) is None
     assert [contest.label_of(task.id) for task in contest.tasks] == ["A", "B"]
@@ -209,22 +206,21 @@ def test_a_contest_leaves_the_optional_blocks_to_their_defaults() -> None:
     assert contest.registration.ways == (Way(signup=SignupWay(approval=Approval.MANUAL)),)
     assert contest.registration.invite_way is None
     assert contest.registration.capacity is None
-    board = contest.leaderboards["standings"]
-    assert (board.title, board.audience.who, board.audience.rows, board.sort) == (
+    leaderboard = contest.leaderboards["standings"]
+    assert (
+        leaderboard.title,
+        leaderboard.audience.who,
+        leaderboard.audience.rows,
+        leaderboard.sort,
+    ) == (
         None,
         "staff",
         "all",
         (),
     )
-    assert (board.columns, board.display, contest.hold) == ({}, (), None)
+    assert (leaderboard.columns, leaderboard.display, contest.hold) == ({}, (), None)
     entry = contest.tasks[0]
-    assert (entry.worth, entry.release_at, entry.due, entry.late_per_day, entry.closes) == (
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    assert (entry.release_at, entry.due, entry.closes, entry.marks) == (None, None, None, None)
     assert contest.release_of(entry) == START
     assert contest.closes_of(entry) == END
     assert contest.entry("a") == entry
@@ -265,7 +261,9 @@ def test_a_label_is_the_entrys_place_as_a_letter() -> None:
         ("registration: {email_pattern: x}\n", "registration.email_pattern", "Add a way in"),
         ("registration: {code: sesame}\n", "registration.code", "Add a way in"),
         ("tasks: [{id: a, label: A}]\n", "tasks[0].label", "its place in the contest's list"),
-        ("tasks: [{id: a, points: 100}]\n", "tasks[0].points", "This is now called worth"),
+        ("tasks: [{id: a, points: 100}]\n", "tasks[0].points", "no longer gives points"),
+        ("tasks: [{id: a, worth: 100}]\n", "tasks[0].worth", "no longer gives points"),
+        ("tasks: [{id: a, late_per_day: 0.1}]\n", "tasks[0].late_per_day", "reads seconds_late"),
         ("leaderboards: [{name: B}]\n", "leaderboards", "keyed by name"),
         ("leaderboards: {b: {name: B}}\n", "leaderboards.b.name", "written as blocks"),
         ("leaderboards: {b: {select: best}}\n", "leaderboards.b.select", "written as blocks"),
@@ -297,7 +295,21 @@ def test_a_stored_contest_still_holding_on_system_error_reads_with_it_ignored(va
     assert paths(contest_problems(text)) == ["on_system_error"]
 
 
-def test_a_stored_contest_with_old_boards_or_freeze_at_reads_with_no_boards() -> None:
+def test_a_stored_contest_whose_tasks_still_give_worth_reads_with_it_ignored() -> None:
+    text = (
+        HEAD
+        + "tasks:\n"
+        + "  - {id: a, worth: 100}\n"
+        + "  - {id: b, due: 2026-06-01T12:00:00Z, late_per_day: 0.1}\n"
+    )
+
+    assert parse_contest(text) == parse_contest(
+        HEAD + "tasks: [{id: a}, {id: b, due: 2026-06-01T12:00:00Z}]\n"
+    )
+    assert paths(contest_problems(text)) == ["tasks[0].worth", "tasks[1].late_per_day"]
+
+
+def test_a_stored_contest_with_old_leaderboards_or_freeze_at_reads_with_no_leaderboards() -> None:
     text = (
         HEAD
         + "freeze_at: 2026-06-01T13:00:00Z\n"
@@ -341,8 +353,6 @@ def test_every_retired_key_in_one_file_is_named_together() -> None:
         ("hold: {from: 2026-06-01T13:00:00Z, until: never}\n", "hold.until"),
         ("tasks: [{id: Big-Task}]\n", "tasks[0].id"),
         ("tasks: [{id: abcdefghijklmnopqrstuvwxy}]\n", "tasks[0].id"),
-        ("tasks: [{id: a, worth: -1}]\n", "tasks[0].worth"),
-        ("tasks: [{id: a, worth: true}]\n", "tasks[0].worth"),
         ("entrants: {most: 0}\n", "entrants.most"),
         ("entrants: {fewest: 0}\n", "entrants.fewest"),
         ("entrants: {most: 2, fewest: 3}\n", "entrants.fewest"),
@@ -449,8 +459,8 @@ def test_the_contest_admin_keys_leave_start_and_end_to_the_managers() -> None:
 # C1 within contest.yaml
 
 
-def entry_problems(entry: str, boards: str = "") -> list[Problem]:
-    return contest_problems(HEAD + f"tasks: [{entry}]\n" + boards)
+def entry_problems(entry: str, leaderboards: str = "") -> list[Problem]:
+    return contest_problems(HEAD + f"tasks: [{entry}]\n" + leaderboards)
 
 
 def test_a_full_timeline_in_order_is_valid() -> None:
@@ -458,16 +468,14 @@ def test_a_full_timeline_in_order_is_valid() -> None:
         HEAD
         + "tasks:\n"
         + "  - id: a\n"
-        + "    worth: 50\n"
         + "    release_at: 2026-06-01T09:00:00Z\n"
         + "    due: 2026-06-01T12:00:00Z\n"
-        + "    late_per_day: 1\n"
         + "    closes: 2026-06-01T14:00:00Z\n"
         + "    marks: 10\n"
     )
 
     entry = contest.tasks[0]
-    assert (entry.worth, entry.late_per_day, entry.marks) == (50, 1, 10)
+    assert (entry.due, entry.marks) == (datetime(2026, 6, 1, 12, tzinfo=UTC), 10)
 
 
 def test_equal_times_are_in_order_and_a_task_may_never_take_a_submission() -> None:
@@ -528,25 +536,6 @@ def test_a_release_after_a_close_is_refused_naming_the_close() -> None:
     )
 
     assert "The closing time is before the release time." in at(problems, "tasks[0].closes")
-
-
-def test_a_late_fraction_needs_a_due() -> None:
-    problems = entry_problems("{id: a, late_per_day: 0.5}")
-
-    assert at(problems, "tasks[0].late_per_day") == (
-        "This applies only to a task with a due time. Give the task a due time, or leave this "
-        "empty."
-    )
-
-
-@pytest.mark.parametrize("fraction", ["0", "-0.1", "1.5"])
-def test_a_late_fraction_is_more_than_0_and_at_most_1(fraction: str) -> None:
-    problems = entry_problems(f"{{id: a, due: 2026-06-01T12:00:00Z, late_per_day: {fraction}}}")
-
-    assert at(problems, "tasks[0].late_per_day") == (
-        "This must be more than 0 and at most 1: the share of the points taken off for each "
-        "late day."
-    )
 
 
 @pytest.mark.parametrize(
@@ -797,23 +786,11 @@ def test_credit_on_a_task_with_no_rule_weight_is_refused() -> None:
     assert not parse_task(task_text("{samples: {}}")).gives_points
 
 
-def test_a_task_entry_with_no_worth_is_worth_its_groups_total() -> None:
-    task = parse_task(task_text("{samples: {}, small: {pass: 3}, large: {each: 2, pass: 5}}"))
-    contest = parse_contest(HEAD + "tasks: [{id: a}, {id: b, worth: 50}]\n")
-    plain, scaled = contest.tasks
-
-    assert task.total_weight == 10
-    assert (worth_of(plain, task), worth_of(scaled, task)) == (10, 50)
-    assert worth_of(plain, parse_task(task_text("{samples: {}}"))) is None
-    assert worth_of(plain, parse_task(task_text("{main: {each: 0.5}}"))) == Decimal("0.5")
-
-
 def test_a_groups_total_keeps_every_digit_of_its_weights() -> None:
     long = "0.1234567890123456789012345678"
     task = parse_task(task_text(f"{{small: {{pass: {long}, each: {long}}}, large: {{pass: 100}}}}"))
 
     assert task.test_groups["small"].weight == Decimal("0.2469135780246913578024691356")
-    assert task.total_weight == Decimal("100.2469135780246913578024691356")
 
 
 def test_credit_is_a_value_name_or_relative_to_one() -> None:

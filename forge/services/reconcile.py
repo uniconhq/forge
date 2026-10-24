@@ -44,8 +44,8 @@ from forge.domain.ids import ContestId, OrgId, TaskId, WorkspaceId
 from forge.domain.roles import task_scope
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import entrants, gradings, org_accounts, published
-from forge.services.published import PublishedTask
+from forge.services import entrant_view, entrants, gradings, org_accounts
+from forge.services.entrant_view import PublishedTask
 
 log = get_logger(__name__)
 
@@ -72,10 +72,10 @@ async def reconcile(ctx: Context) -> Reconciled:
     """
     secured = await _secure_every_place(ctx)
     contests = seen = inserted = activated = 0
-    for contest, settings in await published.every_contest(ctx):
+    for contest, settings in await entrant_view.every_contest(ctx):
         contests += 1
         try:
-            tasks = await published.tasks(ctx, contest, settings)
+            tasks = await entrant_view.tasks(ctx, contest, settings)
         except PortError as exc:
             log.warning("reconcile.contest_unreadable", contest=contest, error=type(exc).__name__)
             continue
@@ -165,7 +165,7 @@ async def _task(
     # waiting on the forge calls below: a row made as a release or a
     # take-back lands takes either split, and either is safe, since what is
     # shown is decided when served (stage 5 section 6 item 32).
-    released = bool(task.definition.runs) and await published.results_released(ctx, task.id)
+    released = bool(task.definition.runs) and await entrant_view.results_released(ctx, task.id)
     for workspace in workspaces:
         try:
             submissions = await ctx.forge.workspaces.list_submissions(workspace, task.id)

@@ -18,9 +18,10 @@ again once a regrade replaced its early row; a late row reads what its
 early row read, and reuses as it did; an upload is linked only when the
 submission took it; a task with nothing early makes its late row at
 once, told as submitted until the reveal, with or without the platform's
-images; a step whose image the platform withdrew ends its start saying
-so and is refused at a save; each row has a user of its own, and takes
-one a lost row held; a save is checked by a pipeline of its own before
+images, and `compiled` waits for every reader until that row compiles; a
+step whose image the platform withdrew ends its start saying so and is
+refused at a save; each row has a user of its own, and takes one a lost
+row held; a save is checked by a pipeline of its own before
 it takes over, compared with the publication entrants are graded on, and
 one whose checker does not compile is refused while the old version
 keeps grading, shown so to its organisers and checked again by a save of
@@ -50,7 +51,6 @@ from forge.db.tables import Upload as UploadRow
 from forge.db.tables.entrants import Entrant
 from forge.db.tables.gradings import PASSED
 from forge.domain import step_data
-from forge.domain.boards import Counted
 from forge.domain.content import Edit
 from forge.domain.errors import (
     CiRequestRefused,
@@ -74,33 +74,34 @@ from forge.domain.grading import (
 from forge.domain.identity import PLATFORM, AsOrgAccount, User
 from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.keys import key_from_name
+from forge.domain.leaderboards import Counted
 from forge.domain.live import Nudge
 from forge.domain.names import EntrantOwner
 from forge.domain.regrades import ValueChange, VerdictChange
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.run_plan import PipelineKind
 from forge.domain.run_showing import TextAt
-from forge.domain.showing import SubmissionState
+from forge.domain.submission_state import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import (
-    boards,
+    entrant_view,
     gradings,
+    leaderboards,
     pipelines,
     primitives,
-    publications,
-    published,
     regrades,
     runs,
     steps,
     submissions,
+    task_save,
     tasks,
 )
 from forge.services.access import Organiser
 from forge.services.gradings import START_RETRY_WAIT
 from forge.services.pipelines import USER_FIRST
-from forge.services.publications import Draft, Published
+from forge.services.task_save import Draft, Published
 from forge.settings import Settings
 from forge.testing import APP_URL, CALLBACK_PATH, FORGE_URL, FakeClock, register_entrant
 from tests.services.conftest import RUNNING, SPRING, Acme, organiser, signed_in, upload
@@ -117,6 +118,7 @@ from tests.services.test_steps import (
     _islands,
     _job,
     _mint,
+    _named,
     _report,
     _row,
     _runs,
@@ -285,11 +287,14 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     user = early.run_user
     assert user is not None and user >= USER_FIRST
     assert _steps(first) == [
-        ("compile", user, []),
-        ("solution", None, ["compile"]),
-        ("compare", None, ["solution"]),
-        ("report", user, ["compile", "solution", "compare"]),
+        ("s1", user, []),
+        ("s2", None, ["s1"]),
+        ("s4", None, ["s2"]),
+        ("report", user, ["s1", "s2", "s4"]),
     ]
+    assert all(
+        step["settings"]["data_url"].endswith(f"/steps/{step['name']}") for step in first["steps"]
+    )
     report = first["steps"][-1]
     assert (report["image"], report["always"]) == (setup.settings.primitive_base_image, True)
     assert report["settings"]["mode"] == "report"
@@ -301,7 +306,7 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     [late] = await _rows(setup, "late")
     assert (late.early_id, late.attempt, late.status) == (early.id, 1, GradingStatus.DISPATCHED)
     assert late.idempotency_key is None
-    assert [step[0] for step in _steps(asked[-1])] == ["solution", "compare", "report"]
+    assert [step[0] for step in _steps(asked[-1])] == ["s2", "s4", "report"]
     assert asked[-1]["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL]
     await _step(setup, acme, late.id, "late", "solution", _batch())
     await _step(setup, acme, late.id, "late", "compare", _batch(score=True))
@@ -324,10 +329,12 @@ BEFORE_CLOSE = datetime(2026, 9, 26, 14, 50, tzinfo=UTC)
 AFTER_CLOSE = datetime(2026, 9, 26, 15, 5, tzinfo=UTC)
 
 
-async def _graded_both(setup: Setup, acme: Acme, text: str = TASKS["islands"][0]) -> Any:
-    """islands as `text` has it, one submission graded early and late
-    before the close; the entrant's session."""
-    islands = await _checked(setup, acme, text)
+async def _graded_both(
+    setup: Setup, acme: Acme, text: str = TASKS["islands"][0], contest: str = LIVE
+) -> Any:
+    """islands as `text` has it in the contest `contest`, one submission
+    graded early and late before the close; the entrant's session."""
+    islands = await _checked(setup, acme, text, contest)
     session = await _submit(setup, acme, islands)
     [early] = await _rows(setup, "early")
     await _early(setup, acme, early.id)
@@ -470,6 +477,52 @@ async def test_a_group_moved_to_now_shows_its_runs_where_they_ran_late(
     ]
     # tests/4.in is shown now and tests/3.in is not, so only one key names its file.
     assert [run["key"] for run in grading.runs[2:]] == [{}, {"input": "tests/4.in"}]
+
+
+TOTALS = LIVE + (
+    "leaderboards:\n"
+    "  totals:\n"
+    "    audience: {who: entrants, rows: own}\n"
+    "    columns:\n"
+    "      total: {value: [{block: latest, from: {results: islands}}, total]}\n"
+    "    display: [total]\n"
+)
+"""A leaderboard each entrant reads alone, over their latest submission's
+total."""
+
+
+async def test_a_value_moved_to_now_is_missing_until_the_reveal_where_it_read_late_runs(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    # Item 134: st1, st2 and total read runs this grading ran late.
+    clock.set(BEFORE_CLOSE)
+    islands, session = await _graded_both(setup, acme, contest=TOTALS)
+    text = (
+        TASKS["islands"][0]
+        .replace("samples/]", "samples/, st1, st2, total]")
+        .replace("[st1, st2, total, all]", "[all]")
+    )
+    await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
+    await setup.settle()
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    async with setup.unit_of_work() as ctx:
+        entrant = await ctx.db.scalar(select(Entrant.id))
+    assert entrant is not None
+
+    before = _values(await _grading(setup, session, islands))
+    [own] = await leaderboards.seen(setup, session, SPRING)
+    staff = await submissions.organised(setup, manager, islands.task, EntrantOwner(entrant), 1)
+    clock.set(AFTER_CLOSE)
+    after = _values(await _grading(setup, session, islands))
+    [revealed] = await leaderboards.seen(setup, session, SPRING)
+
+    # Missing, not 0 from late runs read as never run, nor told waiting.
+    assert before == {"sample_score": 1, "sample_time": 12, "st1": None, "st2": None, "total": None}
+    assert own.rows[0].cells[0].number is None and not own.rows[0].cells[0].waiting
+    assert staff.grading is not None
+    assert {value.name: value.number for value in staff.grading.run_values}["total"] == 100
+    assert after["total"] == 100
+    assert revealed.rows[0].cells[0].number == 100
 
 
 async def test_organisers_read_every_run_of_both_rows_with_its_id(
@@ -716,7 +769,7 @@ async def test_an_early_compile_error_gives_every_late_run_its_verdict_and_no_la
 
     await _step(setup, acme, early.id, "early", "compile", _compiled(outcome="compile_error"))
     access = await _mint(setup, early.id, "early", "solution")
-    assert await steps.step_job(setup, early.id, "solution", _bearer(access)) is None
+    assert await steps.step_job(setup, early.id, _named(access), _bearer(access)) is None
     assert await _report(setup, early.id, "early") is GradingStatus.DONE
     await setup.settle()
 
@@ -879,7 +932,7 @@ async def test_a_pointer_to_an_upload_the_submission_did_not_take_is_given_no_li
         await ctx.db.execute(update(UploadRow).values(consumed_by="acme/spring/@u9/islands#1"))
 
     with pytest.raises(Misconfigured, match="is no upload it took"):
-        await steps.step_job(setup, early.id, "compile", _bearer(access))
+        await steps.step_job(setup, early.id, _named(access), _bearer(access))
 
 
 async def test_a_task_with_nothing_early_makes_its_late_row_at_once(
@@ -894,11 +947,59 @@ async def test_a_task_with_nothing_early_makes_its_late_row_at_once(
     assert early.result is not None and early.result["runs"] == []
     [late] = await _rows(setup, "late")
     assert (late.early_id, late.status) == (early.id, GradingStatus.DISPATCHED)
-    assert [step[0] for step in _steps(asked[-1])] == ["compile", "solution", "compare", "report"]
+    assert [step[0] for step in _steps(asked[-1])] == ["s1", "s2", "s4", "report"]
     # Submitted, results after the contest: not graded, with nothing run.
     assert await _seen(setup, session, islands) == [(1, SubmissionState.SUBMITTED)]
     clock.set(AFTER_CLOSE)
     assert await _seen(setup, session, islands) == [(1, SubmissionState.GRADING)]
+
+
+BUILT_LATE = NOTHING_EARLY.replace(
+    "  values:\n", "  values:\n    built: {fact: compiled}\n"
+).replace("after_close: [st1, st2, total, all]", "after_close: [st1, st2, total, all, built]")
+"""islands with nothing early and a value reading `compiled` shown after
+the close, so its compile runs in the late row."""
+BUILT_LEADERBOARD = (
+    LIVE
+    + "leaderboards:\n  built:\n    audience: {who: staff}\n    columns:\n"
+    + "      c: {value: [{block: latest, from: {results: islands}}, compiled]}\n"
+    + "    display: [c]\n"
+)
+"""A leaderboard for staff reading the latest submission's `compiled`."""
+
+
+async def test_compiled_waits_for_every_reader_until_the_late_row_that_compiles_has_run(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme, BUILT_LATE, contest=BUILT_LEADERBOARD)
+    session = await _submit(setup, acme, islands)
+    [late] = await _rows(setup, "late")
+    staff = await _staff(setup, acme)
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    async with setup.unit_of_work() as ctx:
+        entrant = await ctx.db.scalar(select(Entrant.id))
+    assert entrant is not None
+
+    async def read() -> tuple[Any, ...]:
+        graded = await submissions.organised(setup, manager, islands.task, EntrantOwner(entrant), 1)
+        assert graded.grading is not None
+        [leaderboard] = await leaderboards.seen(setup, staff, SPRING, "built")
+        mine = _values(await _grading(setup, session, islands)).get("built")
+        built = _values(graded.grading)["built"]
+        cell = leaderboard.rows[0].cells[0]
+        return built, graded.grading.compiled, cell.number, cell.waiting, mine
+
+    # Staff, and the entrant from the reveal, read it waiting, never 1.
+    waiting = (Counted("islands", 1),)
+    assert await read() == ("waiting", None, None, waiting, None)
+    clock.set(AFTER_CLOSE)
+    assert await read() == ("waiting", None, None, waiting, "waiting")
+    await _step(setup, acme, late.id, "late", "compile", _compiled())
+    await _step(setup, acme, late.id, "late", "solution", _batch())
+    await _step(setup, acme, late.id, "late", "compare", _batch(score=True))
+    assert await _report(setup, late.id, "late") is GradingStatus.DONE
+    assert await read() == (1, 1, 1, (), 1)
 
 
 async def test_a_row_with_nothing_to_run_ends_without_the_platforms_images(
@@ -944,7 +1045,7 @@ async def test_a_withdrawn_image_ends_a_start_saying_so_and_refuses_a_save(
     assert (other.status, other.run_id) == (GradingStatus.SYSTEM_ERROR, None)
     assert other.error == pipelines.WITHDRAWN.format(image=image)
     head = await acme.fake.content.list_files(PLATFORM, islands.task)
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         islands.task,
@@ -1042,13 +1143,13 @@ async def test_a_save_whose_checker_does_not_compile_is_refused_and_the_old_vers
     refused = await _row(setup, save.id)
     assert {verdict for _, verdict in _verdicts(refused)} == {"compile_error"}
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
     await _submit(setup, acme, islands)
     [early] = await _rows(setup, "early")
     assert early.publication_id == islands.publication
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
-    listed = await publications.list(setup, manager, islands.task)
+    listed = await task_save.list_publications(setup, manager, islands.task)
     assert [each.check for each in listed] == [None, "refused"]
     state = await tasks.state(setup, manager, islands.task)
     assert state.latest is not None and state.latest.check == "refused"
@@ -1068,11 +1169,11 @@ async def _held_back_then_checked(setup: Setup, acme: Acme, islands: Islands) ->
     assert [each.id for each in made][:-1] == [islands.publication]
     assert made[-1].checked_first
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
     assert [row.publication_id for row in await _rows(setup, "save")] == [islands.publication]
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
-    listed = await publications.list(setup, manager, islands.task)
+    listed = await task_save.list_publications(setup, manager, islands.task)
     assert [each.check for each in listed] == [None, "refused"]
 
     again = await _save(setup, acme, islands.task, {})
@@ -1084,7 +1185,7 @@ async def _held_back_then_checked(setup: Setup, acme: Acme, islands: Islands) ->
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == made[-1].id
 
 
@@ -1097,7 +1198,7 @@ async def test_a_save_that_fails_once_it_published_leaves_its_publication_held_u
     async def down(*_args: Any, **_kwargs: Any) -> int:
         raise Unavailable("The forge did not answer.")
 
-    monkeypatch.setattr(publications, "_number_of", down)
+    monkeypatch.setattr(task_save.sources, "_number_of", down)
     with pytest.raises(Unavailable):
         await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
     monkeypatch.undo()
@@ -1147,7 +1248,7 @@ async def test_a_lost_save_row_is_found_by_its_organisers_read_and_tried_again(
     clock.advance(LOST_CHECK_AFTER + timedelta(seconds=1))
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
 
-    listed = await publications.list(setup, manager, islands.task)
+    listed = await task_save.list_publications(setup, manager, islands.task)
     await setup.settle()
 
     assert [each.check for each in listed] == [None, "checking"]
@@ -1176,7 +1277,7 @@ async def test_a_save_while_another_is_checked_is_compared_with_what_entrants_ar
     await setup.settle()
 
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == typo.publication
     first, regraded = await _rows(setup, "early")
     assert (first.publication_id, regraded.publication_id) == (
@@ -1216,7 +1317,7 @@ async def test_a_regrade_of_compares_alone_is_said_at_the_save_and_checks_nothin
 
     _, regraded = await _rows(setup, "early")
     assert regraded.run_id is not None
-    assert [step[0] for step in _steps(asked[-1])] == ["compare", "report"]
+    assert [step[0] for step in _steps(asked[-1])] == ["s4", "report"]
     assert asked[-1]["clone"] is None
 
 
@@ -1236,7 +1337,7 @@ async def test_a_take_over_whose_work_never_ran_is_finished_by_the_next_read(
     monkeypatch.undo()
 
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
-    await publications.list(setup, manager, islands.task)
+    await task_save.list_publications(setup, manager, islands.task)
     await setup.settle()
 
     assert (await _row(setup, save.id)).taken_over_at is not None
@@ -1253,7 +1354,7 @@ async def test_a_save_whose_save_steps_are_stored_takes_over_at_once(
     _, save = await _rows(setup, "save")
     assert (save.status, save.run_id) == (GradingStatus.DONE, None)
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == saved.publication
     assert len(asked) == 1
 
@@ -1414,7 +1515,7 @@ async def test_a_saves_checks_are_graded_by_its_pipeline_and_each_gets_what_it_e
     # A check that passed keeps none of its runs in the save's result.
     assert [each["runs"] for each in row.result["checks"]] == [[], [], []]
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
 
 
@@ -1432,10 +1533,10 @@ async def test_a_check_that_does_not_get_what_it_expects_refuses_its_save_saying
     await setup.settle()
 
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
-    listed = await publications.list(setup, manager, islands.task)
+    listed = await task_save.list_publications(setup, manager, islands.task)
     assert [each.check for each in listed] == [None, "refused"]
     [failed] = listed[1].failed_checks
     assert (failed.index, failed.failing) == (
@@ -1486,7 +1587,7 @@ async def test_a_check_that_faults_ends_the_save_row_a_system_error_and_it_is_tr
     assert await _report(setup, again.id, "save") is GradingStatus.DONE
     await setup.settle()
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
 
 
@@ -1512,7 +1613,7 @@ async def test_checks_at_a_publication_whose_settings_do_not_read_fail_saying_so
         (False, [steps.CHECKS_UNREAD])
     ] * 3
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
 
 
@@ -1607,7 +1708,7 @@ GRADEBOOK = LIVE + (
     "    sort: [{total: desc}]\n"
     "    display: [st2, total]\n"
 )
-"""The running contest with a staff board reading islands' latest
+"""The running contest with a staff leaderboard reading islands' latest
 submission, ranked by its total."""
 
 
@@ -1642,7 +1743,7 @@ async def _staff(setup: Setup, acme: Acme) -> Any:
     return await signed_in(setup, acme.fake, 7)
 
 
-async def test_staff_read_every_row_of_a_staff_board_and_nobody_else_reads_it(
+async def test_staff_read_every_row_of_a_staff_leaderboard_and_nobody_else_reads_it(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     islands = await _checked(setup, acme, contest=GRADEBOOK)
@@ -1652,14 +1753,18 @@ async def test_staff_read_every_row_of_a_staff_board_and_nobody_else_reads_it(
     await _ended(setup, first, ACCEPTED_EARLY, ACCEPTED_LATE)
     staff = await _staff(setup, acme)
 
-    [board] = await boards.seen(setup, staff, SPRING)
+    [leaderboard] = await leaderboards.seen(setup, staff, SPRING)
 
-    # A board with no audience is staff's, so an entrant and a visitor
+    # A leaderboard with no audience is staff's, so an entrant and a visitor
     # read none.
-    assert await boards.seen(setup, entrant, SPRING) == ()
-    assert await boards.seen(setup, None, SPRING) == ()
-    assert (board.key, board.title, board.audience.who) == ("gradebook", "Gradebook", "staff")
-    graded, grading = board.rows
+    assert await leaderboards.seen(setup, entrant, SPRING) == ()
+    assert await leaderboards.seen(setup, None, SPRING) == ()
+    assert (leaderboard.key, leaderboard.title, leaderboard.audience.who) == (
+        "gradebook",
+        "Gradebook",
+        "staff",
+    )
+    graded, grading = leaderboard.rows
     assert (graded.place, grading.place) == (1, 2)
     assert [(cell.column, cell.number) for cell in graded.cells] == [
         ("st2", Fraction(1)),
@@ -1675,7 +1780,7 @@ async def test_staff_read_every_row_of_a_staff_board_and_nobody_else_reads_it(
     assert grading.cells[1].waiting == (Counted("islands", waiting.submission_number),)
 
 
-async def test_a_staff_read_of_a_board_starts_the_retry_of_a_failure_it_finds(
+async def test_a_staff_read_of_a_leaderboard_starts_the_retry_of_a_failure_it_finds(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     islands = await _checked(setup, acme, contest=GRADEBOOK)
@@ -1686,7 +1791,7 @@ async def test_a_staff_read_of_a_board_starts_the_retry_of_a_failure_it_finds(
         assert row is not None
         row.status, row.error = GradingStatus.SYSTEM_ERROR, "The step crashed."
 
-    await boards.seen(setup, await _staff(setup, acme), SPRING)
+    await leaderboards.seen(setup, await _staff(setup, acme), SPRING)
     await setup.settle()
 
     assert [(row.attempt, row.automatic) for row in await _rows(setup, "early")] == [
@@ -1695,7 +1800,7 @@ async def test_a_staff_read_of_a_board_starts_the_retry_of_a_failure_it_finds(
     ]
 
 
-async def test_a_visitors_or_an_entrants_read_of_a_board_starts_no_retry(
+async def test_a_visitors_or_an_entrants_read_of_a_leaderboard_starts_no_retry(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     contest = GRADEBOOK.replace("    title: Gradebook\n", "    audience: {who: everyone}\n")
@@ -1709,8 +1814,8 @@ async def test_a_visitors_or_an_entrants_read_of_a_board_starts_no_retry(
 
     # Only staff's read sees to a failure: a read with no session writes
     # nothing, and the entrant's own submission page sees to theirs.
-    assert len(await boards.seen(setup, None, SPRING)) == 1
-    assert len(await boards.seen(setup, entrant, SPRING)) == 1
+    assert len(await leaderboards.seen(setup, None, SPRING)) == 1
+    assert len(await leaderboards.seen(setup, entrant, SPRING)) == 1
     await setup.settle()
 
     assert [(row.attempt, row.automatic) for row in await _rows(setup, "early")] == [(1, False)]
@@ -1734,11 +1839,11 @@ async def test_staff_read_a_rows_earlier_result_while_its_newest_submission_grad
     )
     await setup.settle()
 
-    [board] = await boards.seen(setup, await _staff(setup, acme), SPRING)
+    [leaderboard] = await leaderboards.seen(setup, await _staff(setup, acme), SPRING)
 
     # The latest submission's st2 and total still wait, so the pick passes
     # over it to the one before, and says it is waiting.
-    [row] = board.rows
+    [row] = leaderboard.rows
     assert [(cell.column, cell.number) for cell in row.cells] == [
         ("st2", Fraction(1)),
         ("total", Fraction(100)),
@@ -1747,7 +1852,7 @@ async def test_staff_read_a_rows_earlier_result_while_its_newest_submission_grad
     assert row.cells[1].waiting == (Counted("islands", 2),)
 
 
-async def test_a_manager_or_observer_of_the_task_alone_reads_no_board(
+async def test_a_manager_or_observer_of_the_task_alone_reads_no_leaderboard(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     islands = await _checked(setup, acme, contest=GRADEBOOK)
@@ -1757,9 +1862,9 @@ async def test_a_manager_or_observer_of_the_task_alone_reads_no_board(
         acme.fake.add_user(user, f"staff{user}")
         await acme.fake.orgs.grant_role(user, ISLANDS, role)
         session = await signed_in(setup, acme.fake, user)
-        # A board reads other tasks, so a role at one task reads none.
-        assert await boards.seen(setup, session, SPRING) == ()
-        assert await boards.seen(setup, session, SPRING, "gradebook") == ()
+        # A leaderboard reads other tasks, so a role at one task reads none.
+        assert await leaderboards.seen(setup, session, SPRING) == ()
+        assert await leaderboards.seen(setup, session, SPRING, "gradebook") == ()
 
 
 def _task_only(acme: Acme, role: Role) -> Any:
@@ -1792,30 +1897,32 @@ async def test_a_regrade_lists_each_submission_whose_values_it_changed_old_to_ne
             ValueChange("total", Fraction(100), Fraction(40)),
         )
         assert each.verdicts == (VerdictChange("r4", "accepted", "wrong_answer"),)
-    # The contest's manager reads every row of the board reading islands,
+    # The contest's manager reads every row of the leaderboard reading islands,
     # its places and cells before and after.
-    assert summary.boards is not None
-    [board] = summary.boards
-    assert (board.board, board.title, board.sort) == (
+    assert summary.leaderboards is not None
+    [leaderboard] = summary.leaderboards
+    assert (leaderboard.leaderboard, leaderboard.title, leaderboard.sort) == (
         "gradebook",
         "Gradebook",
         (("total", "desc"),),
     )
-    assert [header.name for header in board.headers] == ["st2", "total"]
+    assert [header.name for header in leaderboard.headers] == ["st2", "total"]
     # Every row tied first before; after, the one whose st2 held leads
     # and the 4 tie second, listed by name.
-    assert [(row.place_before, row.place_after) for row in board.rows] == [(1, 1)] + [(1, 2)] * 4
-    dropped = [row.name for row in board.rows[1:]]
+    assert [(row.place_before, row.place_after) for row in leaderboard.rows] == [(1, 1)] + [
+        (1, 2)
+    ] * 4
+    dropped = [row.name for row in leaderboard.rows[1:]]
     assert dropped == sorted(dropped) and len(set(dropped)) == 4
-    for dropped_row in board.rows[1:]:
+    for dropped_row in leaderboard.rows[1:]:
         assert [(cell.column, cell.before, cell.after) for cell in dropped_row.cells] == [
             ("st2", Fraction(1), Fraction(0)),
             ("total", Fraction(100), Fraction(40)),
         ]
-    assert [cell.changed for cell in board.rows[0].cells] == [False, False]
+    assert [cell.changed for cell in leaderboard.rows[0].cells] == [False, False]
 
 
-async def test_the_board_diff_reads_the_result_before_while_a_regrade_runs_or_was_cancelled(
+async def test_the_leaderboard_diff_reads_the_result_before_while_a_regrade_runs_or_was_cancelled(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     islands, regrade, rows = await _regraded(setup, acme, 3, GRADEBOOK)
@@ -1827,14 +1934,16 @@ async def test_the_board_diff_reads_the_result_before_while_a_regrade_runs_or_wa
         cancelled.status = GradingStatus.CANCELLED
 
     summary = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
-    [board] = await boards.seen(setup, await _staff(setup, acme), SPRING)
+    [leaderboard] = await leaderboards.seen(setup, await _staff(setup, acme), SPRING)
 
     assert (summary.running, summary.failed, summary.changed) == (1, 1, ())
-    assert summary.boards is not None
-    [diff] = summary.boards
-    # Each row reads as the live board does: the result from before counts
+    assert summary.leaderboards is not None
+    [diff] = summary.leaderboards
+    # Each row reads as the live leaderboard does: the result from before counts
     # until the regrade's own attempt finishes with one, so nothing drops.
-    live = {row.owner: [(cell.column, cell.number) for cell in row.cells] for row in board.rows}
+    live = {
+        row.owner: [(cell.column, cell.number) for cell in row.cells] for row in leaderboard.rows
+    }
     for row in diff.rows:
         assert [(cell.column, cell.after) for cell in row.cells] == live[row.owner]
         assert [(cell.column, cell.before, cell.after) for cell in row.cells] == [
@@ -1858,10 +1967,10 @@ MIRRORED = GRADEBOOK + (
     "    sort: [{total: desc}]\n"
     "    display: [total]\n"
 )
-"""The gradebook, and a board reading islands only through its total."""
+"""The gradebook, and a leaderboard reading islands only through its total."""
 
 
-async def test_the_board_diff_covers_a_board_reading_the_task_through_another_alone(
+async def test_the_leaderboard_diff_covers_a_leaderboard_reading_the_task_through_another_alone(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     islands, regrade, rows = await _regraded(setup, acme, 2, MIRRORED)
@@ -1878,9 +1987,9 @@ async def test_the_board_diff_covers_a_board_reading_the_task_through_another_al
 
     summary = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
 
-    assert summary.boards is not None
-    assert [each.board for each in summary.boards] == ["gradebook", "mirror"]
-    mirror = summary.boards[1]
+    assert summary.leaderboards is not None
+    assert [each.leaderboard for each in summary.leaderboards] == ["gradebook", "mirror"]
+    mirror = summary.leaderboards[1]
     assert [
         (row.name, row.place_before, row.place_after, row.cells[0].before, row.cells[0].after)
         for row in mirror.rows
@@ -1903,7 +2012,9 @@ def test_a_regrades_sides_read_the_attempts_that_counted_when_it_began_and_its_o
     later = attempt(3, began + timedelta(minutes=5), other)
     newcomer = attempt(1, began + timedelta(minutes=1))
     task: Any = None
-    before, after = boards.regrade_sides(regrade, began, TaskId("acme/spring/islands"), task, task)
+    before, after = leaderboards.regrade_sides(
+        regrade, began, TaskId("acme/spring/islands"), task, task
+    )
 
     assert before.attempts([earlier, own, later]) == [earlier]
     assert after.attempts([earlier, own, later]) == [earlier, own]
@@ -1911,7 +2022,7 @@ def test_a_regrades_sides_read_the_attempts_that_counted_when_it_began_and_its_o
     assert before.attempts([newcomer]) == after.attempts([newcomer]) == []
 
 
-async def test_a_regrade_whose_earlier_publication_no_longer_reads_gives_boards_unread(
+async def test_a_regrade_whose_earlier_publication_no_longer_reads_gives_leaderboards_unread(
     setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     islands, regrade, [row] = await _regraded(setup, acme, 1, GRADEBOOK)
@@ -1929,11 +2040,11 @@ async def test_a_regrade_whose_earlier_publication_no_longer_reads_gives_boards_
     summary = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
 
     assert summary.unread == 1
-    # The board is not worked out under the new scoring and called the
-    # board before: it says it cannot be compared, as the summary does.
-    assert summary.boards is not None
-    [board] = summary.boards
-    assert (board.board, board.title, board.unread, board.rows) == (
+    # The leaderboard is not worked out under the new scoring and called the
+    # leaderboard before: it says it cannot be compared, as the summary does.
+    assert summary.leaderboards is not None
+    [leaderboard] = summary.leaderboards
+    assert (leaderboard.leaderboard, leaderboard.title, leaderboard.unread, leaderboard.rows) == (
         "gradebook",
         "Gradebook",
         True,
@@ -2001,7 +2112,7 @@ async def test_a_task_manager_reads_its_regrades_values_and_an_observer_is_refus
         setup, _task_only(acme, Role.MANAGER), islands.task, regrade
     )
 
-    assert len(summary.changed) == 1 and summary.boards is None
+    assert len(summary.changed) == 1 and summary.leaderboards is None
     with pytest.raises(Forbidden):
         await regrades.run_summary(setup, _task_only(acme, Role.OBSERVER), islands.task, regrade)
     with pytest.raises(NotFound):
@@ -2023,18 +2134,16 @@ async def test_a_save_moving_the_pin_asks_first_and_its_regrade_is_summed_up(
     edits = {"task.yaml": Edit(text.encode(), head.tokens.get("task.yaml"))}
 
     with pytest.raises(ConfirmationRequired) as asked:
-        await publications.save(setup, acme.ada, islands.task, edits)
+        await task_save.save(setup, acme.ada, islands.task, edits)
 
-    assert publications.PIN_MOVED in asked.value.detail
+    assert task_save.PIN_MOVED in asked.value.detail
     assert asked.value.extra["regrades"] == 1
     # Only the answer to the question that named the pin confirms it: a
     # bare confirm, or an answer naming the version alone, asks again.
     basis = asked.value.extra["asked"].rsplit(":", 1)[0]
     for answer in (None, basis):
         with pytest.raises(ConfirmationRequired):
-            await publications.save(
-                setup, acme.ada, islands.task, edits, confirm=True, asked=answer
-            )
+            await task_save.save(setup, acme.ada, islands.task, edits, confirm=True, asked=answer)
     saved = await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
     _, save = await _rows(setup, "save")
     await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))

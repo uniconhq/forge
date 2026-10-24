@@ -15,7 +15,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.roles import Role, Scope
 from forge.runtime.setup import Setup
-from forge.services import contests, files, landing, published
+from forge.services import contests, entrant_view, files, landing
 from forge.testing import FakeClock
 from tests.services.conftest import (
     ACME,
@@ -97,7 +97,7 @@ async def test_the_list_is_kept_half_a_minute_and_read_again_after(
 
     kept = await landing.contests(setup)
     assert acme.fake.calls_to("list_contests") == []
-    clock.advance(published.EVERY_CONTEST_KEPT)
+    clock.advance(entrant_view.EVERY_CONTEST_KEPT)
     after = await landing.contests(setup)
 
     assert kept == first

@@ -6,10 +6,10 @@ back as.
 """
 
 from forge.domain.regrades import (
-    BoardDiff,
     CellDiff,
     ChangeKind,
     Compared,
+    LeaderboardDiff,
     RegradeCause,
     RowDiff,
     Side,
@@ -27,10 +27,10 @@ from forge.services.regrades import (
 )
 
 __all__ = [
-    "BoardDiff",
     "CellDiff",
     "ChangeKind",
     "Compared",
+    "LeaderboardDiff",
     "RegradeCause",
     "RowDiff",
     "RunSummary",

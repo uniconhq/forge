@@ -47,20 +47,20 @@ when one is an input (`TimeLimitOrder`), and every input that raises a limit
 or reaches a secret port (`InputUse`).
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import Any, Protocol
 
 from forge.domain.content import has_path
 from forge.domain.meanings import ReportMeaning
-from forge.domain.plans import (
+from forge.domain.port_values import (
     Kind,
     Refused,
-    a_type,
+    check_value_fits_port,
     check_written,
-    fits,
     literal_or_references,
+    type_in_words,
 )
 from forge.domain.primitives import (
     FILE_NAME,
@@ -79,7 +79,7 @@ from forge.domain.primitives import (
 )
 from forge.domain.program_manifest import (
     EXEC_OWN_NAMES,
-    INTERACT_OWN_NAMES,
+    PROGRAMS_OWN_NAMES,
     TOO_LARGE,
     ProgramManifest,
     parse_program,
@@ -214,6 +214,21 @@ class ResolvedStep:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedOutput:
+    """An output of a workflow used as a box, resolved as a report's `from`
+    is: the step and output it reads, the program when it is one program's
+    output, and the port, none while that output is a report of a manifest
+    the task gives.
+    """
+
+    name: str
+    step: str
+    program: str | None
+    output: str
+    port: Port | None
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedReport:
     """A report as the check resolved it: the step and output it reads, with
     the program it is one program's output of, the output's port, none
@@ -324,6 +339,7 @@ class RunWorkflowCheck:
     uses: dict[str, list[InputUse]]
     deferred: list[Deferred]
     time_limits: list[TimeLimitOrder]
+    outputs: dict[str, ResolvedOutput]
 
     @property
     def verdict_self_reported_by(self) -> frozenset[str]:
@@ -357,22 +373,53 @@ def manifest_paths(workflow: RunWorkflow) -> set[str]:
     return found
 
 
+class _Box(Protocol):
+    """A box's rewritten `with:`, structurally what a `BoxGiven` holds, so
+    this module does not import the one that flattens a workflow. The
+    attributes are read-only, as a frozen box's are."""
+
+    @property
+    def first(self) -> int: ...
+
+    @property
+    def inputs(self) -> Mapping[str, Port]: ...
+
+    @property
+    def given(self) -> Mapping[str, object]: ...
+
+
 def check_run_workflow(
     workflow: RunWorkflow,
     primitives: Mapping[str, PrimitiveDeclaration],
     files: WorkflowFiles | None,
+    *,
+    inner_files: Mapping[int, WorkflowFiles] | None = None,
+    boxes: Sequence[_Box] = (),
+    flat: bool = False,
 ) -> RunWorkflowCheck:
     """What making a version of `workflow` finds, `primitives` holding the
     declaration of every `use:` that is a primitive, by the reference as
     text, and `files` the workflow's own at the version's commit. Without
     `files`, as a check of a text alone, a workflow's path is checked only
     for its form and its manifests are left unread.
+
+    A workflow expanded into primitive steps passes `flat`, so a step id
+    may be a path and `workflow@<k>` reads pin k from `inner_files`. `boxes`
+    are checked against their inner inputs just before each one's first
+    flat step. With none of these, the check is of the workflow as written.
     """
-    checker = _Checker(workflow, primitives, files)
+    checker = _Checker(workflow, primitives, files, inner_files or {}, flat)
+    pending: dict[int, list[_Box]] = {}
+    for box in boxes:
+        pending.setdefault(box.first, []).append(box)
     for index, step in enumerate(workflow.steps):
+        for held in pending.get(index, ()):
+            checker.box(held)
         checker.step(("steps", index), step.id, str(step.use), step.with_)
     for name, entry in workflow.reports.items():
         checker.report(name, entry)
+    for name, raw in workflow.outputs.items():
+        checker.output(name, raw)
     return RunWorkflowCheck(
         checker.problems,
         checker.steps,
@@ -380,6 +427,7 @@ def check_run_workflow(
         checker.uses,
         checker.deferred,
         checker.time_limits,
+        checker.outputs,
     )
 
 
@@ -408,13 +456,18 @@ class _Checker:
         workflow: RunWorkflow,
         primitives: Mapping[str, PrimitiveDeclaration],
         files: WorkflowFiles | None,
+        inner_files: Mapping[int, WorkflowFiles],
+        flat: bool,
     ) -> None:
         self.workflow = workflow
         self.primitives = primitives
         self.files = files
+        self.inner_files = inner_files
+        self.flat = flat
         self.problems: list[Problem] = []
         self.steps: dict[str, ResolvedStep] = {}
         self.reports: dict[str, ResolvedReport] = {}
+        self.outputs: dict[str, ResolvedOutput] = {}
         self.uses: dict[str, list[InputUse]] = {}
         self.deferred: list[Deferred] = []
         self.time_limits: list[TimeLimitOrder] = []
@@ -431,6 +484,18 @@ class _Checker:
         self.problems.append(Problem(path=path_text(at), message=message))
 
     # Steps
+
+    def box(self, box: _Box) -> None:
+        """The box's `with:` against its inner inputs, each value as a step's
+        port is checked. A key the inner workflow does not take, and a
+        required one it was not given, were refused while flattening, so
+        only the values it was given are read here.
+        """
+        at = ("steps", box.first, "with")
+        for name, port in box.inputs.items():
+            if name not in box.given:
+                continue
+            self._value((*at, name), box.given[name], port, False, set())
 
     def step(self, where: Path, step_id: str, use: str, given: Mapping[str, Any]) -> None:
         declaration = self.primitives.get(use)
@@ -450,6 +515,12 @@ class _Checker:
                 "unicon/exec@v1.",
             )
             return
+        resolved = declaration.for_step(tuple(given), use)
+        if isinstance(resolved, str):
+            self.refused.add(step_id)
+            self.refuse((*where, "use"), resolved)
+            return
+        declaration = resolved
         at = (*where, "with")
         self._ports(at, use, declaration.inputs, given)
         raised = {
@@ -564,7 +635,9 @@ class _Checker:
                     "This value raises a limit, so it must be known when the task is saved."
                 )
             if port.type not in (Type.TEXT, Type.NUMBER):
-                raise Refused(f"This takes {a_type(port.type)}, and a report is a number or text.")
+                raise Refused(
+                    f"This takes {type_in_words(port.type)}, and a report is a number or text."
+                )
             self.deferred.append(
                 Deferred(path_text(at), kind.step, kind.program, kind.report, port)
             )
@@ -577,7 +650,7 @@ class _Checker:
                     "That output may be missing, so it can be given only to an optional port."
                 )
             raise Refused("That input is optional, so it can be given only to an optional port.")
-        fits(kind, port, raw)
+        check_value_fits_port(kind, port, raw)
         for name, whole in written:
             self.uses.setdefault(name, []).append(
                 InputUse(path_text(at), port, raises_limit, whole)
@@ -587,7 +660,7 @@ class _Checker:
         """What `raw` is, and each input it gives, whole or written into
         text.
         """
-        read = literal_or_references(raw, runs=True)
+        read = literal_or_references(raw, runs=True, flat=self.flat)
         if isinstance(read, Kind):
             return read, []
         whole, written = read
@@ -622,7 +695,7 @@ class _Checker:
                     "run's values in its inputs and says which repeat."
                 )
             case "workflow":
-                return self._workflow_file(found.name)
+                return self._workflow_file(found.name, found.pin)
         assert found.output is not None
         step, port, _ = self._output(found)
         if port is None:
@@ -634,16 +707,26 @@ class _Checker:
         options = frozenset(port.options) if port.options else None
         return Kind(port.type, options, "step", port.optional)
 
-    def _workflow_file(self, path: str) -> Kind:
+    def _held(self, pin: int) -> WorkflowFiles | None:
+        """The files of pin 0, the workflow being checked, or of pin k."""
+        if pin == 0:
+            return self.files
+        return self.inner_files.get(pin)
+
+    def _workflow_file(self, path: str, pin: int = 0) -> Kind:
         folder = path.endswith("/")
-        if self.files is not None:
-            if folder and not has_path(self.files.paths, path):
+        files = self._held(pin)
+        if pin != 0 and files is None:
+            raise Refused(f"The workflow has no {'folder' if folder else 'file'} {path}.")
+        if files is not None:
+            if folder and not has_path(files.paths, path):
                 raise Refused(f"The workflow has no folder {path}.")
-            if not folder and path not in self.files.paths:
-                if has_path(self.files.paths, f"{path}/"):
+            if not folder and path not in files.paths:
+                if has_path(files.paths, f"{path}/"):
+                    shown = f"workflow@{pin}.{path}/" if pin else f"workflow.{path}/"
                     raise Refused(
                         f"{path} is a folder of the workflow, not a file. A folder is written "
-                        f"with a / at its end, ${{{{ workflow.{path}/ }}}}, and given only "
+                        f"with a / at its end, ${{{{ {shown} }}}}, and given only "
                         "where a folder is taken."
                     )
                 raise Refused(f"The workflow has no file {path}.")
@@ -725,7 +808,11 @@ class _Checker:
 
     def _named_file(self, at: Path, value: object, port: Port) -> None:
         try:
-            found = whole_reference(value, runs=True) if isinstance(value, str) else None
+            found = (
+                whole_reference(value, runs=True, flat=self.flat)
+                if isinstance(value, str)
+                else None
+            )
         except BadReference as bad:
             raise Refused(str(bad)) from None
         if found is None:
@@ -737,7 +824,7 @@ class _Checker:
         if isinstance(kind, _Pending):
             raise Refused("A report is a number or text, and a named file is a file.")
         if kind.type is not Type.FILE:
-            raise Refused(f"A named file is one file, not {a_type(kind.type)}.")
+            raise Refused(f"A named file is one file, not {type_in_words(kind.type)}.")
         if kind.optional:
             raise Refused("That may be missing, and a named file must be there.")
         if found.kind == "inputs":
@@ -798,7 +885,7 @@ class _Checker:
                 if inner_port is None or key == SELF_REPORTED:
                     continue
                 if key == MANIFEST:
-                    own_names = INTERACT_OWN_NAMES | set(port.outputs or {})
+                    own_names = PROGRAMS_OWN_NAMES | set(port.outputs or {})
                     each.manifest = self._manifest((*where, key), value, inner_port, own_names)
                 else:
                     self._value((*where, key), value, inner_port, key in raised, each.file_names)
@@ -874,7 +961,9 @@ class _Checker:
         is a file of the workflow.
         """
         try:
-            found = whole_reference(raw, runs=True) if isinstance(raw, str) else None
+            found = (
+                whole_reference(raw, runs=True, flat=self.flat) if isinstance(raw, str) else None
+            )
         except BadReference:
             found = None
         if found is not None and found.kind == "steps":
@@ -891,10 +980,11 @@ class _Checker:
             # One that is refused is left unread, so what reads its reports
             # is not refused again for it.
             return WorkflowManifest(found.name, None, names)
-        if self.files is not None and found.name in self.files.oversized:
+        held = self._held(found.pin)
+        if held is not None and found.name in held.oversized:
             self.refuse(at, f"{found.name}: {TOO_LARGE}")
             return WorkflowManifest(found.name, None, names)
-        text = self.files.manifests.get(found.name) if self.files is not None else None
+        text = held.manifests.get(found.name) if held is not None else None
         if text is None:
             return WorkflowManifest(found.name, None, names)
         try:
@@ -922,7 +1012,10 @@ class _Checker:
             for shorter, other in programs.items():
                 if MANIFEST in other:
                     continue
-                first, second = _limit(given.get(TIME_LIMIT)), _limit(other.get(TIME_LIMIT))
+                first, second = (
+                    _limit(given.get(TIME_LIMIT), flat=self.flat),
+                    _limit(other.get(TIME_LIMIT), flat=self.flat),
+                )
                 if first is None or second is None:
                     continue
                 where = (*at, longer, TIME_LIMIT)
@@ -951,7 +1044,7 @@ class _Checker:
         and each that reaches a step they read.
         """
         found: set[str] = set()
-        for found_reference in _references_in(values):
+        for found_reference in _references_in(values, flat=self.flat):
             if found_reference.kind == "inputs":
                 found.add(found_reference.name)
             elif found_reference.kind == "steps":
@@ -966,7 +1059,7 @@ class _Checker:
         title = entry.title if isinstance(entry, RunReport) else None
         unit = entry.unit if isinstance(entry, RunReport) else None
         try:
-            found = whole_reference(raw, runs=True)
+            found = whole_reference(raw, runs=True, flat=self.flat)
         except BadReference as bad:
             self.refuse(at, str(bad))
             return
@@ -998,14 +1091,16 @@ class _Checker:
         if port.type not in (Type.TEXT, Type.NUMBER):
             self.refuse(
                 at,
-                f"steps.{found.name}.{found.port} is {a_type(port.type)}, and only text or a "
+                f"steps.{found.name}.{found.port} is {type_in_words(port.type)}, "
+                "and only text or a "
                 "number can be reported.",
             )
             return
         if unit is not None and port.type is not Type.NUMBER:
             self.refuse(
                 (*at, "unit"),
-                f"Only a number takes a unit, and {name} is {a_type(port.type)}. Remove the unit.",
+                f"Only a number takes a unit, and {name} is {type_in_words(port.type)}. "
+                "Remove the unit.",
             )
         written_by = (
             step.program
@@ -1019,6 +1114,33 @@ class _Checker:
         self.reports[name] = ResolvedReport(
             name, step.id, program, report, port, title, unit, made_by, written_by
         )
+
+    def output(self, name: str, raw: object) -> None:
+        """An output, resolved as a report's `from` is, refused at
+        `outputs.<name>`. A file is an output a box may give, so only the
+        step and the output are required.
+        """
+        at = ("outputs", name)
+        if not isinstance(raw, str):
+            self.refuse(at, _OUTPUT)
+            return
+        try:
+            found = whole_reference(raw, runs=True, flat=self.flat)
+        except BadReference as bad:
+            self.refuse(at, str(bad))
+            return
+        if found is None or found.kind != "steps" or found.output is None:
+            self.refuse(at, _OUTPUT)
+            return
+        try:
+            step, port, _made_by = self._output(found)
+        except Refused as refused:
+            self.refuse(at, str(refused))
+            return
+        self.outputs[name] = ResolvedOutput(name, step.id, found.program, found.output, port)
+
+
+_OUTPUT = "An output names a step output of this workflow, such as ${{ steps.<id>.<output> }}."
 
 
 def report_ports(manifest: ProgramManifest, *, every_optional: bool) -> dict[str, Port]:
@@ -1043,19 +1165,19 @@ def _runs(port: Port | None) -> bool:
     return port is not None and port.runs is True
 
 
-def _limit(raw: object) -> int | Decimal | str | None:
+def _limit(raw: object, *, flat: bool = False) -> int | Decimal | str | None:
     """A time limit as a number, or as the id of the input that gives it."""
     if is_number(raw):
         assert isinstance(raw, int | Decimal)
         return raw
     try:
-        found = whole_reference(raw, runs=True) if isinstance(raw, str) else None
+        found = whole_reference(raw, runs=True, flat=flat) if isinstance(raw, str) else None
     except BadReference:
         return None
     return found.name if found is not None and found.kind == "inputs" else None
 
 
-def _references_in(values: Iterable[object]) -> list[Reference]:
+def _references_in(values: Iterable[object], *, flat: bool = False) -> list[Reference]:
     """Every reference that reads in `values`, inside mappings and lists
     too.
     """
@@ -1063,13 +1185,13 @@ def _references_in(values: Iterable[object]) -> list[Reference]:
     for value in values:
         if isinstance(value, str):
             try:
-                found.extend(reference for _, reference in references(value, runs=True))
+                found.extend(reference for _, reference in references(value, runs=True, flat=flat))
             except BadReference:
                 continue
         elif isinstance(value, dict):
-            found.extend(_references_in(value.values()))
+            found.extend(_references_in(value.values(), flat=flat))
         elif isinstance(value, list):
-            found.extend(_references_in(value))
+            found.extend(_references_in(value, flat=flat))
     return found
 
 
@@ -1080,6 +1202,7 @@ __all__ = [
     "InputUse",
     "Manifest",
     "Program",
+    "ResolvedOutput",
     "ResolvedReport",
     "ResolvedStep",
     "RunWorkflowCheck",

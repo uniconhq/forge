@@ -5,7 +5,10 @@ with what it read, every number an exact fraction.
 - A test is true when it isn't 0; the comparisons, `and`, `or` and `not`
   give 1 or 0; `if` reads only the branch it takes.
 - Missing in, missing out, and dividing by zero is missing. `and` and `or`
-  read every input, so a missing one makes them missing too.
+  read every input, so a missing one makes them missing too. `otherwise`
+  is the way round: it gives its second input when its first is missing,
+  reading the second only then, and a first that waits waits (stage 5
+  section 6, item 128).
 - A fold reads a group's runs, its `of` and `where` once for each run
   through `{run: [<group>, <column>]}`. `weights` gives a run a weight by
   one repeated input's value, 1 when it names none; `sum` adds each run's
@@ -19,7 +22,8 @@ with what it read, every number an exact fraction.
   number are never missing.
 - A fold left with no runs is missing, but `count`, which is 0.
 - **Waiting:** a run whose verdict is `system_error` waits for staff, and
-  makes every fold over a group holding it waiting. Waiting spreads
+  makes every fold over a group holding it waiting; a fact still to come,
+  `compiled` before its compile has run, waits too. Waiting spreads
   through everything that reads it, ahead of missing, but an `if` branch
   not taken.
 
@@ -38,15 +42,17 @@ What a value read is the ids of the runs its folds read, and the names of
 the values and the facts, through the values it read too, and along the
 branches it took only: not their contents.
 
-The work is bounded as well as the trees (`check.MOST_NODES`). Each value
-is worked out once; each block that reads no run of the fold around it,
-a fold among them, since a fold reads only its own runs, is worked out
-once per call and kept, so folds nested in folds don't multiply. What is
-left is a block reading a run, worked out once for each run. A tree is
-walked without recursion: each block is a generator, driven from one
-stack, so a deep tree costs no Python frames. A node the catalogue doesn't
-have, or a fact that is not a number, raises, since the save refuses the
-one and the caller gives the other, so it is never skipped or guessed.
+The work is bounded as well as the trees (`check.MOST_NODES`) and their
+number (`check.MOST_VALUES`). Each value is worked out once, in an order
+found in one pass over what each reads (`in_order`); each block that
+reads no run of the fold around it, a fold among them, since a fold reads
+only its own runs, is worked out once per call and kept, so folds nested
+in folds don't multiply. What is left is a block reading a run, worked
+out once for each run. A tree is walked without recursion: each block is
+a generator, driven from one stack, so a deep tree costs no Python
+frames. A node the catalogue doesn't have, or a fact that is not a
+number, raises, since the save refuses the one and the caller gives the
+other, so it is never skipped or guessed.
 """
 
 import math
@@ -57,12 +63,18 @@ from fractions import Fraction
 from forge.domain.blocks.catalogue import CATALOGUE, ENTERED, EXEC, LEAVES, SKIP, Form
 from forge.domain.blocks.check import form_of, same_value
 from forge.domain.blocks.numbers import Better, exact
+from forge.domain.blocks.tree_reads import leaves, reached
 
 ACCEPTED = "accepted"
 SYSTEM_ERROR = "system_error"
 """The verdict of a run that waits for staff (9.3)."""
 MOST_BITS = 4096
 """The most bits a number's numerator or denominator holds."""
+
+
+def past_most_bits(number: Fraction) -> bool:
+    """Whether `number`'s numerator or denominator is past `MOST_BITS`."""
+    return number.numerator.bit_length() > MOST_BITS or number.denominator.bit_length() > MOST_BITS
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,19 +138,22 @@ def evaluate(
     entered: Mapping[str, Fraction] | None = None,
     programs: Mapping[str, Fraction] | None = None,
     programs_waiting: Collection[str] = (),
+    facts_waiting: Collection[str] = (),
 ) -> dict[str, Outcome]:
     """Each of a task's values worked out, as checked at the save: `runs`
     each group's runs in order, `all` among them; `facts` the submission's
     facts, each a number; `columns` each report a run may give, by name;
     `entered` the mark entered for each value, `programs` the number each
     value's `exec` program reported, and `programs_waiting` the values
-    whose program waits, each by the value's name. A run's other columns
+    whose program waits, each by the value's name; `facts_waiting` the
+    facts still to come, which `facts` leaves out. A run's other columns
     are `passed` and its key's.
     """
     walk = _Walk(runs, facts, columns, _reading_runs(values.values()))
     walk.entered = entered or {}
     walk.programs = programs or {}
     walk.programs_waiting = frozenset(programs_waiting)
+    walk.facts_waiting = frozenset(facts_waiting)
     for name in _in_order(values):
         walk.current = name
         got = walk.tree(values[name])
@@ -188,7 +203,7 @@ def _kept(number: Fraction | None) -> Fraction | None:
     """`number`, or none past `MOST_BITS`."""
     if number is None:
         return None
-    if number.numerator.bit_length() > MOST_BITS or number.denominator.bit_length() > MOST_BITS:
+    if past_most_bits(number):
         return None
     return number
 
@@ -210,6 +225,7 @@ class _Walk:
         self.entered: Mapping[str, Fraction] = {}
         self.programs: Mapping[str, Fraction] = {}
         self.programs_waiting: frozenset[str] = frozenset()
+        self.facts_waiting: frozenset[str] = frozenset()
         self.current = ""
 
     def tree(self, tree: object) -> _Got:
@@ -266,6 +282,8 @@ class _Walk:
                     facts=done.facts,
                 )
             case "fact":
+                if named in self.facts_waiting:
+                    return _Got(None, waiting=True, facts=frozenset({named}))
                 given = self.facts.get(named)
                 if isinstance(given, bool) or not isinstance(given, int | Fraction):
                     raise ValueError(f"the fact {named} is {given!r}, not a number")
@@ -316,6 +334,14 @@ class _Walk:
                 return test
             branch = yield (node["then"] if test.number != 0 else node["else"], scope)
             return branch.reading(test)
+        if block.name == "otherwise":
+            given = node["of"]
+            assert isinstance(given, list)
+            first = yield (given[0], scope)
+            if first.waiting or first.skip or first.number is not None:
+                return first
+            instead = yield (given[1], scope)
+            return instead.reading(first)
         given = node["of"]
         got: list[_Got] = []
         for each in given if isinstance(given, list) else [given]:
@@ -436,7 +462,7 @@ def _apply(name: str, got: Sequence[_Got]) -> _Got:
 
 def over_numbers(name: str, given: Sequence[Fraction]) -> Fraction | None:
     """The block `name` over numbers, every input a number: missing when
-    it divides by zero or passes `MOST_BITS`. A board's blocks over numbers
+    it divides by zero or passes `MOST_BITS`. A leaderboard's blocks over numbers
     are worked out by it too."""
     first = given[0]
     found: Fraction | None
@@ -537,20 +563,41 @@ def _truth(test: bool) -> Fraction:
 
 def _in_order(values: Mapping[str, object]) -> list[str]:
     """The values, each after every value it reads, on any branch."""
-    reads = {name: _value_leaves(tree) for name, tree in values.items()}
-    for name, read in reads.items():
-        for unknown in sorted(read - set(values)):
+    for name, tree in values.items():
+        for unknown in sorted(_value_leaves(tree) - set(values)):
             raise ValueError(f"the value {name} reads {unknown}, which is no value")
+    order = in_order(values)
+    if len(order) < len(values):
+        placed = set(order)
+        waiting = [name for name in sorted(values) if name not in placed]
+        raise ValueError(f"the values {', '.join(waiting)} read each other in a loop")
+    return order
+
+
+def in_order(values: Mapping[str, object]) -> list[str]:
+    """The values, each after every one of `values` it reads, on any
+    branch, a round at a time, each round's names sorted; a read of a name
+    not in `values` is left to the caller, and values reading each other in
+    a loop are left out. Each value and each read is looked at once, so a
+    chain of values costs no more than its length.
+    """
+    reads = {name: _value_leaves(tree) & values.keys() for name, tree in values.items()}
+    readers: dict[str, list[str]] = {name: [] for name in values}
+    left = {name: len(read) for name, read in reads.items()}
+    for name, read in reads.items():
+        for each in read:
+            readers[each].append(name)
     order: list[str] = []
-    placed: set[str] = set()
-    waiting = sorted(values)
-    while waiting:
-        ready = [name for name in waiting if reads[name] <= placed]
-        if not ready:
-            raise ValueError(f"the values {', '.join(waiting)} read each other in a loop")
+    ready = sorted(name for name, count in left.items() if count == 0)
+    while ready:
         order.extend(ready)
-        placed.update(ready)
-        waiting = [name for name in waiting if name not in placed]
+        following: list[str] = []
+        for name in ready:
+            for reader in readers[name]:
+                left[reader] -= 1
+                if left[reader] == 0:
+                    following.append(reader)
+        ready = sorted(following)
     return order
 
 
@@ -574,31 +621,21 @@ def blocks_in(tree: object, name: str) -> list[Mapping[str, object]]:
 def using(values: Mapping[str, object], name: str) -> frozenset[str]:
     """The values that use the block `name`, directly or through the
     values they read."""
-    direct = {value for value, tree in values.items() if blocks_in(tree, name)}
-    reads = {value: _value_leaves(tree) for value, tree in values.items()}
-    found = set(direct)
-    grown = True
-    while grown:
-        more = {value for value, read in reads.items() if value not in found and read & found}
-        found |= more
-        grown = bool(more)
-    return frozenset(found)
+    readers: dict[str, set[str]] = {value: set() for value in values}
+    for value, tree in values.items():
+        for each in _value_leaves(tree) & values.keys():
+            readers[each].add(value)
+    found = {value for value, tree in values.items() if blocks_in(tree, name)}
+    return frozenset(reached(found, readers))
 
 
 def _value_leaves(tree: object) -> set[str]:
     """The values a tree reads directly, through `{value: <name>}`."""
-    found: set[str] = set()
-    waiting = [tree]
-    while waiting:
-        node = waiting.pop()
-        if isinstance(node, list):
-            waiting.extend(node)
-        elif isinstance(node, dict):
-            if "block" in node:
-                waiting.extend(given for key, given in node.items() if key != "block")
-            elif set(node) == {"value"} and isinstance(node["value"], str):
-                found.add(node["value"])
-    return found
+    return {
+        node["value"]
+        for node in leaves(tree)
+        if set(node) == {"value"} and isinstance(node["value"], str)
+    }
 
 
 __all__ = [
@@ -610,6 +647,8 @@ __all__ = [
     "RunResult",
     "blocks_in",
     "evaluate",
+    "in_order",
     "over_numbers",
+    "past_most_bits",
     "using",
 ]

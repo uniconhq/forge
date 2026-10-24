@@ -12,13 +12,20 @@ steps done once gave and `compiled`, as if no late row were made. Nothing
 they read then moves when the late row is made, runs or ends, so they
 never learn its timing (the order rule). From then on they read both
 rows. A late run is shown before the reveal only when a save moved its
-group to `now` (phase 4.10).
+group to `now` (phase 4.10). A value a save moved to `now` that reads,
+directly or through other values, a run this grading's plan ran late is
+missing until then, not worked out with that run as never run (stage 5
+section 6, item 134).
 
 - **A value** listed is shown with its number, missing as none. One that
   waits for staff is told so ("being checked") only as its runs are: when
   every run it waits on is early, or shown; otherwise it is left out until
   they are. Each carries whether it reads, directly or through others, a
-  column the entrant could set (#504).
+  column the entrant could set (#504). A value reading an entered mark is
+  worked out by the caller as if no mark were entered until a leaderboard cell
+  shown to the entrant counted the submission, and never when none did
+  (`forge.domain.leaderboards.entries_open`, SIMPLER-CORE.md 14), so it reads
+  then as on a submission with no mark.
 - **A group** listed shows its runs that a row holds: each with the
   group's name and its place in the group from 1 ("Test 3"), never its id,
   which counts every run of the task; its key, a file or folder it names
@@ -30,8 +37,10 @@ group to `now` (phase 4.10).
   the rows the entrant reads: each report `show` lists, by its name, once
   any run is shown (stage 5 section 6 item 30); one not listed never, nor
   one named like a group or a value, since the entry names that.
-  `compiled` is shown once any run is, since the shown runs' verdicts
-  already tell it.
+- **`compiled`** is shown from the time `show` lists it under, by its
+  name as a value is, and once any run is shown, since the shown runs'
+  verdicts already tell it (stage 5 section 6 item 124); none while it
+  waits for its compile to run (`forge.domain.run_results`).
 - `staff` outputs never.
 
 A text is a reference to a stored output, which may be another entrant's
@@ -52,12 +61,12 @@ publication dropped after them marked `dropped`, everything done once,
 and the facts.
 """
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any, NamedTuple
 
-from forge.domain.blocks.catalogue import ALL
+from forge.domain.blocks.catalogue import ALL, SHOWN_FACTS
 from forge.domain.blocks.evaluate import SYSTEM_ERROR
 from forge.domain.content import named_by
 from forge.domain.definitions import Scoring
@@ -105,8 +114,8 @@ class ValueShown:
 class Shown:
     """A run task's grading as one reader sees it now: its values, its runs
     by group, what the steps done once reported (`reports` and `texts`),
-    `compiled`, none while not shown, and whether nothing of the task is
-    shown before its reveal. Organisers also read the facts.
+    `compiled`, none while not shown or while it waits, and whether nothing
+    of the task is shown before its reveal. Organisers also read the facts.
     """
 
     values: tuple[ValueShown, ...]
@@ -138,22 +147,22 @@ def shown(
     runs: Sequence[Run],
     files: Collection[str],
     whole: Worked,
-    early: Worked,
+    early: Callable[[], Worked],
     self_reported: Collection[str],
     *,
     revealed: bool,
     released: bool = False,
     everything: bool = False,
+    late: Collection[str] = (),
 ) -> Shown:
     """What a reader sees of a grading now: `scoring`, `runs` and `files` the
     task's live publication's, `whole` the grading worked out from both its
-    rows and `early` from its early row alone, and `self_reported` the
-    values reading a column the entrant could set; for an entrant, whether
-    the task has revealed and whether its results are released; with
-    `everything`, as organisers read it. Texts are as stored: `bare` takes
-    them out for an entrant. `whole` and `early` are as an entrant may be
-    given them (`run_results.for_entrants`), with `everything` `whole` with
-    every value; a value they leave out is not shown.
+    rows and `early` giving it from its early row alone, called only before
+    the reveal and the release, `self_reported` the values reading a
+    column the entrant could set, and `late` the runs the grading's plan
+    ran late; for an entrant, whether the task has revealed and whether
+    its results are released; with `everything`, as organisers read it.
+    Texts are as stored: `bare` takes them out for an entrant.
     """
     if everything:
         return _everything(scoring, runs, whole, self_reported)
@@ -161,16 +170,21 @@ def shown(
     listed = {entry for time in times for entry in scoring.show.lists()[time]}
     held = _held(scoring, runs, whole.grading, files, times)
     view = whole
+    unseen: frozenset[str] = frozenset()
     if not (revealed or released or {name for name, _ in held} - whole.grading.early):
-        view = early
-        held = _held(scoring, runs, early.grading, files, times)
+        view = early()
+        held = _held(scoring, runs, view.grading, files, times)
+        unseen = frozenset(late)
     grading = view.grading
     seen = {name for name, _ in held}
     values: list[ValueShown] = []
     for name in scoring.values:
-        outcome = view.outcomes.get(name)
-        if outcome is None or name not in listed:
-            # A value `for_entrants` left out is no entrant's.
+        outcome = view.outcomes[name]
+        if name not in listed:
+            continue
+        if outcome.runs & unseen:
+            # Moved to `now` after this grading: missing until its late runs show.
+            values.append(ValueShown(name, None, False, name in self_reported))
             continue
         if outcome.waiting:
             waits = {run for run in outcome.runs if grading.read[run].verdict == SYSTEM_ERROR}
@@ -183,7 +197,7 @@ def shown(
         _once(
             [grading.once_early, grading.once_late] if seen else [], listed - show_names(scoring)
         ),
-        grading.compiled if seen else None,
+        grading.compiled if seen or listed & set(SHOWN_FACTS) else None,
         later(scoring, released=released) and not revealed,
     )
 

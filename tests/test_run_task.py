@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from forge.domain.blocks.catalogue import FACTS, ROW_FACTS, SHOWN_FACTS
 from forge.domain.blocks.numbers import Better
 from forge.domain.checks import check_only
 from forge.domain.definitions import Scoring, parse_task
@@ -37,6 +38,7 @@ from forge.domain.run_task import (
     manifest_files,
     most_shown,
     self_reported_question,
+    show_names,
     shown_under,
     unreleased,
 )
@@ -44,7 +46,7 @@ from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.types import Type
 from forge.domain.workflow_definition import parse_run_workflow
 from forge.domain.yaml_models import InvalidDefinition
-from forge.services.published import shown_now
+from forge.services.entrant_view import shown_now
 from forge.testing import PLACEHOLDER_DIGEST, RUN_WORKFLOWS
 from tests.conftest import sibling
 
@@ -58,7 +60,6 @@ def mirrored(name: str) -> PrimitiveDeclaration:
 def primitives() -> dict[str, PrimitiveDeclaration]:
     return {
         "unicon/exec@v1": mirrored("exec"),
-        "unicon/interact@v2": mirrored("interact"),
         "unicon/compile@v3": mirrored("compile"),
     }
 
@@ -155,7 +156,7 @@ steps:
     use: unicon/compile@v3
     with: {source: "${{ inputs.judge }}", language: python}
   - id: game
-    use: unicon/interact@v2
+    use: unicon/exec@v1
     with:
       programs:
         entrant:
@@ -863,7 +864,7 @@ def test_an_entrant_judge_with_a_manifest_is_refused_where_it_cannot_be_marked(
 
     assert at(found, "inputs.judge") == [
         "judge is the entrant's, and reaches the program judge of the step game, which is given "
-        "a manifest. unicon/interact@v2 cannot mark what such a program reports as the "
+        "a manifest. unicon/exec@v1 cannot mark what such a program reports as the "
         "entrant's own, so the task must give judge itself."
     ]
 
@@ -1167,6 +1168,64 @@ def test_a_value_shown_now_reading_compiled_makes_the_compile_early(
     assert task.compile_early()
     assert task.early() == frozenset()
     assert task.runs_file().compile_early
+
+
+def test_every_result_a_leaderboard_reads_of_a_task_is_listed_in_show_by_its_name(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    # A leaderboard reads a task's values and the facts (stage 5 section 6 item
+    # 124): each fact goes with the row, known as the submission is made,
+    # or is a grading's, which show lists by its name as it does a value.
+    assert set(FACTS) == set(ROW_FACTS) | set(SHOWN_FACTS)
+    assert not set(ROW_FACTS) & set(SHOWN_FACTS)
+    assert set(SHOWN_FACTS) == {"compiled"}
+    scoring = _scoring(ISLANDS)
+    assert {*scoring.values, *SHOWN_FACTS} <= show_names(scoring)
+    text = ISLANDS.replace(
+        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
+        f"    now: [{', '.join(SHOWN_FACTS)}]\n",
+    )
+
+    task = ok(islands(primitives, text))
+
+    # compiled shown now makes the compile early, with no run, and once
+    # shown it is not hidden again.
+    assert task.compile_early()
+    assert task.early() == frozenset()
+    assert task.runs_file().compile_early
+    before = shown_under(_scoring(text), ISLANDS_PATHS)
+    assert hidden_again(before, _scoring(text.replace("[compiled]", "[]")), ISLANDS_PATHS) == [
+        {
+            "path": "scoring.show",
+            "message": "Entrants have been shown compiled as soon as a grading ends, and what "
+            "they have been shown cannot be hidden again. List it as soon as before.",
+        }
+    ]
+
+
+def test_compiled_listed_later_than_a_group_or_than_a_value_reading_it_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    after_group = ISLANDS.replace("[st1, st2, total, all]", "[st1, st2, total, all, compiled]")
+    after_value = (
+        ISLANDS.replace(
+            "    now: [sample_score, sample_time, sample_tests, samples/]\n",
+            "    now: [built, samples/]\n",
+        )
+        .replace("  values:\n", "  values:\n    built: {fact: compiled}\n")
+        .replace("[st1, st2, total, all]", "[st1, st2, total, all]\n    on_release: [compiled]")
+    )
+
+    # sample_tests, shown now, tells compiled through its runs' verdicts.
+    assert at(islands(primitives, after_group), "scoring.show.after_close[4]") == [
+        "sample_tests, shown as soon as a grading ends, shows compiled with its runs, since "
+        "their verdicts tell it. Remove compiled here, or list sample_tests later."
+    ]
+    assert at(islands(primitives, after_value), "scoring.show.now[0]") == [
+        "built reads compiled, which is shown once results are released, so showing built as "
+        "soon as a grading ends would give compiled away sooner. List built no sooner than "
+        "compiled."
+    ]
 
 
 def test_on_release_is_late_until_a_release(primitives: dict[str, PrimitiveDeclaration]) -> None:
@@ -1719,6 +1778,28 @@ def test_a_check_that_does_not_fit_the_task_is_refused_at_its_path(
     assert len(messages) == 1
     if words is not None:
         assert messages == [words]
+
+
+def test_a_check_expecting_a_value_that_reads_a_mark_is_refused_at_the_save(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    marked = ISLANDS.replace(
+        "    total:\n",
+        "    review: {block: entered, at_least: 0, at_most: 10}\n"
+        "    reviewed: {block: add, of: [{value: st1}, {value: review}]}\n"
+        "    total:\n",
+        1,
+    )
+    check = "{submit: {code: checks/good}, expect: {review: 7, reviewed: 8, total: 100}}"
+    found = islands(primitives, f"{marked}checks:\n  - {check}\n", paths=CHECK_PATHS)
+
+    assert at(found, "checks[0].expect.review") == [
+        "review reads a mark staff enter, directly or through other values, and a check's "
+        "made-up submission is never marked, so a check cannot expect it. Expect a value that "
+        "reads no mark."
+    ]
+    assert len(at(found, "checks[0].expect.reviewed")) == 1
+    assert at(found, "checks[0].expect.total") == []
 
 
 def test_a_check_needs_something_to_expect() -> None:

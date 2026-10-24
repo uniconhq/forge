@@ -42,7 +42,7 @@ publication's (`publication_objects`) is read from the forge's store by
 link; any other is served through the door (`step_file`), as is a
 `program.yaml` on a boxed primitive's manifest port, which the primitive
 reads as JSON. A task file of a step whose primitive takes the cache is
-placed under the item's cache folder, one per run, or for interact per
+placed under the item's cache folder, one per run, or for exec's programs form per
 program. A boxed step holds a block of box users while it runs.
 
 **Uploads and done.** The step lists what it will upload, and is handed a
@@ -109,11 +109,11 @@ from forge.domain.grading import (
 )
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import SubmissionId, TaskId, VersionId, WorkflowId
-from forge.domain.plans import PLAN_PATH, spelled
+from forge.domain.plan_basics import ERROR_LIMIT, PLAN_PATH, RESULT_MAX
+from forge.domain.port_values import scalar_to_text
 from forge.domain.primitives import MANIFEST, PROGRAMS
 from forge.domain.program_manifest import parse_program
-from forge.domain.publications import Publication
-from forge.domain.reports import ERROR_LIMIT, RESULT_MAX
+from forge.domain.publication_record import Publication
 from forge.domain.run_plan import (
     BOXED,
     RUN_ENTRY_KB,
@@ -235,13 +235,17 @@ async def mint(
         raise Conflict("A grading runs one pipeline.")
     if any(found.from_scratch != from_scratch for found in kept.values()):
         raise Conflict("A grading reuses nothing, or reuses, for every step alike.")
-    given = access(ctx, row, step)
     found = kept.get(step)
+    # A row already minted keeps the name its door was given. One minted
+    # before the column existed has none, and is still found by its own name.
+    woodpecker = found.woodpecker or step if found is not None else plan.woodpecker_name(step)
+    given = access(ctx, row, step, woodpecker)
     if found is None:
         ctx.db.add(
             GradingStep(
                 grading_id=row.id,
                 step=step,
+                woodpecker=woodpecker,
                 pipeline=pipeline,
                 token_hash=token_hash(given.token),
                 expires_at=ctx.now + TOKEN_LIFE,
@@ -254,11 +258,13 @@ async def mint(
     return given
 
 
-def access(ctx: Context, row: Grading, step: str) -> StepAccess:
+def access(ctx: Context, row: Grading, step: str, woodpecker: str) -> StepAccess:
     """A step's door and token as `mint` gives them, worked out again and
-    kept nowhere, for the answer to a CI that asks what the pipeline is."""
+    kept nowhere, for the answer to a CI that asks what the pipeline is.
+    The door's URL carries `woodpecker`, the only name the running step
+    knows; the token is over `step`, the step's name inside forge."""
     token = step_token(ctx.settings.token_encryption_key_bytes, row.id, row.attempt, step)
-    return StepAccess(data_url=_door(ctx, row.id, step), token=token)
+    return StepAccess(data_url=_door(ctx, row.id, woodpecker), token=token)
 
 
 @action
@@ -272,16 +278,16 @@ async def step_job(
     finished.
     """
     row, held = await _open(ctx, grading, step, authorization)
-    if step == REPORT_STEP:
+    if held.step == REPORT_STEP:
         raise NotFound("The report step has no job.")
     plan, publication = await plan_of(ctx, row)
     await _begin(ctx, row, plan, _kind(held))
     reader = await _Reader.load(ctx, row, held, plan)
     built = await _Job(ctx, reader, held, publication).build()
     if built is None:
-        log.info("steps.nothing_left", grading=str(row.id), step=step)
+        log.info("steps.nothing_left", grading=str(row.id), step=held.step)
         return None
-    log.info("steps.job", grading=str(row.id), step=step, items=len(held.items or []))
+    log.info("steps.job", grading=str(row.id), step=held.step, items=len(held.items or []))
     return built
 
 
@@ -311,7 +317,7 @@ async def step_uploads(
     would let an earlier link write over what done then reads.
     """
     row, held = await _open(ctx, grading, step, authorization)
-    if held.job_at is None or step == REPORT_STEP:
+    if held.job_at is None or held.step == REPORT_STEP:
         raise InvalidCallback("The step uploads after it has asked for its job.")
     plan, _ = await plan_of(ctx, row)
     listed = read_uploads(
@@ -328,7 +334,7 @@ async def step_uploads(
     def signed() -> dict[str, str]:
         return {
             path: objects.put_url(
-                results_key(row.id, step, path), expires_in=LINK_LIFE, sha256=up.sha256
+                results_key(row.id, held.step, path), expires_in=LINK_LIFE, sha256=up.sha256
             )
             for path, up in listed.items()
         }
@@ -348,7 +354,7 @@ async def step_done(
     if held.done_at is not None:
         return
     _refuse_closed(ctx, row, held)
-    if step == REPORT_STEP or held.uploads is None:
+    if held.step == REPORT_STEP or held.uploads is None:
         raise InvalidCallback("The step lists its uploads before it is done.")
     plan, _ = await plan_of(ctx, row)
     pipeline_step = _held_step(plan, held)
@@ -356,17 +362,17 @@ async def step_done(
     declared = {path: (entry["sha256"], entry["size"]) for path, entry in held.uploads.items()}
     items = [(run, key) for run, key in held.items or []]
     try:
-        content = await _outputs_file(ctx, row.id, step, declared[OUTPUTS_FILE])
+        content = await _outputs_file(ctx, row.id, held.step, declared[OUTPUTS_FILE])
         listed = {path: Upload(sha256, size) for path, (sha256, size) in declared.items()}
         written = read_outputs(
             content, run_step, [run for run, _ in items], is_batch(pipeline_step), listed
         )
         named = {path: up for item in written for path, up in item.files.items()}
-        await _check_stored(ctx, row.id, step, named)
+        await _check_stored(ctx, row.id, held.step, named)
         _program_answered(run_step, written)
     except Fault as fault:
         held.fault = str(fault).replace("\x00", "")[:ERROR_LIMIT]
-        log.warning("steps.faulted", grading=str(row.id), step=step, fault=held.fault)
+        log.warning("steps.faulted", grading=str(row.id), step=held.step, fault=held.fault)
     else:
         keys = dict(items)
         org = str(gradings.org_of(row))
@@ -380,12 +386,12 @@ async def step_done(
                     pipeline=held.pipeline,
                     reusable=True,
                     grading_id=row.id,
-                    step=step,
+                    step=held.step,
                     run=item.run,
                     outputs=item.outputs,
                     files={
                         path: {
-                            "object": results_key(row.id, step, path),
+                            "object": results_key(row.id, held.step, path),
                             "sha256": up.sha256,
                             "size": up.size,
                         }
@@ -398,7 +404,7 @@ async def step_done(
     held.done_at = ctx.now
     held.box_first = None
     await ctx.db.flush()
-    log.info("steps.done", grading=str(row.id), step=step, faulted=held.fault is not None)
+    log.info("steps.done", grading=str(row.id), step=held.step, faulted=held.fault is not None)
 
 
 @action
@@ -677,10 +683,24 @@ def _refuse_closed(ctx: Context, row: Grading, held: GradingStep) -> None:
 async def _step(
     ctx: Context, grading: uuid.UUID, step: str, *, lock: bool = False
 ) -> GradingStep | None:
-    query = select(GradingStep).where(GradingStep.grading_id == grading, GradingStep.step == step)
-    if lock:
-        query = query.with_for_update().execution_options(populate_existing=True)
-    return (await ctx.db.execute(query)).scalar_one_or_none()
+    """The grading's step the door named `step`: the row whose Woodpecker
+    name is `step`, or, where that was never written, the row whose own
+    name is `step`."""
+    by_woodpecker = select(GradingStep).where(
+        GradingStep.grading_id == grading, GradingStep.woodpecker == step
+    )
+    by_own_name = select(GradingStep).where(
+        GradingStep.grading_id == grading,
+        GradingStep.step == step,
+        GradingStep.woodpecker.is_(None),
+    )
+    for query in (by_woodpecker, by_own_name):
+        if lock:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        found = (await ctx.db.execute(query)).scalar_one_or_none()
+        if found is not None:
+            return found
+    return None
 
 
 def _door(ctx: Context, grading: uuid.UUID, step: str) -> str:
@@ -941,7 +961,7 @@ class _Reader:
             return _facts(self.plan.workflow.files, value["workflow"])
         if "template" in value:
             parts = [self.entrant_value(part) for part in value["parts"]]
-            return {"value": value["template"].format(*[spelled(part) for part in parts])}
+            return {"value": value["template"].format(*[scalar_to_text(part) for part in parts])}
         if "entrant" in value:
             return await self._entrant(value)
         if "step" in value:
@@ -1120,7 +1140,9 @@ class _Job:
         self.pipeline_step = _held_step(self.plan, held)
         self.step = self.plan.steps[self.pipeline_step.step]
         self.boxed = self.step.primitive.partition("@")[0] in BOXED
-        self.door = _door(ctx, reader.row.id, held.step)
+        # The running step knows only its Woodpecker name. A row minted
+        # before that name was stored has none, and its door uses its own.
+        self.door = _door(ctx, reader.row.id, held.woodpecker or held.step)
         self.files: list[dict[str, Any]] = []
         self.placed: dict[tuple[str, str], str] = {}
         self.served: dict[str, dict[str, str]] = {}
@@ -1218,7 +1240,7 @@ class _Job:
             return {PROGRAMS: programs}
         if "template" in value:
             parts = [self.reader.entrant_value(part) for part in value["parts"]]
-            return value["template"].format(*[spelled(part) for part in parts])
+            return value["template"].format(*[scalar_to_text(part) for part in parts])
         if set(value) == {"runs"}:
             check = self.step.check.index if self.step.check is not None else None
             return self._runs(await self.reader.canon(value, run, check))

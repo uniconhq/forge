@@ -71,7 +71,7 @@ from forge.log import get_logger
 from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import published, sessions, submitters
+from forge.services import entrant_view, sessions, submitters
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -142,7 +142,7 @@ async def slot(
     """
     person = await submitters.person(ctx, session, task, submitting=True)
     _, workspace = await submitters.refuse(ctx, person)
-    form = await published.form(ctx, person.published)
+    form = await entrant_view.form(ctx, person.published)
     entry = _file_input(form.fields, input)
     _refuse_file(entry, filename, size, sha256, content_type, form.tests)
     limit = min(entry.max_size, FILE_CEILING)

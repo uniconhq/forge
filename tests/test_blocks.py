@@ -16,9 +16,26 @@ from typing import Any
 import pytest
 
 from forge.domain import exact_json
+from forge.domain.blocks.bounds import value_bounds
 from forge.domain.blocks.catalogue import CATALOGUE, Scope
-from forge.domain.blocks.check import MOST_DEPTH, MOST_NODES, Found, check_values, tree_size
-from forge.domain.blocks.evaluate import MOST_BITS, Column, Outcome, RunResult, evaluate, using
+from forge.domain.blocks.check import (
+    MOST_DEPTH,
+    MOST_GROUPS,
+    MOST_NODES,
+    MOST_VALUES,
+    Found,
+    check_values,
+    tree_size,
+)
+from forge.domain.blocks.evaluate import (
+    MOST_BITS,
+    Column,
+    Outcome,
+    RunResult,
+    evaluate,
+    in_order,
+    using,
+)
 from forge.domain.blocks.numbers import Better, decimal_of, exact, written
 
 COLUMNS = {
@@ -133,6 +150,7 @@ EACH_BLOCK: list[tuple[str, object, Fraction]] = [
     ("or", many("or", 0, 0, 2), Fraction(1)),
     ("not", one("not", 0), Fraction(1)),
     ("if", {"block": "if", "test": 2, "then": 7, "else": 8}, Fraction(7)),
+    ("otherwise", many("otherwise", many("div", 1, 0), 4), Fraction(4)),
     ("min", many("min", 3, Decimal("0.5"), 2), Fraction(1, 2)),
     ("max", many("max", 3, Decimal("0.5"), 2), Fraction(3)),
     ("floor", one("floor", Decimal("-1.5")), Fraction(-2)),
@@ -154,7 +172,7 @@ def test_every_block_a_task_may_use_has_an_evaluation_test() -> None:
     for_tasks = {
         name
         for name, block in CATALOGUE.items()
-        if any(form.scope is not Scope.BOARD for form in block.forms)
+        if any(form.scope is not Scope.LEADERBOARD for form in block.forms)
     }
 
     assert {name for name, _, _ in EACH_BLOCK} == for_tasks
@@ -211,6 +229,37 @@ def test_if_reads_only_the_branch_it_takes() -> None:
     assert outcomes["v"].values == frozenset()
     assert outcomes["taken"].missing
     assert outcomes["unsure"].missing
+
+
+def test_otherwise_gives_its_second_number_only_when_its_first_is_missing() -> None:
+    values = {
+        "gone": many("div", 1, 0),
+        "search": entered(),
+        "kept": many("otherwise", 3, value("gone")),
+        "instead": many("otherwise", value("gone"), 5),
+        "mark": many("otherwise", value("search"), 0),
+        "all_score": fold("min", "all", "score"),
+        "waits": many("otherwise", value("all_score"), 0),
+    }
+
+    outcomes = worked(values)
+
+    assert outcomes["kept"].number == 3
+    assert outcomes["kept"].values == frozenset()
+    assert outcomes["instead"].number == 5
+    assert outcomes["instead"].values == {"gone"}
+    assert outcomes["mark"].number == 0
+    assert worked(values, entered={"search": Fraction(6)})["mark"].number == 6
+    assert worked(values, runs=[run("r1", "system_error")])["waits"].waiting
+
+
+def test_otherwise_in_a_value_takes_two_numbers_and_its_bounds_are_both_inputs() -> None:
+    assert not problems({"v": many("otherwise", entered(0, 10), fold("min", "st1", "score"))})
+    assert problems({"v": many("otherwise", 1)})
+    assert problems({"v": many("otherwise", 1, 2, 3)})
+    runs = {"all": [run("r1")]}
+    bounds = value_bounds({"v": many("otherwise", entered(2, 10), -1)}, runs, COLUMNS)
+    assert bounds["v"] == (Fraction(-1), Fraction(10))
 
 
 def test_and_and_or_read_every_input_so_missing_spreads_through_them() -> None:
@@ -474,6 +523,52 @@ def test_a_tree_far_deeper_than_python_recurses_is_refused_and_still_worked_out(
 
     assert [path for path, _ in problems({"v": tree})] == [("values", "v")]
     assert number({"v": tree}) == 1
+
+
+def links(count: int) -> dict[str, object]:
+    """A chain of `count` values, each 1 more than the next, the last 1."""
+    values: dict[str, object] = {
+        f"v{index}": many("add", value(f"v{index + 1}"), 1) for index in range(count - 1)
+    }
+    values[f"v{count - 1}"] = 1
+    return values
+
+
+def test_a_task_of_more_than_200_values_or_groups_is_refused() -> None:
+    assert (MOST_VALUES, MOST_GROUPS) == (200, 200)
+    assert problems(links(200)) == []
+    assert problems(links(400)) == [
+        (
+            ("values",),
+            "This task has 400 values. A task has at most 200, so working its values out "
+            "stays quick.",
+        )
+    ]
+    groups = check_values({}, groups=[f"g{index}" for index in range(201)], columns={}, keys={})
+    assert groups.problems == [
+        (
+            ("groups",),
+            "This task has 201 groups. A task has at most 200, so working its values out "
+            "stays quick.",
+        )
+    ]
+
+
+def test_a_chain_of_values_is_walked_with_no_recursion_between_them() -> None:
+    values = links(400)
+
+    assert value_bounds(values, {"all": []}, {})["v0"] == (Fraction(400), Fraction(400))
+    assert number(values, "v0") == 400
+
+
+def test_values_are_put_in_order_in_one_pass_over_what_each_reads() -> None:
+    values = links(20000)
+    started = time.monotonic()
+    order = in_order(values)
+
+    assert time.monotonic() - started < 1
+    assert order == [f"v{index}" for index in reversed(range(20000))]
+    assert in_order({"b": value("a"), "a": 1, "c": value("c")}) == ["a", "b"]
 
 
 def test_a_block_the_catalogue_does_not_have_raises_when_read() -> None:

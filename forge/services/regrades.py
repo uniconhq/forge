@@ -6,14 +6,12 @@ each kept as one `Regrade` (`gradings.regrade`), and every attempt one
 makes, and each retry of those, points at it. A regrade is read per
 submission by its latest attempt of it, compared with the result that
 counted for the submission when the regrade began: the latest earlier
-attempt that finished with one. Both are scored as organisers see them,
-every group, nothing held back, the late factor applied, by the scoring the
-boards use (`scores.Scorer`), the earlier one as it counted just before the
-regrade began (`scores.Before`, `forge.domain.regrades.counted_under`), the
-new one under the publication the regrade grades against, against the
-results that counted by its last attempt, so a later save of points or a
-later better best leaves a finished regrade reading as it did; and
-`forge.domain.regrades.change_of` says what changed.
+attempt that finished with one. Both are read as organisers see them,
+every group, nothing held back (`scores.GradedOf`), the earlier one as it
+counted just before the regrade began
+(`forge.domain.regrades.counted_under`), the new one under the publication
+the regrade grades against; and `forge.domain.regrades.change_of` says
+what changed, by the tests' verdicts alone.
 
 - `latest` gives, for each task of the contest the organiser observes, its
   latest regrade with its counts by change, how many it graded, and whether
@@ -31,60 +29,58 @@ later better best leaves a finished regrade reading as it did; and
   on read as every value is, the earlier attempt under the publication
   it counted under then, a bounded few and the rest counted; how many
   are still running, and how many it cannot compare; and, for a
-  manager or admin of the contest alone, each board that reads the task
-  before and after (`BoardDiff`, from phase 5.5).
+  manager or admin of the contest alone, each leaderboard that reads the task
+  before and after (`LeaderboardDiff`, from phase 5.5).
 
 Each reads where an attempt stands as every read does, so a failure it
 finds starts that attempt's retry by itself (`gradings.notice`).
 """
 
-import builtins
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
-from fractions import Fraction
 
 from sqlalchemy import select
 
 from forge.db.tables import Grading, Regrade
 from forge.db.tables.gradings import FRONT
-from forge.domain.board_checks import boards_of
-from forge.domain.boards import Counted
 from forge.domain.definitions import TASK_FILE, ContestDefinition, parse_task
 from forge.domain.errors import NotFound, PortError
 from forge.domain.grading import UNFINISHED, GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, PublicationId, TaskId, WorkspaceId
+from forge.domain.leaderboard_task_check import leaderboards_of
+from forge.domain.leaderboards import Counted
 from forge.domain.names import WorkspaceOwner
 from forge.domain.regrades import (
     GRADED,
-    BoardDiff,
     ChangeKind,
     Compared,
+    LeaderboardDiff,
     RegradeCause,
     Side,
     ValueChange,
     VerdictChange,
-    board_diff,
     change_of,
     counted,
     counted_under,
+    leaderboard_diff,
     run_changes,
 )
 from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_scope
-from forge.domain.scoring import ACCEPTED, EVERYTHING, everywhere
+from forge.domain.showing import ACCEPTED, group_of
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
-    boards,
+    entrant_view,
     entrants,
     entries,
     gradings,
+    leaderboards,
     names,
-    published,
     scores,
     timelines,
 )
@@ -149,7 +145,7 @@ class RunSummary:
     are still running, how many ended with no result, and how many it
     cannot compare since the publication their result counted under no
     longer reads; the first `CHANGED_SHOWN` submissions it changed, and
-    how many more it did; and each board that reads the task before and
+    how many more it did; and each leaderboard that reads the task before and
     after, none for an organiser who does not manage the contest."""
 
     id: uuid.UUID
@@ -162,7 +158,7 @@ class RunSummary:
     unread: int
     changed: tuple[SubmissionChange, ...]
     more_changed: int
-    boards: tuple[BoardDiff, ...] | None
+    leaderboards: tuple[LeaderboardDiff, ...] | None
 
 
 CHANGED_SHOWN = 100
@@ -200,7 +196,7 @@ async def latest(ctx: Context, organiser: Organiser, contest: ContestId) -> tupl
         return ()
     tasks = await names.names_of(ctx, {row.task_id for row in shown})
     settings = await _settings(ctx, contest)
-    found: builtins.list[Summary] = []
+    found: list[Summary] = []
     for row in sorted(shown, key=lambda each: (each.started_at, each.id), reverse=True):
         read = await _read(ctx, row, settings)
         changes = [each.compared.change for each in read]
@@ -295,7 +291,7 @@ async def gradings_of(
     goods = await gradings.last_goods(ctx, rows)
     gone = await gradings.lost(ctx, rows)
     limits = await gradings.retry_limits(ctx, [found for found in rows if found.id in last], gone)
-    records: builtins.list[GradingRecord] = [
+    records: list[GradingRecord] = [
         replace(
             gradings.record(
                 ctx,
@@ -329,8 +325,8 @@ async def run_summary(
     of those changed. Both are worked out on read, every value as
     organisers read it, the extensions and marks as they stand now on both
     sides, so nothing is stored (stage 5 section 6 items 1 and 67). The
-    late rows and marks of every submission are read in one go. The boards that
-    read the task are a contest manager's or admin's alone, since a board
+    late rows and marks of every submission are read in one go. The leaderboards that
+    read the task are a contest manager's or admin's alone, since a leaderboard
     diff shows every cell. `Forbidden` below a manager of the task,
     `NotFound` for a regrade of another task, or none, and for a task
     graded test by test or whose publication does not read.
@@ -341,7 +337,7 @@ async def run_summary(
         raise NotFound(NO_SUCH_REGRADE)
     contest = contest_id_of(task_scope(task))
     settings = await _settings(ctx, contest)
-    current = await published.task(ctx, task, settings) if settings is not None else None
+    current = await entrant_view.task(ctx, task, settings) if settings is not None else None
     if settings is None or current is None:
         raise NotFound(UNREAD_TASK)
     if current.definition.scoring is None:
@@ -349,9 +345,7 @@ async def run_summary(
     cause, against = RegradeCause(row.cause), PublicationId(row.publication_id)
     then = await _as_of(ctx, current, counted_under(cause, against, current.publications))
     now = await _as_of(ctx, current, against) or current
-    mine = builtins.list(
-        await ctx.db.scalars(select(Grading).where(Grading.regrade_id == regrade, FRONT))
-    )
+    mine = list(await ctx.db.scalars(select(Grading).where(Grading.regrade_id == regrade, FRONT)))
     attempts, ours, newest, gone = await _attempts(ctx, mine) if mine else ({}, {}, {}, frozenset())
     owners = {
         each.workspace_id: ctx.forge.workspaces.owner_of(WorkspaceId(each.workspace_id))
@@ -359,7 +353,7 @@ async def run_summary(
     }
     extensions = await timelines.of_owners(ctx, contest, set(owners.values()))
     earliers = {
-        submission: gradings.latest_good(
+        submission: gradings.latest_with_result(
             each
             for each in attempts[submission]
             if each.attempt < min(own.attempt for own in ours[submission])
@@ -369,19 +363,19 @@ async def run_summary(
     lates = await scores.lates_of(
         ctx,
         [
-            *(each for each in newest.values() if gradings.good(each)),
+            *(each for each in newest.values() if gradings.has_result(each)),
             *(each for each in earliers.values() if each is not None),
         ],
     )
     marks = await entries.entered_for(ctx, task, newest)
     running = failed = unread = more = 0
-    regrading: dict[WorkspaceOwner, builtins.list[Counted]] = {}
-    changed: builtins.list[SubmissionChange] = []
+    regrading: dict[WorkspaceOwner, list[Counted]] = {}
+    changed: list[SubmissionChange] = []
     for submission, latest_row in sorted(
         newest.items(), key=lambda each: (each[1].submitted_at, each[0])
     ):
         status = gradings.status_of(ctx, latest_row, gone)
-        late = lates.get(latest_row.id) if gradings.good(latest_row) else None
+        late = lates.get(latest_row.id) if gradings.has_result(latest_row) else None
         if status in UNFINISHED or (
             late is not None and gradings.status_of(ctx, late) in UNFINISHED
         ):
@@ -390,7 +384,7 @@ async def run_summary(
                 Counted(current.name, latest_row.submission_number)
             )
             continue
-        if not gradings.good(latest_row):
+        if not gradings.has_result(latest_row):
             failed += 1
             continue
         earlier = earliers[submission]
@@ -407,8 +401,8 @@ async def run_summary(
             stood = await scores.run_scored(
                 ctx, then, settings, extension, earlier, lates.get(earlier.id), held
             )
-            before = stood.organised
-        found = run_changes(before, after.organised)
+            before = stood.whole
+        found = run_changes(before, after.whole)
         if not found:
             continue
         if len(changed) >= CHANGED_SHOWN:
@@ -425,8 +419,8 @@ async def run_summary(
                 more_verdicts=found.more_verdicts,
             )
         )
-    boards = (
-        await _board_diffs(
+    leaderboards = (
+        await _leaderboard_diffs(
             ctx,
             contest,
             settings,
@@ -449,13 +443,13 @@ async def run_summary(
         unread=unread,
         changed=tuple(changed),
         more_changed=more,
-        boards=boards,
+        leaderboards=leaderboards,
     )
 
 
 async def _as_of(
-    ctx: Context, current: published.PublishedTask, publication: PublicationId
-) -> published.PublishedTask | None:
+    ctx: Context, current: entrant_view.PublishedTask, publication: PublicationId
+) -> entrant_view.PublishedTask | None:
     """The task as `publication` froze it, its settings and runs read at
     that version, or none when it is gone or its settings no longer read."""
     found = next((each for each in current.publications if each.id == publication), None)
@@ -473,38 +467,40 @@ async def _as_of(
     return replace(current, publication=found, definition=definition)
 
 
-async def _board_diffs(
+async def _leaderboard_diffs(
     ctx: Context,
     contest: ContestId,
     settings: ContestDefinition,
     regrade: Regrade,
-    then: published.PublishedTask | None,
-    now: published.PublishedTask,
+    then: entrant_view.PublishedTask | None,
+    now: entrant_view.PublishedTask,
     regrading: Mapping[WorkspaceOwner, tuple[Counted, ...]],
-) -> tuple[BoardDiff, ...]:
-    """Each board that reads the regrade's task, directly or through
-    another board's column, worked out for staff before the regrade and
-    after (`boards.regrade_sides`), in the file's order: `then` the task as
+) -> tuple[LeaderboardDiff, ...]:
+    """Each leaderboard that reads the regrade's task, directly or through
+    another leaderboard's column, worked out for staff before the regrade and
+    after (`leaderboards.regrade_sides`), in the file's order: `then` the task as
     it scored before, `now` as the regrade grades it, and `regrading` each
     row's submissions the regrade is still grading. When `then` no longer
-    reads, each board is given `unread`, with no rows, as the summary
+    reads, each leaderboard is given `unread`, with no rows, as the summary
     counts its submissions (stage 5 section 6, item 71)."""
-    checked = boards_of(settings)
+    checked = leaderboards_of(settings)
     keys = [key for key in checked.reading(now.name) if key in checked.readable]
     if not keys:
         return ()
     if then is None:
         return tuple(
-            BoardDiff(key, board.title_or(key), (), board.sort, (), unread=True)
-            for key, board in settings.leaderboards.items()
+            LeaderboardDiff(key, leaderboard.title_or(key), (), leaderboard.sort, (), unread=True)
+            for key, leaderboard in settings.leaderboards.items()
             if key in keys
         )
-    before_side, after_side = boards.regrade_sides(
+    before_side, after_side = leaderboards.regrade_sides(
         regrade.id, regrade.started_at, now.id, then, now
     )
-    before = await boards.worked_out(ctx, contest, settings, keys, before_side)
-    after = await boards.worked_out(ctx, contest, settings, keys, after_side)
-    return tuple(board_diff(was, now_, regrading) for was, now_ in zip(before, after, strict=True))
+    before = await leaderboards.worked_out(ctx, contest, settings, keys, before_side)
+    after = await leaderboards.worked_out(ctx, contest, settings, keys, after_side)
+    return tuple(
+        leaderboard_diff(was, now_, regrading) for was, now_ in zip(before, after, strict=True)
+    )
 
 
 async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition | None:
@@ -512,71 +508,58 @@ async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition | Non
     does not answer.
     """
     try:
-        return await published.contest(ctx, contest)
+        return await entrant_view.contest(ctx, contest)
     except PortError:
         return None
 
 
-async def _read(
-    ctx: Context, regrade: Regrade, settings: ContestDefinition | None
-) -> builtins.list[_Read]:
+async def _read(ctx: Context, regrade: Regrade, settings: ContestDefinition | None) -> list[_Read]:
     """Each submission the regrade took, by its latest attempt of it, and
     what the regrade did to it. A failure found among the attempts that are
     their submission's latest starts its retry by itself.
     """
-    mine = builtins.list(
+    mine = list(
         await ctx.db.scalars(select(Grading).where(Grading.regrade_id == regrade.id, FRONT))
     )
     if not mine:
         return []
     attempts, ours, newest, gone = await _attempts(ctx, mine)
     task = TaskId(regrade.task_id)
-    current = await published.task(ctx, task, settings) if settings is not None else None
-    scorer = (
-        scores.Scorer(
-            ctx,
-            current,
-            scores.Before(
-                PublicationId(regrade.publication_id), max(row.queued_at for row in mine)
-            ),
-        )
+    current = await entrant_view.task(ctx, task, settings) if settings is not None else None
+    graded = (
+        scores.GradedOf(ctx, current, PublicationId(regrade.publication_id))
         if current is not None
         else None
     )
     stood = (
-        scores.Scorer(
+        scores.GradedOf(
             ctx,
             current,
-            scores.Before(
-                counted_under(
-                    RegradeCause(regrade.cause),
-                    PublicationId(regrade.publication_id),
-                    current.publications,
-                ),
-                regrade.started_at,
-                regrade.id,
+            counted_under(
+                RegradeCause(regrade.cause),
+                PublicationId(regrade.publication_id),
+                current.publications,
             ),
         )
         if current is not None
         else None
     )
-    factors = await _factors(ctx, current, settings, builtins.list(newest.values()))
-    found: builtins.list[_Read] = []
+    found: list[_Read] = []
     for submission, row in newest.items():
         first = min(each.attempt for each in ours[submission])
-        earlier = gradings.latest_good(
+        earlier = gradings.latest_with_result(
             each for each in attempts[submission] if each.attempt < first
         )
         status = gradings.status_of(ctx, row, gone)
-        before = await _side(stood, earlier, factors) if earlier is not None else None
+        before = await _side(stood, earlier) if earlier is not None else None
         if status in UNFINISHED:
             compared = Compared(ChangeKind.RUNNING, before, None)
         elif status is GradingStatus.OVER_LIMIT:
             compared = Compared(ChangeKind.OVER_LIMIT, before, None)
-        elif not gradings.good(row):
+        elif not gradings.has_result(row):
             compared = Compared(ChangeKind.FAILED, before, None)
         else:
-            now = await _side(scorer, row, factors)
+            now = await _side(graded, row)
             compared = Compared(change_of(before, now), before, now)
         found.append(_Read(row, compared))
     return found
@@ -585,8 +568,8 @@ async def _read(
 async def _attempts(
     ctx: Context, mine: Sequence[Grading]
 ) -> tuple[
-    dict[str, builtins.list[Grading]],
-    dict[str, builtins.list[Grading]],
+    dict[str, list[Grading]],
+    dict[str, list[Grading]],
     dict[str, Grading],
     frozenset[uuid.UUID],
 ]:
@@ -595,14 +578,14 @@ async def _attempts(
     lost. A failure found among the latest that are their submission's
     latest starts its retry by itself.
     """
-    attempts: dict[str, builtins.list[Grading]] = {}
+    attempts: dict[str, list[Grading]] = {}
     for row in await ctx.db.scalars(
         select(Grading).where(
             Grading.submission_id.in_(sorted({row.submission_id for row in mine})), FRONT
         )
     ):
         attempts.setdefault(row.submission_id, []).append(row)
-    ours: dict[str, builtins.list[Grading]] = {}
+    ours: dict[str, list[Grading]] = {}
     for row in mine:
         ours.setdefault(row.submission_id, []).append(row)
     newest = {
@@ -621,59 +604,22 @@ async def _attempts(
     return attempts, ours, newest, gone
 
 
-async def _factors(
-    ctx: Context,
-    current: published.PublishedTask | None,
-    settings: ContestDefinition | None,
-    rows: Sequence[Grading],
-) -> dict[str, Fraction]:
-    """The late factor of each of the rows' submissions, by workspace and
-    number, as organisers see it, none while the task does not read.
-    """
-    if current is None or settings is None or not rows:
-        return {}
-    contest = contest_id_of(task_scope(current.id))
-    owners = {
-        row.workspace_id: ctx.forge.workspaces.owner_of(WorkspaceId(row.workspace_id))
-        for row in rows
-    }
-    extensions = await timelines.of_owners(ctx, contest, set(owners.values()))
-    return {
-        row.submission_id: scores.factor(
-            settings, current, extensions[owners[row.workspace_id]], row.submitted_at
-        )
-        for row in rows
-    }
-
-
-async def _side(
-    scorer: scores.Scorer | None, row: Grading, factors: Mapping[str, Fraction]
-) -> Side | None:
+async def _side(graded_of: scores.GradedOf | None, row: Grading) -> Side | None:
     """A finished attempt as a regrade compares it, or none when it cannot
-    be scored: the task or the publication it ran under does not read.
+    be read: the task or the publication it ran under does not read. Its
+    tests are those of its plan in the groups it is shown with.
     """
-    if scorer is None:
+    if graded_of is None:
         return None
-    graded = await scorer.graded(PublicationId(row.publication_id))
+    graded = await graded_of.graded(PublicationId(row.publication_id))
     if graded is None:
         return None
-    factor = factors.get(row.submission_id)
-    if factor is None:
-        return None
-    scored = await scorer.scored(row, graded, factor)
-    tests = [test for group in scored.groups for test in group.tests]
-    values = scored.values(EVERYTHING)
-    better = {
-        name: measure.better
-        for name, measure in scored.measures.items()
-        if measure.better is not None and name in values
-    }
+    result = row.result or {}
+    outcomes = {str(test["test"]): test.get("outcome") for test in result.get("tests") or ()}
+    tests = [test for test in graded.tests if group_of(test) in graded.groups]
     return Side(
         attempt=row.attempt,
-        points=scored.points(everywhere, EVERYTHING),
-        accepted=sum(1 for test in tests if test.outcome == ACCEPTED),
+        accepted=sum(1 for test in tests if outcomes.get(test) == ACCEPTED),
         tests=len(tests),
-        stopped=(row.result or {}).get("stopped"),
-        values={name: values[name] for name in better},
-        better=better,
+        stopped=result.get("stopped"),
     )

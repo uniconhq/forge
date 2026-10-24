@@ -22,19 +22,15 @@ from forge.domain.contracts import violation
 from forge.domain.definitions import parse_task, starter_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine
 from forge.domain.meanings import ValueMeaning, shown_meanings
+from forge.domain.plan_basics import PLAN_PATH, Snapshot
 from forge.domain.plans import (
-    PLAN_PATH,
     Compiled,
     Plan,
-    Snapshot,
     check_workflow,
     compile_plan,
     grading_changes,
     group_problems,
-    is_reserved,
-    natural,
     read_tests,
-    spelled,
 )
 from forge.domain.plans import (
     TestCase as Case,
@@ -42,9 +38,9 @@ from forge.domain.plans import (
 from forge.domain.plans import (
     test_yaml_paths as yaml_paths,
 )
+from forge.domain.port_values import is_reserved, natural, scalar_to_text
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
-from forge.domain.publications import read_note, write_note
-from forge.domain.scoring import fold
+from forge.domain.publication_record import read_note, write_note
 from forge.domain.showing import NOTHING_SEALED, Sealed
 from forge.domain.workflow_definition import Fold, WorkflowDefinition, parse_workflow
 from forge.domain.yaml_models import InvalidDefinition, Problem
@@ -999,7 +995,7 @@ def test_a_contestant_scalar_given_whole_to_a_text_port_is_a_template_of_itself(
     ],
 )
 def test_a_scalar_has_one_spelling_as_text(value: object, spelling: str) -> None:
-    assert spelled(value) == spelling
+    assert scalar_to_text(value) == spelling
 
 
 CLASSIC_INPUTS = "  submission: {label: Your solution}\n  language: {options: [python]}\n"
@@ -1592,7 +1588,7 @@ THIRTY_DIGITS = "-12345678901234.5678901234567891"
 """A bound of 30 significant digits, more than a float holds."""
 
 
-def test_a_bound_of_thirty_significant_digits_survives_from_the_file_to_a_score() -> None:
+def test_a_bound_of_thirty_significant_digits_survives_from_the_file_to_the_note() -> None:
     workflow = parse_workflow(
         CHECKED_TEXT.replace(
             "fold: sum, better: higher}", f"fold: sum, better: higher, at_least: {THIRTY_DIGITS}}}"
@@ -1606,11 +1602,8 @@ def test_a_bound_of_thirty_significant_digits_survives_from_the_file_to_a_score(
         THIRTY_DIGITS
     )
     noted = read_note(write_note(False, (), measures=built.measures)).measures["reward"]
-    # A test without the value counts as the bound, to the last digit.
-    assert fold(noted, [None]) == Fraction(THIRTY_DIGITS)
-    assert written(fold(noted, [None, Fraction(1)]) or Fraction(0)) == (
-        "-12345678901233.5678901234567891"
-    )
+    assert noted.at_least == Fraction(THIRTY_DIGITS)
+    assert written(noted.at_least) == THIRTY_DIGITS
 
 
 # Fit

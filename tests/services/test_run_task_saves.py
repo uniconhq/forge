@@ -9,8 +9,8 @@ submitted; a self-reported report asks once, and the save is refused
 until that question is answered; what was shown is not hidden again; the
 files `show` lists are served from their time on, and no other, the
 reveal's from its instant and a release's not yet; the contest gives a
-run task a due but no worth, share taken per late day or board; and an
-entrant submits to one in parts.
+run task a due and a leaderboard, and a stored worth or late share is ignored;
+and an entrant submits to one in parts.
 """
 
 import hashlib
@@ -27,7 +27,7 @@ from forge.domain.errors import ConfirmationRequired, InvalidInputs, NotFound
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
-from forge.domain.plans import PLAN_PATH
+from forge.domain.plan_basics import PLAN_PATH
 from forge.domain.run_plan import FileFact, RunPlan
 from forge.domain.run_task import RUNS_PATH, RunsFile
 from forge.domain.submissions import SubmittedInput
@@ -39,10 +39,10 @@ from forge.services import (
     files,
     gradings,
     landing,
-    publications,
     submissions,
+    task_save,
 )
-from forge.services.publications import Draft, Published
+from forge.services.task_save import Draft, Published
 from forge.testing import PLACEHOLDER_DIGEST, FakeClock, register_entrant
 from tests.conftest import sibling
 from tests.services.conftest import RUNNING, SPRING, Acme, signed_in, upload, write_contest
@@ -56,7 +56,7 @@ from tests.test_run_task import (
 )
 
 DRAFT = RUNNING.format(visibility="everyone").replace("state: published", "state: draft")
-"""acme/spring, not started, with no board."""
+"""acme/spring, not started, with no leaderboard."""
 
 ISLANDS_DATA = {
     "samples/1.in": b"1\n",
@@ -89,7 +89,7 @@ def _primitives(acme: Acme) -> None:
     """The contract 6 primitives the run workflows use, from the checkouts
     beside this one, with the image line bootstrap writes.
     """
-    for name, version in (("exec", "v1"), ("interact", "v2"), ("compile", "v3")):
+    for name, version in (("exec", "v1"), ("compile", "v3")):
         text = sibling(f"primitive-{name}", "primitive.yaml").read_bytes()
         image = f"image: ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}\n".encode()
         acme.fake.primitives.add(name, {version: image + text})
@@ -99,7 +99,7 @@ async def _save(
     setup: Setup, acme: Acme, task: TaskId, contents: Mapping[str, bytes | None], **options: Any
 ) -> Published | Draft:
     head = await acme.fake.content.list_files(PLATFORM, task)
-    return await publications.save(
+    return await task_save.save(
         setup,
         acme.ada,
         task,
@@ -280,10 +280,10 @@ async def test_a_run_task_whose_runs_file_does_not_read_is_refused_not_renumbere
     async def unread(*_: object) -> None:
         return None
 
-    monkeypatch.setattr(publications, "_runs_file_of", unread)
+    monkeypatch.setattr(task_save.sources, "_runs_file_of", unread)
     result = await _save(setup, acme, sum_task, {"statement.md": b"Count the islands.\n"})
 
-    assert _errors(result) == [("", publications.RUNS_UNREAD)]
+    assert _errors(result) == [("", task_save.RUNS_UNREAD)]
     assert len(acme.fake.calls_to("publish")) == 1
 
 
@@ -323,7 +323,7 @@ async def test_a_task_keeps_its_format_once_anyone_has_submitted(
     async def submitted(*_: object) -> bool:
         return True
 
-    monkeypatch.setattr(publications, "_submitted", submitted)
+    monkeypatch.setattr(task_save.sources, "_submitted", submitted)
     refused = await _save(setup, acme, sum_task, {"task.yaml": run.encode(), **TOUR_DATA})
 
     assert _errors(refused) == [
@@ -402,7 +402,7 @@ async def test_what_was_shown_under_a_graded_publication_is_not_hidden_again(
     async def graded(*_: object) -> set[str]:
         return {published.publication}
 
-    monkeypatch.setattr(publications, "_graded_under", graded)
+    monkeypatch.setattr(task_save.sources, "_graded_under", graded)
     text = TASKS["islands"][0]
     later = text.replace("now: [sample_score, sample_time,", "now: [sample_score,").replace(
         "after_close: [st1,", "after_close: [sample_time, st1,"
@@ -482,46 +482,32 @@ async def test_after_close_is_served_from_the_reveal_and_on_release_never_yet(
         await landing.public_file(setup, sum_task, "tests/4.in")
 
 
-BOARD = (
+LEADERBOARD = (
     "leaderboards:\n  standings:\n    columns:\n"
     "      score: {value: [{block: latest, from: {results: sum}}, total]}\n"
 )
 
 
-async def test_a_contest_gives_a_run_task_a_due_and_a_board_but_no_worth_or_late_share(
+async def test_a_contest_gives_a_run_task_a_due_and_a_leaderboard_but_no_worth_or_late_share(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    text = await _ready(acme, "tour", DRAFT + "    worth: 50\n")
+    # A stored contest still giving a worth or a late share reads with them
+    # ignored, so the task saves; a save of the contest that has either is
+    # refused.
+    late = DRAFT + "    worth: 50\n    due: 2026-09-26T14:00:00Z\n    late_per_day: 0.5\n"
+    text = await _ready(acme, "tour", late)
     contents = {"task.yaml": text.encode(), **TOUR_DATA}
 
-    worth = await _save(setup, acme, sum_task, contents, confirm=True)
-    late = DRAFT + "    due: 2026-09-26T14:00:00Z\n    late_per_day: 0.5\n"
-    await write_contest(acme.fake, late)
-    share = await _save(setup, acme, sum_task, contents, confirm=True)
-    await write_contest(acme.fake, DRAFT + BOARD)
+    assert isinstance(await _save(setup, acme, sum_task, contents, confirm=True), Published)
+    await write_contest(acme.fake, DRAFT + LEADERBOARD)
     assert isinstance(await _save(setup, acme, sum_task, contents, confirm=True), Published)
     await checked(setup, sum_task)
 
-    assert _errors(worth) == [
-        (
-            "scoring",
-            "sum is scored by its runs and gives no points, since a leaderboard reads its "
-            "values, but the contest gives it a worth of 50. Remove that from the contest first.",
-        )
-    ]
-    assert _errors(share) == [
-        (
-            "scoring",
-            "sum is scored by its runs and gives no points, since a leaderboard reads its "
-            "values, but the contest takes a share of its points for each late day. Remove that "
-            "from the contest first.",
-        )
-    ]
     current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
     for content, path in (
         (DRAFT + "    worth: 50\n", "tasks[0].worth"),
         (DRAFT + "leaderboards:\n  - {name: Standings}\n", "leaderboards"),
-        (late, "tasks[0].late_per_day"),
+        (DRAFT + "    due: 2026-09-26T14:00:00Z\n    late_per_day: 0.5\n", "tasks[0].late_per_day"),
     ):
         with pytest.raises(InvalidDefinition) as refused:
             await files.write(

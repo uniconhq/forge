@@ -6,11 +6,12 @@ group, and no value reading itself through others. Group and value names
 are one set, none named like a fact, and `all` is every run's. A block with
 more than one form is checked against the one its node fits, by the inputs
 it is given and whether each is a group's runs; a node fitting none is
-refused naming the forms. A form or a leaf only a board's column may use
-(`Scope.BOARD`, `BOARD_LEAVES`) is refused in a task's value, naming
+refused naming the forms. A form or a leaf only a leaderboard's column may use
+(`Scope.LEADERBOARD`, `LEADERBOARD_LEAVES`) is refused in a task's value, naming
 where it belongs. A tree is at most `MOST_NODES` nodes and
-`MOST_DEPTH` deep, measured before it is walked, since every read of a
-board works its trees out.
+`MOST_DEPTH` deep, and a task has at most `MOST_VALUES` values and
+`MOST_GROUPS` groups, each measured before anything is walked, since every
+read of a leaderboard works every value of every submission out.
 
 A value holds one `entered` block at most, its bounds numbers written
 out, the lower first, and one `exec` block at most, its program a folder,
@@ -35,6 +36,7 @@ from forge.domain.blocks.catalogue import (
     FACTS,
     LANGUAGES,
     LEAVES,
+    NUMBERS,
     SKIP,
     TASK_FACTS,
     TASK_LEAVES,
@@ -44,6 +46,7 @@ from forge.domain.blocks.catalogue import (
     Kind,
     Scope,
 )
+from forge.domain.blocks.tree_reads import reached
 from forge.domain.definitions import VALUE_NAME
 from forge.domain.yaml_models import Path, is_number
 
@@ -53,6 +56,11 @@ MOST_NODES = 1000
 """The most nodes a value's tree holds, every number, leaf and block."""
 MOST_DEPTH = 64
 """The most nodes deep a value's tree is, the top one at depth 1."""
+MOST_VALUES = 200
+"""The most values a task has, so the trees a submission is worked out
+from hold at most `MOST_VALUES` times `MOST_NODES` nodes."""
+MOST_GROUPS = 200
+"""The most groups a task has, besides `all`."""
 
 _LEAF_WORDS = (
     "Give a number, a block such as {block: add, of: [...]}, or what it reads: "
@@ -88,22 +96,16 @@ class ValuesCheck:
         reads, itself among them.
         """
         groups: set[str] = set()
-        values: set[str] = set()
         facts: set[str] = set()
         columns: set[tuple[str, str]] = set()
         blocks: set[str] = set()
-        waiting = [name]
-        while waiting:
-            current = waiting.pop()
-            if current in values:
-                continue
-            values.add(current)
+        values = reached([name], {key: read.values for key, read in self.reads.items()})
+        for current in values:
             read = self.reads.get(current, Reads())
             groups |= read.groups
             facts |= read.facts
             columns |= read.columns
             blocks |= read.blocks
-            waiting.extend(read.values)
         return Reads(
             frozenset(groups),
             frozenset(values),
@@ -175,6 +177,20 @@ def check_values(
     read and the reason for any other, and `keys` each repeated input the
     organiser fills with the values its runs take, which `weights` may name.
     """
+    too_many: Found = [
+        (
+            (kind,),
+            f"This task has {len(names)} {kind}. A task has at most {most}, so working "
+            "its values out stays quick.",
+        )
+        for kind, names, most in (
+            ("groups", groups, MOST_GROUPS),
+            ("values", values, MOST_VALUES),
+        )
+        if len(names) > most
+    ]
+    if too_many:
+        return ValuesCheck(too_many)
     checker = _Checker(values, set(groups) | {ALL}, columns, keys)
     reads: dict[str, Reads] = {}
     for name, tree in values.items():
@@ -266,7 +282,7 @@ class _Checker:
             case Kind.RUNS:
                 self._runs(at, node)
             case Kind.RESULTS | Kind.NAME | Kind.DIRECTIONS:
-                self.refuse(at, ONLY_BOARDS)
+                self.refuse(at, ONLY_LEADERBOARDS)
             case Kind.WEIGHTS:
                 self._weights(at, node)
             case Kind.MISSING:
@@ -307,7 +323,7 @@ class _Checker:
             return
         kind, named = leaf
         if kind not in TASK_LEAVES or (kind == "value" and isinstance(named, list)):
-            self.refuse(at, ONLY_BOARDS)
+            self.refuse(at, ONLY_LEADERBOARDS)
             return
         match kind:
             case "runs":
@@ -350,13 +366,15 @@ class _Checker:
                 f"{name} is not a block Unicon has. The blocks are {', '.join(CATALOGUE)}.",
             )
             return
-        form = form_of(block, node, Scope.BOARD)
+        form = form_of(block, node, Scope.LEADERBOARD)
         if form is None:
-            self.refuse(at, forms_words(block, Scope.BOARD))
+            self.refuse(at, forms_words(block, Scope.LEADERBOARD))
             return
-        if form.scope is Scope.BOARD:
+        if form.scope is Scope.LEADERBOARD:
             self.refuse(
-                at, f"{block.name} given {form.given} is for a leaderboard's column. {ONLY_BOARDS}"
+                at,
+                f"{block.name} given {form.given} is for a leaderboard's column. "
+                f"{ONLY_LEADERBOARDS}",
             )
             return
         for key in node:
@@ -497,7 +515,7 @@ class _Checker:
                 self.refuse(where, "A weight is a number more than 0.")
 
 
-ONLY_BOARDS = (
+ONLY_LEADERBOARDS = (
     "A task's value reads one submission's runs and facts; a task's results, a "
     "submission's results and a leaderboard's columns are read on a leaderboard only."
 )
@@ -611,6 +629,45 @@ def leaf_of(node: Mapping[object, object]) -> tuple[str, object] | None:
     return str(key), named
 
 
+def direct_reads(tree: object) -> tuple[set[str], str | None]:
+    """The values a task's value's tree reads directly, and the first thing
+    it reads directly that is not another value or a number, in words, if
+    any: a fact, a group's runs, a program, a mark or a fallback. A leaderboard's
+    `best_each` works out again only a tree with none (the leaderboards
+    note's 5.4), which the save checks and a read follows alike."""
+    found: set[str] = set()
+    waiting = [tree]
+    while waiting:
+        node = waiting.pop()
+        if isinstance(node, list):
+            waiting.extend(node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        if "block" not in node:
+            leaf = leaf_of(node)
+            if leaf is not None and leaf[0] == "value":
+                found.add(str(leaf[1]))
+            elif leaf is not None and leaf[0] == "fact":
+                return found, f"the fact {leaf[1]}"
+            else:
+                return found, "a group's runs"
+            continue
+        name = str(node["block"])
+        block = CATALOGUE.get(name)
+        form = form_of(block, node) if block is not None else None
+        if name == EXEC:
+            return found, "a program's number, through exec"
+        if name == ENTERED:
+            return found, "a mark staff enter, through entered"
+        if name == "otherwise":
+            return found, "a fallback for a missing number, through otherwise"
+        if form is None or form.given != NUMBERS:
+            return found, f"a group's runs, through {name}"
+        waiting.extend(given for key, given in node.items() if key != "block")
+    return found, None
+
+
 def _loops(reads: Mapping[str, Reads]) -> Found:
     """A problem at each value that reads itself through others."""
     found: Found = []
@@ -645,12 +702,15 @@ def _cycle(start: str, reads: Mapping[str, Reads]) -> list[str] | None:
 __all__ = [
     "MOST_DEPTH",
     "MOST_EXEC_NAME",
+    "MOST_GROUPS",
     "MOST_NODES",
+    "MOST_VALUES",
     "READING",
     "Reads",
     "ValuesCheck",
     "check_names",
     "check_values",
+    "direct_reads",
     "form_of",
     "forms_words",
     "leaf_of",

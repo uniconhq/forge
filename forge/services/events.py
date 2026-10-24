@@ -31,7 +31,7 @@ from forge.domain.threads import ThreadChange, ThreadKind
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import org_accounts, published
+from forge.services import entrant_view, org_accounts
 
 log = get_logger(__name__)
 
@@ -107,8 +107,8 @@ async def _released(ctx: Context, change: ThreadChange) -> bool:
     """
     assert change.task is not None
     try:
-        settings = await published.contest(ctx, change.contest)
-        found = await published.task(ctx, change.task, settings)
+        settings = await entrant_view.contest(ctx, change.contest)
+        found = await entrant_view.task(ctx, change.task, settings)
     except PortError:
         return False
     return found is not None and rules.visible(settings, found.name, ctx.now)

@@ -1,9 +1,8 @@
 """A contest's or a task's files, read and written as the organiser. Reading
 needs observer and writing manager, both made as the organiser's own
 identity; a stale token is a conflict; `contest.yaml` is refused whole when
-it is not valid, when an entry names no task of the contest or gives a worth
-or a due to a task that gives no points (C1), or when it moves a task's
-timeline behind what rows already did or drops the entry of a task that
+it is not valid, when an entry names no task of the contest (C1), or when
+it moves a task's timeline behind what rows already did or drops the entry of a task that
 opened or has submissions (C2), a contest never published moving freely,
 and a manager's change to an admin-only key is refused naming it, with
 nothing written either way; a task's write is its save; and a rollback
@@ -11,7 +10,7 @@ writes the old content as a new change.
 """
 
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -25,9 +24,9 @@ from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import files, publications, submissions, taking_out, timelines, uploads
+from forge.services import files, submissions, taking_out, task_save, timelines, uploads
 from forge.services.access import Organiser
-from forge.services.publications import Published
+from forge.services.task_save import Published
 from tests.services.conftest import (
     RUNNING,
     SPRING,
@@ -258,7 +257,12 @@ async def test_a_path_that_is_not_plainly_inside_the_place_is_refused_unread(
         (
             b"  - id: sum\n",
             b"  - id: sum\n    points: 50\n",
-            "This is now called worth. Give the task's worth instead, and remove this.",
+            "A task no longer gives points",
+        ),
+        (
+            b"  - id: sum\n",
+            b"  - id: sum\n    worth: 50\n",
+            "A task no longer gives points",
         ),
         (
             b"visibility: everyone",
@@ -268,14 +272,14 @@ async def test_a_path_that_is_not_plainly_inside_the_place_is_refused_unread(
             "Remove this.",
         ),
     ],
-    ids=["visibility", "points", "on_system_error"],
+    ids=["visibility", "points", "worth", "on_system_error"],
 )
 async def test_an_old_contest_key_is_refused_with_what_replaced_it(
     setup: Setup, acme: Acme, spring: ContestId, old: bytes, new: bytes, said: str
 ) -> None:
     refused = await _refused(setup, acme, _running(SUM_ENTRY).replace(old, new))
 
-    assert said in [message for _, message in refused]
+    assert any(message.startswith(said) for _, message in refused)
 
 
 SUM_ENTRY = "  - id: sum\n"
@@ -320,13 +324,13 @@ async def _submitted(setup: Setup, acme: Acme, entered: Entered) -> None:
     )
 
 
-async def test_a_worth_on_a_task_that_gives_no_points_is_refused_at_its_line_and_a_due_is_not(
+async def test_a_task_that_gives_no_points_may_have_a_due(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     current = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
     pointless = current.content.replace(b"main: {each: 100}", b"main: {}")
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         entered.task,
@@ -335,17 +339,6 @@ async def test_a_worth_on_a_task_that_gives_no_points_is_refused_at_its_line_and
     )
     assert isinstance(saved, Published), saved
 
-    refused = await _refused(
-        setup, acme, _running(SUM_ENTRY + "    worth: 50\n    due: 2026-09-26T14:00:00Z\n")
-    )
-
-    assert refused == [
-        (
-            "tasks[0].worth",
-            "sum gives no points, so it cannot have a worth. Leave this empty, and rank it by a "
-            "value instead.",
-        ),
-    ]
     # Any task may have a due (stage 5, phase 5.7).
     assert await _write_contest(
         setup,
@@ -359,8 +352,7 @@ async def test_a_timeline_that_moves_behind_no_row_is_saved(
 ) -> None:
     await _submitted(setup, acme, entered)
     timeline = _running(
-        SUM_ENTRY + "    worth: 80\n    due: 2026-09-26T14:00:00Z\n    late_per_day: 0.5\n"
-        "    closes: 2026-09-26T14:30:00Z\n"
+        SUM_ENTRY + "    due: 2026-09-26T14:00:00Z\n    closes: 2026-09-26T14:30:00Z\n"
     )
 
     version = await _write_contest(setup, acme, timeline)
@@ -369,7 +361,10 @@ async def test_a_timeline_that_moves_behind_no_row_is_saved(
     assert written.content == timeline
     assert acme.fake.state.repos[("acme", "spring.contest")].head == version
     (entry,) = parse_contest(written.content).tasks
-    assert (entry.worth, entry.late_per_day) == (80, 0.5)
+    assert (entry.due, entry.closes) == (
+        datetime(2026, 9, 26, 14, tzinfo=UTC),
+        datetime(2026, 9, 26, 14, 30, tzinfo=UTC),
+    )
 
 
 async def test_a_release_that_has_passed_is_not_moved_later(
@@ -715,7 +710,7 @@ async def test_a_listing_gives_each_small_text_files_start_in_one_read_of_them_a
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     head = await acme.fake.content.list_files(PLATFORM, sum_task)
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         sum_task,
@@ -727,7 +722,7 @@ async def test_a_listing_gives_each_small_text_files_start_in_one_read_of_them_a
             "tests/main/1/long.txt": Edit("ü".encode() * 100, None),
         },
     )
-    assert isinstance(saved, (Published, publications.Draft))
+    assert isinstance(saved, (Published, task_save.Draft))
     acme.fake.reset_calls()
 
     listed = {
@@ -770,7 +765,7 @@ async def _write(
     setup: Setup, write: str, who: Organiser, task: TaskId, token: ConflictToken
 ) -> object:
     if write == "save":
-        return await publications.save(setup, who, task, {"statement.md": Edit(MINE, token)})
+        return await task_save.save(setup, who, task, {"statement.md": Edit(MINE, token)})
     if write == "task write":
         return await files.write(setup, who, task, "statement.md", MINE, token)
     if write == "task rollback":

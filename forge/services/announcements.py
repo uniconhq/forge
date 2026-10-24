@@ -37,7 +37,7 @@ from forge.domain.threads import Thread, ThreadKind, ThreadPlace
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import names, published, release
+from forge.services import entrant_view, names, release
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -187,7 +187,7 @@ async def contest(ctx: Context, session: Session, contest: ContestId) -> tuple[A
     settings, _ = await release.seen(ctx, session, contest)
     tasks = [
         task
-        for task in await published.tasks(ctx, contest, settings)
+        for task in await entrant_view.tasks(ctx, contest, settings)
         if rules.visible(settings, task.name, ctx.now)
     ]
     where = await names.places_named(ctx, [contest, *(task.id for task in tasks)])
@@ -207,10 +207,10 @@ async def task(ctx: Context, session: Session, task: TaskId) -> tuple[Announceme
     try:
         settings, _ = await release.seen(ctx, session, contest)
     except NotFound as exc:
-        raise NotFound(published.NO_SUCH_TASK) from exc
-    found = await published.task(ctx, task, settings)
+        raise NotFound(entrant_view.NO_SUCH_TASK) from exc
+    found = await entrant_view.task(ctx, task, settings)
     if found is None or not rules.visible(settings, found.name, ctx.now):
-        raise NotFound(published.NO_SUCH_TASK)
+        raise NotFound(entrant_view.NO_SUCH_TASK)
     where = await names.scope_names(ctx, task_scope(task))
     await ctx.let_go()
     return await _open(ctx, task, where)

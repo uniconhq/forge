@@ -49,7 +49,7 @@ step's outputs is worked out per step, since it depends on what is wired in:
 
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from decimal import Decimal
 from typing import Annotated, Literal, Self
 
@@ -79,6 +79,8 @@ DECLARATION_FILE = "primitive.yaml"
 
 IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$")
 PORT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+FORM_AT_TOP = ("outputs_from", "limits", "limits_from", "inputs", "outputs")
+"""The keys a form holds. On a declaration with forms they are refused at the top."""
 FILE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,254}")
 """A name a program sees a file under, the contract's `file_name`: letters,
 digits, `_`, `.` and `-`, not starting with a `.`, so never `.`, `..` or a
@@ -357,6 +359,20 @@ programs port.
 LimitName = Literal["time_ms", "cpu_ms", "memory_mb", "pids", "output_mb", "gpus"]
 
 
+class PrimitiveForm(Model):
+    """One way to use a primitive that declares several: the ports and limits
+    that differ, and a description for the editor. Not a declaration: a
+    declaration needs an image, and its check wants an outcome at the top.
+    """
+
+    description: Line | None = None
+    outputs_from: Literal["manifest", "programs"] | None = None
+    limits: Limits
+    limits_from: dict[LimitName, LimitFrom] = Field(default_factory=dict)
+    inputs: dict[str, Declared] = Field(default_factory=dict)
+    outputs: dict[str, Declared] = Field(default_factory=dict)
+
+
 class PrimitiveDeclaration(Model):
     """A `primitive.yaml`. `schema_version` is 5 when left out; `batch`,
     `network` and `cache` default to off, and `limits_from`, `outputs_from`
@@ -371,7 +387,8 @@ class PrimitiveDeclaration(Model):
     batch: Flag = False
     network: Flag = False
     cache: Flag = False
-    limits: Limits
+    forms: dict[str, PrimitiveForm] = Field(default_factory=dict)
+    limits: Limits | None = None
     limits_from: dict[LimitName, LimitFrom] = Field(default_factory=dict)
     outputs_from: Literal["manifest", "programs"] | None = None
     inputs: dict[str, Declared] = Field(default_factory=dict)
@@ -390,6 +407,7 @@ class PrimitiveDeclaration(Model):
         raises nothing. A batch's time is the sum of its items', which the
         planner adds up (`BATCH_SCALED`).
         """
+        assert self.limits is not None
         limits = self.limits.as_mapping()
         for name, source in self.limits_from.items():
             if isinstance(source, FromInput):
@@ -410,7 +428,13 @@ class PrimitiveDeclaration(Model):
 
     @model_validator(mode="after")
     def _check(self) -> PrimitiveDeclaration:
+        if self.forms:
+            return self._check_forms()
         problems = Problems()
+        if self.limits is None:
+            problems.add(("limits",), "This is required.")
+            problems.raise_any()
+            return self
         six = self.schema_version == 6
         _input_problems(problems, ("inputs",), self.inputs, six=six, inner=False)
         _output_problems(problems, ("outputs",), self.outputs, six=six, inner=False)
@@ -491,6 +515,114 @@ class PrimitiveDeclaration(Model):
                     )
         problems.raise_any()
         return self
+
+    def _check_forms(self) -> PrimitiveDeclaration:
+        """Each form, checked as the shared keys plus that form's keys, and
+        the rule that every form has a required input of its own.
+        """
+        problems = Problems()
+        if self.schema_version != 6:
+            problems.add(("schema_version",), NEEDS_6)
+        if len(self.forms) > 4:
+            problems.add(("forms",), "A primitive has at most 4 forms.")
+        for key in FORM_AT_TOP:
+            if key in self.model_fields_set:
+                problems.add((key,), "A primitive with forms gives this on each form, not here.")
+        for name, form in self.forms.items():
+            if not PORT_NAME.match(name):
+                problems.add(
+                    ("forms", name),
+                    "A form's name may use only lower case letters, digits and underscores (_), "
+                    "starting with a letter.",
+                )
+            self._check_form(problems, name, form)
+        self._own_required(problems)
+        problems.raise_any()
+        return self
+
+    def _check_form(self, problems: Problems, name: str, form: PrimitiveForm) -> None:
+        payload: dict[str, object] = {
+            "schema_version": self.schema_version,
+            "image": self.image,
+            "limits": form.limits,
+            "limits_from": form.limits_from,
+            "inputs": form.inputs,
+            "outputs": form.outputs,
+        }
+        description = form.description if form.description is not None else self.description
+        if self.title is not None:
+            payload["title"] = self.title
+        if description is not None:
+            payload["description"] = description
+        if self.batch:
+            payload["batch"] = self.batch
+        if self.network:
+            payload["network"] = self.network
+        if "cache" in self.model_fields_set:
+            payload["cache"] = self.cache
+        if form.outputs_from is not None:
+            payload["outputs_from"] = form.outputs_from
+        try:
+            PrimitiveDeclaration.model_validate(payload)
+        except ValidationError as error:
+            for problem in problems_of(error):
+                tail = tuple(part for part in problem["path"].split(".") if part)
+                problems.add(("forms", name, *tail), problem["message"])
+
+    def _own_required(self, problems: Problems) -> None:
+        declared = {name: set(form.inputs) for name, form in self.forms.items()}
+        for name, form in self.forms.items():
+            required = {key for key, port in form.inputs.items() if not port.optional}
+            others: set[str] = set()
+            for other, keys in declared.items():
+                if other != name:
+                    others |= keys
+            if not required - others:
+                problems.add(
+                    ("forms", name),
+                    "A form needs a required input no other form declares.",
+                )
+
+    def for_step(self, given: Collection[str], use: str) -> PrimitiveDeclaration | str:
+        """This declaration when it lists no forms, else the one form whose
+        required inputs are all in `given` and whose inputs include all of
+        `given`, with that form's keys at the top and no forms. The words
+        when none fits or more than one does. `use` is only for those words.
+        """
+        if not self.forms:
+            return self
+        wanted = set(given)
+        fits = [
+            form
+            for form in self.forms.values()
+            if {key for key, port in form.inputs.items() if not port.optional} <= wanted
+            and wanted <= set(form.inputs)
+        ]
+        if len(fits) == 1:
+            form = fits[0]
+            return self.model_copy(
+                update={
+                    "description": (
+                        form.description if form.description is not None else self.description
+                    ),
+                    "outputs_from": form.outputs_from,
+                    "limits": form.limits,
+                    "limits_from": form.limits_from,
+                    "inputs": form.inputs,
+                    "outputs": form.outputs,
+                    "forms": {},
+                }
+            )
+        which = "fit no form" if not fits else "fit more than one form"
+        listed = ", ".join(
+            f"{name} ({', '.join(key for key, port in form.inputs.items() if not port.optional)})"
+            for name, form in self.forms.items()
+        )
+        return (
+            f"The step's inputs {which} of {use}. "
+            "Give every required input of one form and no input it lacks: "
+            f"{listed}."
+        )
 
 
 def _names(problems: Problems, where: Path, ports: Mapping[str, Port]) -> None:

@@ -1,4 +1,4 @@
-"""The most and the least a task's value or a board's column can give
+"""The most and the least a task's value or a leaderboard's column can give
 (stage 5 section 6, item 5; the leaderboards note's 9.2), the same for
 every row, and which self-reported values a column reads (item 7).
 
@@ -13,27 +13,32 @@ Bounds are carried where every part has one and are none otherwise:
   a division whose divisor's bounds hold 0 has none;
 - a fold over a group by its number of runs and their weights, and a fold
   over a task's results by the task's `submissions.max`, none without
-  one; a `where`, or a `missing: skip`, may leave out all but one;
-- a pick's value is the value's bounds, `best_each` its value's, and `if`
-  and `otherwise` the widest of their branches; `sum_best` the sum of the
-  `k` greatest least and most bounds.
+  one, a `missing` number widening them; a `where`, or a `missing: skip`,
+  may leave out all but one;
+- a pick's value is the value's bounds, `best_each` its value's, worked
+  out again from the bounds of each value it reads widened by its
+  `missing` number when it has one, and `if` and `otherwise` the widest of
+  their branches; `sum_best` the sum of the `k` greatest least and most
+  bounds.
 
 None for `seconds`, `seconds_late`, an `exec` block, whose program's
 declared bounds the plan does not keep, and a group with no runs. A bound
 past `MOST_BITS` is none, as such a number is.
 
-The trees are walked by recursion: the save keeps each at most
-`check.MOST_DEPTH` deep.
+Each tree is walked by recursion, the save keeping it at most
+`check.MOST_DEPTH` deep; the values are walked one after another, each
+after those it reads (`evaluate.in_order`), so a chain of values costs no
+frames.
 """
 
 import math
 from collections.abc import Mapping, Sequence
 from fractions import Fraction
 
-from forge.domain.blocks.board_check import BoardColumn, BoardsCheck, column_at
 from forge.domain.blocks.catalogue import CATALOGUE, ENTERED, SKIP, Kind
 from forge.domain.blocks.check import form_of, leaf_of, same_value
-from forge.domain.blocks.evaluate import MOST_BITS, Column, RunResult
+from forge.domain.blocks.evaluate import Column, RunResult, in_order, past_most_bits
+from forge.domain.blocks.leaderboard_shape_check import ColumnRef, LeaderboardsCheck, column_at
 from forge.domain.blocks.numbers import exact
 from forge.domain.definitions import Leaderboard
 
@@ -48,7 +53,7 @@ def _kept(bounds: Bounds) -> Bounds:
     if bounds is None:
         return None
     for number in bounds:
-        if number.numerator.bit_length() > MOST_BITS or number.denominator.bit_length() > MOST_BITS:
+        if past_most_bits(number):
             return None
     return bounds
 
@@ -118,23 +123,13 @@ def value_bounds(
     values: Mapping[str, object],
     groups: Mapping[str, Sequence[RunResult]],
     columns: Mapping[str, Column],
+    given: Mapping[str, Bounds] | None = None,
 ) -> dict[str, Bounds]:
     """Each of a task's values' bounds: `groups` each group's runs, `all`
-    among them, as a fold reads them, and `columns` each report's column as
-    the plan gives it."""
-    found: dict[str, Bounds] = {}
-    walking: set[str] = set()
-
-    def value(name: str) -> Bounds:
-        if name in found:
-            return found[name]
-        tree = values.get(name)
-        if tree is None or name in walking:
-            return None
-        walking.add(name)
-        found[name] = node(tree, None, None)
-        walking.discard(name)
-        return found[name]
+    among them, as a fold reads them, `columns` each report's column as
+    the plan gives it, and `given` the bounds of values read but not in
+    `values`."""
+    found: dict[str, Bounds] = dict(given or {})
 
     def node(tree: object, runs: Sequence[RunResult] | None, missing: object) -> Bounds:
         number = exact(tree) if not isinstance(tree, dict | list) else None
@@ -148,7 +143,7 @@ def value_bounds(
                 return None
             kind, named = leaf
             if kind == "value" and isinstance(named, str):
-                return value(named)
+                return found.get(named)
             if kind == "fact":
                 return ZERO_ONE if named == "compiled" else None
             if kind == "run" and isinstance(named, list) and runs is not None:
@@ -187,9 +182,14 @@ def value_bounds(
             )
         given = tree.get("of")
         listed = given if isinstance(given, list) else [given]
-        return _over_numbers(block.name, [node(each, runs, missing) for each in listed])
+        got = [node(each, runs, missing) for each in listed]
+        if block.name == "otherwise":
+            return widest(*got)
+        return _over_numbers(block.name, got)
 
-    return {name: value(name) for name in values}
+    for name in in_order(values):
+        found[name] = node(values[name], None, None)
+    return {name: found.get(name) for name in values}
 
 
 def _weight(run: RunResult, weights: object) -> Fraction:
@@ -232,39 +232,46 @@ def fact_bounds(name: str, most: int | None) -> Bounds:
 
 
 def column_bounds(
-    boards: Mapping[str, Leaderboard],
-    checked: BoardsCheck,
+    leaderboards: Mapping[str, Leaderboard],
+    checked: LeaderboardsCheck,
     tasks: Mapping[str, Mapping[str, Bounds]],
     most: Mapping[str, int | None],
-) -> dict[BoardColumn, Bounds]:
-    """Each number column's bounds, of the boards worked out on read:
-    `tasks` each task's values' bounds, a task the board reads with none
-    there giving none, and `most` each task's `submissions.max`."""
-    found: dict[BoardColumn, Bounds] = {}
-    for board, name in checked.order:
-        shape = checked.shapes[board][name]
+    trees: Mapping[str, Mapping[str, object]],
+) -> dict[ColumnRef, Bounds]:
+    """Each number column's bounds, of the leaderboards worked out on read:
+    `tasks` each task's values' bounds, a task the leaderboard reads with none
+    there giving none, `most` each task's `submissions.max`, and `trees`
+    each task's values' trees, which `best_each` with a `missing` number
+    works out again."""
+    found: dict[ColumnRef, Bounds] = {}
+    for leaderboard, name in checked.order:
+        shape = checked.shapes[leaderboard][name]
         if shape.kind is not Kind.NUMBER:
             continue
-        reader = _ColumnBounds(board, boards[board], checked, tasks, most, found)
-        found[(board, name)] = reader.node(boards[board].columns[name], ())
+        reader = _ColumnBounds(
+            leaderboard, leaderboards[leaderboard], checked, tasks, most, trees, found
+        )
+        found[(leaderboard, name)] = reader.node(leaderboards[leaderboard].columns[name], ())
     return found
 
 
 class _ColumnBounds:
     def __init__(
         self,
-        board: str,
-        leaderboard: Leaderboard,
-        checked: BoardsCheck,
+        leaderboard: str,
+        from_contest: Leaderboard,
+        checked: LeaderboardsCheck,
         tasks: Mapping[str, Mapping[str, Bounds]],
         most: Mapping[str, int | None],
-        done: Mapping[BoardColumn, Bounds],
+        trees: Mapping[str, Mapping[str, object]],
+        done: Mapping[ColumnRef, Bounds],
     ) -> None:
-        self.board = board
         self.leaderboard = leaderboard
+        self.from_contest = from_contest
         self.checked = checked
         self.tasks = tasks
         self.most = most
+        self.trees = trees
         self.done = done
 
     def read(self, task: str, name: str) -> Bounds:
@@ -275,7 +282,7 @@ class _ColumnBounds:
 
     def submission_tasks(self, node: object) -> frozenset[str]:
         if isinstance(node, str):
-            shape = self.checked.shapes[self.board].get(node)
+            shape = self.checked.shapes[self.leaderboard].get(node)
             return shape.of_tasks if shape is not None else frozenset()
         if isinstance(node, dict) and "block" in node:
             if node["block"] == "otherwise" and isinstance(node.get("of"), list):
@@ -285,10 +292,33 @@ class _ColumnBounds:
             return frozenset({str(leaf[1])}) if leaf is not None else frozenset()
         leaf = leaf_of(node) if isinstance(node, dict) else None
         if leaf is not None and leaf[0] == "column":
-            board, name = column_at(self.board, leaf[1])
-            shape = self.checked.shapes.get(board, {}).get(name)
+            leaderboard, name = column_at(self.leaderboard, leaf[1])
+            shape = self.checked.shapes.get(leaderboard, {}).get(name)
             return shape.of_tasks if shape is not None else frozenset()
         return frozenset()
+
+    def best_each(self, tree: Mapping[str, object], task: str) -> Bounds:
+        """The value's bounds, or, with a `missing` number, which any value
+        it reads may count as instead, worked out again from theirs widened
+        by it, as a fold's are."""
+        value = tree.get("value")
+        named = leaf_of(value) if isinstance(value, dict) else None
+        if named is None:
+            return None
+        name = str(named[1])
+        found = self.read(task, name)
+        instead = exact(tree.get("missing"))
+        if instead is None:
+            return found
+        own = self.trees.get(task, {}).get(name)
+        if found is None or own is None:
+            return None
+        given = {
+            each: widest(bounds, (instead, instead))
+            for each, bounds in self.tasks.get(task, {}).items()
+            if each != name
+        }
+        return value_bounds({name: own}, {}, {}, given)[name]
 
     def node(self, tree: object, scope: tuple[str, ...]) -> Bounds:
         number = exact(tree) if not isinstance(tree, dict | list) else None
@@ -302,7 +332,7 @@ class _ColumnBounds:
                 return None
             kind, named = leaf
             if kind == "column":
-                return self.done.get(column_at(self.board, named))
+                return self.done.get(column_at(self.leaderboard, named))
             if kind == "value" and isinstance(named, list):
                 of, name = named
                 if isinstance(of, str) and of in scope:
@@ -322,14 +352,15 @@ class _ColumnBounds:
             leaf = leaf_of(tree[over]) if isinstance(tree.get(over), dict) else None
             task = str(leaf[1]) if leaf is not None else ""
             if block.name == "best_each":
-                value = tree.get("value")
-                named = leaf_of(value) if isinstance(value, dict) else None
-                return self.read(task, str(named[1])) if named is not None else None
+                return self.best_each(tree, task)
             inner = (*scope, task)
             most = self.most.get(task)
             if block.name == "count":
                 return (Fraction(0), Fraction(most)) if most is not None else None
             each = self.node(tree.get("of"), inner)
+            instead = exact(tree.get("missing"))
+            if instead is not None:
+                each = widest(each, (instead, instead))
             if block.name == "sum":
                 if most is None:
                     return None
@@ -355,20 +386,20 @@ class _ColumnBounds:
 
 
 def self_reported_parts(
-    checked: BoardsCheck, reported: Mapping[str, frozenset[str]]
-) -> dict[BoardColumn, tuple[tuple[str, str], ...]]:
+    checked: LeaderboardsCheck, reported: Mapping[str, frozenset[str]]
+) -> dict[ColumnRef, tuple[tuple[str, str], ...]]:
     """Each column's self-reported parts: each task and value it reads,
     directly or through the columns it reads, that reads a column the
     entrant could set, `reported` each task's such values (#504)."""
-    found: dict[BoardColumn, tuple[tuple[str, str], ...]] = {}
-    for board, name in checked.order:
-        shape = checked.shapes[board][name]
+    found: dict[ColumnRef, tuple[tuple[str, str], ...]] = {}
+    for leaderboard, name in checked.order:
+        shape = checked.shapes[leaderboard][name]
         parts = {
             (task, value) for task, value in shape.reads if value in reported.get(task, frozenset())
         }
         for other in shape.columns:
             parts.update(found.get(other, ()))
-        found[(board, name)] = tuple(sorted(parts))
+        found[(leaderboard, name)] = tuple(sorted(parts))
     return found
 
 

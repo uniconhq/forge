@@ -280,7 +280,7 @@ class Settings(BaseSettings):
     `system_error` saying which. The fake runs none and names a
     placeholder for each unless given. `withdrawn_images`, by digest and
     comma separated, are images no step may run any more, such as an
-    `exec` or `interact` image found with a fault in its walls, dropped at
+    `exec` image found with a fault in its walls, dropped at
     once rather than kept while a publication names it, each matched by
     its digest under any name (`withdraws`): a save whose primitive names
     one is refused, and a grading whose steps run one, a run task's or one

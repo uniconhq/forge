@@ -16,7 +16,7 @@ from forge.services.contest_home import (
     public_file,
     task,
 )
-from forge.services.published import PUBLIC_MOST, PublicFile
+from forge.services.entrant_view import PUBLIC_MOST, PublicFile
 
 __all__ = [
     "PUBLIC_MOST",

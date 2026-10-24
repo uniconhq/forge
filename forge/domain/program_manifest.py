@@ -1,5 +1,5 @@
 """An organiser's program's manifest, its `program.yaml` (SIMPLER-CORE.md 7.3,
-13.1): the reports the program writes when `exec` or `interact` runs it
+13.1): the reports the program writes when `exec` runs it, on either form,
 given the manifest, each a `number`, the type when none is given, with
 which way is better and its bounds, both inclusive, or a `text`, and each
 `optional` or not; no other key.
@@ -11,9 +11,10 @@ reports:
 
 A report becomes an output of its name, so its name follows the
 primitive's own rule (`REPORT_NAME`) and is none of the names the primitive
-gives itself: the report folder's files and its own outputs, `exec`'s
-(`EXEC_OWN_NAMES`) or `interact`'s (`INTERACT_OWN_NAMES`), each a copy of
-that primitive's `OWN_NAMES`. So the save refuses what the primitive would.
+gives itself: the report folder's files and its own outputs, the one
+form's (`EXEC_OWN_NAMES`) or the programs form's (`PROGRAMS_OWN_NAMES`),
+each a copy of that set in `exec`. So the save refuses what the primitive
+would.
 Only the forge reads the YAML: the primitive is handed the manifest's JSON
 (`ProgramManifest.as_json`), which its `read_manifest` checks again.
 """
@@ -58,7 +59,7 @@ EXEC_OWN_NAMES = frozenset(
 )
 """What no report of a program `exec` runs may be named: the report folder's
 own files and `exec`'s own outputs."""
-INTERACT_OWN_NAMES = EXEC_OWN_NAMES | {
+PROGRAMS_OWN_NAMES = EXEC_OWN_NAMES | {
     "ended",
     "signal",
     "ended_at",
@@ -66,8 +67,8 @@ INTERACT_OWN_NAMES = EXEC_OWN_NAMES | {
     "facts",
     "reports",
 }
-"""What no report of a program `interact` runs may be named: `exec`'s, and
-what `interact` gives of each program in its facts."""
+"""What no report of a program on `exec`'s programs form may be named:
+the one form's names, and what that form gives of each program in its facts."""
 
 Flag = Annotated[bool, Field(strict=True)]
 
@@ -183,7 +184,7 @@ def _name_problems(reports: object, own_names: Collection[str]) -> list[Problem]
 def parse_program(text: bytes | str, path: str, *, own_names: Collection[str]) -> ProgramManifest:
     """The `program.yaml` in `text`, found at `path`, for a program run by
     the primitive whose own names are `own_names` (`EXEC_OWN_NAMES` or
-    `INTERACT_OWN_NAMES`). Raises `InvalidDefinition` naming `path` and
+    `PROGRAMS_OWN_NAMES`). Raises `InvalidDefinition` naming `path` and
     listing every problem at its YAML path, a report's under
     `reports.<name>`, each naming the report. A report whose name is not
     text, a number say, is refused for its name alone: its settings are

@@ -161,7 +161,7 @@ async def test_a_failure_fails_the_request_and_the_next_try_makes_the_contest(
 
     assert made.name == "spring"
     assert made.id != SPRING
-    assert [each.id for each in await contests.list(setup, acme.ada, ACME)] == [made.id]
+    assert [each.id for each in await contests.list_contests(setup, acme.ada, ACME)] == [made.id]
 
 
 @pytest.mark.parametrize("operation", ["create_contest", "secure"])
@@ -254,7 +254,7 @@ async def test_the_contests_of_an_org_are_listed_as_the_organiser(
 ) -> None:
     await contests.create(setup, acme.ada, ACME, "autumn")
 
-    listed = await contests.list(setup, acme.ada, ACME)
+    listed = await contests.list_contests(setup, acme.ada, ACME)
 
     assert [(each.id, each.name) for each in listed] == [
         ("acme/autumn", "autumn"),
@@ -271,7 +271,7 @@ async def test_each_listed_contest_carries_its_state_and_dates_as_its_settings_s
     await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
     await contests.create(setup, acme.ada, ACME, "autumn")
 
-    listed = await contests.list(setup, acme.ada, ACME)
+    listed = await contests.list_contests(setup, acme.ada, ACME)
 
     assert listed == (
         contests.Listed(
@@ -296,6 +296,6 @@ async def test_a_contest_whose_settings_do_not_read_is_listed_without_state_or_d
 ) -> None:
     await write_contest(acme.fake, "name: Spring\nstart: not a time\n")
 
-    (listed,) = await contests.list(setup, acme.ada, ACME)
+    (listed,) = await contests.list_contests(setup, acme.ada, ACME)
 
     assert listed == contests.Listed(SPRING, "spring", None, None, None)
