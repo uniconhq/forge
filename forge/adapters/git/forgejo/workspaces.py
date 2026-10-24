@@ -1,15 +1,16 @@
 """The workspace area over Forgejo. A workspace is a desk repository plus one
-submission repository per task, each attached to the contest's role teams
-and the task's, so its organisers can read it, with the members as
-collaborators: read on the
-desk, write on a submission repository, since a submit is recorded there as
-the contestant. Each is
+submission repository per task. The desk is attached to the contest's role
+teams. A submission repository is attached to those and to its task's, so
+the task's organisers can read it. The members are collaborators: read on
+the desk, write on a submission repository, since a submit is recorded
+there as the contestant. Each is
 made on its own, and every part of making one checks before it acts, so a
 try that stopped halfway is finished by the next. Anyone on one who is not
 a member of the entrant now is taken off first, and the members are given
-their access last, so a repository whose members all hold it is finished,
-and making it again costs two calls, the repository and who is on it, and
-two a member: their name, and what they may do there. A submission and a
+their access last, so a repository whose members all hold it is finished.
+Making a desk again costs two calls, the repository and who is on it, and
+two a member: their name, and what they may do there. A submission
+repository also gets its task's teams attached. A submission and a
 publication are tags under a reserved prefix that only the platform account
 may create, each pointing at the exact commit the files went in with. A
 publication is an annotated tag whose message is its note.
@@ -122,8 +123,10 @@ class ForgejoWorkspaces:
         contest's roles, with `reserve` keep its submissions for the platform,
         and only then give the members access, write unless `permission` says
         read, so nobody can write a place whose submissions anyone may name.
-        Each leaves what is already right alone, and when every member holds
-        that access already nothing else is asked.
+        Each leaves what is already right alone. When every member holds
+        that access already, a desk is left as it is, and a submission
+        repository still gets its task's teams, so one opened before those
+        teams existed picks them up the next time.
 
         Only the platform makes these repositories and only an entrant's
         members are put on them, so a collaborator who is not one of the
