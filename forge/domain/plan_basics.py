@@ -15,6 +15,9 @@ from forge.domain.yaml_models import Model, Number
 PLANS_FOLDER = "plans/"
 PLAN_PATH = "plans/plan.json"
 STEP_ID = r"^[a-z0-9][a-z0-9_-]*$"
+# A step's name inside a plan: a written id, or the path of written ids
+# joined by `/` once a workflow holds another as a box.
+FLAT_STEP_ID = r"^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*$"
 PRIMITIVE = r"^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_-]*@[A-Za-z0-9][A-Za-z0-9._-]*$"
 SECRET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 RESULT_MAX = 1024 * 1024

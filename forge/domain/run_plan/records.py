@@ -2,7 +2,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, PlainValidator
 
-from forge.domain.plan_basics import STEP_ID
+from forge.domain.plan_basics import FLAT_STEP_ID
 from forge.domain.run_task import RUN_ID
 from forge.domain.yaml_models import is_number
 
@@ -75,7 +75,7 @@ PIPELINE_WORDS: dict[PipelineKind, str] = {
 SHA256 = r"^[0-9a-f]{64}$"
 COMMIT = r"^[0-9a-f]{40}([0-9a-f]{24})?$"
 OUTPUT = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$"
-PIPELINE_STEP = r"^[a-z0-9][a-z0-9_-]*(\.[A-Za-z0-9_-]+)?$"
+PIPELINE_STEP = r"^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*(\.[A-Za-z0-9_-]+)?$"
 
 
 def _file_value(value: object) -> bool:
@@ -170,4 +170,4 @@ Value = Annotated[dict[str, Any], PlainValidator(_run_value)]
 Inputs = dict[str, Value]
 Taint = Annotated[dict[str, Any], PlainValidator(_taint)]
 RunId = Annotated[str, Field(pattern=RUN_ID.pattern)]
-StepId = Annotated[str, Field(pattern=STEP_ID)]
+StepId = Annotated[str, Field(pattern=FLAT_STEP_ID)]

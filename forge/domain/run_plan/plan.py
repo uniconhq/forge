@@ -3,7 +3,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from forge.domain import exact_json
-from forge.domain.checks import CHECKS_ROOM, COPY_MOST, RUNS_KEPT, TaskCheck, check_room, copy_of
+from forge.domain.checks import CHECKS_ROOM, RUNS_KEPT, TaskCheck, check_room, copy_of
 from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, TaskDefinition
@@ -31,6 +31,15 @@ from forge.domain.run_workflow import RunWorkflowCheck
 from forge.domain.types import FILES
 from forge.domain.workflow_definition import RunWorkflow
 from forge.domain.yaml_models import Path, Problem, path_text
+
+
+def _named(steps: dict[str, RunStep]) -> dict[str, RunStep]:
+    """Each step's Woodpecker name, `s<n>` by its place in the plan from 1,
+    a check's copies and a value's program steps included."""
+    return {
+        key: step.model_copy(update={"woodpecker": f"s{place}"})
+        for place, (key, step) in enumerate(steps.items(), start=1)
+    }
 
 
 def plan_runs(
@@ -127,7 +136,7 @@ def plan_runs(
         runs=tuple(
             RunEntry(id=run.id, key=_key_json(run.key), early=run.early) for run in task.runs
         ),
-        steps={**planner.run_steps(), **copied},
+        steps=_named({**planner.run_steps(), **copied}),
         pipelines=pipelines,
         reports=planner.reports(),
         notes=(*planner.notes(), *task.release_notes()),
@@ -163,7 +172,7 @@ def _check_copies(
     """Each check's copies of the steps graded per submission, and the
     save's pipeline with them after its `own` steps, check by check, each
     check's laid out as `whole` lays a grading out; or what refuses them: a
-    copy's name taken or too long, a check's file larger than the entrant
+    copy's name already taken, a check's file larger than the entrant
     may give, the pipeline then past the run ceiling, or the checks able
     to keep more of the save's result than `CHECKS_ROOM`. None when the
     task has no checks.
@@ -177,20 +186,14 @@ def _check_copies(
     for check in task.checks:
         at = ("checks", check.index - 1)
         rename = {step: copy_of(check.index, step) for step in order}
-        taken = next(
-            (name for name in rename.values() if name in steps or len(name) > COPY_MOST), None
-        )
+        taken = next((name for name in rename.values() if name in steps), None)
         if taken is not None:
             problems.append(
                 Problem(
                     path=path_text(at),
-                    message=f"Unicon names this check's copy of a step {taken}, which "
-                    + (
-                        "the workflow's step of that name already takes."
-                        if taken in steps
-                        else f"is longer than the {COPY_MOST} characters a step's name may be."
-                    )
-                    + " Remove the check, or use a workflow whose steps' ids are shorter.",
+                    message=f"Unicon names this check's copy of a step {taken}, which the "
+                    "workflow's step of that name already takes. Remove the check, or rename "
+                    "that step.",
                 )
             )
             continue

@@ -217,6 +217,47 @@ def held(plan: RunPlan, name: str, kind: str = "late") -> PipelineStep:
 # Islands, step by step
 
 
+def test_each_plan_step_is_named_s_n_by_its_place(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(islands(primitives))
+    checked_plan = ok(checked(primitives))
+    program = ok(mean(primitives))
+
+    for made in (plan, checked_plan, program):
+        assert [step.woodpecker for step in made.steps.values()] == [
+            f"s{place}" for place in range(1, len(made.steps) + 1)
+        ]
+    assert [plan.steps[name].woodpecker for name in ("compile", "solution", "diff", "compare")] == [
+        "s1",
+        "s2",
+        "s3",
+        "s4",
+    ]
+    assert plan.woodpecker_name("compile") == "s1"
+    assert plan.woodpecker_name("solution.r3") == "s2.r3"
+    assert plan.woodpecker_name("c1-compare") == "c1-compare"
+    assert plan.woodpecker_name("report") == "report"
+    bare = plan.model_copy(
+        update={
+            "steps": {
+                name: step.model_copy(update={"woodpecker": None})
+                for name, step in plan.steps.items()
+            }
+        }
+    )
+    assert bare.woodpecker_name("compile") == "compile"
+    assert bare.woodpecker_name("solution.r3") == "solution.r3"
+    assert checked_plan.woodpecker_name("c1-solution.r2") == (
+        f"{checked_plan.steps['c1-solution'].woodpecker}.r2"
+    )
+    assert program.steps["build-mean"].woodpecker is not None
+    assert program.woodpecker_name("exec-mean") == program.steps["exec-mean"].woodpecker
+    document = exact_json.loads(plan.to_bytes())
+    document["steps"]["build/compile"] = document["steps"].pop("compile")
+    assert violation(document, "plan") is None
+
+
 def test_islands_reads_as_written_step_by_step(primitives: dict[str, PrimitiveDeclaration]) -> None:
     plan = ok(islands(primitives))
 
@@ -1840,27 +1881,20 @@ def _cartpole_named(
     )
 
 
-def test_a_check_whose_copy_takes_a_step_s_name_or_is_too_long_is_refused(
+def test_a_check_whose_copy_takes_a_step_s_name_is_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     # The runner is compiled once from the task's own files, so only the
-    # episode, run per submission, is copied, as c1-episode.
+    # episode, run per submission, is copied, as c1-episode. A copy's name
+    # may be longer than a Woodpecker name: Woodpecker is named s<n>.
     assert ok(_cartpole_named(primitives, "runner", "c1-runner")).checks() == (1,)
     assert refused(_cartpole_named(primitives, "runner", "c1-episode")) == {
         "checks[0]": [
             "Unicon names this check's copy of a step c1-episode, which the workflow's step of "
-            "that name already takes. Remove the check, or use a workflow whose steps' ids are "
-            "shorter."
+            "that name already takes. Remove the check, or rename that step."
         ]
     }
-    assert ok(_cartpole_named(primitives, "episode", "e" * 37)).checks() == (1,)
-    assert refused(_cartpole_named(primitives, "episode", "e" * 38)) == {
-        "checks[0]": [
-            f"Unicon names this check's copy of a step c1-{'e' * 38}, which is longer than the "
-            "40 characters a step's name may be. Remove the check, or use a workflow whose "
-            "steps' ids are shorter."
-        ]
-    }
+    assert ok(_cartpole_named(primitives, "episode", "e" * 38)).checks() == (1,)
 
 
 def test_checks_taking_the_save_past_the_wall_are_refused_at_checks(

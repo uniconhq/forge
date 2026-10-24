@@ -118,6 +118,7 @@ class RunStep(Model):
     tainted: Taint | None = None
     value: ValueStep | None = None
     check: CheckStep | None = None
+    woodpecker: Annotated[str, Field(pattern=r"^s[0-9]+$")] | None = None
     inputs: Inputs | None = None
     items: dict[RunId, Item] | None = None
 
@@ -127,9 +128,10 @@ class RunStep(Model):
 
 
 class PipelineStep(Model):
-    """One Woodpecker step of a pipeline: its name, the workflow step it
-    runs, the runs it holds, none for a step done once, the Woodpecker steps
-    of the same pipeline it waits for, and its container's limits.
+    """One step of a pipeline: its name inside the plan, the workflow step it
+    runs, the runs it holds, none for a step done once, the steps of the same
+    pipeline it waits for, and its container's limits. The Woodpecker file
+    names it by `RunPlan.woodpecker_name`.
     """
 
     name: Annotated[str, Field(pattern=PIPELINE_STEP)]
@@ -208,8 +210,21 @@ class RunPlan(Model):
         return cls.model_validate(document)
 
     def pipeline(self, kind: PipelineKind) -> tuple[PipelineStep, ...]:
-        """The Woodpecker steps of one pipeline, none when it is left out."""
+        """The steps of one pipeline, none when it is left out."""
         return self.pipelines.get(kind, ())
+
+    def woodpecker_name(self, name: str) -> str:
+        """The Woodpecker name of a plan name: the step's `woodpecker`, then
+        `.<run>` when `name` is one run of it. A step with no `woodpecker`,
+        and a name that is not a step's, such as the report step, is `name`
+        itself, so a plan written before steps carried one runs as it did.
+        """
+        base, dot, run = name.rpartition(".")
+        key = base if dot and base in self.steps else name
+        if key not in self.steps:
+            return name
+        named = self.steps[key].woodpecker or key
+        return f"{named}.{run}" if key == base else named
 
     def for_split(self, released: bool) -> RunPlan:
         """The plan as a grading made `released` or not reads it: made

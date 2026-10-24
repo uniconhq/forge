@@ -3,7 +3,9 @@ step outputs, and the large-file objects a publication's planned files are
 (SIMPLER-CORE.md 11.6, 11.9).
 
 `grading_steps` is one row per grading and Woodpecker step, made when the
-step's token is minted: the pipeline it runs in, the SHA-256 of its token,
+step's token is minted: the step's name inside forge (`step`), its name in
+the Woodpecker file (`woodpecker`, null on a row minted before steps were
+named that way), the pipeline it runs in, the SHA-256 of its token,
 when the token expires, whether the grading reuses nothing (`from_scratch`),
 and, once the step has asked, when (`job_at`), the items its job held, each
 run with its key (`items`), the files the door serves it by SHA-256,
@@ -51,6 +53,7 @@ class GradingStep(Base, Timestamped):
 
     grading_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
     step: Mapped[str] = mapped_column(primary_key=True)
+    woodpecker: Mapped[str | None]
     pipeline: Mapped[str]
     token_hash: Mapped[bytes]
     expires_at: Mapped[datetime]
@@ -65,6 +68,12 @@ class GradingStep(Base, Timestamped):
 
     __table_args__ = (
         CheckConstraint(f"pipeline in {PIPELINES}", name="pipeline"),
+        Index(
+            "ix_grading_steps_grading_id_woodpecker",
+            "grading_id",
+            "woodpecker",
+            unique=True,
+        ),
         Index(
             "ix_grading_steps_box_first",
             "box_first",

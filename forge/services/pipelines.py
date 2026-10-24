@@ -223,10 +223,12 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
         boxed = boxed or in_boxes
         found.append(
             PipelineStepSpec(
-                name=each.name,
+                name=plan.woodpecker_name(each.name),
                 image=step.image,
-                settings=_settings(steps.access(ctx, row, each.name)),
-                depends_on=each.depends_on,
+                settings=_settings(
+                    steps.access(ctx, row, each.name, plan.woodpecker_name(each.name))
+                ),
+                depends_on=tuple(plan.woodpecker_name(name) for name in each.depends_on),
                 cache=step.cache,
                 user=None if in_boxes else row.run_user,
             )
@@ -240,8 +242,11 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
         PipelineStepSpec(
             name=REPORT_STEP,
             image=report,
-            settings={"mode": REPORT_MODE, **_settings(steps.access(ctx, row, REPORT_STEP))},
-            depends_on=tuple(each.name for each in left),
+            settings={
+                "mode": REPORT_MODE,
+                **_settings(steps.access(ctx, row, REPORT_STEP, REPORT_STEP)),
+            },
+            depends_on=tuple(plan.woodpecker_name(each.name) for each in left),
             user=row.run_user,
             always=True,
         )

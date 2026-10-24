@@ -118,6 +118,7 @@ from tests.services.test_steps import (
     _islands,
     _job,
     _mint,
+    _named,
     _report,
     _row,
     _runs,
@@ -286,11 +287,14 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     user = early.run_user
     assert user is not None and user >= USER_FIRST
     assert _steps(first) == [
-        ("compile", user, []),
-        ("solution", None, ["compile"]),
-        ("compare", None, ["solution"]),
-        ("report", user, ["compile", "solution", "compare"]),
+        ("s1", user, []),
+        ("s2", None, ["s1"]),
+        ("s4", None, ["s2"]),
+        ("report", user, ["s1", "s2", "s4"]),
     ]
+    assert all(
+        step["settings"]["data_url"].endswith(f"/steps/{step['name']}") for step in first["steps"]
+    )
     report = first["steps"][-1]
     assert (report["image"], report["always"]) == (setup.settings.primitive_base_image, True)
     assert report["settings"]["mode"] == "report"
@@ -302,7 +306,7 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     [late] = await _rows(setup, "late")
     assert (late.early_id, late.attempt, late.status) == (early.id, 1, GradingStatus.DISPATCHED)
     assert late.idempotency_key is None
-    assert [step[0] for step in _steps(asked[-1])] == ["solution", "compare", "report"]
+    assert [step[0] for step in _steps(asked[-1])] == ["s2", "s4", "report"]
     assert asked[-1]["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL]
     await _step(setup, acme, late.id, "late", "solution", _batch())
     await _step(setup, acme, late.id, "late", "compare", _batch(score=True))
@@ -765,7 +769,7 @@ async def test_an_early_compile_error_gives_every_late_run_its_verdict_and_no_la
 
     await _step(setup, acme, early.id, "early", "compile", _compiled(outcome="compile_error"))
     access = await _mint(setup, early.id, "early", "solution")
-    assert await steps.step_job(setup, early.id, "solution", _bearer(access)) is None
+    assert await steps.step_job(setup, early.id, _named(access), _bearer(access)) is None
     assert await _report(setup, early.id, "early") is GradingStatus.DONE
     await setup.settle()
 
@@ -928,7 +932,7 @@ async def test_a_pointer_to_an_upload_the_submission_did_not_take_is_given_no_li
         await ctx.db.execute(update(UploadRow).values(consumed_by="acme/spring/@u9/islands#1"))
 
     with pytest.raises(Misconfigured, match="is no upload it took"):
-        await steps.step_job(setup, early.id, "compile", _bearer(access))
+        await steps.step_job(setup, early.id, _named(access), _bearer(access))
 
 
 async def test_a_task_with_nothing_early_makes_its_late_row_at_once(
@@ -943,7 +947,7 @@ async def test_a_task_with_nothing_early_makes_its_late_row_at_once(
     assert early.result is not None and early.result["runs"] == []
     [late] = await _rows(setup, "late")
     assert (late.early_id, late.status) == (early.id, GradingStatus.DISPATCHED)
-    assert [step[0] for step in _steps(asked[-1])] == ["compile", "solution", "compare", "report"]
+    assert [step[0] for step in _steps(asked[-1])] == ["s1", "s2", "s4", "report"]
     # Submitted, results after the contest: not graded, with nothing run.
     assert await _seen(setup, session, islands) == [(1, SubmissionState.SUBMITTED)]
     clock.set(AFTER_CLOSE)
@@ -1313,7 +1317,7 @@ async def test_a_regrade_of_compares_alone_is_said_at_the_save_and_checks_nothin
 
     _, regraded = await _rows(setup, "early")
     assert regraded.run_id is not None
-    assert [step[0] for step in _steps(asked[-1])] == ["compare", "report"]
+    assert [step[0] for step in _steps(asked[-1])] == ["s4", "report"]
     assert asked[-1]["clone"] is None
 
 

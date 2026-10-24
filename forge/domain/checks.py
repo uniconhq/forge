@@ -44,8 +44,6 @@ from forge.domain.yaml_models import Path, Problem, is_number, joined, path_text
 
 VERDICT = "verdict"
 """The key of `expect` that names the verdict every run must get."""
-COPY_MOST = 40
-"""The longest a copy's step id may be, as a step's name at the door is."""
 MOST_FAILING = 20
 """The most sentences a check's result keeps of what it did not get."""
 RUNS_KEPT = 20
@@ -365,7 +363,6 @@ def failing_words(run: str, got: str, wanted: str) -> str:
 
 __all__ = [
     "CHECKS_ROOM",
-    "COPY_MOST",
     "MOST_FAILING",
     "RUNS_KEPT",
     "VERDICT",

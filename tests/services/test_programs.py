@@ -53,6 +53,7 @@ from tests.services.test_steps import (
     _islands,
     _job,
     _mint,
+    _named,
     _outputs,
     _report,
     _row,
@@ -155,7 +156,7 @@ async def test_a_task_with_a_program_and_an_entered_value_saves_grades_and_score
     given = job["inputs"]["inputs"]
     runs = _download(job, given["files"]["files"]["runs.json"]["file"])
     sha256 = runs["url"].rpartition("/files/")[2]
-    served = await steps.step_file(setup, late.id, "exec-mean", sha256, _bearer(access))
+    served = await steps.step_file(setup, late.id, _named(access), sha256, _bearer(access))
     program = _download(job, given["program"]["file"])
     assert acme.fake.objects.get(program["url"]) == MEAN_PROGRAM
     assert (given["time_limit"], given["memory_limit"]) == (2, 256)

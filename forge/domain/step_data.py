@@ -122,8 +122,9 @@ REPORT_STEP = "report"
 """The step Unicon adds to every grading's pipeline, which tells the door
 the pipeline has ended (`workflow_definition.PIPELINE_STEPS`)."""
 STEP_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}(\.[A-Za-z0-9_-]+)?")
-"""What a pipeline step's name may be: a workflow step's id, alone for a
-step done once or a batch, or with a run's id for one run of it."""
+"""What a Woodpecker step's name may be: `s<n>` by the step's place, `report`
+for the report step, or either with `.<run>` for one run. A step's name
+inside forge is its path and is not limited by this."""
 
 
 def is_step_name(name: str) -> bool:
@@ -217,9 +218,9 @@ def reads_from(kind: PipelineKind) -> tuple[PipelineKind, ...]:
 
 
 def without(steps: Sequence[PipelineStep], left_out: Iterable[str]) -> tuple[PipelineStep, ...]:
-    """The pipeline with the Woodpecker steps named in `left_out` taken
-    out, every step that waited for one waiting instead for what it waited
-    for, so the order holds."""
+    """The pipeline with the steps named in `left_out` taken out, every step
+    that waited for one waiting instead for what it waited for, so the order
+    holds. The names are the plan's, the path or `<path>.<run>`."""
     gone = set(left_out)
     waits = {held.name: held.depends_on for held in steps}
 

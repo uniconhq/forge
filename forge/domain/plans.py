@@ -67,6 +67,9 @@ from forge.domain.definitions import (
 from forge.domain.grading import WALL_CEILING, Machine, wall_seconds
 from forge.domain.meanings import Measure, ValueMeaning, in_sentence, with_measures
 from forge.domain.plan_basics import (
+    FLAT_STEP_ID,
+)
+from forge.domain.plan_basics import (
     PRIMITIVE as PRIMITIVE,
 )
 from forge.domain.plan_basics import (
@@ -201,7 +204,7 @@ class PlanStep(Model):
     `test`, or once for many tests with `batch`.
     """
 
-    id: Annotated[str, Field(pattern=STEP_ID)]
+    id: Annotated[str, Field(pattern=FLAT_STEP_ID)]
     primitive: Annotated[str, Field(pattern=PRIMITIVE)]
     image: Image
     network: bool

@@ -185,6 +185,11 @@ def _bearer(access: StepAccess | str) -> str:
     return f"Bearer {access if isinstance(access, str) else access.token}"
 
 
+def _named(access: StepAccess) -> str:
+    """The name the door's URL carries, which is the only one the step knows."""
+    return access.data_url.rstrip("/").rsplit("/", 1)[-1]
+
+
 async def _mint(
     setup: Setup, row: uuid.UUID, pipeline: PipelineKind, step: str, from_scratch: bool = False
 ) -> StepAccess:
@@ -195,7 +200,8 @@ async def _mint(
 
 
 async def _job(setup: Setup, row: uuid.UUID, step: str, access: StepAccess | str) -> dict[str, Any]:
-    built = await steps.step_job(setup, row, step, _bearer(access))
+    asked = _named(access) if isinstance(access, StepAccess) else step
+    built = await steps.step_job(setup, row, asked, _bearer(access))
     assert built is not None
     job: dict[str, Any] = exact_json.loads(built)
     assert list(JOB_CHECK.iter_errors(job)) == []
@@ -211,10 +217,11 @@ async def _finish(
         for path, content in written.items()
     ]
     body = json.dumps({"files": listed}).encode()
-    links = await steps.step_uploads(setup, row, step, _bearer(access), body)
+    asked = _named(access)
+    links = await steps.step_uploads(setup, row, asked, _bearer(access), body)
     for path, link in links["files"].items():
         acme.fake.objects.put(link, written[path])
-    await steps.step_done(setup, row, step, _bearer(access), b"{}")
+    await steps.step_done(setup, row, asked, _bearer(access), b"{}")
     return dict(links["files"])
 
 
@@ -342,7 +349,7 @@ async def test_islands_is_graded_through_the_door_step_by_step(
     compare = compare_job["inputs"]["batch"][0]["inputs"]
     manifest = _download(compare_job, compare["manifest"]["file"])
     sha256 = manifest["url"].rpartition("/files/")[2]
-    served = await steps.step_file(setup, row, "compare", sha256, _bearer(access))
+    served = await steps.step_file(setup, row, _named(access), sha256, _bearer(access))
     await _finish(setup, acme, row, "compare", access, _batch(score=True)(compare_job))
     await _report(setup, row, "early")
 
@@ -442,7 +449,7 @@ async def test_a_compile_error_is_every_runs_verdict_and_the_grading_is_done(
     await _step(setup, acme, row, "early", "compile", _compiled(outcome="compile_error"))
 
     access = await _mint(setup, row, "early", "solution")
-    assert await steps.step_job(setup, row, "solution", _bearer(access)) is None
+    assert await steps.step_job(setup, row, _named(access), _bearer(access)) is None
     assert await _report(setup, row, "early") is GradingStatus.DONE
 
     result = (await _row(setup, row)).result
@@ -482,8 +489,8 @@ async def test_a_step_another_grading_did_first_has_nothing_to_do_and_the_rest_r
     await _step(setup, acme, early, "early", "compile", _compiled())
 
     access = await _mint(setup, late, "early", "compile")
-    assert await steps.step_job(setup, late, "compile", _bearer(access)) is None
-    assert await steps.step_job(setup, late, "compile", _bearer(access)) is None
+    assert await steps.step_job(setup, late, _named(access), _bearer(access)) is None
+    assert await steps.step_job(setup, late, _named(access), _bearer(access)) is None
     await _step(setup, acme, late, "early", "solution", _batch())
     await _step(setup, acme, late, "early", "compare", _batch(score=True))
 
@@ -644,7 +651,7 @@ async def test_a_step_holds_only_its_own_row_and_the_report_holds_every_steps(
 
     async with setup.unit_of_work() as ctx:
         assert await gradings.find(ctx, row, lock=True) is not None
-        job = await asyncio.wait_for(steps.step_job(setup, row, "compile", _bearer(access)), 5)
+        job = await asyncio.wait_for(steps.step_job(setup, row, _named(access), _bearer(access)), 5)
         assert job is not None
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(
@@ -668,22 +675,47 @@ async def test_a_token_opens_only_its_own_step_of_its_own_grading(
     await _saved(setup, acme, islands)
     row, other = await _grading(setup, acme, islands), await _grading(setup, acme, islands)
     access = await _mint(setup, row, "early", "compile")
-    await _mint(setup, row, "early", "solution")
-    await _mint(setup, other, "early", "compile")
+    solution = await _mint(setup, row, "early", "solution")
+    other_compile = await _mint(setup, other, "early", "compile")
 
     for grading, step, header in (
-        (row, "solution", _bearer(access)),
-        (other, "compile", _bearer(access)),
-        (row, "compile", None),
-        (row, "compile", f"Basic {access.token}"),
-        (row, "compile", _bearer(access.token[:-1])),
+        (row, _named(solution), _bearer(access)),
+        (other, _named(other_compile), _bearer(access)),
+        (row, _named(access), None),
+        (row, _named(access), f"Basic {access.token}"),
+        (row, _named(access), _bearer(access.token[:-1])),
         (row, "report", _bearer(access)),
     ):
         with pytest.raises(InvalidToken):
             await steps.step_job(setup, grading, step, header)
     with pytest.raises(NotFound):
         await _mint(setup, row, "early", "diff")
-    assert access.data_url.endswith(f"/api/v1/gradings/{row}/steps/compile")
+    assert access.data_url.endswith(f"/api/v1/gradings/{row}/steps/s1")
+    assert solution.data_url.endswith(f"/api/v1/gradings/{row}/steps/s2")
+
+
+async def test_the_door_finds_a_step_by_its_woodpecker_name_and_an_older_row_by_its_own(
+    setup: Setup, acme: Acme, islands: Islands
+) -> None:
+    await _saved(setup, acme, islands)
+    row = await _grading(setup, acme, islands)
+    access = await _mint(setup, row, "early", "compile")
+
+    assert await steps.step_job(setup, row, "s1", _bearer(access)) is not None
+    with pytest.raises(InvalidToken):
+        await steps.step_job(setup, row, "compile", _bearer(access))
+
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(GradingStep)
+            .where(GradingStep.grading_id == row, GradingStep.step == "compile")
+            .values(woodpecker=None)
+        )
+    assert await steps.step_job(setup, row, "compile", _bearer(access)) is not None
+    with pytest.raises(InvalidToken):
+        await steps.step_job(setup, row, "s1", _bearer(access))
+    again = await _mint(setup, row, "early", "compile")
+    assert again.data_url.endswith("/steps/compile") and again.token == access.token
 
 
 async def test_a_token_is_refused_once_its_step_is_done_or_it_has_expired(
@@ -696,9 +728,9 @@ async def test_a_token_is_refused_once_its_step_is_done_or_it_has_expired(
     links = await _finish(setup, acme, row, "compile", access, _compiled()({}))
 
     with pytest.raises(InvalidToken):
-        await steps.step_job(setup, row, "compile", _bearer(access))
+        await steps.step_job(setup, row, _named(access), _bearer(access))
     with pytest.raises(InvalidToken):
-        await steps.step_uploads(setup, row, "compile", _bearer(access), b'{"files": []}')
+        await steps.step_uploads(setup, row, _named(access), _bearer(access), b'{"files": []}')
     with pytest.raises(GradingClosed):
         await _mint(setup, row, "early", "compile")
     assert links
@@ -706,9 +738,9 @@ async def test_a_token_is_refused_once_its_step_is_done_or_it_has_expired(
     solution = await _mint(setup, row, "early", "solution")
     clock.advance(TOKEN_LIFE)
     with pytest.raises(InvalidToken):
-        await steps.step_job(setup, row, "solution", _bearer(solution))
+        await steps.step_job(setup, row, _named(solution), _bearer(solution))
     with pytest.raises(InvalidToken):
-        await steps.step_done(setup, row, "solution", _bearer(solution), b"{}")
+        await steps.step_done(setup, row, _named(solution), _bearer(solution), b"{}")
 
 
 async def test_a_finished_grading_takes_no_more_work(
@@ -723,7 +755,7 @@ async def test_a_finished_grading_takes_no_more_work(
         gradings.finish(ctx, found, GradingStatus.CANCELLED)
 
     with pytest.raises(GradingClosed):
-        await steps.step_job(setup, row, "compile", _bearer(access))
+        await steps.step_job(setup, row, _named(access), _bearer(access))
     with pytest.raises(GradingClosed):
         await _mint(setup, row, "early", "solution")
 
@@ -737,14 +769,14 @@ async def test_done_and_the_report_answer_the_same_when_said_again(
     await _job(setup, row, "compile", access)
     await _finish(setup, acme, row, "compile", access, _compiled()({}))
 
-    await steps.step_done(setup, row, "compile", _bearer(access), b"{}")
+    await steps.step_done(setup, row, _named(access), _bearer(access), b"{}")
     assert len(await _stored(setup, grading_id=row)) == 1
     report = await _mint(setup, row, "early", "report")
     first = await steps.step_report(setup, row, "report", _bearer(report), b"{}")
     result = (await _row(setup, row)).result
 
     again = await steps.step_report(setup, row, "report", _bearer(report), b"{}")
-    await steps.step_done(setup, row, "compile", _bearer(access), b"{}")
+    await steps.step_done(setup, row, _named(access), _bearer(access), b"{}")
 
     assert first is again is GradingStatus.SYSTEM_ERROR
     assert (await _row(setup, row)).result == result
@@ -782,7 +814,7 @@ async def test_a_step_uploads_only_where_it_may_write(
 
     with pytest.raises(InvalidCallback):
         await steps.step_uploads(
-            setup, row, "compile", _bearer(access), json.dumps({"files": listed}).encode()
+            setup, row, _named(access), _bearer(access), json.dumps({"files": listed}).encode()
         )
 
 
@@ -796,16 +828,16 @@ async def test_uploads_are_bounded_listed_after_the_job_and_put_under_the_step(
     body = json.dumps({"files": [one]}).encode()
 
     with pytest.raises(InvalidCallback):
-        await steps.step_uploads(setup, row, "compile", _bearer(access), body)
+        await steps.step_uploads(setup, row, _named(access), _bearer(access), body)
     await _job(setup, row, "compile", access)
     over = {"path": "out/program", "sha256": "0" * 64, "size": 64 * 1024 * 1024 + 1}
     with pytest.raises(InvalidCallback):
         await steps.step_uploads(
-            setup, row, "compile", _bearer(access), json.dumps({"files": [one, over]}).encode()
+            setup, row, _named(access), _bearer(access), json.dumps({"files": [one, over]}).encode()
         )
     with pytest.raises(InvalidCallback):
-        await steps.step_done(setup, row, "compile", _bearer(access), b"{}")
-    links = await steps.step_uploads(setup, row, "compile", _bearer(access), body)
+        await steps.step_done(setup, row, _named(access), _bearer(access), b"{}")
+    links = await steps.step_uploads(setup, row, _named(access), _bearer(access), body)
 
     assert (
         f"/unicon-results/results/{row}/steps/compile/outputs.json?"
@@ -833,7 +865,7 @@ async def test_a_file_listed_and_not_put_is_a_fault_and_a_put_writes_only_what_w
         for path, content in written.items()
     ]
     links = await steps.step_uploads(
-        setup, row, "compile", _bearer(access), json.dumps({"files": listed}).encode()
+        setup, row, _named(access), _bearer(access), json.dumps({"files": listed}).encode()
     )
     for path in written:
         with pytest.raises(Rejected):
@@ -841,7 +873,7 @@ async def test_a_file_listed_and_not_put_is_a_fault_and_a_put_writes_only_what_w
     for path in put:
         acme.fake.objects.put(links["files"][path], written[path])
 
-    await steps.step_done(setup, row, "compile", _bearer(access), b"{}")
+    await steps.step_done(setup, row, _named(access), _bearer(access), b"{}")
 
     async with setup.unit_of_work() as ctx:
         held = await ctx.db.get(GradingStep, (row, "compile"))
@@ -897,7 +929,7 @@ async def test_the_token_never_reaches_a_link_or_a_log(
         links = await _finish(setup, acme, row, step, access, write(jobs[-1]))
         jobs.append(links)
     with pytest.raises(InvalidToken):
-        await steps.step_job(setup, row, "compile", _bearer(tokens[0]))
+        await steps.step_job(setup, row, "s1", _bearer(tokens[0]))
 
     logged = "\n".join(record.getMessage() + str(record.__dict__) for record in caplog.records)
     for token in tokens:
@@ -947,10 +979,10 @@ async def test_a_large_task_file_is_read_by_its_link_and_no_other_hash_gets_one(
     small = _download(job, job["inputs"]["batch"][1]["inputs"]["stdin"]["file"])
     sha256 = hashlib.sha256(ISLANDS_DATA["tests/4.in"]).hexdigest()
     assert small["url"] == f"{access.data_url}/files/{sha256}"
-    assert await steps.step_file(setup, late, "solution", sha256, _bearer(access)) == b"4\n"
+    assert await steps.step_file(setup, late, _named(access), sha256, _bearer(access)) == b"4\n"
     for unlisted in (digest, hashlib.sha256(ISLANDS_DATA["tests/3.ans"]).hexdigest()):
         with pytest.raises(NotFound):
-            await steps.step_file(setup, late, "solution", unlisted, _bearer(access))
+            await steps.step_file(setup, late, _named(access), unlisted, _bearer(access))
 
 
 @pytest.mark.parametrize(
@@ -975,7 +1007,7 @@ async def test_an_entrants_paths_never_leave_their_folder(
     access = await _mint(setup, row, "early", "compile")
 
     with pytest.raises(Misconfigured):
-        await steps.step_job(setup, row, "compile", _bearer(access))
+        await steps.step_job(setup, row, _named(access), _bearer(access))
 
 
 async def test_a_boxed_step_holds_a_block_of_box_users_while_it_runs(
@@ -1110,7 +1142,7 @@ async def test_a_grading_under_way_keeps_what_it_reused_when_from_scratch_replac
     await _step(setup, acme, await _grading(setup, acme, islands), "early", "compile", _compiled())
     under_way = await _grading(setup, acme, islands)
     access = await _mint(setup, under_way, "early", "compile")
-    assert await steps.step_job(setup, under_way, "compile", _bearer(access)) is None
+    assert await steps.step_job(setup, under_way, _named(access), _bearer(access)) is None
     await _step(setup, acme, under_way, "early", "solution", _batch())
 
     scratch = await _grading(setup, acme, islands)
@@ -1134,7 +1166,7 @@ async def test_an_earlier_step_that_gave_nothing_is_a_fault_not_nothing_to_do(
     access = await _mint(setup, row, "early", "solution")
 
     with pytest.raises(Misconfigured, match="The step solution reads a step"):
-        await steps.step_job(setup, row, "solution", _bearer(access))
+        await steps.step_job(setup, row, _named(access), _bearer(access))
 
 
 async def test_a_step_keeps_to_the_first_upload_list_it_sent(
@@ -1160,16 +1192,16 @@ async def test_a_step_keeps_to_the_first_upload_list_it_sent(
             }
         ).encode()
 
-    first = await steps.step_uploads(setup, row, "compile", _bearer(access), listing(written))
-    again = await steps.step_uploads(setup, row, "compile", _bearer(access), listing(written))
+    first = await steps.step_uploads(setup, row, _named(access), _bearer(access), listing(written))
+    again = await steps.step_uploads(setup, row, _named(access), _bearer(access), listing(written))
     tampered = {**written, "out/program": PROGRAM + b"tampered"}
     with pytest.raises(InvalidCallback, match="listed other uploads"):
-        await steps.step_uploads(setup, row, "compile", _bearer(access), listing(tampered))
+        await steps.step_uploads(setup, row, _named(access), _bearer(access), listing(tampered))
 
     assert set(first["files"]) == set(again["files"])
     for path, link in again["files"].items():
         acme.fake.objects.put(link, written[path])
-    await steps.step_done(setup, row, "compile", _bearer(access), b"{}")
+    await steps.step_done(setup, row, _named(access), _bearer(access), b"{}")
     with pytest.raises(Rejected):
         acme.fake.objects.put(first["files"]["out/program"], tampered["out/program"])
     [kept] = await _stored(setup, grading_id=row, step="compile")
@@ -1202,9 +1234,9 @@ async def test_a_token_is_admitted_before_a_body_is_read(
     row = await _grading(setup, acme, islands)
     access = await _mint(setup, row, "early", "compile")
 
-    await steps.step_admits(setup, row, "compile", _bearer(access))
+    await steps.step_admits(setup, row, _named(access), _bearer(access))
     with pytest.raises(InvalidToken):
-        await steps.step_admits(setup, row, "compile", _bearer(access.token[:-1]))
+        await steps.step_admits(setup, row, _named(access), _bearer(access.token[:-1]))
 
 
 async def _done_with(
@@ -1222,13 +1254,13 @@ async def _done_with(
         for path, content in written.items()
     ]
     links = await steps.step_uploads(
-        setup, row, "solution", _bearer(access), json.dumps({"files": listed}).encode()
+        setup, row, _named(access), _bearer(access), json.dumps({"files": listed}).encode()
     )
     for path, link in links["files"].items():
         acme.fake.objects.put(link, written[path])
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(acme.fake.objects, "head", head)
-        await steps.step_done(setup, row, "solution", _bearer(access), b"{}")
+        await steps.step_done(setup, row, _named(access), _bearer(access), b"{}")
     return row
 
 
