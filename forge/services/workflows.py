@@ -48,9 +48,8 @@ from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, Port
 from forge.domain.identity import AsUser, Identity, User
 from forge.domain.ids import OrgId, WorkflowId
 from forge.domain.names import validate_name
-from forge.domain.plans import check_workflow, reserved_inputs, stray_report_units
 from forge.domain.port_values import natural, stray_units
-from forge.domain.primitives import Port, PrimitiveDeclaration
+from forge.domain.primitives import Port
 from forge.domain.roles import Role, Scope, holds
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.sessions import Session
@@ -61,20 +60,19 @@ from forge.domain.workflow_definition import (
     RunInput,
     RunOutput,
     RunWorkflow,
-    WorkflowDefinition,
     WorkflowRef,
+    parse_run_workflow,
     parse_workflow_ref,
-    read_workflow,
     starter_workflow,
     validate_version,
     version_number,
 )
 from forge.domain.workflows import Visibility
-from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
+from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import access, making, names, primitives, sessions, workflow_boxes
+from forge.services import access, making, names, sessions, workflow_boxes
 
 log = get_logger(__name__)
 
@@ -166,9 +164,9 @@ class BoxOutput:
 
 @dataclass(frozen=True, slots=True)
 class Box:
-    """A workflow version as a box: whether it is a run workflow, its inputs
-    and outputs, and a later numbered version when it has one. A workflow of
-    the test format has `run` false and both lists empty.
+    """A workflow version as a box: whether it is a run workflow, always so
+    now, its inputs and outputs, and a later numbered version when it has
+    one.
     """
 
     run: bool
@@ -331,12 +329,8 @@ async def create_version(
             f"The workflow {writer.label}/{name} has been saved again since your save. Reload "
             "it before making a version of it."
         )
-    definition = read_workflow(file.content)
-    files = (
-        await workflow_boxes.files_at(ctx, writer.identity, workflow, head, definition)
-        if isinstance(definition, RunWorkflow)
-        else None
-    )
+    definition = parse_run_workflow(file.content)
+    files = await workflow_boxes.files_at(ctx, writer.identity, workflow, head, definition)
     problems = await _problems(ctx, writer.identity, definition, files, own=workflow)
     if problems:
         raise InvalidDefinition(WORKFLOW_FILE, problems)
@@ -365,8 +359,8 @@ async def check(
     """Every problem a version of `text` would be refused for, each at its
     YAML path, checked against the primitives its steps use as the person
     reads them. Nothing is written, no version is made and no plan is
-    produced; none means it would make a version. A run workflow's own
-    files are the version's, so here a `${{ workflow.<path> }}` is checked
+    produced; none means it would make a version. A workflow's own files
+    are the version's, so here a `${{ workflow.<path> }}` is checked
     only for its form, and the reports of a `program.yaml` among them only
     when a version is made. `workflow`, the id of the workflow this text
     is a draft of, is put first on the path a box is refused for holding.
@@ -374,7 +368,7 @@ async def check(
     """
     definition_text = _sized(text)
     try:
-        definition = read_workflow(definition_text)
+        definition = parse_run_workflow(definition_text)
     except InvalidDefinition as invalid:
         return tuple(invalid.errors)
     own = WorkflowId(workflow) if workflow is not None else None
@@ -493,16 +487,13 @@ async def newer_version(ctx: Context, as_: Identity, ref: WorkflowRef) -> str | 
 async def box(ctx: Context, session: Session, ref: str) -> Box:
     """The version `ref`, `<owner>/<name>@<version>`, as a box the editor
     draws: its inputs, and each output as the port it resolves to, checked
-    as the caller. A workflow of the test format answers `run` false, with
-    both lists empty. `NotFound`, in the same words as reading the version,
+    as the caller. `NotFound`, in the same words as reading the version,
     when there is no such version or the caller may not read it.
     """
     found = parse_workflow_ref(ref)
     as_ = await _as_user(ctx, session)
-    definition = read_workflow(await _read_at(ctx, as_, found))
+    definition = parse_run_workflow(await _read_at(ctx, as_, found))
     newer = await newer_version(ctx, as_, found)
-    if not isinstance(definition, RunWorkflow):
-        return Box(False, (), (), newer)
     workflow = await names.workflow_id(ctx, found)
     expanded = await workflow_boxes.expand(ctx, as_, definition, own=workflow)
     outputs: dict[str, BoxOutput] = {}
@@ -572,66 +563,35 @@ def _box_output(name: str, port: Port | None, title: str | None, unit: str | Non
 async def _problems(
     ctx: Context,
     as_: Identity,
-    definition: WorkflowDefinition | RunWorkflow,
+    definition: RunWorkflow,
     files: WorkflowFiles | None = None,
     *,
     own: WorkflowId | None = None,
 ) -> list[Problem]:
-    """Every problem a version of the definition would be refused for: an
-    input named as a folder the task format reserves (`reserved_inputs`), a
-    unit on an input or a reported value that is not a number
-    (`stray_units`, `stray_report_units`), each `use:` that cannot be read
-    as a primitive at its own path, then what `check_workflow` finds
-    against the ones that can. A run workflow has no folders reserved. It
-    is expanded (`workflow_boxes.expand`), boxes and all, and
-    `check_run_workflow` checks the flat list against `files`, its own at
-    the version's commit. `own` is that workflow, first on the path a box
-    is refused for holding.
+    """Every problem a version of the definition would be refused for: a
+    unit on an input that is not a number (`stray_units`), then what the
+    workflow expanded (`workflow_boxes.expand`), boxes and all, finds, and
+    what `check_run_workflow` finds of the flat list against `files`, its
+    own at the version's commit. `own` is that workflow, first on the path
+    a box is refused for holding.
     """
-    if isinstance(definition, RunWorkflow):
-        expanded = await workflow_boxes.expand(ctx, as_, definition, own=own)
-        if expanded.flat is None:
-            return [*stray_units(definition), *expanded.problems]
-        checked = check_run_workflow(
-            expanded.flat.workflow,
-            expanded.primitives,
-            files,
-            inner_files=expanded.inner_files,
-            boxes=expanded.flat.boxes,
-            flat=bool(expanded.flat.boxes),
-        )
-        found = placed(checked, expanded.flat).problems if expanded.flat.boxes else checked.problems
-        said = {problem["path"] for problem in expanded.problems}
-        return [
-            *stray_units(definition),
-            *expanded.problems,
-            *(problem for problem in found if problem["path"] not in said),
-        ]
-    read: dict[str, str | None] = {}
-    unread: list[Problem] = []
-    declarations: dict[str, PrimitiveDeclaration] = {}
-    for index, ref in enumerate(definition.steps):
-        use = str(ref.use)
-        if use not in read:
-            declaration, problem = await primitives.declaration(ctx, as_, ref.use)
-            read[use] = problem
-            if declaration is not None:
-                declarations[use] = declaration
-        problem = read[use]
-        if problem is not None:
-            unread.append(Problem(path=path_text(("steps", index, "use")), message=problem))
-    said = {problem["path"] for problem in unread}
-    reported = [
-        problem
-        for problem in check_workflow(definition, declarations)
-        if problem["path"] not in said
-    ]
+    expanded = await workflow_boxes.expand(ctx, as_, definition, own=own)
+    if expanded.flat is None:
+        return [*stray_units(definition), *expanded.problems]
+    checked = check_run_workflow(
+        expanded.flat.workflow,
+        expanded.primitives,
+        files,
+        inner_files=expanded.inner_files,
+        boxes=expanded.flat.boxes,
+        flat=bool(expanded.flat.boxes),
+    )
+    found = placed(checked, expanded.flat).problems if expanded.flat.boxes else checked.problems
+    said = {problem["path"] for problem in expanded.problems}
     return [
-        *reserved_inputs(definition),
         *stray_units(definition),
-        *stray_report_units(definition, declarations),
-        *unread,
-        *reported,
+        *expanded.problems,
+        *(problem for problem in found if problem["path"] not in said),
     ]
 
 

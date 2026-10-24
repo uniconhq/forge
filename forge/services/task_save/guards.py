@@ -6,7 +6,6 @@ from forge.domain.content import Edit, FileSet, WrittenEdit, check_path
 from forge.domain.definitions import (
     ADMIN_ONLY_FILES,
     TASK_FILE,
-    Show,
     State,
     TaskDefinition,
     admin_only_changes,
@@ -34,57 +33,10 @@ from forge.runtime.context import Context
 from forge.services import entrant_view, names, timelines
 from forge.services.access import Organiser
 from forge.services.task_save import sources
-from forge.services.task_save.records import OPENNESS, SHOWN_WORDS
-from forge.services.task_save.sources import _content, _groups_of
+from forge.services.task_save.sources import _content
 from forge.services.task_save.writing import _contest
 
 log = get_logger(__name__)
-
-
-async def _shown_before(ctx: Context, task: TaskId, definition: TaskDefinition) -> list[Problem]:
-    """T7 and T10: once the task has a graded submission, a group shown
-    `always` or `verdict` under any publication a graded submission ran
-    under is not hidden again, nor `always` made `verdict`, so a group
-    removed and added back cannot come back hidden; and a group the save
-    adds to the latest publication's says its `show`.
-    """
-    graded = await sources._graded_under(ctx, task)
-    if not graded:
-        return []
-    publications = await ctx.forge.workspaces.list_publications(task)
-    if not publications:
-        return []
-    most_open: dict[str, Show] = {}
-    for publication in publications:
-        if publication.id not in graded:
-            continue
-        for name, group in (await _groups_of(ctx, task, publication)).items():
-            was = most_open.get(name)
-            if was is None or OPENNESS[group.shown] > OPENNESS[was]:
-                most_open[name] = group.shown
-    latest = await _groups_of(ctx, task, publications[-1])
-    problems: list[Problem] = []
-    for name, group in definition.test_groups.items():
-        at = f"test_groups.{name}"
-        if latest and name not in latest and group.show is None:
-            problems.append(
-                Problem(
-                    path=at,
-                    message=f"{name} is a new test group, and the task has graded "
-                    "submissions, so choose when entrants see its results.",
-                )
-            )
-            continue
-        then = most_open.get(name)
-        if then is not None and OPENNESS[group.shown] < OPENNESS[then]:
-            problems.append(
-                Problem(
-                    path=f"{at}.show",
-                    message=f"Entrants have seen the results of {name} {SHOWN_WORDS[then]}, "
-                    "and what they have seen cannot be hidden again.",
-                )
-            )
-    return problems
 
 
 async def _shown_before_runs(
@@ -94,7 +46,7 @@ async def _shown_before_runs(
     present: Collection[str],
     run_task: RunTask | None,
 ) -> list[Problem]:
-    """T7 for a run task (SIMPLER-CORE.md 9.4 and 16): what `show` listed
+    """T7 (SIMPLER-CORE.md 9.4 and 16): what `show` listed
     under any publication a graded submission ran under, or whose files
     were served (`_served`), is listed as soon, or sooner; a folder it
     listed stands for the files that publication held under it, each still
@@ -109,8 +61,6 @@ async def _shown_before_runs(
     value shown during the contest reads no fewer of the runs the task
     still has (`fewer_runs`), checked once the task checks (`run_task`).
     """
-    if definition.scoring is None:
-        return []
     publications = await ctx.forge.workspaces.list_publications(task)
     counted = await sources._graded_under(ctx, task) | await _served(ctx, task, publications)
     if not counted:
@@ -128,7 +78,7 @@ async def _shown_before_runs(
         if publication.id not in counted:
             continue
         found = await sources._definition_of(ctx, task, publication)
-        if found is None or found.scoring is None:
+        if found is None:
             continue
         held = await ctx.forge.content.list_files(PLATFORM, task, at=publication.version)
         each = shown_under(found.scoring, held.tokens.keys())
@@ -199,11 +149,7 @@ async def _leaderboard_reads(
     problem names the leaderboard and the column, at the value it is about when
     the task still gives it, else at `scoring.values`. A leaderboard whose own
     check finds anything is the contest's to mend, and asks nothing here.
-    A run task's save calls it; a task graded test by test gives a leaderboard
-    no results, and is not checked (stage 5 section 6, item 103).
     """
-    if definition.scoring is None:
-        return []
     contest = await _contest(ctx, task)
     name = (await names.names_of(ctx, [task])).get(task)
     if contest is None or name is None or not contest.leaderboards:

@@ -227,7 +227,7 @@ class _Planner:
         if isinstance(raw, bool) or is_number(raw):
             return {"value": scalar_to_text(raw) if port.type is Type.TEXT else raw}, []
         assert isinstance(raw, str)
-        found = whole_reference(raw, runs=True, flat=True)
+        found = whole_reference(raw, flat=True)
         if found is None:
             return self._written(raw, run), []
         if found.kind == "workflow":
@@ -264,7 +264,7 @@ class _Planner:
         text = ""
         parts: list[dict[str, Any]] = []
         last = 0
-        for match, found in references(raw, runs=True, flat=True):
+        for match, found in references(raw, flat=True):
             text += escaped(raw[last : match.start()])
             last = match.end()
             if found.name in self.entrant:

@@ -1,13 +1,13 @@
-"""A task's public files, served one by one by their path in the task to
-whoever may read its statement: a visitor, for a released task of a contest
-for everyone; a signed-in person, for a task whose page they read; and
-whoever holds a role reaching the task, whether or not it is released. Each
-is read as the task's latest publication holds it, never a draft saved
-after it, except by whoever holds a role reaching the task, who reads it as
-the task's head holds it, the draft the statement's preview draws; an upload
-by its bytes; a path outside `public/`, or not there, is
-no such file, and a file larger than a page is served is refused with a
-refusal of its own.
+"""A task's public files, the ones its `show` lists, served one by one by
+their path in the task to whoever may read its statement: a visitor, for a
+released task of a contest for everyone; a signed-in person, for a task
+whose page they read; and whoever holds a role reaching the task, whether
+or not it is released. Each is read as the task's latest publication holds
+it, never a draft saved after it, except by whoever holds a role reaching
+the task, who reads it as the task's head holds it, the draft the
+statement's preview draws; an upload by its bytes; a path the task does not
+show, or not there, is no such file, and a file larger than a page is
+served is refused with a refusal of its own.
 """
 
 import hashlib
@@ -21,7 +21,7 @@ from forge.domain.ids import TaskId
 from forge.domain.roles import Role, Scope
 from forge.domain.uploads import pointer_text
 from forge.runtime.setup import Setup
-from forge.services import contest_home, contests, files, landing, task_save, uploads
+from forge.services import contest_home, contests, landing, task_save, uploads
 from forge.services.entrant_view import PUBLIC_MOST
 from forge.testing import register_entrant
 from tests.services.conftest import (
@@ -29,6 +29,7 @@ from tests.services.conftest import (
     RUNNING,
     SPRING,
     Acme,
+    checked,
     make_task,
     organiser,
     signed_in,
@@ -39,6 +40,7 @@ LATER = RUNNING + "  - {{id: later, release_at: 2026-09-26T13:00:00Z}}\n"
 FIGURE = b"\x89PNG\r\n\x1a\n a figure"
 NOTES = b"Read the input with care.\n"
 DATA = b"a dataset, pretend it is large\n" * 32
+SHOWN = b"now: [score, all, public/]"
 
 
 async def _save(setup: Setup, acme: Acme, task: TaskId, files: dict[str, bytes]) -> None:
@@ -54,18 +56,31 @@ async def _save(setup: Setup, acme: Acme, task: TaskId, files: dict[str, bytes])
         confirm=True,
     )
     assert isinstance(result, task_save.Published), result
+    await checked(setup, task)
+
+
+async def _showing_public(acme: Acme, task: TaskId) -> dict[str, bytes]:
+    """The task's `task.yaml` with `public/` added to what it shows now."""
+    found = await acme.fake.content.read_file(PLATFORM, task, "task.yaml")
+    return {"task.yaml": found.content.replace(b"now: [score, all]", SHOWN)}
 
 
 @pytest.fixture
 async def public(setup: Setup, acme: Acme, sum_task: TaskId) -> TaskId:
     """acme/spring for everyone and running, its task sum published with a
-    figure and notes under `public/`, and a task `later` published with a
-    figure of its own and released only later.
+    figure and notes under `public/`, which it shows, and a task `later`
+    published with a figure of its own and released only later.
     """
     later = await make_task(setup, acme, "later")
     await write_contest(acme.fake, LATER.format(visibility="everyone"))
-    await _save(setup, acme, sum_task, {"public/figure.png": FIGURE, "public/a/notes.txt": NOTES})
-    await _save(setup, acme, later, {"public/figure.png": FIGURE})
+    shown = await _showing_public(acme, sum_task)
+    await _save(
+        setup,
+        acme,
+        sum_task,
+        {**shown, "public/figure.png": FIGURE, "public/a/notes.txt": NOTES},
+    )
+    await _save(setup, acme, later, {**shown, "public/figure.png": FIGURE})
     acme.fake.reset_calls()
     return sum_task
 
@@ -160,8 +175,17 @@ async def test_an_organiser_reads_a_task_never_published_as_its_head_holds_it(
     setup: Setup, acme: Acme, public: TaskId
 ) -> None:
     unsaved = await make_task(setup, acme, "unsaved")
+    head = await acme.fake.content.list_files(PLATFORM, unsaved)
+    (shown,) = (await _showing_public(acme, unsaved)).values()
     draft = await task_save.save(
-        setup, acme.ada, unsaved, {"public/figure.png": Edit(FIGURE)}, keep_as_draft=True
+        setup,
+        acme.ada,
+        unsaved,
+        {
+            "task.yaml": Edit(shown, head.tokens["task.yaml"]),
+            "public/figure.png": Edit(FIGURE),
+        },
+        keep_as_draft=True,
     )
     assert isinstance(draft, task_save.Draft), draft
     ada = await signed_in(setup, acme.fake, 7)
@@ -239,7 +263,7 @@ async def test_what_a_publication_holds_is_listed_once_for_every_reader(
         "",
     ],
 )
-async def test_a_path_outside_public_or_not_there_is_no_such_file(
+async def test_a_path_the_task_does_not_show_or_not_there_is_no_such_file(
     setup: Setup, acme: Acme, public: TaskId, path: str
 ) -> None:
     bob = await signed_in(setup, acme.fake, 8)
@@ -276,6 +300,7 @@ async def test_an_upload_under_public_is_served_by_its_bytes(
         confirm=True,
     )
     assert isinstance(result, task_save.Published), result
+    await checked(setup, public)
     stored = await acme.fake.content.read_file(PLATFORM, public, "public/data.bin")
     assert stored.content == pointer_text(digest, len(DATA))
 
@@ -315,30 +340,3 @@ async def test_another_orgs_contest_is_no_such_task(
             await landing.public_file(setup, task, "public/figure.png")
         with pytest.raises(NotFound):
             await contest_home.public_file(setup, bob, task, "public/figure.png")
-
-
-async def test_a_task_with_nothing_under_public_lists_it_empty_and_serves_nothing_there(
-    setup: Setup, acme: Acme, sum_task: TaskId
-) -> None:
-    # The starter holds no public/: git keeps no empty folder, and the first
-    # picture makes it.
-    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
-    await _save(setup, acme, sum_task, {"statement.md": NOTES})
-    held = acme.fake.state.repos[("acme", "spring.sum.task")].files
-    assert not any(path.startswith("public/") for path in held)
-    ada = await signed_in(setup, acme.fake, 7)
-
-    listed = await files.tree(setup, acme.ada, sum_task, "public")
-
-    assert listed == ()
-    with pytest.raises(NotFound):
-        await files.tree(setup, acme.ada, sum_task, "data")
-    with pytest.raises(NotFound):
-        await landing.public_file(setup, sum_task, "public/figure.png")
-    with pytest.raises(NotFound):
-        await contest_home.public_file(setup, ada, sum_task, "public/figure.png")
-    # The first picture makes the folder, published with the save.
-    await _save(setup, acme, sum_task, {"public/figure.png": FIGURE})
-    (entry,) = await files.tree(setup, acme.ada, sum_task, "public")
-    assert entry.path == "public/figure.png"
-    assert (await landing.public_file(setup, sum_task, "public/figure.png")).content == FIGURE

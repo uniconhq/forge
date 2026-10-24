@@ -23,12 +23,12 @@ import pytest
 from forge.adapters.fakes import FakeForge
 from forge.db.tables import Session as SessionRow
 from forge.domain.ids import OrgId
-from forge.domain.live import CHANNEL, Audience, Nudge, NudgeKind, hears, read_payload
+from forge.domain.live import CHANNEL, Audience, Nudge, NudgeKind, read_payload
 from forge.domain.roles import Role, RoleGrant, Scope, contest_scope, task_scope
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.broker import QUEUE_MOST, STREAMS_PER_SESSION, Subscription
 from forge.runtime.setup import Setup
-from forge.services import events, gradings, live, runs, sessions, submissions
+from forge.services import events, gradings, live, sessions, submissions
 from forge.settings import Settings
 from forge.testing import CALLBACK_PATH, FakeClock
 from tests.services.conftest import (
@@ -41,6 +41,7 @@ from tests.services.conftest import (
     signed_in,
     upload,
 )
+from tests.services.test_steps import _job, _mint, _to_run
 
 SOURCE = b"print(1)\n"
 
@@ -73,7 +74,7 @@ async def _submit(setup: Setup, acme: Acme, entered: Entered) -> uuid.UUID:
         entered.session,
         entered.task,
         {
-            "submission": SubmittedInput(uploads=(made.id,)),
+            "code": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key="key-0001-aaaa",
@@ -92,16 +93,9 @@ async def test_each_status_change_of_a_grading_publishes_its_id_once(
     grading = await _submit(setup, acme, entered)
     queued_and_dispatched = await _heard(listening)
 
-    async with setup.unit_of_work() as ctx:
-        row = await gradings.find(ctx, grading)
-        assert row is not None
-        key = gradings.envelope_key_of(ctx, row)
-        token = gradings.callback_token_of(ctx, row)
-    await runs.envelope(setup, grading, key)
+    [(first, _), *_] = await _to_run(setup, grading, "early")
+    await _job(setup, grading, first, await _mint(setup, grading, "early", first))
     running = await _heard(listening)
-    report = {"event": "progress", "step": "run", "done": 1, "total": 2}
-    await runs.callback(setup, grading, f"Bearer {token}", json.dumps(report).encode())
-    progressed = await _heard(listening)
     # Staff cancel only a grading in system_error: this one is past its
     # deadline, which writes nothing and so nudges nobody.
     async with setup.unit_of_work() as ctx:
@@ -112,14 +106,9 @@ async def test_each_status_change_of_a_grading_publishes_its_id_once(
     await gradings.cancel(setup, manager, grading, "The checker crashed; this one is not counted.")
     cancelled = await _heard(listening)
 
-    for heard in (queued_and_dispatched, running, progressed, cancelled):
+    for heard in (queued_and_dispatched, running, cancelled):
         assert {(nudge.kind, nudge.id) for nudge in heard} == {(NudgeKind.GRADING, str(grading))}
-    assert [len(heard) for heard in (queued_and_dispatched, running, progressed, cancelled)] == [
-        2,
-        1,
-        1,
-        1,
-    ]
+    assert [len(heard) for heard in (queued_and_dispatched, running, cancelled)] == [2, 1, 1]
     nudge = cancelled[0]
     assert (nudge.user, nudge.entrant, nudge.scope, nudge.contest) == (
         None,
@@ -127,45 +116,6 @@ async def test_each_status_change_of_a_grading_publishes_its_id_once(
         task_scope(entered.task),
         None,
     )
-
-
-async def test_a_runs_progress_reaches_the_tasks_organisers_and_never_its_contestant(
-    setup: Setup,
-    acme: Acme,
-    entered: Entered,
-    listening: psycopg.AsyncConnection,
-) -> None:
-    """A per-test step reports progress once a test, hidden ones too, so a
-    nudge to the row on each would count and time a hidden group's tests
-    (TASK-FORMAT.md section 3.5: no test count, no progress count)."""
-    grading = await _submit(setup, acme, entered)
-    async with setup.unit_of_work() as ctx:
-        row = await gradings.find(ctx, grading)
-        assert row is not None
-        key = gradings.envelope_key_of(ctx, row)
-        token = gradings.callback_token_of(ctx, row)
-    await runs.envelope(setup, grading, key)
-    await _heard(listening)
-    report = {"event": "progress", "step": "run", "done": 1, "total": 2}
-
-    await runs.callback(setup, grading, f"Bearer {token}", json.dumps(report).encode())
-    (progressed,) = await _heard(listening)
-
-    contestant = Audience(
-        user_id=8,
-        grants=(),
-        contests=frozenset({SPRING}),
-        entrants=frozenset({str(entered.entrant)}),
-    )
-    observer = Audience(
-        user_id=7,
-        grants=(RoleGrant(task_scope(entered.task), Role.OBSERVER),),
-        contests=frozenset(),
-    )
-    assert (progressed.kind, progressed.id) == (NudgeKind.GRADING, str(grading))
-    assert (progressed.user, progressed.entrant) == (None, None)
-    assert not hears(contestant, progressed)
-    assert hears(observer, progressed)
 
 
 async def test_a_unit_of_work_that_rolls_back_publishes_nothing(

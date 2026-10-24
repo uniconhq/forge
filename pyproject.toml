@@ -160,26 +160,6 @@ source_modules = ["forge.domain"]
 forbidden_modules = ["forge.services", "forge.db", "forge.port", "forge.adapters", "forge.log"]
 
 [[tool.importlinter.contracts]]
-name = "the new path imports nothing from today's showing or reports modules (plans waits for open 132, for Plan)"
-type = "forbidden"
-source_modules = [
-    "forge.domain.run_plan",
-    "forge.domain.run_task",
-    "forge.domain.run_workflow",
-    "forge.domain.blocks",
-    "forge.services.pipelines",
-    "forge.services.steps",
-    "forge.services.leaderboards",
-    "forge.services.scores",
-]
-forbidden_modules = [
-    "forge.domain.showing",
-    "forge.domain.reports",
-]
-ignore_imports = ["forge.services.scores -> forge.domain.showing"]
-allow_indirect_imports = true
-
-[[tool.importlinter.contracts]]
 name = "Services import each other in no new ring"
 type = "acyclic_siblings"
 ancestors = ["forge.services"]

@@ -291,7 +291,7 @@ def check(
     secrets: frozenset[str] = frozenset(),
     machine: Machine = PLATFORM_MACHINE,
 ) -> RunTaskCheck:
-    definition = parse_task(task, runs=True)
+    definition = parse_task(task)
     parsed = parse_run_workflow(workflow)
     checked = check_run_workflow(parsed, primitives, WorkflowFiles(frozenset(files), files))
     assert checked.problems == []
@@ -485,14 +485,14 @@ def test_each_bad_tuple_title_or_size_names_itself(row: str, words: str) -> None
         "{input: parts/2.in, route: entrant, title: Big grid, max_size: 50MB}", row
     )
     with pytest.raises(InvalidDefinition) as raised:
-        parse_task(text, runs=True)
+        parse_task(text)
     assert any(words in problem["message"] for problem in raised.value.errors)
 
 
 def test_a_repeated_input_cannot_be_named_a_tuple_key() -> None:
     text = TITLED.replace("inputs: [input, route]", "inputs: [title, route]")
     with pytest.raises(InvalidDefinition) as raised:
-        parse_task(text, runs=True)
+        parse_task(text)
     assert any("can't be named title" in problem["message"] for problem in raised.value.errors)
 
 
@@ -1639,7 +1639,7 @@ def test_an_exec_value_names_its_program_and_runs_late_unless_shown_during_the_c
     checked = check_run_workflow(
         parse_run_workflow(workflow), primitives, WorkflowFiles(frozenset(files), files)
     )
-    assert manifest_files(parse_task(MEAN, runs=True), checked) == {"programs/mean/program.yaml"}
+    assert manifest_files(parse_task(MEAN), checked) == {"programs/mean/program.yaml"}
 
     task = ok(mean(primitives))
     assert task.programs["mean"] == ProgramValue(
@@ -1894,17 +1894,14 @@ def test_a_check_expecting_a_value_that_reads_a_mark_is_refused_at_the_save(
 
 def test_a_check_needs_something_to_expect() -> None:
     with pytest.raises(InvalidDefinition) as raised:
-        parse_task(
-            f"{ISLANDS}checks:\n  - {{submit: {{code: checks/good}}, expect: {{}}}}\n", runs=True
-        )
+        parse_task(f"{ISLANDS}checks:\n  - {{submit: {{code: checks/good}}, expect: {{}}}}\n")
 
     assert any(problem["path"] == "checks[0].expect" for problem in raised.value.extra["errors"])
 
 
 def test_a_file_only_a_check_names_is_never_shown() -> None:
     definition = parse_task(
-        (ISLANDS + CHECKS).replace("    now: [sample_score,", "    now: [checks/, sample_score,"),
-        runs=True,
+        (ISLANDS + CHECKS).replace("    now: [sample_score,", "    now: [checks/, sample_score,")
     )
 
     assert check_only(definition, "checks/good/main.cpp")
@@ -1914,7 +1911,7 @@ def test_a_file_only_a_check_names_is_never_shown() -> None:
     assert check_only(definition, "checks/slow/a.cpp")
     assert not check_only(definition, "samples/1.in")
     # A file the task gives a setting or a tuple is the task's as well.
-    shared = parse_task((ISLANDS + CHECKS).replace("checks/empty/", "samples/"), runs=True)
+    shared = parse_task((ISLANDS + CHECKS).replace("checks/empty/", "samples/"))
     assert not check_only(shared, "samples/1.in")
 
 

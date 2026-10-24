@@ -1,6 +1,6 @@
 """What a visitor with no session reads: the public contests, one of them with
-its released tasks, and a released task's statement and the files under its
-`public/`.
+its released tasks, and a released task's statement and the files its
+`show` lists.
 """
 
 from forge.services.entrant_view import PUBLIC_MOST, PublicFile

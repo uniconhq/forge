@@ -7,13 +7,10 @@ YAML path it is at.
 
 What each file says of itself is checked here: a contest's times in order,
 each task entry's timeline in order (C1, the part that needs no task), each
-leaderboard's own rules (C3); a task's test groups, their rule weights, test
-weights and `show` words, and its `credit` (T1, T2 and T6, and the parts of
-T3 that need no workflow), kept until today's format goes (stage 4 open
-132), though since stage 5 its rule weights and `credit` score nothing
-(stage 5 section 6, item 123). What needs another file, the workflow a task
-names, its tests, an earlier publication or the rows' submissions, is the
-save's (`forge.domain.plans`, `forge.services.task_save`,
+leaderboard's own rules (C3); a task's `repeat` axes and their tuples. What
+needs another file, the workflow a task names, its runs' files, an earlier
+publication or the rows' submissions, is the save's
+(`forge.domain.run_task`, `forge.services.task_save`,
 `forge.services.timelines`).
 
 Some keys are the frame of a scope and belong to its admin (PROPOSAL.md
@@ -28,11 +25,9 @@ valid as written.
 from forge.domain.definitions.basics import (
     CONTEST_FILE,
     DOMAIN,
-    PUBLIC_FOLDER,
     STARTER_STATEMENT,
     STATEMENT_FILE,
     TASK_FILE,
-    TESTS_FOLDER,
     UNDER,
     VALUE_NAME,
     Approval,
@@ -41,16 +36,13 @@ from forge.domain.definitions.basics import (
     Domain,
     Flag,
     Seconds,
-    Show,
     State,
     TaskHandle,
     _domain,
     _pattern,
     _task_handle,
     _yaml_text,
-    exact_sum,
 )
-from forge.domain.definitions.classic import Group, Relative, _credit, _value_name, starter_task
 from forge.domain.definitions.contest import (
     _TIMES,
     ContestDefinition,
@@ -87,10 +79,7 @@ from forge.domain.definitions.parsing import (
     _MISSING,
     ADMIN_ONLY_FILES,
     CONTEST_ADMIN_KEYS,
-    RUN_FORMAT_KEYS,
-    RUN_FORMAT_RETIRED,
     TASK_ADMIN_KEYS,
-    TEST_FORMAT_RETIRED,
     _compared,
     _default_problem,
     admin_only_changes,
@@ -101,6 +90,7 @@ from forge.domain.definitions.parsing import (
     parse_task,
     stamp,
     starter_contest,
+    starter_task,
     statement_written,
     title_of,
 )
@@ -124,7 +114,6 @@ from forge.domain.definitions.task import (
     DEFAULT_SUBMISSIONS,
     ENTRANT,
     FILE_CEILING,
-    NAME,
     SUBMISSION_CEILING,
     Axis,
     Check,
@@ -154,10 +143,6 @@ __all__ = [
     "ENTRY_IGNORED_ON_READ",
     "FILE_CEILING",
     "IGNORED_ON_READ",
-    "NAME",
-    "PUBLIC_FOLDER",
-    "RUN_FORMAT_KEYS",
-    "RUN_FORMAT_RETIRED",
     "STAFF_ONLY",
     "STARTER_STATEMENT",
     "STATEMENT_FILE",
@@ -165,8 +150,6 @@ __all__ = [
     "TASK_ADMIN_KEYS",
     "TASK_FILE",
     "TASK_RETIRED",
-    "TESTS_FOLDER",
-    "TEST_FORMAT_RETIRED",
     "UNDER",
     "VALUE_NAME",
     "WAYS_REPLACED",
@@ -190,7 +173,6 @@ __all__ = [
     "Entrants",
     "Flag",
     "Form",
-    "Group",
     "Hold",
     "InvalidDefinition",
     "InviteWay",
@@ -199,10 +181,8 @@ __all__ = [
     "Locks",
     "Rate",
     "Registration",
-    "Relative",
     "Scoring",
     "Seconds",
-    "Show",
     "ShowTimes",
     "SignupWay",
     "State",
@@ -212,7 +192,6 @@ __all__ = [
     "Way",
     "_column_name",
     "_compared",
-    "_credit",
     "_default_problem",
     "_domain",
     "_hold_end",
@@ -226,12 +205,10 @@ __all__ = [
     "_shown",
     "_sort_key",
     "_task_handle",
-    "_value_name",
     "_yaml_text",
     "admin_only_changes",
     "admin_only_refusal",
     "details_problems",
-    "exact_sum",
     "form_problems",
     "letters",
     "parse_contest",

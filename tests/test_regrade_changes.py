@@ -1,7 +1,7 @@
 """What a regrade did to one submission, without a database (#448,
-TASK-FORMAT.md section 3.5): it now stops before its tests, the share of
-its tests accepted went up or down, or nothing changed; with nothing to
-compare, it is newly graded.
+TASK-FORMAT.md section 3.5): a finished result beside an earlier one is
+unchanged, and with nothing to compare it is newly graded; what changed is
+said by its values and its runs' verdicts.
 """
 
 from datetime import UTC, datetime
@@ -24,37 +24,16 @@ from forge.domain.regrades import (
 from forge.domain.run_results import Worked
 
 
-def _side(accepted: int, tests: int, *, stopped: str | None = None) -> Side:
-    return Side(1, accepted, tests, stopped)
-
-
-def test_the_share_accepted_says_up_down_or_unchanged() -> None:
-    assert change_of(_side(8, 10), _side(9, 12)) is ChangeKind.DOWN
-    assert change_of(_side(1, 2), _side(3, 4)) is ChangeKind.UP
-    assert change_of(_side(1, 2), _side(2, 4)) is ChangeKind.UNCHANGED
-
-
-def test_a_run_now_stopped_before_its_tests_is_told_apart_whatever_its_share() -> None:
-    stopped = _side(0, 2, stopped="compile_error")
-    assert change_of(_side(0, 2), stopped) is ChangeKind.STOPPED
-    assert change_of(_side(2, 2), stopped) is ChangeKind.STOPPED
-    # Stopped before and after is read by its share, of its plan's tests.
-    assert change_of(stopped, stopped) is ChangeKind.UNCHANGED
-    assert change_of(stopped, _side(2, 2)) is ChangeKind.UP
-    # A task with no tests in its groups has no share to compare.
-    assert change_of(_side(0, 0), _side(0, 0)) is ChangeKind.UNCHANGED
-
-
-def test_with_nothing_to_compare_it_is_newly_graded() -> None:
-    assert change_of(None, _side(1, 1)) is ChangeKind.NEW
-    assert change_of(_side(1, 1), None) is ChangeKind.NEW
+def test_a_finished_result_is_unchanged_beside_an_earlier_one_and_new_without() -> None:
+    assert change_of(Side(1)) is ChangeKind.UNCHANGED
+    assert change_of(None) is ChangeKind.NEW
 
 
 def test_every_change_is_counted_zero_where_none() -> None:
-    found = counted([ChangeKind.UP, ChangeKind.UP, ChangeKind.FAILED])
+    found = counted([ChangeKind.NEW, ChangeKind.NEW, ChangeKind.FAILED])
 
-    assert found[ChangeKind.UP] == 2 and found[ChangeKind.FAILED] == 1
-    assert set(found) == set(ChangeKind) and found[ChangeKind.DOWN] == 0
+    assert found[ChangeKind.NEW] == 2 and found[ChangeKind.FAILED] == 1
+    assert set(found) == set(ChangeKind) and found[ChangeKind.UNCHANGED] == 0
 
 
 def _publication(number: int) -> Publication:

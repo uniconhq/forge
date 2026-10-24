@@ -4,7 +4,7 @@ from forge.domain.definitions import TASK_FILE
 from forge.domain.errors import InvalidName, NotFound
 from forge.domain.ids import TaskId
 from forge.domain.roles import Role, task_scope
-from forge.domain.workflow_definition import RunWorkflow, parse_workflow_ref
+from forge.domain.workflow_definition import parse_workflow_ref
 from forge.domain.yaml_models import InvalidDefinition, load_mapping
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -17,18 +17,17 @@ from forge.services.task_save.sources import _workflow
 @dataclass(frozen=True, slots=True)
 class DeclaredInput:
     """One input a workflow declares, as the task form shows it: its id, its
-    type, whether the contestant gives it, its options on an enum, whether
-    it is given once per test, whether a task may leave it out, and the
+    type, its options on an enum, whether a task may leave it out, and the
     title, line of help and unit the workflow gives the organiser for it,
-    each none when it gives none. A workflow gives no defaults: a
-    contestant input's `default` is the task's, in `task.yaml`.
+    each none when it gives none. Who gives it, and whether it repeats, are
+    the task's (SIMPLER-CORE.md 8), so the form reads each as given once by
+    the task until it says. A workflow gives no defaults: an entrant input's
+    `default` is the task's, in `task.yaml`.
     """
 
     id: str
     type: str
-    contestant: bool
     options: tuple[str, ...] | None
-    per_test: bool
     optional: bool
     title: str | None = None
     help: str | None = None
@@ -36,44 +35,27 @@ class DeclaredInput:
 
 
 @dataclass(frozen=True, slots=True)
-class DeclaredField:
-    """One field every test of the workflow has: its name, its type and its
-    options on an enum.
-    """
-
-    name: str
-    type: str
-    options: tuple[str, ...] | None
-
-
-@dataclass(frozen=True, slots=True)
 class WorkflowForm:
     """What the task form is built from: the workflow the task's `task.yaml`
-    names, as written, the inputs it declares and its test fields, in the
-    order the workflow gives them, or `problem`, the reason there are none:
-    no `task.yaml` or one that does not read as YAML, no workflow named, or
-    one that cannot be read or is in an old format; `graded`, whether
-    the task has a graded submission, from when on a save refuses a test
-    group it adds without its `show` (T10); and `newer`, the workflow's
-    latest version when it comes after the one the task names, which the
-    task keeps until someone saves it naming another (Task 10.6.5); and
-    `runs`, whether the workflow describes one run, so the task is in the
-    run format (SIMPLER-CORE.md 8), its inputs given by the task, the
-    entrant or `repeat`, and no test fields.
+    names, as written, and the inputs it declares, in the order the
+    workflow gives them, or `problem`, the reason there are none: no
+    `task.yaml` or one that does not read as YAML, no workflow named, or one
+    that cannot be read or is in an old form; `graded`, whether the task has
+    a graded submission; and `newer`, the workflow's latest version when it
+    comes after the one the task names, which the task keeps until someone
+    saves it naming another (Task 10.6.5).
     """
 
     workflow: str | None
     inputs: tuple[DeclaredInput, ...] = ()
-    test: tuple[DeclaredField, ...] = ()
     problem: str | None = None
     graded: bool = False
     newer: str | None = None
-    runs: bool = False
 
 
 @action
 async def workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> WorkflowForm:
-    """The inputs and test fields of the workflow the task's `task.yaml`
+    """The inputs of the workflow the task's `task.yaml`
     names as it is saved now, a draft included, read at its version as the
     organiser, the way a save reads it. Needs the observer role at the task.
     A task that names no workflow, or one that cannot be read, is answered
@@ -110,28 +92,6 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
         return WorkflowForm(
             str(ref), problem=problems[0]["message"] if problems else None, newer=newer
         )
-    if isinstance(workflow, RunWorkflow):
-        # Who gives a run workflow's input, and whether it repeats, are the
-        # task's, so each reads as given once by the task until it says.
-        return WorkflowForm(
-            str(ref),
-            newer=newer,
-            runs=True,
-            inputs=tuple(
-                DeclaredInput(
-                    id=name,
-                    type=declared.type.value,
-                    contestant=False,
-                    options=declared.options,
-                    per_test=False,
-                    optional=declared.optional,
-                    title=declared.title,
-                    help=declared.help,
-                    unit=declared.unit,
-                )
-                for name, declared in workflow.inputs.items()
-            ),
-        )
     return WorkflowForm(
         str(ref),
         newer=newer,
@@ -139,18 +99,12 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
             DeclaredInput(
                 id=name,
                 type=declared.type.value,
-                contestant=declared.contestant,
                 options=declared.options,
-                per_test=declared.per_test,
                 optional=declared.optional,
                 title=declared.title,
                 help=declared.help,
-                unit=declared.shown_unit,
+                unit=declared.unit,
             )
             for name, declared in workflow.inputs.items()
-        ),
-        test=tuple(
-            DeclaredField(name=name, type=declared.type.value, options=declared.options)
-            for name, declared in workflow.test.items()
         ),
     )

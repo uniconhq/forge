@@ -12,12 +12,11 @@ from forge.adapters.ci.fake import token_in
 from forge.adapters.fakes import FakeForge
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected
-from forge.domain.grading import GradingRun, RunSpec
+from forge.domain.grading import PipelineRun
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, CiState, OrgAccountRef, Platform
 from forge.domain.ids import (
     ContestId,
     OrgId,
-    PublicationId,
     SubmissionId,
     TaskId,
     ThreadId,
@@ -65,7 +64,6 @@ async def test_a_path_from_org_to_submission_completes(fake: FakeForge) -> None:
         await fake.workspaces.record_submission(
             _as(fake, 9), workspace, task, {"a": b"b"}, key="key-87654321"
         )
-    assert fake.calls_to("activate") == []
 
 
 async def test_a_tasks_observer_can_read_its_submission_repository(fake: FakeForge) -> None:
@@ -111,48 +109,42 @@ async def test_a_malformed_id_names_nothing(
 
 async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> None:
     await fake.orgs.create_org(OrgId("acme"), description="Acme")
-    contest = await fake.content.create_contest(OrgId("acme"), "spring", {})
-    task = await fake.content.create_task(contest, "sum", {})
+    await fake.content.create_dispatch(OrgId("acme"))
     acme = AsOrgAccount("acme", forge_token="f", ci_state=CI_STATE)
 
-    assert await fake.grading.activate(acme, task)
-    assert not await fake.grading.activate(acme, task)
-    run = GradingRun(
-        grading=uuid.uuid4(),
-        task=task,
-        publication=PublicationId(f"{task}#1"),
-        publication_version=VersionId("0" * 40),
-        submission=SubmissionId(f"acme/spring/@{U8}/sum#1"),
-        submission_version=VersionId("1" * 40),
-        envelope_url="http://machines.test/envelope",
-        compute="pool:platform",
-    )
-    await fake.grading.start_run(acme, run, RunSpec(harness_image="h", clone_image="c"))
+    assert await fake.grading.activate_dispatch(acme, OrgId("acme"))
+    assert not await fake.grading.activate_dispatch(acme, OrgId("acme"))
+    await fake.grading.start_pipeline(acme, _pipeline())
 
-    assert [call.identity for call in fake.calls_to("activate")] == [acme, acme]
-    assert [call.identity for call in fake.calls_to("start_run")] == [acme]
+    assert [call.identity for call in fake.calls_to("activate_dispatch")] == [acme, acme]
+    assert [call.identity for call in fake.calls_to("start_pipeline")] == [acme]
     with pytest.raises(Forbidden):
-        await fake.grading.activate(AsOrgAccount("other", forge_token="f", ci_state=CI_STATE), task)
+        await fake.grading.activate_dispatch(
+            AsOrgAccount("other", forge_token="f", ci_state=CI_STATE), OrgId("acme")
+        )
 
 
-async def test_a_run_of_a_task_the_ci_does_not_know_is_not_found(fake: FakeForge) -> None:
-    await fake.orgs.create_org(OrgId("acme"), description="Acme")
-    contest = await fake.content.create_contest(OrgId("acme"), "spring", {})
-    task = await fake.content.create_task(contest, "sum", {})
-    acme = AsOrgAccount("acme", forge_token="f", ci_state=CI_STATE)
-    run = GradingRun(
+def _pipeline() -> PipelineRun:
+    return PipelineRun(
         grading=uuid.uuid4(),
-        task=task,
-        publication=PublicationId(f"{task}#1"),
+        pipeline="early",
+        org=OrgId("acme"),
         publication_version=VersionId("0" * 40),
         submission=SubmissionId(f"acme/spring/@{U8}/sum#1"),
         submission_version=VersionId("1" * 40),
-        envelope_url="http://machines.test/envelope",
         compute="pool:platform",
     )
+
+
+async def test_a_pipeline_on_a_dispatch_place_the_ci_does_not_know_is_not_found(
+    fake: FakeForge,
+) -> None:
+    await fake.orgs.create_org(OrgId("acme"), description="Acme")
+    await fake.content.create_dispatch(OrgId("acme"))
+    acme = AsOrgAccount("acme", forge_token="f", ci_state=CI_STATE)
 
     with pytest.raises(NotFound):
-        await fake.grading.start_run(acme, run, RunSpec(harness_image="h", clone_image="c"))
+        await fake.grading.start_pipeline(acme, _pipeline())
     assert fake.ci.runs == {}
 
 

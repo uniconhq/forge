@@ -37,8 +37,7 @@ COMPLETE = {
     "UNICON_S3_SECRET_KEY": "s3-secret",
     "UNICON_S3_LFS_ACCESS_KEY": "GK-lfs",
     "UNICON_S3_LFS_SECRET_KEY": "lfs-secret",
-    "UNICON_HARNESS_IMAGE": "ghcr.io/uniconhq/harness@sha256:" + "1" * 64,
-    "UNICON_CLONE_IMAGE": "ghcr.io/uniconhq/clone@sha256:" + "2" * 64,
+    "UNICON_PLUGIN_GIT_IMAGE": "docker.io/woodpeckerci/plugin-git@sha256:" + "1" * 64,
     "UNICON_SLOT_SIZES": "small:1:2048,big:2:8192",
 }
 DEPLOY_SLOTS = Path(__file__).resolve().parents[2] / "deploy" / "machine" / "slots.json"
@@ -270,24 +269,28 @@ def test_the_machine_url_follows_the_public_url_unless_given(
     assert str(load_settings().machine_url) == "http://proxy/"
 
 
-def test_forgejo_needs_both_images(
-    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("given", [None, ""])
+def test_forgejo_needs_the_clone_plugins_image(
+    environment: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    given: str | None,
 ) -> None:
-    monkeypatch.delenv("UNICON_HARNESS_IMAGE")
-    monkeypatch.delenv("UNICON_CLONE_IMAGE")
+    if given is None:
+        monkeypatch.delenv("UNICON_PLUGIN_GIT_IMAGE")
+    else:
+        monkeypatch.setenv("UNICON_PLUGIN_GIT_IMAGE", given)
 
     with pytest.raises(SystemExit):
         load_settings()
 
     lines = capsys.readouterr().err
-    assert "UNICON_FORGE=forgejo needs UNICON_HARNESS_IMAGE, UNICON_CLONE_IMAGE" in lines
+    assert "UNICON_FORGE=forgejo needs UNICON_PLUGIN_GIT_IMAGE" in lines
 
 
 @pytest.mark.parametrize(
     ("variable", "field", "tagged"),
     [
-        ("UNICON_HARNESS_IMAGE", "harness_image", "ghcr.io/uniconhq/harness:latest"),
-        ("UNICON_CLONE_IMAGE", "clone_image", "ghcr.io/uniconhq/clone:v1"),
         ("UNICON_PRIMITIVE_BASE_IMAGE", "primitive_base_image", "ghcr.io/uniconhq/base:v1"),
         ("UNICON_PLUGIN_GIT_IMAGE", "plugin_git_image", "woodpeckerci/plugin-git:2.10.1"),
     ],
@@ -310,31 +313,28 @@ def test_an_image_is_the_one_given_and_always_by_digest(
     assert f"{variable}: Value error, is not an image by digest" in capsys.readouterr().err
 
 
-def test_a_pipelines_images_are_none_while_left_empty(
+def test_the_base_image_is_none_while_left_empty(
     environment: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("UNICON_PRIMITIVE_BASE_IMAGE", "")
-    monkeypatch.setenv("UNICON_PLUGIN_GIT_IMAGE", "")
 
-    settings = load_settings()
-    assert (settings.primitive_base_image, settings.plugin_git_image) == (None, None)
+    assert load_settings().primitive_base_image is None
 
 
 def test_the_fake_names_placeholder_images_unless_given(
     environment: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("UNICON_FORGE", "fake")
-    monkeypatch.delenv("UNICON_HARNESS_IMAGE")
-    monkeypatch.delenv("UNICON_CLONE_IMAGE")
+    monkeypatch.delenv("UNICON_PLUGIN_GIT_IMAGE")
 
     settings = load_settings()
-    assert (settings.harness_image, settings.clone_image) == (
-        FAKE_IMAGES["harness_image"],
-        FAKE_IMAGES["clone_image"],
+    assert (settings.primitive_base_image, settings.plugin_git_image) == (
+        FAKE_IMAGES["primitive_base_image"],
+        FAKE_IMAGES["plugin_git_image"],
     )
-    assert Settings.for_tests().harness_image == FAKE_IMAGES["harness_image"]
-    monkeypatch.setenv("UNICON_HARNESS_IMAGE", COMPLETE["UNICON_HARNESS_IMAGE"])
-    assert load_settings().harness_image == COMPLETE["UNICON_HARNESS_IMAGE"]
+    assert Settings.for_tests().plugin_git_image == FAKE_IMAGES["plugin_git_image"]
+    monkeypatch.setenv("UNICON_PLUGIN_GIT_IMAGE", COMPLETE["UNICON_PLUGIN_GIT_IMAGE"])
+    assert load_settings().plugin_git_image == COMPLETE["UNICON_PLUGIN_GIT_IMAGE"]
 
 
 def test_there_is_no_mail_server_while_its_address_is_empty(
@@ -398,8 +398,7 @@ def test_forgejo_settings_given_whole_still_need_the_cis() -> None:
         Settings.for_tests(
             forge="forgejo",
             forge_public_url="http://forge.test",
-            harness_image=FAKE_IMAGES["harness_image"].replace("0", "1"),
-            clone_image=FAKE_IMAGES["clone_image"].replace("0", "1"),
+            plugin_git_image=FAKE_IMAGES["plugin_git_image"].replace("0", "1"),
             forgejo=ForgejoSettings(
                 internal_url="http://forgejo:3000",
                 admin_token="admin",

@@ -2,10 +2,9 @@
 and a save that published answers with: the first line, what runs again, the
 scores and what entrants read. Results change when a submission is graded
 again, or when the task has a graded submission and the save moves what one
-earns or shows; the rate alone, the statement and the title move none, and
-on a task graded test by test so do its points. A run task's groups and
-values are named as they change, a value with what it reads, and what
-`show` shows when.
+earns or shows; the rate alone, the statement and the title move none. A
+task's groups and values are named as they change, a value with what it
+reads, and what `show` shows when.
 """
 
 import pytest
@@ -37,16 +36,8 @@ leaderboards:
 )
 
 
-def _task(groups: str, extra: str = "", name: str = "Sum") -> str:
-    return f"""\
-name: {name}
-workflow: unicon/classic@v2
-{extra}test_groups:
-{groups}"""
-
-
 NOTHING_READ = ReadChanges()
-BEFORE = _task("  main: {each: 100}\n  large: {pass: 50, show: after_close}\n")
+BEFORE = ISLANDS
 
 
 def _effect(
@@ -80,61 +71,33 @@ def test_a_save_that_changes_nothing_says_so_in_each_part() -> None:
     )
 
 
-def test_a_classic_tasks_points_credit_and_weights_move_no_result() -> None:
-    # A task graded test by test gives a leaderboard nothing and scores nothing
-    # (stage 5 section 6, item 123): only when a group shows is said.
-    effect = _effect(
-        _task(
-            "  main: {each: 60, pass: 50, pass_at: 0.5, test_weights: {'1': 2}}\n"
-            "  large: {pass: 50, show: always}\n",
-            extra="credit: fraction\n",
-        )
-    )
-
-    assert effect.scores == ("Results of large shown right away (was once the task closes).",)
-    assert effect.results_change is True
-    assert _effect(_task("  main: {each: 110}\n  large: {pass: 5, show: after_close}\n")) == (
-        _effect(BEFORE)
-    )
-
-
-def test_a_removed_group_and_the_submission_limits_are_said_and_the_limits_move_no_result() -> None:
-    gone = _effect(_task("  main: {each: 100}\n"), changes=("The tests of large were removed.",))
+def test_a_removed_step_is_said_and_the_submission_limits_move_no_result() -> None:
+    gone = _effect(BEFORE, changes=("The step diff was removed.",))
     rate = _effect(
-        _task(
-            "  main: {each: 100}\n  large: {pass: 50, show: after_close}\n",
-            extra="submissions: {rate: {count: 2, per: 3600}}\n",
-        )
+        BEFORE.replace("rate: {count: 1, per: 30}", "rate: {count: 2, per: 3600}"),
     )
-    limit = _effect(
-        _task(
-            "  main: {each: 100}\n  large: {pass: 50, show: after_close}\n",
-            extra="submissions: {max: 10}\n",
-        )
-    )
+    limit = _effect(BEFORE.replace("max: 50", "max: 10"))
 
     assert gone.scores == ("No score changes.",)
     assert gone.runs_again == (
         "No submission runs again: there are none yet.",
-        "The tests of large were removed.",
+        "The step diff was removed.",
     )
-    assert rate.scores == ("Submission rate: 2 every hour (was 1 every 30 seconds).",)
-    assert rate.results_change is False
-    assert limit.scores == ("Submission limit: 10 per entrant (was 50).",)
-    assert limit.results_change is False
+    assert (rate.results_change, rate.scores) == (False, ("No score changes.",))
+    assert (limit.results_change, limit.scores) == (False, ("No score changes.",))
 
 
 @pytest.mark.parametrize(
     ("regrades", "said"),
     [
-        (1, "1 submission is graded again: the input of test 1 in the group main changed."),
-        (12, "12 submissions are graded again: the input of test 1 in the group main changed."),
+        (1, "1 submission is graded again: the inputs of the step compile changed."),
+        (12, "12 submissions are graded again: the inputs of the step compile changed."),
     ],
 )
 def test_a_grading_change_counts_what_runs_again(regrades: int, said: str) -> None:
     effect = _effect(
         BEFORE,
-        changes=("The input of test 1 in the group main changed.",),
+        changes=("The inputs of the step compile changed.",),
         regrades=regrades,
         graded=False,
     )
@@ -151,7 +114,7 @@ def test_a_grading_change_that_regrades_none_of_the_submissions_made_says_so() -
         parse_task(BEFORE),
         parse_task(BEFORE),
         CONTEST,
-        changes=("The input of test 1 in the group main changed.",),
+        changes=("The inputs of the step compile changed.",),
         regrades=0,
         graded=False,
         submitted=True,
@@ -160,7 +123,7 @@ def test_a_grading_change_that_regrades_none_of_the_submissions_made_says_so() -
 
     assert effect.runs_again == (
         "No submission runs again: none of those made is graded again.",
-        "The input of test 1 in the group main changed.",
+        "The inputs of the step compile changed.",
     )
 
 
@@ -183,7 +146,7 @@ def test_a_latest_publication_that_no_longer_reads_is_not_taken_for_a_first_one(
     assert effect.scores == (
         "The latest publication's settings no longer read, so its scores cannot be compared: "
         "every result is scored as this save says.",
-        "Every result is scored again.",
+        "Every result is scored again, and the leaderboard Standings with it.",
     )
     assert effect.reading == ("The statement changes.",)
     assert effect.results_change is True
@@ -191,26 +154,26 @@ def test_a_latest_publication_that_no_longer_reads_is_not_taken_for_a_first_one(
 
 def test_what_entrants_read_is_the_title_the_statement_and_the_files_beside_it() -> None:
     effect = _effect(
-        _task("  main: {each: 100}\n  large: {pass: 50, show: after_close}\n", name="Sum of two"),
+        BEFORE.replace("name: Islands", "name: Many islands"),
         read=ReadChanges(statement=True, public=True),
     )
 
     assert effect.reading == (
-        "The task's title changes to Sum of two (was Sum).",
+        "The task's title changes to Many islands (was Islands).",
         "The statement changes.",
         "The pictures and files beside the statement change.",
     )
     assert effect.results_change is False
 
 
-def test_a_first_publication_of_a_classic_task_changes_no_score() -> None:
+def test_a_first_publication_changes_no_result() -> None:
     effect = _effect(BEFORE, before=None, graded=False)
 
     assert effect == SaveEffect(
         results_change=False,
         summary="Nobody's result changes.",
         runs_again=("No submission runs again: this is the task's first publication.",),
-        scores=("No score changes.",),
+        scores=("sum now counts on the leaderboard Standings.",),
         reading=("Entrants read the task from its release.",),
     )
 
@@ -262,7 +225,7 @@ def test_a_values_program_running_again_says_its_cost(regrades: int, said: str) 
 
 
 def _run(text: str) -> TaskDefinition:
-    return parse_task(text, runs=True)
+    return parse_task(text)
 
 
 def _run_effect(after: str, before: str | None = ISLANDS, graded: bool = True) -> SaveEffect:

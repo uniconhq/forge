@@ -109,14 +109,14 @@ class _Rewrite:
 
     def text(self, raw: str) -> object:
         try:
-            whole = whole_reference(raw, runs=True)
+            whole = whole_reference(raw)
         except BadReference as bad:
             self._bad(str(bad))
             return raw
         if whole is not None:
             return self.whole(whole, raw)
         try:
-            found = references(raw, runs=True)
+            found = references(raw)
         except BadReference as bad:
             self._bad(str(bad))
             return raw
@@ -161,7 +161,7 @@ class _Rewrite:
             return given
         if isinstance(given, str):
             try:
-                if whole_reference(given, runs=True, flat=True) is not None:
+                if whole_reference(given, flat=True) is not None:
                     return given
             except BadReference:
                 pass

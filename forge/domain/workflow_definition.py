@@ -1,38 +1,29 @@
-"""A workflow as its `workflow.yaml` defines it (TASK-FORMAT.md section 1.3):
-the inputs it declares, which of them the contestant gives, the fields every
-test has, the steps it runs in order, once or per test, and the values a run
-reports, with what each number means. The file has no name and no version:
-the repo is the name and the tag the version. A reference to a workflow or a
-primitive is `owner/name@version`, and is the one way a task or a step names
-one.
-
-A file with no `test` block is a run workflow instead (SIMPLER-CORE.md 7,
-`RunWorkflow`): it describes one run, so it has no test fields and nothing
-runs per test, no input says who gives it, and its `outputs` add only a
-title and a unit, since what a number means is the primitive's or the
-program's that made it. A number or a text output is a column of the run;
-a file output is not. It reads its own files, `${{ workflow.<path> }}`, a
-trailing `/` naming a folder, and a programs-form step's outputs per program,
-`${{ steps.<id>.<program>.<output> }}`. Testing for `test` tells the two
-apart, since a run workflow that gives only its verdict has no `outputs`
-either. `read_workflow` reads either.
+"""A workflow as its `workflow.yaml` defines it (SIMPLER-CORE.md 7,
+`RunWorkflow`): the inputs one run takes, the steps it runs in order, and
+the outputs it gives beside the verdict every run has. It describes one
+run: the task says who gives each input and what repeats. Its `outputs`
+add only a title and a unit, since what a number means is the primitive's
+or the program's that made it. A number or a text output is a column of
+the run; a file output is not. The file has no name and no version: the
+repo is the name and the tag the version. A reference to a workflow or a
+primitive is `owner/name@version`, and is the one way a task or a step
+names one.
 
 What this module checks needs nothing but the file: ids and names unique and
-well formed, each declaration's keys fitting its type, every once step
-before every per-test step, and the report's own rules (W1, W3 to W5). What
-needs the primitives its steps use, every port, type and reference, is the
-compiler's (`forge.domain.plans.check_workflow`).
+well formed, and each declaration's keys fitting its type. What needs the
+primitives its steps use, every port, type and reference, is the run
+workflow's check (`forge.domain.run_workflow`).
 
-A value in a step's `with` or in the report may be or hold a reference,
-`${{ inputs.<id> }}`, `${{ test.<field> }}`, `${{ steps.<id>.<output> }}`,
-or in a run workflow `${{ workflow.<path> }}` and
-`${{ steps.<id>.<program>.<output> }}`; `references` finds them in a string.
+A value in a step's `with` or in the outputs may be or hold a reference,
+`${{ inputs.<id> }}`, `${{ steps.<id>.<output> }}`,
+`${{ steps.<id>.<program>.<output> }}` for one program of a programs-form
+step, or `${{ workflow.<path> }}`, one of the workflow's own files, a
+trailing `/` naming a folder; `references` finds them in a string.
 """
 
 import re
-from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import StrEnum
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import BeforeValidator, Field, PlainValidator, model_validator
@@ -45,7 +36,6 @@ from forge.domain.yaml_models import (
     ANY,
     Line,
     Model,
-    Number,
     Problems,
     Retired,
     already_listed,
@@ -67,20 +57,16 @@ HANDLE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 REPORT_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 """A report's or a run input's name, a column of the run, and a report's in a
 `program.yaml`, as `exec` takes it on either form: one rule for both."""
-TODAY_REPORT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
-"""A reported value's name in a workflow of today's format, as versions
-already made hold it, with no length cap."""
 RESERVED_NAMES = ("outcome", "points", "penalty")
 RUN_NAMES = ("verdict", "passed")
 """What Unicon gives every run itself: its verdict, and `passed`, 1 when the
-verdict is `accepted`, else 0 (SIMPLER-CORE.md 7.3). A run workflow names no
-input or report with one, nor with one of `RESERVED_NAMES`; today's format
-leaves them free."""
+verdict is `accepted`, else 0 (SIMPLER-CORE.md 7.3). A workflow names no
+input or output with one, nor with one of `RESERVED_NAMES`."""
 MAX_USES = 32
 """The most distinct `use:` references one definition holds; each costs a
 read at every check."""
 
-_REF_EXAMPLE = "such as unicon/classic@v2"
+_REF_EXAMPLE = "such as unicon/classic@v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,234 +184,6 @@ def _handle(value: object) -> str:
     return value
 
 
-class WorkflowInput(Model):
-    """One input: its type; `contestant` when the submission fills it;
-    `options` on an enum; `per_test` on a contestant file given once per
-    test; `optional` on an input a task may leave out; and, for the task's
-    form only, `title`, `help` and `unit`, which name it to the organiser
-    ("Time limit", "seconds") and change no plan. Only a `number` takes a
-    `unit`, since the form reads it after the title ("Time limit
-    (seconds)"): making or checking a version refuses it on any other type,
-    naming the input (`plans.stray_units`), and a version made before that
-    reads with it dropped (`shown_unit`), since a version cannot be mended
-    and a unit changes no plan.
-    """
-
-    type: ValueType
-    contestant: Flag = False
-    options: Options | None = None
-    per_test: Flag = False
-    optional: Flag = False
-    title: Line | None = None
-    help: Line | None = None
-    unit: Line | None = None
-
-    @property
-    def shown_unit(self) -> str | None:
-        """Its unit, on a number only: a stray one on another type, which an
-        older version may hold, is dropped.
-        """
-        return self.unit if self.type is Type.NUMBER else None
-
-    @model_validator(mode="after")
-    def _check(self) -> WorkflowInput:
-        problems = Problems()
-        if self.type is Type.ENUM and self.options is None:
-            problems.add(("options",), _LIST_OPTIONS)
-        if self.type is not Type.ENUM and self.options is not None:
-            problems.add(("options",), _ONLY_ENUM)
-        if self.per_test and not (self.contestant and self.type is Type.FILE):
-            problems.add(("per_test",), "This applies only to a file the entrant gives.")
-        if self.optional and self.contestant:
-            problems.add(
-                ("optional",),
-                "An input the entrant gives cannot be optional. The task can give it a "
-                "default instead.",
-            )
-        problems.raise_any()
-        return self
-
-
-class TestField(Model):
-    """One field every test has: its type, `options` on an enum, and
-    `public` on a file or folder the platform serves to contestants.
-    """
-
-    type: ValueType
-    options: Options | None = None
-    public: Flag = False
-
-    @model_validator(mode="after")
-    def _check(self) -> TestField:
-        problems = Problems()
-        if self.type is Type.ENUM and self.options is None:
-            problems.add(("options",), _LIST_OPTIONS)
-        if self.type is not Type.ENUM and self.options is not None:
-            problems.add(("options",), _ONLY_ENUM)
-        if self.public and self.type not in (Type.FILE, Type.FOLDER):
-            problems.add(("public",), "Only a file or a folder can be public.")
-        problems.raise_any()
-        return self
-
-
-class WorkflowStep(Model):
-    """One step: the primitive it uses, whether it runs once or once per
-    test, and what each of the primitive's ports is given.
-    """
-
-    id: Annotated[str, PlainValidator(_handle)]
-    use: Ref
-    per_test: Flag = False
-    with_: dict[str, Any] = Field(default_factory=dict, alias="with")
-
-
-class Fold(StrEnum):
-    SUM = "sum"
-    MEAN = "mean"
-    MAX = "max"
-
-
-class Meaning(Model):
-    """A reported value with what it means: `from` the step output it reads,
-    the `title` and `unit` a page names it by ("Run time", "ms"), how it
-    folds over tests, which way is better, and its bounds. The title and
-    the unit change no plan. Only a number takes a unit: making or checking
-    a version refuses one on text, naming the entry
-    (`plans.stray_report_units`), and a version made before reads with it
-    dropped.
-    """
-
-    from_: str = Field(alias="from")
-    title: Line | None = None
-    unit: Line | None = None
-    fold: Fold | None = None
-    better: str | None = None
-    at_least: Number | None = None
-    at_most: Number | None = None
-
-
-Declared = Annotated[WorkflowInput, BeforeValidator(declared)]
-Field_ = Annotated[TestField, BeforeValidator(declared)]
-
-
-def _report_entry(value: object) -> str | Meaning:
-    """A report entry: a reference, or a mapping read as a `Meaning`, so a
-    problem inside one is reported at its own YAML path.
-    """
-    if isinstance(value, dict):
-        return Meaning.model_validate(value)
-    if not isinstance(value, str):
-        raise ValueError(
-            "Give the step output this reports, as ${{ steps.<id>.<output> }}, or that "
-            "output with what it means: from, title, unit, fold, better, at_least and at_most."
-        )
-    return value
-
-
-_ReportEntry = Annotated[str | Meaning, PlainValidator(_report_entry)]
-
-
-class WorkflowDefinition(Model):
-    """A `workflow.yaml`. `inputs` and `report` default to none; a workflow
-    has at least one test field and one step.
-    """
-
-    inputs: dict[str, Declared] = Field(default_factory=dict)
-    test: dict[str, Field_] = Field(min_length=1)
-    steps: tuple[WorkflowStep, ...] = Field(min_length=1)
-    report: dict[str, _ReportEntry] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def _check(self) -> WorkflowDefinition:
-        problems = Problems()
-        for key in self.inputs:
-            if not HANDLE.match(key):
-                problems.add(("inputs", key), _NOT_A_HANDLE)
-        for key in self.test:
-            if not HANDLE.match(key):
-                problems.add(("test", key), _NOT_A_HANDLE)
-            elif key == "test":
-                problems.add(
-                    ("test", key), "A test field cannot be called test. Choose another name."
-                )
-        problems.duplicates([step.id for step in self.steps], ("steps",))
-        if len({str(step.use) for step in self.steps}) > MAX_USES:
-            problems.add(
-                ("steps",),
-                f"A workflow can use at most {MAX_USES} different primitive versions. Use fewer.",
-            )
-        seen_per_test = False
-        for index, step in enumerate(self.steps):
-            if step.per_test:
-                seen_per_test = True
-            elif seen_per_test:
-                problems.add(
-                    ("steps", index, "per_test"),
-                    "A step that runs once must come before every step that runs for each "
-                    "test, since it cannot read anything they give. Move it up.",
-                )
-        for name, entry in self.report.items():
-            for path, message in self._report_problems(name, entry):
-                problems.add(("report", name, *path), message)
-        problems.raise_any()
-        return self
-
-    def _report_problems(
-        self, name: str, entry: str | Meaning
-    ) -> list[tuple[tuple[str, ...], str]]:
-        found: list[tuple[tuple[str, ...], str]] = []
-        if not TODAY_REPORT_NAME.match(name):
-            found.append(
-                (
-                    (),
-                    "A reported value's name may use only lower case letters, digits and "
-                    "underscores (_), starting with a letter.",
-                )
-            )
-        if name in RESERVED_NAMES:
-            found.append(((), reserved_message(name)))
-        if isinstance(entry, Meaning):
-            if entry.better is not None and entry.better not in ("higher", "lower"):
-                problem = self._better_problem(entry.better)
-                if problem is not None:
-                    found.append((("better",), problem))
-            if (
-                entry.at_least is not None
-                and entry.at_most is not None
-                and entry.at_least > entry.at_most
-            ):
-                found.append((("at_most",), "The upper bound must be at least the lower bound."))
-        return found
-
-    def _better_problem(self, better: str) -> str | None:
-        try:
-            found = whole_reference(better)
-        except BadReference as bad:
-            return str(bad)
-        if found is None or found.kind != "inputs":
-            return (
-                "Choose higher or lower, or name an enum input the task gives, as "
-                "${{ inputs.<id> }}."
-            )
-        declared_input = self.inputs.get(found.name)
-        if declared_input is None:
-            return f"The workflow has no input called {found.name}."
-        if declared_input.contestant or declared_input.type is not Type.ENUM:
-            return f"{found.name} must be an enum input that the task gives, not the entrant."
-        if declared_input.optional:
-            return (
-                f"{found.name} is optional, so it cannot say which way is better. Choose an "
-                "input that is not optional."
-            )
-        if not set(declared_input.options or ()) <= {"higher", "lower"}:
-            return f"The options of {found.name} must be higher and lower, and nothing else."
-        return None
-
-
-_NOT_A_HANDLE = (
-    "Use at most 40 lower case letters, digits, hyphens (-) and underscores (_), starting "
-    "with a letter or a digit."
-)
 _LIST_OPTIONS = "List the options to choose from."
 _ONLY_ENUM = "Only an enum has options. Remove them."
 
@@ -447,13 +205,13 @@ def reserved_message(name: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Reference:
-    """One `${{ ... }}`: `inputs.<id>`, `test.<field>`, `steps.<id>.<output>`,
-    or `workflow.<path>`, the path its `name`. In a run workflow, an
-    programs-form step's output for one program, `steps.<id>.<program>.<output>`,
-    names that `program` too.
+    """One `${{ ... }}`: `inputs.<id>`, `steps.<id>.<output>`, or
+    `workflow.<path>`, the path its `name`. A programs-form step's output
+    for one program, `steps.<id>.<program>.<output>`, names that `program`
+    too.
     """
 
-    kind: Literal["inputs", "test", "steps", "workflow"]
+    kind: Literal["inputs", "steps", "workflow"]
     name: str
     output: str | None = None
     program: str | None = None
@@ -480,7 +238,7 @@ _ANY = re.compile(r"\$\{\{\s*([^{}]*?)\s*\}\}")
 
 
 class BadReference(ValueError):
-    """A `${{ }}` that is not one of the three a workflow makes."""
+    """A `${{ }}` that is not one of the references a workflow makes."""
 
 
 def _step_id(step: str, *, flat: bool) -> bool:
@@ -495,12 +253,11 @@ def _step_id(step: str, *, flat: bool) -> bool:
     return re.fullmatch(FLAT_STEP_ID, step) is not None
 
 
-def parse_reference(expression: str, *, runs: bool = False, flat: bool = False) -> Reference:
-    """The reference inside `${{ ... }}`, read as a workflow of today's
-    format writes it, or as a run workflow does when `runs`. `flat` reads a
-    workflow expanded into primitive steps: a step id may be a path, and
+def parse_reference(expression: str, *, flat: bool = False) -> Reference:
+    """The reference inside `${{ ... }}`. `flat` reads a workflow expanded
+    into primitive steps: a step id may be a path, and
     `workflow@<k>.<path>` names pin k. `BadReference` saying what a
-    reference may be in that format.
+    reference may be.
     """
     head, dot, path = expression.partition(".")
     if flat and head.startswith("workflow@") and dot:
@@ -519,44 +276,32 @@ def parse_reference(expression: str, *, runs: bool = False, flat: bool = False) 
     match parts:
         case ["inputs", name] if name:
             return Reference("inputs", name)
-        case ["test", field] if field:
-            return Reference("test", field)
         case ["steps", step, output] if step and output and _step_id(step, flat=flat):
             return Reference("steps", step, output)
         case ["steps", step, program, output] if (
-            runs and step and program and output and _step_id(step, flat=flat)
+            step and program and output and _step_id(step, flat=flat)
         ):
             return Reference("steps", step, output, program)
-    if runs:
-        raise BadReference(
-            f"Unicon cannot read ${{{{ {expression} }}}}. Write ${{{{ inputs.<id> }}}}, "
-            "${{ steps.<id>.<output> }}, ${{ steps.<id>.<program>.<output> }} or "
-            "${{ workflow.<path> }}."
-        )
     raise BadReference(
         f"Unicon cannot read ${{{{ {expression} }}}}. Write ${{{{ inputs.<id> }}}}, "
-        "${{ steps.<id>.<output> }} or ${{ test.<field> }}."
+        "${{ steps.<id>.<output> }}, ${{ steps.<id>.<program>.<output> }} or "
+        "${{ workflow.<path> }}."
     )
 
 
-def whole_reference(text: str, *, runs: bool = False, flat: bool = False) -> Reference | None:
+def whole_reference(text: str, *, flat: bool = False) -> Reference | None:
     """The reference `text` is exactly, or none when it is anything else.
-    `BadReference` for a `${{ }}` that is not a reference in the format.
+    `BadReference` for a `${{ }}` that is not a reference.
     """
     found = _WHOLE.match(text)
-    return parse_reference(found.group(1), runs=runs, flat=flat) if found is not None else None
+    return parse_reference(found.group(1), flat=flat) if found is not None else None
 
 
-def references(
-    text: str, *, runs: bool = False, flat: bool = False
-) -> list[tuple[re.Match[str], Reference]]:
+def references(text: str, *, flat: bool = False) -> list[tuple[re.Match[str], Reference]]:
     """Every reference written into `text`, with where it is. `BadReference`
     for a `${{ }}` that is not one, or a `${{` that is never closed.
     """
-    found = [
-        (match, parse_reference(match.group(1), runs=runs, flat=flat))
-        for match in _ANY.finditer(text)
-    ]
+    found = [(match, parse_reference(match.group(1), flat=flat)) for match in _ANY.finditer(text)]
     if text.count("${{") != len(found):
         raise BadReference(
             "A ${{ is not closed with }}, or has a brace inside it. Close each one, and "
@@ -577,40 +322,15 @@ _FILE_KEYS = (
 _OLD_INPUTS = (
     Retired(
         ("inputs",),
-        "Inputs are now listed by name, each with its type, such as `submission: {type: file, "
-        "contestant: true}`.",
+        "Inputs are now listed by name, each with its type, such as `code: {type: folder}`.",
         _list_of_inputs,
     ),
     Retired(("inputs", ANY), retired_type_message, retired_type),
 )
-RETIRED = (
-    *_FILE_KEYS,
-    Retired(
-        ("outputs",),
-        "This is now called report: each value the workflow reports, named, with the step "
-        "output it reads, such as ${{ steps.<id>.<output> }}. Move these there.",
-    ),
-    *_OLD_INPUTS,
-    Retired(("test", ANY), retired_type_message, retired_type),
-    Retired(
-        ("steps", ANY, "foreach"),
-        "This is now set by running the step for each test. Turn that on, and remove this.",
-    ),
-)
-
-
-def parse_workflow(text: bytes | str) -> WorkflowDefinition:
-    """The `workflow.yaml` in `text`. Raises `InvalidDefinition` listing every
-    problem with its YAML path.
-    """
-    return validate(WorkflowDefinition, WORKFLOW_FILE, load_mapping(WORKFLOW_FILE, text), RETIRED)
-
-
-# The run workflow (SIMPLER-CORE.md 7)
 
 
 class RunInput(Model):
-    """One input of a run workflow (SIMPLER-CORE.md 7.1): its type, `options`
+    """One input of a workflow (SIMPLER-CORE.md 7.1): its type, `options`
     on an enum, `optional` on an input a task may leave out, and the task
     form's `title`, `help` and `unit`. Who gives it, and whether it repeats,
     are the task's.
@@ -635,7 +355,7 @@ class RunInput(Model):
 
 
 class RunStep(Model):
-    """One step of a run workflow: the primitive it uses and what each of
+    """One step of a workflow: the primitive it uses and what each of
     its ports is given. A `named_files` port takes a mapping of names to
     files, a `programs` port a mapping of program names to each program's
     ports, and a `links` port a list of `"<from> -> <to>"`.
@@ -690,7 +410,7 @@ SELF_REPORTED_GIVEN = (
 
 
 class RunWorkflow(Model):
-    """A run workflow's `workflow.yaml`: one run's inputs, its steps, at
+    """A `workflow.yaml`: one run's inputs, its steps, at
     least one, and the outputs it gives beside the `verdict` and `passed`
     every run has. Output names and input names are one set of columns. A
     number or a text output is a column; a file output is not, and a box
@@ -763,18 +483,22 @@ RUN_RETIRED = (
     Retired(("reports",), _RENAME_OUTPUTS),
     *_OLD_INPUTS,
     Retired(
+        ("test",),
+        "A workflow describes one run, and the task repeats it over its tests with repeat. "
+        "Make each test field an input, and remove this.",
+    ),
+    Retired(
         ("inputs", ANY, "contestant"),
         "The task decides who gives an input, in its own inputs. Remove this.",
     ),
     Retired(
         ("inputs", ANY, "per_test"),
-        "A workflow without a test block describes one run, and the task says which inputs "
-        "repeat. Remove this.",
+        "A workflow describes one run, and the task says which inputs repeat. Remove this.",
     ),
     Retired(
         ("steps", ANY, "per_test"),
-        "A workflow without a test block describes one run, so every step runs once in it, "
-        "and the task says what repeats. Remove this.",
+        "A workflow describes one run, so every step runs once in it, and the task says what "
+        "repeats. Remove this.",
     ),
     Retired(("steps", ANY, "foreach"), "The task says what repeats. Remove this."),
     Retired(
@@ -787,111 +511,42 @@ RUN_RETIRED = (
 )
 
 
-def is_run_workflow(document: Mapping[str, object]) -> bool:
-    """Whether a `workflow.yaml`'s document is a run workflow: one with no
-    `test` block.
-    """
-    return "test" not in document
-
-
 def parse_run_workflow(text: bytes | str) -> RunWorkflow:
-    """The run workflow in `text`. Raises `InvalidDefinition` listing every
+    """The workflow in `text`. Raises `InvalidDefinition` listing every
     problem with its YAML path.
     """
     return validate(RunWorkflow, WORKFLOW_FILE, load_mapping(WORKFLOW_FILE, text), RUN_RETIRED)
 
 
-def read_workflow(text: bytes | str) -> WorkflowDefinition | RunWorkflow:
-    """The `workflow.yaml` in `text` in its own format: a `RunWorkflow` when
-    it has no `test` block, a `WorkflowDefinition` otherwise. Raises
-    `InvalidDefinition` as each format's parse does.
-    """
-    document = load_mapping(WORKFLOW_FILE, text)
-    if is_run_workflow(document):
-        return validate(RunWorkflow, WORKFLOW_FILE, document, RUN_RETIRED)
-    return validate(WorkflowDefinition, WORKFLOW_FILE, document, RETIRED)
+README_FILE = "README.md"
+CLASSIC = Path(__file__).parent / "classic"
+"""A copy of `unicon/classic@v3`'s files, as deploy seeds them, which a new
+workflow starts from."""
+
+
+def classic_files() -> dict[str, bytes]:
+    """`unicon/classic@v3`'s files, by their paths in the workflow."""
+    return {
+        path.relative_to(CLASSIC).as_posix(): path.read_bytes()
+        for path in sorted(CLASSIC.rglob("*"))
+        if path.is_file() and "__pycache__" not in path.parts
+    }
 
 
 def starter_workflow(owner: str, name: str) -> dict[str, bytes]:
-    """The files a new workflow is created with: a `workflow.yaml` with the
-    inputs, test fields, steps and report of `unicon/classic@v2`, so it is
-    valid from its first commit and a person starts from a workflow that
-    grades and changes what they need.
+    """The files a new workflow is created with: `unicon/classic@v3`'s but
+    its README, its `workflow.yaml` headed with the workflow's own name, so
+    it is valid from its first commit and a person starts from a workflow
+    that grades and changes what they need.
     """
-    workflow = f"""# {owner}/{name}, a workflow. It starts as unicon/classic@v2: compile
-# the contestant's file once, run it on every test under the task's
-# limits, and compare each run's output with that test's answer. The
-# format is TASK-FORMAT.md section 1.3.
-inputs:
-  submission:
-    type: file
-    contestant: true
-    title: Solution
-    help: The source file the contestant submits.
-  language:
-    type: enum
-    options: [c, cpp, java, python]
-    contestant: true
-    title: Language
-    help: The languages a contestant may write their solution in.
-  time_limit:
-    type: number
-    title: Time limit
-    unit: seconds
-    help: The CPU time the program may use on each test.
-  memory_limit:
-    type: number
-    title: Memory limit
-    unit: MB
-    help: The memory the program may use on each test.
-
-test:
-  input: file
-  answer: file
-
-steps:
-  - id: compile
-    use: unicon/compile@v2
-    with:
-      source: ${{{{ inputs.submission }}}}
-      language: ${{{{ inputs.language }}}}
-
-  - id: run
-    use: unicon/sandbox-run@v2
-    per_test: true
-    with:
-      binary: ${{{{ steps.compile.binary }}}}
-      input: ${{{{ test.input }}}}
-      time_limit: ${{{{ inputs.time_limit }}}}
-      memory_limit: ${{{{ inputs.memory_limit }}}}
-
-  - id: check
-    use: unicon/diff-check@v2
-    per_test: true
-    with:
-      actual: ${{{{ steps.run.output }}}}
-      expected: ${{{{ test.answer }}}}
-
-report:
-  time_ms:
-    from: ${{{{ steps.run.time_ms }}}}
-    title: Run time
-    unit: ms
-    fold: max
-    better: lower
-    at_least: 0
-  memory_kb:
-    from: ${{{{ steps.run.memory_kb }}}}
-    title: Memory used
-    unit: KB
-    fold: max
-    better: lower
-    at_least: 0
-  log:
-    from: ${{{{ steps.compile.compile_log }}}}
-    title: Compile log
+    files = {path: content for path, content in classic_files().items() if path != README_FILE}
+    lines = files[WORKFLOW_FILE].decode().splitlines(keepends=True)
+    body = "".join(lines[next(i for i, line in enumerate(lines) if not line.startswith("#")) :])
+    header = f"""# {owner}/{name}, a workflow. It starts as unicon/classic@v3: one run of an
+# entrant's program on one input, its output compared word by word with the
+# answer by the diff script beside this file. The format is SIMPLER-CORE.md 7.
 """
-    return {WORKFLOW_FILE: workflow.encode()}
+    return {**files, WORKFLOW_FILE: (header + body).encode()}
 
 
 __all__ = [
@@ -901,24 +556,16 @@ __all__ = [
     "SELF_REPORTED_GIVEN",
     "WORKFLOW_FILE",
     "BadReference",
-    "Fold",
-    "Meaning",
     "Reference",
     "RunInput",
     "RunOutput",
     "RunStep",
     "RunWorkflow",
-    "TestField",
-    "WorkflowDefinition",
-    "WorkflowInput",
     "WorkflowRef",
-    "WorkflowStep",
-    "is_run_workflow",
+    "classic_files",
     "parse_reference",
     "parse_run_workflow",
-    "parse_workflow",
     "parse_workflow_ref",
-    "read_workflow",
     "references",
     "reserved_message",
     "starter_workflow",

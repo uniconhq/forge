@@ -1,9 +1,9 @@
-"""The grading area over Woodpecker: activating a task's repository once,
-deactivating it again, and starting runs as the org account the caller
-hands in, finding a run by its grading id, reading and cancelling runs as
-the CI's administrator, the configuration extension's signed question and
-the answer to it, and the org account's own user and token at the CI, made
-and deleted by the administrator and signed in by the sign-in dance.
+"""The grading area over Woodpecker: activating an org's dispatch
+repository once and starting pipelines on it as the org account the caller
+hands in, reading and cancelling runs as the CI's administrator, the
+configuration extension's signed question and the answer to it, and the org
+account's own user and token at the CI, made and deleted by the
+administrator and signed in by the sign-in dance.
 
 What the org account holds at Woodpecker is its user id, the token its
 sign-in minted, when that was, and the account's id at the git host, by which
@@ -18,46 +18,9 @@ every 20 days, and one that was quiet for months on its first use. A
 refresh gives the account a fresh password at the git host, signs it in with
 that, and throws the password away.
 
-A run is a manual pipeline on the task's repository, started on `main`,
-since the CI starts a run only on a branch, with the run's variables:
-
-    UNICON_GRADING_ID           the grading
-    UNICON_ENVELOPE_URL         where the harness fetches its envelope
-    UNICON_PUBLICATION_COMMIT   the commit the publication froze
-    UNICON_SUBMISSION_REPO      the submission's repository, <org>/<repo>
-    UNICON_SUBMISSION_COMMIT    the commit the submission's files went in with
-    UNICON_COMPUTE              the label of the machines that may take it
-
-The commit the CI records is whatever `main` points at, which may be a
-draft, so the answer to the extension pins both checkouts itself. It is one
-workflow, `grading`, the same every time for the same run:
-
-- `when` the run is started by hand, which every grading run is;
-- `labels` from `UNICON_COMPUTE`, `pool:platform` becoming `pool: platform`,
-  and no size, so it takes a slot of any;
-- under `clone:`, two full steps, `task` and `submission`, each running the
-  clone image with `remote`, `sha`, `ref` and `path` set, `lfs` on, and the
-  machine's store of large files of the task's org mounted as
-  `unicon-lfs-<org>:/lfs-cache`, one store per org, so no org's
-  task is served a large file another org's task brought to the machine by
-  naming its object id. Neither carries `environment`: a clone step
-  with one stops counting as a clone plugin and is lent no credential. The
-  clone image is on the CI's trusted-clone list, so both are lent the org
-  account's credential, and nothing else is;
-- under `steps:`, one step, `grade`, running the harness image the plan
-  names with the socket filter's socket mounted read-only as
-  `unicon-filter:/run/unicon:ro`, so the harness can connect to the socket
-  and cannot put another in its place, `DOCKER_HOST` naming it, and no
-  credential, since the task repository is trusted for `volumes` alone.
-
-The checkouts land at `/woodpecker/task` and `/woodpecker/submission`, inside
-the run's workspace volume, which is what the envelope tells the harness.
-The deployment sets Woodpecker's pipeline timeout,
-`WOODPECKER_DEFAULT_PIPELINE_TIMEOUT`, to the platform's `RUN_TIMEOUT`.
-
-A run task's grading runs otherwise (phase 4.9): each of its pipelines is
-a manual pipeline on the org's dispatch repository, `unicon-dispatch`,
-activated once and trusted for `volumes` alone, started on `main` with:
+A grading's runs are its pipelines (phase 4.9): each is a manual pipeline
+on the org's dispatch repository, `unicon-dispatch`, activated once and
+trusted for `volumes` alone, started on `main` with:
 
     UNICON_GRADING_ID           the grading's row
     UNICON_PIPELINE             save, early or late
@@ -87,7 +50,9 @@ and answered with one workflow, `grading`:
   `when` lets it run after a step that failed.
 
 No step carries `commands`, `entrypoint` or `environment`, so an `exec`
-step stays a plugin the CI's privileged list can name.
+step stays a plugin the CI's privileged list can name. The deployment sets
+Woodpecker's pipeline timeout, `WOODPECKER_DEFAULT_PIPELINE_TIMEOUT`, to the
+platform's `RUN_TIMEOUT`.
 
 The extension's request is signed by the CI's ed25519 key (RFC 9421,
 `signatures.py`). The key is read from `GET /api/signature/public-key` with
@@ -116,16 +81,7 @@ from forge.adapters.ci.woodpecker import signatures
 from forge.adapters.ci.woodpecker.ci_login import CiLogin
 from forge.adapters.ci.woodpecker.ci_state import WoodpeckerState, read_state, written
 from forge.adapters.ci.woodpecker.http import CI_ADMIN, Caller, Http, json_of, segment
-from forge.adapters.ids import (
-    DISPATCH_REPO,
-    PUBLISHED_PREFIX,
-    SUBMISSION_PREFIX,
-    MalformedId,
-    parse_publication,
-    parse_submission,
-    parse_task,
-    task_of_repo,
-)
+from forge.adapters.ids import DISPATCH_REPO, SUBMISSION_PREFIX, parse_submission
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -135,20 +91,16 @@ from forge.domain.errors import (
     VariablesDiffer,
 )
 from forge.domain.grading import (
-    GradingRun,
     InboundAnswer,
     InboundRequest,
     PipelineLookup,
     PipelineRun,
     PipelineSpec,
     PipelineStepSpec,
-    RunLookup,
-    RunPlaces,
-    RunSpec,
     RunState,
 )
 from forge.domain.identity import AsOrgAccount, CiState, OrgAccountRef
-from forge.domain.ids import OrgId, RunId, TaskId
+from forge.domain.ids import OrgId, RunId
 from forge.domain.names import service_account_name
 from forge.domain.workflow_definition import CLONE_STEP
 from forge.log import get_logger
@@ -156,7 +108,6 @@ from forge.log import get_logger
 log = get_logger(__name__)
 
 GRADING_VARIABLE = "UNICON_GRADING_ID"
-ENVELOPE_VARIABLE = "UNICON_ENVELOPE_URL"
 PUBLICATION_VARIABLE = "UNICON_PUBLICATION_COMMIT"
 SUBMISSION_REPO_VARIABLE = "UNICON_SUBMISSION_REPO"
 SUBMISSION_VARIABLE = "UNICON_SUBMISSION_COMMIT"
@@ -164,18 +115,11 @@ COMPUTE_VARIABLE = "UNICON_COMPUTE"
 PIPELINE_VARIABLE = "UNICON_PIPELINE"
 
 WORKFLOW_NAME = "grading"
-WORKSPACE = "/woodpecker"
-TASK_CHECKOUT = f"{WORKSPACE}/task"
-SUBMISSION_CHECKOUT = f"{WORKSPACE}/submission"
-LFS_CACHE_PREFIX = "unicon-lfs-"
-LFS_CACHE_PATH = "/lfs-cache"
 VOLUME_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 """What an org's name may be to name a volume, within Docker's rule for a
 volume name."""
 CACHE_PREFIX = "unicon-cache-"
 CACHE_PATH = "/cache"
-FILTER_VOLUME = "unicon-filter:/run/unicon:ro"
-FILTER_SOCKET = "unix:///run/unicon/docker.sock"
 
 PUBLIC_KEY_PATH = "/api/signature/public-key"
 KEY_REFETCH_SECONDS = 60.0
@@ -193,37 +137,20 @@ PASSWORD_BYTES = 24
 
 @dataclass(frozen=True, slots=True)
 class _Ask:
-    """The extension's question once its signature is checked: the task
-    whose run it is, none for a pipeline on the org's dispatch repository,
-    the org whose repository it is, the grading id the run was started with
-    as it was given, every variable it was started with, and where the CI
-    clones the repository from.
+    """The extension's question once its signature is checked: the org
+    whose dispatch repository it is, the grading id the pipeline was started
+    with as it was given, every variable it was started with, and where the
+    CI clones the repository from.
     """
 
-    task: TaskId | None
     org: OrgId
     grading: str | None
     variables: Mapping[str, str]
     clone_url: str
 
 
-def run_variables(run: GradingRun) -> dict[str, str]:
-    """The variables `run` is started with, the same every time for the same
-    run, and the only ones the extension answers a run started with.
-    """
-    workspace, task, _ = parse_submission(run.submission)
-    return {
-        GRADING_VARIABLE: str(run.grading),
-        ENVELOPE_VARIABLE: run.envelope_url,
-        PUBLICATION_VARIABLE: str(run.publication_version),
-        SUBMISSION_REPO_VARIABLE: f"{workspace.org}/{workspace.submission_repo(task)}",
-        SUBMISSION_VARIABLE: str(run.submission_version),
-        COMPUTE_VARIABLE: run.compute,
-    }
-
-
 def pipeline_variables(run: PipelineRun) -> dict[str, str]:
-    """The variables a run task's pipeline is started with, the same every
+    """The variables a grading's pipeline is started with, the same every
     time for the same pipeline, and the only ones the extension answers it
     started with.
     """
@@ -308,18 +235,12 @@ class WoodpeckerGrading:
         token = await self._login.mint_token(account.username, password)
         return written(replace(current, token=token, signed_in_at=datetime.now(UTC)))
 
-    async def activate(self, as_: AsOrgAccount, task: TaskId) -> bool:
-        """The CI knew the task when it answers the activation with a
+    async def activate_dispatch(self, as_: AsOrgAccount, org: OrgId) -> bool:
+        """The CI knew the repository when it answers the activation with a
         conflict; its settings are applied again either way.
         """
-        ref = parse_task(task)
-        return await self._activate(_acting_for(as_, ref.org), ref.org, ref.repo)
-
-    async def activate_dispatch(self, as_: AsOrgAccount, org: OrgId) -> bool:
-        """As `activate`, for the org's dispatch repository."""
-        return await self._activate(_acting_for(as_, org), org, DISPATCH_REPO)
-
-    async def _activate(self, account: AsOrgAccount, org: str, repo: str) -> bool:
+        account = _acting_for(as_, org)
+        repo = DISPATCH_REPO
         repo_id = await self._host.repo_id(org, repo)
         try:
             activated = json_of(
@@ -339,29 +260,6 @@ class WoodpeckerGrading:
         )
         await self._host.remove_hooks(org, repo, self._ci_public_url)
         return new
-
-    async def deactivate(self, as_: AsOrgAccount, task: TaskId) -> None:
-        """As the org account, which activated the repository: Woodpecker
-        asks the git host to drop its webhook with the credential of whoever
-        deactivates, and the org account's is the one kept fresh. `remove`
-        has the CI forget the repository rather than keep it switched off.
-        """
-        ref = parse_task(task)
-        account = _acting_for(as_, ref.org)
-        try:
-            repo = await self._lookup(account, ref.org, ref.repo)
-            await self._ci.call(
-                account, "DELETE", f"/api/repos/{repo['id']}", params={"remove": "true"}
-            )
-        except NotFound:
-            return
-
-    async def start_run(self, as_: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
-        """`spec` is not sent: Woodpecker asks what the run is while it
-        starts it, and is answered from the platform's records then.
-        """
-        ref = parse_task(run.task)
-        return await self._start(_acting_for(as_, ref.org), ref.org, ref.repo, run_variables(run))
 
     async def start_pipeline(self, as_: AsOrgAccount, run: PipelineRun) -> RunId:
         return await self._start(
@@ -440,36 +338,22 @@ class WoodpeckerGrading:
         return view
 
     async def answer(
-        self,
-        request: InboundRequest,
-        lookup: RunLookup,
-        *,
-        now: datetime,
-        run_tasks: PipelineLookup,
+        self, request: InboundRequest, lookup: PipelineLookup, *, now: datetime
     ) -> InboundAnswer:
         """The configuration extension. Of the two checks that decide what a
-        run runs, `lookup` keeps the platform's, a grading of that task being
-        started, and this the CI's: anyone who may start a manual pipeline
-        on the task's repository may pass variables of their own, a harness
-        image among them, so a run started with any variable but exactly
-        those `run_variables` gives is answered with nothing. A pipeline on
-        the org's dispatch repository is found by `run_tasks`, and held to
-        `pipeline_variables` the same way.
+        pipeline runs, `lookup` keeps the platform's, a grading of that org
+        being started, and this the CI's: anyone who may start a manual
+        pipeline on the dispatch repository may pass variables of their own,
+        so a pipeline started with any variable but exactly those
+        `pipeline_variables` gives is answered with nothing.
         """
         ask = await self._ask(request, now)
-        if ask.task is None:
-            pipeline, steps = await run_tasks(ask.grading, ask.org)
-            if dict(ask.variables) != pipeline_variables(pipeline):
-                raise VariablesDiffer(
-                    "the pipeline was not started with the variables its grading starts it with"
-                )
-            return _configs(self._pipeline(pipeline, ask, steps))
-        run, spec = await lookup(ask.grading, ask.task)
-        if dict(ask.variables) != run_variables(run):
+        pipeline, steps = await lookup(ask.grading, ask.org)
+        if dict(ask.variables) != pipeline_variables(pipeline):
             raise VariablesDiffer(
-                "the run was not started with the variables its grading starts it with"
+                "the pipeline was not started with the variables its grading starts it with"
             )
-        return self._answer(run, ask, spec)
+        return _configs(self._pipeline(pipeline, ask, steps))
 
     async def _ask(self, request: InboundRequest, now: datetime) -> _Ask:
         await self._verify(request, now)
@@ -484,12 +368,8 @@ class WoodpeckerGrading:
         if not isinstance(repo, dict) or not isinstance(pipeline, dict):
             raise Rejected("the CI's request names no repository or run")
         owner, name = _owner_and_name(repo)
-        task: TaskId | None = None
         if name != DISPATCH_REPO:
-            try:
-                task = task_of_repo(owner, name).id
-            except MalformedId as exc:
-                raise Rejected(f"the CI asks about {owner}/{name}, which is no task") from exc
+            raise Rejected(f"the CI asks about {owner}/{name}, which is no dispatch repository")
         variables = pipeline.get("variables") or {}
         if not isinstance(variables, dict) or not all(
             isinstance(key, str) and isinstance(value, str) for key, value in variables.items()
@@ -499,67 +379,14 @@ class WoodpeckerGrading:
         if not isinstance(clone_url, str) or not clone_url:
             raise Rejected("the CI's request names no clone URL")
         return _Ask(
-            task=task,
             org=OrgId(owner),
             grading=variables.get(GRADING_VARIABLE),
             variables=dict(variables),
             clone_url=clone_url,
         )
 
-    def _answer(self, run: GradingRun, ask: _Ask, spec: RunSpec) -> InboundAnswer:
-        places = self.run_places(run)
-        clone_image = spec.clone_image
-        task_remote = _remote(ask.clone_url, places.task["org"], places.task["repo"])
-        submission_remote = _remote(
-            ask.clone_url, places.submission["org"], places.submission["repo"]
-        )
-        cache = lfs_cache_volume(places.task["org"])
-        workflow = {
-            "when": [{"event": "manual"}],
-            "labels": {
-                name: value for label in run.labels for name, value in _labels(label).items()
-            },
-            "clone": [
-                _clone(
-                    "task",
-                    clone_image,
-                    remote=task_remote,
-                    sha=places.publication["commit"],
-                    ref=f"refs/tags/{places.publication['tag']}",
-                    path=TASK_CHECKOUT,
-                    lfs=True,
-                    cache=cache,
-                ),
-                _clone(
-                    "submission",
-                    clone_image,
-                    remote=submission_remote,
-                    sha=places.submission["commit"],
-                    ref=f"refs/tags/{places.submission['tag']}",
-                    path=SUBMISSION_CHECKOUT,
-                    # Every file a contestant uploads is an object in the
-                    # forge's large-file store, and the commit holds a
-                    # pointer to it, so this checkout pulls them as the
-                    # task's does. Both share the org's store on the
-                    # machine, so a file is downloaded once however many
-                    # runs name it.
-                    lfs=True,
-                    cache=cache,
-                ),
-            ],
-            "steps": [
-                {
-                    "name": "grade",
-                    "image": spec.harness_image,
-                    "environment": {"DOCKER_HOST": FILTER_SOCKET},
-                    "volumes": [FILTER_VOLUME],
-                }
-            ],
-        }
-        return _configs(workflow)
-
     def _pipeline(self, run: PipelineRun, ask: _Ask, spec: PipelineSpec) -> dict[str, Any]:
-        """The workflow of a run task's pipeline: the submission checked out
+        """The workflow of a grading's pipeline: the submission checked out
         into the workspace when a step reads it, then each step of `spec`."""
         labels = dict(item for label in spec.labels for item in _labels(label).items())
         workflow: dict[str, Any] = {"when": [{"event": "manual"}], "labels": labels}
@@ -583,24 +410,6 @@ class WoodpeckerGrading:
             ]
         workflow["steps"] = [_step(step, cache_volume(str(run.org))) for step in spec.steps]
         return workflow
-
-    def run_places(self, run: GradingRun) -> RunPlaces:
-        task, publication = parse_publication(run.publication)
-        workspace, task_name, number = parse_submission(run.submission)
-        return RunPlaces(
-            task={"org": task.org, "repo": task.repo},
-            publication={
-                "tag": f"{PUBLISHED_PREFIX}{publication}",
-                "commit": str(run.publication_version),
-            },
-            submission={
-                "org": workspace.org,
-                "repo": workspace.submission_repo(task_name),
-                "tag": f"{SUBMISSION_PREFIX}{number}",
-                "commit": str(run.submission_version),
-            },
-            checkouts={"task": TASK_CHECKOUT, "submission": SUBMISSION_CHECKOUT},
-        )
 
     async def _ci_user(self, username: str) -> int:
         """Looked up before it is made: Woodpecker answers a duplicate with a
@@ -730,41 +539,14 @@ def _labels(compute: str) -> dict[str, str]:
     return {name: value}
 
 
-def lfs_cache_volume(org: str) -> str:
-    """The mount of the machine's store of large files for the org's tasks,
+def cache_volume(org: str) -> str:
+    """The mount of the machine's cache of task files for the org's tasks,
     a volume of the org's own. `Rejected` for an org whose name is no
     volume name, which the org name rule never lets through.
     """
     if not VOLUME_PART.fullmatch(org):
         raise Rejected(f"the org {org!r} names no volume")
-    return f"{LFS_CACHE_PREFIX}{org}:{LFS_CACHE_PATH}"
-
-
-def cache_volume(org: str) -> str:
-    """The mount of the machine's cache of task files for the org's run
-    tasks, a volume of the org's own, as `lfs_cache_volume` names one."""
-    if not VOLUME_PART.fullmatch(org):
-        raise Rejected(f"the org {org!r} names no volume")
     return f"{CACHE_PREFIX}{org}:{CACHE_PATH}"
-
-
-def _clone(
-    name: str,
-    image: str,
-    *,
-    remote: str,
-    sha: str,
-    ref: str,
-    path: str,
-    lfs: bool,
-    cache: str,
-) -> dict[str, Any]:
-    return {
-        "name": name,
-        "image": image,
-        "settings": {"remote": remote, "sha": sha, "ref": ref, "path": path, "lfs": lfs},
-        "volumes": [cache],
-    }
 
 
 def _acting_for(as_: AsOrgAccount, org: str) -> AsOrgAccount:

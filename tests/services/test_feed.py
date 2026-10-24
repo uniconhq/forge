@@ -60,7 +60,7 @@ async def _submit(setup: Setup, acme: Acme, person: Session, task: TaskId, key: 
         person,
         task,
         {
-            "submission": SubmittedInput(uploads=(made.id,)),
+            "code": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key=key,

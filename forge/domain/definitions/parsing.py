@@ -21,9 +21,6 @@ from forge.domain.definitions.retired_keys import (
 )
 from forge.domain.definitions.task import FILE_CEILING, Form, TaskDefinition
 from forge.domain.yaml_models import (
-    InvalidDefinition,
-    Problem,
-    Retired,
     is_number,
     load_mapping,
     mapping_or_empty,
@@ -58,66 +55,16 @@ def parse_contest(text: bytes | str, *, saved: bool = False) -> ContestDefinitio
     return validate(ContestDefinition, CONTEST_FILE, document, CONTEST_RETIRED)
 
 
-RUN_FORMAT_KEYS = ("repeat", "scoring")
-"""The keys only a run task has; a file with either reads as one."""
-
-RUN_FORMAT_RETIRED = (
-    Retired(
-        ("test_groups",),
-        "This task's workflow describes one run, with no test block, so the task has no test "
-        "groups: its runs are grouped under scoring's groups. Remove this.",
-    ),
-    Retired(
-        ("credit",),
-        "This task's workflow describes one run, with no test block, so what its runs earn is "
-        "said by scoring's values. Remove this.",
-    ),
-)
-TEST_FORMAT_RETIRED = (
-    Retired(
-        ("repeat",),
-        "This task's workflow has a test block, so its tests are the folders under tests/ and "
-        "nothing repeats. Choose a workflow that describes one run, such as "
-        "unicon/classic@v3, or remove this.",
-    ),
-    Retired(
-        ("scoring",),
-        "This task's workflow has a test block, so it is scored by its test groups, not by "
-        "scoring. Choose a workflow that describes one run, such as unicon/classic@v3, or "
-        "remove this.",
-    ),
-    Retired(
-        ("checks",),
-        "This task's workflow has a test block, and checks grade a made-up submission through "
-        "a run task's runs. Choose a workflow that describes one run, such as "
-        "unicon/classic@v3, or remove this.",
-    ),
-)
-
-
-def parse_task(text: bytes | str, *, runs: bool | None = None) -> TaskDefinition:
-    """The `task.yaml` in `text`, in the run format when `runs`, in today's
-    when not, and, when `runs` is none, in the format its keys say: the run
-    format when it has `repeat` or `scoring` (`RUN_FORMAT_KEYS`). A key of
-    the other format is refused naming the format, and a run task without
-    `scoring` or another without `test_groups` is refused at that key.
-    Raises `InvalidDefinition` listing every problem with its YAML path.
+def parse_task(text: bytes | str) -> TaskDefinition:
+    """The `task.yaml` in `text`. A task with no `scoring`, or `scoring`
+    left empty, is refused at that key. Raises `InvalidDefinition` listing
+    every problem with its YAML path.
     """
     document = load_mapping(TASK_FILE, text)
-    if runs is None:
-        runs = any(key in document for key in RUN_FORMAT_KEYS)
-    required = "scoring" if runs else "test_groups"
-    # A run task's scoring left empty is none, which no run task can be.
-    given = required in document and not (runs and document[required] is None)
-    missing = [] if given else [Problem(path=required, message="This is required.")]
-    retired = (*TASK_RETIRED, *(RUN_FORMAT_RETIRED if runs else TEST_FORMAT_RETIRED))
-    try:
-        found = validate(TaskDefinition, TASK_FILE, document, retired)
-    except InvalidDefinition as invalid:
-        raise InvalidDefinition(TASK_FILE, [*invalid.errors, *missing]) from None
-    if missing:
-        raise InvalidDefinition(TASK_FILE, missing)
-    return found
+    if "scoring" in document and document["scoring"] is None:
+        # A scoring left empty is none, which no task can be.
+        del document["scoring"]
+    return validate(TaskDefinition, TASK_FILE, document, TASK_RETIRED)
 
 
 CONTEST_ADMIN_KEYS = ("name", "description", "state", "visibility", "registration")
@@ -213,6 +160,44 @@ end: {stamp(end)}
 state: draft
 visibility: signed-in
 """.encode()
+
+
+def starter_task(name: str) -> dict[str, bytes]:
+    """The files a new task is created with: a `task.yaml` titled `name`
+    that runs the entrant's Python with `unicon/classic@v3` on one test,
+    `tests/1.in`, `1 2`, whose answer, `tests/1.ans`, is `3`, scored by the
+    share of its tests accepted and shown at once, and a placeholder
+    statement (`STARTER_STATEMENT`), so the first save publishes.
+    """
+    task = f"""\
+# The task's settings. The format is SIMPLER-CORE.md, sections 8 and 9.
+name: {_yaml_text(name)}
+workflow: unicon/classic@v3
+inputs:
+  code: {{entrant: {{label: Your solution}}}}
+  language: {{entrant: {{label: Language, options: [python]}}}}
+  time_limit: 2
+  memory_limit: 256
+repeat:
+  - inputs: [input, answer]
+    tuples:
+      - [tests/1.in, tests/1.ans]
+scoring:
+  values:
+    score:
+      block: div
+      of:
+        - {{block: sum, over: {{runs: all}}, of: {{run: [all, passed]}}}}
+        - {{block: count, over: {{runs: all}}}}
+  show:
+    now: [score, all]
+"""
+    return {
+        TASK_FILE: task.encode(),
+        STATEMENT_FILE: STARTER_STATEMENT,
+        "tests/1.in": b"1 2\n",
+        "tests/1.ans": b"3\n",
+    }
 
 
 def statement_written(content: bytes | None) -> bool:

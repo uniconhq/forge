@@ -56,7 +56,7 @@ from forge.domain.blocks.catalogue import ENTERED
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.blocks.numbers import exact, written
 from forge.domain.definitions import TaskDefinition
-from forge.domain.errors import InvalidMark, NotARunTask, NotFound
+from forge.domain.errors import InvalidMark, NotFound
 from forge.domain.ids import TaskId, WorkspaceId
 from forge.domain.leaderboard_task_check import leaderboards_of
 from forge.domain.leaderboards import STAFF, alone, counted_in
@@ -72,7 +72,6 @@ from forge.services.access import Organiser, require
 log = get_logger(__name__)
 
 NO_SUCH_SUBMISSION: Final = "There is no such submission."
-NOT_A_RUN_TASK: Final = "Only a task that grades by runs has values a mark is entered for."
 MOST_MARK_CHARACTERS: Final = 40
 """The longest mark's text, sign, digits and point together."""
 
@@ -119,8 +118,7 @@ async def queue(ctx: Context, organiser: Organiser, task: TaskId) -> tuple[Queue
     a cell of any of the contest's leaderboards counted, as staff read them, each
     with the marks of the task's `entered` values; for a caller with no
     role at the contest, only the cells reading this task alone. Needs the
-    observer role at the task. `NotFound` for a task with no publication,
-    `NotARunTask` for one graded test by test.
+    observer role at the task. `NotFound` for a task with no publication.
     """
     require(organiser, task_scope(task), Role.OBSERVER)
     contest = contest_id_of(task_scope(task))
@@ -129,8 +127,6 @@ async def queue(ctx: Context, organiser: Organiser, task: TaskId) -> tuple[Queue
     if current is None:
         raise NotFound(entrant_view.NO_SUCH_TASK)
     scoring = current.definition.scoring
-    if scoring is None:
-        raise NotARunTask(NOT_A_RUN_TASK)
     entry = current.entry
     found = await leaderboards.read(ctx, contest, settings, list(settings.leaderboards), STAFF)
     cells = None
@@ -198,8 +194,6 @@ async def enter(
     if current is None:
         raise NotFound(NO_SUCH_SUBMISSION)
     scoring = current.definition.scoring
-    if scoring is None:
-        raise NotARunTask(NOT_A_RUN_TASK)
     tree = scoring.values.get(value)
     found = blocks_in(tree, ENTERED) if tree is not None else []
     if not found:
@@ -307,10 +301,10 @@ async def start_again(ctx: Context, task: TaskId, values: Iterable[str], by: int
 
 def entered_values(definition: TaskDefinition | None) -> frozenset[str]:
     """The values of `definition` that hold an `entered` block."""
-    scoring = definition.scoring if definition is not None else None
-    if scoring is None:
+    if definition is None:
         return frozenset()
-    return frozenset(name for name, tree in scoring.values.items() if blocks_in(tree, ENTERED))
+    values = definition.scoring.values
+    return frozenset(name for name, tree in values.items() if blocks_in(tree, ENTERED))
 
 
 def _mark(text: str) -> Fraction | None:

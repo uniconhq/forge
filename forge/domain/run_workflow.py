@@ -2,10 +2,8 @@
 version of it checks it (SIMPLER-CORE.md 7, TASK-FORMAT.md 1.3's typing),
 and what the check learns that a task's save and the planner read after it.
 
-Every step uses a contract 6 primitive, as today's format uses only contract
-5's, so neither is handed a step it cannot run. Each port is given a value of
-its type under the two widenings, and the ports only contract 6 has take
-their own shapes:
+Every step uses a contract 6 primitive. Each port is given a value of its
+type under the two widenings, and the ports of these shapes take their own:
 
 - a `named_files` port, a mapping of names to files, each name a file name
   (no leading `.`, no `/`), among the port's `names` when it has any, and
@@ -367,7 +365,7 @@ def manifest_paths(workflow: RunWorkflow) -> set[str]:
             given.extend(each.get(MANIFEST) for each in programs.values() if isinstance(each, dict))
         for raw in given:
             try:
-                reference = whole_reference(raw, runs=True) if isinstance(raw, str) else None
+                reference = whole_reference(raw) if isinstance(raw, str) else None
             except BadReference:
                 continue
             if reference is not None and reference.kind == "workflow":
@@ -499,20 +497,11 @@ class _Checker:
 
     def step(self, where: Path, step_id: str, use: str, given: Mapping[str, Any]) -> None:
         declaration = self.primitives.get(use)
-        if declaration is None or declaration.schema_version != 6:
-            self.refused.add(step_id)
         if declaration is None:
+            self.refused.add(step_id)
             self.refuse(
                 (*where, "use"),
                 f"{use} is not a primitive Unicon knows. Check its owner, name and version.",
-            )
-            return
-        if declaration.schema_version != 6:
-            self.refuse(
-                (*where, "use"),
-                f"{use} is written for workflows with a test block, and this one has none, so "
-                "it describes one run. Use a primitive written for runs, such as "
-                "unicon/exec@v1.",
             )
             return
         resolved = declaration.for_step(tuple(given), use)
@@ -660,7 +649,7 @@ class _Checker:
         """What `raw` is, and each input it gives, whole or written into
         text.
         """
-        read = literal_or_references(raw, runs=True, flat=self.flat)
+        read = literal_or_references(raw, flat=self.flat)
         if isinstance(read, Kind):
             return read, []
         whole, written = read
@@ -689,11 +678,6 @@ class _Checker:
                     raise Refused(f"The workflow has no input called {found.name}.")
                 options = frozenset(declared.options) if declared.options else None
                 return Kind(declared.type, options, "input", declared.optional)
-            case "test":
-                raise Refused(
-                    "A workflow without a test block has no test fields: the task gives each "
-                    "run's values in its inputs and says which repeat."
-                )
             case "workflow":
                 return self._workflow_file(found.name, found.pin)
         assert found.output is not None
@@ -808,11 +792,7 @@ class _Checker:
 
     def _named_file(self, at: Path, value: object, port: Port) -> None:
         try:
-            found = (
-                whole_reference(value, runs=True, flat=self.flat)
-                if isinstance(value, str)
-                else None
-            )
+            found = whole_reference(value, flat=self.flat) if isinstance(value, str) else None
         except BadReference as bad:
             raise Refused(str(bad)) from None
         if found is None:
@@ -961,9 +941,7 @@ class _Checker:
         is a file of the workflow.
         """
         try:
-            found = (
-                whole_reference(raw, runs=True, flat=self.flat) if isinstance(raw, str) else None
-            )
+            found = whole_reference(raw, flat=self.flat) if isinstance(raw, str) else None
         except BadReference:
             found = None
         if found is not None and found.kind == "steps":
@@ -1062,7 +1040,7 @@ class _Checker:
         title = entry.title if isinstance(entry, RunOutput) else None
         unit = entry.unit if isinstance(entry, RunOutput) else None
         try:
-            found = whole_reference(raw, runs=True, flat=self.flat)
+            found = whole_reference(raw, flat=self.flat)
         except BadReference as bad:
             self.refuse(at, str(bad))
             return
@@ -1146,7 +1124,7 @@ def _limit(raw: object, *, flat: bool = False) -> int | Decimal | str | None:
         assert isinstance(raw, int | Decimal)
         return raw
     try:
-        found = whole_reference(raw, runs=True, flat=flat) if isinstance(raw, str) else None
+        found = whole_reference(raw, flat=flat) if isinstance(raw, str) else None
     except BadReference:
         return None
     return found.name if found is not None and found.kind == "inputs" else None
@@ -1160,7 +1138,7 @@ def _references_in(values: Iterable[object], *, flat: bool = False) -> list[Refe
     for value in values:
         if isinstance(value, str):
             try:
-                found.extend(reference for _, reference in references(value, runs=True, flat=flat))
+                found.extend(reference for _, reference in references(value, flat=flat))
             except BadReference:
                 continue
         elif isinstance(value, dict):

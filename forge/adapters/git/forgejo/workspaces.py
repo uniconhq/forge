@@ -293,10 +293,6 @@ class ForgejoWorkspaces:
                     grading_changed=note.grading_changed,
                     changes=note.changes,
                     workflows=note.workflows,
-                    sealed=note.sealed,
-                    measures=note.measures,
-                    titles=note.titles,
-                    meanings=note.meanings,
                     checked_first=note.checked_first,
                     at=datetime.fromisoformat(str(commit["created"])),
                 )

@@ -29,7 +29,7 @@ from sqlalchemy import select
 from forge.db.tables import Release
 from forge.db.tables.releases import HIDDEN_AGAIN, RELEASED
 from forge.domain import release as rules
-from forge.domain.errors import ConfirmationRequired, NotARunTask, NotFound, PortError
+from forge.domain.errors import ConfirmationRequired, NotFound, PortError
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.live import Nudge, NudgeKind
 from forge.domain.roles import Role, contest_id_of, task_scope
@@ -46,10 +46,6 @@ TAKE_BACK_WARNING: Final = (
     "Entrants may already have seen these results; hiding them again won't undo that."
 )
 NO_PUBLICATION: Final = "The task has no publication yet. Save it so that it publishes."
-NOT_A_RUN_TASK: Final = (
-    "Only a task that grades by runs has results to release: its scoring's show lists what "
-    "a release shows under on_release."
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,14 +136,12 @@ async def _act(
     is asked before the task is held alone, as a save holds it, so a submit
     or a regrade in flight never waits on the forge, and reads the state
     before or after the action, never during it. `NotFound` for a task with
-    no publication, and `NotARunTask` for one that does not grade by runs.
+    no publication.
     """
     require(organiser, task_scope(task), Role.MANAGER)
     found = await entrant_view.task(ctx, task)
     if found is None:
         raise NotFound(NO_PUBLICATION)
-    if not found.definition.runs:
-        raise NotARunTask(NOT_A_RUN_TASK)
     contest = contest_id_of(task_scope(task))
     heard = await _visible(ctx, contest, task)
     await timelines.hold_task(ctx, task)
@@ -180,7 +174,7 @@ async def _visible(ctx: Context, contest: ContestId, task: TaskId) -> bool:
 
 def _release_words(found: PublishedTask) -> str:
     scoring = found.definition.scoring
-    listed = list(scoring.show.on_release) if scoring is not None else []
+    listed = list(scoring.show.on_release)
     if not listed:
         shows = "Its scoring's show lists nothing under on_release, so nothing more is shown."
     else:
@@ -195,7 +189,6 @@ def _release_words(found: PublishedTask) -> str:
 
 
 __all__ = [
-    "NOT_A_RUN_TASK",
     "TAKE_BACK_WARNING",
     "ResultsAction",
     "ResultsState",

@@ -12,7 +12,6 @@ from forge.domain.workflow_definition import (
     BadReference,
     Reference,
     RunWorkflow,
-    WorkflowDefinition,
     references,
     whole_reference,
 )
@@ -66,18 +65,13 @@ class Kind:
 
     type: Type
     options: frozenset[str] | None = None
-    source: Literal["literal", "input", "contestant", "test", "step", "text", "workflow"] = (
-        "literal"
-    )
+    source: Literal["literal", "input", "step", "text", "workflow"] = "literal"
     optional: bool = False
 
 
-def stray_units(workflow: WorkflowDefinition | RunWorkflow) -> list[Problem]:
+def stray_units(workflow: RunWorkflow) -> list[Problem]:
     """A unit on an input that is not a number, refused where a version is
-    made or checked, naming the input and its type in words. A version
-    made with one before is read with it dropped (`shown_unit`), and a task
-    on it saves, since a version cannot be mended and a unit changes no
-    plan.
+    made or checked, naming the input and its type in words.
     """
     problems: list[Problem] = []
     for key, declared in workflow.inputs.items():
@@ -100,12 +94,11 @@ class Refused(Exception):
 
 
 def literal_or_references(
-    raw: object, *, runs: bool = False, flat: bool = False
+    raw: object, *, flat: bool = False
 ) -> Kind | tuple[Reference | None, list[Reference]]:
     """The kind of `raw` when it is true or false or a number; for text,
-    the reference it is whole, or else those written into it, in either
-    format. `Refused` for anything else, and for a `${{ }}` that is no
-    reference.
+    the reference it is whole, or else those written into it. `Refused`
+    for anything else, and for a `${{ }}` that is no reference.
     """
     if isinstance(raw, bool):
         return Kind(Type.BOOLEAN)
@@ -119,10 +112,8 @@ def literal_or_references(
     if not isinstance(raw, str):
         raise Refused("Give text, a number, true or false, or a ${{ }} reference.")
     try:
-        whole = whole_reference(raw, runs=runs, flat=flat)
-        written = (
-            [found for _, found in references(raw, runs=runs, flat=flat)] if whole is None else []
-        )
+        whole = whole_reference(raw, flat=flat)
+        written = [found for _, found in references(raw, flat=flat)] if whole is None else []
     except BadReference as bad:
         raise Refused(str(bad)) from None
     return whole, written

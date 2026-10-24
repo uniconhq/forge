@@ -22,7 +22,7 @@ from forge.domain.workflow_definition import (
     WORKFLOW_FILE,
     RunWorkflow,
     WorkflowRef,
-    read_workflow,
+    parse_run_workflow,
 )
 from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
 from forge.runtime.context import Context
@@ -31,9 +31,6 @@ from forge.services import names, primitives
 _CANNOT_OPEN = (
     "Unicon cannot open {use}: there is no such primitive or workflow at that "
     "version, or it is not shared with you."
-)
-_TEST_FORMAT = (
-    "{use} is a workflow in the format graded test by test, and a box can only use a run workflow."
 )
 _OLD = (
     "The workflow {use} is written in an older form that Unicon no longer reads, so its "
@@ -150,11 +147,9 @@ async def expand(
         except NotFound, Forbidden:
             return _Use("bad", _CANNOT_OPEN.format(use=use))
         try:
-            definition = read_workflow(file.content)
+            definition = parse_run_workflow(file.content)
         except InvalidDefinition as invalid:
             return _Use("bad", _OLD.format(use=use, detail=invalid.detail))
-        if not isinstance(definition, RunWorkflow):
-            return _Use("bad", _TEST_FORMAT.format(use=use))
         pin = len(pins) + 1
         pins[use] = pin
         inners[use] = definition

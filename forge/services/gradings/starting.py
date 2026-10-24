@@ -1,7 +1,6 @@
 import uuid
 from datetime import datetime
 
-from pydantic import ValidationError
 from sqlalchemy import ColumnElement, and_, select
 
 from forge.db.tables import Grading
@@ -13,9 +12,8 @@ from forge.domain.errors import (
     NotFound,
     PortError,
     Rejected,
-    Unavailable,
 )
-from forge.domain.grading import GradingRun, GradingStatus, PipelineRun, RunSpec, token_hash
+from forge.domain.grading import GradingStatus, PipelineRun
 from forge.domain.identity import AsOrgAccount
 from forge.domain.ids import PublicationId, RunId, TaskId, WorkspaceId, new_id
 from forge.domain.publication_record import Publication
@@ -24,16 +22,7 @@ from forge.log import get_logger
 from forge.runtime.context import Context
 from forge.services import org_accounts, pipelines
 from forge.services.credentials import CannotDecrypt
-from forge.services.gradings.lookups import (
-    callback_token_of,
-    changed,
-    find,
-    finish,
-    org_of,
-    plan_of,
-    run_of,
-    spec_of,
-)
+from forge.services.gradings.lookups import changed, find, finish, org_of
 from forge.services.gradings.records import (
     ACCOUNT_NOT_READY,
     NO_ANSWER,
@@ -67,8 +56,7 @@ def new_row(
     unwaited: bool = False,
     released_split: bool = False,
 ) -> Grading:
-    """A new `queued` grading, added to the unit of work, with the hash of
-    its run's callback token, whose run starts once the unit of work
+    """A new `queued` grading, added to the unit of work, whose run starts once the unit of work
     commits, in the background when it is `unwaited`, since nobody asking
     waits on it; a start that never runs leaves the row `queued`, which a
     read finds overdue and retries (`notice`). `automatic` when the platform
@@ -100,7 +88,6 @@ def new_row(
         early_id=early,
         released_split=released_split,
     )
-    row.callback_token_hash = token_hash(callback_token_of(ctx, row))
     ctx.db.add(row)
     if over_limit is not None:
         row.submission_limit = over_limit
@@ -152,54 +139,7 @@ async def start(ctx: Context, grading: uuid.UUID) -> None:
     except PortError as exc:
         await _not_started(ctx, grading, exc, NO_ANSWER)
         return
-    try:
-        planned = row.pipeline != EARLY or await pipelines.planned(ctx, row)
-    except Unavailable as exc:
-        await _not_started(ctx, grading, exc, NO_ANSWER)
-        return
-    if planned:
-        await _start_pipeline(ctx, grading, row, account)
-        return
-    try:
-        run = await run_of(ctx, row)
-    except NotFound as exc:
-        await _not_started(ctx, grading, exc, PUBLICATION_GONE)
-        return
-    except PortError as exc:
-        await _not_started(ctx, grading, exc, NO_ANSWER)
-        return
-    try:
-        spec = spec_of(ctx, await plan_of(ctx, run))
-    except pipelines.ImageWithdrawn as exc:
-        await _not_started(ctx, grading, exc, str(exc))
-        return
-    except (NotFound, Forbidden, ValidationError) as exc:
-        # Refused as the CI refused a run whose plan its question could not
-        # be answered from, before the plan was read at the start.
-        await _not_started(ctx, grading, exc, NO_RUN)
-        return
-    except PortError as exc:
-        # Likewise a plan the forge could not hand over, which the CI
-        # answered with no run.
-        await _not_started(ctx, grading, exc, NO_RUN)
-        return
-    await ctx.db.commit()
-    try:
-        found = await _start_run(ctx, account, run, spec)
-    except (PortError, CannotDecrypt) as exc:
-        reason = _start_failure(exc) if isinstance(exc, PortError) else ACCOUNT_NOT_READY
-        await _not_started(ctx, grading, exc, reason)
-        return
-    row = await find(ctx, grading, lock=True)
-    if row is None or row.status != GradingStatus.QUEUED or await _superseded(ctx, row):
-        log.info("gradings.start_overtaken", grading=str(grading), run=found)
-        await _cancel_quietly(ctx, found)
-        return
-    row.status = GradingStatus.DISPATCHED
-    row.run_id = found
-    row.dispatched_at = ctx.now
-    changed(ctx, row)
-    log.info("gradings.dispatched", grading=str(row.id), run=found)
+    await _start_pipeline(ctx, grading, row, account)
 
 
 async def _superseded(ctx: Context, row: Grading) -> bool:
@@ -221,9 +161,9 @@ def _on_line(row: Grading) -> ColumnElement[bool]:
 async def _start_pipeline(
     ctx: Context, grading: uuid.UUID, row: Grading, account: AsOrgAccount
 ) -> None:
-    """`start` for a run task's row: its steps' settings minted, a user
-    taken for it and committed, then its pipeline started on the org's
-    dispatch repository, which is made and activated the first time a
+    """`start` once the org's account is read: the row's steps' settings
+    minted, a user taken for it and committed, then its pipeline started on
+    the org's dispatch repository, which is made and activated the first time a
     start finds it missing. A pipeline with nothing left to run is not
     started: the row is concluded at once from what the store holds, the
     platform's images needed or not.
@@ -266,7 +206,8 @@ async def _start_pipeline(
 async def _start_on_dispatch(ctx: Context, account: AsOrgAccount, run: PipelineRun) -> RunId:
     """Start the pipeline, making and activating the org's dispatch
     repository first when the CI does not know it, and signing the org's
-    account in again once when the CI refuses it, as `_start_run` does.
+    account in again once when the CI refuses it, so a login the CI lost
+    heals at the next start. Nothing is held while the CI is called.
     """
     try:
         return await _start_signed_in(ctx, account, run)
@@ -289,19 +230,6 @@ async def _start_signed_in(ctx: Context, account: AsOrgAccount, run: PipelineRun
         account = await org_accounts.renew(ctx, account)
         await ctx.db.commit()
         return await ctx.forge.grading.start_pipeline(account, run)
-
-
-async def _start_run(ctx: Context, account: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
-    """Start the run, and when the CI refuses the org's account, sign it in
-    again and try once more, so a login the CI lost heals at the next start.
-    Nothing is held while the CI is called.
-    """
-    try:
-        return await ctx.forge.grading.start_run(account, run, spec)
-    except Forbidden:
-        account = await org_accounts.renew(ctx, account)
-        await ctx.db.commit()
-        return await ctx.forge.grading.start_run(account, run, spec)
 
 
 async def _not_started(ctx: Context, grading: uuid.UUID, exc: Exception, reason: str) -> None:

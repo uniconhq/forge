@@ -133,12 +133,13 @@ def test_an_anchor_or_an_alias_is_refused_at_its_line() -> None:
 
 def test_groups_named_no_and_on_are_groups_of_those_names() -> None:
     task = parse_task(
-        b"name: Sum\nworkflow: unicon/classic@v2\n"
-        b"test_groups:\n  no: {each: 1}\n  NO: {pass: 2.5}\n  on: {}\n"
+        b"name: Sum\nworkflow: unicon/classic@v3\n"
+        b"scoring:\n  groups:\n    no: {input: [a]}\n    NO: {input: [b]}\n    on: {}\n"
+        b"  values:\n    score: {block: count, over: {runs: all}}\n"
     )
 
-    assert list(task.test_groups) == ["no", "NO", "on"]
-    assert task.test_groups["NO"].pass_ == Decimal("2.5")
+    assert list(task.scoring.groups) == ["no", "NO", "on"]
+    assert task.scoring.groups["NO"] == {"input": ["b"]}
 
 
 @pytest.mark.parametrize(

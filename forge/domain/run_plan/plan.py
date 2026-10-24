@@ -70,7 +70,6 @@ def plan_runs(
     task's results are released (`RunPlan.released`), each fitted to the
     machine.
     """
-    assert definition.scoring is not None, "a run task has scoring once it is checked"
     planner = _Planner(
         definition,
         definition.scoring,

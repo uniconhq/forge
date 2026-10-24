@@ -136,7 +136,7 @@ def planned(
     in `paths` 3 bytes long but those `sizes` gives, and hashed as if it held
     its path.
     """
-    definition = parse_task(task, runs=True)
+    definition = parse_task(task)
     parsed = parse_run_workflow(workflow)
     checked = check_run_workflow(parsed, primitives, WorkflowFiles(frozenset(files), files))
     assert checked.problems == []
@@ -1410,7 +1410,7 @@ def test_a_step_bigger_than_the_biggest_slot_is_refused(
     files = {"workflow.yaml": SIDE_BY_SIDE.encode()}
     checked = check_run_workflow(workflow, primitives, WorkflowFiles(frozenset(files), files))
     found = check_run_task(
-        parse_task(SIDE_BY_SIDE_TASK.replace("memory: 3000", "memory: 30000"), runs=True),
+        parse_task(SIDE_BY_SIDE_TASK.replace("memory: 3000", "memory: 30000")),
         workflow,
         checked,
         frozenset({"task.yaml", "tests/1.in", "tests/2.in"}),

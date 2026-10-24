@@ -2,10 +2,9 @@
 save carries, a save as the person with the conflict check, a version made
 only of a draft that checks and never changed after, a definition checked
 on its own, its three visibilities with the list of readers, a read at a
-version as a named user, a copy at a version, a combination of several,
-the workflows a person may read, the newest version a task's notice
-names, and a version of a workflow with no test block checked against the
-files of its own commit.
+version as a named user, a copy at a version, the workflows a person may
+read, the newest version a task's notice names, and a version checked
+against the files of its own commit.
 """
 
 from pathlib import Path
@@ -18,17 +17,19 @@ from forge.domain.ids import WorkflowId
 from forge.domain.program_manifest import MAX_MANIFEST, TOO_LARGE
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
-from forge.domain.workflow_definition import parse_workflow_ref
+from forge.domain.workflow_definition import WORKFLOW_FILE, parse_workflow_ref
 from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import primitives, workflows
-from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, RUN_WORKFLOWS
+from forge.testing import CLASSIC, RUN_WORKFLOWS
 from tests.conftest import sibling
 from tests.services.conftest import Acme, signed_in
 
-BROKEN_REFERENCE = CLASSIC.replace(
-    b"binary: ${{ steps.compile.binary }}", b"binary: ${{ steps.compiler.binary }}"
+WORKFLOW = CLASSIC[WORKFLOW_FILE]
+"""The built-in workflow's `workflow.yaml`."""
+BROKEN_REFERENCE = WORKFLOW.replace(
+    b"program: ${{ steps.compile.program }}", b"program: ${{ steps.compiler.program }}"
 ).decode()
 
 
@@ -47,7 +48,7 @@ async def test_the_owner_reads_the_draft_saves_it_and_versions_it(setup: Setup, 
     assert page.summary.visibility is Visibility.PRIVATE
     assert page.summary.versions == ()
     assert page.draft is not None
-    edited = page.draft.text.replace("fold: max\n", "fold: sum\n", 1)
+    edited = page.draft.text.replace("time_limit: 3\n", "time_limit: 4\n", 1)
     assert edited != page.draft.text
     saved = await workflows.save(setup, bob, "bob", "tuned", edited, page.draft.token)
 
@@ -57,7 +58,7 @@ async def test_the_owner_reads_the_draft_saves_it_and_versions_it(setup: Setup, 
     assert repo.files["workflow.yaml"] == edited.encode()
     assert repo.history[-1].author_id == 8
     assert await workflows.create_version(setup, bob, "bob", "tuned", "v1") == "v1"
-    later = edited.replace("fold: sum", "fold: mean", 1)
+    later = edited.replace("time_limit: 4", "time_limit: 5", 1)
     await workflows.save(setup, bob, "bob", "tuned", later, saved.token)
 
     assert await workflows.read_version(setup, bob, "bob/tuned@v1") == edited
@@ -87,7 +88,7 @@ async def test_a_draft_with_problems_saves_and_its_version_is_refused_at_each_pa
 
     assert refused.value.errors == [
         {
-            "path": "steps[1].with.binary",
+            "path": "steps[1].with.program",
             "message": "There is no step called compiler before this one.",
         }
     ]
@@ -167,7 +168,7 @@ async def test_a_draft_over_the_size_is_refused(setup: Setup, acme: Acme) -> Non
 async def test_a_valid_definition_checks_with_no_problem(setup: Setup, acme: Acme) -> None:
     bob = await signed_in(setup, acme.fake, 8)
 
-    assert await workflows.check(setup, bob, CLASSIC.decode()) == ()
+    assert await workflows.check(setup, bob, WORKFLOW.decode()) == ()
 
 
 async def test_a_bad_step_reference_is_named_at_its_path(setup: Setup, acme: Acme) -> None:
@@ -177,7 +178,7 @@ async def test_a_bad_step_reference_is_named_at_its_path(setup: Setup, acme: Acm
 
     assert found == (
         {
-            "path": "steps[1].with.binary",
+            "path": "steps[1].with.program",
             "message": "There is no step called compiler before this one.",
         },
     )
@@ -190,8 +191,8 @@ async def test_a_unit_on_an_input_that_is_no_number_is_refused_by_a_check_and_a_
     bob = await _own(setup, acme)
     page = await workflows.view(setup, bob, "bob", "tuned")
     assert page.draft is not None
-    stray = CLASSIC.replace(b"    title: Language\n", b"    title: Language\n    unit: words\n")
-    assert stray != CLASSIC
+    stray = WORKFLOW.replace(b"title: Language}", b"title: Language, unit: words}")
+    assert stray != WORKFLOW
     refusal = {
         "path": "inputs.language.unit",
         "message": "Only a number takes a unit, and language is one of a list. Remove the "
@@ -213,12 +214,10 @@ async def test_a_unit_on_a_reported_text_is_refused_by_a_check_and_a_version(
     bob = await _own(setup, acme)
     page = await workflows.view(setup, bob, "bob", "tuned")
     assert page.draft is not None
-    stray = CLASSIC.replace(
-        b"    title: Compile log\n", b"    title: Compile log\n    unit: lines\n"
-    )
-    assert stray != CLASSIC
+    stray = WORKFLOW.replace(b"title: Compile log}", b"title: Compile log, unit: lines}")
+    assert stray != WORKFLOW
     refusal = {
-        "path": "report.log.unit",
+        "path": "outputs.log.unit",
         "message": "Only a number takes a unit, and log is text. Remove the unit.",
     }
 
@@ -231,30 +230,6 @@ async def test_a_unit_on_a_reported_text_is_refused_by_a_check_and_a_version(
     assert refused.value.errors == [refusal]
 
 
-async def test_an_input_called_tests_is_refused_by_a_check(setup: Setup, acme: Acme) -> None:
-    bob = await signed_in(setup, acme.fake, 8)
-    named = CLASSIC.replace(b"inputs:\n", b"inputs:\n  tests: {type: folder}\n", 1)
-    assert named != CLASSIC
-
-    found = await workflows.check(setup, bob, named.decode())
-
-    assert [problem["path"] for problem in found] == ["inputs.tests"]
-
-
-async def test_a_step_that_uses_a_workflow_is_not_a_primitive(setup: Setup, acme: Acme) -> None:
-    bob = await signed_in(setup, acme.fake, 8)
-    uses_workflow = CLASSIC.replace(b"unicon/diff-check@v2", b"unicon/classic@v2").decode()
-
-    found = await workflows.check(setup, bob, uses_workflow)
-
-    assert found == (
-        {
-            "path": "steps[2].use",
-            "message": "unicon/classic@v2 is a workflow, and a step can only use a primitive.",
-        },
-    )
-
-
 async def test_a_definition_that_does_not_parse_is_answered_with_its_paths(
     setup: Setup, acme: Acme
 ) -> None:
@@ -262,7 +237,7 @@ async def test_a_definition_that_does_not_parse_is_answered_with_its_paths(
 
     found = await workflows.check(setup, bob, "test: {input: file}\nsteps: []\nname: x\n")
 
-    assert {problem["path"] for problem in found} == {"steps", "name"}
+    assert {problem["path"] for problem in found} == {"test", "steps", "name"}
 
 
 # Who reads a workflow
@@ -387,7 +362,7 @@ async def test_an_orgs_manager_edits_its_workflow_and_its_observer_only_reads_it
         await workflows.save(setup, bob, "acme", "tuned", "x", managed.draft.token)
 
 
-# Copying and combining
+# Copying
 
 
 async def test_a_copy_is_the_sources_file_at_a_version_private_and_marked(
@@ -395,19 +370,19 @@ async def test_a_copy_is_the_sources_file_at_a_version_private_and_marked(
 ) -> None:
     bob = await signed_in(setup, acme.fake, 8)
 
-    made = await workflows.copy(setup, bob, "unicon/classic@v2", "bob", "mine")
+    made = await workflows.copy(setup, bob, "unicon/classic@v3", "bob", "mine")
 
     assert made.id == WorkflowId("bob/mine")
     repo = acme.fake.state.repos[("bob", "mine.workflow")]
     assert repo.private is True
     assert repo.marked == "workflow"
-    assert repo.files == {"workflow.yaml": CLASSIC}
+    assert repo.files == CLASSIC
     assert repo.history[-1].author_id == 8
     page = await workflows.view(setup, bob, "bob", "mine")
     assert page.draft is not None
     await workflows.save(setup, bob, "bob", "mine", "test: {}\n", page.draft.token)
     source = acme.fake.state.repos[("unicon", "classic.workflow")]
-    assert source.files == {"workflow.yaml": CLASSIC}
+    assert source.files == CLASSIC
 
 
 async def test_a_copy_takes_the_version_named_not_the_draft(setup: Setup, acme: Acme) -> None:
@@ -456,7 +431,7 @@ async def test_a_person_lists_what_they_may_read_and_what_they_may_edit(
         ("unicon", "classic", False),
     ]
     assert listed[0].visibility is Visibility.SHARED
-    assert listed[2].versions == ("v2",)
+    assert listed[2].versions == ("v3",)
     by_ada = await workflows.listing(setup, ada)
     assert [(item.owner, item.name, item.editable) for item in by_ada] == [
         ("acme", "orgs", True),
@@ -549,7 +524,7 @@ async def test_the_list_leaves_other_peoples_public_workflows_to_the_marketplace
         ("bob", "tuned"),
         ("unicon", "classic"),
     ]
-    assert await workflows.read_version(setup, bob, "unicon/classic@v2")
+    assert await workflows.read_version(setup, bob, "unicon/classic@v3")
 
 
 async def test_a_primitive_version_with_no_declaration_is_listed_with_why(
@@ -558,16 +533,16 @@ async def test_a_primitive_version_with_no_declaration_is_listed_with_why(
     bob = await signed_in(setup, acme.fake, 8)
     repo = acme.fake.state.repos[("unicon", "compile.primitive")]
     acme.fake.state.commit(repo, {"primitive.yaml": None}, "empty", None)
-    acme.fake.state.create_version(PLATFORM, repo, "v3")
+    acme.fake.state.create_version(PLATFORM, repo, "v4")
 
     listed = await primitives.listing(setup, bob)
 
-    empty = next(found for found in listed if found.ref == "unicon/compile@v3")
+    empty = next(found for found in listed if found.ref == "unicon/compile@v4")
     assert (empty.declaration, empty.problem) == (
         None,
-        "Unicon cannot read the settings of unicon/compile@v3.",
+        "Unicon cannot read the settings of unicon/compile@v4.",
     )
-    assert any(found.ref == "unicon/compile@v2" and found.declaration for found in listed)
+    assert any(found.ref == "unicon/compile@v3" and found.declaration for found in listed)
 
 
 async def test_a_capitalised_username_lists_and_opens_its_workflows_in_lower_case(
@@ -590,36 +565,26 @@ async def test_a_repository_without_the_workflow_mark_is_no_workflow(
     setup: Setup, acme: Acme
 ) -> None:
     bob = await signed_in(setup, acme.fake, 8)
-    acme.fake.state.create_repo(PLATFORM, "bob", "loose.workflow", {"workflow.yaml": CLASSIC})
+    acme.fake.state.create_repo(PLATFORM, "bob", "loose.workflow", {"workflow.yaml": WORKFLOW})
 
     with pytest.raises(NotFound):
         await workflows.view(setup, bob, "bob", "loose")
     assert "loose" not in [item.name for item in await workflows.listing(setup, bob)]
     with pytest.raises(NotFound):
-        await workflows.save(setup, bob, "bob", "loose", CLASSIC.decode(), None)
+        await workflows.save(setup, bob, "bob", "loose", WORKFLOW.decode(), None)
     with pytest.raises(NotFound):
         await workflows.copy(setup, bob, "bob/loose@v1", "bob", "copied")
 
 
 async def test_a_create_of_a_name_left_unmarked_finishes_it(setup: Setup, acme: Acme) -> None:
     bob = await signed_in(setup, acme.fake, 8)
-    acme.fake.state.create_repo(PLATFORM, "bob", "loose.workflow", {"workflow.yaml": CLASSIC})
+    acme.fake.state.create_repo(PLATFORM, "bob", "loose.workflow", {"workflow.yaml": WORKFLOW})
 
     with pytest.raises(Conflict):
         await workflows.create(setup, bob, "bob", "loose")
 
     assert (await workflows.view(setup, bob, "bob", "loose")).summary.editable
     assert acme.fake.state.repo("bob", "loose.workflow").rewrites_refused
-
-
-def _run_primitives(acme: Acme) -> None:
-    """The contract 6 primitives the run workflows use, from the checkouts
-    beside this one, with the image line bootstrap writes.
-    """
-    for name, version in (("exec", "v1"), ("compile", "v3")):
-        text = sibling(f"primitive-{name}", "primitive.yaml").read_bytes()
-        image = f"image: ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}\n".encode()
-        acme.fake.primitives.add(name, {version: image + text})
 
 
 def _held(folder: Path) -> dict[str, bytes]:
@@ -634,7 +599,6 @@ def _held(folder: Path) -> dict[str, bytes]:
 async def test_a_built_in_run_workflow_versions_with_its_own_files(
     setup: Setup, acme: Acme, ref: str
 ) -> None:
-    _run_primitives(acme)
     bob = await _own(setup, acme)
     repo = acme.fake.state.repos[("bob", "tuned.workflow")]
     acme.fake.state.commit(repo, _held(sibling("deploy", RUN_WORKFLOWS[ref])), "copy", 8)
@@ -648,7 +612,6 @@ async def test_a_built_in_run_workflow_versions_with_its_own_files(
 
 
 async def test_a_manifest_over_the_largest_size_is_refused_unread(setup: Setup, acme: Acme) -> None:
-    _run_primitives(acme)
     bob = await _own(setup, acme)
     repo = acme.fake.state.repos[("bob", "tuned.workflow")]
     held = _held(sibling("deploy", RUN_WORKFLOWS["unicon/classic@v3"]))
@@ -667,11 +630,12 @@ async def test_a_manifest_over_the_largest_size_is_refused_unread(setup: Setup, 
 async def test_a_run_workflows_path_its_commit_lacks_is_refused_by_a_version_alone(
     setup: Setup, acme: Acme
 ) -> None:
-    _run_primitives(acme)
     bob = await _own(setup, acme)
     text = (sibling("deploy", RUN_WORKFLOWS["unicon/classic@v3"]) / "workflow.yaml").read_bytes()
     repo = acme.fake.state.repos[("bob", "tuned.workflow")]
-    acme.fake.state.commit(repo, {"workflow.yaml": text}, "copy", 8)
+    acme.fake.state.commit(
+        repo, {"workflow.yaml": text, "diff/diff.py": None, "diff/program.yaml": None}, "copy", 8
+    )
 
     assert await workflows.check(setup, bob, text.decode()) == ()
     with pytest.raises(InvalidDefinition) as refused:
@@ -690,7 +654,6 @@ async def test_a_manifest_listed_but_not_read_as_a_file_is_refused_at_its_port(
     setup: Setup, acme: Acme, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """As a symbolic link the host listed anyway would be."""
-    _run_primitives(acme)
     bob = await _own(setup, acme)
     repo = acme.fake.state.repos[("bob", "tuned.workflow")]
     held = _held(sibling("deploy", RUN_WORKFLOWS["unicon/classic@v3"]))

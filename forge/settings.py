@@ -62,18 +62,15 @@ WOODPECKER_VARIABLES = {
 DEFAULTED_WOODPECKER_FIELDS = ("public_url",)
 
 IMAGE_VARIABLES = {
-    "harness_image": "UNICON_HARNESS_IMAGE",
-    "clone_image": "UNICON_CLONE_IMAGE",
+    "plugin_git_image": "UNICON_PLUGIN_GIT_IMAGE",
 }
 
 FAKE_IMAGES = {
-    "harness_image": "ghcr.io/uniconhq/harness@sha256:" + "0" * 64,
-    "clone_image": "ghcr.io/uniconhq/clone@sha256:" + "0" * 64,
     "primitive_base_image": "ghcr.io/uniconhq/primitive-base@sha256:" + "0" * 64,
     "plugin_git_image": "docker.io/woodpeckerci/plugin-git@sha256:" + "0" * 64,
 }
-"""The images the fake forge's plans and runs name unless given. It runs
-neither, so a placeholder digest does."""
+"""The images the fake forge's pipelines name unless given. It runs none, so
+a placeholder digest does."""
 
 SLOT_SIZES_VARIABLE = "UNICON_SLOT_SIZES"
 FAKE_SLOT_SIZES = "small:1:2048,big:2:8192"
@@ -255,8 +252,8 @@ class Settings(BaseSettings):
     where browsers reach the forge, for either implementation. `internal_url`
     is where the forge reaches the platform inside the deployment, the public
     URL unless given: the org event push points there. `machine_url` is
-    where grading machines reach the platform, for the envelope, the callback
-    and the log they write, the public URL unless given. `org_creation_open`
+    where grading machines reach the platform, for each step's doors and the
+    files it uploads, the public URL unless given. `org_creation_open`
     says whether any signed-in user may create an org, or only the operator.
     `places_ahead` says whether an entrant's place to submit each task is
     made once it is approved and once the task is first published, so the
@@ -269,30 +266,27 @@ class Settings(BaseSettings):
     `s3`, the object store's settings, is
     required with `forgejo`; the fake keeps its store in memory.
     `mail`, the mail server's settings, is optional, and without it nothing
-    is mailed. `harness_image` is the harness every plan names, by digest, and
-    `clone_image` the image the CI checks a task and a submission out with,
-    by digest, both required with `forgejo`: they are the deployment's
-    choice, from its image manifest. A run task's pipelines name two more,
-    by digest: `primitive_base_image`, the step wrapper's base image its
-    report step runs, and `plugin_git_image`, Woodpecker's clone plugin.
-    They are optional until the release manifest names the base image
-    (phase 4.10), and a run task's grading started without them ends in
-    `system_error` saying which. The fake runs none and names a
+    is mailed. A grading's pipelines name two images beside the primitives,
+    by digest, the deployment's choice from its image manifest:
+    `plugin_git_image`, Woodpecker's clone plugin, which checks a submission
+    out, required with `forgejo`, and `primitive_base_image`, the step
+    wrapper's base image its report step runs, optional until the release
+    manifest names it (phase 4.10). A grading started without one it needs
+    ends in `system_error` saying which. The fake runs none and names a
     placeholder for each unless given. `withdrawn_images`, by digest and
-    comma separated, are images no step may run any more, such as an
-    `exec` image found with a fault in its walls, dropped at
-    once rather than kept while a publication names it, each matched by
-    its digest under any name (`withdraws`): a save whose primitive names
-    one is refused, and a grading whose steps run one, a run task's or one
-    on the harness, ends in `system_error` saying so, graded again once
-    the task is saved with a fixed version. The deployment leaves them out of the
-    images the CI lets run privileged too. `slot_sizes` are the sizes of
-    the grading machines' slots, `<name>:<cores>:<memory MB>` comma
-    separated, from deploy's one table of them, at least one, required with
-    `forgejo`: a run task's step may take the biggest, and each pipeline is
-    fitted in the smallest that holds what it runs side by side, with no
-    more boxes at once than its cores, and labelled with its name; the fake
-    plans with deploy's table unless given.
+    comma separated, are images no step may run any more, such as an `exec`
+    image found with a fault in its walls, dropped at once rather than kept
+    while a publication names it, each matched by its digest under any name
+    (`withdraws`): a save whose primitive names one is refused, and a
+    grading whose steps run one ends in `system_error` saying so, graded
+    again once the task is saved with a fixed version. The deployment leaves
+    them out of the images the CI lets run privileged too. `slot_sizes` are
+    the sizes of the grading machines' slots, `<name>:<cores>:<memory MB>`
+    comma separated, from deploy's one table of them, at least one, required
+    with `forgejo`: a step may take the biggest, and each pipeline is fitted
+    in the smallest that holds what it runs side by side, with no more boxes
+    at once than its cores, and labelled with its name; the fake plans with
+    deploy's table unless given.
 
     `database_pool_size` connections to the database stay open in each
     process, `database_pool_overflow` more are opened in a rush, and a
@@ -335,8 +329,6 @@ class Settings(BaseSettings):
     woodpecker: WoodpeckerSettings | None = None
     s3: S3Settings | None = None
     mail: MailSettings | None = None
-    harness_image: str
-    clone_image: str
     primitive_base_image: str | None = None
     plugin_git_image: str | None = None
     withdrawn_images: Annotated[frozenset[str], NoDecode] = frozenset()
@@ -427,9 +419,7 @@ class Settings(BaseSettings):
                 for name, field in S3Settings.model_fields.items()
                 if field.is_required() and given_s3.get(name) is None
             ]
-        missing += [
-            variable for name, variable in IMAGE_VARIABLES.items() if data.get(name) is None
-        ]
+        missing += [variable for name, variable in IMAGE_VARIABLES.items() if not data.get(name)]
         if not data.get("slot_sizes"):
             missing.append(SLOT_SIZES_VARIABLE)
         if missing:
@@ -445,12 +435,12 @@ class Settings(BaseSettings):
         passes one its manifest does not name, is none."""
         return None if value == "" else value
 
-    @field_validator("harness_image", "clone_image", "primitive_base_image", "plugin_git_image")
+    @field_validator("primitive_base_image", "plugin_git_image")
     @classmethod
     def _an_image_by_digest(cls, value: str | None) -> str | None:
         if value is not None and not IMAGE.match(value):
             raise ValueError(
-                "is not an image by digest, such as ghcr.io/uniconhq/harness@sha256:..."
+                "is not an image by digest, such as ghcr.io/uniconhq/primitive-base@sha256:..."
             )
         return value
 

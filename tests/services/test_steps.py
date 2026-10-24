@@ -64,7 +64,7 @@ from forge.services.task_save import Published
 from forge.testing import FakeClock
 from tests.conftest import sibling
 from tests.services.conftest import SPRING, Acme, make_task, write_contest
-from tests.services.test_run_task_saves import DRAFT, ISLANDS_DATA, TASKS, _primitives
+from tests.services.test_run_task_saves import DRAFT, ISLANDS_DATA, TASKS
 
 CODE = b"print(1)\n"
 PROGRAM = b"\x7fELF compiled\n"
@@ -101,7 +101,6 @@ async def _islands(
     over the workflow `unicon/islands@v1` in `contest`, `before` called on
     the task once it is made."""
     task = await make_task(setup, acme, "islands")
-    _primitives(acme)
     _, held, data = TASKS["islands"]
     data = {**data, **(files or {})}
     workflow = await acme.fake.workflows.create_workflow(
@@ -1074,7 +1073,6 @@ async def test_a_programs_forms_cached_files_are_each_in_its_own_item(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     task = await make_task(setup, acme, "duel")
-    _primitives(acme)
     workflow = await acme.fake.workflows.create_workflow(
         PLATFORM, "unicon", "duel", {"workflow.yaml": DUEL.encode()}, Visibility.PUBLIC
     )

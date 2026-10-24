@@ -37,8 +37,7 @@ def _forgejo_settings() -> Settings:
         forge_public_url="http://forge.test",
         session_hard_ttl=SHORTER,
         session_idle_ttl=IDLE,
-        harness_image=IMAGE.format("harness"),
-        clone_image=IMAGE.format("clone"),
+        plugin_git_image=IMAGE.format("plugin-git"),
         forgejo=ForgejoSettings(
             internal_url="http://forgejo:3000",
             admin_token="admin",

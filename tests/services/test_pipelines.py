@@ -162,7 +162,7 @@ def asked(
     async def asking(as_: AsOrgAccount, run: PipelineRun) -> RunId:
         made = await start(as_, run)
         request = acme.fake.grading.config_request(
-            None, pipeline_variables(run), now=clock.now(), org=run.org
+            run.org, pipeline_variables(run), now=clock.now()
         )
         answers.append(json.loads((await runs.config(setup, request)).body))
         return made
@@ -1373,7 +1373,7 @@ async def test_a_pipeline_no_slot_holds_is_not_answered(
     async def shrunk(as_: AsOrgAccount, run: PipelineRun) -> RunId:
         started.append(run)
         request = acme.fake.grading.config_request(
-            None, pipeline_variables(run), now=clock.now(), org=run.org
+            run.org, pipeline_variables(run), now=clock.now()
         )
         with monkeypatch.context() as patched:
             patched.setattr(setup.settings, "slot_sizes", (Slot("tiny", 1, 64),))
@@ -1400,13 +1400,11 @@ async def test_the_platform_answers_a_pipeline_only_while_it_starts_with_its_own
             {**pipeline_variables(run), "UNICON_PIPELINE": "late"},
             {**pipeline_variables(run), "UNICON_EXTRA": "1"},
         ):
-            request = acme.fake.grading.config_request(
-                None, variables, now=clock.now(), org=run.org
-            )
+            request = acme.fake.grading.config_request(run.org, variables, now=clock.now())
             with pytest.raises(CiRequestRefused):
                 await runs.config(setup, request)
         other = acme.fake.grading.config_request(
-            None, pipeline_variables(run), now=clock.now(), org=OrgId("beta")
+            OrgId("beta"), pipeline_variables(run), now=clock.now()
         )
         with pytest.raises(CiRequestRefused):
             await runs.config(setup, other)
@@ -1416,9 +1414,7 @@ async def test_the_platform_answers_a_pipeline_only_while_it_starts_with_its_own
     await _submit(setup, acme, islands)
 
     [run] = started
-    request = acme.fake.grading.config_request(
-        None, pipeline_variables(run), now=clock.now(), org=run.org
-    )
+    request = acme.fake.grading.config_request(run.org, pipeline_variables(run), now=clock.now())
     with pytest.raises(CiRequestRefused):
         await runs.config(setup, request)
 

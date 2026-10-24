@@ -4,31 +4,25 @@ publishes (#449), and answer a save that published (M66).
 
 - The first line says whether anyone's result changes. Results change when
   the save grades a submission again, or when the task has a graded
-  submission and the save moves what one shows: when a group's results are
-  shown; for a run task, its groups, its values or when `show` shows a
-  group or value. A task graded test by test gives no points since stage 5
-  (section 6, item 123), so its rule weights, test weights and `credit`
-  move nothing. A change to the submission limits
+  submission and the save moves what one shows: its groups, its values or
+  when `show` shows a group or value. A change to the submission limits
   moves no result: a lowered `max` takes no result away and a raised one
   grades nothing by itself (#445), so they change only what entrants may
   still submit; nor does anything said under what entrants read.
 - **Runs again:** how many submissions are graded again, and why, from what
-  changed how the task grades; for a run task, which of its steps run
-  again, and that they wait for the save's check when it has one.
-- **Scores:** for a run task, each group and value added, removed or
-  changed, a value changed with what it reads, and each entry `show`
-  shows at another time, then each leaderboard counted again with it; a
-  value is named, never written out, since the editor shows its tree. For
-  a task graded test by test, each group shown at another time and the
-  submission limits.
+  changed how the task grades; which of its steps run again, and that they
+  wait for the save's check when it has one.
+- **Scores:** each group and value added, removed or changed, a value
+  changed with what it reads, and each entry `show` shows at another time,
+  then each leaderboard counted again with it; a value is named, never
+  written out, since the editor shows its tree.
 - **What entrants read:** whether the statement, the task's title or the
-  files beside the statement change; for a run task, each task file or
-  folder `show` lists at another time, never one only a check names.
+  files beside the statement change, and each task file or folder `show`
+  lists at another time, never one only a check names.
 
 Every list holds at least one line, a "nothing changes" line when nothing
 does, so a page lays the four parts out as they come. No line names a key
-of a file: a group by its name, a number to the digit, a reported value by
-its title where the workflow gives one (M58).
+of a file: a group or a value by its name (M58).
 """
 
 from collections.abc import Mapping, Sequence
@@ -37,7 +31,7 @@ from dataclasses import dataclass
 from forge.domain.blocks.leaderboard_shape_check import LeaderboardsCheck, check_leaderboards
 from forge.domain.blocks.tree_reads import reached
 from forge.domain.checks import check_only
-from forge.domain.definitions import ContestDefinition, Rate, Scoring, Show, TaskDefinition
+from forge.domain.definitions import ContestDefinition, Scoring, TaskDefinition
 from forge.domain.run_task import SHOWN_WORDS, show_names, shown_times
 from forge.domain.yaml_models import joined
 
@@ -55,15 +49,7 @@ NO_SCORE_CHANGES = "No score changes."
 NOTHING_READ_CHANGES = "Nothing entrants read changes."
 STATEMENT_CHANGES = "The statement changes."
 PUBLIC_CHANGES = "The pictures and files beside the statement change."
-WORDS_CHANGE = "The names and units results give their values change."
 FIRST_READ = "Entrants read the task from its release."
-
-SHOWN = {
-    Show.ALWAYS: "right away",
-    Show.VERDICT: "as pass or fail right away, and in full once the task closes",
-    Show.AFTER_CLOSE: "once the task closes",
-}
-"""When entrants see a group's results, in the words the task's form uses."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,13 +68,12 @@ class SaveEffect:
 
 @dataclass(frozen=True, slots=True)
 class ReadChanges:
-    """Which of what entrants read a save changes: the statement, the files
-    beside it, and the words the task's results give their values.
+    """Which of what entrants read a save changes: the statement, and the
+    files beside it.
     """
 
     statement: bool = False
     public: bool = False
-    words: bool = False
 
 
 def effect_of(
@@ -111,8 +96,8 @@ def effect_of(
     a first publication, or `unread` when the latest publication's settings
     no longer read) does to the task named `task` in `contest`, given what
     changed how it grades, how many submissions that grades again, whether
-    the task has a graded submission, and whether it has any. For a run task,
-    `steps` are the steps a submission runs again, `checked_first` that
+    the task has a graded submission, and whether it has any. `steps` are
+    the steps a submission runs again, `checked_first` that
     the regrade waits for the save's check to pass, and `programs` the
     values whose `exec` program runs again, each in a container per
     submission, which the save says the cost of.
@@ -172,7 +157,7 @@ def _program_cost(value: str, regrades: int) -> str:
 
 def _lowered(sentence: str) -> str:
     """A sentence carried on after a colon: its first letter in lower case,
-    unless the first word is a name such as a test group's.
+    unless the first word is a name such as a group's.
     """
     first = sentence.split(" ", 1)[0]
     if first in {"The", "A", "An"}:
@@ -196,8 +181,6 @@ def _reading(
         found.append(STATEMENT_CHANGES)
     if read.public:
         found.append(PUBLIC_CHANGES)
-    if read.words:
-        found.append(WORDS_CHANGE)
     return tuple(found) or (NOTHING_READ_CHANGES,)
 
 
@@ -212,29 +195,16 @@ def _scores(
     whether any of it moves what a result is or shows.
     """
     entry = contest.entry(task) if contest is not None else None
-    # No leaderboard counts a withdrawn task, so a save of one moves none; and a
-    # leaderboard reads no task graded test by test (stage 5 section 6, item 70).
+    # No leaderboard counts a withdrawn task, so a save of one moves none.
     checked = (
         check_leaderboards(contest.leaderboards, [each.id for each in contest.tasks])
-        if contest is not None
-        and not (entry is not None and entry.withdrawn)
-        and after.scoring is not None
+        if contest is not None and not (entry is not None and entry.withdrawn)
         else None
     )
     leaderboards = _titles(contest, checked, checked.reading(task)) if checked is not None else []
     if before is None and unread:
         return [UNREAD_SCORES, _scored_again(leaderboards)], True
-    if after.scoring is not None:
-        return _run_scores(task, before, after.scoring, contest, checked)
-    if before is None:
-        return [], False
-    shown = [
-        f"Results of {name} shown {SHOWN[group.shown]} (was {SHOWN[then.shown]})."
-        for name, group in after.test_groups.items()
-        if (then := before.test_groups.get(name)) is not None and then.shown != group.shown
-    ]
-    limit, rate = _submissions(before, after)
-    return [*shown, *limit, *rate], bool(shown)
+    return _run_scores(task, before, after.scoring, contest, checked)
 
 
 def _titles(
@@ -257,7 +227,7 @@ def _run_scores(
     contest: ContestDefinition | None,
     checked: LeaderboardsCheck | None,
 ) -> tuple[list[str], bool]:
-    """A run task's scoring changes in words: each group and value added,
+    """A task's scoring changes in words: each group and value added,
     removed or changed, a value changed when its tree is or when a group or
     value it reads, directly or through others, changed; each entry `show`
     shows at another time; then the leaderboards reading a value that changed,
@@ -267,7 +237,7 @@ def _run_scores(
     if before is None:
         named = _titles(contest, checked, checked.reading(task) if checked is not None else [])
         return [f"{task} now counts on the leaderboard {name}." for name in named], False
-    then = before.scoring or Scoring()
+    then = before.scoring
     found: list[str] = []
     groups = _changed(then.groups, after.groups)
     for name in after.groups:
@@ -371,10 +341,10 @@ FILE_WORDS = {
 
 
 def _file_moves(before: TaskDefinition | None, after: TaskDefinition) -> list[str]:
-    """Each task file or folder a run task's `show` lists at another time,
+    """Each task file or folder a task's `show` lists at another time,
     or no longer lists, but one only a check names, which is never shown
     (`checks.check_only`). What entrants read, never a result."""
-    if before is None or before.scoring is None or after.scoring is None:
+    if before is None:
         return []
     names = show_names(before.scoring) | show_names(after.scoring)
 
@@ -399,33 +369,6 @@ def _file_moves(before: TaskDefinition | None, after: TaskDefinition) -> list[st
         if entry not in now
     ]
     return found
-
-
-def _rate_words(rate: Rate) -> str:
-    seconds = rate.per
-    if seconds % 3600 == 0:
-        unit, count = "hour", seconds // 3600
-    elif seconds % 60 == 0:
-        unit, count = "minute", seconds // 60
-    else:
-        unit, count = "second", seconds
-    window = f"every {unit}" if count == 1 else f"every {count} {unit}s"
-    return f"{rate.count} {window}"
-
-
-def _submissions(before: TaskDefinition, after: TaskDefinition) -> tuple[list[str], list[str]]:
-    then, now = before.submissions, after.submissions
-    limit = (
-        [f"Submission limit: {now.max} per entrant (was {then.max})."]
-        if then.max != now.max
-        else []
-    )
-    rate = (
-        [f"Submission rate: {_rate_words(now.rate)} (was {_rate_words(then.rate)})."]
-        if (then.rate.count, then.rate.per) != (now.rate.count, now.rate.per)
-        else []
-    )
-    return limit, rate
 
 
 def _scored_again(named: Sequence[str]) -> str:

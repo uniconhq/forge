@@ -1,5 +1,5 @@
-"""The run workflow (SIMPLER-CORE.md 7): a file with no test block is one,
-`unicon/classic@v3` and `unicon/interactive@v1` from deploy's checkout parse
+"""The run workflow (SIMPLER-CORE.md 7): a file with a test block is
+refused, `unicon/classic@v3` and `unicon/interactive@v1` from deploy's checkout parse
 and type against the contract 6 primitives beside this repo, a report of a
 manifest is checked against its `program.yaml` and means what that file
 says, the ports only contract 6 has take their own shapes, each refusal of
@@ -16,7 +16,6 @@ from typing import Any
 import pytest
 
 from forge.domain.blocks.numbers import Better
-from forge.domain.plans import check_workflow
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.program_manifest import MAX_MANIFEST
 from forge.domain.run_workflow import (
@@ -37,15 +36,12 @@ from forge.domain.workflow_definition import (
     BadReference,
     Reference,
     RunWorkflow,
-    WorkflowDefinition,
     parse_reference,
     parse_run_workflow,
-    parse_workflow,
-    read_workflow,
     reserved_message,
 )
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line
-from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES, RUN_WORKFLOWS
+from forge.testing import PLACEHOLDER_DIGEST, RUN_WORKFLOWS
 from tests.conftest import sibling
 
 CLASSIC_V3 = "unicon/classic@v3"
@@ -77,12 +73,11 @@ outputs:
 
 @pytest.fixture(scope="module")
 def primitives() -> dict[str, PrimitiveDeclaration]:
-    """The primitives the two workflows use, and today's three at `v2`."""
+    """The primitives the two workflows use."""
     return {
         "unicon/exec@v1": mirrored("exec"),
         "unicon/compile@v3": mirrored("compile"),
         "acme/pick@v1": PICK,
-        **{f"unicon/{name}@v2": parse_primitive(text) for name, text in PRIMITIVES.items()},
     }
 
 
@@ -140,18 +135,24 @@ def step(given: dict[str, Any], step_id: str) -> dict[str, Any]:
 # The format
 
 
-def test_a_file_without_a_test_block_is_a_run_workflow() -> None:
-    assert isinstance(read_workflow(CLASSIC), WorkflowDefinition)
-    run = read_workflow("steps:\n  - {id: a, use: unicon/compile@v3}\n")
+def test_a_file_with_a_test_block_is_refused() -> None:
+    run = parse_run_workflow("steps:\n  - {id: a, use: unicon/compile@v3}\n")
     assert isinstance(run, RunWorkflow)
     assert run.outputs == {}
+    given = document(CLASSIC_V3)
+    given["test"] = {"input": "file"}
+
+    [problem] = refused(given)
+
+    assert problem["path"] == "test"
+    assert "repeat" in problem["message"]
 
 
 @pytest.mark.parametrize("ref", list(RUN_WORKFLOWS))
 def test_each_built_in_run_workflow_parses_and_types(
     primitives: dict[str, PrimitiveDeclaration], ref: str
 ) -> None:
-    workflow = read_workflow((folder(ref) / "workflow.yaml").read_bytes())
+    workflow = parse_run_workflow((folder(ref) / "workflow.yaml").read_bytes())
 
     assert isinstance(workflow, RunWorkflow)
     assert check_run_workflow(workflow, primitives, files(ref)).problems == []
@@ -162,7 +163,7 @@ def test_references_read_a_workflows_files_and_a_programs_outputs() -> None:
     assert parse_reference("workflow.diff/program.yaml") == Reference(
         "workflow", "diff/program.yaml"
     )
-    entrant = parse_reference("steps.game.entrant.time_ms", runs=True)
+    entrant = parse_reference("steps.game.entrant.time_ms")
     assert entrant == Reference("steps", "game", "time_ms", "entrant")
     assert entrant.port == "entrant.time_ms"
     assert str(entrant) == "${{ steps.game.entrant.time_ms }}"
@@ -182,25 +183,20 @@ def test_references_read_a_workflows_files_and_a_programs_outputs() -> None:
         "workflow.diff/ x",
     ):
         with pytest.raises(BadReference):
-            parse_reference(bad, runs=True)
+            parse_reference(bad)
 
 
-def test_a_bad_reference_lists_the_forms_its_format_has() -> None:
-    with pytest.raises(BadReference) as runs:
-        parse_reference("secrets.key", runs=True)
-    assert str(runs.value) == (
-        "Unicon cannot read ${{ secrets.key }}. Write ${{ inputs.<id> }}, "
-        "${{ steps.<id>.<output> }}, ${{ steps.<id>.<program>.<output> }} or "
-        "${{ workflow.<path> }}."
-    )
-    with pytest.raises(BadReference) as today:
-        parse_reference("steps.a.b.c")
-    assert str(today.value) == (
-        "Unicon cannot read ${{ steps.a.b.c }}. Write ${{ inputs.<id> }}, "
-        "${{ steps.<id>.<output> }} or ${{ test.<field> }}."
-    )
+def test_a_bad_reference_lists_the_forms_a_reference_has() -> None:
+    for bad in ("secrets.key", "test.input"):
+        with pytest.raises(BadReference) as raised:
+            parse_reference(bad)
+        assert str(raised.value) == (
+            f"Unicon cannot read ${{{{ {bad} }}}}. Write ${{{{ inputs.<id> }}}}, "
+            "${{ steps.<id>.<output> }}, ${{ steps.<id>.<program>.<output> }} or "
+            "${{ workflow.<path> }}."
+        )
     with pytest.raises(BadReference) as spaced:
-        parse_reference("workflow.diff/ x", runs=True)
+        parse_reference("workflow.diff/ x")
     assert str(spaced.value) == (
         "Unicon cannot read ${{ workflow.diff/ x }}. No part of the path can start or end "
         "with a space."
@@ -269,18 +265,6 @@ def test_a_report_named_verdict_passed_or_like_an_input_is_refused(name: str) ->
         assert "an input of the workflow" in problem["message"]
     else:
         assert "what it gives every run" in problem["message"]
-
-
-@pytest.mark.parametrize("name", ["verdict", "passed"])
-def test_todays_format_still_reports_verdict_and_passed(name: str) -> None:
-    """A version saved before the run workflow may report either, and a
-    task's save still reads it.
-    """
-    given = load_yaml(CLASSIC)
-    assert isinstance(given, dict)
-    given["report"][name] = "${{ steps.compile.compile_log }}"
-
-    assert name in parse_workflow(one_line(given)).report
 
 
 @pytest.mark.parametrize("name", ["verdict", "passed", "outcome", "points"])
@@ -361,20 +345,6 @@ def test_a_program_setting_named_by_a_number_is_refused_beside_unknown_names(
 # Steps and their ports
 
 
-def test_a_contract_5_step_is_refused_here(primitives: dict[str, PrimitiveDeclaration]) -> None:
-    given = document(CLASSIC_V3)
-    step(given, "compile")["use"] = "unicon/compile@v2"
-
-    assert problems(primitives, given) == [
-        {
-            "path": "steps[0].use",
-            "message": "unicon/compile@v2 is written for workflows with a test block, and this "
-            "one has none, so it describes one run. Use a primitive written for runs, such as "
-            "unicon/exec@v1.",
-        }
-    ]
-
-
 def test_a_run_workflow_has_no_test_fields(primitives: dict[str, PrimitiveDeclaration]) -> None:
     given = document(CLASSIC_V3)
     step(given, "solution")["with"]["stdin"] = "${{ test.input }}"
@@ -382,7 +352,7 @@ def test_a_run_workflow_has_no_test_fields(primitives: dict[str, PrimitiveDeclar
     [problem] = problems(primitives, given)
 
     assert problem["path"] == "steps[1].with.stdin"
-    assert problem["message"].startswith("A workflow without a test block has no test fields")
+    assert problem["message"].startswith("Unicon cannot read ${{ test.input }}.")
 
 
 def test_a_step_output_cannot_raise_a_limit(primitives: dict[str, PrimitiveDeclaration]) -> None:
@@ -481,20 +451,6 @@ def test_without_its_files_a_workflows_paths_are_checked_for_their_form_alone(
     step(given, "diff")["with"]["source"] = "${{ workflow.elsewhere/ }}"
 
     assert checked(primitives, given, None).problems == []
-
-
-def test_only_a_run_workflow_reads_its_own_files() -> None:
-    given = load_yaml(CLASSIC)
-    assert isinstance(given, dict)
-    given["steps"][0]["with"]["source"] = "${{ workflow.src/ }}"
-
-    [problem] = check_workflow(
-        parse_workflow(one_line(given)),
-        {f"unicon/{name}@v2": parse_primitive(text) for name, text in PRIMITIVES.items()},
-    )
-
-    assert problem["path"] == "steps[0].with.source"
-    assert problem["message"].startswith("Only a workflow without a test block")
 
 
 # Manifests and what they report

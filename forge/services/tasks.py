@@ -1,17 +1,15 @@
 """Making a task, listing a contest's tasks, and where its files stand
 against its publications. A task is one place at the forge holding
-`task.yaml`, `statement.md` and one test in
-`tests/main/1/`, with three roles of its own. `create` makes it before it answers: the place
+`task.yaml`, `statement.md` and one test, `tests/1.in` and `tests/1.ans`,
+with three roles of its own. `create` makes it before it answers: the place
 with its starter files; its roles and protection, which `content.secure`
 attaches, reserving the task's publications for the platform in the same
-call; its activation at the CI, as the org's own account, which takes the
-task for grading, trusts it for `volumes` and nothing else, and forgets the
-event push the activation leaves behind, since the platform starts every
-run itself; and the task's entry in `contest.yaml`. A step that fails fails
+call; and the task's entry in `contest.yaml`. Its gradings run on the org's
+dispatch place, so the CI is not told of the task. A step that fails fails
 the request, which writes nothing here, and what the try already made is
 removed again, the latest first, before the person is told: the entry, when
-`contest.yaml` still reads as the try left it, the activation, and the task
-with its roles. That is best effort; what a removal could not remove is
+`contest.yaml` still reads as the try left it, and the task with its
+roles. That is best effort; what a removal could not remove is
 logged (`forge.services.making`). The person asks again. Nothing is
 published until the first save.
 
@@ -55,9 +53,9 @@ from forge.domain.definitions import (
     starter_task,
     title_of,
 )
-from forge.domain.errors import Conflict, Forbidden, NotFound, PortError
+from forge.domain.errors import Conflict, NotFound, PortError
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
+from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.names import Named, validate_contest_or_task_name
 from forge.domain.publication_record import Publication
 from forge.domain.release import NONE, due_of
@@ -70,7 +68,6 @@ from forge.services import (
     entrant_view,
     making,
     names,
-    org_accounts,
     pipelines,
     results,
     taking_out,
@@ -168,13 +165,6 @@ async def create(
             lambda: ctx.forge.content.delete_place(task),
         )
         await ctx.forge.content.secure(task)
-        account = await org_accounts.identity(ctx, OrgId(parent.org))
-        made.add("activation", task, lambda: ctx.forge.grading.deactivate(account, task))
-        try:
-            await ctx.forge.grading.activate(account, task)
-        except Forbidden:
-            account = await org_accounts.renew(ctx, account)
-            await ctx.forge.grading.activate(account, task)
         await _list_in_contest(ctx, task, name, made, organiser.user.id)
     except PortError as exc:
         raise making.failure(exc, "tasks.step_failed", task=task) from None

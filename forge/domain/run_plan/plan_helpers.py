@@ -23,7 +23,7 @@ def _references_in(values: Iterable[object]) -> list[Reference]:
     for value in values:
         if isinstance(value, str):
             try:
-                found.extend(reference for _, reference in references(value, runs=True, flat=True))
+                found.extend(reference for _, reference in references(value, flat=True))
             except BadReference:
                 continue
         elif isinstance(value, dict):

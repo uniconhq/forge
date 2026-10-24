@@ -182,7 +182,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
         organiser,
         task,
         "task.yaml",
-        current.content.replace(b"unicon/classic@v2", b"unicon/classic@v9"),
+        current.content.replace(b"unicon/classic@v3", b"unicon/classic@v9"),
         current.token,
     )
 
@@ -222,7 +222,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     public = await landing.statement(live_setup, task)
     assert page.statement == public.statement
     assert page.submissions.max == 50
-    assert [field.id for field in page.inputs] == ["submission", "language"]
+    assert [field.id for field in page.inputs] == ["code", "language"]
 
     removed = await entrants.remove(live_setup, organiser, contest, registered.id)
     assert removed.status is Status.REMOVED

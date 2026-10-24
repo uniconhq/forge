@@ -4,8 +4,8 @@ manager's key.
 
 - **Removed**, while nobody has submitted to it: its entry leaves `tasks`,
   so the letters after it move up, and the task itself goes as a failed
-  `create` is undone: its activation at the CI, then its place at the forge
-  with its roles, and its name, so the name may be taken again. What still
+  `create` is undone: its place at the forge with its roles, and its name,
+  so the name may be taken again. What still
   named it goes with it: an entrant's extension that names it no longer
   does, an invite to one of its roles still waiting is withdrawn, and each
   entrant's place to submit it goes with any upload waiting there. A
@@ -50,14 +50,13 @@ from forge.domain.contest_entries import NoEntry, Unlisted, with_withdrawn, with
 from forge.domain.definitions import CONTEST_FILE, parse_contest
 from forge.domain.errors import (
     Conflict,
-    Forbidden,
     NotFound,
     PortError,
     TakeOutChanged,
     TakeOutRefused,
 )
-from forge.domain.identity import PLATFORM, AsOrgAccount
-from forge.domain.ids import ContestId, OrgId, TaskId
+from forge.domain.identity import PLATFORM
+from forge.domain.ids import ContestId, TaskId
 from forge.domain.invites import InviteStatus
 from forge.domain.leaderboard_task_check import leaderboards_of
 from forge.domain.names import EntrantOwner
@@ -71,7 +70,6 @@ from forge.services import (
     leaderboards,
     making,
     names,
-    org_accounts,
     places,
     timelines,
 )
@@ -294,13 +292,6 @@ async def _remove(
         if updated is not None:
             await _write(ctx, contest, found, updated, f"Remove {name} from the contest", author)
             made.add("contest_entry", contest, _restore(ctx, contest, found, updated, author))
-        account = await org_accounts.identity(ctx, OrgId(contest_scope(contest).org))
-        account = await _deactivate(ctx, account, task)
-
-        async def reactivate() -> None:
-            await ctx.forge.grading.activate(account, task)
-
-        made.add("activation", task, reactivate)
         await _forget(ctx, contest, task, name)
         await _drop_places(ctx, contest, task, name)
         await ctx.forge.content.delete_place(task)
@@ -326,15 +317,6 @@ async def _drop_places(ctx: Context, contest: ContestId, task: TaskId, name: str
                 "removed. Ask the platform's operator to reconcile, then withdraw it."
             ) from None
     await ctx.db.execute(delete(Upload).where(Upload.task_id == task))
-
-
-async def _deactivate(ctx: Context, account: AsOrgAccount, task: TaskId) -> AsOrgAccount:
-    try:
-        await ctx.forge.grading.deactivate(account, task)
-    except Forbidden:
-        account = await org_accounts.renew(ctx, account)
-        await ctx.forge.grading.deactivate(account, task)
-    return account
 
 
 def _restore(

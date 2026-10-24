@@ -1,11 +1,9 @@
-import re
 from datetime import timedelta
 from typing import Annotated, Any
 
-from pydantic import Field, PlainValidator, model_validator
+from pydantic import Field, model_validator
 
-from forge.domain.definitions.basics import Count, Seconds, Show
-from forge.domain.definitions.classic import Group, Relative, _credit
+from forge.domain.definitions.basics import Count, Seconds
 from forge.domain.workflow_definition import Options, Ref
 from forge.domain.yaml_models import Line, Model, Number, Problems, Size, already_listed, parse_size
 
@@ -46,8 +44,6 @@ passes through the platform's memory any more, so what this bounds is the
 disk one person's submissions take in the store every contest shares; it is
 also what the open-upload allowance is counted against (`domain.uploads`).
 Raising it costs disk and nothing else."""
-
-NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class Form(Model):
@@ -299,142 +295,17 @@ class Check(Model):
 
 
 class TaskDefinition(Model):
-    """A `task.yaml`, in one of two formats, as its workflow's: a workflow
-    with a test block is graded test by test, under `test_groups` and
-    `credit`; a run workflow (SIMPLER-CORE.md 8 and 9) runs once per
-    combination of `repeat`'s tuples, is scored by `scoring`, which such a
-    task always has (`runs`), and may list `checks`, graded at its save.
-    `inputs` defaults to none, `credit` to an accepted test earning 1, and
+    """A `task.yaml` (SIMPLER-CORE.md 8 and 9): the workflow it runs, once
+    per combination of `repeat`'s tuples, the inputs it gives that workflow
+    or makes the entrant's, its `scoring`, which every task has, and the
+    `checks` graded at its save. `inputs` defaults to none, and
     `submissions` to 50 at one every 30 seconds.
     """
 
     name: Line
     workflow: Ref
     inputs: dict[str, Any] = Field(default_factory=dict)
-    credit: Annotated[str | Relative, PlainValidator(_credit)] | None = None
-    test_groups: dict[str, Group] = Field(default_factory=dict, min_length=1)
     repeat: list[Axis] = Field(default_factory=list)
-    scoring: Scoring | None = None
+    scoring: Scoring
     checks: list[Check] = Field(default_factory=list)
     submissions: Submissions = Submissions()
-
-    @property
-    def runs(self) -> bool:
-        """Whether the task is in the run format, its workflow a run workflow."""
-        return self.scoring is not None
-
-    @model_validator(mode="after")
-    def _check(self) -> TaskDefinition:
-        problems = Problems()
-        for name, group in self.test_groups.items():
-            for path, message in self._group_problems(name, group):
-                problems.add(("test_groups", name, *path), message)
-        if self.credit is not None and not self.gives_points:
-            problems.add(
-                ("credit",),
-                "No test group gives points, so what an accepted test earns changes nothing. "
-                "Give a test group points, or let an accepted test earn 1.",
-            )
-        problems.raise_any()
-        return self
-
-    def _group_problems(self, name: str, group: Group) -> list[tuple[tuple[str, ...], str]]:
-        """T1, T2 as far as the file says, and T6."""
-        found: list[tuple[tuple[str, ...], str]] = []
-        if not NAME.match(name):
-            found.append(
-                (
-                    (),
-                    "A test group's name may use only letters, digits, hyphens (-) and "
-                    "underscores (_).",
-                )
-            )
-        if group.pass_at is not None:
-            if group.pass_ is None:
-                found.append(
-                    (
-                        ("pass_at",),
-                        'This applies only when the group gives points under "at least a share '
-                        'of its tests must pass". Give those points, or leave this empty.',
-                    )
-                )
-            if not 0 < group.pass_at <= 1:
-                found.append(
-                    (
-                        ("pass_at",),
-                        "This must be more than 0 and at most 1, such as 0.5 for half the tests.",
-                    )
-                )
-        if group.worst is not None and self.credit is None:
-            found.append(
-                (
-                    ("worst",),
-                    "Each test here either passes or fails, so the lowest test score is the "
-                    'same as "every test must pass". Give these points there instead.',
-                )
-            )
-        if group.test_weights is not None:
-            for test, weight in group.test_weights.items():
-                if not NAME.match(test):
-                    found.append(
-                        (
-                            ("test_weights", test),
-                            "A test's name may use only letters, digits, hyphens (-) and "
-                            "underscores (_).",
-                        )
-                    )
-                elif weight <= 0:
-                    found.append(
-                        (
-                            ("test_weights", test),
-                            f"{name}/{test} has a weight of {weight}, and a weight must be "
-                            "more than 0. Put a test that should count for nothing in a test "
-                            "group that gives no points.",
-                        )
-                    )
-            reads = group.each is not None or (
-                group.pass_ is not None and group.pass_at is not None and group.pass_at < 1
-            )
-            if not reads:
-                found.append(
-                    (
-                        ("test_weights",),
-                        f"The test weights on {name} change nothing. They count only "
-                        "towards points for each test passed, or when the share of tests "
-                        "that must pass is below 1.",
-                    )
-                )
-        if group.show is Show.VERDICT:
-            problem = self._verdict_problem(name, group)
-            if problem is not None:
-                found.append((("show",), problem))
-        return found
-
-    def _verdict_problem(self, name: str, group: Group) -> str | None:
-        """T6: a verdict shows only all-or-nothing points."""
-        if group.each is not None:
-            return (
-                f"{name} shows entrants only its outcome until the reveal, but points for "
-                "each test passed would tell them how many of its tests passed. Give its "
-                'points under "every test must pass" instead, or change "When entrants see '
-                'results".'
-            )
-        if group.worst is not None:
-            return (
-                f"{name} shows entrants only its outcome until the reveal, but points for "
-                "the lowest test score would tell them how its worst test did. Give its "
-                'points under "every test must pass" instead, or change "When entrants see '
-                'results".'
-            )
-        if isinstance(self.credit, Relative):
-            return (
-                "This test group shows entrants only its outcome until the reveal, but its "
-                "points would change as other entrants do better on its hidden tests. Show "
-                "its results to entrants at once or only at the reveal."
-            )
-        return None
-
-    @property
-    def gives_points(self) -> bool:
-        """Whether some group carries a rule weight, `W > 0`."""
-        return any(group.weight > 0 for group in self.test_groups.values())

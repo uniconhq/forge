@@ -24,8 +24,8 @@ once the task is visible. A task that is not, or a contest the person may
 not see, is no such task or contest, the same answer as one that is not
 there at all.
 
-Beside its statement, the files under a task's `public/`, or those a run
-task's `show` lists from their time on, are served one by one
+Beside its statement, the files a task's `show` lists from their time on
+are served one by one
 (`public_file`), to whoever reads its page, with the same checks, and to
 whoever holds a role reaching the task, who reads every file of it as an
 organiser anyway, released or not, so a statement shows its images while it
@@ -262,11 +262,7 @@ async def public_file(ctx: Context, session: Session, task: TaskId, path: str) -
     if await _organises(ctx, session, task):
         return await entrant_view.head_public_file(ctx, task, path)
     settings, _, found = await _visible(ctx, session, task)
-    reveal = (
-        await timelines.reveal(ctx, contest_id_of(task_scope(task)), settings, found.name)
-        if found.definition.runs
-        else None
-    )
+    reveal = await timelines.reveal(ctx, contest_id_of(task_scope(task)), settings, found.name)
     return await entrant_view.public_file(ctx, found, path, reveal=reveal)
 
 

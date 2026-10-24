@@ -4,7 +4,7 @@ through the upload door to the forge's large-file store, and says when they
 are there (`forge.domain.uploads` holds the rules).
 
 `slot` needs the person to be able to submit to the task now
-(`submitters.refuse`), the input to be one of the task's contestant `file`
+(`submitters.refuse`), the input to be one of the task's entrant `file`
 or `folder` inputs, the file's path to be one the input takes
 (`forge.domain.submissions.path_problem`), the digest to be a SHA-256, and
 the declared size to be within the input's `max_size` (`too_large`, naming
@@ -146,7 +146,7 @@ async def slot(
     _, workspace = await submitters.refuse(ctx, person)
     form = await entrant_view.form(ctx, person.published)
     entry = _file_input(form.fields, input)
-    _refuse_file(entry, filename, size, sha256, content_type, form.tests)
+    _refuse_file(entry, filename, size, sha256, content_type)
     limit = min(_part_limit(entry, part), FILE_CEILING)
     if size > limit:
         raise TooLarge(
@@ -667,9 +667,8 @@ def _refuse_file(
     size: int,
     digest: str,
     content_type: str | None,
-    tests: Collection[str],
 ) -> None:
-    problem = path_problem(entry, filename, tests)
+    problem = path_problem(entry, filename)
     if problem is None and (isinstance(size, bool) or not isinstance(size, int) or size < 0):
         problem = "A size is a whole number of bytes."
     if problem is None:

@@ -26,8 +26,8 @@ from forge.services import steps, task_save
 from forge.services.task_save import Draft, Published
 from forge.testing import PLACEHOLDER_DIGEST
 from tests.conftest import sibling
-from tests.services.conftest import Acme, make_task, write_contest
-from tests.services.test_run_task_saves import DRAFT, ISLANDS_DATA, _primitives, checked
+from tests.services.conftest import Acme, checked, make_task, write_contest
+from tests.services.test_run_task_saves import DRAFT, ISLANDS_DATA
 from tests.services.test_steps import (
     Islands,
     _batch,
@@ -230,7 +230,6 @@ async def _publish(
 
 
 async def _classic(setup: Setup, acme: Acme, name: str = "boxed") -> tuple[TaskId, Published]:
-    _primitives(acme)
     await _public(acme, "build", BUILD)
     await _public(acme, "judge", JUDGE, _diff())
     await _public(acme, "outer", OUTER)
@@ -287,7 +286,6 @@ async def test_a_boxed_classic_task_saves_and_plans_as_the_flat_one(
 async def test_taint_through_a_box_names_the_flat_step(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
-    _primitives(acme)
     acme.fake.primitives.add("link", {"v1": LINK})
     await _public(acme, "judge", JUDGE_LINK)
     await _public(acme, "outer", OUTER_LINK)
@@ -437,7 +435,6 @@ async def test_an_inner_workflow_renamed_under_its_owner_is_refused(
 async def test_the_time_ceiling_counts_steps_inside_a_box(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
-    _primitives(acme)
     await _public(acme, "slow", SLOW)
     await _public(acme, "outer", SLOW_OUTER)
     await write_contest(acme.fake, DRAFT)
@@ -449,7 +446,7 @@ async def test_the_time_ceiling_counts_steps_inside_a_box(
         task,
         {
             "task.yaml": Edit(SLOW_TASK.encode(), head.tokens.get("task.yaml")),
-            "tests/1.in": Edit(b"1\n", None),
+            "tests/1.in": Edit(b"1\n", head.tokens.get("tests/1.in")),
             "tests/2.in": Edit(b"2\n", None),
         },
     )

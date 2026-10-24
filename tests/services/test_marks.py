@@ -10,6 +10,7 @@ import contextlib
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from fractions import Fraction
 from typing import Any
 
 import pytest
@@ -53,6 +54,7 @@ from tests.services.conftest import (
     SPRING,
     Acme,
     Entered,
+    checked,
     organiser,
     signed_in,
     upload,
@@ -67,37 +69,34 @@ leaderboards:
     title: Final
     columns:
       picked: {block: latest, from: {results: sum}, where: {value: [sum, marked]}}
-      points: {block: otherwise, of: [{value: [{column: picked}, total]}, 0]}
+      points: {block: otherwise, of: [{value: [{column: picked}, score]}, 0]}
     sort: [{points: desc}]
     display: [points]
 """
 """A leaderboard reading which of sum's submissions an entrant marks."""
 
-GROUPS = b"""\
-test_groups:
-  main: {each: 100}
-  small: {pass: 30, show: verdict}
-  large: {pass: 70, show: after_close}
-"""
+PASSED = b"    passed: {block: sum, over: {runs: all}, of: {run: [all, passed]}}\n"
+"""A value of sum's counting its runs passed, shown once the task closes."""
 
-RESULT: dict[str, Any] = {
-    "schema_version": 5,
-    "stopped": None,
-    "stopped_by": None,
-    "tests": [
-        {"test": "large/1", "outcome": "wrong_answer", "values": {"time_ms": 30, "memory_kb": 9}},
-        {"test": "main/1", "outcome": "accepted", "values": {"time_ms": 10, "memory_kb": 7}},
-        {"test": "small/1", "outcome": "accepted", "values": {"time_ms": 20, "memory_kb": 8}},
-    ],
-    "values": {},
-    "run_log": None,
-    "error": None,
-}
 
-EVERY_TEST: dict[str, Any] = {
-    **RESULT,
-    "tests": [{**test, "outcome": "accepted"} for test in RESULT["tests"]],
-}
+def _result(verdict: str) -> dict[str, Any]:
+    return {
+        "schema_version": 6,
+        "runs": [
+            {
+                "id": "r1",
+                "key": {"input": "tests/1.in", "answer": "tests/1.ans"},
+                "verdict": verdict,
+                "passed": 1 if verdict == "accepted" else 0,
+                "reports": {},
+                "texts": {},
+            }
+        ],
+    }
+
+
+RESULT = _result("wrong_answer")
+EVERY_RUN = _result("accepted")
 
 
 def contest(extra: str = "", entry: str = "") -> str:
@@ -122,15 +121,16 @@ async def _save(
     )
 
 
-async def _three_groups(setup: Setup, acme: Acme, task: TaskId) -> Published:
-    current = await _task_yaml(acme, task)
-    start = current.index(b"test_groups:")
-    changed = {"task.yaml": current[:start] + GROUPS}
-    for group in ("small", "large"):
-        changed[f"tests/{group}/1/input"] = b"1 1\n"
-        changed[f"tests/{group}/1/answer"] = b"2\n"
-    saved = await _save(setup, acme, task, changed)
+async def _passed_after_close(setup: Setup, acme: Acme, task: TaskId) -> Published:
+    """sum with a value `passed` it shows once it closes."""
+    current = (
+        (await _task_yaml(acme, task))
+        .replace(b"  values:\n", b"  values:\n" + PASSED)
+        .replace(b"    now: [score, all]\n", b"    now: [score, all]\n    after_close: [passed]\n")
+    )
+    saved = await _save(setup, acme, task, {"task.yaml": current})
     assert isinstance(saved, Published), saved
+    await checked(setup, task)
     return saved
 
 
@@ -145,7 +145,7 @@ async def _submit_as(setup: Setup, acme: Acme, session: Session, task: TaskId, k
         session,
         task,
         {
-            "submission": SubmittedInput(uploads=(made.id,)),
+            "code": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key=key,
@@ -157,7 +157,7 @@ async def _graded(setup: Setup, number: int, result: dict[str, Any]) -> None:
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(
             update(Grading)
-            .where(Grading.submission_number == number)
+            .where(Grading.submission_number == number, Grading.pipeline != "save")
             .values(status="done", result=result)
         )
 
@@ -165,15 +165,15 @@ async def _graded(setup: Setup, number: int, result: dict[str, Any]) -> None:
 @pytest.fixture
 async def ranked(setup: Setup, acme: Acme, entered: Entered, clock: FakeClock) -> Entered:
     """bob's two graded submissions to sum, under the leaderboard: the first,
-    at 12:00, passes main and small; the second, at 12:01, everything.
+    at 12:00, fails its run; the second, at 12:01, passes it.
     """
     await write_contest(acme.fake, contest(LEADERBOARDS))
-    await _three_groups(setup, acme, entered.task)
+    await _passed_after_close(setup, acme, entered.task)
     first = await _submit(setup, acme, entered, "key-0001-aaaa")
     await _graded(setup, first, RESULT)
     clock.advance(timedelta(minutes=1))
     second = await _submit(setup, acme, entered, "key-0002-bbbb")
-    await _graded(setup, second, EVERY_TEST)
+    await _graded(setup, second, EVERY_RUN)
     return entered
 
 
@@ -300,7 +300,7 @@ def _observer_of(acme: Acme, scope: Scope) -> Organiser:
     )
 
 
-async def test_an_organiser_reads_a_hidden_groups_outcome_and_tests_before_the_reveal(
+async def test_an_organiser_reads_a_value_its_entrant_is_shown_only_after_the_close(
     setup: Setup, acme: Acme, ranked: Entered
 ) -> None:
     observer = _observer_of(acme, Scope("acme", "spring", "sum"))
@@ -313,15 +313,13 @@ async def test_an_organiser_reads_a_hidden_groups_outcome_and_tests_before_the_r
     assert seen.grading is not None and own.grading is not None
     assert seen.grading.status is GradingStatus.DONE
     assert own.grading.status is SubmissionState.GRADED
-    by_group = {group.group: group for group in seen.grading.groups}
-    large = by_group["large"]
-    assert large.outcome == "wrong_answer"
-    assert large.tests is not None and [test["test"] for test in large.tests] == ["large/1"]
-    assert large.shown_at == END
-    small = by_group["small"]
-    assert small.tests is not None and small.shown_at == END
-    assert by_group["main"].shown_at is None
-    assert seen.grading.outcome == "wrong_answer"
+    seen_values = {value.name: value for value in seen.grading.run_values}
+    assert (seen_values["passed"].number, seen_values["passed"].show) == (
+        Fraction(0),
+        "after_close",
+    )
+    assert [value.name for value in own.grading.run_values] == ["score"]
+    assert own.grading.reveal_at == END
     assert (seen.number, seen.submitted_at) == (own.number, own.submitted_at)
 
 
@@ -341,8 +339,8 @@ async def test_a_contestants_own_read_is_unchanged_by_an_organisers(
 
     assert after == before
     assert before.grading is not None
-    large = next(group for group in before.grading.groups if group.group == "large")
-    assert (large.outcome, large.tests, large.shown_at) == (None, None, END)
+    assert [value.name for value in before.grading.run_values] == ["score"]
+    assert before.grading.reveal_at == END
 
 
 async def test_an_organiser_without_the_observer_role_at_the_task_is_refused(

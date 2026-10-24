@@ -1,14 +1,6 @@
 """Which attempt of a submission counts, the one rule for its row, the
-leaderboards and `submissions.max` (`counted`); what a task graded test by test
-is shown with (`GradedOf`); and a run task's values, worked out on every
-read from both its rows (`run_scored`).
-
-A grading graded test by test is shown with the publication it ran under as
-`showing.under` says: its own tests and sealed facts, and the latest
-`test_groups` and value meanings while no grading change was published
-since. A past publication's `task.yaml` and plan are read once per process,
-since a publication never changes. Nothing of it is scored: since stage 5
-only a run task has values (stage 5 section 6, item 123).
+leaderboards and `submissions.max` (`counted`); and a task's values, worked
+out on every read from both its rows (`run_scored`).
 
 One rule says which of a submission's attempts counts, on a leaderboard, to its
 row and against `submissions.max`: the latest that finished with a result,
@@ -26,18 +18,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from fractions import Fraction
 
-from pydantic import ValidationError
 from sqlalchemy import select
 
 from forge.db.tables import Grading
 from forge.db.tables.gradings import LATE
-from forge.domain.definitions import TASK_FILE, ContestDefinition, parse_task
-from forge.domain.errors import NotFound
+from forge.domain.definitions import ContestDefinition
 from forge.domain.grading import GradingStatus
-from forge.domain.identity import PLATFORM
-from forge.domain.ids import PublicationId
-from forge.domain.plan_basics import PLAN_PATH
-from forge.domain.plans import Plan
 from forge.domain.release import Extension, due_of
 from forge.domain.run_results import (
     RunGrading,
@@ -46,9 +32,7 @@ from forge.domain.run_results import (
     run_grading,
     worked_out,
 )
-from forge.domain.showing import Graded, under
 from forge.domain.step_data import unreported
-from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
 from forge.services import entrant_view, entries, gradings
@@ -59,9 +43,6 @@ log = get_logger(__name__)
 FINISHED_WITH_RESULT = (GradingStatus.DONE, GradingStatus.SYSTEM_ERROR)
 """Where a run task's row stands when its result is read: done, or failed
 with the runs it gave, its faulted ones waiting for staff."""
-GRADED_KEPT = entrant_view.FORM_KEPT
-"""How long this process keeps what a past publication shows its gradings
-with: a publication never changes, so the time only bounds what is held."""
 
 
 class State(StrEnum):
@@ -104,83 +85,6 @@ def usable(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -
     if gradings.status_of(ctx, row, lost) in (GradingStatus.CANCELLED, GradingStatus.OVER_LIMIT):
         return Usable(State.VOID, None)
     return Usable(State.GRADING, None)
-
-
-class GradedOf:
-    """What one task's gradings graded test by test are shown with, for one
-    read (`showing.Graded`). Given `stood`, the publication that was the
-    task's latest at a moment, it reads as things stood then, that
-    publication standing for the task's latest.
-    """
-
-    def __init__(
-        self, ctx: Context, current: PublishedTask, stood: PublicationId | None = None
-    ) -> None:
-        self.ctx = ctx
-        self.current = current
-        self.stood = stood
-        self._latest: Graded | None = None
-
-    async def latest(self) -> Graded:
-        if self._latest is None:
-            current = self.current
-            form = await entrant_view.form(self.ctx, current)
-            self._latest = Graded(
-                form.tests,
-                current.definition.test_groups,
-                current.publication.sealed,
-                current.generation(current.publication),
-                current.publication.meanings,
-            )
-        return self._latest
-
-    async def graded(self, publication: PublicationId) -> Graded | None:
-        """What a grading made under `publication` is shown with, or none
-        when that publication does not read. Read as things stood at a
-        moment, the publication then the latest stands for the latest.
-        """
-        stood = self.current.publication.id if self.stood is None else self.stood
-        latest = await self.latest() if stood == self.current.publication.id else None
-        if latest is None:
-            latest = await self._own(stood)
-        if publication == stood and latest is not None:
-            return latest
-        own = await self._own(publication)
-        if own is None:
-            return None
-        return under(own, latest) if latest is not None else own
-
-    async def _own(self, publication: PublicationId) -> Graded | None:
-        current = self.current
-        found = next((each for each in current.publications if each.id == publication), None)
-        if found is None:
-            log.warning("scores.publication_gone", task=current.id, publication=publication)
-            return None
-        generation = current.generation(found)
-        ctx = self.ctx
-
-        async def read() -> Graded | None:
-            await ctx.let_go()
-            try:
-                task_file = await ctx.forge.content.read_file(
-                    PLATFORM, current.id, TASK_FILE, at=found.version
-                )
-                plan_file = await ctx.forge.content.read_file(
-                    PLATFORM, current.id, PLAN_PATH, at=found.version
-                )
-                definition = parse_task(task_file.content)
-                plan = Plan.from_bytes(plan_file.content)
-            except NotFound, InvalidDefinition, ValidationError:
-                log.warning(
-                    "scores.publication_unreadable", task=current.id, publication=publication
-                )
-                return None
-            return Graded(
-                plan.tests, definition.test_groups, found.sealed, generation, found.meanings
-            )
-
-        key = f"scores.graded.{current.id}.{publication}"
-        return await ctx.memo.remembered(key, GRADED_KEPT, read)
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,7 +168,6 @@ async def run_scored(
     read, never stored (stage 5 section 6, item 1).
     """
     scoring = current.definition.scoring
-    assert scoring is not None, "a run task's definition always has scoring"
     held = await entrant_view.runs_held(ctx, current)
     early_failed = early.status != GradingStatus.DONE
     late_result = None

@@ -1,14 +1,12 @@
 """The two definition files, `contest.yaml` and `task.yaml`: the format's own
 examples and the starters validate, every key the format no longer has is
 refused at that key with the sentence that says what replaced it, the checks
-each file makes of itself (a task entry's timeline, C1; a leaderboard's rules, C3;
-a test group's rule weights, test weights and `show`, T1, T2 and T6; credit
-on a task that gives no points, T3) refuse at the path that is wrong, and a
-save names the admin-only keys it changes.
+each file makes of itself (a task entry's timeline, C1; a leaderboard's rules,
+C3) refuse at the path that is wrong, and a save names the admin-only keys
+it changes.
 """
 
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -24,8 +22,6 @@ from forge.domain.definitions import (
     InviteWay,
     Locks,
     Registration,
-    Relative,
-    Show,
     SignupWay,
     State,
     Way,
@@ -93,22 +89,24 @@ TASK_EXAMPLE = b"""\
 name: Shortest Path
 workflow: unicon/checked@v1
 inputs:
-  submission: {label: Your solution, max_size: 1MB}
-  language: {options: [cpp, python], default: cpp}
+  code: {entrant: {label: Your solution, max_size: 1MB}}
+  language: {entrant: {options: [cpp, python], default: cpp}}
   checker: checker/checker.cpp
-  checker_language: cpp
   time_limit: 2
   memory_limit: 256
-credit: fraction
-test_groups:
-  samples: {}
-  small: {pass: 30, show: verdict}
-  large: {worst: 70, show: after_close}
-  main:
-    each: 80
-    pass: 20
-    pass_at: 0.8
-    test_weights: {"7": 3, "8": 3, "9": 5}
+repeat:
+  - inputs: [input, answer]
+    tuples:
+      - [samples/1.in, samples/1.ans]
+      - [tests/2.in, tests/2.ans]
+scoring:
+  groups:
+    samples: {input: [samples/1.in]}
+  values:
+    score: {block: count, over: {runs: all}}
+  show:
+    now: [samples]
+    after_close: [score]
 submissions:
   max: 50
   rate: {count: 1, per: 30}
@@ -150,11 +148,8 @@ def at(problems: list[Problem], path: str) -> str:
     return found[0]
 
 
-def task_text(groups: str, *, credit: str | None = None, extra: str = "") -> str:
-    text = f"name: T\nworkflow: unicon/classic@v2\ntest_groups: {groups}\n"
-    if credit is not None:
-        text += f"credit: {credit}\n"
-    return text + extra
+def task_text(extra: str = "") -> str:
+    return "name: T\nworkflow: unicon/classic@v3\nscoring: {}\n" + extra
 
 
 # contest.yaml
@@ -554,36 +549,27 @@ def test_the_format_documents_example_task_parses() -> None:
     task = parse_task(TASK_EXAMPLE)
 
     assert task.workflow == WorkflowRef("unicon", "checked", "v1")
-    assert task.credit == "fraction"
     assert task.inputs["checker"] == "checker/checker.cpp"
-    assert task.inputs["submission"] == {"label": "Your solution", "max_size": "1MB"}
-    assert list(task.test_groups) == ["samples", "small", "large", "main"]
-    samples, small, large, main = task.test_groups.values()
-    assert (samples.weight, samples.shown) == (0, Show.ALWAYS)
-    assert (small.pass_, small.shown) == (30, Show.VERDICT)
-    assert (large.worst, large.shown) == (70, Show.AFTER_CLOSE)
-    assert (main.each, main.pass_, main.pass_at, main.weight) == (80, 20, Decimal("0.8"), 100)
-    assert main.test_weights == {"7": 3, "8": 3, "9": 5}
-    assert task.gives_points
+    assert task.inputs["code"] == {"entrant": {"label": "Your solution", "max_size": "1MB"}}
+    assert [axis.inputs for axis in task.repeat] == [["input", "answer"]]
+    assert task.scoring.groups == {"samples": {"input": ["samples/1.in"]}}
+    assert list(task.scoring.values) == ["score"]
+    assert (task.scoring.show.now, task.scoring.show.after_close) == (["samples"], ["score"])
+    assert (task.submissions.max, task.submissions.rate.count) == (50, 1)
 
 
-def test_a_task_leaves_inputs_credit_and_submissions_to_their_defaults() -> None:
-    task = parse_task(task_text("{main: {each: 100}}"))
+def test_a_task_leaves_inputs_and_submissions_to_their_defaults() -> None:
+    task = parse_task(task_text())
 
     assert task.inputs == {}
-    assert task.credit is None
     assert task.submissions.max == DEFAULT_SUBMISSIONS == 50
     assert task.submissions.rate == DEFAULT_RATE
     assert (task.submissions.rate.count, task.submissions.rate.per) == (1, 30)
     assert task.submissions.rate.window == timedelta(seconds=30)
-    assert task.test_groups["main"].show is None
-    assert task.test_groups["main"].shown is Show.ALWAYS
 
 
 def test_submissions_take_a_count_and_a_rate_of_their_own() -> None:
-    task = parse_task(
-        task_text("{main: {each: 1}}", extra="submissions: {max: 5, rate: {count: 2, per: 60}}\n")
-    )
+    task = parse_task(task_text("submissions: {max: 5, rate: {count: 2, per: 60}}\n"))
 
     assert (task.submissions.max, task.submissions.rate.count, task.submissions.rate.per) == (
         5,
@@ -595,10 +581,12 @@ def test_submissions_take_a_count_and_a_rate_of_their_own() -> None:
 @pytest.mark.parametrize(
     ("extra", "path", "sentence"),
     [
+        ("test_groups: {main: {each: 1}}\n", "test_groups", "scoring's groups"),
+        ("credit: fraction\n", "credit", "scoring's values"),
         ("release_at: 2026-06-01T10:00:00Z\n", "release_at", "on the task's timeline"),
-        ("hidden: true\n", "hidden", "When entrants see results"),
+        ("hidden: true\n", "hidden", "scoring's show after_close"),
         ("limits: {submissions: 50}\n", "limits", "the most submissions"),
-        ("subtasks: [{id: s1}]\n", "subtasks", "test groups"),
+        ("subtasks: [{id: s1}]\n", "subtasks", "groups of runs"),
         ("stages: [{id: final}]\n", "stages", "set on each leaderboard"),
         ("inputs: {contestant: []}\n", "inputs.contestant", "List each input"),
         ("inputs: {setter: []}\n", "inputs.setter", "List each input"),
@@ -608,7 +596,7 @@ def test_submissions_take_a_count_and_a_rate_of_their_own() -> None:
 def test_a_retired_task_key_is_refused_at_its_path_with_what_replaced_it(
     extra: str, path: str, sentence: str
 ) -> None:
-    problems = task_problems(task_text("{main: {each: 1}}", extra=extra))
+    problems = task_problems(task_text(extra))
 
     assert paths(problems) == [path]
     assert sentence in problems[0]["message"]
@@ -617,7 +605,7 @@ def test_a_retired_task_key_is_refused_at_its_path_with_what_replaced_it(
 def test_an_input_named_contestant_in_the_new_mapping_is_still_the_old_shape() -> None:
     # `inputs` is keyed by the workflow's input ids; `contestant` and `setter`
     # were the old two lists, so either key is refused whatever it holds.
-    problems = task_problems(task_text("{main: {each: 1}}", extra="inputs: {setter: 3}\n"))
+    problems = task_problems(task_text("inputs: {setter: 3}\n"))
 
     assert paths(problems) == ["inputs.setter"]
 
@@ -625,29 +613,15 @@ def test_an_input_named_contestant_in_the_new_mapping_is_still_the_old_shape() -
 @pytest.mark.parametrize(
     ("text", "path"),
     [
-        ("workflow: unicon/classic@v2\ntest_groups: {main: {}}\n", "name"),
-        ("name: T\ntest_groups: {main: {}}\n", "workflow"),
-        ("name: T\nworkflow: unicon/classic@v2\n", "test_groups"),
-        ("name: T\nworkflow: unicon/classic@v2\ntest_groups: {}\n", "test_groups"),
-        ("name: '  '\nworkflow: unicon/classic@v2\ntest_groups: {main: {}}\n", "name"),
-        ("name: T\nworkflow: unicon/classic\ntest_groups: {main: {}}\n", "workflow"),
-        ("name: T\nworkflow: unicon/classic@v2\ntest_groups: {main: {}}\ncolour: red\n", "colour"),
-        (task_text("{main: {each: -1}}"), "test_groups.main.each"),
-        (task_text("{main: {pass: yes}}"), "test_groups.main.pass"),
-        (task_text("{main: {show: hidden}}"), "test_groups.main.show"),
-        (task_text("{main: {weight: 3}}"), "test_groups.main.weight"),
-        (task_text("{main.1: {each: 1}}"), "test_groups.main.1"),
-        (task_text("{main: {each: 1}}", credit="Fraction"), "credit"),
-        (task_text("{main: {each: 1}}", credit="{relative: x, better: lower}"), "credit.better"),
-        (task_text("{main: {each: 1}}", extra="submissions: {max: 0}\n"), "submissions.max"),
-        (
-            task_text("{main: {each: 1}}", extra="submissions: {rate: {count: 1, per: 0}}\n"),
-            "submissions.rate.per",
-        ),
-        (
-            task_text("{main: {each: 1}}", extra="submissions: {rate: {count: 1}}\n"),
-            "submissions.rate.per",
-        ),
+        ("workflow: unicon/classic@v3\nscoring: {}\n", "name"),
+        ("name: T\nscoring: {}\n", "workflow"),
+        ("name: T\nworkflow: unicon/classic@v3\n", "scoring"),
+        ("name: '  '\nworkflow: unicon/classic@v3\nscoring: {}\n", "name"),
+        ("name: T\nworkflow: unicon/classic\nscoring: {}\n", "workflow"),
+        (task_text("colour: red\n"), "colour"),
+        (task_text("submissions: {max: 0}\n"), "submissions.max"),
+        (task_text("submissions: {rate: {count: 1, per: 0}}\n"), "submissions.rate.per"),
+        (task_text("submissions: {rate: {count: 1}}\n"), "submissions.rate.per"),
     ],
 )
 def test_a_malformed_task_is_refused_at_the_path_that_is_wrong(text: str, path: str) -> None:
@@ -655,7 +629,7 @@ def test_a_malformed_task_is_refused_at_the_path_that_is_wrong(text: str, path: 
 
 
 def test_a_typo_says_so_and_a_key_given_twice_is_refused() -> None:
-    problems = task_problems(task_text("{main: {each: 1}}", extra="submision: {max: 3}\n"))
+    problems = task_problems(task_text("submision: {max: 3}\n"))
     assert problems == [
         {
             "path": "submision",
@@ -663,7 +637,7 @@ def test_a_typo_says_so_and_a_key_given_twice_is_refused() -> None:
         }
     ]
 
-    twice = task_problems(task_text("{main: {each: 1}}") + "name: U\n")
+    twice = task_problems(task_text() + "name: U\n")
     assert paths(twice) == [""]
     assert "the setting 'name' is given twice" in twice[0]["message"]
 
@@ -681,182 +655,9 @@ def test_a_file_that_is_not_a_mapping_is_one_problem_at_the_top(text: bytes, fra
 
 
 def test_every_problem_in_one_task_is_reported_together() -> None:
-    problems = task_problems(task_text("{main: {each: -1, show: hidden}}", extra="hidden: false\n"))
+    problems = task_problems(task_text("hidden: false\nsubmissions: {max: 0}\n"))
 
-    assert sorted(paths(problems)) == [
-        "hidden",
-        "test_groups.main.each",
-        "test_groups.main.show",
-    ]
-
-
-# T1, T2 and T6 within task.yaml
-
-
-def test_pass_at_applies_only_beside_pass() -> None:
-    problems = task_problems(task_text("{main: {each: 1, pass_at: 0.5}}"))
-
-    assert at(problems, "test_groups.main.pass_at") == (
-        'This applies only when the group gives points under "at least a share of its tests '
-        'must pass". Give those points, or leave this empty.'
-    )
-
-
-@pytest.mark.parametrize("share", ["0", "-0.5", "1.01"])
-def test_pass_at_is_more_than_0_and_at_most_1(share: str) -> None:
-    problems = task_problems(task_text(f"{{main: {{pass: 1, pass_at: {share}}}}}"))
-
-    assert at(problems, "test_groups.main.pass_at") == (
-        "This must be more than 0 and at most 1, such as 0.5 for half the tests."
-    )
-
-
-def test_pass_at_of_exactly_1_is_the_default_written_out() -> None:
-    task = parse_task(task_text("{main: {pass: 1, pass_at: 1}}"))
-
-    assert task.test_groups["main"].pass_at == 1
-
-
-def test_worst_needs_a_credit() -> None:
-    problems = task_problems(task_text("{main: {worst: 1}}"))
-
-    assert at(problems, "test_groups.main.worst") == (
-        "Each test here either passes or fails, so the lowest test score is the same as "
-        '"every test must pass". Give these points there instead.'
-    )
-    assert parse_task(task_text("{main: {worst: 1}}", credit="fraction"))
-
-
-@pytest.mark.parametrize(
-    "group",
-    [
-        "{pass: 1, test_weights: {'1': 2}}",
-        "{pass: 1, pass_at: 1, test_weights: {'1': 2}}",
-        "{worst: 1, test_weights: {'1': 2}}",
-        "{test_weights: {'1': 2}}",
-    ],
-)
-def test_test_weights_are_refused_where_nothing_reads_them(group: str) -> None:
-    problems = task_problems(task_text(f"{{main: {group}}}", credit="fraction"))
-
-    assert at(problems, "test_groups.main.test_weights") == (
-        "The test weights on main change nothing. They count only towards points for each test "
-        "passed, or when the share of tests that must pass is below 1."
-    )
-
-
-@pytest.mark.parametrize(
-    "group",
-    ["{each: 1, test_weights: {'1': 2}}", "{pass: 1, pass_at: 0.5, test_weights: {'1': 2}}"],
-)
-def test_test_weights_are_read_by_each_and_by_pass_below_all(group: str) -> None:
-    task = parse_task(task_text(f"{{main: {group}}}"))
-
-    assert task.test_groups["main"].test_weights == {"1": 2}
-
-
-@pytest.mark.parametrize("weight", ["0", "-1"])
-def test_a_test_weight_is_more_than_0(weight: str) -> None:
-    problems = task_problems(task_text(f"{{main: {{each: 1, test_weights: {{'20': {weight}}}}}}}"))
-
-    assert at(problems, "test_groups.main.test_weights.20") == (
-        f"main/20 has a weight of {weight}, and a weight must be more than 0. Put a test that "
-        "should count for nothing in a test group that gives no points."
-    )
-
-
-def test_a_test_weights_key_is_a_test_name() -> None:
-    problems = task_problems(task_text("{main: {each: 1, test_weights: {'a.b': 1}}}"))
-
-    assert at(problems, "test_groups.main.test_weights.a.b") == (
-        "A test's name may use only letters, digits, hyphens (-) and underscores (_)."
-    )
-
-
-def test_credit_on_a_task_with_no_rule_weight_is_refused() -> None:
-    problems = task_problems(task_text("{samples: {}, main: {each: 0}}", credit="fraction"))
-
-    assert problems == [
-        {
-            "path": "credit",
-            "message": "No test group gives points, so what an accepted test earns changes "
-            "nothing. Give a test group points, or let an accepted test earn 1.",
-        }
-    ]
-    assert not parse_task(task_text("{samples: {}}")).gives_points
-
-
-def test_a_groups_total_keeps_every_digit_of_its_weights() -> None:
-    long = "0.1234567890123456789012345678"
-    task = parse_task(task_text(f"{{small: {{pass: {long}, each: {long}}}, large: {{pass: 100}}}}"))
-
-    assert task.test_groups["small"].weight == Decimal("0.2469135780246913578024691356")
-
-
-def test_credit_is_a_value_name_or_relative_to_one() -> None:
-    assert parse_task(task_text("{main: {each: 1}}", credit="fraction")).credit == "fraction"
-    assert parse_task(task_text("{main: {each: 1}}", credit="{relative: time_ms}")).credit == (
-        Relative(relative="time_ms")
-    )
-
-
-EACH_TELLS = (
-    "main shows entrants only its outcome until the reveal, but points for each test passed "
-    'would tell them how many of its tests passed. Give its points under "every test must pass" '
-    'instead, or change "When entrants see results".'
-)
-
-
-@pytest.mark.parametrize(
-    ("group", "credit", "sentence"),
-    [
-        (
-            "{each: 1, show: verdict}",
-            None,
-            EACH_TELLS,
-        ),
-        (
-            "{pass: 1, each: 1, show: verdict}",
-            None,
-            EACH_TELLS,
-        ),
-        (
-            "{worst: 1, show: verdict}",
-            "fraction",
-            "main shows entrants only its outcome until the reveal, but points for the lowest "
-            "test score would tell them how its worst test did. Give its points under "
-            '"every test must pass" instead, or change "When entrants see results".',
-        ),
-        (
-            "{pass: 1, show: verdict}",
-            "{relative: time_ms}",
-            "This test group shows entrants only its outcome until the reveal, but its points "
-            "would change as other entrants do better on its hidden tests. Show its results to "
-            "entrants at once or only at the reveal.",
-        ),
-    ],
-)
-def test_a_verdict_is_refused_naming_the_rule_weight_that_would_tell(
-    group: str, credit: str | None, sentence: str
-) -> None:
-    problems = task_problems(task_text(f"{{main: {group}}}", credit=credit))
-
-    assert at(problems, "test_groups.main.show") == sentence
-
-
-@pytest.mark.parametrize(
-    ("groups", "credit"),
-    [
-        ("{main: {pass: 1, show: verdict}}", None),
-        ("{main: {pass: 1, pass_at: 0.5, show: verdict}}", None),
-        ("{main: {each: 1}, extra: {show: verdict}}", None),
-        ("{main: {pass: 1, show: verdict}}", "fraction"),
-    ],
-)
-def test_a_verdict_is_allowed_on_pass_alone_or_on_no_rule_weight(
-    groups: str, credit: str | None
-) -> None:
-    parse_task(task_text(groups, credit=credit))
+    assert sorted(paths(problems)) == ["hidden", "submissions.max"]
 
 
 # Form details
@@ -922,25 +723,20 @@ def test_the_starter_task_is_the_formats() -> None:
     task = parse_task(files["task.yaml"])
 
     assert task.name == "Sum of two"
-    assert task.workflow == WorkflowRef("unicon", "classic", "v2")
+    assert task.workflow == WorkflowRef("unicon", "classic", "v3")
     assert task.inputs == {
-        "submission": {"label": "Your solution"},
-        "language": {"label": "Language", "options": ["python"]},
+        "code": {"entrant": {"label": "Your solution"}},
+        "language": {"entrant": {"label": "Language", "options": ["python"]}},
         "time_limit": 2,
         "memory_limit": 256,
     }
     assert files["statement.md"] == b"Write the statement entrants read here.\n"
-    assert list(task.test_groups) == ["main"]
-    assert task.test_groups["main"].each == 100
-    assert task.credit is None
-    assert set(files) == {
-        "task.yaml",
-        "statement.md",
-        "tests/main/1/input",
-        "tests/main/1/answer",
-    }
-    assert files["tests/main/1/input"] == b"1 2\n"
-    assert files["tests/main/1/answer"] == b"3\n"
+    assert [axis.rows for axis in task.repeat] == [[("tests/1.in", "tests/1.ans")]]
+    assert list(task.scoring.values) == ["score"]
+    assert task.scoring.show.now == ["score", "all"]
+    assert set(files) == {"task.yaml", "statement.md", "tests/1.in", "tests/1.ans"}
+    assert files["tests/1.in"] == b"1 2\n"
+    assert files["tests/1.ans"] == b"3\n"
 
 
 def test_a_title_is_the_one_asked_for_or_the_name() -> None:
@@ -951,11 +747,11 @@ def test_a_title_is_the_one_asked_for_or_the_name() -> None:
 
 def test_the_task_admin_keys_are_the_name_and_the_submissions() -> None:
     assert TASK_ADMIN_KEYS == ("name", "submissions")
-    before = task_text("{main: {each: 1}}").encode()
+    before = task_text().encode()
     after = before.replace(b"name: T", b"name: U") + b"submissions: {max: 3}\n"
 
     assert admin_only_changes("task", before, after) == ["name", "submissions"]
-    managers = before.replace(b"{main: {each: 1}}", b"{main: {each: 2}}") + b"credit: x\n"
+    managers = before.replace(b"scoring: {}", b"scoring: {values: {}}") + b"inputs: {x: 1}\n"
     assert admin_only_changes("task", before, managers) == []
 
 

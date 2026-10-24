@@ -30,10 +30,7 @@ contest's save and at the save of every task a leaderboard reads.
   still checks that one, since it then takes over with no save to check the
   leaderboards again (`forge.services.leaderboards`). A task with neither is not
   resolved there; its first save is checked against the leaderboards instead, so
-  every name is resolved by one save or the other. A task graded test by
-  test is not resolved at all: it gives a leaderboard no results, so its cells are
-  missing (stage 5 section 6, item 70), and its format goes with the rest
-  of today's path (stage 4 open 132).
+  every name is resolved by one save or the other.
 
 Each refusal across files names its leaderboard and column and carries its path
 from the top of `contest.yaml`, so the editor can point at it, and the

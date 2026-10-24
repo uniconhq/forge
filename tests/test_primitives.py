@@ -1,30 +1,25 @@
-"""A primitive's declaration, `primitive.yaml`: the three the built-in workflow
-uses parse, keep the runner's contract and are the releases deploy pins with
-the image line written in; a file or folder input says whether the primitive
-runs it (P1); `secret` is an input's word; every primitive declares its
-outcome; and the keys and words the format no longer has are refused at
-their paths. Contract 6's declarations, `exec`'s and
-`compile@v3`'s from their checkouts, parse with what they add kept, and what
-breaks its rules is refused.
+"""A primitive's declaration, `primitive.yaml`: the two the built-in workflow
+uses parse, keep the runner's contract and are their repos' own with the
+image line written in; a declaration says `schema_version: 6`; a file or
+folder input says whether the primitive runs it (P1); `secret` is an
+input's word; every primitive declares its outcome; and the keys and words
+the format no longer has are refused at their paths. `exec`'s and
+`compile@v3`'s declarations from their checkouts parse with what they add
+kept, and what breaks the format's rules is refused.
 """
 
 import json
-from collections.abc import Mapping
 from typing import Any
 
 import pytest
 
 from forge.domain.blocks.numbers import Better
 from forge.domain.contracts import schema_text, violation
-from forge.domain.definitions import parse_task
-from forge.domain.grading import PLATFORM_MACHINE
-from forge.domain.plans import compile_plan
 from forge.domain.primitives import (
     STEP_OUTCOMES,
     FromInput,
     FromMax,
     FromSum,
-    Port,
     PrimitiveDeclaration,
     PrimitiveForm,
     parse_primitive,
@@ -36,6 +31,7 @@ from tests.conftest import released, sibling
 
 DIGEST = "sha256:" + "a" * 64
 BASE = f"""\
+schema_version: 6
 image: ghcr.io/uniconhq/primitive-probe@{DIGEST}
 limits: {{time_ms: 1, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1, gpus: 0}}
 """
@@ -48,17 +44,16 @@ def refused(text: str) -> list[Problem]:
     return raised.value.errors
 
 
-def test_the_three_seeded_primitives_parse() -> None:
-    compile_ = parse_primitive(PRIMITIVES["compile"])
-    run = parse_primitive(PRIMITIVES["sandbox-run"])
-    check = parse_primitive(PRIMITIVES["diff-check"])
+def test_the_two_seeded_primitives_parse() -> None:
+    compile_ = parse_primitive(PRIMITIVES["unicon/compile@v3"])
+    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v1"])
 
-    assert (compile_.batch, run.batch, check.batch) == (False, True, True)
-    assert not (compile_.network or run.network or check.network)
+    assert (compile_.batch, exec_.batch) == (False, True)
+    assert not (compile_.network or exec_.network)
     assert compile_.image == f"ghcr.io/uniconhq/primitive-compile@{PLACEHOLDER_DIGEST}"
     assert compile_.inputs["source"].type is Type.FOLDER
     assert compile_.inputs["source"].runs is True
-    assert compile_.inputs["language"].options == ("c", "cpp", "java", "python")
+    assert compile_.inputs["language"].options == ("c", "cpp", "java", "python", "ipynb")
     assert compile_.inputs["entry"].optional is True
     assert compile_.limits is not None and compile_.limits.as_mapping() == {
         "time_ms": 60000,
@@ -68,12 +63,10 @@ def test_the_three_seeded_primitives_parse() -> None:
         "output_mb": 64,
         "gpus": 0,
     }
-    assert (run.inputs["binary"].runs, run.inputs["input"].runs) == (True, False)
-    assert run.inputs["args"].type is Type.TEXT and run.inputs["args"].runs is None
-    assert run.limits_from["time_ms"] == FromInput(input="time_limit", scale=2000, add=3000)
-    assert (run.limits_from["memory_mb"].scale, run.limits_from["memory_mb"].add) == (1, 256)
-    assert set(check.outputs) == {"outcome"}
-    assert check.outputs["outcome"].type is Type.OUTCOME
+    assert set(exec_.forms) == {"one", "programs"}
+    one = exec_.forms["one"]
+    assert (one.inputs["program"].runs, one.inputs["stdin"].runs) == (True, False)
+    assert one.limits_from["time_ms"] == FromInput(input="time_limit", scale=2000, add=3000)
     assert not any(port.secret for port in compile_.inputs.values())
 
 
@@ -92,73 +85,34 @@ def pins() -> dict[str, dict[str, Any]]:
     return found
 
 
-@pytest.mark.parametrize("name", list(PRIMITIVES))
-def test_each_seeded_primitive_is_the_release_deploy_pins_with_the_image_written_in(
-    name: str,
+@pytest.mark.parametrize("reference", list(PRIMITIVES))
+def test_each_seeded_primitive_is_its_repos_own_with_the_image_written_in(
+    reference: str,
 ) -> None:
-    """The fake seeds each at `v2`, as bootstrap mirrors the release deploy
-    pins for `v2`, read at its tag, since the checkout beside this one may
-    be on a later version of the primitive, as compile's is on `v3`.
+    """The fake seeds each as bootstrap mirrors it, the primitive repo's own
+    `primitive.yaml` with the image line written in at its top.
     """
-    tag = pins()[name]["v2"]["source"]["tag"]
-    published = released(f"primitive-{name}", tag, "primitive.yaml")
-    lines = PRIMITIVES[name].decode().splitlines(keepends=True)
-    assert "".join(line for line in lines if not line.startswith("image: ")) == published
+    name = reference.removeprefix("unicon/").partition("@")[0]
+    own = sibling(f"primitive-{name}", "primitive.yaml").read_text(encoding="utf-8")
+    lines = PRIMITIVES[reference].decode().splitlines(keepends=True)
+    assert "".join(line for line in lines if not line.startswith("image: ")) == own
 
 
-def test_a_primitive_and_its_ports_say_what_they_are_for_and_no_plan_reads_it() -> None:
-    run = parse_primitive(PRIMITIVES["sandbox-run"])
+def test_a_primitive_and_its_ports_say_what_they_are_for() -> None:
+    compile_ = parse_primitive(PRIMITIVES["unicon/compile@v3"])
     plain = parse_primitive(BASE + OUTCOME)
 
-    assert run.title == "Run program"
-    assert run.description is not None and run.description.startswith("Runs a program")
-    assert run.inputs["binary"].description == "The program to run."
-    assert run.outputs["outcome"].description is not None
+    assert compile_.title == "Compile"
+    assert compile_.description is not None and compile_.description.startswith("Compiles")
+    assert compile_.inputs["language"].description == (
+        "The language the source files are written in."
+    )
+    assert compile_.outputs["outcome"].outcomes
     assert (plain.title, plain.description, plain.outputs["outcome"].description) == (
         None,
         None,
         None,
     )
-    # A plan compiled from the declarations without their words is the
-    # same to the byte.
-    from tests.test_plans import CLASSIC_TASK, CLASSIC_WORKFLOW, HARNESS, cases_of, classic_tests
-
-    def wordless(found: PrimitiveDeclaration) -> PrimitiveDeclaration:
-        def ports(given: Mapping[str, Port]) -> dict[str, Port]:
-            return {
-                name: port.model_copy(update={"description": None, "outcomes": None})
-                for name, port in given.items()
-            }
-
-        return found.model_copy(
-            update={
-                "title": None,
-                "description": None,
-                "inputs": ports(found.inputs),
-                "outputs": ports(found.outputs),
-            }
-        )
-
-    worded = {f"unicon/{name}@v2": parse_primitive(text) for name, text in PRIMITIVES.items()}
-    assert any(found.title is not None for found in worded.values())
-    assert all(found.outputs["outcome"].outcomes for found in worded.values())
-    paths = classic_tests("main/1")
-    tests = cases_of(CLASSIC_WORKFLOW, paths, {})
-
-    def plan(primitives: Mapping[str, PrimitiveDeclaration]) -> bytes:
-        made = compile_plan(
-            parse_task(CLASSIC_TASK),
-            CLASSIC_WORKFLOW,
-            primitives,
-            paths,
-            tests,
-            secrets=frozenset(),
-            machine=PLATFORM_MACHINE,
-            harness_image=HARNESS,
-        )
-        return made.plan.to_bytes()
-
-    assert plan(worded) == plan({ref: wordless(found) for ref, found in worded.items()})
 
 
 @pytest.mark.parametrize(
@@ -174,14 +128,23 @@ def test_a_title_or_description_is_one_line_of_text(extra: str, path: str) -> No
 
 
 def test_each_seeded_primitive_says_what_each_outcome_it_reports_means() -> None:
+    compile_ = parse_primitive(PRIMITIVES["unicon/compile@v3"])
+    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v1"])
     said = {
-        name: parse_primitive(text).outputs["outcome"].outcomes for name, text in PRIMITIVES.items()
+        "compile": compile_.outputs["outcome"].outcomes,
+        "exec": exec_.forms["one"].outputs["outcome"].outcomes,
     }
 
     assert {name: list(outcomes or {}) for name, outcomes in said.items()} == {
         "compile": ["accepted", "compile_error"],
-        "sandbox-run": ["accepted", "time_limit", "memory_limit", "output_limit", "runtime_error"],
-        "diff-check": ["accepted", "wrong_answer"],
+        "exec": [
+            "accepted",
+            "wrong_answer",
+            "time_limit",
+            "memory_limit",
+            "output_limit",
+            "runtime_error",
+        ],
     }
     assert (said["compile"] or {})["accepted"] == "the source compiles"
 
@@ -363,12 +326,12 @@ def test_every_primitive_declares_its_outcome(outputs: str, path: str, message: 
     assert message in problems[0]["message"]
 
 
-def test_an_input_port_is_one_of_the_six_value_types() -> None:
+def test_an_input_port_is_one_of_the_input_types() -> None:
     assert refused(BASE + "inputs:\n  k: outcome\n" + OUTCOME) == [
         {
             "path": "inputs.k.type",
-            "message": "An input must be text, a number, true or false, an enum, a file or a "
-            "folder.",
+            "message": "An input must be text, a number, true or false, an enum, a file, a "
+            "folder, named files, programs or links.",
         }
     ]
 
@@ -548,9 +511,8 @@ def test_each_contract_6_primitive_keeps_the_contract(name: str) -> None:
 def test_every_primitive_deploy_pins_reads_as_it_did() -> None:
     """Each version `images.json` pins, from its release: a `v1` is in the
     form the forge stopped reading, with `name` and `version` lines, and is
-    refused as before; every later one is contract 5 and parses.
+    refused as before; every later one says `schema_version: 6` and parses.
     """
-    read = 0
     for name, versions in pins().items():
         for version, pin in versions.items():
             text = released(f"primitive-{name}", pin["source"]["tag"], "primitive.yaml")
@@ -558,9 +520,7 @@ def test_every_primitive_deploy_pins_reads_as_it_did() -> None:
             if version == "v1":
                 assert {"name", "version"} <= {problem["path"] for problem in refused(with_image)}
                 continue
-            assert parse_primitive(with_image).schema_version == 5
-            read += 1
-    assert read == 3
+            assert parse_primitive(with_image).schema_version == 6
 
 
 @pytest.mark.parametrize(
@@ -574,22 +534,21 @@ def test_every_primitive_deploy_pins_reads_as_it_did() -> None:
 )
 def test_the_runners_example_declarations_parse(example: str) -> None:
     text = sibling("runner", "examples", example).read_text(encoding="utf-8")
-    assert parse_primitive(text).schema_version == (5 if example == "primitive.yaml" else 6)
+    assert parse_primitive(text).schema_version == 6
 
 
-def test_a_declaration_speaks_version_5_when_it_names_none_or_5_or_6() -> None:
-    assert parse_primitive(BASE + OUTCOME).schema_version == 5
-    assert parse_primitive("schema_version: 5\n" + BASE + OUTCOME).schema_version == 5
-    assert parse_primitive("schema_version: 6\n" + BASE + OUTCOME).schema_version == 6
-    for other in ("4", "7", "'6'", "true", "6.0"):
-        assert refused(f"schema_version: {other}\n" + BASE + OUTCOME) == [
-            {"path": "schema_version", "message": "This must be 5 or 6."}
+def test_a_declaration_says_schema_version_6() -> None:
+    assert parse_primitive(BASE + OUTCOME).schema_version == 6
+    unnamed = BASE.replace("schema_version: 6\n", "")
+    assert [problem["path"] for problem in refused(unnamed + OUTCOME)] == ["schema_version"]
+    for other in ("4", "5", "7", "'6'", "true", "6.0"):
+        assert refused(f"schema_version: {other}\n" + unnamed + OUTCOME) == [
+            {"path": "schema_version", "message": "This must be 6."}
         ]
 
 
 V6 = (
-    "schema_version: 6\n"
-    + BASE
+    BASE
     + """\
 inputs:
   program: {type: file, runs: true}
@@ -600,8 +559,7 @@ outputs:
 """
 )
 PROGRAMS_V6 = (
-    "schema_version: 6\n"
-    + BASE
+    BASE
     + """\
 outputs_from: programs
 limits_from:
@@ -811,34 +769,6 @@ def test_a_programs_port_is_called_programs() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("extra", "path"),
-    [
-        ("cache: true\n" + OUTCOME, "cache"),
-        ("cache: false\n" + OUTCOME, "cache"),
-        (
-            "outputs_from: manifest\ninputs:\n  manifest: {type: file, runs: false}\n" + OUTCOME,
-            "outputs_from",
-        ),
-        ("inputs:\n  files: {type: named_files, runs: false}\n" + OUTCOME, "inputs.files.type"),
-        ("outputs:\n  outcome: outcome\n  t: {type: number, better: lower}\n", "outputs.t.better"),
-        ("outputs:\n  outcome: outcome\n  t: {type: number, at_most: 1}\n", "outputs.t.at_most"),
-    ],
-)
-def test_what_contract_6_adds_is_refused_in_a_version_5_declaration(extra: str, path: str) -> None:
-    assert refused(BASE + extra) == [{"path": path, "message": "This needs schema_version: 6."}]
-    assert parse_primitive("schema_version: 6\n" + BASE + extra).schema_version == 6
-
-
-def test_a_limit_over_programs_is_refused_in_a_version_5_declaration() -> None:
-    problems = refused(PROGRAMS_V6.replace("schema_version: 6\n", ""))
-
-    assert {"path": "limits_from.memory_mb.sum", "message": "This needs schema_version: 6."} in (
-        problems
-    )
-    assert {"path": "inputs.programs.type", "message": "This needs schema_version: 6."} in problems
-
-
 _LIMITS = "{time_ms: 1, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1, gpus: 0}"
 FORMS = f"""\
 schema_version: 6
@@ -874,12 +804,6 @@ def test_a_form_key_at_the_top_beside_forms_is_refused() -> None:
             "path": "limits",
             "message": "A primitive with forms gives this on each form, not here.",
         }
-    ]
-
-
-def test_forms_need_schema_version_6() -> None:
-    assert refused(FORMS.replace("schema_version: 6\n", "")) == [
-        {"path": "schema_version", "message": "This needs schema_version: 6."}
     ]
 
 

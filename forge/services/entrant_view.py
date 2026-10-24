@@ -6,21 +6,20 @@ no read access to a contest or a task at the forge, and visitors have no
 credential at all, so the package applies the contest's visibility and the
 release rules itself before it hands anything on.
 
-A task with no publication has nothing to show. A run task's publication
-whose plan holds steps done at the save is not the task's until its save
-row ends `done` with every run accepted (`forge.services.pipelines`), so
-while it is checked, once it is refused, or when its save failed before
-its row was written, the task is as the publication before froze it, and
-with none before it has nothing to show (`live`). A
-task whose latest publication cannot be read as `task.yaml` shows nothing either, which cannot
-happen through a save, since only a valid save publishes.
+A task with no publication has nothing to show. A publication whose plan
+holds steps done at the save is not the task's until its save row ends
+`done` with every run accepted (`forge.services.pipelines`), so while it is
+checked, once it is refused, or when its save failed before its row was
+written, the task is as the publication before froze it, and with none
+before it has nothing to show (`live`). A task whose latest publication
+cannot be read as `task.yaml` shows nothing either, which cannot happen
+through a save, since only a valid save publishes.
 
-Of a task's files, its readers are served its statement and the files under
-its `public/` folder (TASK-FORMAT.md section 1.2), such as a statement's
-images, or, for a run task, the files and folders its `show` lists, each
-from its time on (SIMPLER-CORE.md 8.4, #487), one by one by its path in the
-task, as its latest publication holds it (`public_file`); an upload by its
-bytes, never its pointer. Any other path, or one not there, is no such
+Of a task's files, its readers are served its statement and the files and
+folders its `show` lists, such as a statement's images, each from its time
+on (SIMPLER-CORE.md 8.4, #487), one by one by its path in the task, as its
+latest publication holds it (`public_file`); an upload by its bytes, never
+its pointer. Any other path, or one not there, is no such
 file, and one larger than `PUBLIC_MOST` is refused with
 `PublicFileTooLarge`, since a page shows these whole. A contest whose
 `contest.yaml` does not read is no such contest to its readers, the same
@@ -54,13 +53,11 @@ from forge.domain.errors import InvalidPath, NotFound, PortError, PublicFileTooL
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.plan_basics import PLAN_PATH
-from forge.domain.plans import Plan
 from forge.domain.publication_record import Publication
 from forge.domain.run_plan import RunPlan
 from forge.domain.run_results import compilers
 from forge.domain.run_task import RUNS_PATH, Run, RunsFile, file_time
-from forge.domain.showing import generation_of
-from forge.domain.submissions import Field, fields_of, run_fields_of
+from forge.domain.submissions import Field, run_fields_of
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
@@ -71,7 +68,6 @@ log = get_logger(__name__)
 NO_SUCH_CONTEST = names.NO_SUCH_CONTEST
 NO_SUCH_TASK = names.NO_SUCH_TASK
 NO_SUCH_FILE = "There is no such file."
-PUBLIC_FOLDER = "public/"
 PUBLIC_MOST = 10 * 1024 * 1024
 """The most bytes of one public file the platform serves a reader."""
 
@@ -91,13 +87,6 @@ class PublishedTask:
     entry: ContestTask | None
     label: str | None = None
     publications: tuple[Publication, ...] = ()
-
-    def generation(self, publication: Publication) -> int:
-        """`showing.generation_of` for one of the task's publications."""
-        return generation_of(
-            [(each.number, each.grading_changed) for each in self.publications],
-            publication.number,
-        )
 
 
 async def contest(ctx: Context, contest: ContestId) -> ContestDefinition:
@@ -206,17 +195,13 @@ async def tasks(
 
 @dataclass(frozen=True, slots=True)
 class TaskForm:
-    """What a submission to a task is made of: the inputs the contestant
-    gives, as its plan declares them with the task's form details, and the
-    tests of the plan, which a per-test input's files are named for; or,
-    for a run task (`runs`), the entrant's inputs its run plan declares,
-    with no tests, and how many parts each input given in parts has
-    (`parts`), its submission laid out as version 6.
+    """What a submission to a task is made of: the entrant's inputs its
+    plan declares, with the task's form details, and how many parts each
+    input given in parts has (`parts`), its submission laid out as version
+    6.
     """
 
     fields: tuple[Field, ...]
-    tests: tuple[str, ...]
-    runs: bool = False
     parts: Mapping[str, int] = field(default_factory=dict)
 
 
@@ -287,16 +272,9 @@ async def form(ctx: Context, published: PublishedTask) -> TaskForm:
         found = await ctx.forge.content.read_file(
             PLATFORM, published.id, PLAN_PATH, at=published.publication.version
         )
-        if published.definition.runs:
-            planned = RunPlan.from_bytes(found.content)
-            parts = {name: each.parts for name, each in planned.entrant.items() if each.parts}
-            fields = run_fields_of(planned.entrant, published.definition.inputs)
-            return TaskForm(fields, (), runs=True, parts=parts)
-        plan = Plan.from_bytes(found.content)
-        fields = fields_of(
-            plan.contestant, published.definition.inputs, published.publication.titles
-        )
-        return TaskForm(fields, plan.tests)
+        planned = RunPlan.from_bytes(found.content)
+        parts = {name: each.parts for name, each in planned.entrant.items() if each.parts}
+        return TaskForm(run_fields_of(planned.entrant, published.definition.inputs), parts)
 
     key = f"published.form.{published.id}.{published.publication.version}"
     return await ctx.memo.remembered(key, FORM_KEPT, read)
@@ -387,15 +365,12 @@ def shown_now(
     now: datetime,
     released: bool = False,
 ) -> bool:
-    """Whether the task shows its readers the file at `path` now: one under
-    `public/`; or for a run task, one its `show` lists, or a folder it is in,
-    under `now`, under `after_close` once the task's reveal has passed, or
-    under `on_release` while the task's results are `released`. A file no
-    entry lists is never shown, nor one only a check names
-    (`checks.check_only`), whatever `show` lists.
+    """Whether the task shows its readers the file at `path` now: one its
+    `show` lists, or a folder it is in, under `now`, under `after_close`
+    once the task's reveal has passed, or under `on_release` while the
+    task's results are `released`. A file no entry lists is never shown,
+    nor one only a check names (`checks.check_only`), whatever `show` lists.
     """
-    if definition.scoring is None:
-        return path.startswith(PUBLIC_FOLDER)
     if check_only(definition, path):
         return False
     time = file_time(definition.scoring, path)
@@ -411,8 +386,8 @@ async def public_file(
 ) -> PublicFile:
     """The file at `path` as the task's latest publication holds it, when
     the task shows it now (`shown_now`, `reveal` being when the task closes
-    for every row, which a run task's `after_close` waits for, and its
-    `on_release` waiting on `results_released`), read as the
+    for every row, which `after_close` waits for, and `on_release` waiting
+    on `results_released`), read as the
     platform, its large-file object's bytes for an upload. The caller has
     checked the reader may read the task and the path with `public_path`.
     `NotFound` for a file not shown or not there, and `PublicFileTooLarge`
@@ -421,10 +396,8 @@ async def public_file(
     scoring = published.definition.scoring
     # The release is read afresh each time, so a take-back hides the file at
     # once.
-    released = (
-        scoring is not None
-        and file_time(scoring, path) == "on_release"
-        and await results_released(ctx, published.id)
+    released = file_time(scoring, path) == "on_release" and await results_released(
+        ctx, published.id
     )
     if not shown_now(published.definition, path, reveal=reveal, now=ctx.now, released=released):
         raise NotFound(NO_SUCH_FILE)
@@ -449,8 +422,7 @@ async def public_file(
 async def head_public_file(ctx: Context, task: TaskId, path: str) -> PublicFile:
     """The file at `path` as the task's head holds it, the draft a statement
     being written draws its pictures from, whether or not it was ever
-    published, for whoever organises the task: one under `public/`, or, when
-    the head's `task.yaml` is a run task's, one its `show` lists at any
+    published, for whoever organises the task: one its `show` lists at any
     time. The caller has checked who asks. `NotFound` for a task or a file
     not there, or one the task never shows.
     """
@@ -469,9 +441,7 @@ async def _shown_at_head(ctx: Context, task: TaskId, path: str, version: Version
         found = await ctx.forge.content.read_file(PLATFORM, task, TASK_FILE, at=version)
         definition = parse_task(found.content)
     except NotFound, InvalidDefinition:
-        return path.startswith(PUBLIC_FOLDER)
-    if definition.scoring is None:
-        return path.startswith(PUBLIC_FOLDER)
+        return False
     return file_time(definition.scoring, path) is not None
 
 

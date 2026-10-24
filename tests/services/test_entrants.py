@@ -539,7 +539,7 @@ async def _submit_sum(setup: Setup, acme: Acme, entered: Entered, key: str) -> i
         entered.session,
         entered.task,
         {
-            "submission": SubmittedInput(uploads=(made.id,)),
+            "code": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key=key,

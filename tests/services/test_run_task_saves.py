@@ -2,10 +2,8 @@
 and tour tasks publish their runs file and their plan, version 6, pinned to
 the one commit the workflow's version stood at, every workflow file read
 there; a save again says what its plan changed and grades nothing again; a
-runs file that does not read refuses the save; a key of the
-other format is refused naming the format, a stray one by the format of
-the workflow named, and a task keeps its format once anyone has
-submitted; a self-reported report asks once, and the save is refused
+runs file that does not read refuses the save, and so does an empty
+`scoring`; a self-reported report asks once, and the save is refused
 until that question is answered; what was shown is not hidden again; the
 files `show` lists are served from their time on, and no other, the
 reveal's from its instant and a release's not yet; the contest gives a
@@ -19,12 +17,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from forge.db.tables import Grading, Upload
 from forge.domain.content import Edit
 from forge.domain.errors import ConfirmationRequired, InvalidInputs, NotFound, TooLarge
-from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
 from forge.domain.plan_basics import PLAN_PATH
@@ -44,9 +41,16 @@ from forge.services import (
     uploads,
 )
 from forge.services.task_save import Draft, Published
-from forge.testing import PLACEHOLDER_DIGEST, FakeClock, register_entrant
-from tests.conftest import sibling
-from tests.services.conftest import RUNNING, SPRING, Acme, signed_in, upload, write_contest
+from forge.testing import FakeClock, register_entrant
+from tests.services.conftest import (
+    RUNNING,
+    SPRING,
+    Acme,
+    checked,
+    signed_in,
+    upload,
+    write_contest,
+)
 from tests.test_run_task import (
     CARTPOLE_FILES,
     CARTPOLE_TASK,
@@ -87,16 +91,6 @@ TASKS: dict[str, tuple[str, Mapping[str, bytes], Mapping[str, bytes]]] = {
 }
 
 
-def _primitives(acme: Acme) -> None:
-    """The contract 6 primitives the run workflows use, from the checkouts
-    beside this one, with the image line bootstrap writes.
-    """
-    for name, version in (("exec", "v1"), ("compile", "v3")):
-        text = sibling(f"primitive-{name}", "primitive.yaml").read_bytes()
-        image = f"image: ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}\n".encode()
-        acme.fake.primitives.add(name, {version: image + text})
-
-
 async def _save(
     setup: Setup, acme: Acme, task: TaskId, contents: Mapping[str, bytes | None], **options: Any
 ) -> Published | Draft:
@@ -111,10 +105,9 @@ async def _save(
 
 
 async def _ready(acme: Acme, which: str, contest: str = DRAFT) -> str:
-    """The primitives, the workflow `which` names public at `v1` with its
-    files, and the contest; the task's `task.yaml`.
+    """The workflow `which` names public at `v1` with its files, and the
+    contest; the task's `task.yaml`.
     """
-    _primitives(acme)
     text, held, _ = TASKS[which]
     made = await acme.fake.workflows.create_workflow(
         PLATFORM, "unicon", which, dict(held), Visibility.PUBLIC
@@ -139,17 +132,6 @@ async def _published(
     assert isinstance(result, Published), result
     await checked(setup, task)
     return result
-
-
-async def checked(setup: Setup, task: TaskId) -> None:
-    """Each save row of `task` ended `done` with every run accepted, as its
-    save pipeline would, so the publications it checks take over."""
-    async with setup.unit_of_work() as ctx:
-        await ctx.db.execute(
-            update(Grading)
-            .where(Grading.task_id == task, Grading.pipeline == "save")
-            .values(status=GradingStatus.DONE, result={"schema_version": 6, "runs": []})
-        )
 
 
 def _runs_file(acme: Acme) -> RunsFile:
@@ -332,38 +314,6 @@ async def test_a_part_over_its_own_size_is_refused_at_the_slot_and_at_submit(
         )
 
 
-async def test_a_task_naming_a_formats_keys_on_the_other_formats_workflow_is_refused(
-    setup: Setup, acme: Acme, sum_task: TaskId
-) -> None:
-    run = await _ready(acme, "tour")
-    current = acme.fake.state.repos[("acme", "spring.sum.task")].files["task.yaml"]
-
-    on_classic = await _save(
-        setup,
-        acme,
-        sum_task,
-        {"task.yaml": run.replace("unicon/tour@v1", "unicon/classic@v2").encode(), **TOUR_DATA},
-    )
-    on_tour = await _save(
-        setup,
-        acme,
-        sum_task,
-        {"task.yaml": current.replace(b"unicon/classic@v2", b"unicon/tour@v1")},
-    )
-
-    assert [path for path, _ in _errors(on_classic)] == ["repeat", "scoring", "test_groups"]
-    assert "This task's workflow has a test block" in _errors(on_classic)[0][1]
-    assert _errors(on_tour) == [
-        (
-            "test_groups",
-            "This task's workflow describes one run, with no test block, so the task has no "
-            "test groups: its runs are grouped under scoring's groups. Remove this.",
-        ),
-        ("scoring", "This is required."),
-    ]
-    assert acme.fake.calls_to("publish") == []
-
-
 async def test_a_run_task_whose_runs_file_does_not_read_is_refused_not_renumbered(
     setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -379,13 +329,11 @@ async def test_a_run_task_whose_runs_file_does_not_read_is_refused_not_renumbere
     assert len(acme.fake.calls_to("publish")) == 1
 
 
-async def test_a_stray_key_is_refused_by_the_format_of_the_workflow_named(
+async def test_a_task_whose_scoring_is_empty_is_refused(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     run = await _ready(acme, "tour")
-    current = acme.fake.state.repos[("acme", "spring.sum.task")].files["task.yaml"]
 
-    stray = await _save(setup, acme, sum_task, {"task.yaml": current + b"scoring: {}\n"})
     empty = await _save(
         setup,
         acme,
@@ -393,38 +341,8 @@ async def test_a_stray_key_is_refused_by_the_format_of_the_workflow_named(
         {"task.yaml": run.split("scoring:")[0].encode() + b"scoring:\n", **TOUR_DATA},
     )
 
-    assert _errors(stray) == [
-        (
-            "scoring",
-            "This task's workflow has a test block, so it is scored by its test groups, not "
-            "by scoring. Choose a workflow that describes one run, such as unicon/classic@v3, "
-            "or remove this.",
-        )
-    ]
     assert _errors(empty) == [("scoring", "This is required.")]
     assert acme.fake.calls_to("publish") == []
-
-
-async def test_a_task_keeps_its_format_once_anyone_has_submitted(
-    setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    run = await _ready(acme, "tour")
-    first = await _save(setup, acme, sum_task, {}, confirm=True)
-    assert isinstance(first, Published), first
-
-    async def submitted(*_: object) -> bool:
-        return True
-
-    monkeypatch.setattr(task_save.sources, "_submitted", submitted)
-    refused = await _save(setup, acme, sum_task, {"task.yaml": run.encode(), **TOUR_DATA})
-
-    assert _errors(refused) == [
-        (
-            "workflow",
-            "Entrants have submitted to this task, which is graded test by test, so its "
-            "workflow must keep that format. Choose a version that does.",
-        )
-    ]
 
 
 async def test_a_self_reported_report_asks_once_and_is_refused_until_confirmed(

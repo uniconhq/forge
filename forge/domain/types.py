@@ -41,8 +41,8 @@ RETIRED_TYPES = {
     "file[]": "This type is now called folder.",
     "dataset": "This type is no longer used: use file or folder instead.",
     "jupyter": "This type is no longer used: use file instead.",
-    "tests": "Tests are no longer an input: the files each test has are the workflow's test "
-    "fields.",
+    "tests": "Tests are no longer an input: the task repeats the workflow over its tests with "
+    "repeat.",
 }
 
 

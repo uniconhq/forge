@@ -34,13 +34,8 @@ NO_ANSWER = "The grading service did not answer."
 PUBLICATION_GONE = "The publication it grades against is gone."
 
 CI_CONFIG_PATH = "/api/v1/ci/config"
-"""Where a CI that asks what a run is asks it, under the platform's internal
-URL."""
-ENVELOPE_PATH = "/api/v1/gradings/{grading}/envelope"
-"""Where a run fetches its envelope, under the machine URL, with the envelope
-key as `?key=`."""
-CALLBACK_PATH = "/api/v1/gradings/{grading}/callback"
-"""Where a run reports, under the machine URL."""
+"""Where a CI that asks what a pipeline is asks it, under the platform's
+internal URL."""
 
 
 Listed = Literal["early", "late"]

@@ -185,14 +185,6 @@ def test_a_task_path_and_a_workflow_path_keep_one_rule(path: str, message: str) 
     assert path_problem(path, folder=None, of="workflow") == message
 
 
-def test_a_path_of_a_todays_task_keeps_the_rule_it_was_saved_under() -> None:
-    for path in ("data /", " data/1.in", "data/1\x7f"):
-        assert path_problem(path, folder=None, today=True) is None
-    assert path_problem("a//b", folder=None, today=True) == (
-        "The path cannot have empty, . or .. parts."
-    )
-
-
 def test_a_path_names_a_file_or_a_folder_as_it_is_asked_for() -> None:
     assert path_problem("data/", folder=True) is None
     assert path_problem("data/", folder=None) is None

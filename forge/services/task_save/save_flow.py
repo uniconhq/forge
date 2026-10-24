@@ -2,10 +2,8 @@ import uuid
 from collections.abc import Mapping
 
 from forge.domain.content import Edit
-from forge.domain.definitions import PUBLIC_FOLDER, STATEMENT_FILE
+from forge.domain.definitions import STATEMENT_FILE
 from forge.domain.ids import TaskId
-from forge.domain.plan_basics import PLAN_PATH
-from forge.domain.plans import grading_changes
 from forge.domain.publication_record import Check, write_note
 from forge.domain.regrades import RegradeCause
 from forge.domain.roles import Role, contest_id_of, holds, task_scope
@@ -82,7 +80,7 @@ async def save(
         version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, checked.errors, ())
 
-    # A run task's publication still checked, or refused, is not the task's,
+    # A publication still checked, or refused, is not the task's,
     # so a save says what it changes against the one entrants are graded on.
     await pipelines.take_over(ctx, task)
     made = await ctx.forge.workspaces.list_publications(task)
@@ -94,43 +92,29 @@ async def save(
     pinned = False
     read = ReadChanges()
     anew = True
-    worded = False
     if latest is not None:
         before, published_files = await _published_snapshot(ctx, as_, task, latest)
         differ = await _differing(ctx, as_, task, head, written, published_files)
-        if checked.run_task is not None:
-            # What a run task's plan changes is said from its plan and runs
-            # file, which say whether anything moved.
-            after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
-            changed = run_plan_changes(before, after)
-            pinned = pin_moved(before, after)
-            if RELEASE_MOVED in changed and not await entrant_view.results_released(ctx, task):
-                # The released split moved while no grading takes it: one
-                # made at a release takes it as it then stands, so nothing
-                # grades again for it (stage 5 section 6 item 44).
-                changed = tuple(each for each in changed if each != RELEASE_MOVED)
-            rerun = steps_run_again(before, after)
-            scoring = checked.definition.scoring if checked.definition is not None else None
-            read = ReadChanges(
-                statement=STATEMENT_FILE in differ,
-                public=scoring is not None
-                and any(file_time(scoring, path) is not None for path in differ),
-            )
-            anew = bool(differ) or any(
-                before.plans.get(path) != content for path, content in checked.plan_files().items()
-            )
-        else:
-            after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
-            changed = grading_changes(before, after)
-            # A workflow moved in place can change a value's words alone,
-            # which only a new publication's note carries.
-            worded = checked.compiled is not None and latest.meanings != checked.compiled.meanings
-            read = ReadChanges(
-                statement=STATEMENT_FILE in differ,
-                public=any(path.startswith(PUBLIC_FOLDER) for path in differ),
-                words=worded,
-            )
-            anew = bool(differ) or before.plans.get(PLAN_PATH) != after.plans[PLAN_PATH] or worded
+        # What the plan changes is said from its plan and runs file, which
+        # say whether anything moved.
+        after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
+        changed = run_plan_changes(before, after)
+        pinned = pin_moved(before, after)
+        if RELEASE_MOVED in changed and not await entrant_view.results_released(ctx, task):
+            # The released split moved while no grading takes it: one made
+            # at a release takes it as it then stands, so nothing grades
+            # again for it (stage 5 section 6 item 44).
+            changed = tuple(each for each in changed if each != RELEASE_MOVED)
+        rerun = steps_run_again(before, after)
+        scoring = checked.definition.scoring if checked.definition is not None else None
+        read = ReadChanges(
+            statement=STATEMENT_FILE in differ,
+            public=scoring is not None
+            and any(file_time(scoring, path) is not None for path in differ),
+        )
+        anew = bool(differ) or any(
+            before.plans.get(path) != content for path, content in checked.plan_files().items()
+        )
     if keep_as_draft:
         version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, (), changed)
@@ -174,14 +158,8 @@ async def save(
     touched = {*written, *plans}
     if version != head.version and await _landed_under(ctx, as_, task, head, version, touched):
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
-    notes = (
-        checked.compiled.notes
-        if checked.compiled is not None
-        else checked.run_plan.notes
-        if checked.run_plan is not None
-        else ()
-    )
-    if newest is not None and version == newest.version and not worded:
+    notes = checked.run_plan.notes if checked.run_plan is not None else ()
+    if newest is not None and version == newest.version:
         # A save that published a change to how the task grades and stopped
         # before its regrade left the publication live and its submissions
         # graded as before: a save of the same files grades them again.
@@ -222,20 +200,8 @@ async def save(
             started,
         )
     notes = (*notes, *await _report(ctx, task, checked.definition, checked))
-    note = (
-        write_note(
-            bool(changed),
-            changed,
-            checked.workflows,
-            checked.compiled.held,
-            checked.compiled.measures,
-            checked.compiled.titles,
-            checked.compiled.meanings,
-        )
-        if checked.compiled is not None
-        else write_note(
-            bool(changed), changed, checked.workflows, checked_first=_checked_first(checked)
-        )
+    note = write_note(
+        bool(changed), changed, checked.workflows, checked_first=_checked_first(checked)
     )
     # A publication checked first is held back by its note until a save row
     # passes, so a save that fails once it is made leaves it unchecked, never
@@ -305,9 +271,9 @@ async def save(
 
 def _regrades(changed: tuple[str, ...], checked: Checked) -> bool:
     """Whether the save grades the task's submissions again now: when what
-    it grades changed, the store running again only what changed by key for
-    a run task (SIMPLER-CORE.md 11.6); but not for a run task whose plan
-    holds steps done at the save, which grades them again once its save row
+    it grades changed, the store running again only what changed by key
+    (SIMPLER-CORE.md 11.6); but not for a task whose plan holds steps done
+    at the save, which grades them again once its save row
     lets it take over (`pipelines`).
     """
     return bool(changed) and not _checked_first(checked)

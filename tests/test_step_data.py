@@ -202,7 +202,7 @@ def test_a_batch_answers_its_runs_in_order(islands: RunPlan) -> None:
     ("content", "fault"),
     [
         (b"{", "not JSON"),
-        (b'{"schema_version": 5, "outputs": {"outcome": "accepted"}}', "version 6"),
+        (b'{"schema_version": 5, "outputs": {"outcome": "accepted"}}', "6 was expected"),
         (b'{"schema_version": 6, "error": "No isolate."}', "The step failed: No isolate."),
         (b'{"schema_version": 6, "verdict": "accepted"}', "contract"),
         (_batch("r2", "r1", outcome="wrong_answer"), "in their order"),

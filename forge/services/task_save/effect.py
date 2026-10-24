@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 
 from forge.domain.content import FileSet, WrittenEdit
-from forge.domain.definitions import Show, TaskDefinition
+from forge.domain.definitions import TaskDefinition
 from forge.domain.identity import Identity
 from forge.domain.ids import TaskId
 from forge.domain.port_values import is_reserved
@@ -21,7 +21,7 @@ async def _report(
     ctx: Context, task: TaskId, definition: TaskDefinition, checked: Checked
 ) -> list[str]:
     """The note beside what the save's effect says: the task's reveal in words
-    when it hides anything (a group not shown at once, or a sealed step).
+    when it hides anything (something its `show` lists under `after_close`).
     The scoring changes, and the leaderboards the save moves, are the effect's.
     """
     contest = await _contest(ctx, task)
@@ -30,14 +30,7 @@ async def _report(
         return []
     entry = contest.entry(name)
     found: list[str] = []
-    compiled = checked.compiled
-    if checked.run_task is not None:
-        hides = bool(checked.run_task.show.after_close)
-    else:
-        assert compiled is not None
-        hides = bool(compiled.sealed) or any(
-            group.shown is not Show.ALWAYS for group in definition.test_groups.values()
-        )
+    hides = checked.run_task is not None and bool(checked.run_task.show.after_close)
     if entry is not None and hides:
         extensions = await timelines.every_extension(ctx, contest_id_of(task_scope(task)))
         found.append(
@@ -61,7 +54,7 @@ async def _save_effect(
 ) -> SaveEffect:
     """What saving `definition` over the latest publication does, in the
     words a running contest asks with before a save and a save that
-    published answers with; for a run task, the steps a submission runs
+    published answers with; the steps a submission runs
     again, whether that waits for the save's check, and the values whose
     program runs again.
     """

@@ -65,12 +65,11 @@ import uuid
 from collections.abc import Collection, Sequence
 from typing import cast
 
-from sqlalchemy import func, select, text
+from sqlalchemy import exists, func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from forge.db.tables import Grading, GradingStep
 from forge.db.tables.gradings import EARLY, LATE, PASSED, SAVE
-from forge.domain import exact_json
 from forge.domain.errors import CiRequestRefused, Misconfigured, NotFound, PortError, Unavailable
 from forge.domain.grading import (
     BOXED_SHAPE,
@@ -82,9 +81,7 @@ from forge.domain.grading import (
     PipelineSpec,
     PipelineStepSpec,
 )
-from forge.domain.identity import PLATFORM
 from forge.domain.ids import OrgId, PublicationId, SubmissionId, TaskId, VersionId
-from forge.domain.plan_basics import PLAN_PATH
 from forge.domain.publication_record import Check, FailedCheck, Publication, failed_checks
 from forge.domain.regrades import RegradeCause
 from forge.domain.roles import contest_id_of, task_scope
@@ -92,7 +89,7 @@ from forge.domain.run_plan import BOXED, PipelineKind, RunPlan, slot_of
 from forge.domain.step_data import REPORT_STEP, all_accepted, without
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import entrant_view, gradings, names, steps, timelines
+from forge.services import entrant_view, gradings, names, places, steps, timelines
 
 log = get_logger(__name__)
 
@@ -118,28 +115,7 @@ class NoImage(Misconfigured):
 
 
 class ImageWithdrawn(Misconfigured):
-    """A step left to run names an image the platform has withdrawn, a run
-    task's or one the harness runs (`gradings.spec_of`)."""
-
-
-async def planned(ctx: Context, row: Grading) -> bool:
-    """Whether the publication the row grades against froze a run task's
-    plan, version 6. A plan that is not there, is refused or does not
-    read says no, so today's start says why; a forge that does not answer
-    raises its `Unavailable`, so the start fails as unanswered and is
-    tried again, never by today's path.
-    """
-    try:
-        publication = await gradings.publication_of(ctx, row)
-        found = await ctx.forge.content.read_file(
-            PLATFORM, TaskId(row.task_id), PLAN_PATH, at=publication.version
-        )
-        document = exact_json.loads(found.content)
-    except Unavailable:
-        raise
-    except PortError, ValueError:
-        return False
-    return isinstance(document, dict) and document.get("schema_version") == 6
+    """A step left to run names an image the platform has withdrawn."""
 
 
 async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
@@ -489,7 +465,9 @@ async def take_over(ctx: Context, task: TaskId) -> None:
     passed and is not marked taken over. The task is graded again against
     its publication when that is still the task's and changed how it
     grades, then the row is marked, in one unit of work under the task's
-    hold, so a take-over is done once.
+    hold, so a take-over is done once. The task's first take-over starts
+    making its places ahead, as a first publication that needs no check
+    does when it is saved (`places.ahead_at`).
     """
     await timelines.hold_task(ctx, task)
     waiting = (
@@ -510,12 +488,23 @@ async def take_over(ctx: Context, task: TaskId) -> None:
     )
     if not waiting:
         return
+    first = not await ctx.db.scalar(
+        select(
+            exists().where(
+                Grading.task_id == task,
+                Grading.pipeline == SAVE,
+                Grading.taken_over_at.is_not(None),
+            )
+        )
+    )
     current = await entrant_view.task(ctx, task)
     for row in waiting:
         row.taken_over_at = ctx.now
         if current is None or current.publication.id != row.publication_id:
             continue
         log.info("pipelines.took_over", task=task, publication=row.publication_id)
+        if first:
+            places.ahead_at(ctx, task)
         if current.publication.grading_changed:
             await gradings.regrade(
                 ctx,

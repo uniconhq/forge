@@ -9,13 +9,12 @@ from forge.db.tables.gradings import FRONT
 from forge.domain.blocks.catalogue import EXEC
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.content import ConflictToken, FileSet, WrittenEdit, has_path
-from forge.domain.definitions import TASK_FILE, Group, TaskDefinition, parse_task
+from forge.domain.definitions import TASK_FILE, TaskDefinition, parse_task
 from forge.domain.errors import Forbidden, NotFound
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import PublicationId, TaskId, VersionId, WorkflowId
 from forge.domain.plan_basics import PLAN_PATH, Snapshot
-from forge.domain.plans import Plan
 from forge.domain.port_values import is_reserved
 from forge.domain.primitives import PrimitiveDeclaration
 from forge.domain.publication_record import Publication
@@ -24,15 +23,14 @@ from forge.domain.run_task import RUNS_PATH, RunsFile
 from forge.domain.workflow_definition import (
     WORKFLOW_FILE,
     RunWorkflow,
-    WorkflowDefinition,
     WorkflowRef,
+    parse_run_workflow,
     parse_workflow_ref,
-    read_workflow,
 )
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.runtime.context import Context
 from forge.services import entrant_view, names, primitives
-from forge.services.task_save.records import CHANGED_CONTENT, GROUPS_KEPT, Checked
+from forge.services.task_save.records import CHANGED_CONTENT, DEFINITION_KEPT, Checked
 
 
 def _unopened(ref: WorkflowRef) -> Problem:
@@ -81,14 +79,6 @@ async def _graded_under(ctx: Context, task: TaskId) -> set[str]:
     )
 
 
-async def _groups_of(ctx: Context, task: TaskId, publication: Publication) -> Mapping[str, Group]:
-    """The test groups of the publication's `task.yaml`, or none when it
-    does not read, which a save never publishes.
-    """
-    found = await _definition_of(ctx, task, publication)
-    return found.test_groups if found is not None else {}
-
-
 async def _definition_of(
     ctx: Context, task: TaskId, publication: Publication
 ) -> TaskDefinition | None:
@@ -106,7 +96,7 @@ async def _definition_of(
             return None
 
     key = f"publications.definition.{task}.{publication.version}"
-    return await ctx.memo.remembered(key, GROUPS_KEPT, read)
+    return await ctx.memo.remembered(key, DEFINITION_KEPT, read)
 
 
 async def _content(
@@ -130,12 +120,12 @@ async def _content(
 
 @dataclass(frozen=True, slots=True)
 class _Found:
-    """A workflow as read: with or without a test block, the forge's id for
-    it, and the commit its version stood at when it was read, which every
-    later read of its files in the same check is pinned to.
+    """A workflow as read, the forge's id for it, and the commit its version
+    stood at when it was read, which every later read of its files in the
+    same check is pinned to.
     """
 
-    definition: WorkflowDefinition | RunWorkflow
+    definition: RunWorkflow
     workflow: WorkflowId
     at: VersionId
 
@@ -143,7 +133,7 @@ class _Found:
 @dataclass(frozen=True, slots=True)
 class _Opened:
     """The workflow a task names, none when it cannot be read or is in an
-    old format, with the problem saying so, and which workflow its name is,
+    old form, with the problem saying so, and which workflow its name is,
     by the forge's own id for it.
     """
 
@@ -164,7 +154,7 @@ async def _workflow(ctx: Context, as_: Identity, ref: WorkflowRef) -> _Opened:
     except NotFound, Forbidden:
         return _Opened(None, {}, [_unopened(ref)])
     try:
-        definition = read_workflow(file.content)
+        definition = parse_run_workflow(file.content)
     except InvalidDefinition as invalid:
         message = (
             f"The workflow {ref} is written in an older form that Unicon no longer reads, so "
@@ -200,39 +190,17 @@ async def _moved_workflows(
 
 
 async def _primitives(
-    ctx: Context,
-    as_: Identity,
-    definition: TaskDefinition,
-    workflow: WorkflowDefinition | RunWorkflow,
-    *,
-    steps: bool = True,
+    ctx: Context, as_: Identity, definition: TaskDefinition
 ) -> tuple[dict[str, PrimitiveDeclaration], tuple[Problem, ...]]:
-    """The declaration of every primitive a step of the task's workflow
-    uses, read at its version as `as_`, and those a value's `exec` program
-    is compiled and run with (`PROGRAM_USES`) when a value has one, and a
-    problem at the `workflow` line for each `use:` that cannot be read, is
-    not a primitive, or does not validate, or at `scoring` for one of those.
+    """The declarations a value's `exec` program is compiled and run with
+    (`PROGRAM_USES`) when a value has one, read at their versions as `as_`,
+    and a problem at `scoring` for each that cannot be read, is not a
+    primitive, or does not validate.
     """
     found: dict[str, PrimitiveDeclaration] = {}
     problems: list[Problem] = []
-    tried: set[str] = set()
-    if steps:
-        for step in workflow.steps:
-            use = str(step.use)
-            if use in tried:
-                continue
-            tried.add(use)
-            where = f"In the workflow {definition.workflow}, the step {step.id} cannot run: "
-            declaration, problem = await primitives.declaration(ctx, as_, step.use)
-            if problem is not None:
-                problems.append(Problem(path="workflow", message=where + problem))
-            elif declaration is not None:
-                found[use] = declaration
-    values = definition.scoring.values if definition.scoring is not None else {}
-    if any(blocks_in(tree, EXEC) for tree in values.values()):
+    if any(blocks_in(tree, EXEC) for tree in definition.scoring.values.values()):
         for use in PROGRAM_USES:
-            if use in found or use in tried:
-                continue
             declaration, problem = await primitives.declaration(ctx, as_, parse_workflow_ref(use))
             if problem is not None:
                 problems.append(
@@ -258,9 +226,8 @@ async def _published_snapshot(
     }
     named: tuple[str, ...] = ()
     if PLAN_PATH in plans:
-        reader = RunPlan if RUNS_PATH in plans else Plan
         try:
-            named = reader.from_bytes(plans[PLAN_PATH]).task_paths()
+            named = RunPlan.from_bytes(plans[PLAN_PATH]).task_paths()
         except ValueError:
             named = ()
     data = {path: str(token) for each in named for path, token in _under(files, each).items()}
@@ -291,7 +258,7 @@ async def _saved_snapshot(
     otherwise by a digest of its content that no token equals; one it
     removes is not there, so the comparison names it removed.
     """
-    plan = checked.run_plan or (checked.compiled.plan if checked.compiled is not None else None)
+    plan = checked.run_plan
     assert plan is not None
     data: dict[str, str] = {}
     for named in plan.task_paths():

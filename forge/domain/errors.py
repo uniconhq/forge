@@ -194,14 +194,6 @@ class ConfirmationRequired(ServiceError):
     code = "confirmation_required"
 
 
-class NotARunTask(ServiceError):
-    """An action only a run task has, such as releasing its results, asked
-    of a task that is not one.
-    """
-
-    code = "not_a_run_task"
-
-
 class RegistrationRefused(ServiceError):
     """A registration the contest's rules turn away. Each rule has an error of
     its own below, and its `code` says which, so a page can say what happened.
@@ -423,15 +415,15 @@ class InvalidInputs(SubmitRefused):
 
 
 class LogTooLarge(ServiceError):
-    """A run log is larger than the platform reads back for an organiser,
-    which no harness writes. `limit` is the most shown, in bytes.
+    """A run log is larger than the platform reads back for an organiser.
+    `limit` is the most shown, in bytes.
     """
 
     code = "log_too_large"
 
 
 class PublicFileTooLarge(ServiceError):
-    """A file under a task's `public/` is larger than the platform serves
+    """A file a task shows its readers is larger than the platform serves
     of it to a reader. `limit` is the most served, in bytes.
     """
 

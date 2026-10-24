@@ -314,9 +314,7 @@ def _task_named(definition: TaskDefinition) -> list[str]:
                 row.values() if isinstance(row, dict) else row if isinstance(row, list) else [row]
             )
             found += [cell for cell in cells if isinstance(cell, str)]
-    scoring = definition.scoring
-    if scoring is not None:
-        found += _texts(scoring.values)
+    found += _texts(definition.scoring.values)
     return found
 
 

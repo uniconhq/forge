@@ -1,11 +1,9 @@
 """The runner's contract files, as the package holds them: `schemas/` is a
-copy of the five schemas a runner release publishes, at `schema_version` 5,
-the plan, the envelope, the result, the primitive and the submission; the
-primitive's also at 6, which the stage 4 primitives speak, and the plan's
-and the submission's at 6, a run task's. The package checks what a run
-sends back, and what it hands a run, against them; its tests check the
-copy against the runner's own when that repo is checked out beside this
-one.
+copy of the four schemas a runner release publishes that the package
+reads, at `schema_version` 6: the plan, the result, the primitive and the
+submission. The package checks what a run sends back, and what it hands a
+run, against them; its tests check the copy against the runner's own when
+that repo is checked out beside this one.
 """
 
 import json
@@ -15,8 +13,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
 
-SCHEMA_VERSION = 5
-CONTRACTS = ("plan", "envelope", "result", "primitive", "submission")
+CONTRACTS = ("plan", "result", "primitive", "submission")
 MESSAGE_LIMIT = 300
 
 

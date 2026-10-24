@@ -20,9 +20,8 @@ submit used keeps its row as the record of what was submitted, and its bytes
 belong to the commit from then on.
 
 A file name is one plain path segment; where a file goes under its input,
-`files/<input>/<path>`, is that name for a file input, a path of such names
-for a folder input, and `<group>/<test>` with or without an ending for a
-per-test input (`forge.domain.submissions.path_problem`).
+`files/<input>/<path>`, is that name for a file input, and a path of such
+names for a folder input (`forge.domain.submissions.path_problem`).
 
 Content the platform writes from someone's typed text is never a pointer,
 and no place it writes carries its own rules about which of its files are

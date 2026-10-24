@@ -250,10 +250,7 @@ async def read(
     tasks = [
         task
         for task in await entrant_view.tasks(ctx, contest, settings)
-        if task.name in read
-        and task.entry is not None
-        and task.definition.scoring is not None
-        and not rules.withdrawn(settings, task.name)
+        if task.name in read and task.entry is not None and not rules.withdrawn(settings, task.name)
     ]
     if side is not None:
         tasks = [side.current if task.id == side.task else task for task in tasks]
@@ -278,7 +275,6 @@ async def read(
     entered: dict[str, frozenset[str]] = {}
     for task in tasks:
         scoring = task.definition.scoring
-        assert scoring is not None
         assert task.entry is not None
         held = await entrant_view.runs_held(ctx, task)
         trees[task.name] = scoring.values
@@ -416,7 +412,6 @@ async def _results(
     entry = task.entry
     assert entry is not None
     scoring = task.definition.scoring
-    assert scoring is not None
     times = run_showing.times_of(revealed=revealed, released=released)
     values_listed, compiled_listed = listed_now(scoring, times)
     found: dict[WorkspaceOwner, list[Loaded]] = {}
@@ -530,7 +525,7 @@ async def _scored(
 ) -> dict[str, Scored]:
     """Each task scored by its runs that a leaderboard reads a value of, by name,
     as its live publication gives its values; a task with no live
-    publication, or graded test by test, is left out."""
+    publication is left out."""
     read = {task for task, _ in _values_read(leaderboards_of(settings))}
     found: dict[str, Scored] = {}
     for name in sorted(read):
@@ -538,9 +533,7 @@ async def _scored(
         current = await entrant_view.task(ctx, task, settings, name) if task is not None else None
         if current is None:
             continue
-        scoring = current.definition.scoring
-        if scoring is not None:
-            found[name] = Scored(scoring.values)
+        found[name] = Scored(current.definition.scoring.values)
     return found
 
 
@@ -570,8 +563,7 @@ async def _checking(
             scoring = parse_task(newest.content).scoring
         except InvalidDefinition:
             continue
-        if scoring is not None:
-            found[name] = Scored(scoring.values)
+        found[name] = Scored(scoring.values)
     return found
 
 

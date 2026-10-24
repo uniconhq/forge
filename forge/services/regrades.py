@@ -4,14 +4,10 @@
 A rejudge and the regrade a save that changes how a task grades starts are
 each kept as one `Regrade` (`gradings.regrade`), and every attempt one
 makes, and each retry of those, points at it. A regrade is read per
-submission by its latest attempt of it, compared with the result that
-counted for the submission when the regrade began: the latest earlier
-attempt that finished with one. Both are read as organisers see them,
-every group, nothing held back (`scores.GradedOf`), the earlier one as it
-counted just before the regrade began
-(`forge.domain.regrades.counted_under`), the new one under the publication
-the regrade grades against; and `forge.domain.regrades.change_of` says
-what changed, by the tests' verdicts alone.
+submission by its latest attempt of it, set beside the result that counted
+for the submission when the regrade began: the latest earlier attempt that
+finished with one; and `forge.domain.regrades.change_of` says where it
+stands.
 
 - `latest` gives, for each task of the contest the organiser observes, its
   latest regrade with its counts by change, how many it graded, and whether
@@ -24,7 +20,7 @@ what changed, by the tests' verdicts alone.
   attempt of the regrade, as the feed gives gradings, each with what the
   regrade did to it (`GradingRecord.change`), narrowed to one change and
   to a member's or an entrant's submissions when asked;
-- `run_summary` gives a run task's regrade by what it changed: each
+- `run_summary` gives a regrade by what it changed: each
   submission whose values or verdicts it changed, old to new, worked out
   on read as every value is, the earlier attempt under the publication
   it counted under then, a bounded few and the rest counted; how many
@@ -69,7 +65,6 @@ from forge.domain.regrades import (
     run_changes,
 )
 from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_scope
-from forge.domain.showing import ACCEPTED, group_of
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
@@ -91,10 +86,6 @@ log = get_logger(__name__)
 
 NO_SUCH_REGRADE = "There is no such regrade."
 UNREAD_TASK = "The task or its contest no longer reads, so its regrade cannot be summed up."
-NOT_RUN_TASK = (
-    "This regrade is of a task graded test by test, whose gradings say what it changed. "
-    "Only a run task's regrade is summed up by its values."
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +189,7 @@ async def latest(ctx: Context, organiser: Organiser, contest: ContestId) -> tupl
     settings = await _settings(ctx, contest)
     found: list[Summary] = []
     for row in sorted(shown, key=lambda each: (each.started_at, each.id), reverse=True):
-        read = await _read(ctx, row, settings)
+        read = await _read(ctx, row)
         changes = [each.compared.change for each in read]
         name = tasks.get(row.task_id)
         found.append(
@@ -280,7 +271,7 @@ async def gradings_of(
         )
     read = [
         each
-        for each in await _read(ctx, row, await _settings(ctx, contest))
+        for each in await _read(ctx, row)
         if (kept is None or each.row.id in kept)
         and (change is None or each.compared.change is change)
     ]
@@ -328,8 +319,8 @@ async def run_summary(
     late rows and marks of every submission are read in one go. The leaderboards that
     read the task are a contest manager's or admin's alone, since a leaderboard
     diff shows every cell. `Forbidden` below a manager of the task,
-    `NotFound` for a regrade of another task, or none, and for a task
-    graded test by test or whose publication does not read.
+    `NotFound` for a regrade of another task, or none, and for a task whose
+    publication does not read.
     """
     require(organiser, task_scope(task), Role.MANAGER)
     row = await ctx.db.get(Regrade, regrade)
@@ -340,8 +331,6 @@ async def run_summary(
     current = await entrant_view.task(ctx, task, settings) if settings is not None else None
     if settings is None or current is None:
         raise NotFound(UNREAD_TASK)
-    if current.definition.scoring is None:
-        raise NotFound(NOT_RUN_TASK)
     cause, against = RegradeCause(row.cause), PublicationId(row.publication_id)
     then = await _as_of(ctx, current, counted_under(cause, against, current.publications))
     now = await _as_of(ctx, current, against) or current
@@ -462,8 +451,6 @@ async def _as_of(
         definition = parse_task(held.content)
     except InvalidDefinition:
         return None
-    if definition.scoring is None:
-        return None
     return replace(current, publication=found, definition=definition)
 
 
@@ -513,7 +500,7 @@ async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition | Non
         return None
 
 
-async def _read(ctx: Context, regrade: Regrade, settings: ContestDefinition | None) -> list[_Read]:
+async def _read(ctx: Context, regrade: Regrade) -> list[_Read]:
     """Each submission the regrade took, by its latest attempt of it, and
     what the regrade did to it. A failure found among the attempts that are
     their submission's latest starts its retry by itself.
@@ -524,26 +511,6 @@ async def _read(ctx: Context, regrade: Regrade, settings: ContestDefinition | No
     if not mine:
         return []
     attempts, ours, newest, gone = await _attempts(ctx, mine)
-    task = TaskId(regrade.task_id)
-    current = await entrant_view.task(ctx, task, settings) if settings is not None else None
-    graded = (
-        scores.GradedOf(ctx, current, PublicationId(regrade.publication_id))
-        if current is not None
-        else None
-    )
-    stood = (
-        scores.GradedOf(
-            ctx,
-            current,
-            counted_under(
-                RegradeCause(regrade.cause),
-                PublicationId(regrade.publication_id),
-                current.publications,
-            ),
-        )
-        if current is not None
-        else None
-    )
     found: list[_Read] = []
     for submission, row in newest.items():
         first = min(each.attempt for each in ours[submission])
@@ -551,7 +518,7 @@ async def _read(ctx: Context, regrade: Regrade, settings: ContestDefinition | No
             each for each in attempts[submission] if each.attempt < first
         )
         status = gradings.status_of(ctx, row, gone)
-        before = await _side(stood, earlier) if earlier is not None else None
+        before = Side(earlier.attempt) if earlier is not None else None
         if status in UNFINISHED:
             compared = Compared(ChangeKind.RUNNING, before, None)
         elif status is GradingStatus.OVER_LIMIT:
@@ -559,8 +526,7 @@ async def _read(ctx: Context, regrade: Regrade, settings: ContestDefinition | No
         elif not gradings.has_result(row):
             compared = Compared(ChangeKind.FAILED, before, None)
         else:
-            now = await _side(graded, row)
-            compared = Compared(change_of(before, now), before, now)
+            compared = Compared(change_of(before), before, Side(row.attempt))
         found.append(_Read(row, compared))
     return found
 
@@ -602,24 +568,3 @@ async def _attempts(
         gone,
     )
     return attempts, ours, newest, gone
-
-
-async def _side(graded_of: scores.GradedOf | None, row: Grading) -> Side | None:
-    """A finished attempt as a regrade compares it, or none when it cannot
-    be read: the task or the publication it ran under does not read. Its
-    tests are those of its plan in the groups it is shown with.
-    """
-    if graded_of is None:
-        return None
-    graded = await graded_of.graded(PublicationId(row.publication_id))
-    if graded is None:
-        return None
-    result = row.result or {}
-    outcomes = {str(test["test"]): test.get("outcome") for test in result.get("tests") or ()}
-    tests = [test for test in graded.tests if group_of(test) in graded.groups]
-    return Side(
-        attempt=row.attempt,
-        accepted=sum(1 for test in tests if outcomes.get(test) == ACCEPTED),
-        tests=len(tests),
-        stopped=result.get("stopped"),
-    )

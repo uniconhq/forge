@@ -14,20 +14,19 @@ first refusal, each with a code of its own, before anything is written:
 3. Every upload named is theirs, for this task (`upload_not_yours`), and a
    checked file no submission has used (`upload_not_ready`).
 4. Each file is within its input's `max_size` (`too_large`).
-5. What is given fits the contestant inputs the task's plan declares, with
+5. What is given fits the entrant inputs the task's plan declares, with
    the task's form details, the files under each input together within its
    `max_size` (`invalid_inputs`, `forge.domain.submissions`).
 
 Then, while the entrant has no submission of the task, its place to
 submit it is made, as the platform, or finished when a try stopped halfway;
-every part of making it is safe to run again. The files go into it as one commit, as the
-contestant, under `files/<input>/<name>` beside
+every part of making it is safe to run again. The files go into it as one
+commit, as the contestant, under `files/<input>/<name>` beside
 `submission.json`; the commit is named `submission/<n>` as the platform,
 with the next number on a collision; one `queued` grading row is inserted,
-against the task's current publication, attempt 1, with the hash of its
-callback token and the member who submitted, whose run starts once the
-submit commits; and the uploads
-are marked consumed, their objects removed once it commits.
+against the task's current publication, attempt 1, with the member who
+submitted, whose run starts once the submit commits; and the uploads are
+marked consumed, their objects removed once it commits.
 
 Submits of one workspace to one task happen one after another, under a
 Postgres advisory lock held until the unit of work ends, so the limits are
@@ -52,48 +51,35 @@ is refused rolls its finishing back with the rest, and the next one finishes
 it again.
 
 A contestant reads their own submissions back, newest first, each with the
-attempt of its grading that counts as the task's test groups show it
-(`forge.domain.showing`). The
-attempt that counts is the one the leaderboards count (`scores.counted`): the
-latest that finished with a result, so a regrade under way, a system error
-and a staff cancel leave the result read as it was; and while none has, the
-latest, of which a run in `system_error` is read as `delayed` and nothing
-more, and one staff then cancelled as `cancelled` with the sentence they
-gave. A submission with no result whose latest attempt is delayed, staff
-cancelled or over the limit does not count against the task's
-`submissions.max`. A delayed one is graded again only while its entrant
-has room under the most, and otherwise ends over the limit, read as
-`over_limit` with the most it reached (`gradings.retry_by_itself`), so no
-entrant gets more results than the most allows. A grading is
-shown with the publication it ran under: its sealed facts always, and
-the latest publication's `test_groups` and value meanings when its own is
-of the same generation (no grading change published since) and the latest
-plan lists the same tests, its own otherwise (`showing.under`,
-`scores.GradedOf`). A past publication's `task.yaml` and plan are read once
-per process, since a publication never changes; one that does not read
-shows nothing of its gradings but where they stand. A grading graded test
-by test is not scored (stage 5 section 6, item 123). `files` gives
-the inputs a submission was made with, and `download` the door to one of
-its files: where the proxy reads it from the forge and streams it to the
-person, so its bytes, two gigabytes or two, never pass through the
-platform. A run's log names every test, hidden ones too, so it is the
-organisers' alone. A run task's result is read through
+attempt of its grading that counts. The attempt that counts is the one the
+leaderboards count (`scores.counted`): the latest that finished with a
+result, so a regrade under way, a system error and a staff cancel leave the
+result read as it was; and while none has, the latest, of which a run in
+`system_error` is read as `delayed` and nothing more, and one staff then
+cancelled as `cancelled` with the sentence they gave. A submission with no
+result whose latest attempt is delayed, staff cancelled or over the limit
+does not count against the task's `submissions.max`. A delayed one is graded
+again only while its entrant has room under the most, and otherwise ends
+over the limit, read as `over_limit` with the most it reached
+(`gradings.retry_by_itself`), so no entrant gets more results than the most
+allows. `files` gives the inputs a submission was made with, and `download`
+the door to one of its files: where the proxy reads it from the forge and
+streams it to the person, so its bytes, two gigabytes or two, never pass
+through the platform. A grading's result is read through
 `forge.domain.run_showing`, its values worked out on read
 (`scores.run_scored`), a mark entered for it counted only once a leaderboard
-cell shown to the entrant counted the submission, before the reveal or
-after it (`leaderboards.chosen`, SIMPLER-CORE.md 14): until then, and always
-when none does, it is worked out as if none were entered. A text it
-shows is read one at a time, only while the result shows it to that
-reader: an entrant's by where it is shown (`read_text`), never by the
-stored output that holds it, whose id is another entrant's too and says
-when it was made; organisers' by that output (`read_organised_text`).
+cell shown to the entrant counted the submission, before the reveal or after
+it (`leaderboards.chosen`, SIMPLER-CORE.md 14): until then, and always when
+none does, it is worked out as if none were entered. A text it shows is read
+one at a time, only while the result shows it to that reader: an entrant's
+by where it is shown (`read_text`), never by the stored output that holds
+it, whose id is another entrant's too and says when it was made; organisers'
+by that output (`read_organised_text`).
 
 Organisers who observe the task read any row's submission the same way
-(`organised`, TASK-FORMAT.md section 1.7): the same attempt, read by the
-same code, shown as it is once the task has revealed, so every group's
-outcome and tests and every sealed value are filled in, with each
-group's `shown_at` kept from what the row is shown now, when it sees that
-group, and the grading's own status in place of the row's words for it.
+(`organised`): the same attempt, read by the same code, every value and
+every run of both its rows shown at once, and the grading's own status in
+place of the row's words for it.
 
 What the store or the forge says when it fails goes to the log, and the
 contestant is told only that it did not answer, refused the platform, or
@@ -134,15 +120,13 @@ from forge.domain.errors import (
 )
 from forge.domain.grading import GradingStatus, Place
 from forge.domain.identity import AsUser
-from forge.domain.ids import PublicationId, SubmissionId, TaskId, WorkspaceId
+from forge.domain.ids import SubmissionId, TaskId, WorkspaceId
 from forge.domain.leaderboards import entries_open
-from forge.domain.meanings import ValueMeaning, shown_meanings
 from forge.domain.names import WorkspaceOwner
 from forge.domain.release import Extension
 from forge.domain.roles import Role, contest_id_of, task_scope
 from forge.domain.run_showing import TextAt, ValueShown
 from forge.domain.sessions import Session
-from forge.domain.showing import GroupShown, filled_in, shown
 from forge.domain.step_data import RESULT_VERSION
 from forge.domain.submission_state import SubmissionState, told
 from forge.domain.submissions import Field, Submitted, SubmittedInput, UploadedFile
@@ -190,40 +174,29 @@ DOCUMENT_MAX = 1024 * 1024
 @dataclass(frozen=True, slots=True)
 class Result:
     """The latest attempt of a submission's grading as its contestant sees
-    it: its id and attempt, where it stands, and once it is done, what
-    stopped the run, the outcome over the groups shown, each test group as
-    its `show` allows, and the values reported once. Where it stands is in the contestant's words
+    it: its id and attempt and where it stands, in the contestant's words
     (`SubmissionState`): a run in `system_error` is `delayed` to its
     contestant, with nothing else; one staff cancelled is `cancelled`, with
     `reason`, the sentence they gave; and one ended over the limit is
     `over_limit`, with `limit`, the `submissions.max` its entrant had
     reached. Read by organisers, everything is shown and where it stands is
-    the grading's own `GradingStatus`. Once done, `meanings` lists every
-    value the workflow reports, in its order, with the title and unit a
-    page names it by and how it folds, a value a sealed step holds back
-    left out until the reveal. A run task's grading has no groups and
-    no `values`: `run_values` holds each value of its scoring shown to its
-    reader, `runs` each run shown, by group, `once` what its steps done
-    once reported, the compile log among them, and `compiled`, once a run
-    is shown and none while it waits, and, to organisers alone, `facts`
-    (`forge.domain.run_showing`), an entrant's texts there with no output
-    named, `texts_at` where each is shown and what holds it, for
-    `read_text` and never served; and `reveal_at`, until then, when the
-    task reveals, when what its entrant reads changes with no grading's
-    change to say so, so a page open on it reads it again then, as at a
-    classic group's `shown_at`.
+    the grading's own `GradingStatus`. Once it has a result, `run_values`
+    holds each value of its scoring shown to its reader, `runs` each run
+    shown, by group, `once` what its steps done once reported, the compile
+    log among them, and `compiled`, once a run is shown and none while it
+    waits, and, to organisers alone, `facts` (`forge.domain.run_showing`),
+    an entrant's texts there with no output named, `texts_at` where each is
+    shown and what holds it, for `read_text` and never served; and
+    `reveal_at`, until then, when the task reveals, when what its entrant
+    reads changes with no grading's change to say so, so a page open on it
+    reads it again then.
     """
 
     id: uuid.UUID
     attempt: int
     status: SubmissionState | GradingStatus
-    stopped: str | None
-    outcome: str | None
-    groups: tuple[GroupShown, ...]
-    values: dict[str, Any]
     reason: str | None = None
     limit: int | None = None
-    meanings: tuple[ValueMeaning, ...] = ()
     runs: tuple[Mapping[str, Any], ...] = ()
     reveal_at: datetime | None = None
     run_values: tuple[ValueShown, ...] = ()
@@ -322,11 +295,7 @@ async def submit(
         await submitters.open_place(ctx, person)
     form = await entrant_view.form(ctx, person.published)
     uploaded = {upload.id: _uploaded(upload) for upload in chosen.values()}
-    layout = (
-        rules.lay_out_runs(form.fields, form.parts, inputs, uploaded)
-        if form.runs
-        else rules.lay_out(form.fields, form.tests, inputs, uploaded)
-    )
+    layout = rules.lay_out_runs(form.fields, form.parts, inputs, uploaded)
     files = {SUBMISSION_FILE: layout.document}
     user = AsUser(person.session.user_id, await sessions.credential_for(ctx, person.session.id))
     for path, upload in layout.files.items():
@@ -779,13 +748,10 @@ async def _insert(
     by: int | None,
 ) -> Grading:
     """The submission's queued grading row, against the task's current
-    publication, with the hash of its own callback token and the member
-    who submitted it, `by`, taking the released split while the task's
+    publication, with the member who submitted it, `by`, taking the released split while the task's
     results are released.
     """
-    released = bool(person.published.definition.runs) and await entrant_view.results_released(
-        ctx, person.task
-    )
+    released = await entrant_view.results_released(ctx, person.task)
     return gradings.queue_submission(
         ctx,
         task=person.task,
@@ -804,9 +770,8 @@ async def organised(
     ctx: Context, organiser: Organiser, task: TaskId, owner: WorkspaceOwner, number: int
 ) -> Submission:
     """The submission numbered `number` of the entrant `owner`, as organisers
-    read it: as its row reads it, with everything its
-    row is not shown yet filled in, each group's `shown_at` saying when the
-    row is shown it, and the grading's own status. Needs the observer role
+    read it: as its row reads it, with everything its row is not shown yet
+    filled in, and the grading's own status. Needs the observer role
     at the task, as its gradings do. `NotFound` for a task with no
     publication or a row with no such submission.
     """
@@ -988,7 +953,6 @@ async def _read(
     gone = await gradings.lost(ctx, latest)
     await gradings.notice(ctx, latest, gone)
     await gradings.notice_late(ctx, latest)
-    graded = scores.GradedOf(ctx, reading.published)
     chosen = None if everything or not grouped else await _chosen_by_leaderboards(ctx, reading)
     return [
         await _submission(
@@ -998,7 +962,6 @@ async def _read(
             min(row.submitted_at for row in grouped[found]),
             grouped[found],
             gone,
-            graded,
             chosen,
             everything=everything,
         )
@@ -1011,7 +974,7 @@ async def _chosen_by_leaderboards(ctx: Context, reading: Reading) -> leaderboard
     which its values reading an entered mark wait on; none when the task
     has no such value."""
     scoring = reading.published.definition.scoring
-    if scoring is None or not using(scoring.values, ENTERED):
+    if not using(scoring.values, ENTERED):
         return None
     return await leaderboards.chosen(
         ctx,
@@ -1034,7 +997,6 @@ async def _submission(
     at: datetime,
     rows: Sequence[Grading],
     lost: frozenset[uuid.UUID] = frozenset(),
-    graded: scores.GradedOf | None = None,
     chosen: leaderboards.Chosen | None = None,
     *,
     everything: bool = False,
@@ -1057,7 +1019,7 @@ async def _submission(
     reveal_at = await timelines.reveal(ctx, contest, settings, task)
     result = await _result(
         ctx,
-        graded or scores.GradedOf(ctx, reading.published),
+        reading.published,
         row,
         status,
         reveal_at,
@@ -1071,7 +1033,7 @@ async def _submission(
 
 async def _result(
     ctx: Context,
-    graded_of: scores.GradedOf,
+    current: PublishedTask,
     row: Grading,
     status: GradingStatus,
     reveal_at: datetime | None,
@@ -1081,14 +1043,12 @@ async def _result(
     *,
     everything: bool = False,
 ) -> Result:
-    """The grading as its contestant may see it now, with the publication it
-    ran under. A run in `system_error` is told as delayed, with
-    nothing of it shown, and one staff cancelled as cancelled, with the
-    sentence they gave; but a run task's row that failed with the runs it
-    gave is read as one done, its faulted runs waiting, still told as
-    delayed. With `everything`, as organisers read it: where it stands in
-    its own words, and shown as after the reveal, each group's `shown_at`
-    kept from what its contestant is shown now.
+    """The grading as its contestant may see it now. A run in
+    `system_error` is told as delayed, with nothing of it shown, and one
+    staff cancelled as cancelled, with the sentence they gave; but a row
+    that failed with the runs it gave is read as one done, its faulted runs
+    waiting, still told as delayed. With `everything`, as organisers read
+    it: where it stands in its own words, and shown as after the reveal.
     """
     state: SubmissionState | GradingStatus = status if everything else told(status)
     if (
@@ -1098,7 +1058,7 @@ async def _result(
     ):
         return await _runs(
             ctx,
-            graded_of.current,
+            current,
             row,
             state,
             reveal_at,
@@ -1108,33 +1068,10 @@ async def _result(
             everything=everything,
         )
     if status is GradingStatus.CANCELLED:
-        return Result(row.id, row.attempt, state, None, None, (), {}, row.cancel_reason)
+        return Result(row.id, row.attempt, state, row.cancel_reason)
     if status is GradingStatus.OVER_LIMIT:
-        return Result(row.id, row.attempt, state, None, None, (), {}, limit=row.submission_limit)
-    if status is not GradingStatus.DONE or row.result is None:
-        return Result(row.id, row.attempt, state, None, None, (), {})
-    graded = await graded_of.graded(PublicationId(row.publication_id))
-    if graded is None:
-        return Result(row.id, row.attempt, state, None, None, (), {})
-    revealed = reveal_at is not None and ctx.now >= reveal_at
-    seen = shown(row.result, graded.groups, graded.sealed, revealed=revealed, reveal_at=reveal_at)
-    if everything:
-        seen = filled_in(
-            seen,
-            shown(row.result, graded.groups, graded.sealed, revealed=True, reveal_at=reveal_at),
-        )
-    return Result(
-        row.id,
-        row.attempt,
-        state,
-        seen.stopped,
-        seen.outcome,
-        seen.groups,
-        dict(seen.values),
-        meanings=shown_meanings(
-            graded.meanings, graded.sealed.values, revealed=revealed or everything
-        ),
-    )
+        return Result(row.id, row.attempt, state, limit=row.submission_limit)
+    return Result(row.id, row.attempt, state)
 
 
 async def _runs(
@@ -1149,7 +1086,7 @@ async def _runs(
     *,
     everything: bool,
 ) -> Result:
-    """A run task's grading as its reader sees it now, from both its rows
+    """A grading as its reader sees it now, from both its rows
     (11.3): its values worked out on read (`scores.run_scored`) and shown
     by what the task's latest publication shows now, `on_release` while
     its results are released (`run_showing.shown`, 9.4), so a group moved
@@ -1176,10 +1113,8 @@ async def _runs(
             marks = {}
     scored = await scores.run_scored(ctx, current, settings, extension, row, late, marks)
     released = not everything and await entrant_view.results_released(ctx, current.id)
-    scoring = current.definition.scoring
-    assert scoring is not None, "a run task's definition always has scoring"
     seen = run_showing.shown(
-        scoring,
+        current.definition.scoring,
         scored.held.runs,
         scored.held.files,
         scored.whole,
@@ -1207,10 +1142,6 @@ async def _runs(
         row.id,
         row.attempt,
         state,
-        None,
-        None,
-        (),
-        {},
         runs=runs,
         reveal_at=coming,
         run_values=seen.values,

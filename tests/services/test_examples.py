@@ -36,6 +36,7 @@ from tests.services.conftest import (
     RUNNING,
     SPRING,
     Acme,
+    checked,
     make_task,
     organiser,
     signed_in,
@@ -50,7 +51,7 @@ from tests.services.test_pipelines import (
     _rows,
     _staff,
 )
-from tests.services.test_run_task_saves import ISLANDS_DATA, TASKS, _primitives, checked
+from tests.services.test_run_task_saves import ISLANDS_DATA, TASKS
 from tests.services.test_steps import CODE, _report, _save
 from tests.test_leaderboards import GRADEBOOK, ICPC, OLYMPIAD
 from tests.test_run_task import CARTPOLE_FILES
@@ -216,7 +217,6 @@ def at(hour: int, minute: int) -> datetime:
 async def _workflows(acme: Acme) -> None:
     """The primitives, and the islands, cartpole and Kaggle workflows public
     at `v1`."""
-    _primitives(acme)
     for name, held in (
         ("islands", TASKS["islands"][1]),
         ("cartpole", CARTPOLE_FILES),

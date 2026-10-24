@@ -2,21 +2,13 @@
 
 A rejudge of a task and the regrade every submission to it gets when a save
 publishes a change to how it grades are each one regrade, by what started
-it (`RegradeCause`). Each submission's latest attempt of it is compared with
+it (`RegradeCause`). Each submission's latest attempt of it is set beside
 the result that counted for that submission when the regrade began, the
-latest earlier attempt that finished with one, both as organisers see
-results: every group, nothing held back (`Side`). The earlier one is read
-as it counted just before the regrade began, with the test groups of the
-publication then the task's latest (`counted_under`). Nothing is scored, so
-what it changed is told by its tests' verdicts alone (stage 5 section 6,
-item 123), as one `ChangeKind`:
+latest earlier attempt that finished with one (`Side`), and where it
+stands is one `ChangeKind`:
 
-- `up` and `down`, a larger or smaller share of its tests accepted;
-- `stopped`, it now stops before its tests where the result it replaced did
-  not: in the classic workflow, it now fails to compile;
-- `unchanged`, all of that the same;
-- `new`, it had no result to compare with, or one of the two could not be
-  read, its publication no longer reading;
+- `unchanged`, it finished with a result and had one before;
+- `new`, it finished with a result and had none to compare with;
 - `running`, still being graded; `failed`, no result yet, its latest
   attempt a system error or cancelled; and `over_limit`, ended without
   being graded since its entrant had no room left under `submissions.max`.
@@ -24,7 +16,7 @@ item 123), as one `ChangeKind`:
 A regrade's summary counts its submissions by change, `graded` being those
 that finished with a result.
 
-A run task's regrade is summed up by what it changed, not by a direction
+What a regrade changed is summed up by what it changed, not by a direction
 (SIMPLER-CORE.md 11.8, stage 5 section 6 item 4): each value of a
 submission whose number changed, old to new, and each run whose verdict
 changed, so a submission that now fails to compile is told
@@ -60,9 +52,6 @@ class RegradeCause(StrEnum):
 class ChangeKind(StrEnum):
     """What a regrade did to one submission, as the module says."""
 
-    UP = "up"
-    DOWN = "down"
-    STOPPED = "stopped"
     UNCHANGED = "unchanged"
     NEW = "new"
     RUNNING = "running"
@@ -70,33 +59,22 @@ class ChangeKind(StrEnum):
     OVER_LIMIT = "over_limit"
 
 
-GRADED = (ChangeKind.UP, ChangeKind.DOWN, ChangeKind.STOPPED, ChangeKind.UNCHANGED, ChangeKind.NEW)
+GRADED = (ChangeKind.UNCHANGED, ChangeKind.NEW)
 """The changes of a submission whose regrade finished with a result."""
 
 
 @dataclass(frozen=True, slots=True)
 class Side:
-    """One result a regrade compares, as organisers see it: its attempt,
-    how many of its tests were accepted of how many it has, and the outcome
-    that stopped its run before its tests, none when nothing did.
-    """
+    """One result a regrade sets beside another: its attempt."""
 
     attempt: int
-    accepted: int
-    tests: int
-    stopped: str | None = None
-
-    @property
-    def share(self) -> Fraction | None:
-        """The part of its tests accepted, none with no tests."""
-        return Fraction(self.accepted, self.tests) if self.tests else None
 
 
 @dataclass(frozen=True, slots=True)
 class Compared:
     """What a regrade did to one submission: the change, the result it
-    replaced, none when there was none or it could not be read, and its
-    own, none while it has none or it could not be read.
+    replaced, none when there was none, and its own, none while it has
+    none.
     """
 
     change: ChangeKind
@@ -111,8 +89,7 @@ def counted_under(
     against `against` began, of the task's `publications`: `against` itself
     for a rejudge, which publishes nothing; for a save's regrade, the latest
     publication before the one the save made, or `against` when there is
-    none. A result that counted then is read as that publication showed it
-    (`showing.under`).
+    none.
     """
     if cause is RegradeCause.REJUDGE:
         return against
@@ -121,18 +98,12 @@ def counted_under(
     return max(before, key=lambda each: each.number).id if before else against
 
 
-def change_of(earlier: Side | None, now: Side | None) -> ChangeKind:
-    """What a regrade's result `now` changed against `earlier`, the result it
-    replaced; `new` when there is no earlier one, or either could not be
-    read (none). Only a finished result is asked about here.
+def change_of(earlier: Side | None) -> ChangeKind:
+    """Where a regrade's finished result stands beside `earlier`, the result
+    it replaced: `new` when there is none. Only a finished result is asked
+    about here.
     """
-    if earlier is None or now is None:
-        return ChangeKind.NEW
-    if now.stopped is not None and earlier.stopped is None:
-        return ChangeKind.STOPPED
-    if now.share is not None and earlier.share is not None and now.share != earlier.share:
-        return ChangeKind.UP if now.share > earlier.share else ChangeKind.DOWN
-    return ChangeKind.UNCHANGED
+    return ChangeKind.NEW if earlier is None else ChangeKind.UNCHANGED
 
 
 def counted(changes: Iterable[ChangeKind]) -> dict[ChangeKind, int]:

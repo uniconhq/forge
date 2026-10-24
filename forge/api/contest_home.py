@@ -1,6 +1,6 @@
 """What a signed-in person reads of the contests they may see: the list, a
-contest's home, a task's page and the files under its `public/`, and the
-types they come back as.
+contest's home, a task's page and the files its `show` lists, and the types
+they come back as.
 """
 
 from forge.domain.definitions import ContestVisibility, Rate, State, Submissions

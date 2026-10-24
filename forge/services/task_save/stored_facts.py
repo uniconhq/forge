@@ -3,7 +3,6 @@ import json
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from forge.domain.content import FileSet, WrittenEdit, named_by
-from forge.domain.definitions import TaskDefinition
 from forge.domain.identity import Identity
 from forge.domain.ids import TaskId, VersionId, WorkflowId
 from forge.domain.run_plan import FileFact
@@ -13,8 +12,6 @@ from forge.domain.uploads import upload_info
 from forge.domain.workflow_definition import WorkflowRef
 from forge.domain.yaml_models import Problem
 from forge.runtime.context import Context
-from forge.services import entrant_view
-from forge.services.task_save import sources
 from forge.services.task_save.sources import _content
 
 
@@ -131,24 +128,3 @@ def _workflow_problem(ref: WorkflowRef, problem: Problem) -> Problem:
         message=f"The workflow {ref} has a problem ({problem['path']}): {problem['message']} "
         "Choose another version of it, or ask its owner to fix it.",
     )
-
-
-async def _format_kept(ctx: Context, task: TaskId, definition: TaskDefinition) -> list[Problem]:
-    """Once anyone has submitted, the task keeps the format of the
-    publication it is graded on: a submission to one is laid out as the
-    other cannot read.
-    """
-    publications = await entrant_view.live(ctx, task)
-    if not publications:
-        return []
-    before = await sources._definition_of(ctx, task, publications[-1])
-    if before is None or before.runs == definition.runs or not await sources._submitted(ctx, task):
-        return []
-    was = "scored by its runs" if before.runs else "graded test by test"
-    return [
-        Problem(
-            path="workflow",
-            message=f"Entrants have submitted to this task, which is {was}, so its workflow "
-            "must keep that format. Choose a version that does.",
-        )
-    ]

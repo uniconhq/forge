@@ -672,7 +672,7 @@ class _Binder:
         if not isinstance(raw, str):
             return None
         try:
-            found = whole_reference(raw, runs=True)
+            found = whole_reference(raw)
         except BadReference:
             return None
         if found is None or found.kind != "inputs":
