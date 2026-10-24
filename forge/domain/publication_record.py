@@ -56,11 +56,11 @@ from forge.domain.meanings import (
 )
 from forge.domain.showing import NOTHING_SEALED, Sealed
 
-Check = Literal["checking", "refused", "replaced"]
+Check = Literal["checking", "refused", "replaced", "unchecked"]
 """Where a run task's publication stands while its save row has not let it
 take over: still `checking`; `refused`, its checking ended without every
-run accepted and every check given what it expects, or never began, since
-its save failed after publishing; or
+run accepted and every check given what it expects; `unchecked`, its
+checking never began, since its save failed after publishing; or
 `replaced`, its checking stopped by a later save."""
 
 

@@ -57,8 +57,8 @@ that refused one (`FailedCheck`, SIMPLER-CORE.md 9.6); the lost check and the
 retry by itself run over each publication's latest save row as over any
 row read, and a take-over still waiting is finished in the background. A
 save of the same files as a publication whose checking was refused, or
-that has no save row since the save that made it failed after
-publishing, checks it again (`check_again`).
+that is `unchecked` since the save that made it failed after
+publishing, checks it again (`check_again`). Nothing refuses that save.
 """
 
 import uuid
@@ -373,7 +373,7 @@ async def checks(ctx: Context, task: TaskId, made: Sequence[Publication]) -> dic
     over stands, by its id, for its organisers, from its latest save row:
     the lost check asked of each, and its retry by itself started as any row
     read; a `system_error` still `checking` while that retry may come; and
-    `refused` for one checked first that has no row, its save having failed
+    `unchecked` for one checked first that has no row, its save having failed
     after it was made. A take-over still waiting is finished in the
     background.
     """
@@ -393,7 +393,7 @@ async def checks(ctx: Context, task: TaskId, made: Sequence[Publication]) -> dic
     await gradings.notice(ctx, rows, gone)
     if any(accepted(row) and row.taken_over_at is None for row in rows):
         _take_over_later(ctx, task)
-    found: dict[str, Check] = {each.id: "refused" for each in made if each.checked_first}
+    found: dict[str, Check] = {each.id: "unchecked" for each in made if each.checked_first}
     for row in rows:
         check = _check_of(ctx, row, gone)
         if check is None:
@@ -434,10 +434,11 @@ async def check_again(
     ctx: Context, task: TaskId, publication: PublicationId, plan: RunPlan, by: int | None
 ) -> Check | None:
     """Where a save of the same files as `publication` leaves it: checked
-    again, by a new save row, when its checking was refused or replaced, or
-    checked at last when its plan holds steps done at the save and it has
-    no row, since the save that made it failed after publishing. Called
-    under the task's hold.
+    again, by a new save row, when its checking was refused, replaced or
+    `unchecked`, the last when its plan holds steps done at the save and
+    it has no row, since the save that made it failed after publishing.
+    Called under the task's hold. An `unchecked` publication refuses no
+    save.
     """
     latest = await ctx.db.scalar(
         select(Grading)
@@ -446,10 +447,10 @@ async def check_again(
         .limit(1)
     )
     if latest is None:
-        check: Check | None = "refused" if plan.pipeline("save") else None
+        check: Check | None = "unchecked" if plan.pipeline("save") else None
     else:
         check = _check_of(ctx, latest)
-    if check in ("refused", "replaced"):
+    if check in ("refused", "replaced", "unchecked"):
         await queue_save(ctx, task, publication, plan, by)
         log.info("pipelines.checked_again", task=task, publication=publication)
         return "checking"

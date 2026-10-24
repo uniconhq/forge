@@ -1165,7 +1165,7 @@ async def test_a_save_whose_checker_does_not_compile_is_refused_and_the_old_vers
 async def _held_back_then_checked(setup: Setup, acme: Acme, islands: Islands) -> None:
     """A run task's save that failed once its publication was made: the
     task stays as the publication before froze it, shown to its organisers
-    as refused, until a save of the same files queues its check, which
+    as unchecked, until a save of the same files queues its check, which
     lets it take over once it passes."""
     made = await acme.fake.workspaces.list_publications(islands.task)
     assert [each.id for each in made][:-1] == [islands.publication]
@@ -1176,7 +1176,7 @@ async def _held_back_then_checked(setup: Setup, acme: Acme, islands: Islands) ->
     assert [row.publication_id for row in await _rows(setup, "save")] == [islands.publication]
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
     listed = await task_save.list_publications(setup, manager, islands.task)
-    assert [each.check for each in listed] == [None, "refused"]
+    assert [each.check for each in listed] == [None, "unchecked"]
 
     again = await _save(setup, acme, islands.task, {})
 
