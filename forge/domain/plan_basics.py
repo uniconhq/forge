@@ -48,7 +48,7 @@ class ReportEntry(Model):
     missing report's worst bound is read from the plan alone.
     """
 
-    step: Annotated[str, Field(pattern=STEP_ID)]
+    step: Annotated[str, Field(pattern=FLAT_STEP_ID)]
     output: Annotated[str, Field(min_length=1)]
     better: Better | None = None
     at_least: Number | None = None

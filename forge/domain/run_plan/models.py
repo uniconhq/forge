@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field
@@ -181,6 +181,7 @@ class RunPlan(Model):
 
     schema_version: Literal[6] = SCHEMA_VERSION
     workflow: PinnedWorkflow
+    inner_workflows: tuple[PinnedWorkflow, ...] = ()
     task_files: dict[str, FileFact]
     entrant: dict[str, EntrantEntry]
     runs: tuple[RunEntry, ...]
@@ -196,6 +197,8 @@ class RunPlan(Model):
         two spaces of indent and a final newline, the same bytes every time.
         """
         document = self.model_dump(by_alias=True, exclude_none=True)
+        if not document.get("inner_workflows"):
+            document.pop("inner_workflows", None)
         return (exact_json.dumps(document, sort_keys=True, indent=2) + "\n").encode()
 
     @classmethod
@@ -208,6 +211,13 @@ class RunPlan(Model):
         except ValueError:
             return cls.model_validate_json(data)
         return cls.model_validate(document)
+
+    def pinned(self, pin: int) -> PinnedWorkflow:
+        """The workflow of pin `pin`: the task's own for 0, and inner pin k
+        at index k - 1."""
+        if pin == 0:
+            return self.workflow
+        return self.inner_workflows[pin - 1]
 
     def pipeline(self, kind: PipelineKind) -> tuple[PipelineStep, ...]:
         """The steps of one pipeline, none when it is left out."""
@@ -270,7 +280,8 @@ class RunPlan(Model):
                 if "task" in value:
                     task |= named_by(self.task_files, value["task"])
                 elif "workflow" in value:
-                    workflow |= named_by(self.workflow.files, value["workflow"])
+                    pin = value.get("pin", 0)
+                    workflow |= named_by(self.pinned(pin).files, value["workflow"])
                 elif "entrant" in value:
                     entrant.add((value["entrant"], value.get("part")))
                 elif "step" in value:
@@ -312,8 +323,10 @@ class RunPlanCheck:
 @dataclass(frozen=True, slots=True)
 class FilesNamed:
     """The task's files and folders, and the workflow's, that a step is
-    given in some run, a folder ending in `/`.
+    given in some run, a folder ending in `/`. `inner` is the same for
+    each pin from 1.
     """
 
     task: frozenset[str]
     workflow: frozenset[str]
+    inner: dict[int, frozenset[str]] = field(default_factory=dict)

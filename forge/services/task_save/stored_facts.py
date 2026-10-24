@@ -5,7 +5,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from forge.domain.content import FileSet, WrittenEdit, named_by
 from forge.domain.definitions import TaskDefinition
 from forge.domain.identity import Identity
-from forge.domain.ids import TaskId
+from forge.domain.ids import TaskId, VersionId, WorkflowId
 from forge.domain.run_plan import FileFact
 from forge.domain.run_task import RUNS_PATH, RunTask
 from forge.domain.run_workflow import WorkflowFiles
@@ -15,7 +15,7 @@ from forge.domain.yaml_models import Problem
 from forge.runtime.context import Context
 from forge.services import entrant_view
 from forge.services.task_save import sources
-from forge.services.task_save.sources import _content, _Found
+from forge.services.task_save.sources import _content
 
 
 async def _task_facts(
@@ -73,7 +73,12 @@ def _batches(paths: Sequence[str], sizes: Mapping[str, int]) -> Iterator[list[st
 
 
 async def _workflow_facts(
-    ctx: Context, as_: Identity, read: _Found, files: WorkflowFiles, named: Iterable[str]
+    ctx: Context,
+    as_: Identity,
+    workflow: WorkflowId,
+    at: VersionId,
+    files: WorkflowFiles,
+    named: Iterable[str],
 ) -> dict[str, FileFact]:
     """The size and hash of each workflow file `named` names at the commit
     the workflow was read at, as `_task_facts` gives a task file's, each
@@ -83,7 +88,7 @@ async def _workflow_facts(
     for path in sorted({path for entry in named for path in named_by(files.paths, entry)}):
         content = files.manifests.get(path)
         if content is None:
-            found = await ctx.forge.workflows.read_workflow_at(as_, read.workflow, read.at, path)
+            found = await ctx.forge.workflows.read_workflow_at(as_, workflow, at, path)
             content = found.content
         facts[path] = _fact_of(content)
     return facts

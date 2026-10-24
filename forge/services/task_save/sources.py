@@ -182,16 +182,21 @@ async def _moved_workflows(
     """
     publications = await entrant_view.live(ctx, task)
     pinned = publications[-1].workflows if publications else {}
-    ref = definition.workflow
-    name = f"{ref.owner}/{ref.name}"
-    if name in pinned and name in pins and pins[name] != pinned[name]:
-        message = (
-            f"{name} is now a different workflow from the one this task was published "
-            "with, as happens when its owner is renamed and someone else takes the name. "
-            "Give the workflow you mean under its owner's current name."
+    problems: list[Problem] = []
+    for name in sorted(pinned):
+        if name not in pins or pins[name] == pinned[name]:
+            continue
+        problems.append(
+            Problem(
+                path="workflow",
+                message=(
+                    f"{name} is now a different workflow from the one this task was published "
+                    "with, as happens when its owner is renamed and someone else takes the name. "
+                    "Give the workflow you mean under its owner's current name."
+                ),
+            )
         )
-        return [Problem(path="workflow", message=message)]
-    return []
+    return problems
 
 
 async def _primitives(
@@ -199,6 +204,8 @@ async def _primitives(
     as_: Identity,
     definition: TaskDefinition,
     workflow: WorkflowDefinition | RunWorkflow,
+    *,
+    steps: bool = True,
 ) -> tuple[dict[str, PrimitiveDeclaration], tuple[Problem, ...]]:
     """The declaration of every primitive a step of the task's workflow
     uses, read at its version as `as_`, and those a value's `exec` program
@@ -209,17 +216,18 @@ async def _primitives(
     found: dict[str, PrimitiveDeclaration] = {}
     problems: list[Problem] = []
     tried: set[str] = set()
-    for step in workflow.steps:
-        use = str(step.use)
-        if use in tried:
-            continue
-        tried.add(use)
-        where = f"In the workflow {definition.workflow}, the step {step.id} cannot run: "
-        declaration, problem = await primitives.declaration(ctx, as_, step.use)
-        if problem is not None:
-            problems.append(Problem(path="workflow", message=where + problem))
-        elif declaration is not None:
-            found[use] = declaration
+    if steps:
+        for step in workflow.steps:
+            use = str(step.use)
+            if use in tried:
+                continue
+            tried.add(use)
+            where = f"In the workflow {definition.workflow}, the step {step.id} cannot run: "
+            declaration, problem = await primitives.declaration(ctx, as_, step.use)
+            if problem is not None:
+                problems.append(Problem(path="workflow", message=where + problem))
+            elif declaration is not None:
+                found[use] = declaration
     values = definition.scoring.values if definition.scoring is not None else {}
     if any(blocks_in(tree, EXEC) for tree in values.values()):
         for use in PROGRAM_USES:

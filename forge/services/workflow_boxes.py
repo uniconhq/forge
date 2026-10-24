@@ -42,17 +42,30 @@ _OLD = (
 
 
 @dataclass(frozen=True, slots=True)
+class PinnedUse:
+    """One inner workflow version, in pin order from 1: the `use:` text, the
+    workflow and commit it was read at, and the forge's own key for it."""
+
+    use: str
+    workflow: WorkflowId
+    at: VersionId
+    key: str
+
+
+@dataclass(frozen=True, slots=True)
 class Expanded:
     """What expanding a run workflow found. `flat` is none when the workflow
     would hold itself, the expansion uses more than 32 versions, or the flat
     list itself is refused. `primitives` is every primitive `use:` that did
-    read, by its text. `inner_files` is each pin's files, from pin 1.
+    read, by its text. `inner_files` is each pin's files, from pin 1, and
+    `pins` the workflow each of those pins was read from, in order.
     """
 
     flat: FlatWorkflow | None
     primitives: dict[str, PrimitiveDeclaration]
     inner_files: dict[int, WorkflowFiles]
     problems: list[Problem]
+    pins: tuple[PinnedUse, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +119,7 @@ async def expand(
     inners: dict[str, RunWorkflow] = {}
     pins: dict[str, int] = {}
     inner_files: dict[int, WorkflowFiles] = {}
+    held: list[PinnedUse] = []
     seen: dict[str, _Use] = {}
     problems: list[Problem] = []
     blocked = False
@@ -145,6 +159,7 @@ async def expand(
         pins[use] = pin
         inners[use] = definition
         inner_files[pin] = await files_at(ctx, as_, workflow_id, at, definition)
+        held.append(PinnedUse(use, workflow_id, at, key))
         return _Use("workflow", key=key)
 
     async def descend(definition: RunWorkflow, prefix: str, on_path: tuple[str, ...]) -> None:
@@ -189,8 +204,8 @@ async def expand(
             problems.append(problem)
         blocked = True
     if blocked:
-        return Expanded(None, found, inner_files, problems)
+        return Expanded(None, found, inner_files, problems, tuple(held))
     flat = flatten(workflow, inners, pins)
     if isinstance(flat, list):
-        return Expanded(None, found, inner_files, [*problems, *flat])
-    return Expanded(flat, found, inner_files, problems)
+        return Expanded(None, found, inner_files, [*problems, *flat], tuple(held))
+    return Expanded(flat, found, inner_files, problems, tuple(held))

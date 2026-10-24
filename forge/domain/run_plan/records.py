@@ -79,10 +79,19 @@ PIPELINE_STEP = r"^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*(\.[A-Za-z0-9_-]+)?
 
 
 def _file_value(value: object) -> bool:
+    """A task file, or a workflow file of the outer pin or of pin k."""
+    if not isinstance(value, dict):
+        return False
+    keys = set(value)
+    if keys == {"task"} or keys == {"workflow"}:
+        return isinstance(value.get("task", value.get("workflow")), str)
+    pin = value.get("pin")
     return (
-        isinstance(value, dict)
-        and len(value) == 1
-        and any(isinstance(value.get(key), str) for key in ("task", "workflow"))
+        keys == {"workflow", "pin"}
+        and isinstance(value.get("workflow"), str)
+        and isinstance(pin, int)
+        and not isinstance(pin, bool)
+        and pin >= 1
     )
 
 

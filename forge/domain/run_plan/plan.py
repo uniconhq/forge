@@ -54,6 +54,7 @@ def plan_runs(
     task_files: Mapping[str, FileFact],
     workflow_files: Mapping[str, FileFact],
     machine: Machine,
+    inner_workflows: tuple[PinnedWorkflow, ...] = (),
     programs: Mapping[str, PrimitiveDeclaration] | None = None,
 ) -> RunPlanCheck:
     """The plan of the run task `definition`, as `check_run_task` checked it
@@ -79,6 +80,7 @@ def plan_runs(
         task_files,
         workflow_files,
         machine,
+        {index: pin.files for index, pin in enumerate(inner_workflows, start=1)},
     )
     for step in workflow.steps:
         planner.bind(step.id, step.with_)
@@ -131,6 +133,7 @@ def plan_runs(
         workflow=PinnedWorkflow(
             ref=ref, id=workflow_id, commit=commit, files=dict(sorted(workflow_files.items()))
         ),
+        inner_workflows=inner_workflows,
         task_files=dict(sorted(task_files.items())),
         entrant=planner.entrant_entries(),
         runs=tuple(

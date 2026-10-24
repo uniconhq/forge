@@ -117,6 +117,7 @@ from forge.domain.publication_record import Publication
 from forge.domain.run_plan import (
     BOXED,
     RUN_ENTRY_KB,
+    PinnedWorkflow,
     PipelineKind,
     PipelineStep,
     RunPlan,
@@ -958,7 +959,7 @@ class _Reader:
         if "task" in value:
             return _facts(self.plan.task_files, value["task"])
         if "workflow" in value:
-            return _facts(self.plan.workflow.files, value["workflow"])
+            return _facts(self.plan.pinned(value.get("pin", 0)).files, value["workflow"])
         if "template" in value:
             parts = [self.entrant_value(part) for part in value["parts"]]
             return {"value": value["template"].format(*[scalar_to_text(part) for part in parts])}
@@ -1144,7 +1145,7 @@ class _Job:
         # before that name was stored has none, and its door uses its own.
         self.door = _door(ctx, reader.row.id, held.woodpecker or held.step)
         self.files: list[dict[str, Any]] = []
-        self.placed: dict[tuple[str, str], str] = {}
+        self.placed: dict[tuple[str, ...], str] = {}
         self.served: dict[str, dict[str, str]] = {}
         """Each file the door serves the step, by SHA-256: where it is read
         from and the SHA-256 the plan pinned it by, so serving it reads no
@@ -1249,7 +1250,9 @@ class _Job:
         if "task" in value:
             return self._task_file(value["task"], item, name)
         if "workflow" in value:
-            return self._pinned("workflow", value["workflow"], self.plan.workflow.files)
+            pin = value.get("pin", 0)
+            held = self.plan.pinned(pin)
+            return self._pinned("workflow", value["workflow"], held.files, held if pin else None)
         if "entrant" in value:
             return self._entrant(value)
         if "step" in value:
@@ -1272,14 +1275,21 @@ class _Job:
         )
         return {"file": placed}
 
-    def _pinned(self, kind: str, entry: str, files: Mapping[str, Any]) -> dict[str, str]:
+    def _pinned(
+        self,
+        kind: str,
+        entry: str,
+        files: Mapping[str, Any],
+        held: PinnedWorkflow | None = None,
+    ) -> dict[str, str]:
         """A task's or workflow's file, or folder, placed under `in/` once
-        however many items read it."""
+        however many items read it. `held` is an inner pin's workflow."""
+        source = (kind, entry) if held is None else (kind, held.id, entry)
         if not entry.endswith("/"):
             return {
                 "file": self._download(
-                    (kind, entry),
-                    lambda: self._link(kind, entry, files[entry].sha256),
+                    source,
+                    lambda: self._link(kind, entry, files[entry].sha256, held),
                     files[entry].sha256,
                     files[entry].size,
                 )
@@ -1290,36 +1300,40 @@ class _Job:
             self.files.append(
                 {
                     "path": _under(folder, path.removeprefix(entry)),
-                    "url": self._link(kind, path, fact.sha256),
+                    "url": self._link(kind, path, fact.sha256, held),
                     "sha256": fact.sha256,
                     "size": fact.size,
                 }
             )
         return self._filled(folder)
 
-    def _download(self, source: tuple[str, str], link: Any, sha256: str, size: int) -> str:
+    def _download(self, source: tuple[str, ...], link: Any, sha256: str, size: int) -> str:
         if source not in self.placed:
             path = self._folder()
             self.files.append({"path": path, "url": link(), "sha256": sha256, "size": size})
             self.placed[source] = path
         return self.placed[source]
 
-    def _link(self, kind: str, path: str, sha256: str) -> str:
+    def _link(self, kind: str, path: str, sha256: str, held: PinnedWorkflow | None = None) -> str:
         """A task's or workflow's file by link: from the forge's large-file
         store when it is one of the publication's objects, else through the
         door."""
         if sha256 in self.objects:
             return self.ctx.forge.objects.lfs_get_url(sha256, expires_in=LINK_LIFE)
-        self.served[sha256] = self._source(kind, path, sha256)
+        self.served[sha256] = self._source(kind, path, sha256, held)
         return f"{self.door}/files/{sha256}"
 
-    def _source(self, kind: str, path: str, sha256: str) -> dict[str, str]:
+    def _source(
+        self, kind: str, path: str, sha256: str, held: PinnedWorkflow | None = None
+    ) -> dict[str, str]:
         """Where the door reads a file it serves: a task's at the
-        publication's version, a workflow's at the plan's commit."""
+        publication's version, a workflow's at the plan's commit. `held` is
+        an inner pin, read at its own commit."""
         source = {"kind": kind, "path": path, "sha256": sha256}
         if kind.endswith("task"):
             return {**source, "at": self.publication.version}
-        return {**source, "workflow": self.plan.workflow.id, "commit": self.plan.workflow.commit}
+        workflow = held or self.plan.workflow
+        return {**source, "workflow": workflow.id, "commit": workflow.commit}
 
     def _runs(self, canonical: Any) -> dict[str, str]:
         """A value's runs file, served through the door from what the job
@@ -1338,9 +1352,14 @@ class _Job:
     async def _manifest(self, value: Mapping[str, Any]) -> str:
         """A `program.yaml` on a manifest port, served as the JSON the
         primitive reads."""
-        kind = "task" if "task" in value else "workflow"
-        files = self.plan.task_files if kind == "task" else self.plan.workflow.files
-        source = self._source(f"manifest_{kind}", value[kind], files[value[kind]].sha256)
+        if "task" in value:
+            kind, path, files, held = "task", value["task"], self.plan.task_files, None
+        else:
+            pin = value.get("pin", 0)
+            held_pin = self.plan.pinned(pin)
+            kind, path, files = "workflow", value["workflow"], held_pin.files
+            held = held_pin if pin else None
+        source = self._source(f"manifest_{kind}", path, files[path].sha256, held)
         content = await _served(self.ctx, self.reader.row, source)
         sha256 = hashlib.sha256(content).hexdigest()
         self.served[sha256] = source
@@ -1506,6 +1525,19 @@ async def _objects(
         )
         if info is not None and info.digest == fact.sha256:
             found[info.digest] = info.size
+    for inner in plan.inner_workflows:
+        inner_id, inner_at = WorkflowId(inner.id), VersionId(inner.commit)
+        listed = await ctx.forge.workflows.workflow_files(PLATFORM, inner_id, inner_at)
+        for path, fact in inner.files.items():
+            if not may_be_pointer(listed.sizes.get(path)):
+                continue
+            info = upload_info(
+                (
+                    await ctx.forge.workflows.read_workflow_at(PLATFORM, inner_id, inner_at, path)
+                ).content
+            )
+            if info is not None and info.digest == fact.sha256:
+                found[info.digest] = info.size
     await ctx.db.execute(
         insert(PublicationObjects)
         .values(

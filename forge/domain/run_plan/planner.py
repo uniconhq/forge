@@ -72,7 +72,7 @@ class _Bound:
     """
 
     inputs: dict[str, Any]
-    hidden: list[dict[str, str]]
+    hidden: list[dict[str, Any]]
     tainted: dict[str, Any] | None
     limits: dict[str, int] = field(default_factory=dict)
     copies: list[_Copy] = field(default_factory=list)
@@ -92,6 +92,7 @@ class _Planner:
         task_files: Mapping[str, FileFact],
         workflow_files: Mapping[str, FileFact],
         machine: Machine,
+        inner_files: Mapping[int, Mapping[str, FileFact]] | None = None,
     ) -> None:
         self.definition = definition
         self.scoring = scoring
@@ -101,6 +102,7 @@ class _Planner:
         self.task_files = task_files
         self.workflow_files = workflow_files
         self.machine = machine
+        self.inner_files = inner_files or {}
         self.entrant = frozenset(task.entrant)
         self.repeated = frozenset(task.runs[0].key) if task.runs else frozenset()
         """The inputs whose value differs per run: each repeated one, the
@@ -140,8 +142,8 @@ class _Planner:
         declaration = resolved.declaration
         for run in self.task.runs if kind not in ONCE else [None]:
             values: dict[str, Any] = {}
-            hidden: list[dict[str, str]] = []
-            beside: dict[str, str] | None = None
+            hidden: list[dict[str, Any]] = []
+            beside: dict[str, Any] | None = None
             for name, raw in given.items():
                 port = declaration.inputs[name]
                 value, carried, open_ = self._bind(raw, port, run)
@@ -176,7 +178,7 @@ class _Planner:
 
     def _bind(
         self, raw: object, port: Port, run: Any
-    ) -> tuple[object, list[dict[str, str]], list[dict[str, str]]]:
+    ) -> tuple[object, list[dict[str, Any]], list[dict[str, Any]]]:
         """A port's value in `run`, `_ABSENT` for an optional input the task
         leaves out; the hidden files it carries; and those of them it gives on
         a port not marked secret.
@@ -184,8 +186,8 @@ class _Planner:
         if port.type is Type.PROGRAMS:
             assert isinstance(raw, dict)
             programs: dict[str, dict[str, Any]] = {}
-            hidden: list[dict[str, str]] = []
-            open_: list[dict[str, str]] = []
+            hidden: list[dict[str, Any]] = []
+            open_: list[dict[str, Any]] = []
             inner = port.inputs or {}
             for name, values in raw.items():
                 assert isinstance(values, dict)
@@ -214,15 +216,17 @@ class _Planner:
         value, hidden = self._plain(raw, port, run)
         return value, hidden, [] if port.secret else hidden
 
-    def _plain(self, raw: object, port: Port, run: Any) -> tuple[object, list[dict[str, str]]]:
+    def _plain(self, raw: object, port: Port, run: Any) -> tuple[object, list[dict[str, Any]]]:
         if isinstance(raw, bool) or is_number(raw):
             return {"value": scalar_to_text(raw) if port.type is Type.TEXT else raw}, []
         assert isinstance(raw, str)
-        found = whole_reference(raw, runs=True)
+        found = whole_reference(raw, runs=True, flat=True)
         if found is None:
             return self._written(raw, run), []
         if found.kind == "workflow":
-            value = {"workflow": found.name}
+            value: dict[str, Any] = {"workflow": found.name}
+            if found.pin:
+                value["pin"] = found.pin
             return value, [value]
         if found.kind == "steps":
             assert found.port is not None
@@ -253,7 +257,7 @@ class _Planner:
         text = ""
         parts: list[dict[str, Any]] = []
         last = 0
-        for match, found in references(raw, runs=True):
+        for match, found in references(raw, runs=True, flat=True):
             text += escaped(raw[last : match.start()])
             last = match.end()
             if found.name in self.entrant:
@@ -386,9 +390,11 @@ class _Planner:
                 for path in sorted(named_by(self.task_files, value["task"]))
             ]
         if "workflow" in value:
+            pin = value.get("pin", 0)
+            files = self.inner_files[pin] if pin else self.workflow_files
             return [
-                _Copy(_pages(self.workflow_files[path].size), f"the workflow's `{path}`", None)
-                for path in sorted(named_by(self.workflow_files, value["workflow"]))
+                _Copy(_pages(files[path].size), f"the workflow's `{path}`", None)
+                for path in sorted(named_by(files, value["workflow"]))
             ]
         if "entrant" in value:
             name = value["entrant"]
@@ -868,7 +874,7 @@ class _Planner:
             )
         return found
 
-    def _chain(self, step_id: str, run: str | None) -> tuple[list[str], dict[str, str]]:
+    def _chain(self, step_id: str, run: str | None) -> tuple[list[str], dict[str, Any]]:
         """The steps from a tainted one to the one that runs the entrant's
         code beside a hidden file, and that file.
         """

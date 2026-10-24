@@ -23,7 +23,7 @@ def _references_in(values: Iterable[object]) -> list[Reference]:
     for value in values:
         if isinstance(value, str):
             try:
-                found.extend(reference for _, reference in references(value, runs=True))
+                found.extend(reference for _, reference in references(value, runs=True, flat=True))
             except BadReference:
                 continue
         elif isinstance(value, dict):
@@ -59,7 +59,7 @@ def _number(value: object) -> bool:
     return is_number(value) and not isinstance(value, bool)
 
 
-def _words(value: Mapping[str, str]) -> str:
+def _words(value: Mapping[str, object]) -> str:
     if "workflow" in value:
         return f"the workflow's `{value['workflow']}`"
     return f"`{value['task']}`"
