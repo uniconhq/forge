@@ -24,6 +24,7 @@ from forge.domain.blocks.check import (
     MOST_NODES,
     MOST_VALUES,
     Found,
+    check_names,
     check_values,
     tree_size,
 )
@@ -36,6 +37,7 @@ from forge.domain.blocks.evaluate import (
     in_order,
     using,
 )
+from forge.domain.blocks.formula_words import UNREADABLE
 from forge.domain.blocks.numbers import Better, decimal_of, exact, written
 
 COLUMNS = {
@@ -759,3 +761,13 @@ def test_a_value_holds_one_exec_block_and_its_name_fits_its_steps() -> None:
             "steps are named after it.",
         )
     ]
+
+
+def test_a_name_a_formula_would_not_read_as_a_name_is_refused() -> None:
+    sentence = "is a word a formula reads as an operator, so it can't name a value."
+    for word in UNREADABLE:
+        groups = check_names([word], [])
+        values = check_names(["main"], [word])
+        assert groups == [(("groups", word), f"{word} {sentence} Choose another name.")]
+        assert values == [(("values", word), f"{word} {sentence} Choose another name.")]
+    assert check_names(["index", "total_in", "n_ot"], ["main"]) == []

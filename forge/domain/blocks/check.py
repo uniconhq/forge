@@ -46,6 +46,7 @@ from forge.domain.blocks.catalogue import (
     Kind,
     Scope,
 )
+from forge.domain.blocks.formula_words import unreadable_problem
 from forge.domain.blocks.tree_reads import reached
 from forge.domain.definitions import VALUE_NAME
 from forge.domain.yaml_models import Path, is_number
@@ -129,7 +130,8 @@ def same_value(first: object, second: object) -> bool:
 
 def check_names(groups: Iterable[str], values: Iterable[str]) -> Found:
     """Group and value names: each written as a value's name is, none
-    `all`, none named like a fact, and none both a group and a value.
+    `all`, none named like a fact, none a word a formula reads as an
+    operator or a constant, and none both a group and a value.
     """
     found: Found = []
     taken = set(groups)
@@ -154,6 +156,8 @@ def check_names(groups: Iterable[str], values: Iterable[str]) -> Found:
                         f"{{fact: {name}}}. Choose another name.",
                     )
                 )
+            elif (problem := unreadable_problem(name)) is not None:
+                found.append((at, problem))
             elif kind == "values" and name in taken:
                 found.append(
                     (

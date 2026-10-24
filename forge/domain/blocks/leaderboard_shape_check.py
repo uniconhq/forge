@@ -61,6 +61,7 @@ from forge.domain.blocks.check import (
     leaf_of,
     tree_size,
 )
+from forge.domain.blocks.formula_words import unreadable_problem
 from forge.domain.definitions import VALUE_NAME, Leaderboard
 from forge.domain.yaml_models import Path, is_number
 
@@ -252,12 +253,16 @@ def column_label(leaderboard: str, column: ColumnRef) -> str:
 
 
 def _contest_names(leaderboards: Mapping[str, Leaderboard], tasks: Sequence[str]) -> Found:
-    """Leaderboard keys that read like a task or another key once `-` is `_`."""
+    """Leaderboard keys a formula would not read as a name, or that read
+    like a task or another key once `-` is `_`.
+    """
     found: Found = []
     seen: dict[str, str] = {}
     for task in tasks:
         seen.setdefault(name_in_formula(task), task)
     for key in leaderboards:
+        if (problem := unreadable_problem(key)) is not None:
+            found.append((("leaderboards", key), problem))
         other = seen.get(name_in_formula(key))
         if other is not None and other != key:
             found.append(
@@ -439,6 +444,9 @@ class _Checker:
                     f"{name} reads as {other} in a formula, where each - is written _. Name the "
                     "column otherwise.",
                 )
+                continue
+            if (problem := unreadable_problem(name)) is not None:
+                self.refuse(at, problem)
                 continue
             taken[name_in_formula(name)] = name
 

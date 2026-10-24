@@ -18,6 +18,7 @@ from forge.domain.blocks.bounds import column_bounds, self_reported_parts, value
 from forge.domain.blocks.catalogue import CATALOGUE, Scope
 from forge.domain.blocks.check import check_values
 from forge.domain.blocks.evaluate import Column, RunResult
+from forge.domain.blocks.formula_words import UNREADABLE
 from forge.domain.blocks.leaderboard_evaluate import Cell, Submitted, work_out_row
 from forge.domain.blocks.leaderboard_shape_check import (
     MOST_COLUMNS,
@@ -1493,6 +1494,25 @@ def test_a_leaderboard_reading_a_refused_leaderboard_is_not_read() -> None:
         "  three: {columns: {z: 1}}\n"
     )
     assert checked(contest(text)).readable == frozenset({"three"})
+
+
+def test_a_formula_word_cannot_name_a_column_or_a_leaderboard() -> None:
+    sentence = "is a word a formula reads as an operator, so it can't name a value."
+    for word in UNREADABLE:
+        column = [message for _, message in problems(leaderboard({word: 1}))]
+        assert f"{word} {sentence} Choose another name." in column
+        key = [
+            message
+            for _, message in problems(
+                f'tasks: [{{id: a}}]\nleaderboards:\n  "{word}": {{columns: {{c: 1}}}}\n'
+            )
+        ]
+        assert f"{word} {sentence} Choose another name." in key
+    assert [
+        message for _, message in problems(leaderboard({"n-ot": 1, "index": 1, "total_in": 1}))
+    ] == []
+    kept = problems("tasks: [{id: a}]\nleaderboards:\n  n-ot: {columns: {c: 1}}\n")
+    assert [message for _, message in kept if "operator" in message] == []
 
 
 def test_a_leaderboard_of_too_many_columns_is_refused() -> None:
