@@ -23,6 +23,18 @@ default is required; an enum's value is one of the task's `options`, the
 workflow's when the task narrows none, and a number lies within `min` and
 `max`.
 
+A run task's submission is version 6 (`lay_out_runs`, SIMPLER-CORE.md
+8.3): an input given once is laid out as above, and an entrant input inside
+the task's `repeat` is given part by part, each part its tuple's position
+from 1, its files at `files/<input id>/<part>/<relative path>` and its
+value in a map from part to value, so a label never shows a hidden file's
+name. A part not given is left out, and every run made from its tuple is
+skipped (`skipped`).
+
+    {"schema_version": 6, "inputs": {
+      "best": {"value": 1200},
+      "route": {"parts": {"1": {"files": ["files/route/1/route.txt"]}}}}}
+
 The submission is named as a protected version whose note carries the
 submit's idempotency key, so a submit tried again after its answer was lost
 finds the submission it made instead of making a second.
@@ -30,7 +42,7 @@ finds the submission it made instead of making a second.
 
 import re
 import uuid
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -43,10 +55,12 @@ from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, Form
 from forge.domain.errors import InvalidInputs
 from forge.domain.ids import SubmissionId, VersionId
+from forge.domain.run_task import Part, Run
 from forge.domain.types import FILES, Type
 from forge.domain.uploads import filename_problem
 
 SCHEMA_VERSION = 5
+RUN_SCHEMA_VERSION = 6
 SUBMISSION_FILE = "submission.json"
 FILES_FOLDER = "files"
 TEXT_MAX = 64 * 1024
@@ -192,6 +206,7 @@ class SubmittedInput:
 
     uploads: tuple[uuid.UUID, ...] = ()
     value: str | bool | None = None
+    parts: Mapping[int, SubmittedInput] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +266,111 @@ def lay_out(
         )
     text = exact_json.dumps(document, sort_keys=True, indent=2) + "\n"
     return Layout(files=files, document=text.encode(), inputs=inputs)
+
+
+def lay_out_runs(
+    declared: tuple[Field, ...],
+    parts: Mapping[str, int],
+    given: Mapping[str, SubmittedInput],
+    uploads: Mapping[uuid.UUID, UploadedFile],
+) -> Layout:
+    """A run task's submission, version 6: `given` for inputs `declared`,
+    `parts` giving how many parts each input inside the task's `repeat`
+    has, each upload of which is in `uploads`. An input given once is laid
+    out as `lay_out` lays it out; one in parts needs at least one, each
+    part's files under `files/<input id>/<part>/`. `InvalidInputs` naming
+    every problem when it does not fit, or when its `submission.json` would
+    break the runner's contract.
+    """
+    problems: list[dict[str, str]] = []
+    files: dict[str, uuid.UUID] = {}
+    inputs: dict[str, Any] = {}
+    known = {entry.id for entry in declared}
+    for name in sorted(set(given) - known):
+        problems.append({"input": name, "message": "The task has no such input."})
+    for entry in declared:
+        found: dict[str, Any] | str | None
+        submitted = given.get(entry.id)
+        count = parts.get(entry.id)
+        if count is None:
+            if submitted is not None and submitted.parts:
+                found = "This input is given once, not in parts."
+            else:
+                found = _one(entry, (), submitted, uploads, files)
+        else:
+            found = _parts(entry, count, submitted, uploads, files)
+        if isinstance(found, str):
+            problems.append({"input": entry.id, "message": found})
+        elif found is not None:
+            inputs[entry.id] = found
+    document = {"schema_version": RUN_SCHEMA_VERSION, "inputs": inputs}
+    if not problems:
+        problems.extend(_contract_problems(document))
+    if problems:
+        first = problems[0]
+        raise InvalidInputs(
+            f"There is a problem with the input {first['input']}: {first['message']}",
+            errors=problems,
+        )
+    text = exact_json.dumps(document, sort_keys=True, indent=2) + "\n"
+    return Layout(files=files, document=text.encode(), inputs=inputs)
+
+
+def _parts(
+    entry: Field,
+    count: int,
+    given: SubmittedInput | None,
+    uploads: Mapping[uuid.UUID, UploadedFile],
+    files: dict[str, uuid.UUID],
+) -> dict[str, Any] | str:
+    """An input inside the task's `repeat`: each part given, by its number,
+    or a sentence saying what is wrong.
+    """
+    if given is None or not given.parts:
+        if given is not None and (given.uploads or given.value is not None):
+            return "Give this input part by part."
+        return "Give at least one part of this input."
+    if given.uploads or given.value is not None:
+        return "Give this input part by part."
+    found: dict[str, Any] = {}
+    for number, part in sorted(given.parts.items()):
+        if not 1 <= number <= count:
+            return f"There is no part {number}: this input has parts 1 to {count}."
+        if part.parts:
+            return f"Part {number} is one part, with no parts of its own."
+        laid: dict[str, uuid.UUID] = {}
+        each = _one(entry, (), part, uploads, laid)
+        if isinstance(each, str):
+            return f"Part {number}: {each}"
+        assert each is not None
+        if "files" in each:
+            each = {"files": [_in_part(path, entry.id, number) for path in each["files"]]}
+            files.update(
+                {_in_part(path, entry.id, number): upload for path, upload in laid.items()}
+            )
+        found[str(number)] = each
+    return {"parts": found}
+
+
+def _in_part(path: str, input_id: str, number: int) -> str:
+    """A file's path in the commit moved into its part's folder."""
+    top = f"{FILES_FOLDER}/{input_id}/"
+    return f"{top}{number}/{path.removeprefix(top)}"
+
+
+def skipped(runs: Sequence[Run], inputs: Mapping[str, Any]) -> frozenset[str]:
+    """The runs a version 6 submission's `inputs` skips: each made from a
+    tuple whose part of an entrant input was not given.
+    """
+    return frozenset(
+        run.id
+        for run in runs
+        if any(
+            isinstance(value, Part)
+            and str(value.number) not in inputs.get(name, {}).get("parts", {})
+            for name, value in run.key.items()
+        )
+    )
 
 
 def _contract_problems(document: Mapping[str, Any]) -> list[dict[str, str]]:

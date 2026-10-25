@@ -26,8 +26,9 @@ once the task is visible. A task that is not, or a contest the person may
 not see, is no such task or contest, the same answer as one that is not
 there at all.
 
-Beside its statement, the files under a task's `public/` are served one by
-one (`public_file`), to whoever reads its page, with the same checks, and to
+Beside its statement, the files under a task's `public/`, or those a run
+task's `show` lists from their time on, are served one by one
+(`public_file`), to whoever reads its page, with the same checks, and to
 whoever holds a role reaching the task, who reads every file of it as an
 organiser anyway, released or not, so a statement shows its images while it
 is being written.
@@ -50,7 +51,7 @@ from forge.domain.sessions import Session
 from forge.domain.submissions import Field
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, entrants, invites, names, published, release
+from forge.services import boards, entrants, invites, names, published, release, timelines
 from forge.services.boards import BoardPoints
 from forge.services.entrants import Mine
 from forge.services.published import PublicFile, PublishedTask
@@ -261,19 +262,25 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
 
 @action
 async def public_file(ctx: Context, session: Session, task: TaskId, path: str) -> PublicFile:
-    """A file under the task's `public/`, by its path in the task: as its
-    latest publication holds it, for a signed-in person who reads the task's
-    page (`task`); as its head holds it, the draft the statement's preview
-    draws, published or not, for one who holds a role reaching the task,
-    whether or not it is released. `NotFound` for a task neither, a path
-    outside `public/` or not there; `PublicFileTooLarge` for one larger than
-    a page is served.
+    """A file the task shows, by its path in the task: as its latest
+    publication holds it, for a signed-in person who reads the task's page
+    (`task`), once the task shows it (`published.public_file`); as its head
+    holds it, the draft the statement's preview draws, published or not,
+    for one who holds a role reaching the task, whether or not it is
+    released (`published.head_public_file`). `NotFound` for a task neither,
+    a path the task does not show or not there; `PublicFileTooLarge` for
+    one larger than a page is served.
     """
     path = published.public_path(path)
     if await _organises(ctx, session, task):
         return await published.head_public_file(ctx, task, path)
-    _, _, found = await _visible(ctx, session, task)
-    return await published.public_file(ctx, found, path)
+    settings, _, found = await _visible(ctx, session, task)
+    reveal = (
+        await timelines.reveal(ctx, contest_id_of(task_scope(task)), settings, found.name)
+        if found.definition.runs
+        else None
+    )
+    return await published.public_file(ctx, found, path, reveal=reveal)
 
 
 async def _visible(

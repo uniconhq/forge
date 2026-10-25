@@ -54,6 +54,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, PlainValidator, model_validator
 
 from forge.domain import exact_json
+from forge.domain.content import path_problem
 from forge.domain.contracts import violation
 from forge.domain.definitions import (
     PUBLIC_FOLDER,
@@ -65,7 +66,14 @@ from forge.domain.definitions import (
 )
 from forge.domain.grading import WALL_CEILING, Machine, wall_seconds
 from forge.domain.meanings import ValueMeaning, in_sentence, with_measures
-from forge.domain.primitives import BATCH_SCALED, IMAGE, LIMIT_NAMES, Port, PrimitiveDeclaration
+from forge.domain.primitives import (
+    BATCH_SCALED,
+    IMAGE,
+    LIMIT_NAMES,
+    FromInput,
+    Port,
+    PrimitiveDeclaration,
+)
 from forge.domain.scoring import Better, Measure, exact
 from forge.domain.showing import NOTHING_SEALED, Sealed
 from forge.domain.types import FILES, SCALARS, Type
@@ -290,25 +298,6 @@ def spelled(value: object) -> str:
             text = text.rstrip("0").rstrip(".")
         return "0" if text in ("-0", "") else text
     return str(value)
-
-
-def path_problem(value: object, *, folder: bool) -> str | None:
-    """What is wrong with `value` as a path in the task repo, if anything; a
-    folder's path ends in `/` and a file's does not.
-    """
-    if not isinstance(value, str) or not value:
-        return (
-            "Give the path of a file or folder in the task, such as data/ or checker/checker.cpp."
-        )
-    if value.startswith("/") or "\\" in value:
-        return "Give the path from the top of the task's files, with forward slashes (/)."
-    if any(part in ("", ".", "..") for part in value.removesuffix("/").split("/")):
-        return "The path cannot have empty, . or .. parts."
-    if folder and not value.endswith("/"):
-        return "This is a folder, so its path ends with /, such as data/."
-    if not folder and value.endswith("/"):
-        return "This is one file, so its path does not end with /."
-    return None
 
 
 def has_path(paths: Collection[str], path: str) -> bool:
@@ -754,7 +743,11 @@ def check_workflow(
                         message=f"{step.use} needs a value for its input {name}.",
                     )
                 )
-        raised = {source.input for source in declaration.limits_from.values()}
+        raised = {
+            source.input
+            for source in declaration.limits_from.values()
+            if isinstance(source, FromInput)
+        }
         for name, raw in step.with_.items():
             given = declaration.inputs.get(name)
             if given is None:
@@ -856,12 +849,14 @@ def _check_value(
     fits(kind, port, raw)
 
 
-def _raw_kind(
-    workflow: WorkflowDefinition,
-    outputs: Mapping[str, tuple[PrimitiveDeclaration, bool]],
-    per_test: bool,
-    raw: object,
-) -> Kind:
+def literal_or_references(
+    raw: object, *, runs: bool = False
+) -> Kind | tuple[Reference | None, list[Reference]]:
+    """The kind of `raw` when it is true or false or a number; for text,
+    the reference it is whole, or else those written into it, in either
+    format. `Refused` for anything else, and for a `${{ }}` that is no
+    reference.
+    """
     if isinstance(raw, bool):
         return Kind(Type.BOOLEAN)
     if is_number(raw):
@@ -874,28 +869,47 @@ def _raw_kind(
     if not isinstance(raw, str):
         raise Refused("Give text, a number, true or false, or a ${{ }} reference.")
     try:
-        whole = whole_reference(raw)
-        written = references(raw) if whole is None else []
+        whole = whole_reference(raw, runs=runs)
+        written = [found for _, found in references(raw, runs=runs)] if whole is None else []
     except BadReference as bad:
         raise Refused(str(bad)) from None
+    return whole, written
+
+
+def check_written(found: Reference, kind: Kind) -> None:
+    """Refuse `found`, of `kind`, written into text: only text, a number,
+    true or false or an enum, always given, may be.
+    """
+    if kind.type not in SCALARS:
+        raise Refused(
+            f"{found} is {a_type(kind.type)}, and only text, a number, true or false or an "
+            "enum can be written into text."
+        )
+    if kind.optional:
+        raise Refused(
+            f"{found} is optional, so it can be given only whole, to an optional port, not "
+            "written into text."
+        )
+
+
+def _raw_kind(
+    workflow: WorkflowDefinition,
+    outputs: Mapping[str, tuple[PrimitiveDeclaration, bool]],
+    per_test: bool,
+    raw: object,
+) -> Kind:
+    found = literal_or_references(raw)
+    if isinstance(found, Kind):
+        return found
+    whole, written = found
     if whole is not None:
         return _kind_of(workflow, outputs, per_test, whole)
     if not written:
         return Kind(Type.TEXT)
-    for _, found in written:
-        if found.kind == "steps":
+    for reference in written:
+        if reference.kind == "steps":
             raise Refused("A step's output can be given only whole, not written into text.")
-        kind = _kind_of(workflow, outputs, per_test, found)
-        if kind.type not in SCALARS:
-            raise Refused(
-                f"{found} is {a_type(kind.type)}, and only text, a number, true or false or an "
-                "enum can be written into text."
-            )
-        if kind.optional:
-            raise Refused(
-                f"{found} is optional, so it can be given only whole, to an optional port, not "
-                "written into text."
-            )
+        check_written(reference, _kind_of(workflow, outputs, per_test, reference))
     return Kind(Type.TEXT, source="text")
 
 
@@ -1183,7 +1197,7 @@ class _Compiler:
                 return None if given in options else f"This must be one of {', '.join(options)}."
             case Type.FILE | Type.FOLDER:
                 folder = wanted.type is Type.FOLDER
-                problem = path_problem(given, folder=folder)
+                problem = path_problem(given, folder=folder, today=True)
                 if problem is not None:
                     return problem
                 assert isinstance(given, str)
@@ -1442,23 +1456,24 @@ class _Compiler:
         what the workflow gives the step's ports.
         """
         raised: list[dict[str, int]] = []
+        least = declaration.limits.as_mapping()
         for test, inputs in runs:
-            limits = declaration.limits.as_mapping()
+            # A sum or max over a programs port is contract 6's, which
+            # `check_workflow` refuses in this format.
+            numbers = {
+                source.input: value["value"]
+                for source in declaration.limits_from.values()
+                if isinstance(source, FromInput)
+                and (value := inputs.get(source.input)) is not None
+                and set(value) == {"value"}
+                and is_number(value["value"])
+            }
+            limits = declaration.item_limits(numbers)
             for name, source in declaration.limits_from.items():
-                # A sum or max over a programs port is contract 6's, which
-                # `check_workflow` refuses in this format; skipping it would
-                # leave the limit unraised.
-                assert source.input is not None, f"{name} is raised from a programs port"
-                value = inputs.get(source.input)
-                if value is None or set(value) != {"value"} or not is_number(value["value"]):
-                    continue
-                number = value["value"]
-                wanted = exact_number(number) * source.scale + source.add
-                ceiling = math.ceil(wanted)
-                if ceiling > limits[name]:
-                    limits[name] = ceiling
+                if isinstance(source, FromInput) and limits[name] > least[name]:
+                    number = numbers[source.input]
                     origin = _origin_of(given.get(source.input), source.input, number, test)
-                    self.raised.append(_Raised(step_id, entry, test, name, ceiling, origin))
+                    self.raised.append(_Raised(step_id, entry, test, name, limits[name], origin))
             raised.append(limits)
         combined = {
             name: sum(run[name] for run in raised)

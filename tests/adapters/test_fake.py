@@ -258,6 +258,22 @@ async def test_a_workflows_files_are_listed_and_read_at_one_commit(fake: FakeFor
             await refused
 
 
+async def test_a_workflow_version_is_the_commit_it_names(fake: FakeForge) -> None:
+    ada, bob = _as(fake, 7), _as(fake, 8)
+    workflow = await fake.workflows.create_workflow(
+        ada, "ada", "own", {"workflow.yaml": b"steps: []"}, Visibility.PRIVATE
+    )
+    await fake.workflows.create_workflow_version(ada, workflow, "v1")
+    first = fake.state.repo("ada", "own.workflow").head
+    fake.state.commit(fake.state.repo("ada", "own.workflow"), {"a": b"b"}, "edit", 7)
+
+    assert await fake.workflows.workflow_version(ada, workflow, "v1") == first
+    with pytest.raises(NotFound):
+        await fake.workflows.workflow_version(ada, workflow, "v2")
+    with pytest.raises(Forbidden):
+        await fake.workflows.workflow_version(bob, workflow, "v1")
+
+
 async def test_an_org_workflow_reaches_the_org_roles_and_nobody_else(fake: FakeForge) -> None:
     await fake.orgs.create_org(OrgId("acme"), description="Acme")
     fake.add_user(9, "eve")

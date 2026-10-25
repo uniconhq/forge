@@ -18,7 +18,15 @@ from forge.domain.contracts import schema_text, violation
 from forge.domain.definitions import parse_task
 from forge.domain.grading import PLATFORM_MACHINE
 from forge.domain.plans import compile_plan
-from forge.domain.primitives import STEP_OUTCOMES, Port, PrimitiveDeclaration, parse_primitive
+from forge.domain.primitives import (
+    STEP_OUTCOMES,
+    FromInput,
+    FromMax,
+    FromSum,
+    Port,
+    PrimitiveDeclaration,
+    parse_primitive,
+)
 from forge.domain.scoring import Better
 from forge.domain.types import Type
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml
@@ -61,8 +69,7 @@ def test_the_three_seeded_primitives_parse() -> None:
     }
     assert (run.inputs["binary"].runs, run.inputs["input"].runs) == (True, False)
     assert run.inputs["args"].type is Type.TEXT and run.inputs["args"].runs is None
-    assert run.limits_from["time_ms"].input == "time_limit"
-    assert (run.limits_from["time_ms"].scale, run.limits_from["time_ms"].add) == (2000, 3000)
+    assert run.limits_from["time_ms"] == FromInput(input="time_limit", scale=2000, add=3000)
     assert (run.limits_from["memory_mb"].scale, run.limits_from["memory_mb"].add) == (1, 256)
     assert set(check.outputs) == {"outcome"}
     assert check.outputs["outcome"].type is Type.OUTCOME
@@ -475,10 +482,7 @@ def test_exec_reads_the_cache_names_files_and_takes_outputs_from_a_manifest() ->
     time_ms = exec_.outputs["time_ms"]
     assert (time_ms.better, time_ms.at_least, time_ms.at_most) == (Better.LOWER, 0, None)
     assert exec_.outputs["message"].better is None
-    assert (exec_.limits_from["memory_mb"].input, exec_.limits_from["memory_mb"].add) == (
-        "memory_limit",
-        256,
-    )
+    assert exec_.limits_from["memory_mb"] == FromInput(input="memory_limit", add=256)
 
 
 def test_interact_runs_programs_linked_and_sizes_its_container_over_them() -> None:
@@ -514,20 +518,10 @@ def test_interact_runs_programs_linked_and_sizes_its_container_over_them() -> No
     assert programs.outputs["ended_at"].at_least == 0
     assert interact.inputs["links"].type is Type.LINKS
     assert set(interact.outputs) == {"facts", "outcome"}
-    time_ms, memory_mb = interact.limits_from["time_ms"], interact.limits_from["memory_mb"]
-    assert (time_ms.input, time_ms.sum, time_ms.max, time_ms.scale, time_ms.add) == (
-        None,
-        None,
-        "programs.time_limit",
-        4000,
-        6000,
+    assert interact.limits_from["time_ms"] == FromMax(
+        max="programs.time_limit", scale=4000, add=6000
     )
-    assert (memory_mb.input, memory_mb.sum, memory_mb.max, memory_mb.add) == (
-        None,
-        "programs.memory_limit",
-        None,
-        512,
-    )
+    assert interact.limits_from["memory_mb"] == FromSum(sum="programs.memory_limit", add=512)
 
 
 def test_compile_v3_speaks_contract_6_and_reads_no_cache() -> None:

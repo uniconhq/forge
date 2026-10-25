@@ -759,8 +759,8 @@ async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_line_nami
     assert "Unicon cannot open the workflow" in error["message"]
     assert named in error["message"]
     assert acme.fake.calls_to("publish") == []
-    reads = acme.fake.calls_to("read_workflow_file")
-    assert {call.identity for call in reads} == {acme.ada.identity}
+    reads = acme.fake.calls_to("workflow_version")
+    assert reads and {call.identity for call in reads} == {acme.ada.identity}
 
 
 async def test_a_workflow_in_an_old_format_is_refused_at_its_line_for_its_owner_to_retag(
@@ -785,7 +785,7 @@ async def test_a_workflow_in_an_old_format_is_refused_at_its_line_for_its_owner_
     assert acme.fake.calls_to("publish") == []
 
 
-async def test_a_workflow_without_a_test_block_is_refused_at_its_line_for_now(
+async def test_a_task_of_todays_format_naming_a_workflow_without_a_test_block_is_refused(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     await _workflow(acme, "run", b"steps:\n  - {id: a, use: unicon/compile@v3}\n")
@@ -800,10 +800,11 @@ async def test_a_workflow_without_a_test_block_is_refused_at_its_line_for_now(
     assert isinstance(draft, Draft)
     assert draft.errors == (
         {
-            "path": "workflow",
-            "message": "The workflow unicon/run@v1 has no test block, so it describes one run, "
-            "and a task cannot use such a workflow yet. Choose a version with a test block.",
+            "path": "test_groups",
+            "message": "This task's workflow describes one run, with no test block, so the task "
+            "has no test groups: its runs are grouped under scoring's groups. Remove this.",
         },
+        {"path": "scoring", "message": "This is required."},
     )
     assert acme.fake.calls_to("publish") == []
 
@@ -1680,8 +1681,8 @@ async def test_the_task_form_reads_the_inputs_and_test_fields_its_workflow_decla
         ("input", "file"),
         ("answer", "file"),
     ]
-    reads = acme.fake.calls_to("read_workflow_file")
-    assert {call.identity for call in reads} == {acme.ada.identity}
+    reads = [*acme.fake.calls_to("workflow_version"), *acme.fake.calls_to("read_workflow_at")]
+    assert reads and {call.identity for call in reads} == {acme.ada.identity}
 
 
 async def test_a_task_on_a_version_made_with_a_unit_on_a_file_saves_and_reads_without_it(
@@ -1776,17 +1777,24 @@ async def test_a_workflow_in_an_old_format_gives_the_form_its_reason(
         await publications.workflow_form(setup, stranger, sum_task)
 
 
-async def test_a_workflow_without_a_test_block_gives_the_form_its_reason(
+async def test_a_workflow_without_a_test_block_gives_the_form_its_inputs_for_a_run_task(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    await _workflow(acme, "run", b"steps:\n  - {id: a, use: unicon/compile@v3}\n")
+    await _workflow(
+        acme,
+        "run",
+        b"inputs:\n  code: {type: folder, title: Code}\n  seed: {type: number, unit: s}\n"
+        b"steps:\n  - {id: a, use: unicon/compile@v3}\n",
+    )
     await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v2", b"unicon/run@v1"))
 
     form = await publications.workflow_form(setup, acme.ada, sum_task)
 
-    assert form.workflow == "unicon/run@v1"
-    assert form.problem is not None
-    assert "has no test block, so it describes one run" in form.problem
+    assert (form.workflow, form.problem, form.runs, form.test) == ("unicon/run@v1", None, True, ())
+    assert [(each.id, each.type, each.title, each.unit) for each in form.inputs] == [
+        ("code", "folder", "Code", None),
+        ("seed", "number", None, "s"),
+    ]
 
 
 async def test_a_submit_in_flight_while_a_grading_change_publishes_is_graded_against_it(

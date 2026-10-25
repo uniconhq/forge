@@ -51,9 +51,9 @@ import math
 import re
 from collections.abc import Mapping
 from decimal import Decimal
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BeforeValidator, Field, PlainValidator, model_validator
+from pydantic import BeforeValidator, Field, PlainValidator, ValidationError, model_validator
 
 from forge.domain.scoring import Better
 from forge.domain.types import FILES, PORT_TYPES, VALUE_TYPES, Type, declared
@@ -69,7 +69,9 @@ from forge.domain.yaml_models import (
     Retired,
     already_listed,
     exact_number,
+    fail,
     load_mapping,
+    problems_of,
     validate,
 )
 
@@ -268,38 +270,88 @@ class Limits(Model):
         return {name: getattr(self, name) for name in LIMIT_NAMES}
 
 
-class LimitFrom(Model):
-    """A limit raised to `n * scale + add` when that is more, where `n` is
-    one of three: the number `input`, or in contract 6 the `sum` or the
-    `max` of a number input over every program of a programs port, each
-    `<port>.<input>`.
+class _Raise(Model):
+    """How a limit is raised from a number `n`: to `n * scale + add` when
+    that is more.
     """
 
-    input: Handle | None = None
-    sum: ProgramInput | None = None
-    max: ProgramInput | None = None
     scale: Number = 1
     add: Number = 0
 
-    @property
-    def program_input(self) -> str | None:
-        """The input of each program a `sum` or `max` reads, none for an
-        `input`.
-        """
-        over = self.sum if self.sum is not None else self.max
-        return over.partition(".")[2] if over is not None else None
-
     @model_validator(mode="after")
-    def _check(self) -> LimitFrom:
+    def _check(self) -> Self:
         problems = Problems()
-        if [self.input, self.sum, self.max].count(None) != 2:
-            problems.add((), "Give exactly one of input, sum and max.")
         if self.scale <= 0:
             problems.add(("scale",), "This must be more than 0.")
         if self.add < 0:
             problems.add(("add",), "This must be at least 0.")
         problems.raise_any()
         return self
+
+
+class FromInput(_Raise):
+    """A limit raised from the number `input`."""
+
+    input: Handle
+
+
+class FromSum(_Raise):
+    """In contract 6, a limit raised from the sum of a number input over
+    every program of a programs port, `<port>.<input>`.
+    """
+
+    sum: ProgramInput
+
+    @property
+    def program_input(self) -> str:
+        """The input of each program the sum reads."""
+        return self.sum.partition(".")[2]
+
+
+class FromMax(_Raise):
+    """In contract 6, a limit raised from the largest of a number input
+    over every program of a programs port, `<port>.<input>`.
+    """
+
+    max: ProgramInput
+
+    @property
+    def program_input(self) -> str:
+        """The input of each program the largest is taken over."""
+        return self.max.partition(".")[2]
+
+
+_SOURCES: dict[str, type[FromInput | FromSum | FromMax]] = {
+    "input": FromInput,
+    "sum": FromSum,
+    "max": FromMax,
+}
+
+
+def _limit_from(value: object) -> FromInput | FromSum | FromMax:
+    if isinstance(value, FromInput | FromSum | FromMax):
+        return value
+    if not isinstance(value, dict):
+        raise ValueError("This must be a set of named settings, not a single value.")
+    given = [key for key in _SOURCES if key in value]
+    if len(given) != 1:
+        raise ValueError("Give exactly one of input, sum and max.")
+    try:
+        return _SOURCES[given[0]].model_validate(value)
+    except ValidationError as error:
+        fail(
+            [
+                (tuple(problem["path"].split(".")) if problem["path"] else (), problem["message"])
+                for problem in problems_of(error)
+            ]
+        )
+
+
+LimitFrom = Annotated[FromInput | FromSum | FromMax, PlainValidator(_limit_from)]
+"""Where a limit is raised from: exactly one of a number input, or in
+contract 6 the sum or the largest of a number input over every program of a
+programs port.
+"""
 
 
 LimitName = Literal["time_ms", "cpu_ms", "memory_mb", "pids", "output_mb", "gpus"]
@@ -340,18 +392,16 @@ class PrimitiveDeclaration(Model):
         """
         limits = self.limits.as_mapping()
         for name, source in self.limits_from.items():
-            key = source.program_input
-            if source.input is not None:
+            if isinstance(source, FromInput):
                 n = numbers.get(source.input)
-            elif key is not None:
+            else:
+                key = source.program_input
                 given = [
                     exact_number(each[key]) for each in (programs or {}).values() if key in each
                 ]
                 if not given:
                     continue
-                n = sum(given) if source.sum is not None else max(given)
-            else:
-                continue
+                n = sum(given) if isinstance(source, FromSum) else max(given)
             if n is None:
                 continue
             wanted = exact_number(n) * source.scale + source.add
@@ -412,16 +462,17 @@ class PrimitiveDeclaration(Model):
                     "where the program.yaml is given.",
                 )
         for limit, source in self.limits_from.items():
-            if source.input is not None:
+            if isinstance(source, FromInput):
                 given = self.inputs.get(source.input)
                 if given is None or given.type is not Type.NUMBER:
                     problems.add(
                         ("limits_from", limit, "input"),
                         f"The primitive has no number input called {source.input!r}.",
                     )
-            for over, named in (("sum", source.sum), ("max", source.max)):
-                if named is None:
-                    continue
+            else:
+                over, named = (
+                    ("sum", source.sum) if isinstance(source, FromSum) else ("max", source.max)
+                )
                 if not six:
                     problems.add(("limits_from", limit, over), NEEDS_6)
                     continue

@@ -18,6 +18,9 @@ them, and a contest's save against every covered task's latest publication.
 - A board ranking `points` counts nothing from a task that gives none, or
   that has no group with a rule weight in its scope; that is reported, not
   refused.
+- No board covers a run task (SIMPLER-CORE.md 8 and 9) yet: a board over
+  runs comes with stage 5's leaderboards, so one is refused at the board,
+  or at the task's `scoring`.
 
 Each sentence names a value by the title its task's workflow gives it, "run
 time", or another covered task's where that one gives none, and by its key
@@ -46,13 +49,14 @@ from forge.domain.workflow_definition import Fold
 @dataclass(frozen=True, slots=True)
 class Covered:
     """A covered task as a board reads it: what each per-test number means,
-    each group's `show` and whether it has a rule weight, and the title its
-    workflow gives each value that has one.
+    each group's `show` and whether it has a rule weight, the title its
+    workflow gives each value that has one, and whether it is a run task.
     """
 
     measures: Mapping[str, Measure]
     groups: Mapping[str, tuple[Show, bool]]
     titles: Mapping[str, str] = field(default_factory=dict)
+    runs: bool = False
 
     @property
     def gives_points(self) -> bool:
@@ -63,12 +67,18 @@ def covered(
     measures: Mapping[str, Measure],
     groups: Mapping[str, Group],
     meanings: Iterable[ValueMeaning] = (),
+    *,
+    runs: bool = False,
 ) -> Covered:
     return Covered(
         measures,
         {name: (group.shown, rule_weight(group) > 0) for name, group in groups.items()},
         {meaning.name: meaning.title for meaning in meanings if meaning.title},
+        runs,
     )
+
+
+RUNS_LATER = "boards over runs come with leaderboards"
 
 
 def value_words(tasks: Mapping[str, Covered], name: str, task: str | None = None) -> str:
@@ -94,7 +104,8 @@ def _opening(said: str, name: str) -> str:
 class Breach:
     """What a board refuses of one covered task: which `order` key, none
     for its scope or its `select`, whether it is the task's `workflow` or
-    its `test_groups` that would mend it, and why.
+    its `test_groups` that would mend it, or for a run task its `scoring`,
+    and why.
     """
 
     task: str
@@ -126,6 +137,19 @@ def breaches(
     task compared with those before it, so a disagreement is named once.
     """
     found: list[Breach] = []
+    for task, of in tasks.items():
+        if of.runs and (only is None or task == only):
+            found.append(
+                Breach(
+                    task,
+                    None,
+                    "scoring",
+                    f"{task} is scored by its runs, and the leaderboard {board.name} covers it, "
+                    f"but {RUNS_LATER}, which Unicon does not have yet. Leave {task} out of "
+                    "the leaderboard.",
+                )
+            )
+    tasks = {task: of for task, of in tasks.items() if not of.runs}
     names = [key_name(key) for key in board.order]
     first = names[0]
     for index, name in enumerate(names):
@@ -154,7 +178,8 @@ def counts_nothing(board: Leaderboard, tasks: Mapping[str, Covered]) -> list[str
     return [
         task
         for task, of in tasks.items()
-        if not any(weighted and scope(show) for show, weighted in of.groups.values())
+        if not of.runs
+        and not any(weighted and scope(show) for show, weighted in of.groups.values())
     ]
 
 

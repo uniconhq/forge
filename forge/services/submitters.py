@@ -32,6 +32,7 @@ from forge.domain.definitions import ContestDefinition, State
 from forge.domain.errors import (
     Archived,
     EntrantChanged,
+    InvalidInputs,
     NotApproved,
     NotFound,
     PortError,
@@ -54,6 +55,9 @@ from forge.services.turns import Turns
 log = get_logger(__name__)
 
 NOT_APPROVED = "Only approved entrants of this contest can submit to its tasks."
+RUNS_LATER = (
+    "This task is scored by its runs, and Unicon does not take submissions to such a task yet."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +86,8 @@ async def person(
     `SessionExpired` for a session that has ended, and `NotFound` for a task
     that is not released to them or in a contest they may not see. A task
     withdrawn once its timeline released it is found when `submitting`, so
-    `refuse` can say why it takes nothing.
+    `refuse` can say why it takes nothing. A run task takes no submission
+    yet (`RUNS_LATER`), so `submitting` to one is `InvalidInputs`.
     """
     fresh = await sessions.authenticate(ctx, session.id)
     contest = contest_id_of(task_scope(task))
@@ -104,6 +109,8 @@ async def person(
         )
     ):
         raise NotFound(published.NO_SUCH_TASK)
+    if submitting and found.definition.runs:
+        raise InvalidInputs(RUNS_LATER, errors=[])
     standing = await entrants.standing(ctx, contest, fresh.user_id)
     if standing is None:
         return Person(fresh, task, settings, found, None, None)

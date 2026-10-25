@@ -340,6 +340,12 @@ def task_notes(settings: ContestDefinition, name: str, shape: Covered) -> list[s
 def _board_path(index: int, board: Leaderboard, breach: Breach) -> str:
     if breach.key is not None:
         return f"leaderboards[{index}].order[{breach.key}]"
+    if breach.mended_in == "scoring":
+        # A board that names no tasks covers every task, so the board
+        # itself is where one is left out.
+        if board.tasks is None:
+            return f"leaderboards[{index}]"
+        return f"leaderboards[{index}].tasks"
     if breach.mended_in == "test_groups" and board.select is Select.MARKED:
         return f"leaderboards[{index}].select"
     return f"leaderboards[{index}].over"
@@ -365,7 +371,10 @@ def _notes(
 
 def _covered(task: PublishedTask) -> Covered:
     return covered(
-        task.publication.measures, task.definition.test_groups, task.publication.meanings
+        task.publication.measures,
+        task.definition.test_groups,
+        task.publication.meanings,
+        runs=task.definition.runs,
     )
 
 

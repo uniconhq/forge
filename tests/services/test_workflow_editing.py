@@ -15,6 +15,7 @@ import pytest
 from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, Rejected
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import WorkflowId
+from forge.domain.program_manifest import MAX_MANIFEST, TOO_LARGE
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.domain.workflow_definition import parse_workflow, parse_workflow_ref
@@ -671,7 +672,28 @@ async def test_a_built_in_run_workflow_versions_with_its_own_files(
     acme.fake.state.commit(repo, _held(sibling("deploy", RUN_WORKFLOWS[ref])), "copy", 8)
 
     assert await workflows.create_version(setup, bob, "bob", "tuned", "v1") == "v1"
-    assert acme.fake.calls_to("workflow_files")
+    reads = [*acme.fake.calls_to("workflow_files"), *acme.fake.calls_to("read_workflow_at")]
+    assert reads
+    for read in reads:
+        assert isinstance(read.identity, AsUser) and read.identity.user_id == 8
+        assert read.arguments["at"] == repo.versions["v1"]
+
+
+async def test_a_manifest_over_the_largest_size_is_refused_unread(setup: Setup, acme: Acme) -> None:
+    _run_primitives(acme)
+    bob = await _own(setup, acme)
+    repo = acme.fake.state.repos[("bob", "tuned.workflow")]
+    held = _held(sibling("deploy", RUN_WORKFLOWS["unicon/classic@v3"]))
+    held["diff/program.yaml"] = b"#" * (MAX_MANIFEST + 1)
+    acme.fake.state.commit(repo, held, "copy", 8)
+
+    with pytest.raises(InvalidDefinition) as refused:
+        await workflows.create_version(setup, bob, "bob", "tuned", "v1")
+
+    assert refused.value.errors == [
+        {"path": "steps[3].with.manifest", "message": f"diff/program.yaml: {TOO_LARGE}"}
+    ]
+    assert acme.fake.calls_to("read_workflow_at") == []
 
 
 async def test_a_run_workflows_path_its_commit_lacks_is_refused_by_a_version_alone(

@@ -45,6 +45,7 @@ from forge.domain.yaml_models import (
     Line,
     Model,
     Number,
+    Problem,
     Problems,
     Retired,
     Size,
@@ -64,10 +65,13 @@ __all__ = [
     "ADMIN_ONLY_FILES",
     "CONTEST_ADMIN_KEYS",
     "CONTEST_FILE",
+    "ENTRANT",
+    "RUN_FORMAT_KEYS",
     "STATEMENT_FILE",
     "TASK_ADMIN_KEYS",
     "TASK_FILE",
     "Approval",
+    "Axis",
     "ContestDefinition",
     "ContestTask",
     "ContestVisibility",
@@ -83,8 +87,10 @@ __all__ = [
     "Rate",
     "Registration",
     "Relative",
+    "Scoring",
     "Select",
     "Show",
+    "ShowTimes",
     "SignupWay",
     "State",
     "Submissions",
@@ -756,17 +762,159 @@ class Form(Model):
     max_size: Size | None = None
 
 
+ENTRANT = "entrant"
+"""What makes an input the entrant's in a run task's `inputs`, alone or as
+the key of its form details, and what stands for the entrant's value in a
+tuple of `repeat`."""
+
+
+def _row_value_problem(value: object) -> str | None:
+    if isinstance(value, dict) and "secret" in value:
+        return "A secret is given once, in inputs, never in a tuple, so a run's key never shows it."
+    if value is None or isinstance(value, list | dict):
+        return (
+            "Give text, a number, true or false, a file or folder in the task, or entrant, "
+            "not a list, a set of settings or nothing."
+        )
+    return None
+
+
+class Axis(Model):
+    """One axis of a run task's `repeat` (SIMPLER-CORE.md 8.2): the workflow
+    inputs that move together, and one row per tuple, written as a list in
+    the order of `inputs`, as the value alone when the axis repeats one
+    input, or as a mapping of each input to its value, so no two get
+    swapped. A value may be `entrant`: the entrant gives that input once for
+    the tuple.
+    """
+
+    inputs: list[Annotated[str, Field(min_length=1)]] = Field(min_length=1)
+    tuples: list[Any] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check(self) -> Axis:
+        problems = Problems()
+        seen: set[str] = set()
+        for index, name in enumerate(self.inputs):
+            if name in seen:
+                problems.add(("inputs", index), already_listed(name))
+            seen.add(name)
+        for index, row in enumerate(self.tuples):
+            for path, message in self._row_problems(row):
+                problems.add(("tuples", index, *path), message)
+        problems.raise_any()
+        return self
+
+    def _row_problems(self, row: object) -> list[tuple[tuple[str | int, ...], str]]:
+        found: list[tuple[tuple[str | int, ...], str]] = []
+        count = len(self.inputs)
+        if isinstance(row, dict):
+            for name in self.inputs:
+                if name not in row:
+                    found.append(((), f"This tuple gives no value for {name}."))
+            for key, value in row.items():
+                if key not in self.inputs:
+                    found.append(
+                        (
+                            (str(key),),
+                            f"{key} is not one of this axis's inputs, which are "
+                            f"{', '.join(self.inputs)}.",
+                        )
+                    )
+                elif (problem := _row_value_problem(value)) is not None:
+                    found.append(((str(key),), problem))
+            return found
+        if isinstance(row, list):
+            if len(row) != count:
+                found.append(
+                    (
+                        (),
+                        f"This tuple has {len(row)} {'value' if len(row) == 1 else 'values'}, "
+                        f"and the axis repeats {', '.join(self.inputs)}, so give one value "
+                        "for each, in that order.",
+                    )
+                )
+                return found
+            for index, value in enumerate(row):
+                if (problem := _row_value_problem(value)) is not None:
+                    found.append(((index,), problem))
+            return found
+        if count != 1:
+            return [
+                (
+                    (),
+                    f"The axis repeats {', '.join(self.inputs)}, so give each tuple as a list "
+                    "in that order, or as a mapping of each input to its value.",
+                )
+            ]
+        problem = _row_value_problem(row)
+        return [((), problem)] if problem is not None else []
+
+    @property
+    def rows(self) -> list[tuple[object, ...]]:
+        """Each tuple as its values in the order of `inputs`."""
+        found: list[tuple[object, ...]] = []
+        for row in self.tuples:
+            if isinstance(row, dict):
+                found.append(tuple(row[name] for name in self.inputs))
+            elif isinstance(row, list):
+                found.append(tuple(row))
+            else:
+                found.append((row,))
+        return found
+
+
+class ShowTimes(Model):
+    """A run task's `show` (SIMPLER-CORE.md 9.4): the values, groups and
+    task files entrants see as soon as a grading ends, at the reveal, and
+    once staff release the task's results.
+    """
+
+    now: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
+    after_close: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
+    on_release: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
+
+    def lists(self) -> dict[str, list[str]]:
+        """Each time's entries, earliest first."""
+        return {"now": self.now, "after_close": self.after_close, "on_release": self.on_release}
+
+
+class Scoring(Model):
+    """A run task's `scoring` (SIMPLER-CORE.md 9): its groups of runs, each
+    picked by repeated input values; its values, each a tree of blocks
+    (`forge.domain.blocks`); and what entrants see when. What each reads is
+    checked against the task's runs and the workflow's columns at the save
+    (`forge.domain.run_task`).
+    """
+
+    groups: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    values: dict[str, Any] = Field(default_factory=dict)
+    show: ShowTimes = ShowTimes()
+
+
 class TaskDefinition(Model):
-    """A `task.yaml`. `inputs` defaults to none, `credit` to an accepted test
-    earning 1, and `submissions` to 50 at one every 30 seconds.
+    """A `task.yaml`, in one of two formats, as its workflow's: a workflow
+    with a test block is graded test by test, under `test_groups` and
+    `credit`; a run workflow (SIMPLER-CORE.md 8 and 9) runs once per
+    combination of `repeat`'s tuples, and is scored by `scoring`, which
+    such a task always has (`runs`). `inputs` defaults to none, `credit` to
+    an accepted test earning 1, and `submissions` to 50 at one every 30
+    seconds.
     """
 
     name: Line
     workflow: Ref
     inputs: dict[str, Any] = Field(default_factory=dict)
     credit: Annotated[str | Relative, PlainValidator(_credit)] | None = None
-    test_groups: dict[str, Group] = Field(min_length=1)
+    test_groups: dict[str, Group] = Field(default_factory=dict, min_length=1)
+    repeat: list[Axis] = Field(default_factory=list)
+    scoring: Scoring | None = None
     submissions: Submissions = Submissions()
+
+    @property
+    def runs(self) -> bool:
+        """Whether the task is in the run format, its workflow a run workflow."""
+        return self.scoring is not None
 
     @model_validator(mode="after")
     def _check(self) -> TaskDefinition:
@@ -1065,11 +1213,60 @@ def parse_contest(text: bytes | str, *, saved: bool = False) -> ContestDefinitio
     return validate(ContestDefinition, CONTEST_FILE, document, CONTEST_RETIRED)
 
 
-def parse_task(text: bytes | str) -> TaskDefinition:
-    """The `task.yaml` in `text`. Raises `InvalidDefinition` listing every
-    problem with its YAML path.
+RUN_FORMAT_KEYS = ("repeat", "scoring")
+"""The keys only a run task has; a file with either reads as one."""
+
+RUN_FORMAT_RETIRED = (
+    Retired(
+        ("test_groups",),
+        "This task's workflow describes one run, with no test block, so the task has no test "
+        "groups: its runs are grouped under scoring's groups. Remove this.",
+    ),
+    Retired(
+        ("credit",),
+        "This task's workflow describes one run, with no test block, so what its runs earn is "
+        "said by scoring's values. Remove this.",
+    ),
+)
+TEST_FORMAT_RETIRED = (
+    Retired(
+        ("repeat",),
+        "This task's workflow has a test block, so its tests are the folders under tests/ and "
+        "nothing repeats. Choose a workflow that describes one run, such as "
+        "unicon/classic@v3, or remove this.",
+    ),
+    Retired(
+        ("scoring",),
+        "This task's workflow has a test block, so it is scored by its test groups, not by "
+        "scoring. Choose a workflow that describes one run, such as unicon/classic@v3, or "
+        "remove this.",
+    ),
+)
+
+
+def parse_task(text: bytes | str, *, runs: bool | None = None) -> TaskDefinition:
+    """The `task.yaml` in `text`, in the run format when `runs`, in today's
+    when not, and, when `runs` is none, in the format its keys say: the run
+    format when it has `repeat` or `scoring` (`RUN_FORMAT_KEYS`). A key of
+    the other format is refused naming the format, and a run task without
+    `scoring` or another without `test_groups` is refused at that key.
+    Raises `InvalidDefinition` listing every problem with its YAML path.
     """
-    return validate(TaskDefinition, TASK_FILE, load_mapping(TASK_FILE, text), TASK_RETIRED)
+    document = load_mapping(TASK_FILE, text)
+    if runs is None:
+        runs = any(key in document for key in RUN_FORMAT_KEYS)
+    required = "scoring" if runs else "test_groups"
+    # A run task's scoring left empty is none, which no run task can be.
+    given = required in document and not (runs and document[required] is None)
+    missing = [] if given else [Problem(path=required, message="This is required.")]
+    retired = (*TASK_RETIRED, *(RUN_FORMAT_RETIRED if runs else TEST_FORMAT_RETIRED))
+    try:
+        found = validate(TaskDefinition, TASK_FILE, document, retired)
+    except InvalidDefinition as invalid:
+        raise InvalidDefinition(TASK_FILE, [*invalid.errors, *missing]) from None
+    if missing:
+        raise InvalidDefinition(TASK_FILE, missing)
+    return found
 
 
 CONTEST_ADMIN_KEYS = ("name", "description", "state", "visibility", "registration")

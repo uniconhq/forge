@@ -22,9 +22,11 @@ from forge.domain.program_manifest import MAX_MANIFEST
 from forge.domain.run_workflow import (
     MANIFEST_FROM_STEP,
     Deferred,
+    InputManifest,
     RunWorkflowCheck,
     TimeLimitOrder,
     WorkflowFiles,
+    WorkflowManifest,
     check_run_workflow,
     manifest_paths,
 )
@@ -162,9 +164,10 @@ def test_references_read_a_workflows_files_and_a_programs_outputs() -> None:
     assert parse_reference("workflow.diff/program.yaml") == Reference(
         "workflow", "diff/program.yaml"
     )
-    assert parse_reference("steps.game.entrant.time_ms") == Reference(
-        "steps", "game", "entrant.time_ms"
-    )
+    entrant = parse_reference("steps.game.entrant.time_ms", runs=True)
+    assert entrant == Reference("steps", "game", "time_ms", "entrant")
+    assert entrant.port == "entrant.time_ms"
+    assert str(entrant) == "${{ steps.game.entrant.time_ms }}"
     assert str(Reference("workflow", "diff/")) == "${{ workflow.diff/ }}"
     for bad in (
         "workflow.",
@@ -181,7 +184,29 @@ def test_references_read_a_workflows_files_and_a_programs_outputs() -> None:
         "workflow.diff/ x",
     ):
         with pytest.raises(BadReference):
-            parse_reference(bad)
+            parse_reference(bad, runs=True)
+
+
+def test_a_bad_reference_lists_the_forms_its_format_has() -> None:
+    with pytest.raises(BadReference) as runs:
+        parse_reference("secrets.key", runs=True)
+    assert str(runs.value) == (
+        "Unicon cannot read ${{ secrets.key }}. Write ${{ inputs.<id> }}, "
+        "${{ steps.<id>.<output> }}, ${{ steps.<id>.<program>.<output> }} or "
+        "${{ workflow.<path> }}."
+    )
+    with pytest.raises(BadReference) as today:
+        parse_reference("steps.a.b.c")
+    assert str(today.value) == (
+        "Unicon cannot read ${{ steps.a.b.c }}. Write ${{ inputs.<id> }}, "
+        "${{ steps.<id>.<output> }} or ${{ test.<field> }}."
+    )
+    with pytest.raises(BadReference) as spaced:
+        parse_reference("workflow.diff/ x", runs=True)
+    assert str(spaced.value) == (
+        "Unicon cannot read ${{ workflow.diff/ x }}. No part of the path can start or end "
+        "with a space."
+    )
 
 
 @pytest.mark.parametrize(
@@ -253,7 +278,7 @@ def test_an_input_named_for_what_unicon_gives_is_refused(name: str) -> None:
     assert problem == {"path": f"inputs.{name}", "message": reserved_message(name)}
 
 
-@pytest.mark.parametrize("name", ["time-limit", "1st", "Code", "_x"])
+@pytest.mark.parametrize("name", ["time-limit", "1st", "Code", "_x", "a" * 65])
 def test_an_input_is_named_as_a_column_a_formula_names(name: str) -> None:
     given = document(CLASSIC_V3)
     given["inputs"][name] = "number"
@@ -261,7 +286,7 @@ def test_an_input_is_named_as_a_column_a_formula_names(name: str) -> None:
     [problem] = refused(given)
 
     assert problem["path"] == f"inputs.{name}"
-    assert problem["message"].startswith("An input's name may use only lower case letters")
+    assert problem["message"].startswith("An input's name may use at most 64 lower case letters")
 
 
 def test_a_workflow_wiring_self_reported_is_refused() -> None:
@@ -281,6 +306,26 @@ def test_a_program_given_self_reported_is_refused(
 
     assert problems(primitives, given, INTERACTIVE_V1) == [
         {"path": "steps[2].with.programs.judge.self_reported", "message": SELF_REPORTED_GIVEN}
+    ]
+
+
+def test_a_program_setting_named_by_a_number_is_refused_beside_unknown_names(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    given = document(INTERACTIVE_V1)
+    judge = step(given, "game")["with"]["programs"]["judge"]
+    judge[7] = "x"
+    judge["zeta"] = "x"
+
+    assert problems(primitives, given, INTERACTIVE_V1) == [
+        {
+            "path": "steps[2].with.programs.judge.7",
+            "message": "7 is not an input's name. Remove it.",
+        },
+        {
+            "path": "steps[2].with.programs.judge.zeta",
+            "message": "unicon/interact@v2 has no input called zeta. Remove it.",
+        },
     ]
 
 
@@ -446,7 +491,8 @@ def test_a_report_of_the_diff_script_is_checked_against_its_program_yaml(
     }
     assert found.steps["compare"].outputs["score"].type is Type.NUMBER
     compare = found.steps["compare"].program
-    assert compare.manifest is not None and compare.manifest.path == "diff/program.yaml"
+    assert isinstance(compare.manifest, WorkflowManifest)
+    assert compare.manifest.path == "diff/program.yaml"
     assert score.made_by == compare
     meaning = score.meaning("unicon/exec@v1")
     assert meaning is not None
@@ -541,7 +587,7 @@ def test_a_manifest_from_an_input_leaves_its_reports_to_the_tasks_save(
     assert found.reports["score"].port is None
     assert found.reports["score"].meaning("unicon/exec@v1") is None
     manifest = found.steps["compare"].program.manifest
-    assert manifest is not None and (manifest.input, manifest.program) == ("checker", None)
+    assert isinstance(manifest, InputManifest) and manifest.input == "checker"
     assert "time_ms" in manifest.own_names and "verdict" in manifest.own_names
 
 
@@ -561,6 +607,24 @@ def test_a_report_of_a_program_the_entrants_code_reaches_records_its_inputs(
     assert found.steps["compare"].verdict_self_reported_by == {"code", "language"}
     assert found.steps["solution"].verdict_self_reported_by == frozenset()
     assert found.verdict_self_reported_by == {"code", "language"}
+
+
+def test_an_input_the_organisers_program_loads_makes_its_reports_self_reported(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    given = document(CLASSIC_V3)
+    given["inputs"]["helper"] = {"type": "file"}
+    step(given, "compare")["with"]["loads"] = {"helper.py": "${{ inputs.helper }}"}
+    given["reports"]["note"] = "${{ steps.compare.message }}"
+
+    found = checked(primitives, given, files(CLASSIC_V3))
+
+    assert found.problems == []
+    assert found.steps["compare"].program.controlled_by == {"helper"}
+    assert found.reports["score"].self_reported_by == {"helper"}
+    assert found.reports["note"].self_reported_by == {"helper"}
+    assert found.steps["compare"].verdict_self_reported_by == {"helper"}
+    assert found.verdict_self_reported_by == {"helper"}
 
 
 def test_the_verdict_and_texts_of_the_organisers_programs_are_not_self_reported(
@@ -652,7 +716,8 @@ def test_interactive_v1_records_the_entrant_input_reaching_only_the_entrant_prog
     assert entrant.controlled_by == {"code", "language"}
     assert entrant.manifest is None
     assert judge.controlled_by == {"judge", "judge_language"}
-    assert judge.manifest is not None and judge.manifest.input == "judge_manifest"
+    assert isinstance(judge.manifest, InputManifest)
+    assert judge.manifest.input == "judge_manifest"
     assert "facts" in judge.manifest.own_names
     assert judge.self_reportable is False
     assert found.reports["score"].self_reported_by == {"judge", "judge_language"}

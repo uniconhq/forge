@@ -113,6 +113,16 @@ ECHO_PORTS: dict[str, Any] = {"message": "hi", "times": 1, "mode": "fast"}
 # The file
 
 
+def test_a_long_reported_value_name_of_todays_format_still_parses() -> None:
+    """As a version made before the run format capped a column's name at
+    64 letters, which today's format never did.
+    """
+    name = "log_" + "x" * 66
+    workflow = parse_workflow(CLASSIC.replace(b"\n  log:\n", f"\n  {name}:\n".encode()))
+
+    assert name in workflow.report
+
+
 def test_the_classic_workflow_parses() -> None:
     workflow = parse_workflow(CLASSIC)
 

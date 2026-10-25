@@ -12,17 +12,18 @@ happen through a save, since only a valid save publishes.
 
 Of a task's files, its readers are served its statement and the files under
 its `public/` folder (TASK-FORMAT.md section 1.2), such as a statement's
-images, one by one by its path in the task, as its latest publication holds
-it (`public_file`); an upload by its bytes, never its pointer. A path
-outside `public/`, or one not there, is no such file, and one larger than
-`PUBLIC_MOST` is refused with `PublicFileTooLarge`, since a page shows these
-whole. A contest whose
+images, or, for a run task, the files and folders its `show` lists, each
+from its time on (SIMPLER-CORE.md 8.4, #487), one by one by its path in the
+task, as its latest publication holds it (`public_file`); an upload by its
+bytes, never its pointer. Any other path, or one not there, is no such
+file, and one larger than `PUBLIC_MOST` is refused with
+`PublicFileTooLarge`, since a page shows these whole. A contest whose
 `contest.yaml` does not read is no such contest to its readers, the same
 answer as one that is not there, so its errors reach nobody but the log.
 """
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from forge.domain.content import check_path
@@ -43,6 +44,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.publications import Publication
+from forge.domain.run_task import file_time
 from forge.domain.showing import generation_of
 from forge.domain.submissions import Field, fields_of
 from forge.domain.yaml_models import InvalidDefinition
@@ -174,11 +176,15 @@ async def tasks(
 class TaskForm:
     """What a submission to a task is made of: the inputs the contestant
     gives, as its plan declares them with the task's form details, and the
-    tests of the plan, which a per-test input's files are named for.
+    tests of the plan, which a per-test input's files are named for; or,
+    for a run task (`runs`), nothing yet, since a submission to one is laid
+    out and graded from a later stage on, and a submit or an upload to one
+    is refused.
     """
 
     fields: tuple[Field, ...]
     tests: tuple[str, ...]
+    runs: bool = False
 
 
 FORM_KEPT = timedelta(hours=1)
@@ -188,6 +194,8 @@ changes, so the time only bounds what is held."""
 
 async def form(ctx: Context, published: PublishedTask) -> TaskForm:
     """The task's form at its latest publication, read from its plan."""
+    if published.definition.runs:
+        return TaskForm((), (), runs=True)
 
     async def read() -> TaskForm:
         found = await ctx.forge.content.read_file(
@@ -235,7 +243,7 @@ async def statement_written_at(ctx: Context, task: TaskId, version: VersionId, k
 
 @dataclass(frozen=True, slots=True)
 class PublicFile:
-    """A file under a task's `public/`, as its latest publication, or for an
+    """A file a task shows its readers, as its latest publication, or for an
     organiser its head, holds it: its path in the task and its bytes, an
     upload's own bytes rather than its pointer.
     """
@@ -245,32 +253,51 @@ class PublicFile:
 
 
 def public_path(path: str) -> str:
-    """`path` when it names a file under `public/` plainly, and `NotFound`
-    otherwise: a path outside it, the folder itself, or one with an empty,
-    `.` or `..` segment or a character `check_path` refuses.
+    """`path` when it names a file plainly, and `NotFound` otherwise: one
+    with an empty, `.` or `..` segment or a character `check_path` refuses.
+    Whether the task shows it is `public_file`'s.
     """
     try:
         check_path(path)
     except InvalidPath:
         raise NotFound(NO_SUCH_FILE) from None
-    if not path.startswith(PUBLIC_FOLDER):
-        raise NotFound(NO_SUCH_FILE)
     return path
 
 
-async def public_file(ctx: Context, published: PublishedTask, path: str) -> PublicFile:
-    """The file at `path`, under `public/`, as the task's latest publication
-    holds it, read as the platform, its large-file object's bytes for an
-    upload. The caller has checked the reader may read the task and the path
-    with `public_path`. `NotFound` for a file not there, and
-    `PublicFileTooLarge` for one over `PUBLIC_MOST` bytes, read no further.
+def shown_now(
+    definition: TaskDefinition, path: str, *, reveal: datetime | None, now: datetime
+) -> bool:
+    """Whether the task shows its readers the file at `path` now: one under
+    `public/`; or for a run task, one its `show` lists, or a folder it is in,
+    under `now`, or under `after_close` once the task's reveal has passed.
+    `on_release` shows nothing until a release, which Unicon has no action
+    for yet, and a file no entry lists is never shown.
     """
+    if definition.scoring is None:
+        return path.startswith(PUBLIC_FOLDER)
+    time = file_time(definition.scoring, path)
+    return time == "now" or (time == "after_close" and reveal is not None and reveal <= now)
+
+
+async def public_file(
+    ctx: Context, published: PublishedTask, path: str, *, reveal: datetime | None = None
+) -> PublicFile:
+    """The file at `path` as the task's latest publication holds it, when
+    the task shows it now (`shown_now`, `reveal` being when the task closes
+    for every row, which a run task's `after_close` waits for), read as the
+    platform, its large-file object's bytes for an upload. The caller has
+    checked the reader may read the task and the path with `public_path`.
+    `NotFound` for a file not shown or not there, and `PublicFileTooLarge`
+    for one over `PUBLIC_MOST` bytes, read no further.
+    """
+    if not shown_now(published.definition, path, reveal=reveal, now=ctx.now):
+        raise NotFound(NO_SUCH_FILE)
     version = published.publication.version
     await ctx.let_go()
 
     async def listed() -> frozenset[str]:
         files = await ctx.forge.content.list_files(PLATFORM, published.id, at=version)
-        return frozenset(found for found in files.tokens if found.startswith(PUBLIC_FOLDER))
+        return frozenset(files.tokens)
 
     # What a publication holds never changes, so its listing is read once.
     key = f"published.public.{published.id}.{version}"
@@ -284,19 +311,32 @@ async def public_file(ctx: Context, published: PublishedTask, path: str) -> Publ
 
 
 async def head_public_file(ctx: Context, task: TaskId, path: str) -> PublicFile:
-    """The file at `path`, under `public/`, as the task's head holds it, the
-    draft a statement being written draws its pictures from, whether or not
-    it was ever published, for whoever organises the task. The caller has
-    checked both. `NotFound` for a task or a file not there.
+    """The file at `path` as the task's head holds it, the draft a statement
+    being written draws its pictures from, whether or not it was ever
+    published, for whoever organises the task: one under `public/`, or, when
+    the head's `task.yaml` is a run task's, one its `show` lists at any
+    time. The caller has checked who asks. `NotFound` for a task or a file
+    not there, or one the task never shows.
     """
     await ctx.let_go()
     try:
         files = await ctx.forge.content.list_files(PLATFORM, task)
     except NotFound:
         raise NotFound(NO_SUCH_TASK) from None
-    if path not in files.tokens:
+    if path not in files.tokens or not await _shown_at_head(ctx, task, path, files.version):
         raise NotFound(NO_SUCH_FILE)
     return await _public_bytes(ctx, task, path, files.version)
+
+
+async def _shown_at_head(ctx: Context, task: TaskId, path: str, version: VersionId) -> bool:
+    try:
+        found = await ctx.forge.content.read_file(PLATFORM, task, TASK_FILE, at=version)
+        definition = parse_task(found.content)
+    except NotFound, InvalidDefinition:
+        return path.startswith(PUBLIC_FOLDER)
+    if definition.scoring is None:
+        return path.startswith(PUBLIC_FOLDER)
+    return file_time(definition.scoring, path) is not None
 
 
 async def _public_bytes(ctx: Context, task: TaskId, path: str, version: VersionId) -> PublicFile:

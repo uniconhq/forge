@@ -110,8 +110,20 @@ class FakeWorkflows:
         self._state.require_read(as_, repo)
         files = self._state.files_at(repo, at)
         return FileSet(
-            version=at, tokens={path: token_of(content) for path, content in files.items()}
+            version=at,
+            tokens={path: token_of(content) for path, content in files.items()},
+            sizes={path: len(content) for path, content in files.items()},
         )
+
+    async def workflow_version(
+        self, as_: Identity, workflow: WorkflowId, version: str
+    ) -> VersionId:
+        self._state.record("workflow_version", as_, workflow=workflow, version=version)
+        repo = self._repo(workflow)
+        self._state.require_read(as_, repo)
+        if version not in repo.versions:
+            raise NotFound(f"{workflow} has no version {version}")
+        return VersionId(repo.versions[version])
 
     async def read_workflow_at(
         self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str

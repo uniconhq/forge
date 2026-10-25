@@ -36,6 +36,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BeforeValidator, Field, PlainValidator, model_validator
 
+from forge.domain.content import path_problem
 from forge.domain.errors import InvalidName
 from forge.domain.names import validate_name
 from forge.domain.types import VALUE_TYPES, Type, declared, retired_type, retired_type_message
@@ -62,7 +63,12 @@ NEW_VERSION = re.compile(r"^v([1-9][0-9]*)$")
 leading zero. A tag already at the forge under another name is still read
 by the wider `VERSION`, and is never newer than a numbered one."""
 HANDLE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
-REPORT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+REPORT_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+"""A report's or a run input's name, a column of the run, and a report's in a
+`program.yaml`, as `exec` and `interact` take it: one rule for all three."""
+TODAY_REPORT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+"""A reported value's name in a workflow of today's format, as versions
+already made hold it, with no length cap."""
 RESERVED_NAMES = ("outcome", "points", "penalty")
 RUN_NAMES = ("verdict", "passed")
 """What Unicon gives every run itself: its verdict, and `passed`, 1 when the
@@ -367,7 +373,7 @@ class WorkflowDefinition(Model):
         self, name: str, entry: str | Meaning
     ) -> list[tuple[tuple[str, ...], str]]:
         found: list[tuple[tuple[str, ...], str]] = []
-        if not REPORT_NAME.match(name):
+        if not TODAY_REPORT_NAME.match(name):
             found.append(
                 (
                     (),
@@ -441,17 +447,27 @@ def reserved_message(name: str) -> str:
 @dataclass(frozen=True, slots=True)
 class Reference:
     """One `${{ ... }}`: `inputs.<id>`, `test.<field>`, `steps.<id>.<output>`,
-    or `workflow.<path>`, the path its `name`. An `interact` step's output
-    for one program, `steps.<id>.<program>.<output>`, has the output
-    `<program>.<output>`, the name the primitive gives it.
+    or `workflow.<path>`, the path its `name`. In a run workflow, an
+    `interact` step's output for one program, `steps.<id>.<program>.<output>`,
+    names that `program` too.
     """
 
     kind: Literal["inputs", "test", "steps", "workflow"]
     name: str
     output: str | None = None
+    program: str | None = None
+
+    @property
+    def port(self) -> str | None:
+        """The output's name as the step gives it: `<program>.<output>` for
+        one program's output, the output's own name otherwise.
+        """
+        if self.program is not None:
+            return f"{self.program}.{self.output}"
+        return self.output
 
     def __str__(self) -> str:
-        tail = f".{self.output}" if self.output is not None else ""
+        tail = f".{self.port}" if self.port is not None else ""
         return f"${{{{ {self.kind}.{self.name}{tail} }}}}"
 
 
@@ -463,15 +479,16 @@ class BadReference(ValueError):
     """A `${{ }}` that is not one of the three a workflow makes."""
 
 
-def parse_reference(expression: str) -> Reference:
-    """The reference inside `${{ ... }}`. `BadReference` saying what a
-    reference may be.
+def parse_reference(expression: str, *, runs: bool = False) -> Reference:
+    """The reference inside `${{ ... }}`, read as a workflow of today's
+    format writes it, or as a run workflow does when `runs`. `BadReference`
+    saying what a reference may be in that format.
     """
     head, dot, path = expression.partition(".")
     if head == "workflow" and dot:
-        problem = path_problem(path)
+        problem = path_problem(path, folder=None, of="workflow")
         if problem is not None:
-            raise BadReference(f"Unicon cannot read ${{{{ {expression} }}}}: {problem}")
+            raise BadReference(f"Unicon cannot read ${{{{ {expression} }}}}. {problem}")
         return Reference("workflow", path)
     parts = expression.split(".")
     match parts:
@@ -481,47 +498,33 @@ def parse_reference(expression: str) -> Reference:
             return Reference("test", field)
         case ["steps", step, output] if step and output:
             return Reference("steps", step, output)
-        case ["steps", step, program, output] if step and program and output:
-            return Reference("steps", step, f"{program}.{output}")
+        case ["steps", step, program, output] if runs and step and program and output:
+            return Reference("steps", step, output, program)
+    if runs:
+        raise BadReference(
+            f"Unicon cannot read ${{{{ {expression} }}}}. Write ${{{{ inputs.<id> }}}}, "
+            "${{ steps.<id>.<output> }}, ${{ steps.<id>.<program>.<output> }} or "
+            "${{ workflow.<path> }}."
+        )
     raise BadReference(
         f"Unicon cannot read ${{{{ {expression} }}}}. Write ${{{{ inputs.<id> }}}}, "
-        "${{ steps.<id>.<output> }}, ${{ steps.<id>.<program>.<output> }}, "
-        "${{ workflow.<path> }} or ${{ test.<field> }}."
+        "${{ steps.<id>.<output> }} or ${{ test.<field> }}."
     )
 
 
-def path_problem(path: str) -> str | None:
-    """What is wrong with `path` as a file of a workflow, or a folder when
-    it ends in `/`: none when it is a relative path of named parts, no part
-    `.` or `..`, none starting or ending in a space, and no backslash or
-    control character.
-    """
-    parts = path.removesuffix("/").split("/")
-    if (
-        any(part in ("", ".", "..") or part != part.strip() for part in parts)
-        or "\\" in path
-        or any(ord(char) < 32 or ord(char) == 127 for char in path)
-    ):
-        return (
-            "give a file of the workflow by its path from the workflow's top, such as "
-            "diff/program.yaml, or a folder with a / at its end, such as diff/."
-        )
-    return None
-
-
-def whole_reference(text: str) -> Reference | None:
+def whole_reference(text: str, *, runs: bool = False) -> Reference | None:
     """The reference `text` is exactly, or none when it is anything else.
-    `BadReference` for a `${{ }}` that is not a reference.
+    `BadReference` for a `${{ }}` that is not a reference in the format.
     """
     found = _WHOLE.match(text)
-    return parse_reference(found.group(1)) if found is not None else None
+    return parse_reference(found.group(1), runs=runs) if found is not None else None
 
 
-def references(text: str) -> list[tuple[re.Match[str], Reference]]:
+def references(text: str, *, runs: bool = False) -> list[tuple[re.Match[str], Reference]]:
     """Every reference written into `text`, with where it is. `BadReference`
     for a `${{ }}` that is not one, or a `${{` that is never closed.
     """
-    found = [(match, parse_reference(match.group(1))) for match in _ANY.finditer(text)]
+    found = [(match, parse_reference(match.group(1), runs=runs)) for match in _ANY.finditer(text)]
     if text.count("${{") != len(found):
         raise BadReference(
             "A ${{ is not closed with }}, or has a brace inside it. Close each one, and "
@@ -662,12 +665,12 @@ class RunWorkflow(Model):
     def _check(self) -> RunWorkflow:
         problems = Problems()
         for key in self.inputs:
-            if not REPORT_NAME.match(key):
+            if not REPORT_NAME.fullmatch(key):
                 problems.add(
                     ("inputs", key),
-                    "An input's name may use only lower case letters, digits and underscores "
-                    "(_), starting with a letter, since a formula names it as a column of the "
-                    "run.",
+                    "An input's name may use at most 64 lower case letters, digits and "
+                    "underscores (_), starting with a letter, since a formula names it as a "
+                    "column of the run.",
                 )
             elif key in RESERVED_NAMES or key in RUN_NAMES:
                 problems.add(("inputs", key), reserved_message(key))
@@ -682,11 +685,11 @@ class RunWorkflow(Model):
                 problems.add(("steps", index, "with", SELF_REPORTED), SELF_REPORTED_GIVEN)
         for name in self.reports:
             at = ("reports", name)
-            if not REPORT_NAME.match(name):
+            if not REPORT_NAME.fullmatch(name):
                 problems.add(
                     at,
-                    "A report's name may use only lower case letters, digits and underscores "
-                    "(_), starting with a letter.",
+                    "A report's name may use at most 64 lower case letters, digits and "
+                    "underscores (_), starting with a letter.",
                 )
             elif name in RESERVED_NAMES or name in RUN_NAMES:
                 problems.add(at, reserved_message(name))
@@ -873,7 +876,6 @@ __all__ = [
     "parse_run_workflow",
     "parse_workflow",
     "parse_workflow_ref",
-    "path_problem",
     "read_workflow",
     "references",
     "reserved_message",

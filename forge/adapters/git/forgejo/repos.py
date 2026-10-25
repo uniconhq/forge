@@ -310,10 +310,11 @@ class Repos:
         file.
         """
         version = at or await self.head(as_, owner, name)
-        blobs = await self._blobs(as_, owner, name, version, links=links)
+        entries = await self._tree(as_, owner, name, version, links=links)
         return FileSet(
             version=VersionId(version),
-            tokens={path: ConflictToken(blob) for path, blob in blobs.items()},
+            tokens={path: ConflictToken(blob) for path, (blob, _) in entries.items()},
+            sizes={path: size for path, (_, size) in entries.items() if size is not None},
         )
 
     async def read_file(
@@ -744,11 +745,20 @@ class Repos:
     async def _blobs(
         self, as_: Identity, owner: str, name: str, at: str, *, links: bool = True
     ) -> dict[str, str]:
-        """The blob of every file at a version, read page by page while the
-        host says the listing was cut short; a symbolic link's too, unless
-        not `links`.
+        """The blob of every file at a version; a symbolic link's too,
+        unless not `links`.
         """
-        blobs: dict[str, str] = {}
+        entries = await self._tree(as_, owner, name, at, links=links)
+        return {path: blob for path, (blob, _) in entries.items()}
+
+    async def _tree(
+        self, as_: Identity, owner: str, name: str, at: str, *, links: bool = True
+    ) -> dict[str, tuple[str, int | None]]:
+        """The blob and size of every file at a version, read page by page
+        while the host says the listing was cut short; a symbolic link's
+        too, unless not `links`.
+        """
+        blobs: dict[str, tuple[str, int | None]] = {}
         for page in range(1, MAX_TREE_PAGES + 1):
             tree = json_of(
                 await self._http.call(
@@ -759,7 +769,7 @@ class Repos:
                 )
             )
             blobs.update(
-                (str(entry["path"]), str(entry["sha"]))
+                (str(entry["path"]), (str(entry["sha"]), _size(entry.get("size"))))
                 for entry in tree.get("tree") or []
                 if entry.get("type") == "blob" and (links or entry.get("mode") != SYMLINK)
             )
@@ -784,6 +794,11 @@ class Repos:
         except NotFound:
             return False
         return True
+
+
+def _size(value: object) -> int | None:
+    """A tree entry's size, none when the host gave no whole number."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _encoded(content: bytes) -> str:

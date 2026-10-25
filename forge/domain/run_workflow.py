@@ -54,7 +54,14 @@ from typing import Any
 
 from forge.domain.content import has_path
 from forge.domain.meanings import ReportMeaning
-from forge.domain.plans import Kind, Refused, a_type, fits
+from forge.domain.plans import (
+    Kind,
+    Refused,
+    a_type,
+    check_written,
+    fits,
+    literal_or_references,
+)
 from forge.domain.primitives import (
     FILE_NAME,
     LINK,
@@ -64,16 +71,20 @@ from forge.domain.primitives import (
     PROGRAM_NAME,
     PROGRAMS,
     WALL_CLOCK,
+    FromInput,
+    FromMax,
+    FromSum,
     Port,
     PrimitiveDeclaration,
 )
 from forge.domain.program_manifest import (
     EXEC_OWN_NAMES,
     INTERACT_OWN_NAMES,
+    TOO_LARGE,
     ProgramManifest,
     parse_program,
 )
-from forge.domain.types import SCALARS, Type
+from forge.domain.types import Type
 from forge.domain.workflow_definition import (
     SELF_REPORTED,
     SELF_REPORTED_GIVEN,
@@ -108,26 +119,48 @@ MANIFEST_FROM_STEP = (
 class WorkflowFiles:
     """The files of a workflow at the commit a version names: every path,
     and the content of each one wired into a manifest port
-    (`manifest_paths`).
+    (`manifest_paths`), but those over `MAX_MANIFEST`, which are `oversized`
+    and never read.
     """
 
     paths: frozenset[str]
     manifests: Mapping[str, bytes] = field(default_factory=dict)
+    oversized: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
-class Manifest:
-    """A `program.yaml` on a manifest port: a file of the workflow (`path`),
-    read by the check, or an input (`input`), which the task's save reads
-    once the task fills it with one of its files. `program` is none until it
-    is read, or when it does not read. `own_names` are what no report of it
-    may be called: the primitive's own outputs and its report folder's.
+class WorkflowManifest:
+    """A `program.yaml` on a manifest port that is a file of the workflow,
+    at `path`, which the check reads: `program`, none when it does not read.
+    `own_names` are what no report of it may be called: the primitive's own
+    outputs and its report folder's.
     """
 
-    path: str | None
-    input: str | None
+    path: str
     program: ProgramManifest | None
     own_names: frozenset[str]
+
+    @property
+    def source(self) -> str:
+        return self.path
+
+
+@dataclass(frozen=True, slots=True)
+class InputManifest:
+    """A `program.yaml` on a manifest port given by the workflow input
+    `input`, which the task's save reads once the task fills it with one of
+    its files. `own_names` as for a `WorkflowManifest`.
+    """
+
+    input: str
+    own_names: frozenset[str]
+
+    @property
+    def source(self) -> str:
+        return self.input
+
+
+Manifest = WorkflowManifest | InputManifest
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,16 +210,18 @@ class ResolvedStep:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedReport:
-    """A report as the check resolved it: the step and output it reads, the
-    output's port, none while it is a report of a manifest the task gives,
-    the report's title and unit, and `made_by`, the program whose manifest
-    declares it, none for an output the primitive measured. `written_by` is
-    the program given a manifest whose report folder wrote one of
-    `REPORT_TEXTS`, which no manifest declares.
+    """A report as the check resolved it: the step and output it reads, with
+    the program it is one program's output of, the output's port, none
+    while it is a report of a manifest the task gives, the report's title
+    and unit, and `made_by`, the program whose manifest declares it, none
+    for an output the primitive measured. `written_by` is the program given
+    a manifest whose report folder wrote one of `REPORT_TEXTS`, which no
+    manifest declares.
     """
 
     name: str
     step: str
+    program: str | None
     output: str
     port: Port | None
     title: str | None
@@ -211,7 +246,7 @@ class ResolvedReport:
         if self.port is None:
             return None
         manifest = self.made_by.manifest if self.made_by is not None else None
-        made_by = manifest.path or manifest.input if manifest is not None else None
+        made_by = manifest.source if manifest is not None else None
         return ReportMeaning(
             self.name,
             made_by or use,
@@ -309,7 +344,7 @@ def manifest_paths(workflow: RunWorkflow) -> set[str]:
             given.extend(each.get(MANIFEST) for each in programs.values() if isinstance(each, dict))
         for raw in given:
             try:
-                reference = whole_reference(raw) if isinstance(raw, str) else None
+                reference = whole_reference(raw, runs=True) if isinstance(raw, str) else None
             except BadReference:
                 continue
             if reference is not None and reference.kind == "workflow":
@@ -412,7 +447,11 @@ class _Checker:
             return
         at = (*where, "with")
         self._ports(at, use, declaration.inputs, given)
-        raised = {source.input for source in declaration.limits_from.values() if source.input}
+        raised = {
+            source.input
+            for source in declaration.limits_from.values()
+            if isinstance(source, FromInput)
+        }
         own = _Values()
         program_values: dict[str, _Values] = {}
         given_programs: dict[str, Mapping[str, Any]] = {}
@@ -425,7 +464,7 @@ class _Checker:
                 over = {
                     source.program_input
                     for source in declaration.limits_from.values()
-                    if source.program_input is not None
+                    if isinstance(source, FromSum | FromMax)
                 }
                 given_programs = self._programs((*at, name), use, port, raw, over, program_values)
             elif port.type is Type.LINKS:
@@ -472,7 +511,13 @@ class _Checker:
     def _ports(
         self, at: Path, use: str, ports: Mapping[str, Port], given: Mapping[str, Any]
     ) -> None:
-        for name in sorted(set(given) - set(ports) - {SELF_REPORTED}):
+        # A program's settings are read as YAML wrote them, so a key may be a
+        # number or nothing, which is no input's name and sorts with no text.
+        for name in given:
+            if not isinstance(name, str):
+                self.refuse((*at, str(name)), f"{name!r} is not an input's name. Remove it.")
+        unknown = {name for name in given if isinstance(name, str)} - set(ports) - {SELF_REPORTED}
+        for name in sorted(unknown):
             self.refuse((*at, name), f"{use} has no input called {name}. Remove it.")
         for name, port in ports.items():
             if not port.optional and name not in given:
@@ -482,14 +527,14 @@ class _Checker:
         self, declaration: PrimitiveDeclaration, program: Program, programs: Mapping[str, Program]
     ) -> dict[str, Port]:
         outputs = dict(declaration.outputs)
-        manifest = program.manifest.program if program.manifest is not None else None
-        if manifest is not None:
-            outputs.update(_report_ports(manifest, every_optional=False))
+        manifest = program.manifest
+        if isinstance(manifest, WorkflowManifest) and manifest.program is not None:
+            outputs.update(_report_ports(manifest.program, every_optional=False))
         held = declaration.inputs.get(PROGRAMS)
         for name, each in programs.items():
             for output, port in ((held.outputs or {}) if held is not None else {}).items():
                 outputs[f"{name}.{output}"] = port
-            read = each.manifest.program if each.manifest is not None else None
+            read = each.manifest.program if isinstance(each.manifest, WorkflowManifest) else None
             if read is not None:
                 for report, port in _report_ports(read, every_optional=True).items():
                     outputs[f"{name}.{report}"] = port
@@ -537,27 +582,15 @@ class _Checker:
         """What `raw` is, and each input it gives, whole or written into
         text.
         """
-        if isinstance(raw, bool):
-            return Kind(Type.BOOLEAN), []
-        if is_number(raw):
-            return Kind(Type.NUMBER), []
-        if raw is None or isinstance(raw, list | dict):
-            raise Refused(
-                "Give text, a number, true or false, or a ${{ }} reference, not a list, a set "
-                "of settings or nothing."
-            )
-        if not isinstance(raw, str):
-            raise Refused("Give text, a number, true or false, or a ${{ }} reference.")
-        try:
-            whole = whole_reference(raw)
-            written = references(raw) if whole is None else []
-        except BadReference as bad:
-            raise Refused(str(bad)) from None
+        read = literal_or_references(raw, runs=True)
+        if isinstance(read, Kind):
+            return read, []
+        whole, written = read
         if whole is not None:
             given = [(whole.name, True)] if whole.kind == "inputs" else []
             return self._kind(whole), given
         inputs: list[tuple[str, bool]] = []
-        for _, found in written:
+        for found in written:
             if found.kind == "steps":
                 raise Refused("A step's output can be given only whole, not written into text.")
             if found.kind == "workflow":
@@ -566,16 +599,7 @@ class _Checker:
                 )
             kind = self._kind(found)
             assert isinstance(kind, Kind)
-            if kind.type not in SCALARS:
-                raise Refused(
-                    f"{found} is {a_type(kind.type)}, and only text, a number, true or false or "
-                    "an enum can be written into text."
-                )
-            if kind.optional:
-                raise Refused(
-                    f"{found} is optional, so it can be given only whole, to an optional port, "
-                    "not written into text."
-                )
+            check_written(found, kind)
             inputs.append((found.name, False))
         return Kind(Type.TEXT, source="text" if written else "literal"), inputs
 
@@ -595,9 +619,9 @@ class _Checker:
             case "workflow":
                 return self._workflow_file(found.name)
         assert found.output is not None
-        step, port, _ = self._output(found.name, found.output)
+        step, port, _ = self._output(found)
         if port is None:
-            return _Pending(step.id, *_split(step, found.output))
+            return _Pending(step.id, found.program, found.output)
         if port.type is Type.OUTCOME:
             raise Refused(
                 "A step's outcome is read by Unicon itself, and cannot be given to another step."
@@ -620,36 +644,36 @@ class _Checker:
                 raise Refused(f"The workflow has no file {path}.")
         return Kind(Type.FOLDER if folder else Type.FILE, source="workflow")
 
-    def _output(
-        self, step_id: str, output: str
-    ) -> tuple[ResolvedStep, Port | None, Program | None]:
-        """The step, the port of its output, none for a report of a manifest
-        not read yet, and the program whose manifest declares it, if any.
+    def _output(self, found: Reference) -> tuple[ResolvedStep, Port | None, Program | None]:
+        """The step and the port of the output `found` reads, none for a
+        report of a manifest not read yet, and the program whose manifest
+        declares it, if any.
         """
+        step_id, name, report, output = found.name, found.program, found.output, found.port
+        assert report is not None and output is not None
         step = self.steps.get(step_id)
         if step_id in self.refused:
             raise Refused("")
         if step is None:
             raise Refused(f"There is no step called {step_id} before this one.")
-        name, report = _split(step, output)
+        if name is not None and not (step.programs or PROGRAMS in step.declaration.inputs):
+            raise Refused(f"The step {step_id} has no output called {output}.")
         program = step.programs.get(name) if name is not None else step.program
         if name is not None and program is None:
             raise Refused(f"The step {step_id} runs no program called {name}.")
-        if "." in report:
-            raise Refused(f"The step {step_id} has no output called {output}.")
         port = step.outputs.get(output)
         manifest = program.manifest if program is not None else None
+        read = manifest.program if isinstance(manifest, WorkflowManifest) else None
         if port is not None:
             declared = (
-                manifest is not None
-                and manifest.program is not None
-                and report in manifest.program.reports
+                read is not None
+                and report in read.reports
                 and output not in step.declaration.outputs
             )
             return step, port, program if declared else None
-        if manifest is not None and manifest.program is None and report not in manifest.own_names:
+        if manifest is not None and read is None and report not in manifest.own_names:
             return step, None, program
-        if manifest is not None and manifest.path is not None:
+        if isinstance(manifest, WorkflowManifest):
             raise Refused(
                 f"The step {step_id} has no output called {output}: neither {step.use} gives "
                 f"it nor {manifest.path} reports it."
@@ -696,7 +720,7 @@ class _Checker:
 
     def _named_file(self, at: Path, value: object, port: Port) -> None:
         try:
-            found = whole_reference(value) if isinstance(value, str) else None
+            found = whole_reference(value, runs=True) if isinstance(value, str) else None
         except BadReference as bad:
             raise Refused(str(bad)) from None
         if found is None:
@@ -845,7 +869,7 @@ class _Checker:
         is a file of the workflow.
         """
         try:
-            found = whole_reference(raw) if isinstance(raw, str) else None
+            found = whole_reference(raw, runs=True) if isinstance(raw, str) else None
         except BadReference:
             found = None
         if found is not None and found.kind == "steps":
@@ -856,26 +880,26 @@ class _Checker:
         if found is None or found.kind not in ("inputs", "workflow"):
             return None
         names = frozenset(own_names)
-        if found.kind == "inputs" or len(self.problems) > before:
+        if found.kind == "inputs":
+            return InputManifest(found.name, names)
+        if len(self.problems) > before:
             # One that is refused is left unread, so what reads its reports
             # is not refused again for it.
-            return Manifest(
-                found.name if found.kind == "workflow" else None,
-                found.name if found.kind == "inputs" else None,
-                None,
-                names,
-            )
+            return WorkflowManifest(found.name, None, names)
+        if self.files is not None and found.name in self.files.oversized:
+            self.refuse(at, f"{found.name}: {TOO_LARGE}")
+            return WorkflowManifest(found.name, None, names)
         text = self.files.manifests.get(found.name) if self.files is not None else None
         if text is None:
-            return Manifest(found.name, None, None, names)
+            return WorkflowManifest(found.name, None, names)
         try:
             read = parse_program(text, found.name, own_names=names)
         except InvalidDefinition as invalid:
             for problem in invalid.errors:
                 where = f", at {problem['path']}" if problem["path"] else ""
                 self.refuse(at, f"{found.name}{where}: {problem['message']}")
-            return Manifest(found.name, None, None, names)
-        return Manifest(found.name, None, read, names)
+            return WorkflowManifest(found.name, None, names)
+        return WorkflowManifest(found.name, read, names)
 
     def _time_limits(
         self, at: Path, step_id: str, port: Port, programs: Mapping[str, Mapping[str, Any]]
@@ -937,7 +961,7 @@ class _Checker:
         title = entry.title if isinstance(entry, RunReport) else None
         unit = entry.unit if isinstance(entry, RunReport) else None
         try:
-            found = whole_reference(raw)
+            found = whole_reference(raw, runs=True)
         except BadReference as bad:
             self.refuse(at, str(bad))
             return
@@ -945,24 +969,24 @@ class _Checker:
             self.refuse(at, "Give the step output this reports, as ${{ steps.<id>.<output> }}.")
             return
         try:
-            step, port, made_by = self._output(found.name, found.output)
+            step, port, made_by = self._output(found)
         except Refused as refused:
             self.refuse(at, str(refused))
             return
+        program, report = found.program, found.output
         if port is None:
-            program, report = _split(step, found.output)
             self.deferred.append(
                 Deferred(path_text(at), step.id, program, report, None, unit is not None)
             )
             pending = step.programs.get(program) if program is not None else step.program
             self.reports[name] = ResolvedReport(
-                name, step.id, found.output, None, title, unit, pending
+                name, step.id, program, report, None, title, unit, pending
             )
             return
         if port.type not in (Type.TEXT, Type.NUMBER):
             self.refuse(
                 at,
-                f"steps.{found.name}.{found.output} is {a_type(port.type)}, and only text or a "
+                f"steps.{found.name}.{found.port} is {a_type(port.type)}, and only text or a "
                 "number can be reported.",
             )
             return
@@ -974,13 +998,14 @@ class _Checker:
         written_by = (
             step.program
             if made_by is None
-            and found.output in REPORT_TEXTS
+            and program is None
+            and report in REPORT_TEXTS
             and step.declaration.outputs_from == MANIFEST
             and step.program.manifest is not None
             else None
         )
         self.reports[name] = ResolvedReport(
-            name, step.id, found.output, port, title, unit, made_by, written_by
+            name, step.id, program, report, port, title, unit, made_by, written_by
         )
 
 
@@ -1002,15 +1027,6 @@ def _report_ports(manifest: ProgramManifest, *, every_optional: bool) -> dict[st
     }
 
 
-def _split(step: ResolvedStep, output: str) -> tuple[str | None, str]:
-    """An output's program, for a step with programs, and its own name."""
-    if step.programs or PROGRAMS in step.declaration.inputs:
-        name, dot, rest = output.partition(".")
-        if dot:
-            return name, rest
-    return None, output
-
-
 def _runs(port: Port | None) -> bool:
     return port is not None and port.runs is True
 
@@ -1021,7 +1037,7 @@ def _limit(raw: object) -> int | Decimal | str | None:
         assert isinstance(raw, int | Decimal)
         return raw
     try:
-        found = whole_reference(raw) if isinstance(raw, str) else None
+        found = whole_reference(raw, runs=True) if isinstance(raw, str) else None
     except BadReference:
         return None
     return found.name if found is not None and found.kind == "inputs" else None
@@ -1035,7 +1051,7 @@ def _references_in(values: Iterable[object]) -> list[Reference]:
     for value in values:
         if isinstance(value, str):
             try:
-                found.extend(reference for _, reference in references(value))
+                found.extend(reference for _, reference in references(value, runs=True))
             except BadReference:
                 continue
         elif isinstance(value, dict):
@@ -1047,6 +1063,7 @@ def _references_in(values: Iterable[object]) -> list[Reference]:
 
 __all__ = [
     "Deferred",
+    "InputManifest",
     "InputUse",
     "Manifest",
     "Program",
@@ -1055,6 +1072,7 @@ __all__ = [
     "RunWorkflowCheck",
     "TimeLimitOrder",
     "WorkflowFiles",
+    "WorkflowManifest",
     "check_run_workflow",
     "manifest_paths",
 ]

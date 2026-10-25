@@ -58,6 +58,7 @@ from forge.domain.plans import (
     stray_units,
 )
 from forge.domain.primitives import PrimitiveDeclaration
+from forge.domain.program_manifest import MAX_MANIFEST
 from forge.domain.roles import Role, Scope, holds
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow, manifest_paths
 from forge.domain.sessions import Session
@@ -292,7 +293,7 @@ async def create_version(
         )
     definition = read_workflow(file.content)
     files = (
-        await _files(ctx, writer.identity, workflow, head, definition)
+        await files_at(ctx, writer.identity, workflow, head, definition)
         if isinstance(definition, RunWorkflow)
         else None
     )
@@ -523,25 +524,30 @@ async def _problems(
     ]
 
 
-async def _files(
+async def files_at(
     ctx: Context, as_: Identity, workflow: WorkflowId, at: VersionId, definition: RunWorkflow
 ) -> WorkflowFiles:
-    """The workflow's files at the commit `at`, read as `as_`: every path,
-    and each one wired into a manifest port that is there. One listed that
+    """The workflow's files at the commit `at`, read as `as_`, as making a
+    version checks them and a run task's save checks them again: every
+    path, and each one wired into a manifest port that is there. One listed that
     does not read as a file is left out, so the check refuses it as missing
-    at the manifest port.
+    at the manifest port; one listed as over `MAX_MANIFEST` is never read.
     """
     listed = await ctx.forge.workflows.workflow_files(as_, workflow, at)
     paths = set(listed.tokens)
     manifests: dict[str, bytes] = {}
+    oversized: set[str] = set()
     for path in sorted(manifest_paths(definition) & paths):
+        if listed.sizes.get(path, 0) > MAX_MANIFEST:
+            oversized.add(path)
+            continue
         try:
             read = await ctx.forge.workflows.read_workflow_at(as_, workflow, at, path)
         except NotFound:
             paths.discard(path)
             continue
         manifests[path] = read.content
-    return WorkflowFiles(frozenset(paths), manifests)
+    return WorkflowFiles(frozenset(paths), manifests, frozenset(oversized))
 
 
 async def _make(ctx: Context, writer: _Writer, name: str, files: dict[str, bytes]) -> WorkflowId:

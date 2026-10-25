@@ -21,11 +21,11 @@ from forge.domain.program_manifest import (
     EXEC_OWN_NAMES,
     INTERACT_OWN_NAMES,
     MAX_MANIFEST,
-    REPORT_NAME,
     Report,
     parse_program,
 )
 from forge.domain.scoring import Better
+from forge.domain.workflow_definition import REPORT_NAME
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from tests.conftest import sibling
 

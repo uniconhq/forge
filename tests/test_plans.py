@@ -1118,6 +1118,16 @@ def test_a_folder_value_names_a_folder_with_a_file_in_the_task(data: str, messag
     assert refused(text, NOTEBOOK_PATHS, NOTEBOOK) == [{"path": "inputs.data", "message": message}]
 
 
+def test_a_task_of_todays_format_keeps_a_folder_with_a_space_at_a_parts_edge() -> None:
+    """As a task saved before the run format's stricter path rule was."""
+    text = NOTEBOOK_TASK.replace("data/mnist-test/", "data /mnist-test/")
+    paths = {path.replace("data/", "data /") for path in NOTEBOOK_PATHS}
+
+    predict = step(compiled(text, paths, NOTEBOOK).plan, "predict")
+
+    assert predict["inputs"]["data"] == {"task": "data /mnist-test/"}
+
+
 def test_a_task_folder_into_a_folder_port_is_listed_in_folders() -> None:
     plan = compiled(NOTEBOOK_TASK, NOTEBOOK_PATHS, NOTEBOOK).plan
     predict = step(plan, "predict")

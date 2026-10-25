@@ -19,7 +19,6 @@ Only the forge reads the YAML: the primitive is handed the manifest's JSON
 """
 
 import math
-import re
 from collections.abc import Collection
 from decimal import Decimal
 from typing import Annotated, Literal
@@ -28,6 +27,7 @@ from pydantic import Field, model_validator
 
 from forge.domain import exact_json
 from forge.domain.scoring import Better
+from forge.domain.workflow_definition import REPORT_NAME
 from forge.domain.yaml_models import (
     InvalidDefinition,
     Model,
@@ -42,8 +42,7 @@ from forge.domain.yaml_models import (
 PROGRAM_FILE = "program.yaml"
 MAX_MANIFEST = 256 * 1024
 """The most bytes a `program.yaml` may hold, as a `workflow.yaml` may."""
-REPORT_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
-"""A report's name, as `exec` and `interact` take it."""
+TOO_LARGE = f"A program.yaml can be at most {MAX_MANIFEST // 1024} KB. Make it smaller."
 EXEC_OWN_NAMES = frozenset(
     {
         "verdict",
@@ -191,8 +190,7 @@ def parse_program(text: bytes | str, path: str, *, own_names: Collection[str]) -
     checked once it has one. One over `MAX_MANIFEST` is refused unread.
     """
     if len(text.encode() if isinstance(text, str) else text) > MAX_MANIFEST:
-        message = f"A program.yaml can be at most {MAX_MANIFEST // 1024} KB. Make it smaller."
-        raise InvalidDefinition(path, [Problem(path="", message=message)])
+        raise InvalidDefinition(path, [Problem(path="", message=TOO_LARGE)])
     document = load_mapping(path, text)
     reports = document.get("reports")
     named = _name_problems(reports, own_names)
