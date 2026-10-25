@@ -158,6 +158,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     assert commit["author"]["login"] == person["login"]
     assert sorted(entry["filename"] for entry in commit["files"]) == [
         "plans/plan.json",
+        "plans/runs.json",
         "statement.md",
         "task.yaml",
     ]
