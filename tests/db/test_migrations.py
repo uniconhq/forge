@@ -60,6 +60,7 @@ TABLES = {
     "grading_reuses",
     "releases",
     "entries",
+    "hold_ends",
 }
 
 

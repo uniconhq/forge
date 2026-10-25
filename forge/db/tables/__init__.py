@@ -7,6 +7,7 @@ from forge.db.base import Base
 from forge.db.tables.entrants import Entrant, EntrantMember
 from forge.db.tables.entries import Entry
 from forge.db.tables.gradings import Grading
+from forge.db.tables.hold_ends import HoldEnd
 from forge.db.tables.invites import Invite
 from forge.db.tables.marks import Mark
 from forge.db.tables.names import Name
@@ -24,6 +25,7 @@ __all__ = [
     "Grading",
     "GradingReuse",
     "GradingStep",
+    "HoldEnd",
     "Invite",
     "Mark",
     "Name",

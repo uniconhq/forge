@@ -28,7 +28,9 @@ save refuses it first. `BoardsCheck.order` gives every column of the
 readable boards after each column it reads, so they are worked out in one
 pass with no recursion between them. `BoardsCheck.through` gives, for each
 column giving a submission's results, every value and fact any column of
-any board reads through it, which its picks read as well (guarantee 5).
+any board reads through it, which its picks read as well (guarantee 5);
+`BoardsCheck.hiding` gives the same read by the boards a read works out
+alone, which hide its picks where held back (stage 5 section 6, item 98).
 
 Each column's tree is at most `MOST_NODES` nodes and `MOST_DEPTH` deep,
 as a task's value is, and a board has at most `MOST_COLUMNS` columns,
@@ -94,10 +96,10 @@ class BoardsCheck:
     """Every problem with a contest's leaderboards, each at its path from
     the top of `contest.yaml`; each column's shape, by board; the boards
     that are worked out on read; their columns in an order that has each
-    after every column it reads; and, for each column giving a
-    submission's results, the values and facts any column reads through
-    it, from any board, which its picks pass over a submission still
-    waiting on (guarantee 5).
+    after every column it reads; for each column giving a submission's
+    results, the values and facts any column reads through it, from any
+    board, which its picks pass over a submission still waiting on
+    (guarantee 5); and the same by the board whose columns read them.
     """
 
     problems: Found
@@ -105,6 +107,20 @@ class BoardsCheck:
     readable: frozenset[str] = frozenset()
     order: tuple[BoardColumn, ...] = ()
     through: Mapping[BoardColumn, frozenset[str]] = field(default_factory=dict)
+    through_by: Mapping[str, Mapping[BoardColumn, frozenset[str]]] = field(default_factory=dict)
+
+    def hiding(self) -> dict[BoardColumn, frozenset[str]]:
+        """What the boards `order` works out read through each column giving
+        a submission's results: a pick is hidden where one of these is held
+        back, so a board not read, staff's among them, hides no pick of a
+        board that is (item 98). Its picks still pass over a submission
+        waiting on anything in `through`, the same on every board."""
+        boards = {board for board, _ in self.order}
+        found: dict[BoardColumn, set[str]] = {}
+        for board in boards:
+            for column, names in self.through_by.get(board, {}).items():
+                found.setdefault(column, set()).update(names)
+        return {column: frozenset(names) for column, names in found.items()}
 
     def reads(self, task: str, name: str) -> list[str]:
         """The boards with a column reading `name` of `task`, directly or
@@ -169,10 +185,10 @@ def check_boards(boards: Mapping[str, Leaderboard], tasks: Sequence[str]) -> Boa
     problems += _contest_names(boards, tasks)
     kinds = _kinds(boards)
     shapes: dict[str, dict[str, ColumnShape]] = {}
-    through: dict[BoardColumn, set[str]] = {}
+    through: dict[str, dict[BoardColumn, set[str]]] = {}
     troubled: set[str] = set()
     for key, board in boards.items():
-        checker = _Checker(key, board, tasks, boards, kinds, through)
+        checker = _Checker(key, board, tasks, boards, kinds, through.setdefault(key, {}))
         checker.check()
         shapes[key] = checker.shapes
         if checker.problems:
@@ -189,8 +205,18 @@ def check_boards(boards: Mapping[str, Leaderboard], tasks: Sequence[str]) -> Boa
             )
         )
     readable = _readable(shapes, troubled)
+    by = {key: _through(boards, read) for key, read in through.items()}
+    every: dict[BoardColumn, set[str]] = {}
+    for read in by.values():
+        for at, names in read.items():
+            every.setdefault(at, set()).update(names)
     return BoardsCheck(
-        problems, shapes, readable, _order(shapes, readable), _through(boards, through)
+        problems,
+        shapes,
+        readable,
+        _order(shapes, readable),
+        {at: frozenset(names) for at, names in every.items()},
+        by,
     )
 
 

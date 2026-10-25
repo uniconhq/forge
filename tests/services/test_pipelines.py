@@ -1643,7 +1643,7 @@ async def _staff(setup: Setup, acme: Acme) -> Any:
     return await signed_in(setup, acme.fake, 7)
 
 
-async def test_staff_read_every_row_of_a_board_and_nobody_else_reads_one_yet(
+async def test_staff_read_every_row_of_a_staff_board_and_nobody_else_reads_it(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     islands = await _checked(setup, acme, contest=GRADEBOOK)
@@ -1655,8 +1655,8 @@ async def test_staff_read_every_row_of_a_board_and_nobody_else_reads_one_yet(
 
     [board] = await boards.seen(setup, staff, SPRING)
 
-    # Until audiences come, an entrant and a visitor read no board, and
-    # the board with no audience is staff's.
+    # A board with no audience is staff's, so an entrant and a visitor
+    # read none.
     assert await boards.seen(setup, entrant, SPRING) == ()
     assert await boards.seen(setup, None, SPRING) == ()
     assert (board.key, board.title, board.audience.who) == ("gradebook", "Gradebook", "staff")
@@ -1694,6 +1694,27 @@ async def test_a_staff_read_of_a_board_starts_the_retry_of_a_failure_it_finds(
         (1, False),
         (2, True),
     ]
+
+
+async def test_a_visitors_or_an_entrants_read_of_a_board_starts_no_retry(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    contest = GRADEBOOK.replace("    title: Gradebook\n", "    audience: {who: everyone}\n")
+    islands = await _checked(setup, acme, contest=contest)
+    entrant = await _submit(setup, acme, islands)
+    [first] = await _rows(setup, "early")
+    async with setup.unit_of_work() as ctx:
+        row = await ctx.db.get(Grading, first.id)
+        assert row is not None
+        row.status, row.error = GradingStatus.SYSTEM_ERROR, "The step crashed."
+
+    # Only staff's read sees to a failure: a read with no session writes
+    # nothing, and the entrant's own submission page sees to theirs.
+    assert len(await boards.seen(setup, None, SPRING)) == 1
+    assert len(await boards.seen(setup, entrant, SPRING)) == 1
+    await setup.settle()
+
+    assert [(row.attempt, row.automatic) for row in await _rows(setup, "early")] == [(1, False)]
 
 
 async def test_staff_read_a_rows_earlier_result_while_its_newest_submission_grades(

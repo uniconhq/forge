@@ -32,6 +32,13 @@ task's submissions oldest first, every number an exact fraction.
   pick column what any column of any board reads through it
   (`BoardsCheck.through`), a pick read in place, `{value: [<pick>, v]}`,
   its `v`.
+- **Hidden.** A name a submission's results hold back from the reader
+  (`Submitted.hidden`) gives no number, and every cell that reads it is
+  hidden, the values a pick or a fold compares or tests included, and
+  every column reading through such a pick (guarantee 2): a pick is hidden
+  when anything the boards worked out read through it
+  (`BoardsCheck.hiding`) is hidden on a submission it looked at. Which
+  cells the reader is shown is `forge.domain.boards`'.
 
 Each cell records the submissions it counted (the leaderboards note's
 5.3): a pick its one; `max` and `min` the oldest that reached the result;
@@ -57,12 +64,13 @@ SubmissionAt = tuple[str, int]
 @dataclass(frozen=True, slots=True)
 class Submitted:
     """One submission's results as a board reads them: its number, each
-    value and fact that has a number, by name, and the names still
-    waiting. A name in neither is missing."""
+    value and fact that has a number, by name, the names still waiting, and
+    the names held back from the reader. A name in none is missing."""
 
     number: int
     numbers: Mapping[str, Fraction] = field(default_factory=dict)
     waiting: frozenset[str] = frozenset()
+    hidden: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,22 +78,25 @@ class Cell:
     """What one column gave a row: its number, or for a column giving a
     submission's results, the submission with its task, none for none;
     whether it gives a submission's results; the submissions it counted;
-    and those it left out as still waiting."""
+    those it left out as still waiting; and whether it read anything held
+    back from the reader."""
 
     number: Fraction | None = None
     picked: tuple[str, Submitted] | None = None
     submission: bool = False
     counted: frozenset[SubmissionAt] = frozenset()
     waiting: frozenset[SubmissionAt] = frozenset()
+    hidden: bool = False
 
     def having(self, *others: Cell) -> Cell:
-        """This, with what `others` counted and left out added."""
+        """This, with what `others` counted, left out and read added."""
         return Cell(
             self.number,
             self.picked,
             self.submission,
             self.counted.union(*(other.counted for other in others)),
             self.waiting.union(*(other.waiting for other in others)),
+            self.hidden or any(other.hidden for other in others),
         )
 
     @property
@@ -107,10 +118,12 @@ def work_out_row(
     the row's submissions to each task, oldest first, a task with none left
     out, and `trees` each task's values' trees, which `best_each` reads."""
     row = _Row(results, trees)
+    hiding = checked.hiding()
     for board, name in checked.order:
         row.board = board
         through = checked.through.get((board, name), frozenset())
-        row.done[(board, name)] = row.node(boards[board].columns[name], {}, through)
+        hides = hiding.get((board, name), frozenset())
+        row.done[(board, name)] = row.node(boards[board].columns[name], {}, through, hides)
     return row.done
 
 
@@ -128,10 +141,17 @@ class _Row:
         self.done: dict[BoardColumn, Cell] = {}
         self.board = ""
 
-    def node(self, tree: object, scope: Scope, through: frozenset[str] = frozenset()) -> Cell:
+    def node(
+        self,
+        tree: object,
+        scope: Scope,
+        through: frozenset[str] = frozenset(),
+        hides: frozenset[str] = frozenset(),
+    ) -> Cell:
         """What `tree` gives, `scope` the submissions the blocks around it
-        are looking at by task, and `through` what is read through it when
-        it gives a submission's results."""
+        are looking at by task, and, when it gives a submission's results,
+        `through` what is read through it and `hides` what the boards
+        worked out read through it."""
         if not isinstance(tree, dict | list):
             number = exact(tree)
             if number is None:
@@ -140,7 +160,7 @@ class _Row:
         if not isinstance(tree, dict):
             raise ValueError(f"{tree!r} is not a node of a column's tree")
         if "block" in tree:
-            return self.block(tree, scope, through)
+            return self.block(tree, scope, through, hides)
         leaf = leaf_of(tree)
         if leaf is None:
             raise ValueError(f"{tree!r} is not a node of a column's tree")
@@ -154,14 +174,20 @@ class _Row:
             picked = (
                 self.done[(self.board, of)]
                 if isinstance(of, str)
-                else self.node(of, scope, frozenset({name}))
+                else self.node(of, scope, frozenset({name}), frozenset({name}))
             )
             if picked.picked is None:
-                return Cell(counted=picked.counted, waiting=picked.waiting)
+                return _MISSING.having(picked)
             return _read(picked.picked, name).having(picked)
         raise ValueError(f"{tree!r} gives no number on a board")
 
-    def block(self, tree: Mapping[str, object], scope: Scope, through: frozenset[str]) -> Cell:
+    def block(
+        self,
+        tree: Mapping[str, object],
+        scope: Scope,
+        through: frozenset[str],
+        hides: frozenset[str],
+    ) -> Cell:
         name = tree["block"]
         block = CATALOGUE.get(name) if isinstance(name, str) else None
         form = form_of(block, tree) if block is not None else None
@@ -173,7 +199,7 @@ class _Row:
             task = str(source["results"])
             listed = self.results.get(task, ())
             if block.name in PICKS:
-                return self.pick(block.name, tree, task, listed, scope, through)
+                return self.pick(block.name, tree, task, listed, scope, through, hides)
             if block.name == "best_each":
                 return self.best_each(tree, task, listed)
             return self.fold(block.name, tree, task, listed, scope)
@@ -182,17 +208,17 @@ class _Row:
             if test.submission:
                 truth = test.picked is not None
             elif test.number is None:
-                return Cell(counted=test.counted, waiting=test.waiting)
+                return _MISSING.having(test)
             else:
                 truth = test.number != 0
             return self.node(tree["then"] if truth else tree["else"], scope).having(test)
         given = tree["of"]
         inputs = given if isinstance(given, list) else [given]
         if block.name == "otherwise":
-            first = self.node(inputs[0], scope, through)
+            first = self.node(inputs[0], scope, through, hides)
             if not first.nothing:
                 return first
-            return self.node(inputs[1], scope, through).having(first)
+            return self.node(inputs[1], scope, through, hides).having(first)
         got = [self.node(each, scope) for each in inputs]
         read = _MISSING.having(*got)
         if any(each.number is None for each in got):
@@ -221,20 +247,27 @@ class _Row:
         listed: Sequence[Submitted],
         scope: Scope,
         through: frozenset[str],
+        hides: frozenset[str],
     ) -> Cell:
         waiting: set[SubmissionAt] = set()
+        hidden = False
         kept: list[tuple[Submitted, Fraction]] = []
         for each in listed:
             where = self._looked_at(tree, "where", task, each, scope)
             if where is not None:
                 waiting |= where.waiting
+                hidden = hidden or where.hidden
                 if where.number is None or where.number == 0:
                     continue
             by = self._looked_at(tree, "by", task, each, scope)
             if by is not None:
                 waiting |= by.waiting
+                hidden = hidden or by.hidden
                 if by.number is None:
                     continue
+            # What is read through the pick is read of each submission it
+            # looks at, so a name held back there hides the pick.
+            hidden = hidden or bool(hides & each.hidden)
             if through & each.waiting:
                 # What is read through the pick still waits: pass it over.
                 waiting.add((task, each.number))
@@ -256,12 +289,13 @@ class _Row:
                     best = min(number for _, number in kept)
                     found = next(each for each, number in kept if number == best)
         if found is None:
-            return Cell(submission=True, waiting=frozenset(waiting))
+            return Cell(submission=True, waiting=frozenset(waiting), hidden=hidden)
         return Cell(
             picked=(task, found),
             submission=True,
             counted=frozenset({(task, found.number)}),
             waiting=frozenset(waiting),
+            hidden=hidden,
         )
 
     def fold(
@@ -273,16 +307,19 @@ class _Row:
         scope: Scope,
     ) -> Cell:
         waiting: set[SubmissionAt] = set()
+        hidden = False
         kept: list[tuple[Submitted, Fraction]] = []
         for each in listed:
             where = self._looked_at(tree, "where", task, each, scope)
             if where is not None:
                 waiting |= where.waiting
+                hidden = hidden or where.hidden
                 if where.number is None or where.number == 0:
                     continue
             of = self._looked_at(tree, "of", task, each, scope)
             if of is not None:
                 waiting |= of.waiting
+                hidden = hidden or of.hidden
                 if of.number is None:
                     continue
             kept.append(
@@ -291,16 +328,16 @@ class _Row:
         left = frozenset(waiting)
         if name == "count":
             counted = frozenset((task, each.number) for each, _ in kept)
-            return Cell(Fraction(len(kept)), counted=counted, waiting=left)
+            return Cell(Fraction(len(kept)), counted=counted, waiting=left, hidden=hidden)
         if not kept:
-            return Cell(waiting=left)
+            return Cell(waiting=left, hidden=hidden)
         if name == "sum":
             counted = frozenset((task, each.number) for each, _ in kept)
             total = over_numbers("add", [Fraction(0), *(number for _, number in kept)])
-            return Cell(total, counted=counted, waiting=left)
+            return Cell(total, counted=counted, waiting=left, hidden=hidden)
         best = (max if name == "max" else min)(number for _, number in kept)
         first = next(each for each, number in kept if number == best)
-        return Cell(best, counted=frozenset({(task, first.number)}), waiting=left)
+        return Cell(best, counted=frozenset({(task, first.number)}), waiting=left, hidden=hidden)
 
     def best_each(self, tree: Mapping[str, object], task: str, listed: Sequence[Submitted]) -> Cell:
         named = tree["value"]
@@ -309,8 +346,10 @@ class _Row:
         value = str(named["name"])
         own = self.trees.get(task, {}).get(value)
         reads = _plain_reads(own)
+        # It reads the value and each it reads directly, of every submission.
+        hidden = any(name in each.hidden for each in listed for name in {value, *(reads or ())})
         if own is None or reads is None or not reads <= set(directions):
-            return _MISSING
+            return Cell(hidden=hidden)
         waiting: set[SubmissionAt] = set()
         counted: set[SubmissionAt] = set()
         bests: dict[str, Fraction | None] = {}
@@ -332,11 +371,18 @@ class _Row:
             bests[each] = best[1] if best is not None else None
             if best is not None:
                 counted.add((task, best[0].number))
-        return Cell(_again(own, bests), counted=frozenset(counted), waiting=frozenset(waiting))
+        return Cell(
+            _again(own, bests),
+            counted=frozenset(counted),
+            waiting=frozenset(waiting),
+            hidden=hidden,
+        )
 
 
 def _read(picked: tuple[str, Submitted], name: str) -> Cell:
     task, submitted = picked
+    if name in submitted.hidden:
+        return Cell(hidden=True)
     if name in submitted.waiting:
         return Cell(waiting=frozenset({(task, submitted.number)}))
     return Cell(submitted.numbers.get(name))

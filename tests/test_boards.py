@@ -8,6 +8,7 @@ self-reported parts; and the hold.
 
 import uuid
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from fractions import Fraction
 from typing import Any
 
@@ -21,15 +22,36 @@ from forge.domain.blocks.check import check_values
 from forge.domain.blocks.evaluate import Column, RunResult
 from forge.domain.blocks.numbers import Better
 from forge.domain.board_checks import check_contest, marks_of
-from forge.domain.boards import Unranked, headers_of, ranked
+from forge.domain.boards import (
+    STAFF,
+    Board,
+    BoardCell,
+    Counted,
+    Header,
+    Loaded,
+    Row,
+    Viewer,
+    boards_read,
+    grading_seen,
+    headers_of,
+    held_back,
+    holding,
+    listed_now,
+    read_boards,
+    results_seen,
+)
 from forge.domain.definitions import (
     ContestDefinition,
+    Hold,
     InvalidDefinition,
     Leaderboard,
     parse_contest,
+    parse_task,
 )
 from forge.domain.names import EntrantOwner
+from forge.domain.run_showing import ValueShown
 from forge.domain.yaml_models import one_line
+from tests.test_run_task import ISLANDS as ISLANDS_TASK
 
 HEAD = """\
 name: Boards
@@ -394,24 +416,58 @@ def test_a_column_read_from_another_board_works_out_and_names_the_task() -> None
     assert boards.needed(["two"]).order == (("one", "best"), ("two", "half"))
 
 
-def test_the_three_boards_rank_rows_with_shared_places() -> None:
-    settings = contest(ICPC)
+def owner(entrant: int) -> EntrantOwner:
+    return EntrantOwner(uuid.UUID(int=entrant))
+
+
+def read_as(
+    text: str,
+    key: str,
+    rows: list[tuple[int, str, dict[str, list[Submitted]]]],
+    viewer: Viewer = STAFF,
+    *,
+    released: list[str] | None = None,
+    held: Mapping[int, Mapping[str, int]] | None = None,
+) -> tuple[Board, ...]:
+    """The board `key` as `viewer` reads it, each row given by its entrant,
+    name and results as the viewer reads them; empty when they see none."""
+    settings = contest(text)
     found = checked(settings)
-    board = settings.leaderboards["standings"]
-
-    def row(entrant: int, name: str, a: list[Submitted]) -> Unranked:
-        worked = work_out_row(settings.leaderboards, found, {"a": a}, {})
-        owner = EntrantOwner(uuid.UUID(int=entrant))
-        return Unranked(owner, name, {key: worked[("standings", key)] for key in board.columns})
-
-    solved = [sub(1, attempt=1, seconds=1200, compiled=1, solved=1)]
-    standings = ranked(
-        "standings",
-        board,
-        headers_of("standings", board, {}, {}),
-        [row(1, "cy", []), row(2, "bo", solved), row(3, "al", solved)],
+    assert not found.problems, found.problems
+    worked = [
+        Row(
+            owner(entrant),
+            name,
+            work_out_row(settings.leaderboards, found, lists, {}),
+            (held or {}).get(entrant, {}),
+        )
+        for entrant, name, lists in rows
+    ]
+    return read_boards(
+        settings.leaderboards,
+        found,
+        [key],
+        worked,
+        viewer,
+        released=[task.id for task in settings.tasks] if released is None else released,
+        headers={key: headers_of(key, each, {}, {}) for key, each in settings.leaderboards.items()},
     )
 
+
+def one(boards: tuple[Board, ...]) -> Board:
+    assert len(boards) == 1
+    return boards[0]
+
+
+def test_the_three_boards_rank_rows_with_shared_places() -> None:
+    solved = [sub(1, attempt=1, seconds=1200, compiled=1, solved=1)]
+    standings = one(
+        read_as(
+            ICPC, "standings", [(1, "cy", {}), (2, "bo", {"a": solved}), (3, "al", {"a": solved})]
+        )
+    )
+
+    # Guarantee 7: ties share a place, 1, 1, 3, listed by name.
     assert [(each.name, each.place) for each in standings.rows] == [
         ("al", 1),
         ("bo", 1),
@@ -428,28 +484,512 @@ def test_the_three_boards_rank_rows_with_shared_places() -> None:
     ]
 
 
+def rewards(entrant: int, *found: int) -> tuple[int, str, dict[str, list[Submitted]]]:
+    return entrant, f"r{entrant}", {"cartpole": [sub(n, reward=r) for n, r in enumerate(found, 1)]}
+
+
 def test_a_missing_sort_key_sorts_last_whichever_way() -> None:
-    settings = contest(GRADEBOOK)
-    found = checked(settings)
-    board = settings.leaderboards["cartpole_ranking"]
-
-    def row(entrant: int, rewards: list[int]) -> Unranked:
-        worked = work_out_row(
-            settings.leaderboards,
-            found,
-            {"cartpole": [sub(n, reward=r) for n, r in enumerate(rewards, 1)]},
-            {},
-        )
-        owner = EntrantOwner(uuid.UUID(int=entrant))
-        return Unranked(owner, f"r{entrant}", {"reward": worked[("cartpole_ranking", "reward")]})
-
-    ranking = ranked("cartpole_ranking", board, (), [row(1, []), row(2, [10]), row(3, [20])])
+    ranking = one(
+        read_as(GRADEBOOK, "cartpole_ranking", [rewards(1), rewards(2, 10), rewards(3, 20)])
+    )
 
     assert [(each.name, each.place) for each in ranking.rows] == [
         ("r3", 1),
         ("r2", 2),
         ("r1", 3),
     ]
+
+
+# Who sees what (SIMPLER-CORE.md 10.2, the leaderboards note's 5.1)
+
+
+def test_a_row_reads_only_its_own_entrant() -> None:
+    # Guarantee 1: another row submitting moves no cell of this one.
+    alone = one(read_as(GRADEBOOK, "cartpole_ranking", [rewards(1, 10), rewards(2)]))
+    beaten = one(read_as(GRADEBOOK, "cartpole_ranking", [rewards(1, 10), rewards(2, 500)]))
+
+    assert alone.rows[0].cells == beaten.rows[1].cells
+
+
+def hidden_sub(number: int, *names: str, **numbers: Any) -> Submitted:
+    found = sub(number, **numbers)
+    return Submitted(found.number, found.numbers, found.waiting, frozenset(names))
+
+
+def test_a_cell_is_hidden_when_a_pick_compared_a_value_not_shown() -> None:
+    # Guarantee 2: the highest reward is picked by comparing every reward,
+    # so one hidden reward hides the cell, and what it counted with it.
+    lists = {"cartpole": [sub(1, reward=10), hidden_sub(2, "reward")]}
+    seen = one(read_as(GRADEBOOK, "cartpole_ranking", [(1, "r1", lists)], Viewer()))
+    staff = one(read_as(GRADEBOOK, "cartpole_ranking", [(1, "r1", lists)]))
+
+    assert seen.rows[0].cells == (BoardCell("reward", None, hidden=True),)
+    assert staff.rows[0].cells[0].number == 10
+
+
+def test_a_fold_is_hidden_when_its_where_or_its_of_read_a_value_not_shown() -> None:
+    # Guarantee 2: a fold tests its where and folds its of over each
+    # submission, so one hidden value hides it.
+    lists = {"a": [sub(1, score=3), hidden_sub(2, "score")]}
+    where = {"block": "gt", "of": [read("a", "score"), 1]}
+    count = column("p", "c", lists, {"block": "count", "over": results("a"), "where": where})
+    most = column("p", "c", lists, {"block": "max", "over": results("a"), "of": read("a", "score")})
+    shown = column("p", "c", {"a": [sub(1, score=3)]}, {"block": "count", "over": results("a")})
+
+    assert count.hidden and most.hidden
+    assert not shown.hidden
+
+
+def test_best_each_is_hidden_when_a_value_it_reads_is_not_shown_on_any_submission() -> None:
+    # Guarantee 2: best_each compares each value its value reads.
+    tree = {
+        "block": "best_each",
+        "from": results("a"),
+        "value": {"name": "total"},
+        "directions": {"st1": "desc", "st2": "desc"},
+    }
+    boards = {"p": Leaderboard.model_validate({"columns": {"c": tree}})}
+    found = check_boards(boards, ["a"])
+
+    def best(*listed: Submitted) -> Cell:
+        return work_out_row(boards, found, {"a": list(listed)}, {"a": ISLANDS_VALUES})[("p", "c")]
+
+    assert best(sub(1, st1=1, st2=0), hidden_sub(2, "st2", st1=0)).hidden
+    assert not best(sub(1, st1=1, st2=0), sub(2, st1=0, st2=1)).hidden
+
+
+def test_a_pick_is_hidden_by_a_value_read_through_it_on_a_submission_it_did_not_take() -> None:
+    # Item 85: the latest submission is taken, but the total read through
+    # the pick is hidden on the one before, so the cell is hidden.
+    latest = read({"block": "latest", "from": results("a")}, "total")
+    hidden = column("p", "c", {"a": [hidden_sub(1, "total"), sub(2, total=50)]}, latest)
+    shown = column("p", "c", {"a": [sub(1, total=40), sub(2, total=50)]}, latest)
+
+    assert hidden.hidden and hidden.counted == {("a", 2)}
+    assert (shown.number, shown.hidden) == (Fraction(50), False)
+
+
+KAGGLE = """tasks: [{id: k}]
+leaderboards:
+  public:
+    audience: {who: everyone}
+    columns:
+      score: {block: max, over: {results: k}, of: {value: [k, public]}}
+    sort: [{score: desc}]
+    display: [score]
+  private:
+    audience: {who: everyone}
+    columns:
+      score:
+        value:
+          - {block: highest, from: {results: k}, by: {value: [k, public]}}
+          - private
+    sort: [{score: desc}]
+    display: [score]
+"""
+
+
+def kaggle(number: int, public: int, private: int, *, shown: bool) -> Submitted:
+    values = [ValueShown("public", Fraction(public), False, False)]
+    if shown:
+        values.append(ValueShown("private", Fraction(private), False, False))
+    listed = [value.name for value in values]
+    return results_seen(number, {}, values, 1, ["public", "private"], listed, True)
+
+
+def test_the_kaggle_private_board_is_hidden_until_private_is_shown() -> None:
+    def private(shown: bool) -> Board:
+        lists = {"k": [kaggle(1, 80, 70, shown=shown), kaggle(2, 90, 60, shown=shown)]}
+        return one(read_as(KAGGLE, "private", [(1, "r1", lists), (2, "r2", {})], Viewer()))
+
+    before, after = private(False), private(True)
+    public = one(
+        read_as(KAGGLE, "public", [(1, "r1", {"k": [kaggle(1, 80, 70, shown=False)]})], Viewer())
+    )
+
+    assert before.rows[0].cells == (BoardCell("score", None, hidden=True),)
+    assert after.rows[0].cell("score") == BoardCell("score", Fraction(60))
+    # A hidden key is no sort key: no places until it is shown.
+    assert before.dropped == ("score",) and before.sort == ()
+    assert [row.place for row in before.rows] == [None, None]
+    assert [row.place for row in after.rows] == [1, 2]
+    assert public.rows[0].cells[0].number == 80
+
+
+def test_a_value_listed_now_but_not_yet_shown_waits_and_one_not_listed_is_hidden() -> None:
+    # A late run still running or faulted leaves a value listed now out of
+    # what its entrant is shown: it waits, so no viewer learns which rows
+    # still grade, as `compiled` does while a group is listed.
+    shown = [ValueShown("public", Fraction(5), False, False)]
+    late = results_seen(1, {}, shown, None, ["public", "private"], ["public", "private"], True)
+    early = results_seen(1, {}, shown, None, ["public", "private"], ["public"], False)
+
+    assert late.waiting == {"private", "compiled"} and not late.hidden
+    assert not early.waiting and early.hidden == {"private", "compiled"}
+    rows = [(1, "r1", {"k": [kaggle(1, 80, 70, shown=True)]}), (2, "r2", {"k": [late]})]
+    board = one(read_as(KAGGLE, "private", rows, Viewer()))
+    assert board.dropped == ()
+    assert [(row.name, row.place) for row in board.rows] == [("r1", 1), ("r2", 2)]
+    assert board.rows[1].cells == (BoardCell("score", None),)
+
+
+def test_a_sort_key_hidden_on_one_row_drops_places_for_every_row() -> None:
+    # Guarantee 3: rows are never ordered by what the viewer is not shown.
+    rows = [
+        rewards(1, 10),
+        (2, "r2", {"cartpole": [hidden_sub(1, "reward")]}),
+        rewards(3, 20),
+    ]
+    seen = one(read_as(GRADEBOOK, "cartpole_ranking", rows, Viewer()))
+    own = one(read_as(GRADEBOOK, "cartpole_ranking", rows, Viewer(own=owner(1))))
+
+    assert seen.dropped == ("reward",)
+    assert [(row.name, row.place) for row in seen.rows] == [
+        ("r1", None),
+        ("r2", None),
+        ("r3", None),
+    ]
+    assert own.dropped == ("reward",)
+
+
+def test_a_sort_key_hidden_on_a_row_past_a_top_n_still_drops_it() -> None:
+    # Item 92: which rows are served depends on the sort, so a key is
+    # judged on every row before the cut.
+    text = GRADEBOOK.replace("audience: {who: everyone}", "audience: {who: everyone, rows: 1}")
+    rows = [rewards(1, 10), (2, "r2", {"cartpole": [hidden_sub(1, "reward")]})]
+    seen = one(read_as(text, "cartpole_ranking", rows, Viewer()))
+
+    assert seen.dropped == ("reward",)
+    assert [(row.name, row.place) for row in seen.rows] == [("r1", None)]
+
+
+def test_a_value_reading_an_entered_mark_and_compiled_with_no_group_shown_are_hidden() -> None:
+    # Guarantee 6: a submission still grading waits only on what its
+    # entrant may be shown, so a waiting count never tells of the rest.
+    text = ISLANDS_TASK.replace(
+        "    total:\n",
+        "    review: {block: entered, at_least: 0, at_most: 10}\n"
+        "    reviewed: {block: add, of: [{value: sample_score}, {value: review}]}\n"
+        "    total:\n",
+    ).replace("now: [sample_score,", "now: [review, reviewed, sample_score,")
+    scoring = parse_task(text).scoring
+    assert scoring is not None
+    values, runs = listed_now(scoring, ("now",))
+    grading = grading_seen(1, {}, scoring.values, values, runs)
+    no_group = grading_seen(1, {}, scoring.values, {"sample_score"}, False)
+
+    assert values == {"sample_score", "sample_time"} and runs
+    assert grading.waiting == {"sample_score", "sample_time", "compiled"}
+    assert {"review", "reviewed", "total"} <= grading.hidden
+    assert "compiled" in no_group.hidden and "compiled" not in no_group.waiting
+    tries = {"block": "count", "over": results("a"), "where": read("a", "compiled")}
+    assert column("p", "c", {"a": [no_group]}, tries).hidden
+    assert column("p", "c", {"a": [grading]}, tries).waiting == {("a", 1)}
+
+
+def test_a_cell_is_an_exact_fraction() -> None:
+    # Guarantee 4.
+    text = (
+        "tasks: [{id: a}]\nleaderboards:\n  s:\n    audience: {who: everyone}\n"
+        "    columns:\n      third: {block: div, of: [{block: count, over: {results: a}}, 3]}\n"
+        "    display: [third]\n"
+    )
+    found = one(read_as(text, "s", [(1, "r1", {"a": [sub(1)]})], Viewer()))
+
+    assert found.rows[0].cells[0].number == Fraction(1, 3)
+
+
+THROUGH_PUBLIC = """tasks: [{id: k}]
+leaderboards:
+  public:
+    audience: {who: everyone}
+    columns:
+      last: {block: latest, from: {results: k}}
+      score: {value: [last, public]}
+    sort: [{score: desc}]
+    display: [score]
+  staffs:
+    columns:
+      theirs: {column: [public, last]}
+      secret: {value: [theirs, private]}
+    display: [secret]
+"""
+"""A board for everyone reading its latest submission's public score, and
+staff's reading the private score through that pick."""
+
+
+def test_a_staff_board_reading_through_a_public_boards_pick_hides_nothing_of_it() -> None:
+    # Item 98: only what the boards read for a viewer read through a pick
+    # hides it, so staff's private read hides no public cell, while the
+    # pick takes the same submission on every board.
+    settings = contest(THROUGH_PUBLIC)
+    found = checked(settings)
+    assert not found.problems, found.problems
+    lists = [{"k": [kaggle(1, 80, 70, shown=False)]}, {"k": [kaggle(1, 70, 60, shown=False)]}]
+
+    def public(boards: BoardsCheck) -> Board:
+        worked = [
+            Row(
+                owner(entrant), f"r{entrant}", work_out_row(settings.leaderboards, boards, each, {})
+            )
+            for entrant, each in enumerate(lists, 1)
+        ]
+        return one(
+            read_boards(
+                settings.leaderboards,
+                boards,
+                ["public"],
+                worked,
+                Viewer(),
+                released=["k"],
+                headers={},
+            )
+        )
+
+    seen = public(found.needed(boards_read(found, ["public"])))
+    assert found.through[("public", "last")] == {"public", "private"}
+    assert seen.dropped == ()
+    assert [(row.name, row.place, row.cells[0].number) for row in seen.rows] == [
+        ("r1", 1, Fraction(80)),
+        ("r2", 2, Fraction(70)),
+    ]
+    # Read with staff's board worked out too, its private read hides the pick.
+    assert public(found).dropped == ("score",)
+    # Once private is listed, a newest submission whose private still waits
+    # is passed over on the public board as on staff's.
+    newest = results_seen(
+        2,
+        {},
+        [ValueShown("public", Fraction(90), False, False)],
+        1,
+        ["public", "private"],
+        ["public", "private"],
+        True,
+    )
+    lists[0] = {"k": [kaggle(1, 80, 70, shown=True), newest]}
+    assert public(found.needed(boards_read(found, ["public"]))).rows[0].cells[0].number == 80
+
+
+def test_a_hidden_value_still_waiting_changes_no_cell_reading_shown_ones() -> None:
+    # Guarantee 5.
+    lists = {"k": [kaggle(1, 80, 70, shown=False), sub(2, public=90, waiting=("private",))]}
+    found = one(read_as(KAGGLE, "public", [(1, "r1", lists)], Viewer()))
+
+    assert found.rows[0].cells[0].number == 90
+
+
+def test_waiting_is_told_only_to_the_rows_own_entrant_and_staff() -> None:
+    # Guarantee 6.
+    lists = {"cartpole": [sub(1, reward=10), sub(2, waiting=("reward",))]}
+    rows = [(1, "r1", lists), (2, "r2", lists)]
+    entrant = one(read_as(GRADEBOOK, "cartpole_ranking", rows, Viewer(own=owner(1))))
+    staff = one(read_as(GRADEBOOK, "cartpole_ranking", rows))
+
+    mine, other = entrant.rows
+    assert mine.told and mine.cells[0].waiting == (Counted("cartpole", 2),)
+    assert mine.cells[0].counted == (Counted("cartpole", 1),)
+    assert not other.told and other.cells == (BoardCell("reward", Fraction(10)),)
+    assert all(row.cells[0].waiting == (Counted("cartpole", 2),) for row in staff.rows)
+
+
+def test_a_column_reading_only_tasks_not_released_is_not_listed() -> None:
+    # Guarantee 8: neither its header nor its cells tell of the task.
+    text = GRADEBOOK.replace(
+        "    sort: [{reward: desc}]\n    display: [reward]\n",
+        "      tries: 3\n    sort: [{reward: desc}]\n    display: [reward, tries]\n",
+    )
+    rows = [rewards(1, 10)]
+    seen = one(read_as(text, "cartpole_ranking", rows, Viewer(), released=["search"]))
+    staff = one(read_as(text, "cartpole_ranking", rows, released=["search"]))
+
+    assert [header.name for header in seen.headers] == ["tries"]
+    assert [cell.column for cell in seen.rows[0].cells] == ["tries"]
+    assert seen.dropped == ("reward",)
+    assert [header.name for header in staff.headers] == ["reward", "tries"]
+
+
+HOLD_FROM = datetime(2026, 6, 1, 13, tzinfo=UTC)
+
+
+def made(hour: int, minute: int, results: Submitted) -> Loaded:
+    return Loaded(datetime(2026, 6, 1, hour, minute, tzinfo=UTC), results)
+
+
+def test_the_hold_keeps_what_was_made_before_from_and_counts_the_rest_held() -> None:
+    # Guarantee 9: others read the row as it stood at `from`, told how
+    # many it holds, compile errors among them; its own entrant reads it
+    # whole.
+    lists = {
+        "search": [
+            made(12, 0, sub(1, score=0.5, marked=1)),
+            made(13, 5, sub(2, score=0.9, marked=0)),
+            made(13, 10, sub(3, compiled=0)),
+        ]
+    }
+    open_text = GRADEBOOK.replace("{who: entrants, rows: own}", "{who: everyone}")
+    held, counts = held_back(lists, HOLD_FROM)
+    whole, none = held_back(lists, None)
+    others = one(read_as(open_text, "gradebook", [(1, "r1", held)], Viewer(), held={1: counts}))
+    own = one(read_as(open_text, "gradebook", [(1, "r1", whole)], Viewer(own=owner(1))))
+
+    assert counts == {"search": 2} and none == {}
+    assert others.rows[0].held == 2
+    # The search mark reads `marked`, which may change under the hold.
+    assert others.rows[0].cell("search_mark") == BoardCell("search_mark", None, hidden=True)
+    assert others.rows[0].cell("cartpole_best") == BoardCell("cartpole_best", Fraction(0))
+    assert own.rows[0].held == 0
+    assert own.rows[0].cell("search_mark") == BoardCell(
+        "search_mark", Fraction(1, 2), (Counted("search", 1),)
+    )
+
+
+def test_a_rows_held_count_on_a_board_counts_only_the_tasks_it_reads() -> None:
+    # Item 91: the ranking reads cartpole alone, so search's held
+    # submissions are not counted on it.
+    rows = [rewards(1, 10)]
+    held = {1: {"cartpole": 1, "search": 2}}
+    ranking = one(read_as(GRADEBOOK, "cartpole_ranking", rows, Viewer(), held=held))
+
+    assert ranking.rows[0].held == 1
+
+
+def test_the_hold_holds_from_its_from_until_its_until_or_an_early_end() -> None:
+    by_time = Hold.model_validate(
+        {"from": HOLD_FROM, "until": datetime(2026, 6, 1, 15, tzinfo=UTC)}
+    )
+    by_staff = Hold.model_validate({"from": HOLD_FROM, "until": "staff"})
+
+    assert holding(by_time, datetime(2026, 6, 1, 12, 59, tzinfo=UTC), False) is None
+    assert holding(by_time, HOLD_FROM, False) == HOLD_FROM
+    assert holding(by_time, datetime(2026, 6, 1, 15, tzinfo=UTC), False) is None
+    assert holding(by_staff, datetime(2026, 6, 2, tzinfo=UTC), False) == HOLD_FROM
+    assert holding(by_staff, datetime(2026, 6, 2, tzinfo=UTC), True) is None
+    assert holding(None, HOLD_FROM, False) is None
+
+
+def test_the_gradebook_shows_an_entrant_only_their_own_row_with_no_place() -> None:
+    rows = [rewards(1, 10), rewards(2, 20)]
+    entrant = one(read_as(GRADEBOOK, "gradebook", rows, Viewer(own=owner(1))))
+    staff = one(read_as(GRADEBOOK, "gradebook", rows))
+
+    assert [(row.name, row.place) for row in entrant.rows] == [("r1", None)]
+    assert read_as(GRADEBOOK, "gradebook", rows, Viewer()) == ()
+    assert [(row.name, row.place) for row in staff.rows] == [("r2", 1), ("r1", 2)]
+
+
+def test_top_3_keeps_the_rows_tied_at_3_and_the_viewers_own() -> None:
+    text = GRADEBOOK.replace("audience: {who: everyone}", "audience: {who: everyone, rows: 3}")
+    rows = [rewards(1, 50), rewards(2, 40), rewards(3, 30), rewards(4, 30), rewards(5, 20)]
+    rows.append(rewards(6, 10))
+    found = one(read_as(text, "cartpole_ranking", rows, Viewer(own=owner(6))))
+    visitor = one(read_as(text, "cartpole_ranking", rows, Viewer()))
+
+    assert [(row.name, row.place) for row in found.rows] == [
+        ("r1", 1),
+        ("r2", 2),
+        ("r3", 3),
+        ("r4", 3),
+        ("r6", 6),
+    ]
+    assert [row.name for row in visitor.rows] == ["r1", "r2", "r3", "r4"]
+
+
+def test_a_public_column_reading_the_gradebook_shows_only_on_the_viewers_own_row() -> None:
+    # Rule 5: a column is shown no wider than the board it reads.
+    text = GRADEBOOK + (
+        "  mine:\n    audience: {who: everyone}\n"
+        "    columns:\n      total: {column: [gradebook, total]}\n"
+        "    display: [total]\n"
+    )
+    rows = [rewards(1, 475), rewards(2, 0)]
+    entrant = one(read_as(text, "mine", rows, Viewer(own=owner(1))))
+    staff = one(read_as(text, "mine", rows))
+
+    assert entrant.rows[0].cells[0].number == Fraction(1, 2)
+    assert entrant.rows[1].cells[0] == BoardCell("total", None, hidden=True)
+    assert [row.cells[0].number for row in staff.rows] == [Fraction(1, 2), Fraction(0)]
+
+
+def test_boards_reading_each_other_read_a_board_not_read_yet_as_serving_no_row() -> None:
+    # Item 89: neither board can be read first, so the first in the file
+    # reads the other's column hidden on every row; the second reads the
+    # first once it is read.
+    text = (
+        "tasks: [{id: a}]\nleaderboards:\n"
+        "  one:\n    audience: {who: everyone}\n"
+        "    columns: {n: {block: count, over: {results: a}}, x: {column: [two, m]}}\n"
+        "    display: [n, x]\n"
+        "  two:\n    audience: {who: everyone}\n"
+        "    columns: {m: {block: count, over: {results: a}}, y: {column: [one, n]}}\n"
+        "    display: [m, y]\n"
+    )
+    rows = [(1, "r1", {"a": [sub(1)]})]
+    first = one(read_as(text, "one", rows, Viewer()))
+    second = one(read_as(text, "two", rows, Viewer()))
+    staff = one(read_as(text, "one", rows))
+
+    assert first.rows[0].cells == (BoardCell("n", Fraction(1)), BoardCell("x", None, hidden=True))
+    assert second.rows[0].cells == (BoardCell("m", Fraction(1)), BoardCell("y", Fraction(1)))
+    assert [cell.number for cell in staff.rows[0].cells] == [1, 1]
+
+
+def test_the_gradebooks_headers_carry_bounds_and_the_self_reported_mark_no_cell_does() -> None:
+    settings = contest(GRADEBOOK)
+    found = checked(settings)
+    tasks = {
+        "search": {"score": (Fraction(0), Fraction(1))},
+        "cartpole": {"reward": (Fraction(0), Fraction(500))},
+    }
+    bounds = column_bounds(settings.leaderboards, found, tasks, {"search": 50, "cartpole": 50})
+    parts = self_reported_parts(found, {"search": frozenset(), "cartpole": frozenset({"reward"})})
+    headers = headers_of("gradebook", settings.leaderboards["gradebook"], bounds, parts)
+    worked = work_out_row(settings.leaderboards, found, {"cartpole": [sub(1, reward=475)]}, {})
+    board = one(
+        read_boards(
+            settings.leaderboards,
+            found,
+            ["gradebook"],
+            [Row(owner(1), "r1", worked)],
+            Viewer(own=owner(1)),
+            released=["search", "cartpole"],
+            headers={"gradebook": headers},
+        )
+    )
+
+    assert board.headers == (
+        Header("search_mark", None, Fraction(0), Fraction(1)),
+        Header("cartpole_best", None, Fraction(0), Fraction(500), (("cartpole", "reward"),)),
+        Header("total", 2, Fraction(0), Fraction(1), (("cartpole", "reward"),)),
+    )
+    assert "self_reported" not in BoardCell.__dataclass_fields__
+
+
+def test_a_header_names_no_self_reported_value_of_a_task_not_released() -> None:
+    # Rule 8: a column over a released task and one not yet released keeps
+    # its header, which names no value of the task not released.
+    text = (
+        "tasks: [{id: a}, {id: b}]\nleaderboards:\n  s:\n    audience: {who: everyone}\n"
+        "    columns:\n      both:\n        block: add\n        of:\n"
+        "          - {block: max, over: {results: a}, of: {value: [a, score]}}\n"
+        "          - {block: max, over: {results: b}, of: {value: [b, reward]}}\n"
+        "    display: [both]\n"
+    )
+    settings = contest(text)
+    found = checked(settings)
+    parts = self_reported_parts(found, {"a": frozenset({"score"}), "b": frozenset({"reward"})})
+    headers = {"s": headers_of("s", settings.leaderboards["s"], {}, parts)}
+    worked = [Row(owner(1), "r1", work_out_row(settings.leaderboards, found, {}, {}))]
+
+    def header(viewer: Viewer) -> Header:
+        board = one(
+            read_boards(
+                settings.leaderboards, found, ["s"], worked, viewer, released=["a"], headers=headers
+            )
+        )
+        return board.headers[0]
+
+    assert header(Viewer()).self_reported == (("a", "score"),)
+    assert header(STAFF).self_reported == (("a", "score"), ("b", "reward"))
 
 
 # Each board block

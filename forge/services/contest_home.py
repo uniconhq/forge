@@ -14,9 +14,10 @@ contest's dates, the person's registration panel (`entrants.panel`): their
 entrant and whether and how they may register; the server's clock so a
 countdown agrees with it, and the tasks released to them, the ones visible
 now, each with its label, its worth and when it falls due and closes for
-their entrant, its extension on it included. A row's standing is read on
-the leaderboards, which until stage 5's phase 5.6 only staff read, so the
-home shows no number a board holds back.
+their entrant, its extension on it included. A member of an approved
+entrant also reads its standing: their own row on each leaderboard they
+read, as that board shows it to them (`boards.own_rows`), so the home shows
+no number a board holds back.
 A task's page gives its statement, its submission caps and the form of the
 inputs a contestant gives, and nothing else of what the task holds, only
 once the task is visible. A task that is not, or a contest the person may
@@ -38,10 +39,11 @@ from decimal import Decimal
 from forge.db.tables import Entrant
 from forge.domain import release as rules
 from forge.domain.board_checks import marks_of
+from forge.domain.boards import Board
 from forge.domain.definitions import ContestDefinition, ContestVisibility, State, Submissions
 from forge.domain.errors import NotFound
 from forge.domain.ids import ContestId, TaskId
-from forge.domain.names import ScopeNames
+from forge.domain.names import EntrantOwner, ScopeNames
 from forge.domain.registration import Status
 from forge.domain.release import Closed, Extension, close_of, due_of
 from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_scope
@@ -49,7 +51,7 @@ from forge.domain.sessions import Session
 from forge.domain.submissions import Field
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import entrants, invites, names, published, release, timelines
+from forge.services import boards, entrants, invites, names, published, release, timelines
 from forge.services.entrants import Mine
 from forge.services.published import PublicFile, PublishedTask
 from forge.services.release import TaskRelease
@@ -95,7 +97,9 @@ class ContestHome:
     the contest, which keeps them from entering it; `registration` is their
     registration panel: their entrant, if any, and whether and how they may
     register; `now` is the server's clock when this was read. `where` is the
-    contest by the names of its org and itself.
+    contest by the names of its org and itself. `standing` is the row's own
+    line on each leaderboard they read, none unless they are in an approved
+    entrant.
     """
 
     contest: ContestId
@@ -109,6 +113,7 @@ class ContestHome:
     organises: bool
     now: datetime
     tasks: tuple[TaskEntry, ...]
+    standing: tuple[Board, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +181,10 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
     """
     settings, person = await release.seen(ctx, session, contest)
     extension = release.row_extension(person)
+    standing: tuple[Board, ...] = ()
+    if person.entrant is not None and _approved(person.entrant):
+        owner = EntrantOwner(person.entrant.id)
+        standing = await boards.own_rows(ctx, contest, settings, owner)
     await ctx.let_go()
     now = ctx.now
     shown = [
@@ -209,6 +218,7 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
         organises=person.organises,
         now=now,
         tasks=tasks,
+        standing=standing,
     )
 
 
