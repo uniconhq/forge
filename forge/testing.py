@@ -166,8 +166,8 @@ report:
 """
 
 RUN_WORKFLOWS = {
-    "unicon/classic@v3": "workflows-next/classic/v3",
-    "unicon/interactive@v1": "workflows-next/interactive/v1",
+    "unicon/classic@v3": "workflows/classic/v3",
+    "unicon/interactive@v1": "workflows/interactive/v1",
 }
 """Where deploy keeps each built-in run workflow, by the reference it is to
 have at the forge: a folder holding its `workflow.yaml` and the files it

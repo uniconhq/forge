@@ -7,6 +7,7 @@ port given a value of its type, under the two widenings, from a reference
 that may feed it.
 """
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -37,7 +38,7 @@ from forge.domain.workflow_definition import (
     whole_reference,
 )
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line
-from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES
+from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES, RUN_WORKFLOWS
 from tests.conftest import sibling
 
 SEEDED = {f"unicon/{name}@v2": parse_primitive(text) for name, text in PRIMITIVES.items()}
@@ -342,8 +343,16 @@ def test_the_seeded_classic_workflow_is_the_one_tested_here() -> None:
     assert parse_workflow(seeded.read_bytes()) == parse_workflow(CLASSIC)
 
 
+def todays_seeded() -> list[Path]:
+    """Every workflow deploy seeds in today's format: the run workflows beside
+    them are another format, read by `forge.domain.run_workflow`."""
+    run = {sibling("deploy", folder) for folder in RUN_WORKFLOWS.values()}
+    found = sibling("deploy", "workflows").glob("*/*/workflow.yaml")
+    return sorted(path for path in found if path.parent not in run)
+
+
 def test_every_seeded_workflow_puts_a_unit_only_on_a_number() -> None:
-    seeded = sorted(sibling("deploy", "workflows").glob("*/*/workflow.yaml"))
+    seeded = todays_seeded()
 
     assert len(seeded) >= 2
     for path in seeded:
@@ -354,7 +363,7 @@ def test_every_seeded_workflow_puts_a_unit_only_on_a_number() -> None:
 
 
 def test_every_seeded_workflow_names_each_value_it_reports() -> None:
-    seeded = sorted(sibling("deploy", "workflows").glob("*/*/workflow.yaml"))
+    seeded = todays_seeded()
 
     for path in seeded:
         workflow = parse_workflow(path.read_bytes())
