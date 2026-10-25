@@ -128,9 +128,7 @@ def _workflow_problem(ref: WorkflowRef, problem: Problem) -> Problem:
     )
 
 
-async def _format_kept(
-    ctx: Context, task: TaskId, definition: TaskDefinition
-) -> list[Problem]:
+async def _format_kept(ctx: Context, task: TaskId, definition: TaskDefinition) -> list[Problem]:
     """Once anyone has submitted, the task keeps the format of the
     publication it is graded on: a submission to one is laid out as the
     other cannot read.

@@ -469,9 +469,7 @@ def mirrored(name: str) -> PrimitiveDeclaration:
 
 def test_exec_reads_the_cache_names_files_and_takes_outputs_from_a_manifest() -> None:
     formed = mirrored("exec")
-    stepped = formed.for_step(
-        ("program", "time_limit", "memory_limit"), "unicon/exec@v1"
-    )
+    stepped = formed.for_step(("program", "time_limit", "memory_limit"), "unicon/exec@v1")
     assert isinstance(stepped, PrimitiveDeclaration)
     exec_ = stepped
 

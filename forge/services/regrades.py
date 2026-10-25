@@ -345,9 +345,7 @@ async def run_summary(
     cause, against = RegradeCause(row.cause), PublicationId(row.publication_id)
     then = await _as_of(ctx, current, counted_under(cause, against, current.publications))
     now = await _as_of(ctx, current, against) or current
-    mine = list(
-        await ctx.db.scalars(select(Grading).where(Grading.regrade_id == regrade, FRONT))
-    )
+    mine = list(await ctx.db.scalars(select(Grading).where(Grading.regrade_id == regrade, FRONT)))
     attempts, ours, newest, gone = await _attempts(ctx, mine) if mine else ({}, {}, {}, frozenset())
     owners = {
         each.workspace_id: ctx.forge.workspaces.owner_of(WorkspaceId(each.workspace_id))
@@ -515,9 +513,7 @@ async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition | Non
         return None
 
 
-async def _read(
-    ctx: Context, regrade: Regrade, settings: ContestDefinition | None
-) -> list[_Read]:
+async def _read(ctx: Context, regrade: Regrade, settings: ContestDefinition | None) -> list[_Read]:
     """Each submission the regrade took, by its latest attempt of it, and
     what the regrade did to it. A failure found among the attempts that are
     their submission's latest starts its retry by itself.

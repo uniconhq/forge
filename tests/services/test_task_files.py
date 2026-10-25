@@ -241,9 +241,7 @@ async def test_typed_content_that_would_read_as_a_pointer_is_refused(
     forged = pointer_text("a" * 64, 4096)
 
     with pytest.raises(InvalidInputs):
-        await task_save.save(
-            setup, acme.ada, entered.task, {"data/forged.bin": Edit(forged, None)}
-        )
+        await task_save.save(setup, acme.ada, entered.task, {"data/forged.bin": Edit(forged, None)})
 
 
 async def test_a_pointer_to_an_object_the_task_holds_may_be_written_back(

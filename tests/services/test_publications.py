@@ -1950,6 +1950,7 @@ async def test_a_rejudge_in_flight_and_a_saves_regrade_give_each_submission_its_
         held.set()
 
     monkeypatch.setattr(gradings, "regrade", slow_first)
+    monkeypatch.setattr(gradings.regrading, "regrade", slow_first)
     monkeypatch.setattr(timelines, "hold_task", hold_then_say)
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring", "sum"), Role.MANAGER)
     rejudging = asyncio.create_task(gradings.rejudge(setup, manager, entered.task))

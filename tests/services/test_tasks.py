@@ -387,9 +387,7 @@ async def test_a_task_says_whether_its_published_statement_is_written_and_its_he
     assert (published.statement_written, published.head_statement_written) == (False, False)
     # Written in a draft: the published statement is still the placeholder.
     assert (drafted.statement_written, drafted.head_statement_written) == (False, True)
-    assert isinstance(written, task_save.Published) and isinstance(
-        emptied, task_save.Published
-    )
+    assert isinstance(written, task_save.Published) and isinstance(emptied, task_save.Published)
     assert (both.statement_written, both.head_statement_written) == (True, True)
     # A blank statement is no statement either.
     after = await tasks.state(setup, acme.ada, sum_task)

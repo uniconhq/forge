@@ -1002,7 +1002,7 @@ async def test_a_boxed_step_holds_a_block_of_box_users_while_it_runs(
 DUEL = """\
 inputs:
   code: folder
-  leaderboard: file
+  grid: file
 steps:
   - id: compile
     use: unicon/compile@v3
@@ -1013,12 +1013,12 @@ steps:
       programs:
         first:
           program: ${{ steps.compile.program }}
-          files: {leaderboard: "${{ inputs.leaderboard }}"}
+          files: {grid: "${{ inputs.grid }}"}
           time_limit: 1
           memory_limit: 64
         second:
           program: ${{ steps.compile.program }}
-          files: {leaderboard: "${{ inputs.leaderboard }}"}
+          files: {grid: "${{ inputs.grid }}"}
           time_limit: 1
           memory_limit: 64
       links: [first -> second, second -> first]
@@ -1030,11 +1030,11 @@ name: Duel
 workflow: unicon/duel@v1
 inputs:
   code: entrant
-  leaderboard: leaderboards/1.txt
+  grid: grids/1.txt
 scoring:
   values:
     time: {block: max, over: {runs: all}, of: {run: [all, time]}}
-  show: {now: [time, all, leaderboards/]}
+  show: {now: [time, all, grids/]}
 """
 
 
@@ -1048,7 +1048,7 @@ async def test_a_programs_forms_cached_files_are_each_in_its_own_item(
     )
     await acme.fake.workflows.create_workflow_version(PLATFORM, workflow, "v1")
     await write_contest(acme.fake, DRAFT)
-    contents = {"task.yaml": DUEL_TASK.encode(), "leaderboards/1.txt": b"3 3\n"}
+    contents = {"task.yaml": DUEL_TASK.encode(), "grids/1.txt": b"3 3\n"}
     duel = Islands(task, (await _save(setup, acme, task, contents)).publication, workflow)
     document = {"schema_version": 6, "inputs": {"code": {"files": ["files/code/main.py"]}}}
     row = await _grading(setup, acme, duel, document=document)
@@ -1058,14 +1058,10 @@ async def test_a_programs_forms_cached_files_are_each_in_its_own_item(
     job = await _job(setup, row, "game", access)
 
     programs = job["inputs"]["inputs"]["programs"]["programs"]
-    leaderboards = [
-        programs[name]["files"]["files"]["leaderboard"]["file"] for name in ("first", "second")
-    ]
-    items = {leaderboard.split("/")[1] for leaderboard in leaderboards}
-    assert len(items) == 2 and all(
-        leaderboard.endswith("/leaderboard") for leaderboard in leaderboards
-    )
-    assert all(_download(job, leaderboard)["cached"] is True for leaderboard in leaderboards)
+    grids = [programs[name]["files"]["files"]["grid"]["file"] for name in ("first", "second")]
+    items = {grid.split("/")[1] for grid in grids}
+    assert len(items) == 2 and all(grid.endswith("/grid") for grid in grids)
+    assert all(_download(job, grid)["cached"] is True for grid in grids)
     assert job["box_users"]["last"] - job["box_users"]["first"] == BOX_BLOCK - 1
     measured: dict[str, Any] = {"time_ms": 3, "memory_kb": 1, "ended": "finished", "ended_at": 3}
     outputs: dict[str, Any] = {"outcome": "accepted", "facts": {"file": "out/facts"}}

@@ -196,8 +196,7 @@ async def _listed(
     submitted each.
     """
     return [
-        entry.grading
-        for entry in await gradings.list_gradings(setup, organiser, task, limit=limit)
+        entry.grading for entry in await gradings.list_gradings(setup, organiser, task, limit=limit)
     ]
 
 

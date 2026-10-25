@@ -13,11 +13,10 @@ from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import entrant_view, timelines
 from forge.services.access import Organiser, require
-from forge.services.gradings import attempt_history
+from forge.services.gradings import attempt_history, regrading
 from forge.services.gradings.attempt_history import record
 from forge.services.gradings.lookups import finish, staff_cancelled
 from forge.services.gradings.records import GradingRecord, Rejudged
-from forge.services.gradings.regrading import regrade
 from forge.services.gradings.room import _over_limit
 from forge.services.gradings.row_state import (
     latest_with_result,
@@ -165,7 +164,7 @@ async def rejudge(ctx: Context, organiser: Organiser, task: TaskId) -> Rejudged:
         raise NotFound(
             "The task has no publication to grade against yet. Save it so that it publishes."
         )
-    return await regrade(
+    return await regrading.regrade(
         ctx,
         task,
         current.publication.id,

@@ -41,9 +41,7 @@ from forge.services.task_save.writing import _contest
 log = get_logger(__name__)
 
 
-async def _shown_before(
-    ctx: Context, task: TaskId, definition: TaskDefinition
-) -> list[Problem]:
+async def _shown_before(ctx: Context, task: TaskId, definition: TaskDefinition) -> list[Problem]:
     """T7 and T10: once the task has a graded submission, a group shown
     `always` or `verdict` under any publication a graded submission ran
     under is not hidden again, nor `always` made `verdict`, so a group

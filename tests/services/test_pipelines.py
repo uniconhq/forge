@@ -2139,9 +2139,7 @@ async def test_a_save_moving_the_pin_asks_first_and_its_regrade_is_summed_up(
     basis = asked.value.extra["asked"].rsplit(":", 1)[0]
     for answer in (None, basis):
         with pytest.raises(ConfirmationRequired):
-            await task_save.save(
-                setup, acme.ada, islands.task, edits, confirm=True, asked=answer
-            )
+            await task_save.save(setup, acme.ada, islands.task, edits, confirm=True, asked=answer)
     saved = await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
     _, save = await _rows(setup, "save")
     await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))

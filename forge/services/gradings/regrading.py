@@ -1,4 +1,3 @@
-
 from sqlalchemy import select
 
 from forge.db.tables import Grading, Regrade
