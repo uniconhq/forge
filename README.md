@@ -2246,10 +2246,8 @@ workflow `deploy` seeds, `PRIMITIVES` with each `primitive-<name>`'s
 `primitive.yaml` as checked out, each version deploy's `images.json` pins
 read with git at its tag whatever the checkout's branch, and `program_manifest.py`'s name rules
 and JSON with `exec`'s own. Without a repo or a tag they are
-skipped, unless `CI` is set, when they fail. Until the stage 4 work ships and
-is tagged, CI checks every repo out at the branch it is built on,
-`feat/simpler-core`, the three seeded primitives with their tags; each
-`ref:` in `.github/workflows/ci.yaml` moves to its tag then.
+skipped, unless `CI` is set, when they fail. CI checks the runner out at
+`v0.10.0`, deploy at `main`, compile at `v3.0.0` and exec at `v1.0.0`.
 
 ## Releasing
 

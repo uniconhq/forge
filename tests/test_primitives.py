@@ -509,18 +509,19 @@ def test_each_contract_6_primitive_keeps_the_contract(name: str) -> None:
 
 
 def test_every_primitive_deploy_pins_reads_as_it_did() -> None:
-    """Each version `images.json` pins, from its release: a `v1` is in the
-    form the forge stopped reading, with `name` and `version` lines, and is
-    refused as before; every later one says `schema_version: 6` and parses.
+    """Each version `images.json` pins, from its release. One that says
+    `schema_version: 6` parses. An older declaration, with `name` and
+    `version` lines and no schema version, is refused as before.
     """
     for name, versions in pins().items():
         for version, pin in versions.items():
             text = released(f"primitive-{name}", pin["source"]["tag"], "primitive.yaml")
             with_image = f"image: {pin['image']}\n" + text
-            if version == "v1":
-                assert {"name", "version"} <= {problem["path"] for problem in refused(with_image)}
+            if "schema_version:" in text:
+                assert parse_primitive(with_image).schema_version == 6
                 continue
-            assert parse_primitive(with_image).schema_version == 6
+            assert version == "v1"
+            assert {"name", "version"} <= {problem["path"] for problem in refused(with_image)}
 
 
 @pytest.mark.parametrize(

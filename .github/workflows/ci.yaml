@@ -38,14 +38,14 @@ jobs:
     steps:
       # The tests compare the package's copies with their originals in the
       # repos beside it: the contract schemas with the runner's, the classic
-      # workflow with the one deploy seeds, the three seeded primitives'
-      # declarations with the releases deploy's images.json pins, read at
-      # their tags (so those checkouts fetch every tag), and the contract 6
-      # primitives' declarations and name rules with exec's and
-      # compile's own. They fail in CI when a checkout is missing, so the
-      # repos sit beside each other the way they do on a laptop. Until the
-      # stage ships and is tagged (#513), every one is the branch this one
-      # is built with; each moves to the release tag made then.
+      # workflow with the one deploy seeds, each primitive version deploy's
+      # images.json pins read at its tag (so those checkouts fetch every
+      # tag), and the contract 6 primitives' declarations and name rules
+      # with exec's and compile's own. They fail in CI when a checkout is
+      # missing, so the repos sit beside each other the way they do on a
+      # laptop. Deploy is main, which carries the workflows before this
+      # repo is tagged. The runner and the primitives are the releases
+      # those copies were taken from.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: forge
@@ -53,41 +53,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: uniconhq/runner
-          ref: feat/simpler-core
+          ref: v0.10.0
           path: runner
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: uniconhq/deploy
-          ref: feat/simpler-core
+          ref: main
           path: deploy
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: uniconhq/primitive-compile
-          ref: feat/simpler-core
+          ref: v3.0.0
           path: primitive-compile
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: uniconhq/primitive-sandbox-run
-          ref: feat/simpler-core
-          path: primitive-sandbox-run
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: uniconhq/primitive-diff-check
-          ref: feat/simpler-core
-          path: primitive-diff-check
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
           repository: uniconhq/primitive-exec
-          ref: feat/simpler-core
+          ref: v1.0.0
           path: primitive-exec
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
