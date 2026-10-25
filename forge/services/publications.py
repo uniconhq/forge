@@ -177,6 +177,7 @@ from forge.domain.run_plan import (
     files_named,
     plan_runs,
     run_plan_changes,
+    steps_run_again,
 )
 from forge.domain.run_task import (
     RUNS_PATH,
@@ -358,6 +359,7 @@ async def save(
     latest = live[-1] if live else None
     newest = made[-1] if made else None
     changed: tuple[str, ...] = ()
+    rerun: tuple[str, ...] | None = None
     read = ReadChanges()
     anew = True
     worded = False
@@ -369,6 +371,7 @@ async def save(
             # file, which say whether anything moved.
             after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
             changed = run_plan_changes(before, after)
+            rerun = steps_run_again(before, after)
             scoring = checked.definition.scoring if checked.definition is not None else None
             read = ReadChanges(
                 statement=STATEMENT_FILE in differ,
@@ -410,7 +413,7 @@ async def save(
     expected = basis if question is None else f"{basis}:{_marks_digest(checked.run_task)}"
     confirmed = confirm and (asked == expected if question else asked in (None, basis))
     if not confirmed:
-        await _ask(ctx, task, checked, latest, question, changed, read, expected, anew=anew)
+        await _ask(ctx, task, checked, latest, question, changed, rerun, read, expected, anew=anew)
 
     plans = await _plan_files(ctx, as_, task, head, checked)
     version = await _write(ctx, organiser, task, head, written, plans, said)
@@ -455,8 +458,13 @@ async def save(
             checked.compiled.meanings,
         )
         if checked.compiled is not None
-        else write_note(bool(changed), changed, checked.workflows)
+        else write_note(
+            bool(changed), changed, checked.workflows, checked_first=_checked_first(checked)
+        )
     )
+    # A publication checked first is held back by its note until a save row
+    # passes, so a save that fails once it is made leaves it unchecked, never
+    # the task's (`published.live`).
     publication = await ctx.forge.workspaces.publish(task, version, note)
     number = await _number_of(ctx, task, publication)
     checking: Check | None = None
@@ -477,8 +485,23 @@ async def save(
                 limit=checked.definition.submissions.max,
             )
         ).queued
+    if changed and _checked_first(checked):
+        # Graded again once the save row passes: counted as the take-over
+        # will choose them.
+        counting = await gradings.to_regrade(ctx, task, limit=checked.definition.submissions.max)
+    else:
+        counting = regraded
     effect = await _effect(
-        ctx, task, checked.definition, latest, changed, regraded, read, checked.compiled
+        ctx,
+        task,
+        checked.definition,
+        latest,
+        changed,
+        counting,
+        read,
+        checked.compiled,
+        steps=rerun,
+        checked_first=_checked_first(checked),
     )
     if newest is None:
         places.ahead_at(ctx, task)
@@ -502,7 +525,13 @@ def _regrades(changed: tuple[str, ...], checked: Checked) -> bool:
     holds steps done at the save, which grades them again once its save row
     lets it take over (`pipelines`).
     """
-    return bool(changed) and (checked.run_plan is None or not checked.run_plan.pipeline("save"))
+    return bool(changed) and not _checked_first(checked)
+
+
+def _checked_first(checked: Checked) -> bool:
+    """Whether a save of a run task is checked by a save row before it takes
+    over, and its submissions are graded again only then."""
+    return checked.run_plan is not None and bool(checked.run_plan.pipeline("save"))
 
 
 async def _ask(
@@ -512,6 +541,7 @@ async def _ask(
     latest: Publication | None,
     question: str | None,
     changed: tuple[str, ...],
+    again: tuple[str, ...] | None,
     read: ReadChanges,
     basis: str,
     *,
@@ -535,11 +565,20 @@ async def _ask(
         return
     regrades = (
         await gradings.to_regrade(ctx, task, limit=checked.definition.submissions.max)
-        if _regrades(changed, checked)
+        if changed
         else 0
     )
     effect = await _effect(
-        ctx, task, checked.definition, latest, changed, regrades, read, checked.compiled
+        ctx,
+        task,
+        checked.definition,
+        latest,
+        changed,
+        regrades,
+        read,
+        checked.compiled,
+        steps=again,
+        checked_first=_checked_first(checked),
     )
     marks = checked.run_task.self_reported if question and checked.run_task else {}
     raise ConfirmationRequired(
@@ -972,11 +1011,16 @@ async def _effect(
     regrades: int,
     read: ReadChanges,
     compiled: Compiled | None,
+    *,
+    steps: tuple[str, ...] | None = None,
+    checked_first: bool = False,
 ) -> SaveEffect:
     """What saving `definition` over the latest publication does, in the
     words a running contest asks with before a save and a save that
     published answers with, each reported value named by its title in the
-    save or, where the save no longer reports it, in the latest publication.
+    save or, where the save no longer reports it, in the latest publication;
+    for a run task, the steps a submission runs again, and whether that
+    waits for the save's check.
     """
     name = (await names.names_of(ctx, [task])).get(task)
     before = await _definition_of(ctx, task, latest) if latest is not None else None
@@ -998,6 +1042,8 @@ async def _effect(
         titles=titles,
         submitted=await _submitted(ctx, task),
         unread=latest is not None and before is None,
+        steps=steps,
+        checked_first=checked_first,
     )
 
 
@@ -1694,7 +1740,7 @@ async def list(ctx: Context, organiser: Organiser, task: TaskId) -> tuple[Public
     """
     require(organiser, task_scope(task), Role.OBSERVER)
     made = await ctx.forge.workspaces.list_publications(task)
-    found = await pipelines.checks(ctx, task)
+    found = await pipelines.checks(ctx, task, made)
     return tuple(replace(each, check=found.get(each.id)) for each in made)
 
 

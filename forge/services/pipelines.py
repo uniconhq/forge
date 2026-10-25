@@ -15,9 +15,10 @@ Each row runs as a manual pipeline on its org's dispatch repository
 (`gradings.start`). `prepare` readies a row's start: only the steps the
 store leaves to run (`steps.pipeline_to_run`), each with its door and token
 minted, and the report step; and a user for the row, from `USER_FIRST` to
-`USER_LAST`, unique among the rows not finished, which every step but
-`exec` and `interact` runs as, since those make isolate boxes of their own
-(phase 4.1). A pipeline left with nothing is not started: its row is
+`USER_LAST`, unique among the rows not finished, a row past what its state
+may take settled to free its user, which every step but `exec` and
+`interact` runs as, since those make isolate boxes of their own (phase
+4.1). A pipeline left with nothing is not started: its row is
 concluded at once from what the store holds, and a late row whose early
 compile was not accepted so takes that step's verdict for every run with no
 pipeline run.
@@ -45,12 +46,13 @@ so a take-over whose work failed or never ran is not lost.
 publication not yet taken over stands (`Check`), the lost check and the
 retry by itself run over each publication's latest save row as over any
 row read, and a take-over still waiting is finished in the background. A
-save of the same files as a publication whose checking was refused checks
-it again (`check_again`).
+save of the same files as a publication whose checking was refused, or
+that has no save row since the save that made it failed after
+publishing, checks it again (`check_again`).
 """
 
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from typing import cast
 
 from sqlalchemy import func, select, text
@@ -72,7 +74,7 @@ from forge.domain.grading import (
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import OrgId, PublicationId, SubmissionId, TaskId, VersionId
 from forge.domain.plans import PLAN_PATH
-from forge.domain.publications import Check
+from forge.domain.publications import Check, Publication
 from forge.domain.regrades import RegradeCause
 from forge.domain.run_plan import BOXED, PipelineKind, RunPlan
 from forge.domain.step_data import REPORT_STEP, all_accepted, runs_of, without
@@ -293,12 +295,14 @@ async def queue_save(
     )
 
 
-async def checks(ctx: Context, task: TaskId) -> dict[str, Check]:
-    """Where each of the task's publications that has not taken over
-    stands, by its id, for its organisers, from its latest save row: the
-    lost check asked of each, and its retry by itself started as any row
-    read; a `system_error` still `checking` while that retry may come. A
-    take-over still waiting is finished in the background.
+async def checks(ctx: Context, task: TaskId, made: Sequence[Publication]) -> dict[str, Check]:
+    """Where each of the task's publications, `made`, that has not taken
+    over stands, by its id, for its organisers, from its latest save row:
+    the lost check asked of each, and its retry by itself started as any row
+    read; a `system_error` still `checking` while that retry may come; and
+    `refused` for one checked first that has no row, its save having failed
+    after it was made. A take-over still waiting is finished in the
+    background.
     """
     rows = (
         (
@@ -316,10 +320,12 @@ async def checks(ctx: Context, task: TaskId) -> dict[str, Check]:
     await gradings.notice(ctx, rows, gone)
     if any(accepted(row) and row.taken_over_at is None for row in rows):
         _take_over_later(ctx, task)
-    found: dict[str, Check] = {}
+    found: dict[str, Check] = {each.id: "refused" for each in made if each.checked_first}
     for row in rows:
         check = _check_of(ctx, row, gone)
-        if check is not None:
+        if check is None:
+            found.pop(row.publication_id, None)
+        else:
             found[row.publication_id] = check
     return found
 
@@ -328,8 +334,10 @@ async def check_again(
     ctx: Context, task: TaskId, publication: PublicationId, plan: RunPlan, by: int | None
 ) -> Check | None:
     """Where a save of the same files as `publication` leaves it: checked
-    again, by a new save row, when its checking was refused or replaced.
-    Called under the task's hold.
+    again, by a new save row, when its checking was refused or replaced, or
+    checked at last when its plan holds steps done at the save and it has
+    no row, since the save that made it failed after publishing. Called
+    under the task's hold.
     """
     latest = await ctx.db.scalar(
         select(Grading)
@@ -337,7 +345,10 @@ async def check_again(
         .order_by(Grading.attempt.desc())
         .limit(1)
     )
-    check = _check_of(ctx, latest) if latest is not None else None
+    if latest is None:
+        check: Check | None = "refused" if plan.pipeline("save") else None
+    else:
+        check = _check_of(ctx, latest)
     if check in ("refused", "replaced"):
         await queue_save(ctx, task, publication, plan, by)
         log.info("pipelines.checked_again", task=task, publication=publication)
@@ -411,21 +422,35 @@ def _take_over_later(ctx: Context, task: TaskId) -> None:
 async def _take_user(ctx: Context, row: Grading) -> None:
     """Give the row a user no other row not finished holds, the next of a
     counter kept in Postgres, wrapping round the range, a held one skipped;
-    a row given one by a start that stopped partway keeps it.
+    a row given one by a start that stopped partway keeps it. A user held
+    by a row past what its state may take is freed and taken
+    (`gradings.free_user`), so rows nobody reads again do not use the
+    range up.
     """
     if row.run_user is not None:
         return
     span = USER_LAST - USER_FIRST + 1
     for _ in range(USER_TRIES):
         number = await ctx.db.scalar(text("SELECT nextval('grading_users')"))
-        try:
-            async with ctx.db.begin_nested():
-                row.run_user = USER_FIRST + int(number) % span
-                await ctx.db.flush()
+        user = USER_FIRST + int(number) % span
+        if await _given(ctx, row, user):
             return
-        except IntegrityError:
-            row.run_user = None
+        if await gradings.free_user(ctx, user) and await _given(ctx, row, user):
+            return
     raise Unavailable(NO_USER)
+
+
+async def _given(ctx: Context, row: Grading, user: int) -> bool:
+    """Whether the row could take `user`, which no other row not finished
+    holds."""
+    try:
+        async with ctx.db.begin_nested():
+            row.run_user = user
+            await ctx.db.flush()
+        return True
+    except IntegrityError:
+        row.run_user = None
+        return False
 
 
 async def _run(ctx: Context, row: Grading) -> PipelineRun:

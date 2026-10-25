@@ -7,17 +7,21 @@ error gives every late run its verdict with no late pipeline; an early
 `system_error` is retried once and makes no late row, nor does a cancel;
 a late one is retried once, lost or failed, found so by its entrant's
 read, and told to no entrant; a regrade stops a late row of the grading
-it replaces; a late row reads what its early row read, and reuses as it
+it replaces, and a late row that failed is not tried again once a regrade
+replaced its early row; a late row reads what its early row read, and reuses as it
 did; an upload is linked only when the submission took it; a task with
 nothing early makes its late row at once, with or without the platform's
-images; each row has a user of its own; a save is
-checked by a pipeline of its own before it takes over, compared with the
-publication entrants are graded on, and one whose checker does not
-compile is refused while the old version keeps grading, shown so to its
-organisers and checked again by a save of the same files; a lost save
-row is found by its organisers' read; a take-over whose work never ran
-is finished by the next read; and the platform answers a pipeline only
-while its row starts, and only for the variables it was started with.
+images; each row has a user of its own, and takes one a lost row held; a
+save is checked by a pipeline of its own before it takes over, compared
+with the publication entrants are graded on, and one whose checker does
+not compile is refused while the old version keeps grading, shown so to
+its organisers and checked again by a save of the same files; a save
+that fails, or is cut off by a restart, once its publication is made
+leaves it held back until a save of the same files checks it; a lost
+save row is found by its organisers' read; a take-over whose work never
+ran is finished by the next read; and the platform answers a pipeline
+only while its row starts, and only for the variables it was started
+with.
 """
 
 import json
@@ -32,16 +36,19 @@ from forge.adapters.ci.fake import dispatch_of, pipeline_variables
 from forge.db.tables import Grading, GradingStep, StepOutput
 from forge.db.tables import Upload as UploadRow
 from forge.db.tables.entrants import Entrant
-from forge.domain.errors import CiRequestRefused, Misconfigured
+from forge.domain.errors import CiRequestRefused, Misconfigured, Rejected, Unavailable
 from forge.domain.grading import (
     BOXED_SHAPE,
     LOST_CHECK_AFTER,
+    MACHINE_WAIT,
+    NEVER_BEGAN,
     PLATFORM_POOL,
     GradingStatus,
     PipelineRun,
 )
 from forge.domain.identity import PLATFORM, AsOrgAccount
 from forge.domain.ids import OrgId, RunId
+from forge.domain.keys import key_from_name
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.run_plan import PipelineKind
@@ -58,9 +65,11 @@ from forge.services import (
     submissions,
     tasks,
 )
+from forge.services.gradings import START_RETRY_WAIT
 from forge.services.pipelines import USER_FIRST
+from forge.services.publications import Published
 from forge.settings import Settings
-from forge.testing import APP_URL, FORGE_URL, FakeClock, register_entrant
+from forge.testing import APP_URL, CALLBACK_PATH, FORGE_URL, FakeClock, register_entrant
 from tests.services.conftest import RUNNING, SPRING, Acme, organiser, signed_in, upload
 from tests.services.test_run_task_saves import TASKS
 from tests.services.test_steps import (
@@ -481,6 +490,40 @@ async def test_a_regrade_stops_the_late_row_of_the_grading_it_replaces(
     assert [row.attempt for row in await _rows(setup, "early")] == [1, 2]
 
 
+async def test_a_late_row_whose_early_row_was_replaced_is_not_tried_again(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    islands = await _checked(setup, acme)
+    session = await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    start = acme.fake.grading.start_pipeline
+
+    async def refusing_late(as_: AsOrgAccount, run: PipelineRun) -> RunId:
+        if run.pipeline == "late":
+            raise Rejected("The CI refused the pipeline.")
+        return await start(as_, run)
+
+    monkeypatch.setattr(acme.fake.grading, "start_pipeline", refusing_late)
+    await _early(setup, acme, early.id)
+    [late] = await _rows(setup, "late")
+    assert (late.status, late.run_id) == (GradingStatus.SYSTEM_ERROR, None)
+    # While the late row waits to be tried again, a save's regrade replaces
+    # the grading it follows.
+    await _save(setup, acme, islands.task, {"task.yaml": (await _v2(acme, islands)).encode()})
+    _, save = await _rows(setup, "save")
+    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))
+    assert await _report(setup, save.id, "save") is GradingStatus.DONE
+    await setup.settle()
+    _, regraded = await _rows(setup, "early")
+    assert regraded.status == GradingStatus.DISPATCHED
+    clock.advance(START_RETRY_WAIT + timedelta(seconds=1))
+
+    await _seen(setup, session, islands)
+    await setup.settle()
+
+    assert [row.id for row in await _rows(setup, "late")] == [late.id]
+
+
 async def test_a_late_row_reads_what_its_early_row_read_and_reuses_as_it_did(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
@@ -588,6 +631,37 @@ async def test_each_row_running_has_a_user_of_its_own(
     assert other.run_user == held.run_user + 1
 
 
+async def test_a_user_held_by_a_lost_automatic_retry_is_freed_for_the_next_start(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    islands = await _checked(setup, acme)
+    await _submit(setup, acme, islands)
+    [first] = await _rows(setup, "early")
+    await _fault(setup, acme, first.id, "early")
+    [_, retried] = await _rows(setup, "early")
+    assert retried.automatic and retried.run_user is not None
+    # Its run lost and nobody reading it again, the retry keeps its row
+    # dispatched; the next start's counter lands on its user, with no other
+    # try.
+    del acme.fake.ci.runs[RunId(retried.run_id or "")]
+    clock.advance(MACHINE_WAIT + timedelta(seconds=1))
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            text("SELECT setval('grading_users', :number, false)"),
+            {"number": retried.run_user - USER_FIRST},
+        )
+    monkeypatch.setattr(pipelines, "USER_TRIES", 1)
+
+    await _submit(setup, acme, islands, user=9)
+
+    [other] = [
+        row for row in await _rows(setup, "early") if row.submission_id != first.submission_id
+    ]
+    assert (other.status, other.run_user) == (GradingStatus.DISPATCHED, retried.run_user)
+    freed = await _row(setup, retried.id)
+    assert (freed.status, freed.error) == (GradingStatus.SYSTEM_ERROR, NEVER_BEGAN)
+
+
 async def test_a_save_whose_checker_does_not_compile_is_refused_and_the_old_version_grades(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
@@ -632,6 +706,84 @@ async def test_a_save_whose_checker_does_not_compile_is_refused_and_the_old_vers
     assert (again.publication, again.check) == (saved.publication, "checking")
     *_, checking = await _rows(setup, "save")
     assert (checking.publication_id, checking.attempt) == (saved.publication, 2)
+
+
+async def _held_back_then_checked(setup: Setup, acme: Acme, islands: Islands) -> None:
+    """A run task's save that failed once its publication was made: the
+    task stays as the publication before froze it, shown to its organisers
+    as refused, until a save of the same files queues its check, which
+    lets it take over once it passes."""
+    made = await acme.fake.workspaces.list_publications(islands.task)
+    assert [each.id for each in made][:-1] == [islands.publication]
+    assert made[-1].checked_first
+    async with setup.unit_of_work() as ctx:
+        current = await published.task(ctx, islands.task)
+    assert current is not None and current.publication.id == islands.publication
+    assert [row.publication_id for row in await _rows(setup, "save")] == [islands.publication]
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    listed = await publications.list(setup, manager, islands.task)
+    assert [each.check for each in listed] == [None, "refused"]
+
+    again = await _save(setup, acme, islands.task, {})
+
+    assert (again.publication, again.check) == (made[-1].id, "checking")
+    _, save = await _rows(setup, "save")
+    assert (save.publication_id, save.attempt) == (made[-1].id, 1)
+    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))
+    assert await _report(setup, save.id, "save") is GradingStatus.DONE
+    await setup.settle()
+    async with setup.unit_of_work() as ctx:
+        current = await published.task(ctx, islands.task)
+    assert current is not None and current.publication.id == made[-1].id
+
+
+async def test_a_save_that_fails_once_it_published_leaves_its_publication_held_until_checked(
+    setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    islands = await _checked(setup, acme)
+    text = await _v2(acme, islands)
+
+    async def down(*_args: Any, **_kwargs: Any) -> int:
+        raise Unavailable("The forge did not answer.")
+
+    monkeypatch.setattr(publications, "_number_of", down)
+    with pytest.raises(Unavailable):
+        await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
+    monkeypatch.undo()
+
+    await _held_back_then_checked(setup, acme, islands)
+
+
+class _Killed(Exception):
+    """The process stopping in the middle of a save."""
+
+
+async def test_a_save_cut_off_by_a_restart_once_it_published_leaves_its_publication_held(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    islands = await _checked(setup, acme)
+    text = await _v2(acme, islands)
+
+    async def killed(*_args: Any, **_kwargs: Any) -> None:
+        raise _Killed
+
+    monkeypatch.setattr(pipelines, "queue_save", killed)
+    with pytest.raises(_Killed):
+        await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
+    monkeypatch.undo()
+    await setup.stop()
+
+    restarted = Setup.build(
+        setup.settings,
+        callback_path=CALLBACK_PATH,
+        forge=acme.fake,
+        clock=clock,
+        keys=key_from_name,
+    )
+    try:
+        await _held_back_then_checked(restarted, acme, islands)
+    finally:
+        await restarted.stop()
 
 
 async def test_a_lost_save_row_is_found_by_its_organisers_read_and_tried_again(
@@ -683,14 +835,29 @@ async def test_a_save_while_another_is_checked_is_compared_with_what_entrants_ar
     assert (await _row(setup, save.id)).taken_over_at is not None
 
 
-async def test_a_regrade_of_compares_alone_checks_nothing_out(
+async def test_a_regrade_of_compares_alone_is_said_at_the_save_and_checks_nothing_out(
     setup: Setup, acme: Acme, spring: str, asked: list[dict[str, Any]]
 ) -> None:
     islands = await _checked(setup, acme)
     await _submit(setup, acme, islands)
     [early] = await _rows(setup, "early")
     await _early(setup, acme, early.id)
-    await _save(setup, acme, islands.task, {"task.yaml": (await _v2(acme, islands)).encode()})
+    saved = await _save(
+        setup, acme, islands.task, {"task.yaml": (await _v2(acme, islands)).encode()}
+    )
+    assert isinstance(saved, Published)
+    # Nothing is queued until the save's check passes, which the effect says,
+    # with the one step each submission runs again.
+    assert (saved.regraded, saved.effect.summary, saved.effect.runs_again) == (
+        0,
+        "Results change.",
+        (
+            "Once the save's check passes, 1 submission is graded again, running compare "
+            "again, for these changes:",
+            "The workflow changed from unicon/islands@v1 to unicon/islands@v2.",
+            "The workflow's file diff/diff.py changed.",
+        ),
+    )
     _, save = await _rows(setup, "save")
     await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))
     assert await _report(setup, save.id, "save") is GradingStatus.DONE

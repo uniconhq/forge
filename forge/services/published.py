@@ -9,8 +9,9 @@ release rules itself before it hands anything on.
 A task with no publication has nothing to show. A run task's publication
 whose plan holds steps done at the save is not the task's until its save
 row ends `done` with every run accepted (`forge.services.pipelines`), so
-while it is checked, or once it is refused, the task is as the publication
-before froze it, and with none before it has nothing to show (`live`). A
+while it is checked, once it is refused, or when its save failed before
+its row was written, the task is as the publication before froze it, and
+with none before it has nothing to show (`live`). A
 task whose latest publication cannot be read as `task.yaml` shows nothing either, which cannot
 happen through a save, since only a valid save publishes.
 
@@ -168,7 +169,10 @@ async def live(
     """The task's publications that are its own, oldest first, from `made`
     when the caller has listed them: every one but a run task's that its
     save row has not let take over, its latest attempt not `done` with every
-    run accepted, told in the query. `NotFound` for no such task.
+    run accepted, told in the query; and one its note says is checked first
+    (`Publication.checked_first`) is held back until such a row passed,
+    even with no row at all, as a save that failed after publishing leaves
+    it. `NotFound` for no such task.
     """
     if made is None:
         made = await ctx.forge.workspaces.list_publications(task)
@@ -179,10 +183,13 @@ async def live(
         .distinct(Grading.publication_id)
         .subquery()
     )
-    held: set[str] = set(
-        await ctx.db.scalars(select(latest.c.publication_id).where(latest.c.passed.is_not(True)))
-    )
-    return [each for each in made if each.id not in held]
+    passed = {
+        publication: bool(ok)
+        for publication, ok in await ctx.db.execute(
+            select(latest.c.publication_id, latest.c.passed)
+        )
+    }
+    return [each for each in made if passed.get(each.id, not each.checked_first)]
 
 
 async def tasks(

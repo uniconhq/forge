@@ -1412,6 +1412,67 @@ def run_plan_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...
     return tuple(dict.fromkeys(changes))
 
 
+def steps_run_again(before: Snapshot | None, after: Snapshot) -> tuple[str, ...]:
+    """The steps a submission graded under the previous publication runs
+    again under this one, in the order its pipelines run them, for the
+    save's effect: each
+    step of the early and late pipelines that was added, uses another
+    primitive or image, is given other inputs, reads a task or workflow
+    file whose content changed, or reads an output of a step that runs
+    again, since the store runs again only what changed by key. A run added
+    or removed moves no step's other runs. A step done at the save runs
+    once, at the save, and is left out. Every graded step when the previous
+    plan no longer reads; none for a first publication.
+    """
+    if before is None:
+        return ()
+    new = RunPlan.from_bytes(after.plans[PLAN_PATH])
+    graded = dict.fromkeys(each.step for kind in ("early", "late") for each in new.pipeline(kind))
+    try:
+        old = RunPlan.from_bytes(before.plans[PLAN_PATH]) if PLAN_PATH in before.plans else None
+    except ValueError:
+        old = None
+    if old is None:
+        return tuple(graded)
+    again: set[str] = set()
+    moved = True
+    while moved:
+        moved = False
+        for step_id, now in new.steps.items():
+            if step_id not in again and _runs_again(old, new, step_id, now, again):
+                again.add(step_id)
+                moved = True
+    return tuple(step_id for step_id in graded if step_id in again)
+
+
+def _runs_again(old: RunPlan, new: RunPlan, step_id: str, now: RunStep, again: set[str]) -> bool:
+    was = old.steps.get(step_id)
+    if was is None or was.primitive != now.primitive or was.image != now.image:
+        return True
+    if _inputs(was, now.items) != _inputs(now, was.items):
+        return True
+    inputs = (
+        [now.inputs]
+        if now.inputs is not None
+        else [each.inputs for each in (now.items or {}).values()]
+    )
+    for value in _leaves(value for given in inputs for value in given.values()):
+        if "task" in value:
+            paths = named_by(new.task_files, value["task"]) | named_by(
+                old.task_files, value["task"]
+            )
+            if any(old.task_files.get(path) != new.task_files.get(path) for path in paths):
+                return True
+        elif "workflow" in value:
+            ours, theirs = new.workflow.files, old.workflow.files
+            paths = named_by(ours, value["workflow"]) | named_by(theirs, value["workflow"])
+            if any(theirs.get(path) != ours.get(path) for path in paths):
+                return True
+        elif "step" in value and value["step"] in again:
+            return True
+    return False
+
+
 def _inputs(step: RunStep, other: Mapping[str, Item] | None) -> object:
     """What a step is given, each run's by its id among those `other`, the
     same step in the other plan, holds too, for comparing: a run added or
@@ -1459,4 +1520,5 @@ __all__ = [
     "order_problems",
     "plan_runs",
     "run_plan_changes",
+    "steps_run_again",
 ]

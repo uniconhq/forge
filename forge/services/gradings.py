@@ -1032,18 +1032,20 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
     """The retry the platform makes by itself of a grading that ended in
     `system_error`, a new attempt marked `automatic` against the publication
     it graded against, or none when there is nothing to retry: the grading
-    is not the latest attempt of its submission any more, does not read as
-    a system error, its run could not be started and it still waits
+    is not the latest attempt of its submission any more, does not read as a
+    system error, its run could not be started and it still waits
     (`start_waits`), staff ended it, it was itself such a retry, or another
-    attempt is still being graded. The task and the submission's attempts
-    are held as a staff retry holds them, so two of these at once, or one
-    beside a staff retry, a cancel or a rejudge, make one attempt between
-    them. One that reads failed only because it is overdue or lost is
-    ended first, with the reason written on its row, its run cancelled at
-    the CI once this commits. A submission with no result is graded again
-    only while its entrant has room under the task's `submissions.max`, and
-    otherwise its new attempt ends `over_limit` (`_over_limit`). The new
-    attempt belongs to the regrade the failed one belonged to.
+    attempt is still being graded; or, for a late row, its early row is no
+    longer its submission's latest early attempt, the late row settled then
+    if it still waits. The task and the submission's attempts are held as a
+    staff retry holds them, so two of these at once, or one beside a staff
+    retry, a cancel or a rejudge, make one attempt between them. One that
+    reads failed only because it is overdue or lost is ended first, with the
+    reason written on its row, its run cancelled at the CI once this
+    commits. A submission with no result is graded again only while its
+    entrant has room under the task's `submissions.max`, and otherwise its
+    new attempt ends `over_limit` (`_over_limit`). The new attempt belongs
+    to the regrade the failed one belonged to.
     """
     found = await find(ctx, grading)
     if found is None or found.automatic:
@@ -1055,6 +1057,10 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
     if row.automatic or any(other.attempt > row.attempt for other in attempts):
         return None
     if status_of(ctx, row, gone) is not GradingStatus.SYSTEM_ERROR or start_waits(ctx, row):
+        return None
+    if row.pipeline == LATE and await _follows_an_earlier_attempt(ctx, row):
+        _settle(ctx, row, gone)
+        log.info("gradings.late_left", grading=str(row.id))
         return None
     if any(status_of(ctx, other, gone) in UNFINISHED for other in attempts):
         return None
@@ -1071,6 +1077,20 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
         over_limit=over is not None,
     )
     return made
+
+
+async def _follows_an_earlier_attempt(ctx: Context, late: Grading) -> bool:
+    """Whether a late row follows an early row that is no longer its
+    submission's latest early attempt, since a rejudge or a save's regrade
+    made another: its runs are read by no one, so it is not tried again.
+    """
+    latest = await ctx.db.scalar(
+        select(Grading.id)
+        .where(Grading.submission_id == late.submission_id, Grading.pipeline == EARLY)
+        .order_by(Grading.attempt.desc())
+        .limit(1)
+    )
+    return latest != late.early_id
 
 
 def overdue_of(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> str | None:
@@ -1300,6 +1320,32 @@ def _settle(ctx: Context, row: Grading, gone: Collection[uuid.UUID]) -> None:
         finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=overdue_of(ctx, row, gone))
     if row.run_id is not None and stored not in (GradingStatus.DONE, GradingStatus.CANCELLED):
         _cancel_after_commit(ctx, RunId(row.run_id))
+
+
+async def free_user(ctx: Context, user: int) -> bool:
+    """Free `user`, a run task's row's (`pipelines`), from the row not
+    finished that holds it when that row is past what its state may take
+    (`overdue_of`): it is written as a system error, with why, and its run
+    stopped once the unit of work commits, as a retry or a cancel settles
+    it. Without this, a row nobody reads again, such as an automatic retry
+    whose run the CI lost, a late row after its contest, or the save row of
+    a task since removed, would hold its user for good. A row another unit
+    of work holds is left to it. Whether the user is free now.
+    """
+    holder = await ctx.db.scalar(
+        select(Grading)
+        .where(Grading.run_user == user, Grading.status.in_([each.value for each in UNFINISHED]))
+        .with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
+    )
+    if holder is None:
+        return True
+    if overdue_of(ctx, holder) is None:
+        return False
+    _settle(ctx, holder, ())
+    await ctx.db.flush()
+    log.info("gradings.user_freed", grading=str(holder.id), user=user)
+    return True
 
 
 def _cancel_after_commit(ctx: Context, run: RunId) -> None:

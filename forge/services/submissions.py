@@ -105,7 +105,7 @@ from sqlalchemy import func, select, text
 
 from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
-from forge.db.tables.gradings import FRONT
+from forge.db.tables.gradings import FRONT, LATE
 from forge.domain import exact_json
 from forge.domain import submissions as rules
 from forge.domain.blocks.catalogue import ALL
@@ -971,8 +971,17 @@ async def _runs(
     scoring makes from the runs are stage 5's.
     """
     runs = list(row.result["runs"] if row.result else ())
+    # By the submission's late line, which its unique index orders by
+    # attempt, then the early row it follows.
     late = await ctx.db.scalar(
-        select(Grading).where(Grading.early_id == row.id).order_by(Grading.attempt.desc()).limit(1)
+        select(Grading)
+        .where(
+            Grading.submission_id == row.submission_id,
+            Grading.pipeline == LATE,
+            Grading.early_id == row.id,
+        )
+        .order_by(Grading.attempt.desc())
+        .limit(1)
     )
     revealed = reveal_at is not None and ctx.now >= reveal_at
     if late is not None:

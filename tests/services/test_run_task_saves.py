@@ -557,7 +557,7 @@ async def test_an_entrant_submits_to_a_run_task_and_its_early_row_is_queued(
     ]
 
 
-async def test_asking_before_a_save_promises_no_regrade_of_a_run_task(
+async def test_asking_before_a_save_counts_the_regrade_its_check_waits_for(
     setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _published(setup, acme, sum_task, "tour", RUNNING.format(visibility="everyone"))
@@ -579,4 +579,11 @@ async def test_asking_before_a_save_promises_no_regrade_of_a_run_task(
         "The run r3 was added.",
         "The file parts/3.in was added.",
     ]
-    assert asked.value.extra["regrades"] == 0
+    assert asked.value.extra["regrades"] == 5
+    # Graded again once the save row passes, as the take-over will choose.
+    assert asked.value.extra["runs_again"] == [
+        "Once the save's check passes, 5 submissions are graded again, running check again, "
+        "for these changes:",
+        "The run r3 was added.",
+        "The file parts/3.in was added.",
+    ]

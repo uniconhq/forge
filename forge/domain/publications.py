@@ -15,7 +15,9 @@ pinned version said when the task published, so a grading is scored and a
 board is checked without reading the workflow again; and every value the
 workflow reports, in its order, with the title and unit a page names it by
 (`forge.domain.meanings.ValueMeaning`), so no page reads the workflow for
-those either.
+those either; and, for a run task's publication whose plan holds steps done
+at the save, `checked_first`, so it is held back until a save row checks it,
+whether or not that row was ever written (`forge.services.published.live`).
 
     grading_changed: true
     changes:
@@ -29,6 +31,7 @@ those either.
     reported:
       time_ms: {title: Run time, unit: ms}
       log: {title: Compile log}
+    checked_first: true
 
 A publication made before values were noted has none: its numbers are shown
 on their tests and fold into nothing until the task publishes again. One
@@ -51,7 +54,8 @@ from forge.domain.showing import NOTHING_SEALED, Sealed
 Check = Literal["checking", "refused", "replaced"]
 """Where a run task's publication stands while its save row has not let it
 take over: still `checking`; `refused`, its checking ended without every
-run accepted; or `replaced`, its checking stopped by a later save."""
+run accepted, or never began, since its save failed after publishing; or
+`replaced`, its checking stopped by a later save."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +63,8 @@ class Publication:
     """One publication: its id, its number among the task's publications,
     the version it froze, what its note says and when it was made; and for
     an organiser, `check`, where a run task's one stands while it has not
-    taken over, none once it has or when it needs no checking.
+    taken over, none once it has or when it needs no checking;
+    `checked_first` when it is not the task's until a save row passes.
     """
 
     id: PublicationId
@@ -74,6 +79,7 @@ class Publication:
     titles: Mapping[str, str] = field(default_factory=dict)
     meanings: tuple[ValueMeaning, ...] = ()
     check: Check | None = None
+    checked_first: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +91,7 @@ class Note:
     measures: Mapping[str, Measure] = field(default_factory=dict)
     titles: Mapping[str, str] = field(default_factory=dict)
     meanings: tuple[ValueMeaning, ...] = ()
+    checked_first: bool = False
 
 
 def write_note(
@@ -95,6 +102,8 @@ def write_note(
     measures: Mapping[str, Measure] | None = None,
     titles: Mapping[str, str] | None = None,
     meanings: Sequence[ValueMeaning] = (),
+    *,
+    checked_first: bool = False,
 ) -> str:
     """The note a publication is made with."""
     document: dict[str, object] = {"grading_changed": grading_changed, "changes": list(changes)}
@@ -110,6 +119,8 @@ def write_note(
         document["titles"] = dict(sorted(titles.items()))
     if meanings:
         document["reported"] = {meaning.name: meaning.noted() for meaning in meanings}
+    if checked_first:
+        document["checked_first"] = True
     return yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
 
 
@@ -158,6 +169,7 @@ def read_note(text: str | None) -> Note:
         measures,
         _titles(document.get("titles")),
         with_measures(meanings_noted(document.get("reported")), measures),
+        document.get("checked_first") is True,
     )
 
 

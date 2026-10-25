@@ -29,6 +29,7 @@ from forge.domain.run_plan import (
     order_problems,
     plan_runs,
     run_plan_changes,
+    steps_run_again,
 )
 from forge.domain.run_task import check_run_task
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
@@ -1156,4 +1157,43 @@ def test_a_save_says_what_its_plan_changed(primitives: dict[str, PrimitiveDeclar
     )
     assert run_plan_changes(Snapshot(plans={}, data={}), _snapshot(before)) == (
         "The way the task grades changed.",
+    )
+
+
+def test_a_save_says_which_steps_a_submission_runs_again(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    before = ok(islands(primitives))
+    longer = ok(islands(primitives, ISLANDS.replace("time_limit: 2", "time_limit: 3")))
+    shown = ok(
+        islands(
+            primitives,
+            ISLANDS.replace(
+                "    after_close: [st1, st2, total, all]\n", "    after_close: [st2, total, all]\n"
+            ).replace("    now: [sample_score,", "    now: [st1, sample_score,"),
+        )
+    )
+    other = FileFact(size=1, sha256="d" * 64)
+    answer = before.model_copy(update={"task_files": {**before.task_files, "tests/3.ans": other}})
+    script = before.model_copy(
+        update={
+            "workflow": before.workflow.model_copy(
+                update={"files": {**before.workflow.files, "diff/diff.py": other}}
+            )
+        }
+    )
+
+    assert steps_run_again(None, _snapshot(before)) == ()
+    assert steps_run_again(_snapshot(before), _snapshot(before)) == ()
+    # Its output read by compare, the solution runs both again.
+    assert steps_run_again(_snapshot(before), _snapshot(longer)) == ("solution", "compare")
+    # Runs moved between the pipelines keep every key.
+    assert steps_run_again(_snapshot(before), _snapshot(shown)) == ()
+    assert steps_run_again(_snapshot(before), _snapshot(answer)) == ("compare",)
+    # The checker is compiled at the save; each submission runs only compare.
+    assert steps_run_again(_snapshot(before), _snapshot(script)) == ("compare",)
+    assert steps_run_again(Snapshot(plans={}, data={}), _snapshot(before)) == (
+        "compile",
+        "solution",
+        "compare",
     )
