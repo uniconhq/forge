@@ -2,13 +2,16 @@
 and a save that published answers with: the first line, what runs again, the
 scores and what entrants read. Results change when a submission is graded
 again, or when the task has a graded submission and the save moves what one
-earns or shows; the rate alone, the statement and the title move none.
+earns or shows; the rate alone, the statement and the title move none. A
+run task's groups and values are named as they change, a value with what
+it reads, and what `show` shows when.
 """
 
 import pytest
 
-from forge.domain.definitions import parse_contest, parse_task
+from forge.domain.definitions import TaskDefinition, parse_contest, parse_task
 from forge.domain.save_effect import ReadChanges, SaveEffect, effect_of
+from tests.test_run_task import ISLANDS
 
 CONTEST = parse_contest(
     """\
@@ -346,3 +349,117 @@ def test_a_values_program_running_again_says_its_cost(regrades: int, said: str) 
         read=NOTHING_READ,
         programs=("mean",),
     ).runs_again == ("No submission runs again: the tests and how they run are the same.",)
+
+
+# Run tasks
+
+
+def _run(text: str) -> TaskDefinition:
+    return parse_task(text, runs=True)
+
+
+def _run_effect(after: str, before: str | None = ISLANDS, graded: bool = True) -> SaveEffect:
+    return effect_of(
+        "sum",
+        _run(before) if before is not None else None,
+        _run(after),
+        CONTEST,
+        changes=(),
+        regrades=0,
+        graded=graded,
+        read=NOTHING_READ,
+    )
+
+
+def test_a_run_tasks_values_are_named_as_they_change_with_what_they_read() -> None:
+    effect = _run_effect(
+        ISLANDS.replace(
+            "st2_tests: {input: [tests/3.in, tests/4.in]}", "st2_tests: {input: [tests/4.in]}"
+        )
+        .replace("of: [40, {value: st1}]", "of: [50, {value: st1}]")
+        .replace(
+            "    sample_time:",
+            "    tries: {block: count, over: {runs: all}}\n    sample_time:",
+        )
+    )
+
+    assert effect.results_change and effect.summary == "Results change."
+    assert effect.scores == (
+        "The group st2_tests now holds other runs.",
+        "The value tries is new.",
+        "The value st2 changes with st2_tests.",
+        "The value total is worked out another way.",
+        "Every result is scored again, and the leaderboards Standings and Live with them.",
+    )
+
+
+def test_a_value_gone_a_group_gone_and_what_is_shown_when_are_each_said() -> None:
+    effect = _run_effect(
+        ISLANDS.replace("    st1_tests: {input: [tests/3.in]}\n", "")
+        .replace(
+            "    st1: {block: min, over: {runs: st1_tests}, of: {run: [st1_tests, score]}}\n", ""
+        )
+        .replace("of: [40, {value: st1}]", "of: [40, 1]")
+        .replace("after_close: [st1, st2, total, all]", "after_close: [st2, all]")
+        .replace("now: [sample_score,", "now: [total, sample_score,")
+    )
+
+    assert effect.scores == (
+        "The group st1_tests is gone.",
+        "The value total is worked out another way.",
+        "The value st1 is gone.",
+        "Entrants see total as soon as a grading ends (was at the reveal).",
+        "Entrants no longer see st1 (was at the reveal).",
+        "Every result is scored again, and the leaderboards Standings and Live with them.",
+    )
+
+
+def test_a_run_task_moving_only_what_is_shown_scores_nothing_again() -> None:
+    effect = _run_effect(
+        ISLANDS.replace("after_close: [st1, st2, total, all]", "on_release: [st1, st2, total, all]")
+    )
+    untouched = _run_effect(ISLANDS)
+    ungraded = _run_effect(ISLANDS.replace("[40,", "[30,"), graded=False)
+    first = _run_effect(ISLANDS, before=None)
+
+    assert effect.results_change
+    assert effect.scores[0] == "Entrants see st1 once results are released (was at the reveal)."
+    assert not any("scored again" in line for line in effect.scores)
+    assert (untouched.results_change, untouched.scores) == (False, ("No score changes.",))
+    assert not ungraded.results_change
+    assert first.scores == (
+        "sum now counts on the leaderboard Standings.",
+        "sum now counts on the leaderboard Live.",
+    )
+
+
+def test_a_task_file_shown_at_another_time_is_said_under_what_entrants_read_alone() -> None:
+    later = ISLANDS.replace(
+        "now: [sample_score, sample_time, sample_tests, samples/]",
+        "now: [sample_score, sample_time, sample_tests]",
+    ).replace(
+        "after_close: [st1, st2, total, all]", "after_close: [st1, st2, total, all, samples/]"
+    )
+    effect = _run_effect(later)
+    gone = _run_effect(later.replace(", samples/]", "]"))
+
+    assert (effect.results_change, effect.summary) == (False, "Nobody's result changes.")
+    assert effect.scores == ("No score changes.",)
+    assert effect.reading == (
+        "Entrants can read samples/ from the reveal (was during the contest).",
+    )
+    assert gone.reading == ("Entrants can no longer read samples/ (was during the contest).",)
+
+
+def test_a_file_only_a_check_names_is_never_said_to_be_shown() -> None:
+    checked = ISLANDS.replace(
+        "submissions:",
+        "checks:\n  - submit: {code: checks/good}\n    expect: {verdict: accepted}\nsubmissions:",
+    )
+    effect = _run_effect(
+        checked.replace("samples/]", "samples/, checks/good/]"),
+        before=checked,
+    )
+
+    assert effect.reading == ("Nothing entrants read changes.",)
+    assert effect.scores == ("No score changes.",)

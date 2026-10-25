@@ -155,23 +155,26 @@ FRONT = Grading.pipeline == EARLY
 row of today's tasks, and a run task's early row; not a late row, which
 follows one, nor a save row, which has no submission."""
 
+
+def _failing(holds: str, items: str) -> str:
+    """A path to each of `items` for which `holds` is false or unknown,
+    unknown being a value of another type, so it fails as in Python."""
+    return f"{items} ? (!({holds}) || ({holds}) is unknown)"
+
+
 PASSED = and_(
     Grading.status == GradingStatus.DONE,
-    not_(
-        func.jsonb_path_exists(
-            Grading.result,
-            literal_column(
-                """'$.runs[*] ? (@.verdict != "accepted" && @.verdict != "skipped")'::jsonpath"""
-            ),
-        )
-    ),
-    not_(
-        func.jsonb_path_exists(
-            Grading.result, literal_column("""'$.checks[*] ? (@.passed != true)'::jsonpath""")
+    *(
+        not_(func.jsonb_path_exists(Grading.result, literal_column(f"'{path}'::jsonpath")))
+        for path in (
+            _failing('@.verdict == "accepted" || @.verdict == "skipped"', "$.runs[*]"),
+            _failing('@ == "accepted"', "$.once.outcomes.*"),
+            _failing("@.passed == true", "$.checks[*]"),
         )
     ),
 )
 """The rows `done` whose result accepts every run, a skipped one among
-them, and whose every check got what it expects, as
-`step_data.all_accepted` tells it: a save row that lets its publication
-take over."""
+them, every step done once, and whose every check got what it expects,
+exactly as `step_data.all_accepted` tells it: a save row that lets its
+publication take over. A run with no verdict, or a check whose `passed`
+is missing or not `true`, fails it as it does in Python."""

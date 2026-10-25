@@ -25,7 +25,14 @@ later better best leaves a finished regrade reading as it did; and
 - `gradings_of` gives a regrade's gradings, one per submission, its latest
   attempt of the regrade, as the feed gives gradings, each with what the
   regrade did to it (`GradingRecord.change`), narrowed to one change and
-  to a member's or an entrant's submissions when asked.
+  to a member's or an entrant's submissions when asked;
+- `run_summary` gives a run task's regrade by what it changed: each
+  submission whose values or verdicts it changed, old to new, worked out
+  on read as every value is, the earlier attempt under the publication
+  it counted under then, a bounded few and the rest counted; how many
+  are still running, and how many it cannot compare; and, for a
+  manager or admin of the contest alone, each board that reads the task
+  before and after (`BoardDiff`, from phase 5.5).
 
 Each reads where an attempt stands as every read does, so a failure it
 finds starts that attempt's retry by itself (`gradings.notice`).
@@ -42,32 +49,43 @@ from sqlalchemy import select
 
 from forge.db.tables import Grading, Regrade
 from forge.db.tables.gradings import FRONT
-from forge.domain.definitions import ContestDefinition
+from forge.domain.definitions import TASK_FILE, ContestDefinition, parse_task
 from forge.domain.errors import NotFound, PortError
 from forge.domain.grading import UNFINISHED, GradingStatus
+from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, PublicationId, TaskId, WorkspaceId
 from forge.domain.regrades import (
     GRADED,
+    BoardDiff,
     ChangeKind,
     Compared,
     RegradeCause,
     Side,
+    ValueChange,
+    VerdictChange,
     change_of,
     counted,
     counted_under,
+    run_changes,
 )
-from forge.domain.roles import Role, contest_id_of, task_scope
+from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_scope
 from forge.domain.scoring import ACCEPTED, EVERYTHING, everywhere
+from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import entrants, gradings, names, published, scores, timelines
+from forge.services import entrants, entries, gradings, names, published, scores, timelines
 from forge.services.access import Organiser, require
 from forge.services.gradings import FeedEntry, GradingRecord
 
 log = get_logger(__name__)
 
 NO_SUCH_REGRADE = "There is no such regrade."
+UNREAD_TASK = "The task or its contest no longer reads, so its regrade cannot be summed up."
+NOT_RUN_TASK = (
+    "This regrade is of a task graded test by test, whose gradings say what it changed. "
+    "Only a run task's regrade is summed up by its values."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +112,49 @@ class Summary:
     graded: int
     running: bool
     counts: Mapping[ChangeKind, int]
+
+
+@dataclass(frozen=True, slots=True)
+class SubmissionChange:
+    """One submission a run task's regrade changed: its latest attempt of
+    the regrade, the submission by id and number, its workspace, and each
+    value and verdict the regrade changed."""
+
+    grading: uuid.UUID
+    submission: str
+    number: int
+    workspace: WorkspaceId
+    values: tuple[ValueChange, ...]
+    verdicts: tuple[VerdictChange, ...]
+    more_verdicts: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RunSummary:
+    """A run task's regrade by what it changed: its id, task, cause and the
+    publication it grades against; how many submissions it took, how many
+    are still running, how many ended with no result, and how many it
+    cannot compare since the publication their result counted under no
+    longer reads; the first `CHANGED_SHOWN` submissions it changed, and
+    how many more it did; and each board that reads the task before and
+    after, none for an organiser who does not manage the contest."""
+
+    id: uuid.UUID
+    task: TaskId
+    cause: RegradeCause
+    publication: PublicationId
+    total: int
+    running: int
+    failed: int
+    unread: int
+    changed: tuple[SubmissionChange, ...]
+    more_changed: int
+    boards: tuple[BoardDiff, ...] | None
+
+
+CHANGED_SHOWN = 100
+"""The most submissions a run task's regrade summary lists; the rest it
+changed are counted."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +299,164 @@ async def gradings_of(
     return await gradings.entries(ctx, contest, records)
 
 
+@action
+async def run_summary(
+    ctx: Context, organiser: Organiser, task: TaskId, regrade: uuid.UUID
+) -> RunSummary:
+    """What a run task's regrade changed (SIMPLER-CORE.md 11.8), for a
+    manager of the task: each submission whose values or verdicts its
+    latest attempt changed against the attempt that counted when the
+    regrade began, the latest earlier one that finished with a result,
+    worked out under the publication the task's latest then
+    (`counted_under`), and the new one under the regrade's; a submission
+    still running, or whose attempt ended with no result, is counted, not
+    compared, and so is one whose earlier result counted under a
+    publication that no longer reads, never listed as changing everything.
+    Submissions come in the order they were made, at most `CHANGED_SHOWN`
+    of those changed. Both are worked out on read, every value as
+    organisers read it, the extensions and marks as they stand now on both
+    sides, so nothing is stored (stage 5 section 6 items 1 and 67). The
+    late rows and marks of every submission are read in one go. The boards that
+    read the task are a contest manager's or admin's alone, since a board
+    diff shows every cell. `Forbidden` below a manager of the task,
+    `NotFound` for a regrade of another task, or none, and for a task
+    graded test by test or whose publication does not read.
+    """
+    require(organiser, task_scope(task), Role.MANAGER)
+    row = await ctx.db.get(Regrade, regrade)
+    if row is None or row.task_id != task:
+        raise NotFound(NO_SUCH_REGRADE)
+    contest = contest_id_of(task_scope(task))
+    settings = await _settings(ctx, contest)
+    current = await published.task(ctx, task, settings) if settings is not None else None
+    if settings is None or current is None:
+        raise NotFound(UNREAD_TASK)
+    if current.definition.scoring is None:
+        raise NotFound(NOT_RUN_TASK)
+    cause, against = RegradeCause(row.cause), PublicationId(row.publication_id)
+    then = await _as_of(ctx, current, counted_under(cause, against, current.publications))
+    now = await _as_of(ctx, current, against) or current
+    mine = builtins.list(
+        await ctx.db.scalars(select(Grading).where(Grading.regrade_id == regrade, FRONT))
+    )
+    attempts, ours, newest, gone = await _attempts(ctx, mine) if mine else ({}, {}, {}, frozenset())
+    owners = {
+        each.workspace_id: ctx.forge.workspaces.owner_of(WorkspaceId(each.workspace_id))
+        for each in newest.values()
+    }
+    extensions = await timelines.of_owners(ctx, contest, set(owners.values()))
+    earliers = {
+        submission: gradings.latest_good(
+            each
+            for each in attempts[submission]
+            if each.attempt < min(own.attempt for own in ours[submission])
+        )
+        for submission in newest
+    }
+    lates = await scores.lates_of(
+        ctx,
+        [
+            *(each for each in newest.values() if gradings.good(each)),
+            *(each for each in earliers.values() if each is not None),
+        ],
+    )
+    marks = await entries.entered_for(ctx, task, newest)
+    running = failed = unread = more = 0
+    changed: builtins.list[SubmissionChange] = []
+    for submission, latest_row in sorted(
+        newest.items(), key=lambda each: (each[1].submitted_at, each[0])
+    ):
+        status = gradings.status_of(ctx, latest_row, gone)
+        late = lates.get(latest_row.id) if gradings.good(latest_row) else None
+        if status in UNFINISHED or (
+            late is not None and gradings.status_of(ctx, late) in UNFINISHED
+        ):
+            running += 1
+            continue
+        if not gradings.good(latest_row):
+            failed += 1
+            continue
+        earlier = earliers[submission]
+        if earlier is not None and then is None:
+            # Its result counted under a publication that no longer reads,
+            # so there is nothing to compare it with.
+            unread += 1
+            continue
+        extension = extensions[owners[latest_row.workspace_id]]
+        held = marks[submission]
+        after = await scores.run_scored(ctx, now, settings, extension, latest_row, late, held)
+        before = None
+        if earlier is not None and then is not None:
+            stood = await scores.run_scored(
+                ctx, then, settings, extension, earlier, lates.get(earlier.id), held
+            )
+            before = stood.organised
+        found = run_changes(before, after.organised)
+        if not found:
+            continue
+        if len(changed) >= CHANGED_SHOWN:
+            more += 1
+            continue
+        changed.append(
+            SubmissionChange(
+                grading=latest_row.id,
+                submission=submission,
+                number=latest_row.submission_number,
+                workspace=WorkspaceId(latest_row.workspace_id),
+                values=found.values,
+                verdicts=found.verdicts,
+                more_verdicts=found.more_verdicts,
+            )
+        )
+    boards = (
+        await _board_diffs(ctx, row, settings)
+        if holds(organiser.grants, contest_scope(contest), Role.MANAGER)
+        else None
+    )
+    return RunSummary(
+        id=row.id,
+        task=task,
+        cause=cause,
+        publication=against,
+        total=len(newest),
+        running=running,
+        failed=failed,
+        unread=unread,
+        changed=tuple(changed),
+        more_changed=more,
+        boards=boards,
+    )
+
+
+async def _as_of(
+    ctx: Context, current: published.PublishedTask, publication: PublicationId
+) -> published.PublishedTask | None:
+    """The task as `publication` froze it, its settings and runs read at
+    that version, or none when it is gone or its settings no longer read."""
+    found = next((each for each in current.publications if each.id == publication), None)
+    if found is None:
+        return None
+    if found.id == current.publication.id:
+        return current
+    held = await ctx.forge.content.read_file(PLATFORM, current.id, TASK_FILE, at=found.version)
+    try:
+        definition = parse_task(held.content)
+    except InvalidDefinition:
+        return None
+    if definition.scoring is None:
+        return None
+    return replace(current, publication=found, definition=definition)
+
+
+async def _board_diffs(
+    ctx: Context, regrade: Regrade, settings: ContestDefinition
+) -> tuple[BoardDiff, ...]:
+    """Each board that reads the regrade's task, before and after. Phase
+    5.5 works a board's rows out from a run task's values; until then no
+    board reads one, so there is none."""
+    return ()
+
+
 async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition | None:
     """The contest's settings, or none when they do not read or the forge
     does not answer.
@@ -260,29 +479,7 @@ async def _read(
     )
     if not mine:
         return []
-    attempts: dict[str, builtins.list[Grading]] = {}
-    for row in await ctx.db.scalars(
-        select(Grading).where(
-            Grading.submission_id.in_(sorted({row.submission_id for row in mine})), FRONT
-        )
-    ):
-        attempts.setdefault(row.submission_id, []).append(row)
-    ours: dict[str, builtins.list[Grading]] = {}
-    for row in mine:
-        ours.setdefault(row.submission_id, []).append(row)
-    newest = {
-        submission: max(rows, key=lambda row: row.attempt) for submission, rows in ours.items()
-    }
-    gone = await gradings.lost(ctx, newest.values())
-    await gradings.notice(
-        ctx,
-        [
-            row
-            for submission, row in newest.items()
-            if row.attempt == max(each.attempt for each in attempts[submission])
-        ],
-        gone,
-    )
+    attempts, ours, newest, gone = await _attempts(ctx, mine)
     task = TaskId(regrade.task_id)
     current = await published.task(ctx, task, settings) if settings is not None else None
     scorer = (
@@ -333,6 +530,45 @@ async def _read(
             compared = Compared(change_of(before, now), before, now)
         found.append(_Read(row, compared))
     return found
+
+
+async def _attempts(
+    ctx: Context, mine: Sequence[Grading]
+) -> tuple[
+    dict[str, builtins.list[Grading]],
+    dict[str, builtins.list[Grading]],
+    dict[str, Grading],
+    frozenset[uuid.UUID],
+]:
+    """Of a regrade's rows `mine`: every attempt of each of their
+    submissions, the regrade's own, its latest of each, and the rows the CI
+    lost. A failure found among the latest that are their submission's
+    latest starts its retry by itself.
+    """
+    attempts: dict[str, builtins.list[Grading]] = {}
+    for row in await ctx.db.scalars(
+        select(Grading).where(
+            Grading.submission_id.in_(sorted({row.submission_id for row in mine})), FRONT
+        )
+    ):
+        attempts.setdefault(row.submission_id, []).append(row)
+    ours: dict[str, builtins.list[Grading]] = {}
+    for row in mine:
+        ours.setdefault(row.submission_id, []).append(row)
+    newest = {
+        submission: max(rows, key=lambda row: row.attempt) for submission, rows in ours.items()
+    }
+    gone = await gradings.lost(ctx, newest.values())
+    await gradings.notice(
+        ctx,
+        [
+            row
+            for submission, row in newest.items()
+            if row.attempt == max(each.attempt for each in attempts[submission])
+        ],
+        gone,
+    )
+    return attempts, ours, newest, gone
 
 
 async def _factors(

@@ -144,24 +144,37 @@ async def entered_of(ctx: Context, task: TaskId, submission: str) -> dict[str, F
     row by the order the rows were written (`entries.seq`), by the value's
     name; a value with none is left out.
     """
+    return (await entered_for(ctx, task, [submission]))[submission]
+
+
+async def entered_for(
+    ctx: Context, task: TaskId, submissions: Iterable[str]
+) -> dict[str, dict[str, Fraction]]:
+    """`entered_of` for each of `submissions` at once, read in one go."""
+    wanted = sorted(set(submissions))
+    found: dict[str, dict[str, Fraction]] = {submission: {} for submission in wanted}
+    if not wanted:
+        return found
     rows = await ctx.db.execute(
-        select(Entry.value, Entry.mark)
+        select(Entry.submission_id, Entry.value, Entry.mark)
         .where(
             Entry.task_id == task,
-            or_(Entry.submission_id == submission, Entry.submission_id.is_(None)),
+            or_(Entry.submission_id.in_(wanted), Entry.submission_id.is_(None)),
         )
         .order_by(Entry.seq)
     )
-    found: dict[str, Fraction] = {}
-    for value, mark in rows:
+    for submission, value, mark in rows:
+        marks = [found[submission]] if submission is not None else list(found.values())
         if mark is None:
             # A start: the value was given its `entered` block again.
-            found.pop(value, None)
+            for each in marks:
+                each.pop(value, None)
             continue
         number = _plain(mark)
         if number is None:
             raise ValueError(f"An entry for {value} holds {mark!r}, which is no mark.")
-        found[value] = number
+        for each in marks:
+            each[value] = number
     return found
 
 
@@ -216,4 +229,4 @@ def _stored(text: str) -> str:
     return kept.rstrip("0").rstrip(".") if "." in kept else kept
 
 
-__all__ = ["Entered", "enter", "entered_of", "entered_values", "start_again"]
+__all__ = ["Entered", "enter", "entered_for", "entered_of", "entered_values", "start_again"]

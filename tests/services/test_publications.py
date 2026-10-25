@@ -22,7 +22,7 @@ from typing import Any
 from unittest.mock import ANY
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from forge.db.tables import Grading
 from forge.domain import plans
@@ -1521,6 +1521,12 @@ async def test_the_confirmation_counts_the_submissions_the_save_regrades_and_no_
     assert confirmed.effect.runs_again == (
         "2 submissions are graded again: the way the task grades changed.",
     )
+    # The answer names the regrade it started, for its summary.
+    async with setup.unit_of_work() as ctx:
+        queued = await ctx.db.scalar(
+            select(func.count()).select_from(Grading).where(Grading.regrade_id == confirmed.regrade)
+        )
+    assert confirmed.regrade is not None and queued == 2
 
 
 async def test_a_grading_change_with_every_submission_cancelled_says_none_is_graded_again(

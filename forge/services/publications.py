@@ -99,6 +99,7 @@ steps in order, and refuses before anything is written.
 import builtins
 import hashlib
 import json
+import uuid
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
@@ -180,6 +181,7 @@ from forge.domain.run_plan import (
     FileFact,
     RunPlan,
     files_named,
+    pin_moved,
     plan_runs,
     run_plan_changes,
     steps_run_again,
@@ -245,6 +247,13 @@ LANDED_UNDER = (
     "Someone else saved this task while yours was being saved, so the task as it now stands "
     "was not checked. Save again to publish it."
 )
+PIN_ANSWER = "pin"
+"""What the answer to a save's question carries when the save moves the
+workflow's pin, so only an answer to that question confirms it."""
+PIN_MOVED = (
+    "This save moves the workflow's pin, so its submissions are graded again on the new "
+    "version. Once that regrade runs, its summary lists each value and verdict it changed."
+)
 SHOWN_WORDS = {
     Show.ALWAYS: "as soon as a grading ends",
     Show.VERDICT: "as an outcome before the reveal",
@@ -264,8 +273,10 @@ class Published:
     beside publishing it, its sealed steps and a bounded value its `credit`
     does not name, how many submissions it queued to be graded again, and
     what it did, in the words a running contest asks with before a save;
-    and `check`, where a run task's publication stands while its save row
-    has not let it take over (`pipelines.checks`), none otherwise.
+    `check`, where a run task's publication stands while its save row
+    has not let it take over (`pipelines.checks`), none otherwise; and
+    `regrade`, the regrade it started, for its summary, none when it
+    started none now.
     """
 
     publication: PublicationId
@@ -276,6 +287,7 @@ class Published:
     regraded: int
     effect: SaveEffect
     check: Check | None = None
+    regrade: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,6 +381,7 @@ async def save(
     newest = made[-1] if made else None
     changed: tuple[str, ...] = ()
     rerun: tuple[str, ...] | None = None
+    pinned = False
     read = ReadChanges()
     anew = True
     worded = False
@@ -380,6 +393,7 @@ async def save(
             # file, which say whether anything moved.
             after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
             changed = run_plan_changes(before, after)
+            pinned = pin_moved(before, after)
             if RELEASE_MOVED in changed and not await published.results_released(ctx, task):
                 # The released split moved while no grading takes it: one
                 # made at a release takes it as it then stands, so nothing
@@ -422,12 +436,28 @@ async def save(
         if checked.run_task is not None
         else None
     )
-    # A self-reported column is confirmed only by an answer to the question
-    # that named it: a bare confirm, or one to another question, is no answer.
+    # A self-reported column, or a pin moved, is confirmed only by an
+    # answer to the question that named it: a bare confirm, or one to
+    # another question, is no answer (stage 5 section 6 item 68).
     expected = basis if question is None else f"{basis}:{_marks_digest(checked.run_task)}"
-    confirmed = confirm and (asked == expected if question else asked in (None, basis))
+    if pinned:
+        expected = f"{expected}:{PIN_ANSWER}"
+    exact = question is not None or pinned
+    confirmed = confirm and (asked == expected if exact else asked in (None, basis))
     if not confirmed:
-        await _ask(ctx, task, checked, latest, question, changed, rerun, read, expected, anew=anew)
+        await _ask(
+            ctx,
+            task,
+            checked,
+            latest,
+            question,
+            changed,
+            rerun,
+            read,
+            expected,
+            anew=anew,
+            pinned=pinned,
+        )
 
     plans = await _plan_files(ctx, as_, task, head, checked)
     version = await _write(ctx, organiser, task, head, written, plans, said)
@@ -447,21 +477,21 @@ async def save(
         # graded as before: a save of the same files grades them again.
         # A task checked first is graded again when its check passes.
         regraded = 0
+        started: uuid.UUID | None = None
         if (
             newest.grading_changed
             and not _checked_first(checked)
             and await gradings.behind(ctx, task, newest.id)
         ):
-            regraded = (
-                await gradings.regrade(
-                    ctx,
-                    task,
-                    newest.id,
-                    cause=RegradeCause.SAVE,
-                    by=organiser.user.id,
-                    limit=checked.definition.submissions.max,
-                )
-            ).queued
+            regrading = await gradings.regrade(
+                ctx,
+                task,
+                newest.id,
+                cause=RegradeCause.SAVE,
+                by=organiser.user.id,
+                limit=checked.definition.submissions.max,
+            )
+            regraded, started = regrading.queued, regrading.regrade
         effect = await _effect(
             ctx, task, checked.definition, latest, (), regraded, ReadChanges(), checked.compiled
         )
@@ -479,6 +509,7 @@ async def save(
             regraded,
             effect,
             again,
+            started,
         )
     notes = (*notes, *await _report(ctx, task, checked.definition, checked))
     note = (
@@ -516,17 +547,17 @@ async def save(
         )
         checking = "checking" if saving is not None else None
     regraded = 0
+    started = None
     if _regrades(changed, checked):
-        regraded = (
-            await gradings.regrade(
-                ctx,
-                task,
-                publication,
-                cause=RegradeCause.SAVE,
-                by=organiser.user.id,
-                limit=checked.definition.submissions.max,
-            )
-        ).queued
+        regrading = await gradings.regrade(
+            ctx,
+            task,
+            publication,
+            cause=RegradeCause.SAVE,
+            by=organiser.user.id,
+            limit=checked.definition.submissions.max,
+        )
+        regraded, started = regrading.queued, regrading.regrade
     if changed and _checked_first(checked):
         # Graded again once the save row passes: counted as the take-over
         # will choose them.
@@ -558,7 +589,9 @@ async def save(
         regraded=regraded,
         user_id=organiser.user.id,
     )
-    return Published(publication, number, bool(changed), changed, notes, regraded, effect, checking)
+    return Published(
+        publication, number, bool(changed), changed, notes, regraded, effect, checking, started
+    )
 
 
 def _regrades(changed: tuple[str, ...], checked: Checked) -> bool:
@@ -589,28 +622,32 @@ async def _ask(
     basis: str,
     *,
     anew: bool,
+    pinned: bool = False,
 ) -> None:
     """Refuse a save not yet confirmed with `ConfirmationRequired` when it
     asks first: while its contest runs, before it publishes anything new
-    (#449); and for a run task, when a column the entrant could set is new
-    or set through other inputs than under the latest publication (#504).
-    One question asks both, `self_reported` listing each such column with
-    the entrant's inputs that let them set it, and `asked` being what a
-    confirmation answers it with, `basis`.
+    (#449); for a run task, when a column the entrant could set is new or
+    set through other inputs than under the latest publication (#504); and
+    when it moves the workflow's pin, `pinned`, with submissions to grade
+    again (11.8). One question asks all of them, `self_reported` listing
+    each such column with the entrant's inputs that let them set it, and
+    `asked` being what a confirmation answers it with, `basis`.
     """
     assert checked.definition is not None
-    asks: builtins.list[str] = []
-    if anew and await _contest_running(ctx, task):
-        asks.append("The contest is running, so this save asks before it publishes.")
-    if question is not None:
-        asks.append(question)
-    if not asks:
-        return
     regrades = (
         await gradings.to_regrade(ctx, task, limit=checked.definition.submissions.max)
         if changed
         else 0
     )
+    asks: builtins.list[str] = []
+    if anew and await _contest_running(ctx, task):
+        asks.append("The contest is running, so this save asks before it publishes.")
+    if pinned and regrades:
+        asks.append(PIN_MOVED)
+    if question is not None:
+        asks.append(question)
+    if not asks:
+        return
     effect = await _effect(
         ctx,
         task,

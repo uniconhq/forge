@@ -18,12 +18,14 @@ import pytest
 from forge.domain import exact_json
 from forge.domain.blocks.evaluate import Column
 from forge.domain.blocks.numbers import Better
+from forge.domain.checks import CHECKS_ROOM, RUNS_KEPT, check_room, keep_runs
 from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, parse_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine, Slot, run_machine
 from forge.domain.plans import PLAN_PATH, Snapshot, StepLimits
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
+from forge.domain.reports import RESULT_MAX
 from forge.domain.run_plan import (
     PRIMITIVE_ROOM_MB,
     PROGRAM_USES,
@@ -1670,5 +1672,165 @@ def test_a_check_giving_more_than_the_entrant_may_is_refused(
     assert refused(found) == {
         "checks[2].submit.code": [
             "checks/slow/ holds 2097152 bytes, more than the 1048576 the entrant may give as code."
+        ]
+    }
+
+
+def _long_keyed(stem: str) -> tuple[str, frozenset[str]]:
+    """CHECKED with 20 more runs whose files' names start with `stem`."""
+    runs = "".join(f"      - [tests/{stem}{n}.in, tests/{stem}{n}.ans]\n" for n in range(5, 25))
+    task = CHECKED.replace(
+        "      - {answer: tests/4.ans, input: tests/4.in}\n",
+        "      - {answer: tests/4.ans, input: tests/4.in}\n" + runs,
+    ).replace("time_limit: 2", "time_limit: 0.1")
+    paths = CHECKED_PATHS | {
+        f"tests/{stem}{n}.{end}" for n in range(5, 25) for end in ("in", "ans")
+    }
+    return task, paths
+
+
+def test_checks_that_could_keep_more_than_their_room_of_the_result_are_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    workflow, files = deployed("unicon/classic@v3")
+    task, paths = _long_keyed("a" * 1000)
+    within = planned(primitives, task, workflow, files, paths)
+    task, paths = _long_keyed("/".join(["a" * 200] * 20))
+    over = planned(primitives, task, workflow, files, paths)
+
+    assert ok(within).checks() == (1, 2, 3)
+    # Each failed check keeps 20 runs, each key over 8000 bytes long.
+    [message] = refused(over)["checks"]
+    assert message.startswith("A failed check keeps up to 20 of its runs in the save's result,")
+    assert message.endswith(f"more than the {CHECKS_ROOM} they may. Give fewer checks.")
+
+
+def _run(number: int, verdict: str) -> dict[str, Any]:
+    ref = {"output": "0" * 8 + "-0000-0000-0000-" + "0" * 12, "name": "message"}
+    return {
+        "id": f"r{number}",
+        "key": {"input": f"tests/{number}.in", "answer": f"tests/{number}.ans"},
+        "verdict": verdict,
+        "passed": int(verdict == "accepted"),
+        "reports": {"score": int(verdict == "accepted"), "time_ms": 1234, "memory_kb": 65536},
+        "texts": {},
+        "label": ref,
+        "message": ref,
+    }
+
+
+def _check_entry(verdicts: list[str], passed: bool) -> dict[str, Any]:
+    """A check's entry of a save's result over runs getting `verdicts`, each
+    step writing a staff message and extras for each run."""
+    runs = [_run(number, verdict) for number, verdict in enumerate(verdicts, 1)]
+    ref = runs[0]["message"]
+    return {
+        "runs": runs,
+        "once": {"reports": {}, "texts": {}, "outcomes": {"compile": "accepted"}},
+        "staff": [{"step": "c1-compile", "run": None, "staff_message": ref}]
+        + [
+            {"step": step, "run": run["id"], "staff_message": ref, "extras": ref}
+            for step in ("c1-solution", "c1-compare")
+            for run in runs
+        ],
+        "error": None,
+        "passed": passed,
+        "failing": []
+        if passed
+        else [f"The run r{n} got wrong_answer, not accepted." for n in range(20)],
+    }
+
+
+def test_three_checks_over_a_thousand_runs_keep_few_enough_runs_to_fit_the_result() -> None:
+    accepted = ["accepted"] * 1000
+    missed = ["wrong_answer" if number % 7 == 0 else "accepted" for number in range(1, 1001)]
+    timed_out = ["time_limit"] * 1000
+    entries = [
+        _check_entry(accepted, True),
+        _check_entry(missed, False),
+        _check_entry(timed_out, False),
+    ]
+    whole = {"schema_version": 6, "runs": [], "checks": entries}
+    assert len(exact_json.dumps(whole)) > RESULT_MAX
+
+    for entry, verdict in zip(entries, ("accepted", "accepted", "wrong_answer"), strict=True):
+        keep_runs(entry, verdict)
+
+    keys = [{"input": f"tests/{n}.in", "answer": f"tests/{n}.ans"} for n in range(1, 1001)]
+    assert len(exact_json.dumps(whole)) <= RESULT_MAX
+    for entry in entries:
+        assert len(exact_json.dumps(entry)) <= check_room(keys, 3, 3)
+    passed, failed, slow = entries
+    assert passed["runs"] == [] and passed["staff"] == [passed["staff"][0]]
+    # A failed check keeps the runs it missed first, in the task's order.
+    assert [run["id"] for run in failed["runs"]] == [f"r{7 * n}" for n in range(1, 21)]
+    assert {item["run"] for item in failed["staff"]} == {None} | {f"r{7 * n}" for n in range(1, 21)}
+    assert [run["id"] for run in slow["runs"]] == [f"r{n}" for n in range(1, 21)]
+    assert len(slow["runs"]) == RUNS_KEPT
+
+
+def test_a_failed_check_missing_few_runs_keeps_them_with_others_in_order() -> None:
+    entry = _check_entry(["accepted"] * 30 + ["wrong_answer"], False)
+
+    keep_runs(entry, None)
+
+    assert [run["id"] for run in entry["runs"]] == [f"r{n}" for n in range(1, 20)] + ["r31"]
+
+
+CARTPOLE_CHECKED = (
+    CARTPOLE_TASK
+    + "checks:\n  - submit: {weights: checks/w.bin}\n    expect: {verdict: accepted}\n"
+)
+
+
+def _cartpole_named(
+    primitives: Mapping[str, PrimitiveDeclaration], step: str, name: str
+) -> RunPlanCheck:
+    """The cartpole task, with a check, over its workflow with the step
+    `step` named `name`."""
+    workflow = CARTPOLE.replace(f"  - id: {step}\n", f"  - id: {name}\n").replace(
+        f"steps.{step}.", f"steps.{name}."
+    )
+    files = {**CARTPOLE_FILES, "workflow.yaml": workflow.encode()}
+    return planned(
+        primitives, CARTPOLE_CHECKED, workflow, files, frozenset({"task.yaml", "checks/w.bin"})
+    )
+
+
+def test_a_check_whose_copy_takes_a_step_s_name_or_is_too_long_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    # The runner is compiled once from the task's own files, so only the
+    # episode, run per submission, is copied, as c1-episode.
+    assert ok(_cartpole_named(primitives, "runner", "c1-runner")).checks() == (1,)
+    assert refused(_cartpole_named(primitives, "runner", "c1-episode")) == {
+        "checks[0]": [
+            "Unicon names this check's copy of a step c1-episode, which the workflow's step of "
+            "that name already takes. Remove the check, or use a workflow whose steps' ids are "
+            "shorter."
+        ]
+    }
+    assert ok(_cartpole_named(primitives, "episode", "e" * 37)).checks() == (1,)
+    assert refused(_cartpole_named(primitives, "episode", "e" * 38)) == {
+        "checks[0]": [
+            f"Unicon names this check's copy of a step c1-{'e' * 38}, which is longer than the "
+            "40 characters a step's name may be. Remove the check, or use a workflow whose "
+            "steps' ids are shorter."
+        ]
+    }
+
+
+def test_checks_taking_the_save_past_the_wall_are_refused_at_checks(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    slow = CHECKED.replace("time_limit: 2", "time_limit: 100")
+
+    # Each grading pipeline holds two runs of 100 s, but the save holds
+    # every run of each of three checks.
+    assert ok(islands(primitives, ISLANDS.replace("time_limit: 2", "time_limit: 100")))
+    assert refused(checked(primitives, slow)) == {
+        "checks": [
+            "The save's steps and its checks take 50 minutes, but a pipeline may take at most "
+            "25. Give fewer checks."
         ]
     }

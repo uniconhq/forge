@@ -82,6 +82,7 @@ from sqlalchemy.exc import IntegrityError
 from forge.db.tables import Grading, GradingReuse, GradingStep, PublicationObjects, StepOutput
 from forge.db.tables import Upload as UploadRow
 from forge.domain import exact_json
+from forge.domain.checks import VERDICT, keep_runs
 from forge.domain.content import UploadInfo, named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import TASK_FILE, parse_task
@@ -549,7 +550,8 @@ async def _checked(
 ) -> str | None:
     """Fill in whether each check of a save's `result` got what it expects,
     and the sentences of what it did not, from the publication's
-    `task.yaml` and runs; the first fault of a check's steps, for the row
+    `task.yaml` and runs, each keeping only the runs worth reading
+    (`checks.keep_runs`); the first fault of a check's steps, for the row
     to end on and be tried again, none when there is none. A check that
     faulted got nothing. A publication whose settings or runs do not read
     fails every check, saying so."""
@@ -566,23 +568,24 @@ async def _checked(
         log.warning("steps.checks_unread", grading=str(row.id), error=type(exc).__name__)
         for entry in entries:
             entry["failing"] = [CHECKS_UNREAD]
+            keep_runs(entry, None)
         return None
     scoring = definition.scoring
     columns = {name: entry.column() for name, entry in plan.reports.items()}
     faulted: str | None = None
     for index, entry in zip(plan.checks(), entries, strict=True):
+        expect = definition.checks[index - 1].expect if index <= len(definition.checks) else {}
+        verdict = expect.get(VERDICT)
         if entry["error"] is not None:
             faulted = faulted or f"Check {index}: {entry['error']}"
             entry["failing"] = [f"Its grading faulted: {entry['error']}"[:ERROR_LIMIT]]
-            continue
-        if scoring is None or index > len(definition.checks):
+        elif scoring is None or not expect:
             entry["failing"] = [CHECKS_UNREAD]
-            continue
-        failing = check_failing(
-            scoring, runs, columns, compilers(plan), entry, definition.checks[index - 1].expect
-        )
-        entry["passed"] = not failing
-        entry["failing"] = failing
+        else:
+            failing = check_failing(scoring, runs, columns, compilers(plan), entry, expect)
+            entry["passed"] = not failing
+            entry["failing"] = failing
+        keep_runs(entry, verdict if isinstance(verdict, str) else None)
     return faulted
 
 

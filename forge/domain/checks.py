@@ -16,8 +16,12 @@ The save grades a check through copies of the steps graded per submission
 be, in the save's own pipeline (`forge.domain.run_plan`), and the check's
 values are worked out from what its runs got as any submission's are, with
 `seconds_late` and `seconds` 0 (`forge.domain.run_results.check_failing`).
-Nothing an entrant reads names a check, and a file only a check names is
-never shown (`check_only`).
+A check keeps in the save row's result the runs worth reading: none once
+it passed, at most `RUNS_KEPT` of a failed one (`keep_runs`), so the
+result stays within its bound, and the save refuses checks that could
+take more than `CHECKS_ROOM` of it (`check_room`). Nothing an entrant
+reads names a check, and a file only a check names is never shown
+(`check_only`).
 """
 
 from collections.abc import Collection, Mapping, Sequence
@@ -25,10 +29,12 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Protocol
 
+from forge.domain import exact_json
 from forge.domain.blocks.numbers import exact
 from forge.domain.content import has_path, names_path
 from forge.domain.definitions import Check, Form, TaskDefinition
 from forge.domain.primitives import STEP_OUTCOMES
+from forge.domain.reports import RESULT_MAX
 from forge.domain.types import FILES, Type
 from forge.domain.yaml_models import Path, Problem, is_number, path_text
 
@@ -38,6 +44,12 @@ COPY_MOST = 40
 """The longest a copy's step id may be, as a step's name at the door is."""
 MOST_FAILING = 20
 """The most sentences a check's result keeps of what it did not get."""
+RUNS_KEPT = 20
+"""The most runs a failed check keeps in its save row's result; a check
+that passed keeps none."""
+CHECKS_ROOM = RESULT_MAX // 2
+"""The most of a save row's result its checks may take, the rest left to
+the save's own runs."""
 
 
 class EntrantGiven(Protocol):
@@ -284,6 +296,48 @@ def _texts(node: object) -> list[str]:
     return []
 
 
+def check_room(keys: Sequence[Mapping[str, object]], reports: int, steps: int) -> int:
+    """The most bytes one check may keep in its save row's result, for a
+    task whose runs have `keys`, whose plan names `reports` and whose
+    graded steps number `steps`: its runs kept, each at most the widest
+    key with every report, text and staff item, then its steps done once
+    and its sentences."""
+    widest = max((len(exact_json.dumps(dict(key))) for key in keys), default=0)
+    entry = 512 + widest + 160 * reports + 256 * steps
+    return min(len(keys), RUNS_KEPT) * entry + 2048 + 256 * steps + 320 * MOST_FAILING
+
+
+def keep_runs(entry: dict[str, object], verdict: str | None) -> None:
+    """Leave in a check's `entry` of its save row's result the runs worth
+    reading: none once it passed, else at most `RUNS_KEPT`, those that did
+    not get `verdict`, or were not accepted when it expects none, first,
+    kept in the task's order; and only the staff items of a run kept or a
+    step done once."""
+    runs = entry.get("runs")
+    if not isinstance(runs, list):
+        return
+    if entry.get("passed") is True:
+        kept: list[object] = []
+    else:
+        wanted = verdict or "accepted"
+        missed = [
+            place
+            for place, run in enumerate(runs)
+            if not isinstance(run, Mapping) or run.get("verdict") != wanted
+        ]
+        rest = [place for place in range(len(runs)) if place not in set(missed)]
+        kept = [runs[place] for place in sorted([*missed, *rest][:RUNS_KEPT])]
+    entry["runs"] = kept
+    ids = {run.get("id") for run in kept if isinstance(run, Mapping)}
+    staff = entry.get("staff")
+    if isinstance(staff, list):
+        entry["staff"] = [
+            item
+            for item in staff
+            if not isinstance(item, Mapping) or item.get("run") is None or item.get("run") in ids
+        ]
+
+
 def failing_words(run: str, got: str, wanted: str) -> str:
     """The sentence for a run that got another verdict than expected."""
     return f"The run {run} got {got}, not {wanted}."
@@ -296,14 +350,18 @@ def _joined(items: Sequence[str]) -> str:
 
 
 __all__ = [
+    "CHECKS_ROOM",
     "COPY_MOST",
     "MOST_FAILING",
+    "RUNS_KEPT",
     "VERDICT",
     "Given",
     "TaskCheck",
     "check_checks",
     "check_only",
     "check_paths",
+    "check_room",
     "copy_of",
     "failing_words",
+    "keep_runs",
 ]

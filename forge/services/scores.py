@@ -27,7 +27,7 @@ error, and nothing once that attempt is cancelled or ended over the limit
 """
 
 import uuid
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
@@ -339,6 +339,21 @@ async def late_of(ctx: Context, early: Grading) -> Grading | None:
     return counted(attempts) if attempts else None
 
 
+async def lates_of(ctx: Context, earlies: Iterable[Grading]) -> dict[uuid.UUID, Grading]:
+    """`late_of` for each of `earlies` at once, by the early row's id; one
+    with no late row is left out."""
+    ids = sorted({early.id for early in earlies})
+    if not ids:
+        return {}
+    attempts: dict[uuid.UUID, list[Grading]] = {}
+    for row in await ctx.db.scalars(
+        select(Grading).where(Grading.pipeline == LATE, Grading.early_id.in_(ids))
+    ):
+        assert row.early_id is not None
+        attempts.setdefault(row.early_id, []).append(row)
+    return {early: counted(rows) for early, rows in attempts.items()}
+
+
 async def run_scored(
     ctx: Context,
     current: PublishedTask,
@@ -346,6 +361,7 @@ async def run_scored(
     extension: Extension,
     early: Grading,
     late: Grading | None,
+    marks: Mapping[str, Fraction] | None = None,
 ) -> RunScored:
     """The values of a run task's submission (SIMPLER-CORE.md 9.2): the live
     publication's `scoring` over the runs of its early row, done or failed
@@ -359,7 +375,8 @@ async def run_scored(
     while that row failed, the late row's while that row is queued, running
     or failed, or not made since the early row failed. Any other, such as
     one a later save added, never ran (`run_results`). The marks entered
-    for the submission's `entered` values are read with them (`entries`).
+    for the submission's `entered` values are read with them (`entries`),
+    unless the caller read them already, as `marks`.
     `whole` and `early` leave out every value reading a mark
     (`run_results.for_entrants`), so whatever an entrant reads, a board
     among them, is built from them; `organised` keeps every value. A
@@ -395,7 +412,8 @@ async def run_scored(
     programs_late = late_named if late_waits else set(unreported(late_result, late_named))
     entry = settings.entry(current.name)
     due = due_of(settings, entry, extension) if entry is not None else None
-    marks = await entries.entered_of(ctx, current.id, early.submission_id)
+    if marks is None:
+        marks = await entries.entered_of(ctx, current.id, early.submission_id)
 
     def work(grading: RunGrading) -> Worked:
         facts = facts_of(due, settings.start, early.submitted_at, grading.compiled)

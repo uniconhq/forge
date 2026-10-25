@@ -75,7 +75,15 @@ from typing import Annotated, Any, Literal
 from pydantic import ConfigDict, Field, PlainValidator
 
 from forge.domain import exact_json
-from forge.domain.checks import COPY_MOST, TaskCheck, check_paths, copy_of
+from forge.domain.checks import (
+    CHECKS_ROOM,
+    COPY_MOST,
+    RUNS_KEPT,
+    TaskCheck,
+    check_paths,
+    check_room,
+    copy_of,
+)
 from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, VALUE_NAME, Scoring, TaskDefinition
@@ -734,7 +742,12 @@ def plan_runs(
         else None
     )
     copied, save, refused = _check_copies(
-        task, planner.run_steps(), pipelines.get("save", ()), planner.whole(), task_files
+        task,
+        planner.run_steps(),
+        pipelines.get("save", ()),
+        planner.whole(),
+        task_files,
+        len(planner.reports()),
     )
     if refused:
         return RunPlanCheck(refused, None)
@@ -784,12 +797,14 @@ def _check_copies(
     own: Sequence[PipelineStep],
     whole: Sequence[PipelineStep],
     task_files: Mapping[str, FileFact],
+    reports: int,
 ) -> tuple[dict[str, RunStep], tuple[PipelineStep, ...], list[Problem]]:
     """Each check's copies of the steps graded per submission, and the
     save's pipeline with them after its `own` steps, check by check, each
     check's laid out as `whole` lays a grading out; or what refuses them: a
     copy's name taken or too long, a check's file larger than the entrant
-    may give, or the pipeline then past the run ceiling. None when the
+    may give, the pipeline then past the run ceiling, or the checks able
+    to keep more of the save's result than `CHECKS_ROOM`. None when the
     task has no checks.
     """
     if not task.checks:
@@ -844,6 +859,17 @@ def _check_copies(
                 message=f"The save's steps and its checks take {math.ceil(total / 60)} "
                 f"minutes, but a pipeline may take at most {int(ceiling // 60)}. Give fewer "
                 "checks.",
+            )
+        )
+        return {}, (), problems
+    room = len(task.checks) * check_room([run.key for run in task.runs], reports, len(order))
+    if room > CHECKS_ROOM:
+        problems.append(
+            Problem(
+                path="checks",
+                message=f"A failed check keeps up to {RUNS_KEPT} of its runs in the save's "
+                f"result, so these {len(task.checks)} checks could keep {room} bytes, more than "
+                f"the {CHECKS_ROOM} they may. Give fewer checks.",
             )
         )
         return {}, (), problems
@@ -2003,6 +2029,21 @@ def run_plan_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...
     return tuple(dict.fromkeys(changes))
 
 
+def pin_moved(before: Snapshot | None, after: Snapshot) -> bool:
+    """Whether a save moves the workflow's pin (SIMPLER-CORE.md 11.8): the
+    task names another version or another workflow than the previous
+    publication's plan, or the same at another commit. A first
+    publication, or one whose plan does not read, moves none."""
+    if before is None or PLAN_PATH not in before.plans:
+        return False
+    try:
+        old = RunPlan.from_bytes(before.plans[PLAN_PATH])
+    except ValueError:
+        return False
+    new = RunPlan.from_bytes(after.plans[PLAN_PATH])
+    return (old.workflow.ref, old.workflow.commit) != (new.workflow.ref, new.workflow.commit)
+
+
 def steps_run_again(before: Snapshot | None, after: Snapshot) -> tuple[str, ...]:
     """The steps a submission graded under the previous publication runs
     again under this one, in the order its pipelines run them, for the
@@ -2122,6 +2163,7 @@ __all__ = [
     "ValueStep",
     "files_named",
     "order_problems",
+    "pin_moved",
     "plan_runs",
     "run_plan_changes",
     "steps_run_again",

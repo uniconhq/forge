@@ -28,6 +28,15 @@ results that counted then. What it changed is one `ChangeKind`:
 
 A regrade's summary counts its submissions by change, `graded` being those
 that finished with a result.
+
+A run task's regrade is summed up by what it changed, not by a direction
+(SIMPLER-CORE.md 11.8, stage 5 section 6 item 4): each value of a
+submission whose number changed, old to new, and each run whose verdict
+changed, so a submission that now fails to compile is told
+(`run_changes`). Its values have no direction (#490): up and down are a
+row's place on a board, which the board's sort says, and each board that
+reads the task gives its rows before and after (`BoardDiff`, from phase
+5.5).
 """
 
 from collections import Counter
@@ -36,9 +45,11 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from fractions import Fraction
 
+from forge.domain.blocks.evaluate import RunResult
 from forge.domain.blocks.numbers import Better
 from forge.domain.ids import PublicationId
 from forge.domain.publications import Publication
+from forge.domain.run_results import Worked
 
 
 class RegradeCause(StrEnum):
@@ -164,3 +175,103 @@ def counted(changes: Iterable[ChangeKind]) -> dict[ChangeKind, int]:
     """
     found = Counter(changes)
     return {change: found[change] for change in ChangeKind}
+
+
+@dataclass(frozen=True, slots=True)
+class ValueChange:
+    """One value of a run task's submission that a regrade changed: its
+    name, its number before and after, none where it had none or waits,
+    and whether it waits after, for a run or for staff."""
+
+    name: str
+    before: Fraction | None
+    after: Fraction | None
+    waiting: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class VerdictChange:
+    """One run whose verdict a regrade changed: its id and its verdict
+    before and after, none where the grading did not hold the run; or,
+    with no id, every one of the submission's `runs` runs, each of which
+    changed from the same verdict to the same other one."""
+
+    run: str | None
+    before: str | None
+    after: str | None
+    runs: int = 1
+
+
+VERDICTS_SHOWN = 20
+"""The most runs a submission's change lists one by one; the rest are
+counted."""
+
+
+@dataclass(frozen=True, slots=True)
+class BoardDiff:
+    """One board that reads a regraded task, as staff read it, every row
+    and cell and no hold: each row's place and cells before and after.
+    Phase 5.5 works a board's rows out, and fills this in; until then a
+    summary gives none."""
+
+    board: str
+
+
+@dataclass(frozen=True, slots=True)
+class RunChanges:
+    """What a regrade changed of one submission: its values, its verdicts,
+    at most `VERDICTS_SHOWN` of them, and how many more runs changed."""
+
+    values: tuple[ValueChange, ...]
+    verdicts: tuple[VerdictChange, ...]
+    more_verdicts: int = 0
+
+    def __bool__(self) -> bool:
+        return bool(self.values or self.verdicts)
+
+
+def run_changes(before: Worked | None, after: Worked) -> RunChanges:
+    """What a regrade's grading `after` changed against `before`, the one
+    that counted when the regrade began, none when none did, each as
+    organisers read it: every value whose number moved, or that now waits
+    or no longer does, in the order the task lists them, and every run
+    whose verdict moved, by id, the first `VERDICTS_SHOWN` of them and the
+    rest counted; one line for them all when every run changed from the
+    same verdict to the same other one."""
+    then = before.outcomes if before is not None else {}
+    values: list[ValueChange] = []
+    for name in [*after.outcomes, *(each for each in then if each not in after.outcomes)]:
+        was, now = then.get(name), after.outcomes.get(name)
+        old = was.number if was is not None else None
+        new = now.number if now is not None else None
+        waits = now is not None and now.waiting
+        if old != new or (was is not None and was.waiting) != waits:
+            values.append(ValueChange(name, old, new, waits))
+    read_before = before.grading.read if before is not None else {}
+    read_after = after.grading.read
+    verdicts: list[VerdictChange] = []
+    every = sorted(read_before.keys() | read_after.keys(), key=_run_order)
+    for run in every:
+        verdict = VerdictChange(run, _verdict(read_before, run), _verdict(read_after, run))
+        if verdict.before != verdict.after:
+            verdicts.append(verdict)
+    pairs = {(each.before, each.after) for each in verdicts}
+    if len(verdicts) > 1 and len(verdicts) == len(every) and len(pairs) == 1:
+        [(first, last)] = pairs
+        return RunChanges(tuple(values), (VerdictChange(None, first, last, len(verdicts)),))
+    return RunChanges(
+        tuple(values),
+        tuple(verdicts[:VERDICTS_SHOWN]),
+        max(0, len(verdicts) - VERDICTS_SHOWN),
+    )
+
+
+def _verdict(read: Mapping[str, RunResult], run: str) -> str | None:
+    found = read.get(run)
+    return found.verdict if found is not None else None
+
+
+def _run_order(run: str) -> tuple[int, str]:
+    """A run id by its number, r2 before r10."""
+    digits = run.lstrip("r")
+    return (int(digits), run) if digits.isdigit() else (0, run)
