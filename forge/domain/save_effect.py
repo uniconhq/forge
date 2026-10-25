@@ -111,6 +111,7 @@ def effect_of(
     unread: bool = False,
     steps: Sequence[str] | None = None,
     checked_first: bool = False,
+    programs: Sequence[str] = (),
 ) -> SaveEffect:
     """What saving `after` over the latest publication's `before` (none for
     a first publication, or `unread` when the latest publication's settings
@@ -118,8 +119,10 @@ def effect_of(
     changed how it grades, how many submissions that grades again, whether
     the task has a graded submission, and whether it has any; `titles` are
     what the workflow calls the values it reports, by key. For a run task,
-    `steps` are the steps a submission runs again, and `checked_first` that
-    the regrade waits for the save's check to pass.
+    `steps` are the steps a submission runs again, `checked_first` that
+    the regrade waits for the save's check to pass, and `programs` the
+    values whose `exec` program runs again, each in a container per
+    submission, which the save says the cost of.
     """
     first = before is None and not unread
     scores, moves = _scores(task, before, after, contest, bool(changes), titles or {}, unread)
@@ -127,7 +130,10 @@ def effect_of(
     return SaveEffect(
         results_change=changes_results,
         summary=RESULTS_CHANGE if changes_results else NO_RESULT_CHANGES,
-        runs_again=_runs_again(first, changes, regrades, submitted, steps, checked_first),
+        runs_again=(
+            *_runs_again(first, changes, regrades, submitted, steps, checked_first),
+            *(_program_cost(name, regrades) for name in programs if changes and regrades),
+        ),
         scores=tuple(scores) or (NO_SCORE_CHANGES,),
         reading=_reading(first, before, after, read),
     )
@@ -163,6 +169,12 @@ def _runs_again(
     if len(changes) == 1:
         return (f"{counted}: {_lowered(changes[0])}",)
     return (f"{counted}, for these changes:", *changes)
+
+
+def _program_cost(value: str, regrades: int) -> str:
+    """What a value's program running again costs, said once per value."""
+    counted = "1 submission" if regrades == 1 else f"{regrades:,} submissions"
+    return f"The program of {value} works out this value again for {counted}, in a container each."
 
 
 def _lowered(sentence: str) -> str:

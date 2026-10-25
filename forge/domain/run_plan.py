@@ -31,6 +31,13 @@ wiring and the container's limits, time summed over its runs and the rest
 the most of any, memory with room for the files `exec` and `interact` copy
 into their boxes, since the container holds what a step copies.
 
+A value's `exec` program adds two steps no workflow names, each marked
+with its value (`RunStep.value`): `build-<value>`, compiling its folder at
+the save, and `exec-<value>`, run once per grading at the end of the
+pipeline its value is shown from, after every step there, on the runs
+file the forge builds from its group's runs (`RUNS_FILE`), at most
+`RUN_ENTRY_KB` a run. Neither is any run's step.
+
 Each pipeline runs in one slot of a grading machine (`Slot`), and the
 steps Woodpecker runs side by side share its memory. So a pipeline is laid
 out in stages, each step waiting for every step of the stage before it,
@@ -53,6 +60,7 @@ whose own steps are tainted (15.4).
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field, PlainValidator
@@ -60,7 +68,7 @@ from pydantic import ConfigDict, Field, PlainValidator
 from forge.domain import exact_json
 from forge.domain.content import named_by
 from forge.domain.contracts import violation
-from forge.domain.definitions import DEFAULT_MAX_SIZE, Scoring, TaskDefinition
+from forge.domain.definitions import DEFAULT_MAX_SIZE, VALUE_NAME, Scoring, TaskDefinition
 from forge.domain.grading import WALL_CEILING, Machine, Slot, wall_of
 from forge.domain.plans import (
     PLAN_PATH,
@@ -81,6 +89,7 @@ from forge.domain.primitives import (
     FromMax,
     FromSum,
     Port,
+    PrimitiveDeclaration,
 )
 from forge.domain.run_task import RUN_ID, SHOWN_WORDS, Part, RunTask, file_time
 from forge.domain.run_workflow import ResolvedStep, RunWorkflowCheck
@@ -100,13 +109,23 @@ StepClass = Literal["save_once", "save_per_run", "grading_once", "grading_per_ru
 PipelineKind = Literal["save", "early", "late"]
 PIPELINES: tuple[PipelineKind, ...] = ("save", "early", "late")
 GradingKind = Literal["early", "late"]
+"""The pipelines of a grading, which a release may lay out otherwise."""
 RELEASE_MOVED = (
     "What a release shows moved, so a grading made while results are released runs other runs "
     "early."
 )
 """The words a save says when it moves only the released split, which
 grades nothing again while the task's results are not released."""
-"""The pipelines of a grading, which a release may lay out otherwise."""
+COMPILE_USE = "unicon/compile@v3"
+EXEC_USE = "unicon/exec@v1"
+PROGRAM_USES = (COMPILE_USE, EXEC_USE)
+"""The primitives a value's `exec` program is compiled and run with, which
+a save reads when a value has one."""
+RUNS_FILE = "runs.json"
+"""The name a value's program reads its group's runs under."""
+RUN_ENTRY_KB = 16
+"""The most one run takes in a program's runs file, which bounds the file
+as its box holds it."""
 ONCE: tuple[StepClass, ...] = ("save_once", "grading_once")
 CLASS_WORDS: dict[StepClass, str] = {
     "save_once": "once, at the save",
@@ -186,6 +205,17 @@ def _output_value(value: object) -> bool:
     )
 
 
+def _runs_value(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"runs"}
+        and isinstance(value["runs"], list)
+        and bool(value["runs"])
+        and all(isinstance(each, str) and RUN_ID.fullmatch(each) for each in value["runs"])
+        and len(set(value["runs"])) == len(value["runs"])
+    )
+
+
 def _run_value(value: object) -> dict[str, Any]:
     """One value of a step's inputs, in exactly one of the plan's shapes."""
     if not isinstance(value, dict):
@@ -207,7 +237,12 @@ def _run_value(value: object) -> dict[str, Any]:
         return value
     if keys == {"files"} and isinstance(value["files"], dict):
         for each in value["files"].values():
-            if not (_file_value(each) or _entrant_value(each) or _output_value(each)):
+            if not (
+                _file_value(each)
+                or _entrant_value(each)
+                or _output_value(each)
+                or _runs_value(each)
+            ):
                 raise ValueError(f"{each!r} is not a file a plan holds")
         return value
     if keys == {"programs"} and isinstance(value["programs"], dict) and value["programs"]:
@@ -286,12 +321,23 @@ class Item(Model):
     tainted: Taint | None = None
 
 
+class ValueStep(Model):
+    """The value a step serves the `exec` program of, never a workflow
+    step's: its name, and for the program's run, the report it gives the
+    value's number under."""
+
+    name: Annotated[str, Field(pattern=VALUE_NAME.pattern)]
+    report: str | None = None
+
+
 class RunStep(Model):
     """One workflow step bound to the task's values: its class, its
     primitive and image, whether it may reach the network and takes the
     cache, the boxes one item uses at once, its outputs, its folder ports,
     whether its manifest program's reports are the entrant's, and its
     inputs once or an item per run, by run id, each with why it is tainted.
+    A value's program is two steps of its own (`value`): compiled once at
+    the save, and run once per grading after the runs it reads.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
@@ -306,6 +352,7 @@ class RunStep(Model):
     folders: tuple[str, ...] | None = None
     self_reported: Literal[True] | None = None
     tainted: Taint | None = None
+    value: ValueStep | None = None
     inputs: Inputs | None = None
     items: dict[RunId, Item] | None = None
 
@@ -481,7 +528,7 @@ def files_named(workflow: RunWorkflow, task: RunTask) -> FilesNamed:
     """What the plan of `task` names, which a save reads the facts of before
     it makes the plan.
     """
-    named_task: set[str] = set()
+    named_task: set[str] = {program.folder for program in task.programs.values()}
     named_workflow: set[str] = set()
     for step in workflow.steps:
         for found in _references_in(step.with_.values()):
@@ -597,15 +644,20 @@ def plan_runs(
     task_files: Mapping[str, FileFact],
     workflow_files: Mapping[str, FileFact],
     machine: Machine,
+    programs: Mapping[str, PrimitiveDeclaration] | None = None,
 ) -> RunPlanCheck:
     """The plan of the run task `definition`, as `check_run_task` checked it
     (`task`) against its workflow resolved at `commit` (`checked`).
     `task_files` and `workflow_files` hold the facts of every file
     `files_named` names, each folder's files each by itself; `machine` is
-    the largest a step may take. The plan holds both splits of a grading
-    (9.4): the one made before any release, and when a release moves
-    anything, the one made while the task's results are released
-    (`RunPlan.released`), each fitted to the machine.
+    the largest a step may take; `programs` the declarations of
+    `PROGRAM_USES`, by use, when a value has an `exec` program, which is
+    compiled at the save and run once per grading in the pipeline its
+    value is shown from, after its group's runs (`_Planner.programs`).
+    The plan holds both splits of a grading (9.4): the one made before any
+    release, and when a release moves anything, the one made while the
+    task's results are released (`RunPlan.released`), each fitted to the
+    machine.
     """
     assert definition.scoring is not None, "a run task has scoring once it is checked"
     planner = _Planner(
@@ -621,6 +673,9 @@ def plan_runs(
     for step in workflow.steps:
         planner.bind(step.id, step.with_)
     problems = [*cache_problems(checked), *order_problems(planner.classes, planner.reads)]
+    if task.programs:
+        assert programs is not None, "a save reads the program primitives when a value has one"
+        problems += planner.programs(programs[COMPILE_USE], programs[EXEC_USE])
     if problems:
         return RunPlanCheck(problems, None)
     pipelines = planner.pipelines()
@@ -739,6 +794,8 @@ class _Planner:
         self.output_mb: dict[str, int] = {}
         """The most any run of each step may write, which bounds a file it
         gives another step."""
+        self.program_steps: dict[str, RunStep] = {}
+        """The steps of each value's `exec` program, by id."""
 
     # Binding
 
@@ -1025,6 +1082,109 @@ class _Planner:
             return 0
         return entrant.form.max_size or DEFAULT_MAX_SIZE
 
+    # A value's program
+
+    def programs(self, build: PrimitiveDeclaration, run: PrimitiveDeclaration) -> list[Problem]:
+        """The two steps of each value's `exec` program: `build-<value>`,
+        compiling the folder at the save, and `exec-<value>`, running it on
+        the JSON file of its group's runs the forge builds (`RUNS_FILE`),
+        its manifest the folder's `program.yaml`, under its limits, with
+        room for what it copies into its box. A workflow step of either
+        name is refused.
+        """
+        problems: list[Problem] = []
+        for name, program in self.task.programs.items():
+            ids = self.task.groups[program.group]
+            taken = [step for step in (f"build-{name}", f"exec-{name}") if step in self.classes]
+            if taken:
+                problems.append(
+                    Problem(
+                        path=path_text(("scoring", "values", name)),
+                        message=f"The workflow has a step called {taken[0]}, the name {name}'s "
+                        "program step takes. Rename the value or the step.",
+                    )
+                )
+                continue
+            compiles = {"source": {"task": program.folder}, "language": {"value": program.language}}
+            compiled = build.item_limits({})
+            self.bound[(f"build-{name}", None)] = _Bound(compiles, [], None, compiled)
+            inputs: dict[str, Any] = {
+                "program": {"step": f"build-{name}", "output": "program"},
+                "files": {"files": {RUNS_FILE: {"runs": list(ids)}}},
+                "manifest": {"task": program.manifest},
+                "time_limit": {"value": program.time_limit},
+                "memory_limit": {"value": program.memory_limit},
+            }
+            copies = [
+                _Copy(compiled["output_mb"] * 1024, f"the program of {name}", None),
+                _Copy(_pages(self.task_files[program.manifest].size), program.manifest, None),
+                _Copy(RUN_ENTRY_KB * len(ids), f"the runs {name} reads", None),
+            ]
+            limits = run.item_limits(
+                {"time_limit": program.time_limit, "memory_limit": program.memory_limit}
+            )
+            kb = sum(copy.kb for copy in copies)
+            least = (
+                math.ceil(Decimal(program.memory_limit) + Decimal(kb) / 1024) + PRIMITIVE_ROOM_MB
+            )
+            limits["memory_mb"] = max(limits["memory_mb"] + math.ceil(kb / 1024), least)
+            self.bound[(f"exec-{name}", None)] = _Bound(inputs, [], None, limits, copies)
+            self.raising[f"build-{name}"] = self.raising[f"exec-{name}"] = []
+            self.program_steps[f"build-{name}"] = RunStep.model_validate(
+                {
+                    "class": "save_once",
+                    "primitive": COMPILE_USE,
+                    "image": build.image,
+                    "network": build.network,
+                    "cache": build.cache,
+                    "outputs": _declared(build),
+                    "folders": ("source",),
+                    "value": {"name": name},
+                    "inputs": compiles,
+                }
+            )
+            self.program_steps[f"exec-{name}"] = RunStep.model_validate(
+                {
+                    "class": "grading_once",
+                    "primitive": EXEC_USE,
+                    "image": run.image,
+                    "network": run.network,
+                    "cache": run.cache,
+                    "boxes": 1,
+                    "outputs": {**_declared(run), program.report: Type.NUMBER.value},
+                    "value": {"name": name, "report": program.report},
+                    "inputs": inputs,
+                }
+            )
+        return problems
+
+    def _program_pipelines(
+        self, found: dict[PipelineKind, tuple[PipelineStep, ...]], *, released: bool
+    ) -> dict[PipelineKind, tuple[PipelineStep, ...]]:
+        """`found` with each value's program steps after the rest: its
+        compile at the save, and its run in the early pipeline when its
+        value is early (`RunTask.early_programs`), else the late one, each
+        waiting for every step before it, so the runs it reads are done.
+        """
+        early = self.task.early_programs(released=released)
+        held = dict(found)
+        for name in self.task.programs:
+            placed: list[tuple[PipelineKind, str]] = [
+                ("save", f"build-{name}"),
+                ("early" if name in early else "late", f"exec-{name}"),
+            ]
+            for kind, step in placed:
+                if step not in self.program_steps:
+                    continue
+                before = held.get(kind, ())
+                waited = {waits for each in before for waits in each.depends_on}
+                last = tuple(each.name for each in before if each.name not in waited)
+                made = PipelineStep(
+                    name=step, step=step, depends_on=last, limits=self._limits(step, None)
+                )
+                held[kind] = (*before, made)
+        return {kind: held[kind] for kind in PIPELINES if kind in held}
+
     # Pipelines
 
     def pipelines(self, *, released: bool = False) -> dict[PipelineKind, tuple[PipelineStep, ...]]:
@@ -1056,7 +1216,7 @@ class _Planner:
             made = self._chained(self._pipeline(steps))
             if made:
                 found[kind] = made
-        return found
+        return self._program_pipelines(found, released=released)
 
     def _early_once(self, any_early: bool, *, released: bool = False) -> set[str]:
         """The steps done once per grading in the early pipeline: every one
@@ -1440,7 +1600,7 @@ class _Planner:
                     for run in self.task.runs
                 }
                 steps[step.id] = RunStep.model_validate({**common, "items": items})
-        return steps
+        return {**steps, **self.program_steps}
 
     def entrant_entries(self) -> dict[str, EntrantEntry]:
         return {
@@ -1466,6 +1626,15 @@ class _Planner:
                 at_most=port.at_most if number and port is not None else None,
             )
         return found
+
+
+def _declared(declaration: PrimitiveDeclaration) -> dict[str, str]:
+    """A primitive's own outputs as a plan's step lists them, a `?` after
+    the name of one that may be missing."""
+    return {
+        f"{name}?" if port.optional else name: port.type.value
+        for name, port in declaration.outputs.items()
+    }
 
 
 def _references_in(values: Iterable[object]) -> list[Reference]:
@@ -1648,6 +1817,12 @@ def _runs_again(old: RunPlan, new: RunPlan, step_id: str, now: RunStep, again: s
                 return True
         elif "step" in value and value["step"] in again:
             return True
+        elif "runs" in value and (
+            old.reports != new.reports or any(new.steps[each].value is None for each in again)
+        ):
+            # A program reads its runs' verdicts and reports, which a step
+            # run again, or other reports, may change.
+            return True
     return False
 
 
@@ -1681,7 +1856,10 @@ def _counted(runs: Sequence[str]) -> str:
 
 __all__ = [
     "BOXED",
+    "COMPILE_USE",
+    "EXEC_USE",
     "PIPELINES",
+    "PROGRAM_USES",
     "RELEASE_MOVED",
     "SCHEMA_VERSION",
     "FileFact",
@@ -1697,6 +1875,7 @@ __all__ = [
     "RunPlanCheck",
     "RunStep",
     "StepClass",
+    "ValueStep",
     "files_named",
     "order_problems",
     "plan_runs",

@@ -95,13 +95,15 @@ async def _islands(
     before: Callable[[TaskId], None] | None = None,
     text: str = TASKS["islands"][0],
     contest: str = DRAFT,
+    files: Mapping[str, bytes] | None = None,
 ) -> Islands:
-    """islands saved as `text` and published over the workflow
-    `unicon/islands@v1` in `contest`, `before` called on the task once it
-    is made."""
+    """islands saved as `text`, with `files` beside its own, and published
+    over the workflow `unicon/islands@v1` in `contest`, `before` called on
+    the task once it is made."""
     task = await make_task(setup, acme, "islands")
     _primitives(acme)
     _, held, data = TASKS["islands"]
+    data = {**data, **(files or {})}
     workflow = await acme.fake.workflows.create_workflow(
         PLATFORM, "unicon", "islands", dict(held), Visibility.PUBLIC
     )

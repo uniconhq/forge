@@ -24,6 +24,7 @@ from forge.domain.plans import PLAN_PATH, Snapshot, StepLimits
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.run_plan import (
     PRIMITIVE_ROOM_MB,
+    PROGRAM_USES,
     FileFact,
     PipelineStep,
     RunPlan,
@@ -51,6 +52,9 @@ from tests.test_run_task import (
     JUDGED,
     JUDGED_PATHS,
     JUDGED_TASK,
+    MEAN,
+    MEAN_MANIFEST,
+    MEAN_PATHS,
     TOUR,
     TOUR_FILES,
     TOUR_PATHS,
@@ -121,6 +125,7 @@ def planned(
     sizes: Mapping[str, int] | None = None,
     manifests: Mapping[str, bytes] | None = None,
     machine: Machine = PLATFORM_MACHINE,
+    programs: Mapping[str, PrimitiveDeclaration] | None = None,
 ) -> RunPlanCheck:
     """The plan of `task` over `workflow` and its `files`, each task file
     in `paths` 3 bytes long but those `sizes` gives, and hashed as if it held
@@ -164,6 +169,7 @@ def planned(
         task_files=task_files,
         workflow_files=workflow_files,
         machine=machine,
+        programs=programs or {use: primitives[use] for use in PROGRAM_USES},
     )
 
 
@@ -1455,3 +1461,100 @@ def test_a_save_says_when_what_a_release_shows_moved(
         "runs early.",
     )
     assert run_plan_changes(_snapshot(after), _snapshot(after)) == ()
+
+
+# A value's program
+
+PROGRAM_YAML = "programs/mean/program.yaml"
+
+
+def mean(primitives: Mapping[str, PrimitiveDeclaration], task: str = MEAN) -> RunPlanCheck:
+    workflow, files = deployed("unicon/classic@v3")
+    return planned(
+        primitives, task, workflow, files, MEAN_PATHS, manifests={PROGRAM_YAML: MEAN_MANIFEST}
+    )
+
+
+def test_a_values_program_compiles_at_the_save_and_runs_late_after_its_groups_runs(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(mean(primitives))
+
+    assert laid_out(plan)["save"] == [("diff", None, ()), ("build-mean", None, ("diff",))]
+    assert laid_out(plan)["late"][-1] == ("exec-mean", None, ("compare",))
+    assert "exec-mean" not in [step.name for step in plan.pipeline("early")]
+    built, ran = plan.steps["build-mean"], plan.steps["exec-mean"]
+    assert (built.class_, built.primitive, built.folders) == (
+        "save_once",
+        "unicon/compile@v3",
+        ("source",),
+    )
+    assert built.value is not None and (built.value.name, built.value.report) == ("mean", None)
+    assert exact_json.loads(exact_json.dumps(built.inputs)) == {
+        "source": {"task": "programs/mean/"},
+        "language": {"value": "python"},
+    }
+    assert (ran.class_, ran.primitive, ran.boxes) == ("grading_once", "unicon/exec@v1", 1)
+    assert ran.value is not None and (ran.value.name, ran.value.report) == ("mean", "mean")
+    assert ran.outputs["mean"] == "number"
+    assert exact_json.loads(exact_json.dumps(ran.inputs)) == {
+        "program": {"step": "build-mean", "output": "program"},
+        "files": {"files": {"runs.json": {"runs": ["r1", "r2", "r3", "r4"]}}},
+        "manifest": {"task": PROGRAM_YAML},
+        "time_limit": {"value": 2},
+        "memory_limit": {"value": 256},
+    }
+    assert {"programs/mean/mean.py", PROGRAM_YAML} <= set(plan.task_files)
+    # The program's box holds its memory limit, the program, its manifest
+    # and 16 KB a run.
+    assert held(plan, "exec-mean").limits.memory_mb >= 256 + PRIMITIVE_ROOM_MB
+
+
+def test_a_values_program_runs_early_when_its_value_is_shown_during_the_contest(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    shown = MEAN.replace(
+        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
+        "    now: [sample_score, sample_time, sample_tests, samples/, mean, all]\n",
+    ).replace("total, all, mean]", "total]")
+
+    plan = ok(mean(primitives, shown))
+
+    assert laid_out(plan)["early"][-1] == ("exec-mean", None, ("compare",))
+    assert "late" not in plan.pipelines
+
+
+def test_a_values_program_under_on_release_runs_early_only_once_released(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    released = MEAN.replace("total, all, mean]", "total, all]\n    on_release: [mean]")
+
+    plan = ok(mean(primitives, released))
+
+    assert laid_out(plan)["late"][-1][0] == "exec-mean"
+    assert plan.released is not None
+    assert plan.released.pipelines["early"][-1].name == "exec-mean"
+
+
+def test_a_workflow_step_named_as_a_values_program_step_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    workflow, files = deployed("unicon/classic@v3")
+    workflow = workflow.replace("id: diff", "id: build-mean").replace(
+        "steps.diff.program", "steps.build-mean.program"
+    )
+    found = planned(
+        primitives,
+        MEAN,
+        workflow,
+        {**files, "workflow.yaml": workflow.encode()},
+        MEAN_PATHS,
+        manifests={PROGRAM_YAML: MEAN_MANIFEST},
+    )
+
+    assert refused(found) == {
+        "scoring.values.mean": [
+            "The workflow has a step called build-mean, the name mean's program step takes. "
+            "Rename the value or the step."
+        ]
+    }

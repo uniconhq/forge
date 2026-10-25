@@ -24,7 +24,14 @@ from forge.domain.blocks.evaluate import Column
 from forge.domain.blocks.numbers import Better
 from forge.domain.definitions import Scoring, parse_task
 from forge.domain.release import seconds, seconds_late
-from forge.domain.run_results import NOT_RUN, Worked, facts_of, run_grading, worked_out
+from forge.domain.run_results import (
+    NOT_RUN,
+    Worked,
+    facts_of,
+    for_entrants,
+    run_grading,
+    worked_out,
+)
 from forge.domain.run_showing import Shown, TextAt, addresses, bare, shown, texts
 from forge.domain.run_task import Run
 from tests.test_run_task import CARTPOLE_TASK, ISLANDS
@@ -482,3 +489,27 @@ def test_organisers_see_every_value_and_run_at_once_with_what_each_read() -> Non
     assert seen.once["texts"] == {"log": LOG}
     # Organisers read a text by the output that holds it.
     assert ("out-r1", "message") in texts(seen.runs, seen.once)
+
+
+def test_what_reads_an_entered_mark_is_left_out_of_what_an_entrant_is_given() -> None:
+    text = ISLANDS.replace(
+        "    total:\n",
+        "    review: {block: entered, at_least: 0, at_most: 10}\n"
+        "    reviewed: {block: add, of: [{value: sample_score}, {value: review}]}\n"
+        "    twice: {block: mul, of: [2, {value: reviewed}]}\n"
+        "    total:\n",
+    ).replace("now: [sample_score,", "now: [review, reviewed, twice, sample_score,")
+    scoring = _scoring(text)
+    every = _worked(ISLAND_RUNS, text, _row({"r1": "accepted", "r2": "accepted"}), None)
+
+    given = for_entrants(scoring.values, every)
+
+    assert {"review", "reviewed", "twice"} <= set(every.outcomes)
+    assert set(given.outcomes) == set(every.outcomes) - {"review", "reviewed", "twice"}
+    assert given.grading is every.grading and given.facts == every.facts
+    seen = shown(scoring, ISLAND_RUNS, ISLAND_FILES, given, given, (), revealed=True)
+    assert {"review", "reviewed", "twice"}.isdisjoint(value.name for value in seen.values)
+    staff = shown(
+        scoring, ISLAND_RUNS, ISLAND_FILES, every, every, (), revealed=True, everything=True
+    )
+    assert {"review", "reviewed", "twice"} <= {value.name for value in staff.values}

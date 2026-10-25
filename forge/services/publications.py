@@ -107,6 +107,8 @@ from sqlalchemy import exists, select
 
 from forge.db.tables import Grading
 from forge.db.tables.gradings import FRONT
+from forge.domain.blocks.catalogue import EXEC
+from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.board_checks import Covered, covered
 from forge.domain.content import (
     ConflictToken,
@@ -173,6 +175,7 @@ from forge.domain.roles import (
     task_scope,
 )
 from forge.domain.run_plan import (
+    PROGRAM_USES,
     RELEASE_MOVED,
     FileFact,
     RunPlan,
@@ -221,6 +224,7 @@ from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
     boards,
+    entries,
     gradings,
     names,
     pipelines,
@@ -495,6 +499,14 @@ async def save(
     # A publication checked first is held back by its note until a save row
     # passes, so a save that fails once it is made leaves it unchecked, never
     # the task's (`published.live`).
+    if latest is not None:
+        # A value given an `entered` block the live version lacks starts with
+        # no marks, before any mark can be entered under the new version
+        # (stage 5 section 6 item 57).
+        prior = entries.entered_values(await _definition_of(ctx, task, latest))
+        added = entries.entered_values(checked.definition) - prior
+        if added:
+            await entries.start_again(ctx, task, added, organiser.user.id)
     publication = await ctx.forge.workspaces.publish(task, version, note)
     number = await _number_of(ctx, task, publication)
     checking: Check | None = None
@@ -532,6 +544,7 @@ async def save(
         checked.compiled,
         steps=rerun,
         checked_first=_checked_first(checked),
+        programs=_programs_again(checked, rerun),
     )
     if newest is None:
         places.ahead_at(ctx, task)
@@ -609,6 +622,7 @@ async def _ask(
         checked.compiled,
         steps=again,
         checked_first=_checked_first(checked),
+        programs=_programs_again(checked, again),
     )
     marks = checked.run_task.self_reported if question and checked.run_task else {}
     raise ConfirmationRequired(
@@ -816,6 +830,7 @@ async def _check_runs(
         task_files=await _task_facts(ctx, as_, task, head, written, present, named.task),
         workflow_files=await _workflow_facts(ctx, as_, read, files, named.workflow),
         machine=run_machine(ctx.settings.slot_sizes),
+        programs={use: primitives[use] for use in PROGRAM_USES if use in primitives},
     )
     if planned.plan is None:
         return Checked(definition, None, tuple(planned.problems), pins)
@@ -1044,13 +1059,14 @@ async def _effect(
     *,
     steps: tuple[str, ...] | None = None,
     checked_first: bool = False,
+    programs: tuple[str, ...] = (),
 ) -> SaveEffect:
     """What saving `definition` over the latest publication does, in the
     words a running contest asks with before a save and a save that
     published answers with, each reported value named by its title in the
     save or, where the save no longer reports it, in the latest publication;
-    for a run task, the steps a submission runs again, and whether that
-    waits for the save's check.
+    for a run task, the steps a submission runs again, whether that waits
+    for the save's check, and the values whose program runs again.
     """
     name = (await names.names_of(ctx, [task])).get(task)
     before = await _definition_of(ctx, task, latest) if latest is not None else None
@@ -1074,6 +1090,22 @@ async def _effect(
         unread=latest is not None and before is None,
         steps=steps,
         checked_first=checked_first,
+        programs=programs,
+    )
+
+
+def _programs_again(checked: Checked, steps: tuple[str, ...] | None) -> tuple[str, ...]:
+    """The values whose `exec` program a submission runs again, each in a
+    container of its own, of the steps that run again."""
+    plan = checked.run_plan
+    if plan is None or not steps:
+        return ()
+    return tuple(
+        value.name
+        for step in steps
+        if step in plan.steps
+        and (value := plan.steps[step].value) is not None
+        and value.report is not None
     )
 
 
@@ -1501,9 +1533,10 @@ async def _primitives(
     workflow: WorkflowDefinition | RunWorkflow,
 ) -> tuple[dict[str, PrimitiveDeclaration], tuple[Problem, ...]]:
     """The declaration of every primitive a step of the task's workflow
-    uses, read at its version as `as_`, and a problem at the `workflow` line
-    for each `use:` that cannot be read, is not a primitive, or does not
-    validate.
+    uses, read at its version as `as_`, and those a value's `exec` program
+    is compiled and run with (`PROGRAM_USES`) when a value has one, and a
+    problem at the `workflow` line for each `use:` that cannot be read, is
+    not a primitive, or does not validate, or at `scoring` for one of those.
     """
     found: dict[str, PrimitiveDeclaration] = {}
     problems: builtins.list[Problem] = []
@@ -1519,6 +1552,21 @@ async def _primitives(
             problems.append(Problem(path="workflow", message=where + problem))
         elif declaration is not None:
             found[use] = declaration
+    values = definition.scoring.values if definition.scoring is not None else {}
+    if any(blocks_in(tree, EXEC) for tree in values.values()):
+        for use in PROGRAM_USES:
+            if use in found or use in tried:
+                continue
+            declaration, problem = await primitives.declaration(ctx, as_, parse_workflow_ref(use))
+            if problem is not None:
+                problems.append(
+                    Problem(
+                        path="scoring",
+                        message=f"A value's exec program cannot run: {problem}",
+                    )
+                )
+            elif declaration is not None:
+                found[use] = declaration
     return found, tuple(problems)
 
 

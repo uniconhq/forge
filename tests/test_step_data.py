@@ -8,13 +8,16 @@ large file under, and the fake store's links.
 import hashlib
 import json
 import uuid
+from collections.abc import Mapping
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
 
 from forge.adapters.objects.fake import FakeObjects
 from forge.adapters.objects.s3 import lfs_object
+from forge.domain import step_data
 from forge.domain.clock import FakeClock
 from forge.domain.contracts import violation
 from forge.domain.errors import Forbidden, InvalidCallback, NotFound, Rejected
@@ -29,33 +32,56 @@ from forge.domain.step_data import (
     Found,
     Item,
     Upload,
+    all_accepted,
+    chain_of,
     is_step_name,
     item_key,
+    program_alone,
     read_outputs,
     read_uploads,
     result_of,
     results_key,
+    runs_file,
+    step_order,
+    unreported,
     without,
 )
 from forge.port.objects import Stored
 from tests.test_run_plan import planned
-from tests.test_run_task import ISLANDS, ISLANDS_PATHS, deployed, mirrored
+from tests.test_run_task import (
+    ISLANDS,
+    ISLANDS_PATHS,
+    MEAN,
+    MEAN_MANIFEST,
+    MEAN_PATHS,
+    deployed,
+    mirrored,
+)
 
 SHA = "0" * 64
 GRADING = uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31")
 
 
-@pytest.fixture(scope="module")
-def islands() -> RunPlan:
+def _planned(task: str, paths: frozenset[str], **kw: Any) -> RunPlan:
     primitives = {
         "unicon/exec@v1": mirrored("exec"),
         "unicon/interact@v2": mirrored("interact"),
         "unicon/compile@v3": mirrored("compile"),
     }
     _, files = deployed("unicon/classic@v3")
-    found = planned(primitives, ISLANDS, files["workflow.yaml"].decode(), files, ISLANDS_PATHS)
+    found = planned(primitives, task, files["workflow.yaml"].decode(), files, paths, **kw)
     assert found.plan is not None, found.problems
     return found.plan
+
+
+@pytest.fixture(scope="module")
+def islands() -> RunPlan:
+    return _planned(ISLANDS, ISLANDS_PATHS)
+
+
+@pytest.fixture(scope="module")
+def mean() -> RunPlan:
+    return _planned(MEAN, MEAN_PATHS, manifests={"programs/mean/program.yaml": MEAN_MANIFEST})
 
 
 def _listed(*entries: tuple[str, int]) -> bytes:
@@ -427,3 +453,145 @@ async def test_the_fake_stores_put_signed_for_a_checksum_writes_only_those_bytes
     assert await store.head("results/a") == Stored(1, digest)
     store.put(store.put_url("results/a", expires_in=timedelta(minutes=15)), b"bb")
     assert await store.head("results/a") == Stored(2, None)
+
+
+def _late(changes: Mapping[Item, Found | Faulted | None] = {}) -> dict[Item, Found | Faulted]:
+    """Every run of the plan with a value's program graded, each accepted,
+    the program reporting a mean of 0.5, but what `changes` gives."""
+    found = _early()
+    for run in ("r3", "r4"):
+        found[("solution", run)] = _found(memory_kb=1500, time_ms=20, output={"file": "out/o"})
+        found[("compare", run)] = _found(memory_kb=1, time_ms=1, score=0, output={"file": "out/o"})
+    found[("exec-mean", None)] = _found(
+        mean=Decimal("0.5"), memory_kb=1, time_ms=3, output={"file": "out/o"}
+    )
+    for item, value in changes.items():
+        if value is None:
+            found.pop(item, None)
+        else:
+            found[item] = value
+    return found
+
+
+def test_a_values_program_is_no_step_of_a_runs_and_its_number_goes_in_values(
+    mean: RunPlan,
+) -> None:
+    order = step_order(mean, "late")
+
+    assert "exec-mean" in order and "build-mean" in order
+    assert chain_of(mean, order, "r3") == [
+        ("diff", None),
+        ("compile", None),
+        ("solution", "r3"),
+        ("compare", "r3"),
+    ]
+    result = result_of(mean, "late", frozenset(), _late())
+    assert violation(result, "result", "result_v6") is None
+    assert result["values"] == {"mean": Decimal("0.5")}
+    assert [run["id"] for run in result["runs"]] == ["r3", "r4"]
+    assert result["error"] is None
+    assert "values" not in result_of(mean, "early", frozenset(), _early())
+
+
+@pytest.mark.parametrize(
+    ("program", "error"),
+    [
+        (Faulted("The step exec-mean faulted: no JSON."), "The step exec-mean faulted: no JSON."),
+        (None, "The step exec-mean gave nothing."),
+        (_found("runtime_error", memory_kb=1, time_ms=3), "The step exec-mean gave nothing."),
+        (_found(memory_kb=1, time_ms=3), "The step exec-mean gave nothing."),
+    ],
+)
+def test_a_program_that_faulted_or_gave_no_number_is_the_gradings_error_not_a_verdict(
+    mean: RunPlan, program: Found | Faulted | None, error: str
+) -> None:
+    result = result_of(mean, "late", frozenset(), _late({("exec-mean", None): program}))
+
+    assert "values" not in result
+    assert result["error"] == error
+    assert {run["verdict"] for run in result["runs"]} == {"accepted"}
+
+
+def test_the_runs_file_holds_each_runs_id_key_verdict_passed_and_numbers_alone(
+    mean: RunPlan,
+) -> None:
+    found = _late({("compare", "r2"): _found("wrong_answer", message="No.")})
+    present = {item: got for item, got in found.items() if isinstance(got, Found)}
+
+    written = runs_file(mean, "late", ["r1", "r2", "r3", "r4"], frozenset({"r4"}), present)
+
+    assert written is not None
+    assert json.loads(written) == {
+        "runs": [
+            {
+                "id": "r1",
+                "key": {"answer": "samples/1.ans", "input": "samples/1.in"},
+                "passed": 1,
+                "reports": {"memory_kb": 1500, "score": 1, "time_ms": 12},
+                "verdict": "accepted",
+            },
+            {
+                "id": "r2",
+                "key": {"answer": "samples/2.ans", "input": "samples/2.in"},
+                "passed": 0,
+                "reports": {"memory_kb": 1500, "time_ms": 12},
+                "verdict": "wrong_answer",
+            },
+            {
+                "id": "r3",
+                "key": {"answer": "tests/3.ans", "input": "tests/3.in"},
+                "passed": 1,
+                "reports": {"memory_kb": 1500, "score": 0, "time_ms": 20},
+                "verdict": "accepted",
+            },
+            {
+                "id": "r4",
+                "key": {"answer": "tests/4.ans", "input": "tests/4.in"},
+                "passed": 0,
+                "reports": {},
+                "verdict": "skipped",
+            },
+        ]
+    }
+    without_r3 = {item: got for item, got in present.items() if item != ("compare", "r3")}
+    assert runs_file(mean, "late", ["r3"], frozenset(), without_r3) is None
+
+
+def test_a_save_check_needs_every_step_done_once_accepted() -> None:
+    runs = [{"verdict": "accepted"}, {"verdict": "skipped"}]
+
+    assert all_accepted({"runs": runs, "once": {"outcomes": {"build-mean": "accepted"}}})
+    assert not all_accepted({"runs": runs, "once": {"outcomes": {"build-mean": "compile_error"}}})
+    assert not all_accepted({"runs": [{"verdict": "wrong_answer"}]})
+    assert not all_accepted(None)
+
+
+def test_a_number_too_long_for_the_runs_file_is_missing_to_the_program(
+    mean: RunPlan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    huge = Decimal("1" * 200)
+    found = _late({("compare", "r1"): _found(memory_kb=1, time_ms=1, score=huge)})
+    present = {item: got for item, got in found.items() if isinstance(got, Found)}
+
+    written = runs_file(mean, "late", ["r1", "r2"], frozenset(), present)
+
+    assert written is not None
+    first, second = json.loads(written)["runs"]
+    # The entrant's huge number is left out; the run's other reports stay.
+    assert first["reports"] == {"memory_kb": 1500, "time_ms": 12}
+    assert second["reports"] == {"memory_kb": 1500, "score": 1, "time_ms": 12}
+    monkeypatch.setattr(step_data, "MOST_RUN_ENTRY", 120)
+    cut = runs_file(mean, "late", ["r1", "r2"], frozenset(), present)
+    assert cut is not None
+    assert [run["reports"] for run in json.loads(cut)["runs"]] == [{}, {}]
+    assert [run["verdict"] for run in json.loads(cut)["runs"]] == ["accepted", "accepted"]
+
+
+def test_a_fault_of_a_values_program_alone_is_told_apart_from_a_runs() -> None:
+    accepted = {"runs": [{"verdict": "accepted"}, {"verdict": "wrong_answer"}], "error": "x"}
+
+    assert program_alone(accepted)
+    assert not program_alone({"runs": [{"verdict": "system_error"}], "error": "x"})
+    assert unreported({**accepted, "values": {"a": 1}}, ["a", "b"]) == {"b"}
+    assert unreported({"runs": [], "error": None}, ["a"]) == frozenset()
+    assert unreported(None, ["a"]) == frozenset()

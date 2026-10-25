@@ -74,6 +74,8 @@ def worked(
     groups: Mapping[str, Sequence[str]] | None = None,
     facts: Mapping[str, int | Fraction] | None = None,
     entered: Mapping[str, Fraction] | None = None,
+    programs: Mapping[str, Fraction] | None = None,
+    programs_waiting: Sequence[str] = (),
 ) -> dict[str, Outcome]:
     by_id = {each.id: each for each in runs}
     held = {"all": list(by_id), **(groups or {})}
@@ -83,6 +85,8 @@ def worked(
         facts or {"seconds_late": 0, "seconds": 0, "compiled": 1},
         COLUMNS,
         entered=entered,
+        programs=programs,
+        programs_waiting=programs_waiting,
     )
 
 
@@ -138,6 +142,11 @@ EACH_BLOCK: list[tuple[str, object, Fraction]] = [
     ("min", fold("min", "all", "time_ms"), Fraction(30)),
     ("max", fold("max", "all", "time_ms"), Fraction(50)),
     ("entered", {"block": "entered", "at_least": 0, "at_most": 10}, Fraction(7)),
+    (
+        "exec",
+        {"block": "exec", "program": "mean/", "language": "python", "over": {"runs": "all"}},
+        Fraction(3, 4),
+    ),
 ]
 
 
@@ -152,7 +161,10 @@ def test_every_block_has_an_evaluation_test() -> None:
 )
 def test_each_block_works_out_exactly(name: str, tree: object, expected: Fraction) -> None:
     assert not problems({"v": tree})
-    assert number({"v": tree}, runs=RUNS, entered={"v": Fraction(7)}) == expected
+    found = number(
+        {"v": tree}, runs=RUNS, entered={"v": Fraction(7)}, programs={"v": Fraction(3, 4)}
+    )
+    assert found == expected
 
 
 def test_thirds_add_up_to_one_and_1200_over_1500_is_four_fifths() -> None:
@@ -585,3 +597,64 @@ def test_what_reads_an_entered_mark_is_found_through_other_values() -> None:
     assert using(values, "entered") == {"search", "total"}
     assert found.through("total").blocks == {"entered"}
     assert found.through("time").blocks == frozenset()
+
+
+def program(group: str = "all", **inputs: object) -> dict[str, Any]:
+    return {
+        "block": "exec",
+        "program": "programs/mean/",
+        "language": "python",
+        "over": {"runs": group},
+    } | inputs
+
+
+def test_a_programs_number_is_missing_until_it_reports_and_waits_with_it_or_its_runs() -> None:
+    values = {"mean": program(), "total": many("add", value("mean"), 1)}
+    runs = [run("r1", score=1), run("r2", score=0)]
+
+    assert worked(values, runs)["total"].missing
+    reported = worked(values, runs, programs={"mean": Fraction(1, 2)})
+    assert reported["total"].number == Fraction(3, 2)
+    assert reported["mean"].runs == {"r1", "r2"}
+    assert worked(values, runs, programs_waiting=["mean"])["total"].waiting
+    faulted = [run("r1", "system_error"), run("r2", score=0)]
+    assert worked(values, faulted, programs={"mean": Fraction(1, 2)})["mean"].waiting
+
+
+def test_an_exec_blocks_inputs_are_a_folder_a_language_and_limits_above_0() -> None:
+    assert not problems({"v": program("st1", time_limit=Decimal("0.5"), memory_limit=64)})
+    folder = (
+        "Give the folder of the task that holds the program and its program.yaml, "
+        "such as programs/mean/."
+    )
+    for bad in ("mean", "/mean/", "a/../b/", "a//b/", 3):
+        assert problems({"v": program(program=bad)}) == [(("values", "v", "program"), folder)]
+    assert problems({"v": program(language="rust")}) == [
+        (
+            ("values", "v", "language"),
+            "Give the program's language, one of c, cpp, java, python, ipynb.",
+        )
+    ]
+    assert problems({"v": program(time_limit=0, memory_limit=-1)}) == [
+        (("values", "v", "time_limit"), "time_limit is a number more than 0."),
+        (("values", "v", "memory_limit"), "memory_limit is a number more than 0."),
+    ]
+    assert problems({"v": program("nothing")})
+
+
+def test_a_value_holds_one_exec_block_and_its_name_fits_its_steps() -> None:
+    assert problems({"v": many("add", program(), program("st1"))}) == [
+        (
+            ("values", "v"),
+            "This value uses exec 2 times. A value uses it once at most, so its program's "
+            "steps are named after it.",
+        )
+    ]
+    assert not problems({"v" * 34: program()})
+    assert problems({"v" * 35: program()}) == [
+        (
+            ("values", "v" * 35),
+            "A value using exec has a name of at most 34 characters, since its program's "
+            "steps are named after it.",
+        )
+    ]

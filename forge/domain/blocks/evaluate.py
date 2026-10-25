@@ -25,6 +25,10 @@ with what it read, every number an exact fraction.
 
 - **An entered mark** is the one entered for the value, missing until
   one is, or when it is outside the bounds the version gives.
+- **A program's number** (`exec`) is the one the value's program reported
+  from its group's runs, which it read. It waits while the program waits,
+  for its grading to run it or for staff once it faulted, and when a run
+  of its group waits; it is missing when no grading of it ran it.
 
 - **A number past `MOST_BITS`,** in its numerator or its denominator, is
   missing, as dividing by zero is: values that square each other a few
@@ -46,11 +50,11 @@ one and the caller gives the other, so it is never skipped or guessed.
 """
 
 import math
-from collections.abc import Generator, Iterable, Mapping, Sequence
+from collections.abc import Collection, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-from forge.domain.blocks.catalogue import CATALOGUE, ENTERED, LEAVES, SKIP, Form
+from forge.domain.blocks.catalogue import CATALOGUE, ENTERED, EXEC, LEAVES, SKIP, Form
 from forge.domain.blocks.check import form_of, same_value
 from forge.domain.blocks.numbers import Better, exact
 
@@ -120,15 +124,21 @@ def evaluate(
     columns: Mapping[str, Column],
     *,
     entered: Mapping[str, Fraction] | None = None,
+    programs: Mapping[str, Fraction] | None = None,
+    programs_waiting: Collection[str] = (),
 ) -> dict[str, Outcome]:
     """Each of a task's values worked out, as checked at the save: `runs`
     each group's runs in order, `all` among them; `facts` the submission's
     facts, each a number; `columns` each report a run may give, by name;
-    `entered` the mark entered for each value, by its name. A run's other
-    columns are `passed` and its key's.
+    `entered` the mark entered for each value, `programs` the number each
+    value's `exec` program reported, and `programs_waiting` the values
+    whose program waits, each by the value's name. A run's other columns
+    are `passed` and its key's.
     """
     walk = _Walk(runs, facts, columns, _reading_runs(values.values()))
     walk.entered = entered or {}
+    walk.programs = programs or {}
+    walk.programs_waiting = frozenset(programs_waiting)
     for name in _in_order(values):
         walk.current = name
         got = walk.tree(values[name])
@@ -198,6 +208,8 @@ class _Walk:
         self.done: dict[str, Outcome] = {}
         self.kept: dict[int, _Got] = {}
         self.entered: Mapping[str, Fraction] = {}
+        self.programs: Mapping[str, Fraction] = {}
+        self.programs_waiting: frozenset[str] = frozenset()
         self.current = ""
 
     def tree(self, tree: object) -> _Got:
@@ -296,6 +308,8 @@ class _Walk:
             return (yield from self.fold(block.name, form, node))
         if block.name == ENTERED:
             return self.mark(node)
+        if block.name == EXEC:
+            return self.program(node)
         if block.name == "if":
             test = yield (node["test"], scope)
             if test.waiting or test.skip or test.number is None:
@@ -370,6 +384,24 @@ class _Walk:
         if mark is None or least is None or most is None or not least <= mark <= most:
             return _NONE
         return _Got(mark)
+
+    def program(self, node: Mapping[str, object]) -> _Got:
+        """The number the value's program reported from its group's runs:
+        waiting while the program waits, or a run of the group waits for
+        staff, as a fold over them does; missing when no grading of it ran
+        the program.
+        """
+        over = node["over"]
+        assert isinstance(over, dict)
+        runs = self.runs[over["runs"]]
+        read = _Got(None, runs=frozenset(run.id for run in runs))
+        waiting = self.current in self.programs_waiting
+        if waiting or any(run.verdict == SYSTEM_ERROR for run in runs):
+            return _Got(None, waiting=True).reading(read)
+        number = self.programs.get(self.current)
+        if number is None:
+            return read
+        return _Got(_kept(number)).reading(read)
 
     def weight(self, run: RunResult, weights: object) -> Fraction:
         """A run's weight: the one `weights` gives its key's value, else 1."""

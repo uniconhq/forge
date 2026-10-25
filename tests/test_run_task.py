@@ -9,16 +9,19 @@ self-reported; and what is shown when, and what was shown, is read from
 
 import json
 from collections.abc import Mapping
+from decimal import Decimal
 from typing import Any
 
 import pytest
 
+from forge.domain.blocks.numbers import Better
 from forge.domain.definitions import Scoring, parse_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.run_task import (
     MOST_RUNS,
     Part,
+    ProgramValue,
     RunsFile,
     RunTask,
     RunTaskCheck,
@@ -1427,3 +1430,177 @@ def test_a_name_shown_during_the_contest_may_not_read_fewer_of_the_runs_left(
     # A run the task no longer has is not counted, nor what was shown at
     # the reveal, nor a release taken back.
     assert fewer_runs([(unreleased(shown), reads)], ok(islands(primitives, RELEASING))) == []
+
+
+# exec: a value a program of the task works out
+
+MEAN = ISLANDS.replace(
+    "  values:\n",
+    "  values:\n"
+    "    mean: {block: exec, program: programs/mean/, language: python, over: {runs: all}}\n",
+).replace(
+    "    after_close: [st1, st2, total, all]\n", "    after_close: [st1, st2, total, all, mean]\n"
+)
+MEAN_PATHS = ISLANDS_PATHS | {"programs/mean/mean.py", "programs/mean/program.yaml"}
+MEAN_MANIFEST = b"reports:\n  mean: {better: higher, at_least: 0, at_most: 1}\n"
+
+
+def mean(
+    primitives: dict[str, PrimitiveDeclaration],
+    task: str = MEAN,
+    manifest: bytes | None = MEAN_MANIFEST,
+    paths: frozenset[str] = MEAN_PATHS,
+) -> RunTaskCheck:
+    manifests = {} if manifest is None else {"programs/mean/program.yaml": manifest}
+    return islands(primitives, task, paths=paths, manifests=manifests)
+
+
+def test_an_exec_value_names_its_program_and_runs_late_unless_shown_during_the_contest(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    workflow, files = deployed("unicon/classic@v3")
+    checked = check_run_workflow(
+        parse_run_workflow(workflow), primitives, WorkflowFiles(frozenset(files), files)
+    )
+    assert manifest_files(parse_task(MEAN, runs=True), checked) == {"programs/mean/program.yaml"}
+
+    task = ok(mean(primitives))
+    assert task.programs["mean"] == ProgramValue(
+        "mean", "programs/mean/", "python", "all", 2, 256, "mean", Better.HIGHER
+    )
+    assert task.programs["mean"].manifest == "programs/mean/program.yaml"
+    assert task.early_programs() == frozenset()
+
+    shown = MEAN.replace(
+        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
+        "    now: [sample_score, sample_time, sample_tests, samples/, mean, all]\n",
+    ).replace("total, all, mean]", "total]")
+    assert ok(mean(primitives, shown)).early_programs() == {"mean"}
+
+    released = MEAN.replace("total, all, mean]", "total, all]\n    on_release: [mean]")
+    assert ok(mean(primitives, released)).early_programs() == frozenset()
+    assert ok(mean(primitives, released)).early_programs(released=True) == {"mean"}
+
+    limited = MEAN.replace("over: {runs: all}}", "over: {runs: all}, time_limit: 0.5}")
+    assert ok(mean(primitives, limited)).programs["mean"].time_limit == Decimal("0.5")
+
+
+@pytest.mark.parametrize(
+    ("manifest", "words"),
+    [
+        (
+            None,
+            "programs/mean/ holds no program.yaml, which declares the one number the program "
+            "reports.",
+        ),
+        (
+            b"reports:\n  a: {better: higher}\n  b: {better: lower}\n",
+            "programs/mean/program.yaml declares 2 reports, and a value's program reports one "
+            "number, the value's.",
+        ),
+        (
+            b"reports:\n  a: {type: text}\n",
+            "programs/mean/program.yaml declares a as text, with no better. A value's program "
+            "reports one number, never left out, saying which way is better.",
+        ),
+        (
+            b"reports:\n  a: {better: higher, optional: true}\n",
+            "programs/mean/program.yaml declares a as number, optional. A value's program reports "
+            "one number, never left out, saying which way is better.",
+        ),
+        (
+            b"reports:\n  a: {at_least: 0}\n",
+            "programs/mean/program.yaml declares a as number, with no better. A value's program "
+            "reports one number, never left out, saying which way is better.",
+        ),
+    ],
+)
+def test_an_exec_values_program_yaml_declares_one_number_with_better(
+    primitives: dict[str, PrimitiveDeclaration], manifest: bytes | None, words: str
+) -> None:
+    assert at(mean(primitives, manifest=manifest), "scoring.values.mean.program") == [words]
+
+
+def test_an_exec_values_folder_and_group_must_be_the_tasks_and_hold_runs(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    assert at(
+        mean(primitives, MEAN.replace("program: programs/mean/", "program: programs/other/")),
+        ("scoring.values.mean.program"),
+    ) == ["programs/other/ is not a folder of the task."]
+    assert at(mean(primitives, manifest=b"reports: [1]\n"), "scoring.values.mean.program")
+    empty = MEAN.replace("    st1_tests:", "    none_tests: {input: [tests/9.in]}\n    st1_tests:")
+    empty = empty.replace("over: {runs: all}}", "over: {runs: none_tests}}")
+    assert at(mean(primitives, empty), "scoring.values.mean.over") == [
+        "none_tests holds no runs, so the program would have none to read."
+    ]
+
+
+def test_a_program_reading_a_self_reported_column_is_self_reported(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    assert ok(mean(primitives)).self_reported_values() == frozenset()
+    text = (
+        TOUR_TASK.replace("inputs:\n  best: 1200\n", "")
+        .replace("inputs: [input, route]", "inputs: [input, route, best]")
+        .replace("entrant]", "entrant, entrant]")
+        .replace(
+            "  values:\n",
+            "  values:\n    mean: {block: exec, program: programs/mean/, language: python, "
+            "over: {runs: all}}\n",
+        )
+    )
+    task = ok(
+        tour(
+            primitives,
+            text,
+            paths=TOUR_PATHS | {"programs/mean/mean.py", "programs/mean/program.yaml"},
+            manifests={"programs/mean/program.yaml": MEAN_MANIFEST},
+        )
+    )
+    assert task.self_reported_values() == {"mean"}
+
+
+MEAN_BLOCK = "{block: exec, program: programs/mean/, language: python, over: {runs: all}}"
+
+
+@pytest.mark.parametrize(
+    ("block", "path", "words"),
+    [
+        (
+            "{block: exec, language: python, over: {runs: all}}",
+            "scoring.values.mean.program",
+            "exec needs its input program.",
+        ),
+        (
+            "{block: exec, program: programs/mean/, over: {runs: all}}",
+            "scoring.values.mean.language",
+            "exec needs its input language.",
+        ),
+        (
+            "{block: exec, program: 5, language: python, over: {runs: all}}",
+            "scoring.values.mean.program",
+            None,
+        ),
+        (
+            "{block: exec, program: programs/mean/, language: python, over: all}",
+            "scoring.values.mean.over",
+            None,
+        ),
+        (
+            "{block: exec, program: programs/mean/, language: python, over: {runs: nope}}",
+            "scoring.values.mean.over",
+            None,
+        ),
+    ],
+)
+def test_a_malformed_exec_block_is_one_problem_never_a_crash(
+    primitives: dict[str, PrimitiveDeclaration], block: str, path: str, words: str | None
+) -> None:
+    found = mean(primitives, MEAN.replace(MEAN_BLOCK, block))
+
+    assert found.task is None
+    [problem] = found.problems
+    assert problem["path"] == path
+    if words is not None:
+        assert problem["message"] == words

@@ -23,6 +23,11 @@ The facts (`facts_of`): `seconds_late` and `seconds`
 not tainted returned `compile_error`, which the plan's steps and each
 row's `once` outcomes say, else 1. Nothing here is stored: a value is
 worked out on every read.
+
+What reaches an entrant, or anything an entrant reads such as a board, is
+`for_entrants`: every value reading an `entered` mark, directly or through
+others, left out, until the grading queue decides when an entry may reach
+its entrant (phase 5.8, stage 5 section 6 item 45).
 """
 
 from collections.abc import Collection, Mapping, Sequence
@@ -31,8 +36,16 @@ from datetime import datetime
 from fractions import Fraction
 from typing import Any
 
-from forge.domain.blocks.catalogue import ALL
-from forge.domain.blocks.evaluate import SYSTEM_ERROR, Column, Outcome, RunResult, evaluate
+from forge.domain.blocks.catalogue import ALL, ENTERED
+from forge.domain.blocks.evaluate import (
+    SYSTEM_ERROR,
+    Column,
+    Outcome,
+    RunResult,
+    evaluate,
+    using,
+)
+from forge.domain.blocks.numbers import exact
 from forge.domain.definitions import Scoring
 from forge.domain.release import seconds, seconds_late
 from forge.domain.run_plan import COMPILE_ERROR, RunPlan
@@ -48,8 +61,9 @@ class RunGrading:
     of the live publication a row holds, as that row's result has it, by
     id; the ids the early row holds; every run as a fold reads it; what the
     steps done once reported and returned, the early row's and the late
-    row's; the `compiled` fact; and each run a row holds that the live
-    publication no longer has, by id.
+    row's; the `compiled` fact; each run a row holds that the live
+    publication no longer has, by id; the number each value's program
+    reported, by the value's name; and the values whose program waits.
     """
 
     results: Mapping[str, Mapping[str, Any]]
@@ -59,6 +73,8 @@ class RunGrading:
     once_late: Mapping[str, Any]
     compiled: int
     dropped: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    programs: Mapping[str, Fraction] = field(default_factory=dict)
+    programs_waiting: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,11 +87,27 @@ class Worked:
     facts: Mapping[str, Fraction]
 
 
+def for_entrants(values: Mapping[str, object], worked: Worked) -> Worked:
+    """`worked` as an entrant, or anything an entrant reads, may be given
+    it: each value reading an `entered` mark of `values`, a task's values,
+    directly or through others, left out (stage 5 section 6 item 45).
+    """
+    withheld = using(values, ENTERED)
+    return Worked(
+        worked.grading,
+        {name: outcome for name, outcome in worked.outcomes.items() if name not in withheld},
+        worked.facts,
+    )
+
+
 def compilers(plan: RunPlan) -> frozenset[str]:
     """The steps done once that are not tainted, whose `compile_error` makes
-    `compiled` 0 (stage 4 open 79)."""
+    `compiled` 0 (stage 4 open 79): a workflow's, never a value's
+    program's."""
     return frozenset(
-        name for name, step in plan.steps.items() if step.once and step.tainted is None
+        name
+        for name, step in plan.steps.items()
+        if step.once and step.tainted is None and step.value is None
     )
 
 
@@ -86,11 +118,13 @@ def run_grading(
     *,
     waiting: Collection[str],
     compiling: Collection[str],
+    programs_waiting: Collection[str] = (),
 ) -> RunGrading:
     """The grading of the live publication's `runs` from its early row's
     result and its late row's, none for a row with none; `waiting` the runs
     that wait when neither row holds them; `compiling` the steps `compiled`
-    reads.
+    reads; `programs_waiting` the values whose program neither row gives,
+    while a row whose plan runs it is still to give it.
     """
     live = {run.id for run in runs}
     early_runs = {str(run["id"]): run for run in (early or {}).get("runs", ())}
@@ -110,6 +144,12 @@ def run_grading(
         once = reports_early if run.id in early_runs else reports_late
         reports = {**once, **(entry.get("reports") or {})}
         read[run.id] = RunResult(run.id, str(entry["verdict"]), run.key, reports)
+    programs: dict[str, Fraction] = {}
+    for result in (early, late):
+        for name, number in ((result or {}).get("values") or {}).items():
+            found = exact(number)
+            if found is not None:
+                programs[str(name)] = found
     stopped = any(
         (once.get("outcomes") or {}).get(step) == COMPILE_ERROR
         for once in (once_early, once_late)
@@ -123,6 +163,8 @@ def run_grading(
         once_late,
         0 if stopped else 1,
         {name: entry for name, entry in held.items() if name not in live},
+        programs,
+        frozenset(name for name in programs_waiting if name not in programs),
     )
 
 
@@ -154,7 +196,15 @@ def worked_out(
     groups = {ALL: [grading.read[run.id] for run in runs]}
     for name, picked in scoring.groups.items():
         groups[name] = [grading.read[run.id] for run in runs if holds(picked, run.key)]
-    return evaluate(scoring.values, groups, facts, columns, entered=entered)
+    return evaluate(
+        scoring.values,
+        groups,
+        facts,
+        columns,
+        entered=entered,
+        programs=grading.programs,
+        programs_waiting=grading.programs_waiting,
+    )
 
 
 __all__ = [
@@ -163,6 +213,7 @@ __all__ = [
     "Worked",
     "compilers",
     "facts_of",
+    "for_entrants",
     "run_grading",
     "worked_out",
 ]

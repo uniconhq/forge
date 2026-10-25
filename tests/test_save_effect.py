@@ -303,3 +303,46 @@ def test_a_first_publication_lists_each_groups_points_and_the_boards_it_joins() 
         ),
         reading=("Entrants read the task from its release.",),
     )
+
+
+@pytest.mark.parametrize(
+    ("regrades", "said"),
+    [
+        (
+            1,
+            "The program of mean works out this value again for 1 submission, in a container each.",
+        ),
+        (
+            9000,
+            "The program of mean works out this value again for 9,000 submissions, in a "
+            "container each.",
+        ),
+    ],
+)
+def test_a_values_program_running_again_says_its_cost(regrades: int, said: str) -> None:
+    changes = ("The block of mean changed.",)
+
+    effect = effect_of(
+        "sum",
+        parse_task(BEFORE),
+        parse_task(BEFORE),
+        CONTEST,
+        changes=changes,
+        regrades=regrades,
+        graded=True,
+        read=NOTHING_READ,
+        programs=("mean",),
+    )
+
+    assert effect.runs_again[-1] == said
+    assert effect_of(
+        "sum",
+        parse_task(BEFORE),
+        parse_task(BEFORE),
+        CONTEST,
+        changes=(),
+        regrades=0,
+        graded=True,
+        read=NOTHING_READ,
+        programs=("mean",),
+    ).runs_again == ("No submission runs again: the tests and how they run are the same.",)

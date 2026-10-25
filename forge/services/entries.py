@@ -10,24 +10,29 @@ value that publication gives no such block. Each entry is one `entries`
 row, never changed or deleted, and the latest for a submission's value is
 its mark (`entered_of`), so who changed a mark stays known. A regrade
 never touches an entry: a mark is the submission's, not its grading's.
+A save that gives a value an `entered` block the live version does not
+starts it with no marks (`start_again`), so a value removed and added
+again never takes back its old marks.
 
 Until the grading queue decides when an entry may reach its entrant
 (phase 5.8), a value reading an `entered` block is served to staff alone
-(`run_showing.shown`).
+(`run_results.for_entrants`, which `scores.run_scored` applies).
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Final
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from forge.db.tables import Entry, Grading
 from forge.domain.blocks.catalogue import ENTERED
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.blocks.numbers import exact, written
+from forge.domain.definitions import TaskDefinition
 from forge.domain.errors import InvalidMark, NotARunTask, NotFound
 from forge.domain.ids import TaskId
 from forge.domain.names import WorkspaceOwner
@@ -110,7 +115,7 @@ async def enter(
     )
     if submission is None:
         raise NotFound(NO_SUCH_SUBMISSION)
-    entered = Entered(value, written(number_of), organiser.user.id, ctx.now)
+    entered = Entered(value, _stored(mark), organiser.user.id, ctx.now)
     ctx.db.add(
         Entry(
             task_id=task,
@@ -141,15 +146,43 @@ async def entered_of(ctx: Context, task: TaskId, submission: str) -> dict[str, F
     """
     rows = await ctx.db.execute(
         select(Entry.value, Entry.mark)
-        .where(Entry.task_id == task, Entry.submission_id == submission)
+        .where(
+            Entry.task_id == task,
+            or_(Entry.submission_id == submission, Entry.submission_id.is_(None)),
+        )
         .order_by(Entry.seq)
     )
     found: dict[str, Fraction] = {}
     for value, mark in rows:
-        number = _mark(mark)
-        if number is not None:
-            found[value] = number
+        if mark is None:
+            # A start: the value was given its `entered` block again.
+            found.pop(value, None)
+            continue
+        number = _plain(mark)
+        if number is None:
+            raise ValueError(f"An entry for {value} holds {mark!r}, which is no mark.")
+        found[value] = number
     return found
+
+
+async def start_again(ctx: Context, task: TaskId, values: Iterable[str], by: int) -> None:
+    """Start each of `values` with no marks, since the save by the user
+    `by` gives it an `entered` block the task's live version does not:
+    one row each with no submission and no mark, before which no entry
+    of the value counts. Written before the version is published, so any
+    mark entered under it comes after.
+    """
+    for value in sorted(set(values)):
+        ctx.db.add(Entry(task_id=task, value=value, entered_by=by, entered_at=ctx.now))
+    await ctx.db.flush()
+
+
+def entered_values(definition: TaskDefinition | None) -> frozenset[str]:
+    """The values of `definition` that hold an `entered` block."""
+    scoring = definition.scoring if definition is not None else None
+    if scoring is None:
+        return frozenset()
+    return frozenset(name for name, tree in scoring.values.items() if blocks_in(tree, ENTERED))
 
 
 def _mark(text: str) -> Fraction | None:
@@ -158,6 +191,11 @@ def _mark(text: str) -> Fraction | None:
     """
     if not isinstance(text, str) or len(text) > MOST_MARK_CHARACTERS:
         return None
+    return _plain(text)
+
+
+def _plain(text: str) -> Fraction | None:
+    """The exact number plain decimal text is, of any length, or none."""
     if not text or any(each not in "+-.0123456789" for each in text):
         return None
     try:
@@ -166,4 +204,16 @@ def _mark(text: str) -> Fraction | None:
         return None
 
 
-__all__ = ["Entered", "enter", "entered_of"]
+def _stored(text: str) -> str:
+    """A mark's text as it is kept: the same number, exactly, with no
+    sign but a minus, no leading or trailing zeros past the point, and
+    `0` for zero; at most one character longer than what was entered.
+    """
+    number = Decimal(text)
+    if number == 0:
+        return "0"
+    kept = format(number, "f")
+    return kept.rstrip("0").rstrip(".") if "." in kept else kept
+
+
+__all__ = ["Entered", "enter", "entered_of", "entered_values", "start_again"]

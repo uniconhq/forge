@@ -29,7 +29,11 @@ as, `skip` to leave the run out, or a number.
 
 `entered` reads no node: it is the mark a manager of the task enters for
 the submission, its bounds numbers written out, and a value holds one at
-most, so an entry is the value's own.
+most, so an entry is the value's own. `exec` is the number a program of
+the task reports from a group's runs: `program` a folder of the task with
+its `program.yaml`, `language` one of `LANGUAGES`, and its limits numbers
+written out, exec's own when left out. A value holds one at most, since
+its program's steps are named after it.
 """
 
 from collections.abc import Mapping
@@ -44,6 +48,8 @@ class Kind(StrEnum):
     RUNS = "runs"
     WEIGHTS = "weights"
     MISSING = "missing"
+    PATH = "path"
+    LANGUAGE = "language"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,8 +79,10 @@ class Form:
 
     @property
     def fold(self) -> bool:
-        """Whether the form folds over a group's runs."""
-        return "over" in self.inputs
+        """Whether the form folds over a group's runs, reading an input once
+        for each of them; `exec` reads a group's runs whole.
+        """
+        return "over" in self.inputs and any(each.per_run for each in self.inputs.values())
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +117,19 @@ _BOUND = BlockInput(Kind.NUMBER, plain=True)
 ENTERED = "entered"
 """The block a manager of the task enters a mark for, one in a value at
 most (SIMPLER-CORE.md 14.2)."""
+EXEC = "exec"
+"""The block a program of the task works out from a group's runs, one in a
+value at most (SIMPLER-CORE.md 14)."""
+LANGUAGES = ("c", "cpp", "java", "python", "ipynb")
+"""The languages an `exec` block's program may be written in: those
+`unicon/compile@v3` takes."""
+EXEC_TIME_LIMIT = 2
+"""The seconds of CPU an `exec` block's program may use when it gives none,
+`unicon/exec`'s own."""
+EXEC_MEMORY_LIMIT = 256
+"""The megabytes an `exec` block's program may use when it gives none,
+`unicon/exec`'s own."""
+_LIMIT = BlockInput(Kind.NUMBER, optional=True, plain=True)
 
 
 def _numbers(of: BlockInput) -> Form:
@@ -168,6 +189,23 @@ CATALOGUE: Mapping[str, Block] = {
             "count",
             "how many of a group's runs there are, their weights summed when weighed",
             (_fold(of=False, weights=True),),
+        ),
+        Block(
+            EXEC,
+            "the one number a program in a folder of the task reports from a group's runs, "
+            "which it reads as runs.json",
+            (
+                Form(
+                    RUNS,
+                    {
+                        "program": BlockInput(Kind.PATH),
+                        "language": BlockInput(Kind.LANGUAGE),
+                        "over": BlockInput(Kind.RUNS),
+                        "time_limit": _LIMIT,
+                        "memory_limit": _LIMIT,
+                    },
+                ),
+            ),
         ),
         Block(
             ENTERED,

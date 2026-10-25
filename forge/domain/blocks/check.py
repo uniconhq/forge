@@ -11,7 +11,10 @@ refused naming the forms. A tree is at most `MOST_NODES` nodes and
 board works its trees out.
 
 A value holds one `entered` block at most, its bounds numbers written
-out, the lower first.
+out, the lower first, and one `exec` block at most, its program a folder,
+its language one `unicon/compile@v3` takes and its limits numbers more
+than 0; the save checks the folder and its `program.yaml`
+(`run_task`).
 
 What each value reads directly is recorded (`Reads`), so the save can tell
 which runs a value shown during the contest reads, and whether it reads a
@@ -26,7 +29,9 @@ from forge.domain.blocks.catalogue import (
     ALL,
     CATALOGUE,
     ENTERED,
+    EXEC,
     FACTS,
+    LANGUAGES,
     LEAVES,
     SKIP,
     TASK_FACTS,
@@ -195,6 +200,12 @@ def check_values(
                     f"This value uses {block} {found.blocks[block]} times. A value uses it "
                     f"once at most, so {_ONE_WHY[block]}.",
                 )
+        if EXEC in found.blocks and len(name) > MOST_EXEC_NAME:
+            checker.refuse(
+                ("values", name),
+                f"A value using exec has a name of at most {MOST_EXEC_NAME} characters, since "
+                "its program's steps are named after it.",
+            )
     checker.problems.extend(_loops(reads))
     return ValuesCheck(checker.problems, reads)
 
@@ -208,10 +219,16 @@ class _Reading:
     blocks: dict[str, int] = field(default_factory=dict)
 
 
-READING = (ENTERED,)
+READING = (ENTERED, EXEC)
 """The blocks that read beyond a submission's runs and facts, each once in
 a value at most, which `Reads.blocks` records."""
-_ONE_WHY = {ENTERED: "a mark entered for it is the value's own"}
+_ONE_WHY = {
+    ENTERED: "a mark entered for it is the value's own",
+    EXEC: "its program's steps are named after it",
+}
+MOST_EXEC_NAME = 34
+"""The longest name of a value using `exec`, whose program's steps are
+named `build-<value>` and `exec-<value>`, at most 40 characters."""
 
 
 class _Checker:
@@ -255,6 +272,16 @@ class _Checker:
                     )
             case Kind.NUMBER:
                 self._number(at, node, over)
+            case Kind.PATH:
+                if not _folder(node):
+                    self.refuse(
+                        at,
+                        "Give the folder of the task that holds the program and its "
+                        "program.yaml, such as programs/mean/.",
+                    )
+            case Kind.LANGUAGE:
+                if node not in LANGUAGES:
+                    self.refuse(at, f"Give the program's language, one of {', '.join(LANGUAGES)}.")
 
     def _number(self, at: Path, node: object, over: str | None) -> None:
         if isinstance(node, bool):
@@ -328,6 +355,11 @@ class _Checker:
             self.reading.blocks[block.name] = self.reading.blocks.get(block.name, 0) + 1
         if block.name == ENTERED:
             self._bounds(at, node)
+        if block.name == EXEC:
+            for key in ("time_limit", "memory_limit"):
+                given = node.get(key)
+                if is_number(given) and not isinstance(given, bool) and Decimal(str(given)) <= 0:
+                    self.refuse((*at, key), f"{key} is a number more than 0.")
         inner = over
         if form.fold:
             inner = self._fold_group(node.get("over"))
@@ -527,6 +559,14 @@ def _count(wanted: BlockInput) -> str:
     return f"at least {wanted.least} inputs"
 
 
+def _folder(node: object) -> bool:
+    """Whether `node` names a folder of the task: a relative path ending in
+    `/`, no segment empty, `.` or `..`."""
+    if not isinstance(node, str) or not node.endswith("/") or node.startswith("/"):
+        return False
+    return all(segment not in ("", ".", "..") for segment in node[:-1].split("/"))
+
+
 def _leaf(node: Mapping[object, object]) -> tuple[str, object] | None:
     """A leaf's kind and what it names, when `node` is one."""
     if len(node) != 1:
@@ -570,6 +610,7 @@ def _cycle(start: str, reads: Mapping[str, Reads]) -> list[str] | None:
 
 __all__ = [
     "MOST_DEPTH",
+    "MOST_EXEC_NAME",
     "MOST_NODES",
     "READING",
     "Reads",

@@ -89,7 +89,7 @@ from forge.domain.publications import Check, Publication
 from forge.domain.regrades import RegradeCause
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.run_plan import BOXED, PipelineKind, RunPlan, slot_of
-from forge.domain.step_data import REPORT_STEP, all_accepted, runs_of, without
+from forge.domain.step_data import REPORT_STEP, all_accepted, without
 from forge.log import get_logger
 from forge.runtime.context import Context
 from forge.services import gradings, names, published, steps, timelines
@@ -285,7 +285,8 @@ async def concluded(ctx: Context, row: Grading) -> None:
         return
     if row.pipeline == EARLY:
         plan, _ = await steps.plan_of(ctx, row)
-        if runs_of(plan, "late"):
+        # A late pipeline may hold a value's program alone, its runs early.
+        if plan.pipeline("late"):
             made = await gradings.follow(ctx, row)
             log.info(
                 "pipelines.late_made",

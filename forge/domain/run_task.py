@@ -36,6 +36,13 @@ shown `now` reading `compiled` makes the compile early even when no run is.
 self-reported when an entrant input reaches the program that wrote it, and
 the run's `verdict` and `passed` when one reaches a program given a
 manifest (#504).
+
+A value's `exec` block names a program of the task (`ProgramValue`): its
+folder holds a `program.yaml` declaring one number report, never left
+out, with which way is better, and its group holds runs. Its program runs
+early when its value is shown during the contest, or read by one that is
+(`RunTask.early_programs`), and a value it works out is self-reported
+when any column is, since it reads its runs whole.
 """
 
 import itertools
@@ -47,8 +54,10 @@ from decimal import Decimal
 from typing import Any
 
 from forge.domain import exact_json
-from forge.domain.blocks.catalogue import ALL
+from forge.domain.blocks.catalogue import ALL, EXEC, EXEC_MEMORY_LIMIT, EXEC_TIME_LIMIT
 from forge.domain.blocks.check import ValuesCheck, check_names, check_values, same_value
+from forge.domain.blocks.evaluate import blocks_in
+from forge.domain.blocks.numbers import Better
 from forge.domain.content import names_path, path_problem
 from forge.domain.definitions import (
     ENTRANT,
@@ -69,7 +78,12 @@ from forge.domain.plans import (
     spelled,
 )
 from forge.domain.primitives import PROGRAMS, Port
-from forge.domain.program_manifest import ProgramManifest, parse_program
+from forge.domain.program_manifest import (
+    EXEC_OWN_NAMES,
+    PROGRAM_FILE,
+    ProgramManifest,
+    parse_program,
+)
 from forge.domain.run_workflow import (
     InputManifest,
     Program,
@@ -244,6 +258,28 @@ class RunsFile:
 
 
 @dataclass(frozen=True, slots=True)
+class ProgramValue:
+    """A value its `exec` block's program works out (SIMPLER-CORE.md 14):
+    the value, the folder the program and its `program.yaml` are in, the
+    language, the group whose runs it reads, its limits in seconds and
+    megabytes, and the one number report its `program.yaml` declares.
+    """
+
+    value: str
+    folder: str
+    language: str
+    group: str
+    time_limit: int | Decimal
+    memory_limit: int | Decimal
+    report: str
+    better: Better
+
+    @property
+    def manifest(self) -> str:
+        return f"{self.folder}{PROGRAM_FILE}"
+
+
+@dataclass(frozen=True, slots=True)
 class RunTask:
     """A run task as its save checked it: its runs in order, each group's
     runs by id, `all` among them, what each value reads, `show`, the
@@ -262,6 +298,7 @@ class RunTask:
     self_reported: Mapping[str, frozenset[str]]
     ids: Mapping[str, str] = field(default_factory=dict)
     manifest_outputs: Mapping[str, Mapping[str, Port]] = field(default_factory=dict)
+    programs: Mapping[str, ProgramValue] = field(default_factory=dict)
 
     def shown(self, *, released: bool = False) -> list[str]:
         """The entries shown during the contest: `now`'s, and `on_release`'s
@@ -291,14 +328,28 @@ class RunTask:
             if entry in self.values.reads
         )
 
+    def early_programs(self, *, released: bool = False) -> frozenset[str]:
+        """The values whose `exec` program runs in the early pipeline: each
+        shown during the contest, or read by a value shown then, directly or
+        through others.
+        """
+        read = {
+            name
+            for entry in self.shown(released=released)
+            if entry in self.values.reads
+            for name in self.values.through(entry).values
+        }
+        return frozenset(name for name in self.programs if name in read)
+
     def self_reported_values(self) -> frozenset[str]:
         """The values that read a self-reported column, directly or through
-        other values.
+        other values, a program reading their runs whole among them.
         """
         return frozenset(
             name
             for name in self.values.reads
             if any(column in self.self_reported for _, column in self.values.through(name).columns)
+            or (EXEC in self.values.through(name).blocks and bool(self.self_reported))
         )
 
     def runs_of(self, name: str) -> frozenset[str] | None:
@@ -651,11 +702,17 @@ def manifest_inputs(checked: RunWorkflowCheck) -> set[str]:
 
 
 def manifest_files(definition: TaskDefinition, checked: RunWorkflowCheck) -> set[str]:
-    """The task files the task fills a manifest input with, which the save
-    reads as `program.yaml` files before it checks the task.
+    """The task files the task fills a manifest input with, and the
+    `program.yaml` of each `exec` block's program, which the save reads as
+    `program.yaml` files before it checks the task.
     """
     wanted = manifest_inputs(checked)
     found: set[str] = set()
+    for tree in (definition.scoring.values if definition.scoring is not None else {}).values():
+        for node in blocks_in(tree, EXEC):
+            folder = node.get("program")
+            if isinstance(folder, str) and folder.endswith("/"):
+                found.add(f"{folder}{PROGRAM_FILE}")
     for name in wanted:
         given = definition.inputs.get(name)
         if isinstance(given, str) and given != ENTRANT:
@@ -698,6 +755,7 @@ def check_run_task(
     if values is not None and definition.scoring is not None:
         for at, message in read_later(definition.scoring, values):
             binder.refuse(at, message)
+    programs = binder.programs(groups, manifests, values) if values is not None else {}
     binder.limits(runs)
     binder.manifests(runs, manifests)
     binder.manifest_types(manifests)
@@ -717,6 +775,7 @@ def check_run_task(
         marks,
         binder.ids,
         binder.manifest_outputs(manifests),
+        programs,
     )
     early = task.early()
     task = RunTask(
@@ -729,6 +788,7 @@ def check_run_task(
         task.self_reported,
         task.ids,
         task.manifest_outputs,
+        task.programs,
     )
     return RunTaskCheck([], task)
 
@@ -1072,6 +1132,84 @@ class _Binder:
         if not types:
             return None
         return Port.model_validate({"type": min(types, key=lambda each: types[each])})
+
+    def programs(
+        self,
+        groups: Mapping[str, tuple[str, ...]],
+        manifests: Mapping[str, bytes],
+        values: ValuesCheck,
+    ) -> dict[str, ProgramValue]:
+        """Each value's `exec` program, its blocks checked (`values`): its
+        folder one of the task's, holding a `program.yaml` that declares
+        one report, a number that is never left out, with which way is
+        better; and its group holding runs. A value whose blocks were
+        refused is left out, so each mistake is said once.
+        """
+        scoring = self.task.scoring
+        refused = {path[1] for path, _ in values.problems if len(path) > 1 and path[0] == "values"}
+        found: dict[str, ProgramValue] = {}
+        for name, tree in (scoring.values if scoring is not None else {}).items():
+            nodes = blocks_in(tree, EXEC)
+            if name in refused or len(nodes) != 1:
+                continue
+            node = nodes[0]
+            at: Path = ("scoring", "values", name)
+            folder, language, over = node.get("program"), node.get("language"), node.get("over")
+            group = over.get("runs") if isinstance(over, dict) else None
+            if not (
+                isinstance(folder, str) and isinstance(language, str) and isinstance(group, str)
+            ):
+                continue
+            if not groups.get(group):
+                self.refuse(
+                    (*at, "over"),
+                    f"{group} holds no runs, so the program would have none to read.",
+                )
+                continue
+            if not has_path(self.paths, folder):
+                self.refuse((*at, "program"), f"{folder} is not a folder of the task.")
+                continue
+            path = f"{folder}{PROGRAM_FILE}"
+            text = manifests.get(path)
+            if text is None:
+                self.refuse(
+                    (*at, "program"),
+                    f"{folder} holds no {PROGRAM_FILE}, which declares the one number the "
+                    "program reports.",
+                )
+                continue
+            try:
+                read = parse_program(text, path, own_names=EXEC_OWN_NAMES)
+            except InvalidDefinition as invalid:
+                self.refuse((*at, "program"), f"{path} does not read: {invalid.detail}")
+                continue
+            if len(read.reports) != 1:
+                self.refuse(
+                    (*at, "program"),
+                    f"{path} declares {len(read.reports)} reports, and a value's program "
+                    "reports one number, the value's.",
+                )
+                continue
+            [(report, declared)] = read.reports.items()
+            if declared.type != "number" or declared.optional or declared.better is None:
+                self.refuse(
+                    (*at, "program"),
+                    f"{path} declares {report} as {declared.type}"
+                    f"{', optional' if declared.optional else ''}"
+                    f"{'' if declared.better is not None else ', with no better'}. A value's "
+                    "program reports one number, never left out, saying which way is better.",
+                )
+                continue
+            limits = [node.get("time_limit"), node.get("memory_limit")]
+            time_limit, memory_limit = (
+                given if is_number(given) and not isinstance(given, bool) else default
+                for given, default in zip(limits, (EXEC_TIME_LIMIT, EXEC_MEMORY_LIMIT), strict=True)
+            )
+            assert isinstance(time_limit, int | Decimal) and isinstance(memory_limit, int | Decimal)
+            found[name] = ProgramValue(
+                name, folder, language, group, time_limit, memory_limit, report, declared.better
+            )
+        return found
 
     # 9.4: show
 

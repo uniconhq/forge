@@ -52,9 +52,17 @@ from forge.domain.ids import PublicationId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.release import Extension, due_of, late_days
 from forge.domain.roles import contest_id_of, task_scope
-from forge.domain.run_results import RunGrading, Worked, facts_of, run_grading, worked_out
+from forge.domain.run_results import (
+    RunGrading,
+    Worked,
+    facts_of,
+    for_entrants,
+    run_grading,
+    worked_out,
+)
 from forge.domain.scoring import ONE, Scored, best_of, late_factor, rule_weight, score
 from forge.domain.showing import Graded, under
+from forge.domain.step_data import unreported
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
@@ -302,12 +310,15 @@ class Scorer:
 class RunScored:
     """A run task's grading worked out on read: the live publication's runs
     and plan, the grading from both its rows and from its early row alone,
-    and the values reading a column the entrant could set.
+    each as an entrant may be given it (`run_results.for_entrants`), the
+    grading from both rows with every value, for organisers alone
+    (`organised`), and the values reading a column the entrant could set.
     """
 
     held: RunsHeld
     whole: Worked
     early: Worked
+    organised: Worked
     self_reported: frozenset[str]
 
 
@@ -342,13 +353,19 @@ async def run_scored(
     that is done or failed with a result, matched by run id, with the facts
     of the row's due, its extension included, and the contest's start; and
     the same from the early row alone, which is all an entrant reads until
-    the reveal (`run_showing`). A run neither row holds waits only when its
+    the reveal (`run_showing`). A run neither row holds, or a value's
+    program neither row gives, waits only when its
     row's own plan put it in a pipeline still to give it: the early row's
     while that row failed, the late row's while that row is queued, running
     or failed, or not made since the early row failed. Any other, such as
     one a later save added, never ran (`run_results`). The marks entered
     for the submission's `entered` values are read with them (`entries`).
-    Worked out on every read, never stored (stage 5 section 6, item 1).
+    `whole` and `early` leave out every value reading a mark
+    (`run_results.for_entrants`), so whatever an entrant reads, a board
+    among them, is built from them; `organised` keeps every value. A
+    program waits while its row is to give it, and for staff once its row
+    ended with a fault and no number for it. Worked out on every read,
+    never stored (stage 5 section 6, item 1).
     """
     scoring = current.definition.scoring
     assert scoring is not None, "a run task's definition always has scoring"
@@ -356,8 +373,8 @@ async def run_scored(
     early_failed = early.status != GradingStatus.DONE
     late_result = None
     late_waits = early_failed
-    planned = await _planned(ctx, current, early, held)
-    late_planned = planned
+    planned, programs = await _planned(ctx, current, early, held)
+    late_planned, late_programs = planned, programs
     if late is not None:
         status = gradings.status_of(ctx, late)
         if late.result is not None and status in FINISHED_WITH_RESULT:
@@ -367,9 +384,15 @@ async def run_scored(
             GradingStatus.CANCELLED,
             GradingStatus.OVER_LIMIT,
         )
-        late_planned = await _planned(ctx, current, late, held)
+        late_planned, late_programs = await _planned(ctx, current, late, held)
     waits_early = {run for run, first in planned.items() if first} if early_failed else set()
     waits_late = {run for run, first in late_planned.items() if not first} if late_waits else set()
+    # A program waits while its row is still to give it, and, once its row
+    # ended with a fault and no number for it, for staff.
+    early_named = {name for name, first in programs.items() if first}
+    late_named = {name for name, first in late_programs.items() if not first}
+    programs_early = early_named if early_failed else set(unreported(early.result, early_named))
+    programs_late = late_named if late_waits else set(unreported(late_result, late_named))
     entry = settings.entry(current.name)
     due = due_of(settings, entry, extension) if entry is not None else None
     marks = await entries.entered_of(ctx, current.id, early.submission_id)
@@ -385,22 +408,42 @@ async def run_scored(
         late_result,
         waiting=waits_early | waits_late,
         compiling=held.compiling,
+        programs_waiting=programs_early | programs_late,
     )
     alone = run_grading(
-        held.runs, early.result, None, waiting=waits_early, compiling=held.compiling
+        held.runs,
+        early.result,
+        None,
+        waiting=waits_early,
+        compiling=held.compiling,
+        programs_waiting=programs_early,
     )
-    return RunScored(held, work(whole), work(alone), held.self_reported)
+    everything = work(whole)
+    return RunScored(
+        held,
+        for_entrants(scoring.values, everything),
+        for_entrants(scoring.values, work(alone)),
+        everything,
+        held.self_reported,
+    )
 
 
 async def _planned(
     ctx: Context, current: PublishedTask, row: Grading, held: RunsHeld
-) -> dict[str, bool]:
+) -> tuple[dict[str, bool], dict[str, bool]]:
     """Each run of the publication `row` grades against, by id, with whether
-    its plan runs it early in the split `row` was made with; the live
-    publication's when that one is gone."""
+    its plan runs it early in the split `row` was made with, and each value
+    whose program it runs, with whether early; the live publication's runs
+    when that one is gone, and no program."""
     found = next((each for each in current.publications if each.id == row.publication_id), None)
     if found is None:
         log.warning("scores.publication_gone", task=current.id, publication=row.publication_id)
-        return {run.id: run.early for run in held.runs}
-    plan = await published.plan_at(ctx, current.id, found.version)
-    return {run.id: run.early for run in plan.for_split(row.released_split).runs}
+        return {run.id: run.early for run in held.runs}, {}
+    plan = (await published.plan_at(ctx, current.id, found.version)).for_split(row.released_split)
+    programs: dict[str, bool] = {}
+    for kind in ("early", "late"):
+        for each in plan.pipeline(kind):
+            value = plan.steps[each.step].value
+            if value is not None and value.report is not None:
+                programs[value.name] = kind == "early"
+    return {run.id: run.early for run in plan.runs}, programs

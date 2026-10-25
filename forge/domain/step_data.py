@@ -40,6 +40,14 @@ name, `{"output": <id>, "name": <name>}`, so a 64 KB text on each of a
 thousand runs leaves the result small. Reports of steps done once go in
 `once` on the grading whose pipeline ran the step, with the outcome each
 of those steps returned, which the `compiled` fact reads.
+
+**A value's program** is no step of any run's: it reads its group's runs
+whole, as a JSON file the forge builds from their stored outputs
+(`runs_file`), each run's id, key, verdict, `passed` and number reports,
+and writes the value's number, which the result keeps under `values`. A
+program that faulted, gave nothing, or ended other than accepted with its
+report is a fault of the grading, named in `error`, never a run's
+verdict.
 """
 
 import hashlib
@@ -55,6 +63,7 @@ from forge.domain.contracts import violation
 from forge.domain.errors import InvalidCallback
 from forge.domain.run_plan import (
     PIPELINES,
+    RUN_ENTRY_KB,
     PipelineKind,
     PipelineStep,
     RunEntry,
@@ -148,13 +157,24 @@ def skipped_runs(plan: RunPlan, inputs: Mapping[str, Any]) -> frozenset[str]:
 
 
 def step_order(plan: RunPlan, kind: PipelineKind) -> tuple[str, ...]:
-    """The workflow steps a run of a `kind` pipeline goes through, in order:
-    every pipeline's up to and including `kind`'s."""
+    """The steps a `kind` pipeline reads, in order: every pipeline's up to
+    and including `kind`'s, a value's program's among them."""
     found: dict[str, None] = {}
     for each in PIPELINES[: PIPELINES.index(kind) + 1]:
         for held in plan.pipeline(each):
             found.setdefault(held.step, None)
     return tuple(found)
+
+
+def chain_of(plan: RunPlan, order: Sequence[str], run: str) -> list[Item]:
+    """The items a run goes through, in `order`: each workflow step done
+    once, and each done for it; never a value's program's."""
+    return [
+        (step, None if plan.steps[step].once else run)
+        for step in order
+        if plan.steps[step].value is None
+        and (plan.steps[step].once or run in (plan.steps[step].items or {}))
+    ]
 
 
 def holds(plan: RunPlan, kind: PipelineKind, step: str, run: str | None) -> bool:
@@ -424,11 +444,7 @@ def result_of(
     staffed: set[Item] = set()
     error: str | None = None
     for run in runs_of(plan, kind):
-        chain = [
-            (step, None if plan.steps[step].once else run.id)
-            for step in order
-            if plan.steps[step].once or run.id in (plan.steps[step].items or {})
-        ]
+        chain = chain_of(plan, order, run.id)
         entry: dict[str, Any] = {"id": run.id, "key": run.key}
         if run.id in skipped:
             runs.append({**entry, "verdict": "skipped", "passed": 0, "reports": {}, "texts": {}})
@@ -470,23 +486,127 @@ def result_of(
         for step, _ in once_items
         if isinstance(got := found.get((step, None)), Found)
     }
+    values: dict[str, Any] = {}
+    for step, _ in once_items:
+        value = plan.steps[step].value
+        if value is None or value.report is None:
+            continue
+        got = found.get((step, None))
+        if (
+            isinstance(got, Found)
+            and got.outputs["outcome"] == "accepted"
+            and value.report in got.outputs
+        ):
+            values[value.name] = got.outputs[value.report]
+            staff.extend(_staff(found, (step, None)))
+        elif error is None:
+            error = got.reason if isinstance(got, Faulted) else _nothing((step, None))
     return {
         "schema_version": RESULT_VERSION,
         "runs": runs,
         "once": {"reports": once_reports, "texts": once_texts, "outcomes": outcomes},
+        **({"values": values} if values else {}),
         "staff": staff,
         "error": error,
         "run_log": None,
     }
 
 
+def runs_file(
+    plan: RunPlan,
+    kind: PipelineKind,
+    ids: Sequence[str],
+    skipped: frozenset[str],
+    found: Mapping[Item, Found],
+) -> bytes | None:
+    """The JSON file a value's program reads in a `kind` pipeline: the runs
+    `ids` names, in that order, each with its id, its key, its verdict,
+    `passed` and its number reports, the reports of steps done once among
+    them, as a fold reads it, and nothing else, so no text and nothing for
+    staff; none while an item a run goes through has given nothing. A
+    number past `MOST_REPORT_CHARACTERS`, and every report of a run whose
+    entry would pass `RUN_ENTRY_KB`, is left out, missing to the program,
+    so what an entrant reports never faults the grading.
+    """
+    order = step_order(plan, kind)
+    keys = {run.id: run.key for run in plan.runs}
+    runs: list[dict[str, Any]] = []
+    for run in ids:
+        if run in skipped:
+            runs.append(
+                {"id": run, "key": keys[run], "verdict": "skipped", "passed": 0, "reports": {}}
+            )
+            continue
+        verdict, reached = "accepted", []
+        for item in chain_of(plan, order, run):
+            got = found.get(item)
+            if got is None:
+                return None
+            reached.append(item)
+            if got.outputs["outcome"] != "accepted":
+                verdict = got.outputs["outcome"]
+                break
+        reports, _ = _reports(plan, found, reached)
+        entry: dict[str, Any] = {
+            "id": run,
+            "key": keys[run],
+            "verdict": verdict,
+            "passed": 1 if verdict == "accepted" else 0,
+            "reports": {
+                name: number for name, number in reports.items() if _fits_runs_file(number)
+            },
+        }
+        if len(exact_json.dumps(entry, sort_keys=True).encode()) > MOST_RUN_ENTRY:
+            # Too large to hand the program: its reports count as missing.
+            entry["reports"] = {}
+        runs.append(entry)
+    return exact_json.dumps({"runs": runs}, sort_keys=True).encode()
+
+
+MOST_RUN_ENTRY = RUN_ENTRY_KB * 1024 - 64
+"""The most bytes one run's entry in a runs file takes, room left for the
+file's own brackets and commas, so the file keeps within `RUN_ENTRY_KB` a
+run."""
+MOST_REPORT_CHARACTERS = 100
+"""The longest a number report may be written in a runs file; a longer
+one, an entrant's self-reported number among them, is missing to the
+program, as a number past `MOST_BITS` is to a block."""
+
+
+def _fits_runs_file(number: object) -> bool:
+    """Whether a number report goes into a runs file as it is."""
+    return len(exact_json.dumps(number)) <= MOST_REPORT_CHARACTERS
+
+
+def program_alone(result: Mapping[str, Any]) -> bool:
+    """Whether a result's `error` is a value's program's alone: no run it
+    grades is a `system_error`. `result_of` sets `error` only from a run's
+    chain, where a workflow step's fault, done once or for the run, is the
+    run's verdict, or from a value's program."""
+    return all(run.get("verdict") != "system_error" for run in result.get("runs", ()))
+
+
+def unreported(result: Mapping[str, Any] | None, values: Iterable[str]) -> frozenset[str]:
+    """Those of `values`, each one whose program a row's plan runs, that a
+    row's result with an `error` gives no number: a program that failed,
+    whose value waits for staff."""
+    if result is None or result.get("error") is None:
+        return frozenset()
+    given = result.get("values") or {}
+    return frozenset(name for name in values if name not in given)
+
+
 def all_accepted(result: Mapping[str, Any] | None) -> bool:
     """Whether result version 6 accepts every run it grades, a skipped one
-    among them: what a save's checking needs for its publication to take
-    over."""
-    return result is not None and all(
+    among them, and every step done once it ran, a value's program's
+    compile among them: what a save's checking needs for its publication
+    to take over."""
+    if result is None:
+        return False
+    outcomes = (result.get("once") or {}).get("outcomes") or {}
+    return all(
         run.get("verdict") in ("accepted", "skipped") for run in result.get("runs", ())
-    )
+    ) and all(outcome == "accepted" for outcome in outcomes.values())
 
 
 def runs_of(plan: RunPlan, kind: PipelineKind) -> list[RunEntry]:

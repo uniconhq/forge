@@ -1075,7 +1075,7 @@ async def _runs(
         scoring,
         scored.held.runs,
         scored.held.files,
-        scored.whole,
+        scored.organised if everything else scored.whole,
         scored.early,
         scored.self_reported,
         revealed=revealed,
