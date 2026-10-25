@@ -58,9 +58,9 @@ from forge.domain.submissions import Submitted
 from forge.domain.uploads import pointer_text
 from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
-from forge.services import gradings, publications, steps
-from forge.services.publications import Published
+from forge.services import gradings, steps, task_save
 from forge.services.steps import TOKEN_LIFE, StepAccess
+from forge.services.task_save import Published
 from forge.testing import FakeClock
 from tests.conftest import sibling
 from tests.services.conftest import SPRING, Acme, make_task, write_contest
@@ -122,9 +122,9 @@ async def _save(setup: Setup, acme: Acme, task: TaskId, contents: Mapping[str, b
     head = await acme.fake.content.list_files(PLATFORM, task)
     edits = {path: Edit(content, head.tokens.get(path)) for path, content in contents.items()}
     try:
-        found = await publications.save(setup, acme.ada, task, edits, confirm=True)
+        found = await task_save.save(setup, acme.ada, task, edits, confirm=True)
     except ConfirmationRequired as asked:
-        found = await publications.save(
+        found = await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
     assert isinstance(found, Published), found
@@ -1008,7 +1008,7 @@ steps:
     use: unicon/compile@v3
     with: {source: "${{ inputs.code }}", language: python}
   - id: game
-    use: unicon/interact@v2
+    use: unicon/exec@v1
     with:
       programs:
         first:
@@ -1038,7 +1038,7 @@ scoring:
 """
 
 
-async def test_an_interact_programs_cached_files_are_each_in_its_own_item(
+async def test_a_programs_forms_cached_files_are_each_in_its_own_item(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     task = await make_task(setup, acme, "duel")

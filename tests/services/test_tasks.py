@@ -36,7 +36,7 @@ from forge.domain.names import Named
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import making, names, org_accounts, publications, reconcile, tasks
+from forge.services import making, names, org_accounts, reconcile, task_save, tasks
 from forge.services.access import Organiser
 from forge.testing import logged
 from tests.services.conftest import (
@@ -344,7 +344,7 @@ async def test_the_tasks_of_a_contest_are_listed_as_the_organiser(
 ) -> None:
     await tasks.create(setup, acme.ada, SPRING, "product")
 
-    listed = await tasks.list(setup, acme.ada, SPRING)
+    listed = await tasks.list_tasks(setup, acme.ada, SPRING)
 
     assert listed == (Named("acme/spring/product", "product"), Named(SUM, "sum"))
     (call,) = acme.fake.calls_to("list_tasks")
@@ -368,7 +368,7 @@ async def test_a_task_says_whether_its_published_statement_is_written_and_its_he
     placeholder = await publish(setup, acme, sum_task)
     published = await tasks.state(setup, acme.ada, sum_task)
     head = await acme.fake.content.list_files(PLATFORM, sum_task)
-    kept = await publications.save(
+    kept = await task_save.save(
         setup,
         acme.ada,
         sum_task,
@@ -376,19 +376,19 @@ async def test_a_task_says_whether_its_published_statement_is_written_and_its_he
         keep_as_draft=True,
     )
     drafted = await tasks.state(setup, acme.ada, sum_task)
-    written = await publications.save(setup, acme.ada, sum_task, {})
+    written = await task_save.save(setup, acme.ada, sum_task, {})
     both = await tasks.state(setup, acme.ada, sum_task)
     blank = await acme.fake.content.list_files(PLATFORM, sum_task)
-    emptied = await publications.save(
+    emptied = await task_save.save(
         setup, acme.ada, sum_task, {"statement.md": Edit(b"  \n", blank.tokens["statement.md"])}
     )
 
-    assert placeholder.number == 1 and isinstance(kept, publications.Draft)
+    assert placeholder.number == 1 and isinstance(kept, task_save.Draft)
     assert (published.statement_written, published.head_statement_written) == (False, False)
     # Written in a draft: the published statement is still the placeholder.
     assert (drafted.statement_written, drafted.head_statement_written) == (False, True)
-    assert isinstance(written, publications.Published) and isinstance(
-        emptied, publications.Published
+    assert isinstance(written, task_save.Published) and isinstance(
+        emptied, task_save.Published
     )
     assert (both.statement_written, both.head_statement_written) == (True, True)
     # A blank statement is no statement either.
@@ -431,10 +431,10 @@ async def test_the_contests_tasks_stand_in_its_order_with_drafts_and_timelines(
     await publish(setup, acme, sum_task)
     first = await publish(setup, acme, max_task)
     head = await acme.fake.content.list_files(PLATFORM, max_task)
-    broken = await publications.save(
+    broken = await task_save.save(
         setup, acme.ada, max_task, {"task.yaml": Edit(b"name: [\n", head.tokens["task.yaml"])}
     )
-    assert isinstance(broken, publications.Draft)
+    assert isinstance(broken, task_save.Draft)
     await write_contest(acme.fake, STANDING)
     observer = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.OBSERVER)
 

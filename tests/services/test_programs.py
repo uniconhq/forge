@@ -24,7 +24,7 @@ from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role
 from forge.runtime.setup import Setup
 from forge.services import entries, gradings, steps, submissions
-from forge.services.publications import Published
+from forge.services.task_save import Published
 from forge.settings import Settings
 from forge.testing import APP_URL, FORGE_URL, FakeClock
 from tests.services.conftest import Acme, organiser

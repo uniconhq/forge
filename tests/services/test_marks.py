@@ -42,11 +42,11 @@ from forge.services import (
     gradings,
     identity,
     marks,
-    publications,
     submissions,
+    task_save,
 )
 from forge.services.access import Organiser
-from forge.services.publications import Draft, Published
+from forge.services.task_save import Draft, Published
 from forge.testing import FakeClock
 from tests.services.conftest import (
     RUNNING,
@@ -113,7 +113,7 @@ async def _save(
     setup: Setup, acme: Acme, task: TaskId, files_: Mapping[str, bytes]
 ) -> Published | Draft:
     head = await acme.fake.content.list_files(PLATFORM, task)
-    return await publications.save(
+    return await task_save.save(
         setup,
         acme.ada,
         task,
@@ -353,7 +353,7 @@ async def test_an_organiser_without_the_observer_role_at_the_task_is_refused(
     with pytest.raises(Forbidden):
         await submissions.organised(setup, elsewhere, ranked.task, EntrantOwner(ranked.entrant), 1)
     with pytest.raises(Forbidden):
-        await gradings.list(setup, elsewhere, ranked.task)
+        await gradings.list_gradings(setup, elsewhere, ranked.task)
 
 
 async def test_a_row_with_no_such_submission_is_no_such_submission(

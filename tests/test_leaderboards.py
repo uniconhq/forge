@@ -14,17 +14,17 @@ from typing import Any
 
 import pytest
 
-from forge.domain.blocks.board_check import (
-    MOST_COLUMNS,
-    MOST_LEADERBOARDS,
-    LeaderboardsCheck,
-    check_leaderboards,
-)
 from forge.domain.blocks.bounds import column_bounds, self_reported_parts, value_bounds
 from forge.domain.blocks.catalogue import CATALOGUE, Scope
 from forge.domain.blocks.check import check_values
 from forge.domain.blocks.evaluate import Column, RunResult
 from forge.domain.blocks.leaderboard_evaluate import Cell, Submitted, work_out_row
+from forge.domain.blocks.leaderboard_shape_check import (
+    MOST_COLUMNS,
+    MOST_LEADERBOARDS,
+    LeaderboardsCheck,
+    check_leaderboards,
+)
 from forge.domain.blocks.numbers import Better
 from forge.domain.definitions import (
     ContestDefinition,

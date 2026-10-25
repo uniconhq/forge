@@ -165,7 +165,9 @@ SKIP = "skip"
 """A fold's `missing` that leaves out a run whose report is missing."""
 ALL = "all"
 """The group every task has, every run, built in."""
-ROW_FACTS = ("attempt", "seconds", "seconds_late", "marked")
+MARKED = "marked"
+"""The fact a hold hides on another row: a mark may change until the close."""
+ROW_FACTS = ("attempt", "seconds", "seconds_late", MARKED)
 """The facts every viewer of a row reads with it, which a task's `show`
 needs no entry for, since none is a grading's: which of the row's
 submissions it is, when it was made and how late by the task's due, all

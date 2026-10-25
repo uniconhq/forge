@@ -102,7 +102,7 @@ it has not waited in a queue."""
 BOX_FIRST = 20_000
 BOX_LAST = 64_999
 BOX_BLOCK = 8
-"""A boxed step's box users: a block of `BOX_BLOCK`, enough for interact's
+"""A boxed step's box users: a block of `BOX_BLOCK`, enough for exec's programs form's
 most programs, from `BOX_FIRST` to `BOX_LAST`, apart from the users phase
 4.9 gives gradings below `BOX_FIRST`."""
 BOX_BLOCKS = (BOX_LAST - BOX_FIRST + 1) // BOX_BLOCK

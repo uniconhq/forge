@@ -69,7 +69,7 @@ activated once and trusted for `volumes` alone, started on `main` with:
 and answered with one workflow, `grading`:
 
 - `when` the run is started by hand, and `labels` the pool's, for a
-  pipeline holding an `exec` or `interact` step the machine shape's,
+  pipeline holding an `exec` step the machine shape's,
   since a label picks a machine for the whole pipeline, and the size of
   the slot it runs in;
 - under `clone:`, one step, `clone`, the clone image by digest with
@@ -86,8 +86,8 @@ and answered with one workflow, `grading`:
   spec runs as the grading's user, and `depends_on`; the report step's
   `when` lets it run after a step that failed.
 
-No step carries `commands`, `entrypoint` or `environment`, so an `exec` or
-`interact` step stays a plugin the CI's privileged list can name.
+No step carries `commands`, `entrypoint` or `environment`, so an `exec`
+step stays a plugin the CI's privileged list can name.
 
 The extension's request is signed by the CI's ed25519 key (RFC 9421,
 `signatures.py`). The key is read from `GET /api/signature/public-key` with

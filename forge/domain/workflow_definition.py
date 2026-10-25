@@ -11,7 +11,7 @@ A file with no `test` block is a run workflow instead (SIMPLER-CORE.md 7,
 runs per test, no input says who gives it, and its `reports` add only a
 title and a unit, since what a number means is the primitive's or the
 program's that made it. It reads its own files, `${{ workflow.<path> }}`, a
-trailing `/` naming a folder, and an `interact` step's outputs per program,
+trailing `/` naming a folder, and a programs-form step's outputs per program,
 `${{ steps.<id>.<program>.<output> }}`. Testing for `test` and not for
 `reports` tells the two apart, since a run workflow that reports only its
 verdict has no `reports` either. `read_workflow` reads either.
@@ -65,7 +65,7 @@ by the wider `VERSION`, and is never newer than a numbered one."""
 HANDLE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 REPORT_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 """A report's or a run input's name, a column of the run, and a report's in a
-`program.yaml`, as `exec` and `interact` take it: one rule for all three."""
+`program.yaml`, as `exec` takes it on either form: one rule for both."""
 TODAY_REPORT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 """A reported value's name in a workflow of today's format, as versions
 already made hold it, with no length cap."""
@@ -448,7 +448,7 @@ def reserved_message(name: str) -> str:
 class Reference:
     """One `${{ ... }}`: `inputs.<id>`, `test.<field>`, `steps.<id>.<output>`,
     or `workflow.<path>`, the path its `name`. In a run workflow, an
-    `interact` step's output for one program, `steps.<id>.<program>.<output>`,
+    programs-form step's output for one program, `steps.<id>.<program>.<output>`,
     names that `program` too.
     """
 

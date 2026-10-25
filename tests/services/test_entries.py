@@ -30,7 +30,7 @@ from forge.domain.release import Extension
 from forge.domain.roles import Role, Scope, contest_id_of, task_scope
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import entries, gradings, leaderboards, marks, published, scores, submissions
+from forge.services import entrant_view, entries, gradings, leaderboards, marks, scores, submissions
 from forge.testing import FakeClock, register_entrant
 from tests.services.conftest import SPRING, Acme, organiser, signed_in, upload
 from tests.services.test_pipelines import (
@@ -299,8 +299,8 @@ async def test_the_shared_scoring_works_out_what_reads_a_mark_for_every_reader(
     [early] = [row for row in await _rows(setup, "early") if row.attempt == 1]
 
     async with setup.unit_of_work() as ctx:
-        settings = await published.contest(ctx, contest_id_of(task_scope(islands.task)))
-        current = await published.task(ctx, islands.task, settings)
+        settings = await entrant_view.contest(ctx, contest_id_of(task_scope(islands.task)))
+        current = await entrant_view.task(ctx, islands.task, settings)
         assert current is not None
         late = await scores.late_of(ctx, early)
         scored = await scores.run_scored(ctx, current, settings, Extension(), early, late)
@@ -761,7 +761,7 @@ async def test_the_queue_of_a_task_never_published_is_not_found(
     with pytest.raises(NotFound) as refused:
         await entries.queue(setup, acme.ada, sum_task)
 
-    assert refused.value.detail == published.NO_SUCH_TASK
+    assert refused.value.detail == entrant_view.NO_SUCH_TASK
 
 
 MIXED = GRADEBOOK + (

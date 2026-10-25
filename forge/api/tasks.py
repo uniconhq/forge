@@ -12,7 +12,7 @@ from forge.services.tasks import (
     TaskState,
     Timeline,
     create,
-    list,
+    list_tasks,
     standing,
     state,
 )
@@ -24,7 +24,7 @@ __all__ = [
     "TaskState",
     "Timeline",
     "create",
-    "list",
+    "list_tasks",
     "put_back",
     "standing",
     "state",

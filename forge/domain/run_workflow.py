@@ -57,10 +57,10 @@ from forge.domain.meanings import ReportMeaning
 from forge.domain.port_values import (
     Kind,
     Refused,
-    a_type,
+    check_value_fits_port,
     check_written,
-    fits,
     literal_or_references,
+    type_in_words,
 )
 from forge.domain.primitives import (
     FILE_NAME,
@@ -79,7 +79,7 @@ from forge.domain.primitives import (
 )
 from forge.domain.program_manifest import (
     EXEC_OWN_NAMES,
-    INTERACT_OWN_NAMES,
+    PROGRAMS_OWN_NAMES,
     TOO_LARGE,
     ProgramManifest,
     parse_program,
@@ -570,7 +570,9 @@ class _Checker:
                     "This value raises a limit, so it must be known when the task is saved."
                 )
             if port.type not in (Type.TEXT, Type.NUMBER):
-                raise Refused(f"This takes {a_type(port.type)}, and a report is a number or text.")
+                raise Refused(
+                    f"This takes {type_in_words(port.type)}, and a report is a number or text."
+                )
             self.deferred.append(
                 Deferred(path_text(at), kind.step, kind.program, kind.report, port)
             )
@@ -583,7 +585,7 @@ class _Checker:
                     "That output may be missing, so it can be given only to an optional port."
                 )
             raise Refused("That input is optional, so it can be given only to an optional port.")
-        fits(kind, port, raw)
+        check_value_fits_port(kind, port, raw)
         for name, whole in written:
             self.uses.setdefault(name, []).append(
                 InputUse(path_text(at), port, raises_limit, whole)
@@ -743,7 +745,7 @@ class _Checker:
         if isinstance(kind, _Pending):
             raise Refused("A report is a number or text, and a named file is a file.")
         if kind.type is not Type.FILE:
-            raise Refused(f"A named file is one file, not {a_type(kind.type)}.")
+            raise Refused(f"A named file is one file, not {type_in_words(kind.type)}.")
         if kind.optional:
             raise Refused("That may be missing, and a named file must be there.")
         if found.kind == "inputs":
@@ -804,7 +806,7 @@ class _Checker:
                 if inner_port is None or key == SELF_REPORTED:
                     continue
                 if key == MANIFEST:
-                    own_names = INTERACT_OWN_NAMES | set(port.outputs or {})
+                    own_names = PROGRAMS_OWN_NAMES | set(port.outputs or {})
                     each.manifest = self._manifest((*where, key), value, inner_port, own_names)
                 else:
                     self._value((*where, key), value, inner_port, key in raised, each.file_names)
@@ -1004,14 +1006,16 @@ class _Checker:
         if port.type not in (Type.TEXT, Type.NUMBER):
             self.refuse(
                 at,
-                f"steps.{found.name}.{found.port} is {a_type(port.type)}, and only text or a "
+                f"steps.{found.name}.{found.port} is {type_in_words(port.type)}, "
+                "and only text or a "
                 "number can be reported.",
             )
             return
         if unit is not None and port.type is not Type.NUMBER:
             self.refuse(
                 (*at, "unit"),
-                f"Only a number takes a unit, and {name} is {a_type(port.type)}. Remove the unit.",
+                f"Only a number takes a unit, and {name} is {type_in_words(port.type)}. "
+                "Remove the unit.",
             )
         written_by = (
             step.program

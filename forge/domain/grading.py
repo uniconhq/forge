@@ -98,7 +98,7 @@ PLATFORM_POOL = "pool:platform"
 """The label every run is pinned to until orgs bring machines of their own:
 only a machine the platform controls declares it."""
 BOXED_SHAPE = "shape:rootless"
-"""The label a run task's pipeline holding an `exec` or `interact` step
+"""The label a run task's pipeline holding an `exec` step
 carries beside its pool's, so only a machine of the shape phase 4.1 picked
 takes it: Woodpecker's labels pick a machine for a whole pipeline."""
 SIZE_LABEL = "size"

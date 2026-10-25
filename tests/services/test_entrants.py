@@ -53,7 +53,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import account, contests, entrants, published, roles, submissions, timelines
+from forge.services import account, contests, entrant_view, entrants, roles, submissions, timelines
 from forge.services.access import Organiser
 from forge.testing import FakeClock
 from tests.services.conftest import (
@@ -642,7 +642,7 @@ async def test_a_removed_entrants_extension_holds_no_reveal_back(
 
     async def reveal() -> datetime | None:
         async with setup.unit_of_work() as ctx:
-            settings = await published.contest(ctx, SPRING)
+            settings = await entrant_view.contest(ctx, SPRING)
             return await timelines.reveal(ctx, SPRING, settings, "sum")
 
     assert await reveal() == datetime(2026, 9, 26, 14, tzinfo=UTC)
@@ -667,7 +667,7 @@ async def test_observers_list_the_entrants_and_only_managers_decide(
     await roles.grant(setup, manager, Scope("acme", "spring"), "dee", Role.OBSERVER)
     observer = await organiser(setup, people.fake, 21, Scope("acme", "spring"))
 
-    listed = await entrants.list(setup, observer, SPRING)
+    listed = await entrants.list_entrants(setup, observer, SPRING)
 
     assert [(entry.display_name, entry.status) for entry in listed] == [
         ("bob", Status.PENDING),
@@ -692,7 +692,7 @@ async def test_an_organiser_of_another_contest_decides_nothing_here(
     elsewhere = await organiser(setup, people.fake, 21, Scope("acme", "autumn"), Role.MANAGER)
 
     with pytest.raises(Forbidden):
-        await entrants.list(setup, elsewhere, SPRING)
+        await entrants.list_entrants(setup, elsewhere, SPRING)
     with pytest.raises(Forbidden):
         await entrants.approve(setup, elsewhere, SPRING, bob.id)
     autumn = await organiser(setup, people.fake, 7, Scope("acme", "autumn"), Role.MANAGER)
@@ -772,7 +772,7 @@ async def test_a_deleted_users_member_row_keeps_their_id_and_shows_them_as_delet
     cyd = await signed_in(setup, people.fake, 20)
 
     await account.delete(setup, cyd)
-    listed = await entrants.list(setup, manager, SPRING)
+    listed = await entrants.list_entrants(setup, manager, SPRING)
 
     (gone,) = listed
     assert gone.display_name == "Deleted user"

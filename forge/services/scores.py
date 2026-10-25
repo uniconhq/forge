@@ -51,15 +51,15 @@ from forge.domain.step_data import unreported
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import entries, gradings, published
-from forge.services.published import PublishedTask, RunsHeld
+from forge.services import entrant_view, entries, gradings
+from forge.services.entrant_view import PublishedTask, RunsHeld
 
 log = get_logger(__name__)
 
 FINISHED_WITH_RESULT = (GradingStatus.DONE, GradingStatus.SYSTEM_ERROR)
 """Where a run task's row stands when its result is read: done, or failed
 with the runs it gave, its faulted ones waiting for staff."""
-GRADED_KEPT = published.FORM_KEPT
+GRADED_KEPT = entrant_view.FORM_KEPT
 """How long this process keeps what a past publication shows its gradings
 with: a publication never changes, so the time only bounds what is held."""
 
@@ -88,7 +88,7 @@ def counted(rows: Sequence[Grading]) -> Grading:
     """The attempt of one submission that counts, the one its row reads: the
     latest that finished with a result, or, while none has, the latest.
     """
-    return gradings.latest_good(rows) or max(rows, key=lambda row: row.attempt)
+    return gradings.latest_with_result(rows) or max(rows, key=lambda row: row.attempt)
 
 
 def usable(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -> Usable:
@@ -99,7 +99,7 @@ def usable(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -
     or ended over the limit.
     """
     row = counted(rows)
-    if gradings.good(row):
+    if gradings.has_result(row):
         return Usable(State.CANDIDATE, row)
     if gradings.status_of(ctx, row, lost) in (GradingStatus.CANCELLED, GradingStatus.OVER_LIMIT):
         return Usable(State.VOID, None)
@@ -124,7 +124,7 @@ class GradedOf:
     async def latest(self) -> Graded:
         if self._latest is None:
             current = self.current
-            form = await published.form(self.ctx, current)
+            form = await entrant_view.form(self.ctx, current)
             self._latest = Graded(
                 form.tests,
                 current.definition.test_groups,
@@ -265,7 +265,7 @@ async def run_scored(
     """
     scoring = current.definition.scoring
     assert scoring is not None, "a run task's definition always has scoring"
-    held = await published.runs_held(ctx, current)
+    held = await entrant_view.runs_held(ctx, current)
     early_failed = early.status != GradingStatus.DONE
     late_result = None
     late_waits = early_failed
@@ -353,7 +353,9 @@ async def _planned(
     if found is None:
         log.warning("scores.publication_gone", task=current.id, publication=row.publication_id)
         return {run.id: run.early for run in held.runs}, {}, {}
-    plan = (await published.plan_at(ctx, current.id, found.version)).for_split(row.released_split)
+    plan = (await entrant_view.plan_at(ctx, current.id, found.version)).for_split(
+        row.released_split
+    )
     programs: dict[str, bool] = {}
     compiles: dict[str, bool] = {}
     for kind in ("early", "late"):

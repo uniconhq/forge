@@ -71,17 +71,14 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from fractions import Fraction
 
-from forge.domain.blocks.board_check import ColumnRef, LeaderboardsCheck
 from forge.domain.blocks.bounds import Bounds, value_bounds
-from forge.domain.blocks.catalogue import ALL, SHOWN_FACTS
+from forge.domain.blocks.catalogue import ALL, MARKED, SHOWN_FACTS
 from forge.domain.blocks.evaluate import Column, RunResult
 from forge.domain.blocks.leaderboard_evaluate import Cell, Submitted
+from forge.domain.blocks.leaderboard_shape_check import ColumnRef, LeaderboardsCheck
 from forge.domain.definitions import Hold, Leaderboard, LeaderboardAudience, Scoring
 from forge.domain.names import WorkspaceOwner
 from forge.domain.run_showing import ValueShown
-
-MARKED = "marked"
-"""The fact a hold hides on another row: a mark may change until the close."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -39,10 +39,10 @@ from forge.services import (
     files,
     gradings,
     landing,
-    publications,
     submissions,
+    task_save,
 )
-from forge.services.publications import Draft, Published
+from forge.services.task_save import Draft, Published
 from forge.testing import PLACEHOLDER_DIGEST, FakeClock, register_entrant
 from tests.conftest import sibling
 from tests.services.conftest import RUNNING, SPRING, Acme, signed_in, upload, write_contest
@@ -89,7 +89,7 @@ def _primitives(acme: Acme) -> None:
     """The contract 6 primitives the run workflows use, from the checkouts
     beside this one, with the image line bootstrap writes.
     """
-    for name, version in (("exec", "v1"), ("interact", "v2"), ("compile", "v3")):
+    for name, version in (("exec", "v1"), ("compile", "v3")):
         text = sibling(f"primitive-{name}", "primitive.yaml").read_bytes()
         image = f"image: ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}\n".encode()
         acme.fake.primitives.add(name, {version: image + text})
@@ -99,7 +99,7 @@ async def _save(
     setup: Setup, acme: Acme, task: TaskId, contents: Mapping[str, bytes | None], **options: Any
 ) -> Published | Draft:
     head = await acme.fake.content.list_files(PLATFORM, task)
-    return await publications.save(
+    return await task_save.save(
         setup,
         acme.ada,
         task,
@@ -280,10 +280,10 @@ async def test_a_run_task_whose_runs_file_does_not_read_is_refused_not_renumbere
     async def unread(*_: object) -> None:
         return None
 
-    monkeypatch.setattr(publications, "_runs_file_of", unread)
+    monkeypatch.setattr(task_save.sources, "_runs_file_of", unread)
     result = await _save(setup, acme, sum_task, {"statement.md": b"Count the islands.\n"})
 
-    assert _errors(result) == [("", publications.RUNS_UNREAD)]
+    assert _errors(result) == [("", task_save.RUNS_UNREAD)]
     assert len(acme.fake.calls_to("publish")) == 1
 
 
@@ -323,7 +323,7 @@ async def test_a_task_keeps_its_format_once_anyone_has_submitted(
     async def submitted(*_: object) -> bool:
         return True
 
-    monkeypatch.setattr(publications, "_submitted", submitted)
+    monkeypatch.setattr(task_save.sources, "_submitted", submitted)
     refused = await _save(setup, acme, sum_task, {"task.yaml": run.encode(), **TOUR_DATA})
 
     assert _errors(refused) == [
@@ -402,7 +402,7 @@ async def test_what_was_shown_under_a_graded_publication_is_not_hidden_again(
     async def graded(*_: object) -> set[str]:
         return {published.publication}
 
-    monkeypatch.setattr(publications, "_graded_under", graded)
+    monkeypatch.setattr(task_save.sources, "_graded_under", graded)
     text = TASKS["islands"][0]
     later = text.replace("now: [sample_score, sample_time,", "now: [sample_score,").replace(
         "after_close: [st1,", "after_close: [sample_time, st1,"

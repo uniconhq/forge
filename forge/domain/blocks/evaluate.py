@@ -63,12 +63,18 @@ from fractions import Fraction
 from forge.domain.blocks.catalogue import CATALOGUE, ENTERED, EXEC, LEAVES, SKIP, Form
 from forge.domain.blocks.check import form_of, same_value
 from forge.domain.blocks.numbers import Better, exact
+from forge.domain.blocks.tree_reads import leaves, reached
 
 ACCEPTED = "accepted"
 SYSTEM_ERROR = "system_error"
 """The verdict of a run that waits for staff (9.3)."""
 MOST_BITS = 4096
 """The most bits a number's numerator or denominator holds."""
+
+
+def past_most_bits(number: Fraction) -> bool:
+    """Whether `number`'s numerator or denominator is past `MOST_BITS`."""
+    return number.numerator.bit_length() > MOST_BITS or number.denominator.bit_length() > MOST_BITS
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,7 +203,7 @@ def _kept(number: Fraction | None) -> Fraction | None:
     """`number`, or none past `MOST_BITS`."""
     if number is None:
         return None
-    if number.numerator.bit_length() > MOST_BITS or number.denominator.bit_length() > MOST_BITS:
+    if past_most_bits(number):
         return None
     return number
 
@@ -620,28 +626,16 @@ def using(values: Mapping[str, object], name: str) -> frozenset[str]:
         for each in _value_leaves(tree) & values.keys():
             readers[each].add(value)
     found = {value for value, tree in values.items() if blocks_in(tree, name)}
-    waiting = list(found)
-    while waiting:
-        for reader in readers[waiting.pop()] - found:
-            found.add(reader)
-            waiting.append(reader)
-    return frozenset(found)
+    return frozenset(reached(found, readers))
 
 
 def _value_leaves(tree: object) -> set[str]:
     """The values a tree reads directly, through `{value: <name>}`."""
-    found: set[str] = set()
-    waiting = [tree]
-    while waiting:
-        node = waiting.pop()
-        if isinstance(node, list):
-            waiting.extend(node)
-        elif isinstance(node, dict):
-            if "block" in node:
-                waiting.extend(given for key, given in node.items() if key != "block")
-            elif set(node) == {"value"} and isinstance(node["value"], str):
-                found.add(node["value"])
-    return found
+    return {
+        node["value"]
+        for node in leaves(tree)
+        if set(node) == {"value"} and isinstance(node["value"], str)
+    }
 
 
 __all__ = [
@@ -655,5 +649,6 @@ __all__ = [
     "evaluate",
     "in_order",
     "over_numbers",
+    "past_most_bits",
     "using",
 ]

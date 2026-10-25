@@ -27,8 +27,8 @@ from forge.domain.ids import TaskId
 from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import files, leaderboards, publications
-from forge.services.publications import Draft, Published
+from forge.services import files, leaderboards, task_save
+from forge.services.task_save import Draft, Published
 from tests.services.conftest import RUNNING, SPRING, Acme, make_task, write_contest
 from tests.services.test_run_task_saves import TASKS, _primitives, checked
 
@@ -88,9 +88,9 @@ async def _save(
     contents = {"task.yaml": text.encode(), **(data or {})}
     edits = {path: Edit(content, head.tokens.get(path)) for path, content in contents.items()}
     try:
-        return await publications.save(setup, acme.ada, task, edits, confirm=True)
+        return await task_save.save(setup, acme.ada, task, edits, confirm=True)
     except ConfirmationRequired as asked:
-        return await publications.save(
+        return await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
 

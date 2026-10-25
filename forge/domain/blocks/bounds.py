@@ -35,10 +35,10 @@ import math
 from collections.abc import Mapping, Sequence
 from fractions import Fraction
 
-from forge.domain.blocks.board_check import ColumnRef, LeaderboardsCheck, column_at
 from forge.domain.blocks.catalogue import CATALOGUE, ENTERED, SKIP, Kind
 from forge.domain.blocks.check import form_of, leaf_of, same_value
-from forge.domain.blocks.evaluate import MOST_BITS, Column, RunResult, in_order
+from forge.domain.blocks.evaluate import Column, RunResult, in_order, past_most_bits
+from forge.domain.blocks.leaderboard_shape_check import ColumnRef, LeaderboardsCheck, column_at
 from forge.domain.blocks.numbers import exact
 from forge.domain.definitions import Leaderboard
 
@@ -53,7 +53,7 @@ def _kept(bounds: Bounds) -> Bounds:
     if bounds is None:
         return None
     for number in bounds:
-        if number.numerator.bit_length() > MOST_BITS or number.denominator.bit_length() > MOST_BITS:
+        if past_most_bits(number):
             return None
     return bounds
 

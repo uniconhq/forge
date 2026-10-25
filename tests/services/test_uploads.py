@@ -52,7 +52,7 @@ from forge.domain.uploads import UploadStatus
 from forge.domain.workflows import Visibility
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
-from forge.services import entrants, publications, submissions, submitters, uploads
+from forge.services import entrants, submissions, submitters, task_save, uploads
 from forge.testing import FakeClock
 from tests.services.conftest import SPRING, Acme, Entered, organiser, segment, signed_in, upload
 
@@ -268,14 +268,14 @@ async def test_a_file_input_checks_the_size_its_task_gives_it(
         b"submission: {label: Your solution}", b"submission: {label: Your solution, max_size: 1KB}"
     )
     assert text != current.content
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         entered.task,
         {"task.yaml": Edit(text, head.tokens["task.yaml"])},
         confirm=True,
     )
-    assert isinstance(saved, publications.Published), saved
+    assert isinstance(saved, task_save.Published), saved
     session, task = entered.session, entered.task
     digest = _digest(b"x")
 
@@ -316,14 +316,14 @@ async def test_a_per_test_slot_is_named_for_a_test_with_an_ending_that_is_not_em
     await acme.fake.workflows.create_workflow_version(PLATFORM, made, "v1")
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
     text = b"name: Sum\nworkflow: acme/answers@v1\ntest_groups:\n  main: {each: 100}\n"
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         entered.task,
         {"task.yaml": Edit(text, head.tokens["task.yaml"])},
         confirm=True,
     )
-    assert isinstance(saved, publications.Published), saved
+    assert isinstance(saved, task_save.Published), saved
     session, task = entered.session, entered.task
     digest = _digest(b"3\n")
 

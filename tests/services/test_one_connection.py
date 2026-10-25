@@ -139,7 +139,7 @@ async def test_an_organiser_reads_the_gradings_of_a_task(
     session = await identity.current((await _ada(one, acme)).id, setup=one)
     manager = await access.organiser_at(one, session, Role.MANAGER, "acme", "spring", "sum")
 
-    assert await gradings.list(one, manager, entered.task) is not None
+    assert await gradings.list_gradings(one, manager, entered.task) is not None
 
 
 async def test_a_credential_the_forge_refuses_ends_the_session_on_one_connection(

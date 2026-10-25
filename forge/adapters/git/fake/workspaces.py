@@ -32,7 +32,7 @@ from forge.domain.ids import (
     WorkspaceId,
 )
 from forge.domain.names import WorkspaceOwner
-from forge.domain.publications import Publication, read_note
+from forge.domain.publication_record import Publication, read_note
 from forge.domain.roles import Scope
 from forge.domain.submissions import Submitted, write_note
 from forge.domain.submissions import read_note as read_submission_note

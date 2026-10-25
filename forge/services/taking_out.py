@@ -66,7 +66,15 @@ from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import leaderboards, making, names, org_accounts, places, published, timelines
+from forge.services import (
+    entrant_view,
+    leaderboards,
+    making,
+    names,
+    org_accounts,
+    places,
+    timelines,
+)
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -250,7 +258,7 @@ async def _write(
         expected=found.token,
         author=author,
     )
-    published.forget_contests(ctx)
+    entrant_view.forget_contests(ctx)
     places.forget_tasks(ctx, contest)
 
 
@@ -349,7 +357,7 @@ def _restore(
             expected=now.token,
             author=author,
         )
-        published.forget_contests(ctx)
+        entrant_view.forget_contests(ctx)
 
     return restore
 

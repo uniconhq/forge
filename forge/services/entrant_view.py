@@ -55,7 +55,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.plan_basics import PLAN_PATH
 from forge.domain.plans import Plan
-from forge.domain.publications import Publication
+from forge.domain.publication_record import Publication
 from forge.domain.run_plan import RunPlan
 from forge.domain.run_results import compilers
 from forge.domain.run_task import RUNS_PATH, Run, RunsFile, file_time

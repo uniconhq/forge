@@ -34,10 +34,12 @@ its title where the workflow gives one (M58).
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from forge.domain.blocks.board_check import LeaderboardsCheck, check_leaderboards
+from forge.domain.blocks.leaderboard_shape_check import LeaderboardsCheck, check_leaderboards
+from forge.domain.blocks.tree_reads import reached
 from forge.domain.checks import check_only
 from forge.domain.definitions import ContestDefinition, Rate, Scoring, Show, TaskDefinition
 from forge.domain.run_task import SHOWN_WORDS, show_names, shown_times
+from forge.domain.yaml_models import joined
 
 RESULTS_CHANGE = "Results change."
 NO_RESULT_CHANGES = "Nobody's result changes."
@@ -151,7 +153,7 @@ def _runs_again(
     )
     if steps is not None:
         counted += (
-            f", running {_joined(steps)} again"
+            f", running {joined(steps)} again"
             if steps
             else ", from what is stored, running no step again"
         )
@@ -282,7 +284,7 @@ def _run_scores(
         elif name in own:
             found.append(f"The value {name} is worked out another way.")
         elif name in moved:
-            found.append(f"The value {name} changes with {_joined(sorted(moved[name]))}.")
+            found.append(f"The value {name} changes with {joined(sorted(moved[name]))}.")
     found += [f"The value {name} is gone." for name in then.values if name not in after.values]
     rescored = bool(found)
     names = show_names(then) | show_names(after)
@@ -315,14 +317,7 @@ def _moved_values(values: Mapping[str, object], changed: set[str]) -> dict[str, 
     reads = {name: _read_names(tree) for name, tree in values.items()}
     found: dict[str, set[str]] = {}
     for name in values:
-        seen: set[str] = set()
-        waiting = [*reads[name]]
-        while waiting:
-            current = waiting.pop()
-            if current in seen:
-                continue
-            seen.add(current)
-            waiting.extend(reads.get(current, ()))
+        seen = reached(reads[name], reads)
         hit = (seen - {name}) & changed
         if hit:
             found[name] = hit
@@ -438,13 +433,7 @@ def _scored_again(named: Sequence[str]) -> str:
         return "Every result is scored again."
     if len(named) == 1:
         return f"Every result is scored again, and the leaderboard {named[0]} with it."
-    return f"Every result is scored again, and the leaderboards {_joined(named)} with them."
-
-
-def _joined(items: Sequence[str]) -> str:
-    if len(items) == 1:
-        return items[0]
-    return f"{', '.join(items[:-1])} and {items[-1]}"
+    return f"Every result is scored again, and the leaderboards {joined(named)} with them."
 
 
 def as_extra(effect: SaveEffect) -> Mapping[str, object]:

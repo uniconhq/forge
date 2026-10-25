@@ -51,7 +51,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, RunId, TaskId
 from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner
-from forge.domain.publications import write_note
+from forge.domain.publication_record import write_note
 from forge.domain.roles import Role, Scope
 from forge.domain.showing import GroupShown, Sealed
 from forge.domain.submission_state import SubmissionState
@@ -61,7 +61,7 @@ from forge.domain.workflow_definition import Fold
 from forge.domain.workflows import Visibility
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
-from forge.services import entrants, gradings, identity, publications, submissions, uploads
+from forge.services import entrants, gradings, identity, submissions, task_save, uploads
 from forge.testing import CLASSIC, FakeClock
 from tests.services.conftest import (
     RUNNING,
@@ -127,14 +127,14 @@ async def _save(setup: Setup, acme: Acme, task: TaskId, files: Mapping[str, byte
     contest runs.
     """
     head = await acme.fake.content.list_files(PLATFORM, task)
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         task,
         {path: Edit(content, head.tokens.get(path)) for path, content in files.items()},
         confirm=True,
     )
-    assert isinstance(saved, publications.Published), saved
+    assert isinstance(saved, task_save.Published), saved
 
 
 async def _task_yaml(acme: Acme, task: TaskId) -> bytes:

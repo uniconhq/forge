@@ -44,7 +44,7 @@ from forge.domain.blocks.evaluate import RunResult
 from forge.domain.ids import PublicationId
 from forge.domain.leaderboards import Counted, Header, LeaderboardView
 from forge.domain.names import WorkspaceOwner
-from forge.domain.publications import Publication
+from forge.domain.publication_record import Publication
 from forge.domain.run_results import Worked
 
 

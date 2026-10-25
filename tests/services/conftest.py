@@ -33,13 +33,13 @@ from forge.services import (
     entrants,
     identity,
     orgs,
-    publications,
     sessions,
+    task_save,
     tasks,
     uploads,
 )
 from forge.services.access import Organiser
-from forge.services.publications import Published
+from forge.services.task_save import Published
 from forge.testing import seed_classic
 
 ACME = OrgId("acme")
@@ -124,7 +124,7 @@ async def publish(setup: Setup, acme: Acme, task: TaskId, extra: bytes = b"") ->
     """
     head = await acme.fake.content.list_files(PLATFORM, task)
     current = await acme.fake.content.read_file(PLATFORM, task, "task.yaml")
-    result = await publications.save(
+    result = await task_save.save(
         setup,
         acme.ada,
         task,

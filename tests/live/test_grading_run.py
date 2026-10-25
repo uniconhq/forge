@@ -51,15 +51,15 @@ from forge.runtime.setup import Setup
 from forge.services import (
     access,
     contests,
+    entrant_view,
     files,
     gradings,
     orgs,
-    published,
     runs,
     sessions,
     tasks,
 )
-from forge.services.publications import Published
+from forge.services.task_save import Published
 from forge.settings import Settings
 from forge.testing import CALLBACK_PATH
 from tests.live.conftest import (
@@ -317,7 +317,7 @@ async def test_a_run_goes_from_its_queued_row_to_its_result(
     assert patched.status_code == 200, patched.text
     [publication] = await forge.workspaces.list_publications(task)
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, task)
+        current = await entrant_view.task(ctx, task)
         assert current is not None
         row = gradings.queue_submission(
             ctx,

@@ -50,9 +50,9 @@ from forge.domain.sessions import Session
 from forge.domain.submissions import Field
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import entrants, invites, leaderboards, names, published, release, timelines
+from forge.services import entrant_view, entrants, invites, leaderboards, names, release, timelines
+from forge.services.entrant_view import PublicFile, PublishedTask
 from forge.services.entrants import Mine
-from forge.services.published import PublicFile, PublishedTask
 from forge.services.release import TaskRelease
 
 
@@ -147,7 +147,7 @@ async def contests(ctx: Context, session: Session) -> tuple[ContestSummary, ...]
     invited = await invites.accepted_places(ctx, session.user_id)
     await ctx.let_go()
     found = []
-    every = await published.every_contest_kept(ctx)
+    every = await entrant_view.every_contest_kept(ctx)
     where = await names.places_named(ctx, [contest for contest, _ in every])
     for contest, settings in every:
         status = statuses.get(contest)
@@ -186,7 +186,7 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
     now = ctx.now
     shown = [
         task
-        for task in await published.tasks(ctx, contest, settings)
+        for task in await entrant_view.tasks(ctx, contest, settings)
         if rules.visible(settings, task.name, now)
     ]
     tasks = tuple(
@@ -227,13 +227,13 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
     settings, person, found = await _visible(ctx, session, task)
     extension = release.row_extension(person)
     now = ctx.now
-    form = await published.form(ctx, found)
+    form = await entrant_view.form(ctx, found)
     return TaskPage(
         task=task,
         name=found.name,
         label=found.label or found.name,
         title=found.definition.name,
-        statement=await published.statement(ctx, found),
+        statement=await entrant_view.statement(ctx, found),
         submissions=found.definition.submissions,
         inputs=form.fields,
         release=_to(person, release.of(settings, found.name, now, extension)),
@@ -258,16 +258,16 @@ async def public_file(ctx: Context, session: Session, task: TaskId, path: str) -
     a path the task does not show or not there; `PublicFileTooLarge` for
     one larger than a page is served.
     """
-    path = published.public_path(path)
+    path = entrant_view.public_path(path)
     if await _organises(ctx, session, task):
-        return await published.head_public_file(ctx, task, path)
+        return await entrant_view.head_public_file(ctx, task, path)
     settings, _, found = await _visible(ctx, session, task)
     reveal = (
         await timelines.reveal(ctx, contest_id_of(task_scope(task)), settings, found.name)
         if found.definition.runs
         else None
     )
-    return await published.public_file(ctx, found, path, reveal=reveal)
+    return await entrant_view.public_file(ctx, found, path, reveal=reveal)
 
 
 async def _visible(
@@ -281,11 +281,11 @@ async def _visible(
     try:
         settings, person = await release.seen(ctx, session, contest)
     except NotFound as exc:
-        raise NotFound(published.NO_SUCH_TASK) from exc
-    found = await published.task(ctx, task, settings)
+        raise NotFound(entrant_view.NO_SUCH_TASK) from exc
+    found = await entrant_view.task(ctx, task, settings)
     await ctx.let_go()
     if found is None or not rules.visible(settings, found.name, ctx.now):
-        raise NotFound(published.NO_SUCH_TASK)
+        raise NotFound(entrant_view.NO_SUCH_TASK)
     return settings, person, found
 
 

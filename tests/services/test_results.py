@@ -40,14 +40,14 @@ from forge.services import (
     entrants,
     gradings,
     landing,
-    publications,
     results,
     steps,
+    task_save,
     tasks,
     timelines,
 )
-from forge.services.publications import Draft, Published
 from forge.services.results import ResultsState
+from forge.services.task_save import Draft, Published
 from forge.testing import FakeClock
 from tests.services.conftest import SPRING, Acme, Entered
 from tests.services.test_pipelines import (
@@ -298,9 +298,9 @@ async def _try_save(setup: Setup, acme: Acme, task: TaskId, text: str) -> Publis
     head = await acme.fake.content.list_files(PLATFORM, task)
     edits = {"task.yaml": Edit(text.encode(), head.tokens.get("task.yaml"))}
     try:
-        return await publications.save(setup, acme.ada, task, edits, confirm=True)
+        return await task_save.save(setup, acme.ada, task, edits, confirm=True)
     except ConfirmationRequired as asked:
-        return await publications.save(
+        return await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
 

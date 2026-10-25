@@ -46,7 +46,7 @@ from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.types import Type
 from forge.domain.workflow_definition import parse_run_workflow
 from forge.domain.yaml_models import InvalidDefinition
-from forge.services.published import shown_now
+from forge.services.entrant_view import shown_now
 from forge.testing import PLACEHOLDER_DIGEST, RUN_WORKFLOWS
 from tests.conftest import sibling
 
@@ -60,7 +60,6 @@ def mirrored(name: str) -> PrimitiveDeclaration:
 def primitives() -> dict[str, PrimitiveDeclaration]:
     return {
         "unicon/exec@v1": mirrored("exec"),
-        "unicon/interact@v2": mirrored("interact"),
         "unicon/compile@v3": mirrored("compile"),
     }
 
@@ -157,7 +156,7 @@ steps:
     use: unicon/compile@v3
     with: {source: "${{ inputs.judge }}", language: python}
   - id: game
-    use: unicon/interact@v2
+    use: unicon/exec@v1
     with:
       programs:
         entrant:
@@ -865,7 +864,7 @@ def test_an_entrant_judge_with_a_manifest_is_refused_where_it_cannot_be_marked(
 
     assert at(found, "inputs.judge") == [
         "judge is the entrant's, and reaches the program judge of the step game, which is given "
-        "a manifest. unicon/interact@v2 cannot mark what such a program reports as the "
+        "a manifest. unicon/exec@v1 cannot mark what such a program reports as the "
         "entrant's own, so the task must give judge itself."
     ]
 

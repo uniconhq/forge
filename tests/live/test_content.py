@@ -25,7 +25,7 @@ from forge.domain.definitions import starter_contest, starter_task
 from forge.domain.errors import Conflict, Rejected
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId, TaskId
-from forge.domain.publications import write_note
+from forge.domain.publication_record import write_note
 from forge.domain.roles import Role, Scope
 from tests.live.conftest import (
     LIVE,

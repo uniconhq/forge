@@ -36,7 +36,6 @@ Each reads where an attempt stands as every read does, so a failure it
 finds starts that attempt's retry by itself (`gradings.notice`).
 """
 
-import builtins
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -76,12 +75,12 @@ from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
+    entrant_view,
     entrants,
     entries,
     gradings,
     leaderboards,
     names,
-    published,
     scores,
     timelines,
 )
@@ -197,7 +196,7 @@ async def latest(ctx: Context, organiser: Organiser, contest: ContestId) -> tupl
         return ()
     tasks = await names.names_of(ctx, {row.task_id for row in shown})
     settings = await _settings(ctx, contest)
-    found: builtins.list[Summary] = []
+    found: list[Summary] = []
     for row in sorted(shown, key=lambda each: (each.started_at, each.id), reverse=True):
         read = await _read(ctx, row, settings)
         changes = [each.compared.change for each in read]
@@ -292,7 +291,7 @@ async def gradings_of(
     goods = await gradings.last_goods(ctx, rows)
     gone = await gradings.lost(ctx, rows)
     limits = await gradings.retry_limits(ctx, [found for found in rows if found.id in last], gone)
-    records: builtins.list[GradingRecord] = [
+    records: list[GradingRecord] = [
         replace(
             gradings.record(
                 ctx,
@@ -338,7 +337,7 @@ async def run_summary(
         raise NotFound(NO_SUCH_REGRADE)
     contest = contest_id_of(task_scope(task))
     settings = await _settings(ctx, contest)
-    current = await published.task(ctx, task, settings) if settings is not None else None
+    current = await entrant_view.task(ctx, task, settings) if settings is not None else None
     if settings is None or current is None:
         raise NotFound(UNREAD_TASK)
     if current.definition.scoring is None:
@@ -346,7 +345,7 @@ async def run_summary(
     cause, against = RegradeCause(row.cause), PublicationId(row.publication_id)
     then = await _as_of(ctx, current, counted_under(cause, against, current.publications))
     now = await _as_of(ctx, current, against) or current
-    mine = builtins.list(
+    mine = list(
         await ctx.db.scalars(select(Grading).where(Grading.regrade_id == regrade, FRONT))
     )
     attempts, ours, newest, gone = await _attempts(ctx, mine) if mine else ({}, {}, {}, frozenset())
@@ -356,7 +355,7 @@ async def run_summary(
     }
     extensions = await timelines.of_owners(ctx, contest, set(owners.values()))
     earliers = {
-        submission: gradings.latest_good(
+        submission: gradings.latest_with_result(
             each
             for each in attempts[submission]
             if each.attempt < min(own.attempt for own in ours[submission])
@@ -366,19 +365,19 @@ async def run_summary(
     lates = await scores.lates_of(
         ctx,
         [
-            *(each for each in newest.values() if gradings.good(each)),
+            *(each for each in newest.values() if gradings.has_result(each)),
             *(each for each in earliers.values() if each is not None),
         ],
     )
     marks = await entries.entered_for(ctx, task, newest)
     running = failed = unread = more = 0
-    regrading: dict[WorkspaceOwner, builtins.list[Counted]] = {}
-    changed: builtins.list[SubmissionChange] = []
+    regrading: dict[WorkspaceOwner, list[Counted]] = {}
+    changed: list[SubmissionChange] = []
     for submission, latest_row in sorted(
         newest.items(), key=lambda each: (each[1].submitted_at, each[0])
     ):
         status = gradings.status_of(ctx, latest_row, gone)
-        late = lates.get(latest_row.id) if gradings.good(latest_row) else None
+        late = lates.get(latest_row.id) if gradings.has_result(latest_row) else None
         if status in UNFINISHED or (
             late is not None and gradings.status_of(ctx, late) in UNFINISHED
         ):
@@ -387,7 +386,7 @@ async def run_summary(
                 Counted(current.name, latest_row.submission_number)
             )
             continue
-        if not gradings.good(latest_row):
+        if not gradings.has_result(latest_row):
             failed += 1
             continue
         earlier = earliers[submission]
@@ -451,8 +450,8 @@ async def run_summary(
 
 
 async def _as_of(
-    ctx: Context, current: published.PublishedTask, publication: PublicationId
-) -> published.PublishedTask | None:
+    ctx: Context, current: entrant_view.PublishedTask, publication: PublicationId
+) -> entrant_view.PublishedTask | None:
     """The task as `publication` froze it, its settings and runs read at
     that version, or none when it is gone or its settings no longer read."""
     found = next((each for each in current.publications if each.id == publication), None)
@@ -475,8 +474,8 @@ async def _leaderboard_diffs(
     contest: ContestId,
     settings: ContestDefinition,
     regrade: Regrade,
-    then: published.PublishedTask | None,
-    now: published.PublishedTask,
+    then: entrant_view.PublishedTask | None,
+    now: entrant_view.PublishedTask,
     regrading: Mapping[WorkspaceOwner, tuple[Counted, ...]],
 ) -> tuple[LeaderboardDiff, ...]:
     """Each board that reads the regrade's task, directly or through
@@ -511,26 +510,26 @@ async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition | Non
     does not answer.
     """
     try:
-        return await published.contest(ctx, contest)
+        return await entrant_view.contest(ctx, contest)
     except PortError:
         return None
 
 
 async def _read(
     ctx: Context, regrade: Regrade, settings: ContestDefinition | None
-) -> builtins.list[_Read]:
+) -> list[_Read]:
     """Each submission the regrade took, by its latest attempt of it, and
     what the regrade did to it. A failure found among the attempts that are
     their submission's latest starts its retry by itself.
     """
-    mine = builtins.list(
+    mine = list(
         await ctx.db.scalars(select(Grading).where(Grading.regrade_id == regrade.id, FRONT))
     )
     if not mine:
         return []
     attempts, ours, newest, gone = await _attempts(ctx, mine)
     task = TaskId(regrade.task_id)
-    current = await published.task(ctx, task, settings) if settings is not None else None
+    current = await entrant_view.task(ctx, task, settings) if settings is not None else None
     graded = (
         scores.GradedOf(ctx, current, PublicationId(regrade.publication_id))
         if current is not None
@@ -549,10 +548,10 @@ async def _read(
         if current is not None
         else None
     )
-    found: builtins.list[_Read] = []
+    found: list[_Read] = []
     for submission, row in newest.items():
         first = min(each.attempt for each in ours[submission])
-        earlier = gradings.latest_good(
+        earlier = gradings.latest_with_result(
             each for each in attempts[submission] if each.attempt < first
         )
         status = gradings.status_of(ctx, row, gone)
@@ -561,7 +560,7 @@ async def _read(
             compared = Compared(ChangeKind.RUNNING, before, None)
         elif status is GradingStatus.OVER_LIMIT:
             compared = Compared(ChangeKind.OVER_LIMIT, before, None)
-        elif not gradings.good(row):
+        elif not gradings.has_result(row):
             compared = Compared(ChangeKind.FAILED, before, None)
         else:
             now = await _side(graded, row)
@@ -573,8 +572,8 @@ async def _read(
 async def _attempts(
     ctx: Context, mine: Sequence[Grading]
 ) -> tuple[
-    dict[str, builtins.list[Grading]],
-    dict[str, builtins.list[Grading]],
+    dict[str, list[Grading]],
+    dict[str, list[Grading]],
     dict[str, Grading],
     frozenset[uuid.UUID],
 ]:
@@ -583,14 +582,14 @@ async def _attempts(
     lost. A failure found among the latest that are their submission's
     latest starts its retry by itself.
     """
-    attempts: dict[str, builtins.list[Grading]] = {}
+    attempts: dict[str, list[Grading]] = {}
     for row in await ctx.db.scalars(
         select(Grading).where(
             Grading.submission_id.in_(sorted({row.submission_id for row in mine})), FRONT
         )
     ):
         attempts.setdefault(row.submission_id, []).append(row)
-    ours: dict[str, builtins.list[Grading]] = {}
+    ours: dict[str, list[Grading]] = {}
     for row in mine:
         ours.setdefault(row.submission_id, []).append(row)
     newest = {

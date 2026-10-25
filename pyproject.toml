@@ -179,3 +179,14 @@ forbidden_modules = [
 ]
 ignore_imports = ["forge.services.scores -> forge.domain.showing"]
 allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Services import each other in no new ring"
+type = "acyclic_siblings"
+ancestors = ["forge.services"]
+ignore_imports = [
+  "forge.services.entries -> forge.services.leaderboards",
+  "forge.services.invites -> forge.services.entrants",
+  "forge.services.pipelines -> forge.services.gradings",
+  "forge.services.pipelines -> forge.services.steps",
+]

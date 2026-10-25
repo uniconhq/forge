@@ -39,6 +39,13 @@ from forge.domain.names import validate_name
 Path = tuple[str | int, ...]
 
 
+def joined(items: Sequence[str]) -> str:
+    """`items` as one sentence: one as it is, or the rest with `and` before the last."""
+    if len(items) == 1:
+        return items[0]
+    return f"{', '.join(items[:-1])} and {items[-1]}"
+
+
 class Problem(TypedDict):
     """One thing wrong with a definition file: where, and what."""
 

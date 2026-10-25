@@ -17,8 +17,8 @@ Each row runs as a manual pipeline on its org's dispatch repository
 store leaves to run (`steps.pipeline_to_run`), each with its door and token
 minted, and the report step; and a user for the row, from `USER_FIRST` to
 `USER_LAST`, unique among the rows not finished, a row past what its state
-may take settled to free its user, which every step but `exec` and
-`interact` runs as, since those make isolate boxes of their own (phase
+may take settled to free its user, which every step but `exec`
+runs as, since it makes isolate boxes of its own (phase
 4.1). A step left to run whose image the platform has withdrawn
 (`Settings.withdrawn_images`) ends the row's start in `system_error` saying
 so, and `lookup` answers no pipeline that holds one. A pipeline left with
@@ -32,7 +32,7 @@ digest, its door and token as settings, the org's cache for a step that
 takes it, its user, and what it waits for; then the report step, the step
 wrapper's base image in its report mode, which runs whatever the steps
 before it ended with. The pipeline's labels are the platform's pool, the
-machine shape's when it holds an `exec` or `interact` step, since a label
+machine shape's when it holds an `exec` step, since a label
 picks a machine for a whole pipeline, the size of the smallest slot that
 holds what its steps left to run can use at once (`run_plan.slot_of`).
 Every slot takes any pipeline, early, late or save, first come, first
@@ -85,14 +85,14 @@ from forge.domain.grading import (
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import OrgId, PublicationId, SubmissionId, TaskId, VersionId
 from forge.domain.plan_basics import PLAN_PATH
-from forge.domain.publications import Check, FailedCheck, Publication, failed_checks
+from forge.domain.publication_record import Check, FailedCheck, Publication, failed_checks
 from forge.domain.regrades import RegradeCause
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.run_plan import BOXED, PipelineKind, RunPlan, slot_of
 from forge.domain.step_data import REPORT_STEP, all_accepted, without
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import gradings, names, published, steps, timelines
+from forge.services import entrant_view, gradings, names, steps, timelines
 
 log = get_logger(__name__)
 
@@ -274,7 +274,7 @@ async def concluded(ctx: Context, row: Grading) -> None:
     task = TaskId(row.task_id)
     if row.pipeline == LATE and (
         await _revealed(ctx, task)
-        or (not row.released_split and await published.results_released(ctx, task))
+        or (not row.released_split and await entrant_view.results_released(ctx, task))
     ):
         gradings.told_late(ctx, row)
     if status is GradingStatus.SYSTEM_ERROR:
@@ -305,7 +305,7 @@ async def _revealed(ctx: Context, task: TaskId) -> bool:
     if name is None:
         return False
     try:
-        settings = await published.contest(ctx, contest)
+        settings = await entrant_view.contest(ctx, contest)
     except PortError as exc:
         log.warning("pipelines.reveal_unread", task=task, error=type(exc).__name__)
         return False
@@ -504,7 +504,7 @@ async def take_over(ctx: Context, task: TaskId) -> None:
     )
     if not waiting:
         return
-    current = await published.task(ctx, task)
+    current = await entrant_view.task(ctx, task)
     for row in waiting:
         row.taken_over_at = ctx.now
         if current is None or current.publication.id != row.publication_id:

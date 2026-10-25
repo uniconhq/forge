@@ -46,6 +46,7 @@ from forge.domain.blocks.catalogue import (
     Kind,
     Scope,
 )
+from forge.domain.blocks.tree_reads import reached
 from forge.domain.definitions import VALUE_NAME
 from forge.domain.yaml_models import Path, is_number
 
@@ -95,22 +96,16 @@ class ValuesCheck:
         reads, itself among them.
         """
         groups: set[str] = set()
-        values: set[str] = set()
         facts: set[str] = set()
         columns: set[tuple[str, str]] = set()
         blocks: set[str] = set()
-        waiting = [name]
-        while waiting:
-            current = waiting.pop()
-            if current in values:
-                continue
-            values.add(current)
+        values = reached([name], {key: read.values for key, read in self.reads.items()})
+        for current in values:
             read = self.reads.get(current, Reads())
             groups |= read.groups
             facts |= read.facts
             columns |= read.columns
             blocks |= read.blocks
-            waiting.extend(read.values)
         return Reads(
             frozenset(groups),
             frozenset(values),

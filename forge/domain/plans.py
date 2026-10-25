@@ -94,7 +94,7 @@ from forge.domain.port_values import (
     Refused as Refused,
 )
 from forge.domain.port_values import (
-    a_type as a_type,
+    check_value_fits_port as check_value_fits_port,
 )
 from forge.domain.port_values import (
     check_written as check_written,
@@ -103,16 +103,16 @@ from forge.domain.port_values import (
     escaped as escaped,
 )
 from forge.domain.port_values import (
-    fits as fits,
-)
-from forge.domain.port_values import (
     literal_or_references as literal_or_references,
 )
 from forge.domain.port_values import (
     natural as natural,
 )
 from forge.domain.port_values import (
-    spelled as spelled,
+    scalar_to_text as scalar_to_text,
+)
+from forge.domain.port_values import (
+    type_in_words as type_in_words,
 )
 from forge.domain.primitives import (
     BATCH_SCALED,
@@ -590,7 +590,8 @@ def stray_report_units(
             problems.append(
                 Problem(
                     path=path_text(("report", name, "unit")),
-                    message=f"Only a number takes a unit, and {name} is {a_type(port.type)}. "
+                    message=f"Only a number takes a unit, and {name} is "
+                    f"{type_in_words(port.type)}. "
                     "Remove the unit.",
                 )
             )
@@ -783,7 +784,7 @@ def _check_value(
                 "That output may be missing, so it can be given only to an optional port."
             )
         raise Refused("That input is optional, so it can be given only to an optional port.")
-    fits(kind, port, raw)
+    check_value_fits_port(kind, port, raw)
 
 
 def _raw_kind(
@@ -823,7 +824,8 @@ def _check_report(
         raise Refused(f"steps.{found.name}.{found.output} is not the output of any step.")
     if port.type not in (Type.TEXT, Type.NUMBER):
         raise Refused(
-            f"steps.{found.name}.{found.output} is {a_type(port.type)}, and only text or a number "
+            f"steps.{found.name}.{found.output} is {type_in_words(port.type)}, "
+            "and only text or a number "
             "can be reported."
         )
     if isinstance(entry, Meaning):
@@ -1225,7 +1227,7 @@ class _Compiler:
         self, raw: object, port: Port, test: TestCase | None
     ) -> tuple[dict[str, Any] | Absent, _Taint]:
         if isinstance(raw, bool) or is_number(raw):
-            return {"value": spelled(raw) if port.type is Type.TEXT else raw}, _Taint()
+            return {"value": scalar_to_text(raw) if port.type is Type.TEXT else raw}, _Taint()
         assert isinstance(raw, str)
         whole = whole_reference(raw)
         if whole is None:
@@ -1254,13 +1256,15 @@ class _Compiler:
                 if declared.type in FILES:
                     path = str(given)
                     return {"task": path}, _Taint(hidden=self._hidden(path))
-                return {"value": spelled(given) if port.type is Type.TEXT else given}, _Taint()
+                text = scalar_to_text(given) if port.type is Type.TEXT else given
+                return {"value": text}, _Taint()
             case "test":
                 assert test is not None
                 if found.name in test.entries:
                     return {"task": test.entries[found.name]}, _Taint()
                 scalar = test.scalars[found.name]
-                return {"value": spelled(scalar) if port.type is Type.TEXT else scalar}, _Taint()
+                text = scalar_to_text(scalar) if port.type is Type.TEXT else scalar
+                return {"value": text}, _Taint()
         taint = _Taint()
         taint.merge(self.taints.get(found.name, _Taint()))
         return {"step": found.name, "output": found.output}, taint
@@ -1286,10 +1290,10 @@ class _Compiler:
                 text += f"{{{len(parts)}}}"
                 parts.append({"submission": found.name})
             elif found.kind == "inputs":
-                text += escaped(spelled(self.values.get(found.name)))
+                text += escaped(scalar_to_text(self.values.get(found.name)))
             else:
                 assert test is not None
-                text += escaped(spelled(test.scalars[found.name]))
+                text += escaped(scalar_to_text(test.scalars[found.name]))
         text += escaped(raw[last:])
         if not parts:
             return {"value": text.replace("{{", "{").replace("}}", "}")}
@@ -1499,7 +1503,7 @@ def _over_time(compiler: _Compiler, plan: Plan, said: str) -> Problem:
     tests = sorted({run.test.id for run in runs if run.test is not None}, key=natural)
     most = max(runs, key=lambda run: run.value)
     origin = most.origin
-    written = f"{origin.name} at {spelled(origin.value)}"
+    written = f"{origin.name} at {scalar_to_text(origin.value)}"
     if origin.kind == "test":
         assert origin.test is not None
         if len(tests) == 1:
@@ -1509,7 +1513,8 @@ def _over_time(compiler: _Compiler, plan: Plan, said: str) -> Problem:
             )
         return Problem(
             path=origin.path,
-            message=f"With {origin.name} up to {spelled(origin.value)} (in {origin.test.id}), "
+            message=f"With {origin.name} up to {scalar_to_text(origin.value)} "
+            f"(in {origin.test.id}), "
             f"{_tests(len(tests))} make a grading take {said}",
         )
     if origin.kind == "literal":
@@ -1540,7 +1545,7 @@ def _over_machine(
     )
     if origin is None:
         return Problem(path="workflow", message=f"As {step.primitive} sets it, {said}")
-    written = f"{origin.name} at {spelled(origin.value)}"
+    written = f"{origin.name} at {scalar_to_text(origin.value)}"
     if origin.kind == "test":
         assert origin.test is not None
         return Problem(

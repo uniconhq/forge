@@ -21,8 +21,8 @@ from forge.domain.ids import TaskId
 from forge.domain.roles import Role, Scope
 from forge.domain.uploads import pointer_text
 from forge.runtime.setup import Setup
-from forge.services import contest_home, contests, files, landing, publications, uploads
-from forge.services.published import PUBLIC_MOST
+from forge.services import contest_home, contests, files, landing, task_save, uploads
+from forge.services.entrant_view import PUBLIC_MOST
 from forge.testing import register_entrant
 from tests.services.conftest import (
     ACME,
@@ -46,14 +46,14 @@ async def _save(setup: Setup, acme: Acme, task: TaskId, files: dict[str, bytes])
     save asks first once the contest has started.
     """
     head = await acme.fake.content.list_files(PLATFORM, task)
-    result = await publications.save(
+    result = await task_save.save(
         setup,
         acme.ada,
         task,
         {path: Edit(content, head.tokens.get(path)) for path, content in files.items()},
         confirm=True,
     )
-    assert isinstance(result, publications.Published), result
+    assert isinstance(result, task_save.Published), result
 
 
 @pytest.fixture
@@ -160,10 +160,10 @@ async def test_an_organiser_reads_a_task_never_published_as_its_head_holds_it(
     setup: Setup, acme: Acme, public: TaskId
 ) -> None:
     unsaved = await make_task(setup, acme, "unsaved")
-    draft = await publications.save(
+    draft = await task_save.save(
         setup, acme.ada, unsaved, {"public/figure.png": Edit(FIGURE)}, keep_as_draft=True
     )
-    assert isinstance(draft, publications.Draft), draft
+    assert isinstance(draft, task_save.Draft), draft
     ada = await signed_in(setup, acme.fake, 7)
     bob = await signed_in(setup, acme.fake, 8)
 
@@ -180,7 +180,7 @@ async def test_a_file_is_read_as_the_latest_publication_holds_it_and_as_the_head
     setup: Setup, acme: Acme, public: TaskId
 ) -> None:
     head = await acme.fake.content.list_files(PLATFORM, public)
-    draft = await publications.save(
+    draft = await task_save.save(
         setup,
         acme.ada,
         public,
@@ -190,7 +190,7 @@ async def test_a_file_is_read_as_the_latest_publication_holds_it_and_as_the_head
         },
         keep_as_draft=True,
     )
-    assert isinstance(draft, publications.Draft), draft
+    assert isinstance(draft, task_save.Draft), draft
     ada = await signed_in(setup, acme.fake, 7)
     bob = await signed_in(setup, acme.fake, 8)
 
@@ -268,14 +268,14 @@ async def test_an_upload_under_public_is_served_by_its_bytes(
     acme.fake.uploads.send(door.path, door.authorization, DATA)
     await uploads.complete(setup, ada, public, slot.id)
     head = await acme.fake.content.list_files(PLATFORM, public)
-    result = await publications.save(
+    result = await task_save.save(
         setup,
         acme.ada,
         public,
         {"public/data.bin": Edit(Uploaded(slot.id), head.tokens.get("public/data.bin"))},
         confirm=True,
     )
-    assert isinstance(result, publications.Published), result
+    assert isinstance(result, task_save.Published), result
     stored = await acme.fake.content.read_file(PLATFORM, public, "public/data.bin")
     assert stored.content == pointer_text(digest, len(DATA))
 

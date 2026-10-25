@@ -100,7 +100,6 @@ contestant is told only that it did not answer, refused the platform, or
 refused the submission, in fixed words.
 """
 
-import builtins
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -160,9 +159,9 @@ from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
+    entrant_view,
     gradings,
     leaderboards,
-    published,
     scores,
     sessions,
     submitters,
@@ -170,7 +169,7 @@ from forge.services import (
     uploads,
 )
 from forge.services.access import Organiser, require
-from forge.services.published import PublishedTask
+from forge.services.entrant_view import PublishedTask
 from forge.services.submitters import Person
 
 log = get_logger(__name__)
@@ -321,7 +320,7 @@ async def submit(
         # submission of typed values made it before the hold; one whose
         # gradings are all gone still has its place made here.
         await submitters.open_place(ctx, person)
-    form = await published.form(ctx, person.published)
+    form = await entrant_view.form(ctx, person.published)
     uploaded = {upload.id: _uploaded(upload) for upload in chosen.values()}
     layout = (
         rules.lay_out_runs(form.fields, form.parts, inputs, uploaded)
@@ -435,7 +434,7 @@ async def _uncounted(ctx: Context, workspace: WorkspaceId, task: TaskId) -> set[
             select(Grading).where(Grading.workspace_id == workspace, Grading.task_id == task, FRONT)
         )
     ).scalars()
-    grouped: dict[str, builtins.list[Grading]] = {}
+    grouped: dict[str, list[Grading]] = {}
     for row in rows:
         grouped.setdefault(row.submission_id, []).append(row)
     return {
@@ -551,7 +550,7 @@ async def _consume_used(ctx: Context, person: Person, found: Submitted) -> None:
     except NotFound, ValueError:
         log.warning("submissions.recovered_unreadable", submission=found.id)
         return
-    digests: builtins.list[str] = []
+    digests: list[str] = []
     for path in sorted(_paths(document)):
         try:
             blob = await ctx.forge.workspaces.read_submission_blob(
@@ -581,7 +580,7 @@ async def _consume_used(ctx: Context, person: Person, found: Submitted) -> None:
             .execution_options(populate_existing=True)
         )
     ).scalars()
-    waiting: dict[str, builtins.list[UploadRow]] = {}
+    waiting: dict[str, list[UploadRow]] = {}
     for row in rows:
         waiting.setdefault(row.digest, []).append(row)
     for digest in digests:
@@ -659,7 +658,7 @@ async def _chosen(
             "Upload it again.",
             uploads=unready,
         )
-    form = await published.form(ctx, person.published)
+    form = await entrant_view.form(ctx, person.published)
     declared = {entry.id: entry for entry in form.fields}
     for row in sorted(rows.values(), key=lambda row: str(row.id)):
         entry = declared.get(row.input_id or "")
@@ -764,7 +763,7 @@ async def _insert(
     who submitted it, `by`, taking the released split while the task's
     results are released.
     """
-    released = bool(person.published.definition.runs) and await published.results_released(
+    released = bool(person.published.definition.runs) and await entrant_view.results_released(
         ctx, person.task
     )
     return gradings.queue_submission(
@@ -792,8 +791,8 @@ async def organised(
     publication or a row with no such submission.
     """
     require(organiser, task_scope(task), Role.OBSERVER)
-    settings = await published.contest(ctx, contest_id_of(task_scope(task)))
-    found = await published.task(ctx, task, settings)
+    settings = await entrant_view.contest(ctx, contest_id_of(task_scope(task)))
+    found = await entrant_view.task(ctx, task, settings)
     if found is None:
         raise NotFound(NO_SUCH_SUBMISSION)
     workspace = ctx.forge.workspaces.workspace_of(contest_id_of(task_scope(task)), owner)
@@ -881,7 +880,7 @@ class Reading:
 
 async def _read(
     ctx: Context, reading: Reading, number: int | None = None, *, everything: bool = False
-) -> builtins.list[Submission]:
+) -> list[Submission]:
     """The workspace's submissions of the task from their grading rows,
     newest first, or the one numbered `number`; with `everything`, as
     organisers read them.
@@ -892,7 +891,7 @@ async def _read(
     if number is not None:
         query = query.where(Grading.submission_number == number)
     rows = (await ctx.db.execute(query)).scalars().all()
-    grouped: dict[int, builtins.list[Grading]] = {}
+    grouped: dict[int, list[Grading]] = {}
     for row in rows:
         grouped.setdefault(row.submission_number, []).append(row)
     latest = [_latest(found) for found in grouped.values()]
@@ -1086,7 +1085,7 @@ async def _runs(
             # Worked out with no mark, so it reads as a submission with none.
             marks = {}
     scored = await scores.run_scored(ctx, current, settings, extension, row, late, marks)
-    released = not everything and await published.results_released(ctx, current.id)
+    released = not everything and await entrant_view.results_released(ctx, current.id)
     scoring = current.definition.scoring
     assert scoring is not None, "a run task's definition always has scoring"
     seen = run_showing.shown(

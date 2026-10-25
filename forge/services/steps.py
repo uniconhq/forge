@@ -42,7 +42,7 @@ publication's (`publication_objects`) is read from the forge's store by
 link; any other is served through the door (`step_file`), as is a
 `program.yaml` on a boxed primitive's manifest port, which the primitive
 reads as JSON. A task file of a step whose primitive takes the cache is
-placed under the item's cache folder, one per run, or for interact per
+placed under the item's cache folder, one per run, or for exec's programs form per
 program. A boxed step holds a block of box users while it runs.
 
 **Uploads and done.** The step lists what it will upload, and is handed a
@@ -110,10 +110,10 @@ from forge.domain.grading import (
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import SubmissionId, TaskId, VersionId, WorkflowId
 from forge.domain.plan_basics import ERROR_LIMIT, PLAN_PATH, RESULT_MAX
-from forge.domain.port_values import spelled
+from forge.domain.port_values import scalar_to_text
 from forge.domain.primitives import MANIFEST, PROGRAMS
 from forge.domain.program_manifest import parse_program
-from forge.domain.publications import Publication
+from forge.domain.publication_record import Publication
 from forge.domain.run_plan import (
     BOXED,
     RUN_ENTRY_KB,
@@ -941,7 +941,7 @@ class _Reader:
             return _facts(self.plan.workflow.files, value["workflow"])
         if "template" in value:
             parts = [self.entrant_value(part) for part in value["parts"]]
-            return {"value": value["template"].format(*[spelled(part) for part in parts])}
+            return {"value": value["template"].format(*[scalar_to_text(part) for part in parts])}
         if "entrant" in value:
             return await self._entrant(value)
         if "step" in value:
@@ -1218,7 +1218,7 @@ class _Job:
             return {PROGRAMS: programs}
         if "template" in value:
             parts = [self.reader.entrant_value(part) for part in value["parts"]]
-            return value["template"].format(*[spelled(part) for part in parts])
+            return value["template"].format(*[scalar_to_text(part) for part in parts])
         if set(value) == {"runs"}:
             check = self.step.check.index if self.step.check is not None else None
             return self._runs(await self.reader.canon(value, run, check))

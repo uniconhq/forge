@@ -82,7 +82,6 @@ def primitives() -> dict[str, PrimitiveDeclaration]:
     """The primitives the two workflows use, and today's three at `v2`."""
     return {
         "unicon/exec@v1": mirrored("exec"),
-        "unicon/interact@v2": mirrored("interact"),
         "unicon/compile@v3": mirrored("compile"),
         "acme/pick@v1": PICK,
         **{f"unicon/{name}@v2": parse_primitive(text) for name, text in PRIMITIVES.items()},
@@ -339,7 +338,7 @@ def test_a_program_setting_named_by_a_number_is_refused_beside_unknown_names(
         },
         {
             "path": "steps[2].with.programs.judge.zeta",
-            "message": "unicon/interact@v2 has no input called zeta. Remove it.",
+            "message": "unicon/exec@v1 has no input called zeta. Remove it.",
         },
     ]
 
@@ -691,7 +690,7 @@ def test_a_report_never_names_what_only_staff_see(
     ]
 
 
-def test_the_verdict_of_a_program_inside_interact_is_recorded_per_program(
+def test_the_verdict_of_a_program_on_the_programs_form_is_recorded_per_program(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     found = checked(primitives, document(INTERACTIVE_V1), files(INTERACTIVE_V1))
@@ -730,7 +729,7 @@ def test_a_programs_reports_are_its_outputs_and_may_be_missing(
         },
         {
             "path": "reports.oops",
-            "message": "The step game has no output called entrant.score: unicon/interact@v2 "
+            "message": "The step game has no output called entrant.score: unicon/exec@v1 "
             "gives no score of a program, and entrant is given no manifest that reports one.",
         },
     ]
@@ -937,13 +936,16 @@ def test_a_named_file_cannot_take_a_pipes_name(
 def test_a_sum_or_a_max_over_the_programs_sizes_the_container(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    interact, exec_ = primitives["unicon/interact@v2"], primitives["unicon/exec@v1"]
+    formed = primitives["unicon/exec@v1"]
+    several = formed.for_step(("programs",), "unicon/exec@v1")
+    assert isinstance(several, PrimitiveDeclaration)
+    exec_ = formed
     programs: dict[str, dict[str, int | Decimal]] = {
         "entrant": {"time_limit": 1, "memory_limit": 256},
         "judge": {"time_limit": Decimal("2.5"), "memory_limit": 64},
     }
 
-    assert interact.item_limits({}, programs) == {
+    assert several.item_limits({}, programs) == {
         "time_ms": 16000,
         "cpu_ms": 16000,
         "memory_mb": 832,
@@ -951,9 +953,9 @@ def test_a_sum_or_a_max_over_the_programs_sizes_the_container(
         "output_mb": 64,
         "gpus": 0,
     }
-    assert interact.item_limits({}, {"only": {"time_limit": Decimal("0.0001")}})["memory_mb"] == 512
-    assert interact.limits is not None
-    assert interact.item_limits({}) == interact.limits.as_mapping()
+    assert several.item_limits({}, {"only": {"time_limit": Decimal("0.0001")}})["memory_mb"] == 512
+    assert several.limits is not None
+    assert several.item_limits({}) == several.limits.as_mapping()
     one = exec_.for_step(("program", "time_limit", "memory_limit"), "unicon/exec@v1")
     assert isinstance(one, PrimitiveDeclaration)
     sized = one.item_limits({"time_limit": 10, "memory_limit": 256})

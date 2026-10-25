@@ -77,7 +77,7 @@ class Listed:
 
 
 @action
-async def list(ctx: Context, organiser: Organiser, org: OrgId) -> tuple[Listed, ...]:
+async def list_contests(ctx: Context, organiser: Organiser, org: OrgId) -> tuple[Listed, ...]:
     """Every contest in the org with its name, by name, and its state and
     dates, read as the organiser, so they see the ones the forge lets them
     read. Needs the observer role at the org. The connection is let go of

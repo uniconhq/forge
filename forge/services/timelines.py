@@ -63,7 +63,7 @@ from forge.domain.registration import Status
 from forge.domain.release import Extension, close_of, due_of, in_words, reached, reveal_of
 from forge.domain.yaml_models import Problem
 from forge.runtime.context import Context
-from forge.services import names, published
+from forge.services import entrant_view, names
 
 RULES_LOCK = 0x52554C45
 TASK_LOCK = 0x5441534B
@@ -106,7 +106,7 @@ async def _released_held(ctx: Context, task: TaskId) -> bool:
     (stage 5 section 6 item 32).
     """
     await hold_task(ctx, task, shared=True)
-    return await published.results_released(ctx, task)
+    return await entrant_view.results_released(ctx, task)
 
 
 def extension_of(length_seconds: int, tasks: Sequence[str] | None) -> Extension:
@@ -310,12 +310,12 @@ async def _not_ready(
             continue
         named = f"{letters(index)} · {entry.id}"
         try:
-            made = await published.live(ctx, task)
+            made = await entrant_view.live(ctx, task)
         except NotFound:
             made = []
         if not made:
             problems.append(Problem(path="state", message=f"{named}: it is not published yet."))
-        elif not await published.statement_written_at(ctx, task, made[-1].version, made[-1].id):
+        elif not await entrant_view.statement_written_at(ctx, task, made[-1].version, made[-1].id):
             problems.append(
                 Problem(path="state", message=f"{named}: its statement is not written yet.")
             )

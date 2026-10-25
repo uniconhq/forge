@@ -25,8 +25,8 @@ from forge.domain.release import Closed
 from forge.domain.roles import Role, Scope
 from forge.domain.types import Type
 from forge.runtime.setup import Setup
-from forge.services import contest_home, contests, entrants, publications
-from forge.services.publications import Published
+from forge.services import contest_home, contests, entrants, task_save
+from forge.services.task_save import Published
 from forge.testing import FakeClock, register_entrant
 from tests.services.conftest import (
     ACME,
@@ -186,7 +186,7 @@ async def test_an_input_the_task_gives_no_label_is_named_by_its_workflows_title(
         b"label: Language, ", b""
     )
     assert unlabelled.count(b"label") == 0
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         sum_task,

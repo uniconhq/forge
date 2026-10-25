@@ -24,9 +24,9 @@ from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import files, publications, submissions, taking_out, timelines, uploads
+from forge.services import files, submissions, taking_out, task_save, timelines, uploads
 from forge.services.access import Organiser
-from forge.services.publications import Published
+from forge.services.task_save import Published
 from tests.services.conftest import (
     RUNNING,
     SPRING,
@@ -330,7 +330,7 @@ async def test_a_task_that_gives_no_points_may_have_a_due(
     current = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
     pointless = current.content.replace(b"main: {each: 100}", b"main: {}")
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         entered.task,
@@ -710,7 +710,7 @@ async def test_a_listing_gives_each_small_text_files_start_in_one_read_of_them_a
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     head = await acme.fake.content.list_files(PLATFORM, sum_task)
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         sum_task,
@@ -722,7 +722,7 @@ async def test_a_listing_gives_each_small_text_files_start_in_one_read_of_them_a
             "tests/main/1/long.txt": Edit("ü".encode() * 100, None),
         },
     )
-    assert isinstance(saved, (Published, publications.Draft))
+    assert isinstance(saved, (Published, task_save.Draft))
     acme.fake.reset_calls()
 
     listed = {
@@ -765,7 +765,7 @@ async def _write(
     setup: Setup, write: str, who: Organiser, task: TaskId, token: ConflictToken
 ) -> object:
     if write == "save":
-        return await publications.save(setup, who, task, {"statement.md": Edit(MINE, token)})
+        return await task_save.save(setup, who, task, {"statement.md": Edit(MINE, token)})
     if write == "task write":
         return await files.write(setup, who, task, "statement.md", MINE, token)
     if write == "task rollback":

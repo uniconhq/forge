@@ -16,7 +16,7 @@ from forge.domain.roles import Role, contest_scope
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import entrants, published, timelines
+from forge.services import entrant_view, entrants, timelines
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -58,7 +58,7 @@ async def hold_state(ctx: Context, organiser: Organiser, contest: ContestId) -> 
     """Where the contest's hold stands, for an observer of the contest, as
     ending it early answers once that has committed."""
     require(organiser, contest_scope(contest), Role.OBSERVER)
-    settings = await published.contest(ctx, contest)
+    settings = await entrant_view.contest(ctx, contest)
     hold = settings.hold
     if hold is None:
         return HoldState(None, None, holding=False)
@@ -85,7 +85,7 @@ async def end_hold(
     require(organiser, contest_scope(contest), Role.MANAGER)
     # A save of the settings in flight cannot move the hold's `from` under it.
     await timelines.hold_rules(ctx, contest)
-    settings = await published.contest(ctx, contest)
+    settings = await entrant_view.contest(ctx, contest)
     hold = settings.hold
     if hold is None:
         raise NotFound(NO_HOLD)

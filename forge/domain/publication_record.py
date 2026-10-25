@@ -17,7 +17,7 @@ workflow reports, in its order, with the title and unit a page names it by
 (`forge.domain.meanings.ValueMeaning`), so no page reads the workflow for
 those either; and, for a run task's publication whose plan holds steps done
 at the save, `checked_first`, so it is held back until a save row checks it,
-whether or not that row was ever written (`forge.services.published.live`).
+whether or not that row was ever written (`forge.services.entrant_view.live`).
 
     grading_changed: true
     changes:

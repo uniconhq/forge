@@ -1,8 +1,8 @@
 """A program's manifest, its `program.yaml`: a report of each kind parses,
 what breaks the format or a primitive's name rules is refused naming the
 file and the report, and the JSON the forge hands a primitive is what the
-primitive's own `read_manifest` accepts, checked against `exec` and
-`interact` in the checkouts beside this one, whose name rules the forge
+primitive's own `read_manifest` accepts, checked against `exec` in the
+checkout beside this one, on both forms, whose name rules the forge
 copies.
 """
 
@@ -20,8 +20,8 @@ from forge.domain import exact_json
 from forge.domain.blocks.numbers import Better
 from forge.domain.program_manifest import (
     EXEC_OWN_NAMES,
-    INTERACT_OWN_NAMES,
     MAX_MANIFEST,
+    PROGRAMS_OWN_NAMES,
     Report,
     parse_program,
 )
@@ -51,13 +51,13 @@ def primitive(name: str) -> ModuleType:
     return module
 
 
-@pytest.fixture(scope="module", params=["exec", "interact"])
+@pytest.fixture(scope="module", params=["one", "programs"])
 def checker(request: pytest.FixtureRequest) -> tuple[ModuleType, frozenset[str]]:
-    """Each primitive that runs a program given a manifest, with the names
-    the forge copies for it.
+    """exec's one form and its programs form, with the names the forge copies
+    for each.
     """
-    own = {"exec": EXEC_OWN_NAMES, "interact": INTERACT_OWN_NAMES}[request.param]
-    return primitive(request.param), own
+    own = {"one": EXEC_OWN_NAMES, "programs": PROGRAMS_OWN_NAMES}[request.param]
+    return primitive("exec"), own
 
 
 def refused(text: str, own_names: Collection[str] = EXEC_OWN_NAMES) -> InvalidDefinition:
@@ -172,11 +172,11 @@ def test_a_manifest_that_breaks_a_rule_is_refused_naming_the_file_and_the_report
     assert PATH in problem.detail
 
 
-def test_a_name_interact_gives_is_refused_only_under_interact() -> None:
+def test_a_name_the_programs_form_gives_is_refused_only_on_that_form() -> None:
     text = "reports:\n  ended: {type: text}\n  facts: {}\n"
 
     assert list(parse_program(text, PATH, own_names=EXEC_OWN_NAMES).reports) == ["ended", "facts"]
-    assert [found["path"] for found in refused(text, INTERACT_OWN_NAMES).errors] == [
+    assert [found["path"] for found in refused(text, PROGRAMS_OWN_NAMES).errors] == [
         "reports.ended",
         "reports.facts",
     ]
@@ -231,7 +231,8 @@ def test_the_name_rules_are_the_primitives_own(checker: tuple[ModuleType, frozen
     module, own = checker
 
     assert module.REPORT_NAME.pattern == REPORT_NAME.pattern
-    assert own == module.OWN_NAMES
+    reserved = module.PROGRAMS_OWN_NAMES if own == PROGRAMS_OWN_NAMES else module.OWN_NAMES
+    assert own == reserved
     assert frozenset(Report.model_fields) == module.REPORT_KEYS
 
 

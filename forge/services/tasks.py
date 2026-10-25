@@ -41,7 +41,6 @@ withdrawn task keeps its place and its letter. A task of the org the
 contest does not list is not on it.
 """
 
-import builtins
 from dataclasses import dataclass, replace
 from datetime import datetime
 
@@ -60,7 +59,7 @@ from forge.domain.errors import Conflict, Forbidden, NotFound, PortError
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
 from forge.domain.names import Named, validate_contest_or_task_name
-from forge.domain.publications import Publication
+from forge.domain.publication_record import Publication
 from forge.domain.release import NONE, due_of
 from forge.domain.roles import Role, contest_id_of, contest_scope, task_scope
 from forge.domain.yaml_models import InvalidDefinition, Problem
@@ -68,14 +67,14 @@ from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
+    entrant_view,
     making,
     names,
     org_accounts,
     pipelines,
-    publications,
-    published,
     results,
     taking_out,
+    task_save,
 )
 from forge.services.access import Organiser, require
 from forge.services.results import ResultsState
@@ -257,14 +256,14 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
         failed = await pipelines.failed(ctx, task, [latest.id] if check == "refused" else [])
         latest = replace(latest, check=check, failed_checks=failed.get(latest.id, ()))
     token = head.tokens.get(STATEMENT_FILE)
-    written = token is not None and await published.statement_written_at(
+    written = token is not None and await entrant_view.statement_written_at(
         ctx, task, head.version, token
     )
     results_now = await results.state_of(ctx, task)
     if latest is not None and latest.version == head.version:
         return TaskState(head.version, latest, False, (), written, written, results_now)
-    checked = await publications.check(ctx, organiser.identity, task, head, {})
-    published_written = latest is not None and await published.statement_written_at(
+    checked = await task_save.check(ctx, organiser.identity, task, head, {})
+    published_written = latest is not None and await entrant_view.statement_written_at(
         ctx, task, latest.version, latest.id
     )
     return TaskState(
@@ -290,7 +289,7 @@ async def standing(
     ids = await names.task_ids(ctx, contest, [entry.id for entry in settings.tasks])
     counts = await taking_out.submission_counts(ctx, [*ids.values()])
     await ctx.let_go()
-    found: builtins.list[TaskStanding] = []
+    found: list[TaskStanding] = []
     for index, entry in enumerate(settings.tasks):
         task = ids.get(entry.id)
         if task is None:
@@ -333,7 +332,7 @@ def _timeline(settings: ContestDefinition, entry: ContestTask) -> Timeline:
 
 
 @action
-async def list(ctx: Context, organiser: Organiser, contest: ContestId) -> tuple[Named, ...]:
+async def list_tasks(ctx: Context, organiser: Organiser, contest: ContestId) -> tuple[Named, ...]:
     """Every task in the contest with its name, by name, read as the
     organiser, so they see the ones the forge lets them read. Needs the
     observer role at the contest.

@@ -64,10 +64,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-from forge.domain.blocks.board_check import ColumnRef, LeaderboardsCheck, column_at
 from forge.domain.blocks.catalogue import ASC, CATALOGUE, PICKS, SKIP
 from forge.domain.blocks.check import direct_reads, form_of, leaf_of
 from forge.domain.blocks.evaluate import over_numbers
+from forge.domain.blocks.leaderboard_shape_check import ColumnRef, LeaderboardsCheck, column_at
 from forge.domain.blocks.numbers import exact
 from forge.domain.definitions import Leaderboard
 

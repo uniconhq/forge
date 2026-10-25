@@ -41,15 +41,15 @@ from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.plan_basics import PLAN_PATH
 from forge.domain.plans import Plan
-from forge.domain.publications import write_note
+from forge.domain.publication_record import write_note
 from forge.domain.roles import Role, RoleGrant, Scope, contest_id_of, task_scope
 from forge.domain.save_effect import SaveEffect
 from forge.domain.submissions import SubmittedInput
 from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
-from forge.services import gradings, publications, submissions, tasks, timelines
+from forge.services import gradings, submissions, task_save, tasks, timelines
 from forge.services.access import Organiser
-from forge.services.publications import Draft, Published
+from forge.services.task_save import Draft, Published
 from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES, FakeClock
 from tests.services.conftest import Acme, Entered, organiser, upload, write_contest
 
@@ -127,7 +127,7 @@ async def _save(
     who: Organiser | None = None,
     **options: Any,
 ) -> Published | Draft:
-    return await publications.save(
+    return await task_save.save(
         setup, who or acme.ada, task, await _edits(acme, task, contents), **options
     )
 
@@ -208,7 +208,7 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
     assert all(call.identity == acme.ada.identity for call in reads)
     (published,) = acme.fake.calls_to("publish")
     assert published.identity == PLATFORM
-    (listed,) = await publications.list(setup, acme.ada, sum_task)
+    (listed,) = await task_save.list_publications(setup, acme.ada, sum_task)
     assert (listed.id, listed.number, listed.version) == (result.publication, 1, head.version)
     assert (listed.grading_changed, listed.changes) == (False, ())
     assert set(listed.workflows) == {"unicon/classic"}
@@ -236,7 +236,7 @@ async def test_a_save_that_changes_nothing_since_the_publication_publishes_nothi
 ) -> None:
     first = await _published(setup, acme, sum_task)
 
-    again = await publications.save(setup, acme.ada, sum_task, {})
+    again = await task_save.save(setup, acme.ada, sum_task, {})
 
     assert isinstance(again, Published)
     assert (again.publication, again.number) == (first.publication, 1)
@@ -258,7 +258,7 @@ async def test_a_stale_token_is_a_conflict_and_nothing_is_written(
     acme.fake.reset_calls()
 
     with pytest.raises(Conflict):
-        await publications.save(setup, acme.ada, sum_task, stale)
+        await task_save.save(setup, acme.ada, sum_task, stale)
     assert acme.fake.calls_to("publish") == []
     assert len(acme.fake.state.repos[("acme", "spring.sum.task")].versions) == 1
 
@@ -398,7 +398,7 @@ async def test_a_save_needs_the_manager_role_at_the_task(
 
     with pytest.raises(Forbidden, match="manager role at acme/spring/sum"):
         await _save(setup, acme, sum_task, {"statement.md": b"x"}, bob)
-    assert await publications.list(setup, bob, sum_task) == ()
+    assert await task_save.list_publications(setup, bob, sum_task) == ()
 
 
 async def test_a_group_with_no_tests_is_a_draft_and_the_state_recomputes_its_errors(
@@ -639,7 +639,7 @@ async def test_a_removal_with_a_stale_token_is_a_conflict_and_nothing_is_written
     acme.fake.reset_calls()
 
     with pytest.raises(Conflict):
-        await publications.save(setup, acme.ada, sum_task, stale)
+        await task_save.save(setup, acme.ada, sum_task, stale)
 
     assert acme.fake.calls_to("publish") == []
     assert (repo.head, repo.files["public/hint.txt"]) == (head, b"Two.\n")
@@ -654,7 +654,7 @@ async def test_a_removal_of_a_file_that_is_not_there_is_a_conflict(
     head = repo.head
 
     with pytest.raises(Conflict):
-        await publications.save(setup, acme.ada, sum_task, {"public/gone.txt": Edit(None, token)})
+        await task_save.save(setup, acme.ada, sum_task, {"public/gone.txt": Edit(None, token)})
 
     assert acme.fake.calls_to("publish") == []
     assert repo.head == head
@@ -664,7 +664,7 @@ async def test_a_removal_without_its_token_is_refused_naming_it(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     with pytest.raises(InvalidInputs) as refused:
-        await publications.save(
+        await task_save.save(
             setup,
             acme.ada,
             sum_task,
@@ -1014,7 +1014,7 @@ async def test_scoring_changes_never_change_grading_and_a_test_or_a_limit_does(
             ),
         ),
     ]
-    history = await publications.list(setup, acme.ada, sum_task)
+    history = await task_save.list_publications(setup, acme.ada, sum_task)
     assert [entry.grading_changed for entry in history] == [
         False,
         False,
@@ -1207,7 +1207,7 @@ async def test_a_grading_change_kept_as_a_draft_is_written_and_not_published(
     assert saved.arguments["paths"] == ["task.yaml"]
     state = await tasks.state(setup, acme.ada, running)
     assert (state.draft, state.errors) == (True, ())
-    published = await publications.save(setup, acme.ada, running, {}, confirm=True)
+    published = await task_save.save(setup, acme.ada, running, {}, confirm=True)
     assert isinstance(published, Published)
     assert published.changes == ("The way the task grades changed.",)
 
@@ -1230,7 +1230,9 @@ async def test_a_save_kept_as_a_draft_never_publishes_whatever_else_holds(
     assert (later.errors, later.held_back) == ((), ())
     assert _written(acme) == ["save_files"]
     assert acme.fake.calls_to("activate") == []
-    assert [entry.number for entry in await publications.list(setup, acme.ada, sum_task)] == [1]
+    assert [
+        entry.number for entry in await task_save.list_publications(setup, acme.ada, sum_task)
+    ] == [1]
     state = await tasks.state(setup, acme.ada, sum_task)
     assert (state.draft, state.errors) == (True, ())
 
@@ -1374,10 +1376,10 @@ NEW_GROUP = {"tests/large/1/input": b"5 6\n", "tests/large/1/answer": b"11\n"}
 async def test_once_graded_a_new_group_must_say_its_show(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    before = await publications.workflow_form(setup, acme.ada, entered.task)
+    before = await task_save.workflow_form(setup, acme.ada, entered.task)
     await _graded(setup, acme, entered)
     # The form hears of it, so it asks for the show of a group the save adds.
-    after = await publications.workflow_form(setup, acme.ada, entered.task)
+    after = await task_save.workflow_form(setup, acme.ada, entered.task)
     assert (before.graded, after.graded) == (False, True)
     unsaid = _with(acme, b"  main: {each: 100}\n", b"  main: {each: 100}\n  large: {each: 50}\n")
 
@@ -1553,7 +1555,7 @@ async def test_a_latest_publication_whose_settings_no_longer_read_is_not_called_
     async def unread(*_: object) -> None:
         return None
 
-    monkeypatch.setattr(publications, "_definition_of", unread)
+    monkeypatch.setattr(task_save.sources, "_definition_of", unread)
 
     with pytest.raises(ConfirmationRequired) as asked:
         await _save(setup, acme, running, {"statement.md": b"Typo fixed.\n"})
@@ -1679,7 +1681,7 @@ async def test_a_task_left_giving_no_points_may_keep_its_due(
 async def test_the_task_form_reads_the_inputs_and_test_fields_its_workflow_declares(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
     assert (form.workflow, form.problem) == ("unicon/classic@v2", None)
     assert [(field.id, field.type, field.contestant) for field in form.inputs] == [
@@ -1719,7 +1721,7 @@ async def test_a_task_on_a_version_made_with_a_unit_on_a_file_saves_and_reads_wi
         sum_task,
         {"task.yaml": current.replace(b"unicon/classic@v2", b"unicon/united@v1")},
     )
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
     assert isinstance(saved, Published), saved
     assert form.problem is None
@@ -1729,11 +1731,11 @@ async def test_a_task_on_a_version_made_with_a_unit_on_a_file_saves_and_reads_wi
 async def test_the_task_form_names_a_newer_version_and_the_task_keeps_its_own(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    assert (await publications.workflow_form(setup, acme.ada, sum_task)).newer is None
+    assert (await task_save.workflow_form(setup, acme.ada, sum_task)).newer is None
     classic = acme.fake.state.repos[("unicon", "classic.workflow")]
     acme.fake.state.create_version(PLATFORM, classic, "v3")
 
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
     assert (form.workflow, form.newer) == ("unicon/classic@v2", "v3")
     assert len(form.inputs) == 4
@@ -1747,7 +1749,7 @@ async def test_a_draft_still_shows_its_workflows_inputs(
     )
     assert isinstance(draft, Draft)
 
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
     assert form.problem is None
     assert len(form.inputs) == 4
@@ -1768,7 +1770,7 @@ async def test_a_task_form_without_a_workflow_it_can_read_says_why(
 ) -> None:
     await _save(setup, acme, sum_task, {"task.yaml": b"name: Sum\n" + workflow})
 
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
     assert (form.inputs, form.test) == ((), ())
     assert form.problem is not None and problem in form.problem
@@ -1780,7 +1782,7 @@ async def test_a_workflow_in_an_old_format_gives_the_form_its_reason(
     await _workflow(acme, "old", b"inputs: {}\nstages: []\n")
     await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v2", b"unicon/old@v1"))
 
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
     assert form.workflow == "unicon/old@v1"
     assert form.problem is not None and "an older form that Unicon no longer reads" in form.problem
@@ -1793,7 +1795,7 @@ async def test_a_workflow_in_an_old_format_gives_the_form_its_reason(
         identity=acme.ada.identity,
     )
     with pytest.raises(Forbidden):
-        await publications.workflow_form(setup, stranger, sum_task)
+        await task_save.workflow_form(setup, stranger, sum_task)
 
 
 async def test_a_workflow_without_a_test_block_gives_the_form_its_inputs_for_a_run_task(
@@ -1807,7 +1809,7 @@ async def test_a_workflow_without_a_test_block_gives_the_form_its_inputs_for_a_r
     )
     await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v2", b"unicon/run@v1"))
 
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
     assert (form.workflow, form.problem, form.runs, form.test) == ("unicon/run@v1", None, True, ())
     assert [(each.id, each.type, each.title, each.unit) for each in form.inputs] == [

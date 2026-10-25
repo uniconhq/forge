@@ -40,7 +40,7 @@ from forge.domain.definitions import Check, Form, TaskDefinition
 from forge.domain.plan_basics import RESULT_MAX
 from forge.domain.primitives import STEP_OUTCOMES
 from forge.domain.types import FILES, Type
-from forge.domain.yaml_models import Path, Problem, is_number, path_text
+from forge.domain.yaml_models import Path, Problem, is_number, joined, path_text
 
 VERDICT = "verdict"
 """The key of `expect` that names the verdict every run must get."""
@@ -128,7 +128,7 @@ def check_checks(
                 Problem(
                     path=path_text((*at, "submit", name)),
                     message=f"The entrant gives no {name}, so a check cannot. A check gives "
-                    f"what the entrant does: {_joined(sorted(entrant))}.",
+                    f"what the entrant does: {joined(sorted(entrant))}.",
                 )
             )
         for name, wanted in entrant.items():
@@ -209,7 +209,7 @@ def _one(raw: object, wanted: EntrantGiven, paths: Collection[str]) -> tuple[obj
         return None, "This input takes text."
     options = form.options or wanted.options
     if kind is Type.ENUM and options is not None and raw not in options:
-        return None, f"This input takes one of {_joined(list(options))}."
+        return None, f"This input takes one of {joined(list(options))}."
     return raw, None
 
 
@@ -231,14 +231,14 @@ def _expected(
                 problems.append(
                     Problem(
                         path=where,
-                        message=f"A verdict is one of {_joined(list(STEP_OUTCOMES))}.",
+                        message=f"A verdict is one of {joined(list(STEP_OUTCOMES))}.",
                     )
                 )
             else:
                 verdict = raw
             continue
         if name not in values:
-            listed = _joined(sorted(values)) if values else "none"
+            listed = joined(sorted(values)) if values else "none"
             problems.append(
                 Problem(
                     path=where,
@@ -361,12 +361,6 @@ def keep_runs(entry: dict[str, object], verdict: str | None) -> None:
 def failing_words(run: str, got: str, wanted: str) -> str:
     """The sentence for a run that got another verdict than expected."""
     return f"The run {run} got {got}, not {wanted}."
-
-
-def _joined(items: Sequence[str]) -> str:
-    if len(items) == 1:
-        return items[0]
-    return f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 __all__ = [

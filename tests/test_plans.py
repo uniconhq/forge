@@ -38,9 +38,9 @@ from forge.domain.plans import (
 from forge.domain.plans import (
     test_yaml_paths as yaml_paths,
 )
-from forge.domain.port_values import is_reserved, natural, spelled
+from forge.domain.port_values import is_reserved, natural, scalar_to_text
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
-from forge.domain.publications import read_note, write_note
+from forge.domain.publication_record import read_note, write_note
 from forge.domain.showing import NOTHING_SEALED, Sealed
 from forge.domain.workflow_definition import Fold, WorkflowDefinition, parse_workflow
 from forge.domain.yaml_models import InvalidDefinition, Problem
@@ -995,7 +995,7 @@ def test_a_contestant_scalar_given_whole_to_a_text_port_is_a_template_of_itself(
     ],
 )
 def test_a_scalar_has_one_spelling_as_text(value: object, spelling: str) -> None:
-    assert spelled(value) == spelling
+    assert scalar_to_text(value) == spelling
 
 
 CLASSIC_INPUTS = "  submission: {label: Your solution}\n  language: {options: [python]}\n"

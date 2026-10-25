@@ -186,7 +186,7 @@ def column_at(leaderboard: str, named: object) -> ColumnRef:
     return (leaderboard, str(named))
 
 
-def spelled(name: str) -> str:
+def name_in_formula(name: str) -> str:
     """A name as formula text writes it, each `-` as `_`."""
     return name.replace("-", "_")
 
@@ -226,7 +226,8 @@ def check_leaderboards(
         problems.append(
             (
                 ("leaderboards", key, "columns", column),
-                f"{column} reads itself, through {' -> '.join(_said(key, each) for each in path)}"
+                f"{column} reads itself, through "
+                f"{' -> '.join(column_label(key, each) for each in path)}"
                 ". A column cannot read one that reads it.",
             )
         )
@@ -246,7 +247,7 @@ def check_leaderboards(
     )
 
 
-def _said(leaderboard: str, column: ColumnRef) -> str:
+def column_label(leaderboard: str, column: ColumnRef) -> str:
     return column[1] if column[0] == leaderboard else f"{column[0]}.{column[1]}"
 
 
@@ -255,9 +256,9 @@ def _contest_names(leaderboards: Mapping[str, Leaderboard], tasks: Sequence[str]
     found: Found = []
     seen: dict[str, str] = {}
     for task in tasks:
-        seen.setdefault(spelled(task), task)
+        seen.setdefault(name_in_formula(task), task)
     for key in leaderboards:
-        other = seen.get(spelled(key))
+        other = seen.get(name_in_formula(key))
         if other is not None and other != key:
             found.append(
                 (
@@ -266,7 +267,7 @@ def _contest_names(leaderboards: Mapping[str, Leaderboard], tasks: Sequence[str]
                     "Name the leaderboard otherwise.",
                 )
             )
-        seen.setdefault(spelled(key), key)
+        seen.setdefault(name_in_formula(key), key)
     return found
 
 
@@ -419,7 +420,7 @@ class _Checker:
     def _names(self) -> None:
         taken: dict[str, str] = {}
         for each in [*self.tasks, *self.leaderboards]:
-            taken.setdefault(spelled(each), each)
+            taken.setdefault(name_in_formula(each), each)
         for name in self.leaderboard.columns:
             at = self.at("columns", name)
             if name in self.tasks or name in self.leaderboards:
@@ -431,7 +432,7 @@ class _Checker:
                     "thing. Name the column otherwise.",
                 )
                 continue
-            other = taken.get(spelled(name))
+            other = taken.get(name_in_formula(name))
             if other is not None:
                 self.refuse(
                     at,
@@ -439,7 +440,7 @@ class _Checker:
                     "column otherwise.",
                 )
                 continue
-            taken[spelled(name)] = name
+            taken[name_in_formula(name)] = name
 
     def _sort_and_display(self) -> None:
         leaderboard = self.leaderboard
@@ -902,5 +903,5 @@ __all__ = [
     "LeaderboardsCheck",
     "check_leaderboards",
     "column_at",
-    "spelled",
+    "name_in_formula",
 ]

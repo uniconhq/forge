@@ -39,11 +39,11 @@ from forge.services import (
     files,
     landing,
     orgs,
-    publications,
     sessions,
+    task_save,
     tasks,
 )
-from forge.services.publications import Draft, Published
+from forge.services.task_save import Draft, Published
 from tests.live.conftest import (
     CI_PUBLIC_URL,
     LIVE,
@@ -136,12 +136,12 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     contest = ContestId(f"{org}/spring")
     await tasks.create(live_setup, organiser, contest, "sum", title="Sum of Two")
     task = TaskId(f"{org}/spring/sum")
-    assert await tasks.list(live_setup, organiser, contest) == (Named(task, "sum"),)
+    assert await tasks.list_tasks(live_setup, organiser, contest) == (Named(task, "sum"),)
 
     starter = await files.read(live_setup, organiser, task, "task.yaml")
     statement = await files.read(live_setup, organiser, task, "statement.md")
     # A contest opens only with every task's statement written (C5).
-    saved = await publications.save(
+    saved = await task_save.save(
         live_setup,
         organiser,
         task,

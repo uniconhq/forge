@@ -27,9 +27,9 @@ from forge.domain.regrades import ChangeKind, RegradeCause
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import gradings, publications, regrades, submissions
+from forge.services import gradings, regrades, submissions, task_save
 from forge.services.access import Organiser
-from forge.services.publications import Published
+from forge.services.task_save import Published
 from forge.testing import FakeClock
 from tests.services.conftest import SPRING, Acme, Entered, organiser, upload
 
@@ -218,7 +218,7 @@ async def test_a_saves_regrade_is_one_too_and_replaces_the_one_before(
     await gradings.rejudge(setup, manager, entered.task)
     await _stands(setup, 1, **ACCEPTED)
 
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         entered.task,
@@ -226,7 +226,7 @@ async def test_a_saves_regrade_is_one_too_and_replaces_the_one_before(
         confirm=True,
     )
 
-    assert isinstance(saved, publications.Published) and saved.regraded == 1
+    assert isinstance(saved, task_save.Published) and saved.regraded == 1
     (summary,) = await regrades.latest(setup, manager, SPRING)
     assert (summary.cause, summary.publication, summary.started_by) == (
         RegradeCause.SAVE,
@@ -239,7 +239,7 @@ async def test_a_saves_regrade_is_one_too_and_replaces_the_one_before(
 async def _save(setup: Setup, acme: Acme, task: TaskId, files: dict[str, bytes]) -> Published:
     """ada's save of the task's `files` over what they hold, confirmed."""
     head = await acme.fake.content.list_files(PLATFORM, task)
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         task,

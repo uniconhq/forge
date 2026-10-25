@@ -66,11 +66,11 @@ from forge.db.tables import Entrant, Grading
 from forge.db.tables.gradings import FRONT
 from forge.domain import release as rules
 from forge.domain import run_showing
-from forge.domain.blocks.board_check import LeaderboardsCheck
 from forge.domain.blocks.bounds import Bounds, column_bounds, self_reported_parts, value_bounds
 from forge.domain.blocks.catalogue import ALL, ENTERED
 from forge.domain.blocks.evaluate import RunResult, using
 from forge.domain.blocks.leaderboard_evaluate import Submitted, work_out_row
+from forge.domain.blocks.leaderboard_shape_check import LeaderboardsCheck
 from forge.domain.definitions import TASK_FILE, ContestDefinition, parse_task
 from forge.domain.definitions import State as ContestState
 from forge.domain.errors import NotFound
@@ -114,6 +114,7 @@ from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
+    entrant_view,
     entrants,
     entries,
     gradings,
@@ -121,12 +122,11 @@ from forge.services import (
     marks,
     names,
     pipelines,
-    published,
     release,
     scores,
     timelines,
 )
-from forge.services.published import PublishedTask
+from forge.services.entrant_view import PublishedTask
 from forge.services.scores import State
 
 CHECKING: Final = (
@@ -249,7 +249,7 @@ async def read(
     read = _tasks_read(checked)
     tasks = [
         task
-        for task in await published.tasks(ctx, contest, settings)
+        for task in await entrant_view.tasks(ctx, contest, settings)
         if task.name in read
         and task.entry is not None
         and task.definition.scoring is not None
@@ -280,11 +280,11 @@ async def read(
         scoring = task.definition.scoring
         assert scoring is not None
         assert task.entry is not None
-        held = await published.runs_held(ctx, task)
+        held = await entrant_view.runs_held(ctx, task)
         trees[task.name] = scoring.values
         entered[task.name] = using(scoring.values, ENTERED)
         revealed = ctx.now >= reveal_of(settings, task.entry, every_row)
-        results_released = not viewer.staff and await published.results_released(ctx, task.id)
+        results_released = not viewer.staff and await entrant_view.results_released(ctx, task.id)
         groups = {ALL: [RunResult(run.id, "", run.key) for run in held.runs]}
         for name, picked in scoring.groups.items():
             groups[name] = [
@@ -535,7 +535,7 @@ async def _scored(
     found: dict[str, Scored] = {}
     for name in sorted(read):
         task = ids.get(name)
-        current = await published.task(ctx, task, settings, name) if task is not None else None
+        current = await entrant_view.task(ctx, task, settings, name) if task is not None else None
         if current is None:
             continue
         scoring = current.definition.scoring
@@ -562,7 +562,7 @@ async def _checking(
             made = await ctx.forge.workspaces.list_publications(task)
         except NotFound:
             continue
-        live = {each.id for each in await published.live(ctx, task, made)}
+        live = {each.id for each in await entrant_view.live(ctx, task, made)}
         if not made or made[-1].id in live or not await pipelines.checking(ctx, made[-1].id):
             continue
         newest = await ctx.forge.content.read_file(PLATFORM, task, TASK_FILE, at=made[-1].version)
@@ -612,18 +612,18 @@ async def _reader(
     an observer of the contest or above; the member of an approved entrant,
     with that row as their own; or anyone else. `NotFound` for a contest
     they may not see."""
-    settings = await published.contest(ctx, contest)
+    settings = await entrant_view.contest(ctx, contest)
     if session is None:
         if not rules.contest_visible_to(
             settings, has_session=False, is_contestant=False, is_organiser=False
         ):
-            raise NotFound(published.NO_SUCH_CONTEST)
+            raise NotFound(entrant_view.NO_SUCH_CONTEST)
         return settings, Viewer()
     person = await release.reader(ctx, session, contest)
     approved = person.entrant is not None and person.entrant.status == Status.APPROVED
     entered = settings.state is ContestState.ARCHIVED and approved
     if not release.sees(settings, person) and not entered:
-        raise NotFound(published.NO_SUCH_CONTEST)
+        raise NotFound(entrant_view.NO_SUCH_CONTEST)
     if person.organises:
         try:
             grants = await ctx.forge.orgs.roles_of_user(session.user_id)

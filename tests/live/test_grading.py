@@ -59,7 +59,7 @@ from forge.services import (
     sessions,
     tasks,
 )
-from forge.services.publications import Published
+from forge.services.task_save import Published
 from tests.live.conftest import LIVE, credential_of, delete_org, delete_user, make_user, needs_ci
 
 U999999 = EntrantOwner(uuid.UUID(int=999999)).segment

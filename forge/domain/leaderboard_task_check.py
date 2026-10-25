@@ -3,7 +3,7 @@ read (SIMPLER-CORE.md 10.1, the leaderboards note's 6.2), checked at the
 contest's save and at the save of every task a board reads.
 
 - **Within `contest.yaml`** (`check_contest`): each board against the
-  catalogue (`forge.domain.blocks.board_check`), a loop across boards
+  catalogue (`forge.domain.blocks.leaderboard_shape_check`), a loop across boards
   among it; and a task's `marks` given only while a board reads that
   task's `marked`, since a mark changes nothing else. A row may mark the
   entry's `marks` submissions of a task, or one when a board reads its
@@ -45,27 +45,27 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from forge.domain.blocks.board_check import (
-    ColumnRef,
-    LeaderboardsCheck,
-    check_leaderboards,
-    column_at,
-)
 from forge.domain.blocks.catalogue import (
     CATALOGUE,
     ENTERED,
     FACTS,
+    MARKED,
     PICKS,
     RESULTS,
     SKIP,
 )
 from forge.domain.blocks.check import Found, direct_reads, form_of, leaf_of
 from forge.domain.blocks.evaluate import using
+from forge.domain.blocks.leaderboard_shape_check import (
+    ColumnRef,
+    LeaderboardsCheck,
+    check_leaderboards,
+    column_at,
+)
+from forge.domain.blocks.tree_reads import leaves
 from forge.domain.definitions import ContestDefinition, ContestTask
 from forge.domain.release import in_words
 from forge.domain.yaml_models import Path
-
-MARKED = "marked"
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,19 +324,9 @@ class _Walk:
         reads too, by task."""
         found: set[tuple[str, str]] = set()
         columns: set[ColumnRef] = set()
-        waiting = [tree]
-        while waiting:
-            node = waiting.pop()
-            if isinstance(node, list):
-                waiting.extend(node)
-                continue
-            if not isinstance(node, dict):
-                continue
-            if "block" in node:
-                if node["block"] == "best_each":
-                    found |= _best_each_reads(node)
-                    continue
-                waiting.extend(given for key, given in node.items() if key != "block")
+        for node in leaves(tree, into=lambda block: block["block"] != "best_each"):
+            if "block" in node and node["block"] == "best_each":
+                found |= _best_each_reads(node)
                 continue
             leaf = leaf_of(node)
             if leaf is None:
@@ -347,7 +337,7 @@ class _Walk:
                 of, name = leaf[1]
                 found |= {(task, str(name)) for task in self.given(of)}
                 if isinstance(of, dict):
-                    waiting.append(of)
+                    found |= self.reads_in(of)
                 elif isinstance(of, str) and of not in self.ids:
                     columns.add((self.leaderboard, of))
         return found | self.through_columns(columns)

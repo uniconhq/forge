@@ -86,10 +86,10 @@ from forge.services import (
     gradings,
     org_accounts,
     pipelines,
-    publications,
     reconcile,
     runs,
     submissions,
+    task_save,
 )
 from forge.services.access import Organiser
 from forge.testing import FakeClock, logged
@@ -175,12 +175,12 @@ def unstarted(monkeypatch: pytest.MonkeyPatch) -> Start:
     CI asks while a start is under way, and the start itself, run when the
     test says.
     """
-    real = gradings.start
+    real = gradings.starting.start
 
     async def later(ctx: Any, grading: uuid.UUID) -> None:
         return None
 
-    monkeypatch.setattr(gradings, "start", later)
+    monkeypatch.setattr(gradings.starting, "start", later)
 
     async def start(setup: Setup, row: Grading) -> None:
         async with setup.unit_of_work() as ctx:
@@ -195,7 +195,10 @@ async def _listed(
     """The task's gradings as `gradings.list` gives them, without who
     submitted each.
     """
-    return [entry.grading for entry in await gradings.list(setup, organiser, task, limit=limit)]
+    return [
+        entry.grading
+        for entry in await gradings.list_gradings(setup, organiser, task, limit=limit)
+    ]
 
 
 def _held(acme: Acme, scope: Scope, role: Role) -> Organiser:
@@ -1025,7 +1028,7 @@ async def _limit_to_one(setup: Setup, acme: Acme, entered: Entered) -> None:
     current = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
     limited = current.content.replace(b"test_groups:", b"submissions: {max: 1}\ntest_groups:")
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
-    await publications.save(
+    await task_save.save(
         setup,
         acme.ada,
         entered.task,

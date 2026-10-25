@@ -20,7 +20,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.uploads import UploadStatus, pointer_text
 from forge.port.uploads import TaskPlace
 from forge.runtime.setup import Setup
-from forge.services import files, publications, roles, uploads
+from forge.services import files, roles, task_save, uploads
 from tests.services.conftest import Acme, Entered, organiser, signed_in
 
 DATA = b"a dataset, pretend it is large\n" * 32
@@ -56,7 +56,7 @@ async def test_an_organisers_file_reaches_the_task_as_a_pointer(
         setup, acme.ada, entered.task, PATH, slot.id, None, confirm=True
     )
 
-    assert isinstance(saved, publications.Published | publications.Draft), saved
+    assert isinstance(saved, task_save.Published | task_save.Draft), saved
     written = await acme.fake.content.read_file(acme.ada.identity, entered.task, PATH)
     assert written.content == pointer_text(_digest(DATA), len(DATA))
     # The bytes are the forge's; the commit names them and holds none of them.
@@ -241,7 +241,7 @@ async def test_typed_content_that_would_read_as_a_pointer_is_refused(
     forged = pointer_text("a" * 64, 4096)
 
     with pytest.raises(InvalidInputs):
-        await publications.save(
+        await task_save.save(
             setup, acme.ada, entered.task, {"data/forged.bin": Edit(forged, None)}
         )
 
@@ -280,7 +280,7 @@ async def test_an_edit_naming_an_upload_that_is_not_the_savers_is_refused(
     import uuid as _uuid
 
     with pytest.raises(InvalidInputs):
-        await publications.save(
+        await task_save.save(
             setup,
             acme.ada,
             entered.task,

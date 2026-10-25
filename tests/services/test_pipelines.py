@@ -86,22 +86,22 @@ from forge.domain.submissions import SubmittedInput
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import (
+    entrant_view,
     gradings,
     leaderboards,
     pipelines,
     primitives,
-    publications,
-    published,
     regrades,
     runs,
     steps,
     submissions,
+    task_save,
     tasks,
 )
 from forge.services.access import Organiser
 from forge.services.gradings import START_RETRY_WAIT
 from forge.services.pipelines import USER_FIRST
-from forge.services.publications import Draft, Published
+from forge.services.task_save import Draft, Published
 from forge.settings import Settings
 from forge.testing import APP_URL, CALLBACK_PATH, FORGE_URL, FakeClock, register_entrant
 from tests.services.conftest import RUNNING, SPRING, Acme, organiser, signed_in, upload
@@ -1041,7 +1041,7 @@ async def test_a_withdrawn_image_ends_a_start_saying_so_and_refuses_a_save(
     assert (other.status, other.run_id) == (GradingStatus.SYSTEM_ERROR, None)
     assert other.error == pipelines.WITHDRAWN.format(image=image)
     head = await acme.fake.content.list_files(PLATFORM, islands.task)
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         islands.task,
@@ -1139,13 +1139,13 @@ async def test_a_save_whose_checker_does_not_compile_is_refused_and_the_old_vers
     refused = await _row(setup, save.id)
     assert {verdict for _, verdict in _verdicts(refused)} == {"compile_error"}
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
     await _submit(setup, acme, islands)
     [early] = await _rows(setup, "early")
     assert early.publication_id == islands.publication
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
-    listed = await publications.list(setup, manager, islands.task)
+    listed = await task_save.list_publications(setup, manager, islands.task)
     assert [each.check for each in listed] == [None, "refused"]
     state = await tasks.state(setup, manager, islands.task)
     assert state.latest is not None and state.latest.check == "refused"
@@ -1165,11 +1165,11 @@ async def _held_back_then_checked(setup: Setup, acme: Acme, islands: Islands) ->
     assert [each.id for each in made][:-1] == [islands.publication]
     assert made[-1].checked_first
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
     assert [row.publication_id for row in await _rows(setup, "save")] == [islands.publication]
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
-    listed = await publications.list(setup, manager, islands.task)
+    listed = await task_save.list_publications(setup, manager, islands.task)
     assert [each.check for each in listed] == [None, "refused"]
 
     again = await _save(setup, acme, islands.task, {})
@@ -1181,7 +1181,7 @@ async def _held_back_then_checked(setup: Setup, acme: Acme, islands: Islands) ->
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == made[-1].id
 
 
@@ -1194,7 +1194,7 @@ async def test_a_save_that_fails_once_it_published_leaves_its_publication_held_u
     async def down(*_args: Any, **_kwargs: Any) -> int:
         raise Unavailable("The forge did not answer.")
 
-    monkeypatch.setattr(publications, "_number_of", down)
+    monkeypatch.setattr(task_save.sources, "_number_of", down)
     with pytest.raises(Unavailable):
         await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
     monkeypatch.undo()
@@ -1244,7 +1244,7 @@ async def test_a_lost_save_row_is_found_by_its_organisers_read_and_tried_again(
     clock.advance(LOST_CHECK_AFTER + timedelta(seconds=1))
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
 
-    listed = await publications.list(setup, manager, islands.task)
+    listed = await task_save.list_publications(setup, manager, islands.task)
     await setup.settle()
 
     assert [each.check for each in listed] == [None, "checking"]
@@ -1273,7 +1273,7 @@ async def test_a_save_while_another_is_checked_is_compared_with_what_entrants_ar
     await setup.settle()
 
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == typo.publication
     first, regraded = await _rows(setup, "early")
     assert (first.publication_id, regraded.publication_id) == (
@@ -1333,7 +1333,7 @@ async def test_a_take_over_whose_work_never_ran_is_finished_by_the_next_read(
     monkeypatch.undo()
 
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
-    await publications.list(setup, manager, islands.task)
+    await task_save.list_publications(setup, manager, islands.task)
     await setup.settle()
 
     assert (await _row(setup, save.id)).taken_over_at is not None
@@ -1350,7 +1350,7 @@ async def test_a_save_whose_save_steps_are_stored_takes_over_at_once(
     _, save = await _rows(setup, "save")
     assert (save.status, save.run_id) == (GradingStatus.DONE, None)
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == saved.publication
     assert len(asked) == 1
 
@@ -1511,7 +1511,7 @@ async def test_a_saves_checks_are_graded_by_its_pipeline_and_each_gets_what_it_e
     # A check that passed keeps none of its runs in the save's result.
     assert [each["runs"] for each in row.result["checks"]] == [[], [], []]
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
 
 
@@ -1529,10 +1529,10 @@ async def test_a_check_that_does_not_get_what_it_expects_refuses_its_save_saying
     await setup.settle()
 
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
-    listed = await publications.list(setup, manager, islands.task)
+    listed = await task_save.list_publications(setup, manager, islands.task)
     assert [each.check for each in listed] == [None, "refused"]
     [failed] = listed[1].failed_checks
     assert (failed.index, failed.failing) == (
@@ -1583,7 +1583,7 @@ async def test_a_check_that_faults_ends_the_save_row_a_system_error_and_it_is_tr
     assert await _report(setup, again.id, "save") is GradingStatus.DONE
     await setup.settle()
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
 
 
@@ -1609,7 +1609,7 @@ async def test_checks_at_a_publication_whose_settings_do_not_read_fail_saying_so
         (False, [steps.CHECKS_UNREAD])
     ] * 3
     async with setup.unit_of_work() as ctx:
-        current = await published.task(ctx, islands.task)
+        current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
 
 
@@ -2130,16 +2130,16 @@ async def test_a_save_moving_the_pin_asks_first_and_its_regrade_is_summed_up(
     edits = {"task.yaml": Edit(text.encode(), head.tokens.get("task.yaml"))}
 
     with pytest.raises(ConfirmationRequired) as asked:
-        await publications.save(setup, acme.ada, islands.task, edits)
+        await task_save.save(setup, acme.ada, islands.task, edits)
 
-    assert publications.PIN_MOVED in asked.value.detail
+    assert task_save.PIN_MOVED in asked.value.detail
     assert asked.value.extra["regrades"] == 1
     # Only the answer to the question that named the pin confirms it: a
     # bare confirm, or an answer naming the version alone, asks again.
     basis = asked.value.extra["asked"].rsplit(":", 1)[0]
     for answer in (None, basis):
         with pytest.raises(ConfirmationRequired):
-            await publications.save(
+            await task_save.save(
                 setup, acme.ada, islands.task, edits, confirm=True, asked=answer
             )
     saved = await _save(setup, acme, islands.task, {"task.yaml": text.encode()})

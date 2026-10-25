@@ -178,7 +178,7 @@ The format is the proposal's `TASK-FORMAT.md`. `forge/domain/definitions.py`
 reads `contest.yaml` and `task.yaml` into models, `workflow_definition.py` a
 `workflow.yaml`, `primitives.py` a `primitive.yaml`, contract 5 or 6, and
 `program_manifest.py` an organiser's program's `program.yaml`, the reports it
-writes, whose JSON `exec` and `interact` are handed, with the YAML loading
+writes, whose JSON `exec` is handed, with the YAML loading
 and the error paths they share in `yaml_models.py` and the six value types in
 `types.py`, beside the three only a contract 6 input port takes. Every
 file is read as YAML 1.2's core schema, whatever `%YAML` line it carries
@@ -1968,7 +1968,7 @@ graded against an older publication and leaving one being graded against
 the current one, holding delayed and over-the-limit submissions to their
 entrants' room, and answers a `Rejudged` with its counts, `over_limit`
 among them.
-`gradings.list(task)` gives the task's gradings, newest first, at most 500,
+`gradings.list_gradings(task)` gives the task's gradings, newest first, at most 500,
 to anyone observing the task, each a `FeedEntry` as the feed gives it
 (below), so it says who submitted each. Every `GradingRecord` an organiser
 reads, from `list`, the feed, a cancel or a retry, has the result whole and
@@ -2378,7 +2378,7 @@ checked out beside this one: `schemas/` with `runner`'s, `CLASSIC` with the
 workflow `deploy` seeds, `PRIMITIVES` with each `primitive-<name>`'s
 `primitive.yaml` at the tag deploy's `images.json` pins for `v2`, read with
 git whatever the checkout's branch, and `program_manifest.py`'s name rules
-and JSON with `exec`'s and `interact`'s own. Without a repo or a tag they are
+and JSON with `exec`'s own. Without a repo or a tag they are
 skipped, unless `CI` is set, when they fail. Until the stage 4 work ships and
 is tagged, CI checks every repo out at the branch it is built on,
 `feat/simpler-core`, the three seeded primitives with their tags; each

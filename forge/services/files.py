@@ -66,9 +66,9 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import leaderboards, places, publications, published, timelines
+from forge.services import entrant_view, leaderboards, places, task_save, timelines
 from forge.services.access import Organiser, require
-from forge.services.publications import Draft, Published
+from forge.services.task_save import Draft, Published
 
 log = get_logger(__name__)
 
@@ -247,7 +247,7 @@ async def write(
     require(organiser, scope, Role.MANAGER)
     check_path(path)
     if scope.kind is ScopeKind.TASK:
-        return await publications.save(
+        return await task_save.save(
             ctx,
             organiser,
             TaskId(place),
@@ -286,7 +286,7 @@ async def write(
         author=organiser.user.id,
     )
     if path == CONTEST_FILE:
-        published.forget_contests(ctx)
+        entrant_view.forget_contests(ctx)
         # A task put back by hand gets its places as `put_back` makes them.
         for entry in after.tasks:
             old = standing.entry(entry.id) if standing is not None else None
@@ -405,7 +405,7 @@ async def write_upload(
     """
     require(organiser, task_scope(task), Role.MANAGER)
     check_path(path)
-    return await publications.save(
+    return await task_save.save(
         ctx,
         organiser,
         task,

@@ -28,7 +28,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.submission_state import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import gradings, publications, submissions
+from forge.services import gradings, submissions, task_save
 from forge.settings import Settings
 from forge.testing import APP_URL, FORGE_URL, FakeClock
 from tests.services.conftest import SPRING, Acme, Entered, organiser, upload
@@ -73,14 +73,14 @@ async def _most(setup: Setup, acme: Acme, entered: Entered, most: int) -> None:
     current = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
     content = current.content.split(b"submissions:")[0] + f"submissions: {{max: {most}}}\n".encode()
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         entered.task,
         {"task.yaml": Edit(content, head.tokens["task.yaml"])},
         confirm=True,
     )
-    assert isinstance(saved, publications.Published), saved
+    assert isinstance(saved, task_save.Published), saved
 
 
 async def _rows(setup: Setup) -> list[Grading]:
@@ -190,7 +190,7 @@ async def test_a_staff_retry_is_told_beforehand_and_held_to_the_same_rule(
 
     listed = {
         entry.grading.submission_number: entry.grading
-        for entry in await gradings.list(setup, manager, entered.task)
+        for entry in await gradings.list_gradings(setup, manager, entered.task)
     }
     assert (listed[1].retry_limit, listed[2].retry_limit) == (1, None)
     first = listed[1].id
@@ -214,7 +214,7 @@ async def test_a_staff_retry_is_told_beforehand_and_held_to_the_same_rule(
     await _most(setup, acme, entered, 2)
     (latest,) = [
         entry.grading
-        for entry in await gradings.list(setup, manager, entered.task)
+        for entry in await gradings.list_gradings(setup, manager, entered.task)
         if entry.grading.submission_number == 1 and entry.grading.latest
     ]
     assert (latest.status, latest.limit, latest.retry_limit) == (GradingStatus.OVER_LIMIT, 1, None)
@@ -261,10 +261,10 @@ async def test_a_save_that_lowers_the_most_regrades_under_the_most_it_saves(
     }
 
     with pytest.raises(ConfirmationRequired) as asked:
-        await publications.save(setup, acme.ada, entered.task, edits)
-    saved = await publications.save(setup, acme.ada, entered.task, edits, confirm=True)
+        await task_save.save(setup, acme.ada, entered.task, edits)
+    saved = await task_save.save(setup, acme.ada, entered.task, edits, confirm=True)
 
-    assert isinstance(saved, publications.Published) and saved.regraded == 2
+    assert isinstance(saved, task_save.Published) and saved.regraded == 2
     assert asked.value.extra["regrades"] == saved.regraded
     over = [
         (row.submission_number, row.status == GradingStatus.OVER_LIMIT)

@@ -35,7 +35,7 @@ def natural(text: str) -> tuple[tuple[int, int, str], ...]:
     )
 
 
-def spelled(value: object) -> str:
+def scalar_to_text(value: object) -> str:
     """A scalar's one spelling as text: a boolean as `true` or `false`, a
     number as the shortest decimal equal to it, no exponent and no trailing
     zeros, an integer without a point; text and an enum's word as they are.
@@ -82,7 +82,7 @@ def stray_units(workflow: WorkflowDefinition | RunWorkflow) -> list[Problem]:
     problems: list[Problem] = []
     for key, declared in workflow.inputs.items():
         if declared.unit is not None and declared.type is not Type.NUMBER:
-            kind = "one of a list" if declared.type is Type.ENUM else a_type(declared.type)
+            kind = "one of a list" if declared.type is Type.ENUM else type_in_words(declared.type)
             problems.append(
                 Problem(
                     path=path_text(("inputs", key, "unit")),
@@ -132,7 +132,7 @@ def check_written(found: Reference, kind: Kind) -> None:
     """
     if kind.type not in SCALARS:
         raise Refused(
-            f"{found} is {a_type(kind.type)}, and only text, a number, true or false or an "
+            f"{found} is {type_in_words(kind.type)}, and only text, a number, true or false or an "
             "enum can be written into text."
         )
     if kind.optional:
@@ -142,7 +142,7 @@ def check_written(found: Reference, kind: Kind) -> None:
         )
 
 
-def fits(kind: Kind, port: Port, raw: object) -> None:
+def check_value_fits_port(kind: Kind, port: Port, raw: object) -> None:
     """Refuse a value of `kind` given to `port`, under the two widenings: a
     scalar fits a text port, and a file fits a folder port.
     """
@@ -166,10 +166,10 @@ def fits(kind: Kind, port: Port, raw: object) -> None:
             )
         raise Refused(f"This takes one of {', '.join(port.options or ())}.")
     if kind.type is not wanted:
-        raise Refused(f"This takes {a_type(wanted)}, not {a_type(kind.type)}.")
+        raise Refused(f"This takes {type_in_words(wanted)}, not {type_in_words(kind.type)}.")
 
 
-def a_type(kind: Type) -> str:
+def type_in_words(kind: Type) -> str:
     """A type as a sentence names one value of it."""
     return {
         Type.TEXT: "text",

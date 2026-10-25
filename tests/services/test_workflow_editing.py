@@ -648,7 +648,7 @@ def _run_primitives(acme: Acme) -> None:
     """The contract 6 primitives the run workflows use, from the checkouts
     beside this one, with the image line bootstrap writes.
     """
-    for name, version in (("exec", "v1"), ("interact", "v2"), ("compile", "v3")):
+    for name, version in (("exec", "v1"), ("compile", "v3")):
         text = sibling(f"primitive-{name}", "primitive.yaml").read_bytes()
         image = f"image: ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}\n".encode()
         acme.fake.primitives.add(name, {version: image + text})

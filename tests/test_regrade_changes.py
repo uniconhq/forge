@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import cast
 
 from forge.domain.ids import PublicationId, VersionId
-from forge.domain.publications import Publication
+from forge.domain.publication_record import Publication
 from forge.domain.regrades import (
     VERDICTS_SHOWN,
     ChangeKind,

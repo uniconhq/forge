@@ -3,7 +3,7 @@ uses parse, keep the runner's contract and are the releases deploy pins with
 the image line written in; a file or folder input says whether the primitive
 runs it (P1); `secret` is an input's word; every primitive declares its
 outcome; and the keys and words the format no longer has are refused at
-their paths. Contract 6's declarations, `exec`'s, `interact`'s and
+their paths. Contract 6's declarations, `exec`'s and
 `compile@v3`'s from their checkouts, parse with what they add kept, and what
 breaks its rules is refused.
 """
@@ -491,15 +491,17 @@ def test_exec_reads_the_cache_names_files_and_takes_outputs_from_a_manifest() ->
     assert exec_.limits_from["memory_mb"] == FromInput(input="memory_limit", add=256)
 
 
-def test_interact_runs_programs_linked_and_sizes_its_container_over_them() -> None:
-    interact = mirrored("interact")
+def test_execs_programs_form_runs_programs_linked_and_sizes_its_container() -> None:
+    formed = mirrored("exec")
+    several = formed.for_step(("programs",), "unicon/exec@v1")
+    assert isinstance(several, PrimitiveDeclaration)
 
-    assert (interact.schema_version, interact.cache, interact.outputs_from) == (
+    assert (several.schema_version, several.cache, several.outputs_from) == (
         6,
         True,
         "programs",
     )
-    programs = interact.inputs["programs"]
+    programs = several.inputs["programs"]
     assert programs.type is Type.PROGRAMS and programs.runs is None
     assert programs.inputs is not None and programs.outputs is not None
     assert list(programs.inputs) == [
@@ -522,12 +524,12 @@ def test_interact_runs_programs_linked_and_sizes_its_container_over_them() -> No
     )
     assert programs.outputs["memory_kb"].better is Better.LOWER
     assert programs.outputs["ended_at"].at_least == 0
-    assert interact.inputs["links"].type is Type.LINKS
-    assert set(interact.outputs) == {"facts", "outcome"}
-    assert interact.limits_from["time_ms"] == FromMax(
+    assert several.inputs["links"].type is Type.LINKS
+    assert set(several.outputs) == {"facts", "outcome"}
+    assert several.limits_from["time_ms"] == FromMax(
         max="programs.time_limit", scale=4000, add=6000
     )
-    assert interact.limits_from["memory_mb"] == FromSum(sum="programs.memory_limit", add=512)
+    assert several.limits_from["memory_mb"] == FromSum(sum="programs.memory_limit", add=512)
 
 
 def test_compile_v3_speaks_contract_6_and_reads_no_cache() -> None:
@@ -538,7 +540,7 @@ def test_compile_v3_speaks_contract_6_and_reads_no_cache() -> None:
     assert compile_.inputs["language"].options == ("c", "cpp", "java", "python", "ipynb")
 
 
-@pytest.mark.parametrize("name", ["exec", "interact", "compile"])
+@pytest.mark.parametrize("name", ["exec", "compile"])
 def test_each_contract_6_primitive_keeps_the_contract(name: str) -> None:
     text = sibling(f"primitive-{name}", "primitive.yaml").read_text(encoding="utf-8")
     image = f"image: ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}\n"

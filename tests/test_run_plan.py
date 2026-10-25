@@ -112,7 +112,6 @@ LINKC = _declared(
 def primitives() -> dict[str, PrimitiveDeclaration]:
     return {
         "unicon/exec@v1": mirrored("exec"),
-        "unicon/interact@v2": mirrored("interact"),
         "unicon/compile@v3": mirrored("compile"),
         "acme/link@v1": LINK,
         "acme/judge@v1": JUDGE,
@@ -301,7 +300,7 @@ def test_islands_reads_as_written_step_by_step(primitives: dict[str, PrimitiveDe
     assert RunPlan.from_bytes(plan.to_bytes()) == plan
 
 
-@pytest.mark.parametrize("name", ["exec", "interact"])
+@pytest.mark.parametrize("name", ["exec"])
 def test_the_room_kept_for_a_boxed_primitive_is_what_it_keeps(name: str) -> None:
     assert primitive(name).STEP_MEMORY_KB == PRIMITIVE_ROOM_MB * 1024
 
@@ -373,7 +372,9 @@ def test_an_entrant_file_is_copied_at_the_most_its_input_may_hold(
     assert held(larger, "episode", "early").limits.memory_mb == 1024 + 256 + 64 + 500
 
 
-def test_interact_needs_a_box_per_program(primitives: dict[str, PrimitiveDeclaration]) -> None:
+def test_linked_programs_need_a_box_each(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
     task = JUDGED_TASK.replace("show: {now: [moves]}", "show: {after_close: [moves]}")
     plan = ok(
         planned(
@@ -387,7 +388,7 @@ def test_interact_needs_a_box_per_program(primitives: dict[str, PrimitiveDeclara
     )
 
     assert plan.steps["game"].boxes == 2
-    # Both programs' 256 MB and interact's room of 512 MB, with both
+    # Both programs' 256 MB and the programs form's room of 512 MB, with both
     # programs, each up to 64 MB, copied in on top.
     assert held(plan, "game").limits.memory_mb == 256 + 256 + 512 + 64 + 64
     assert plan.steps["game"].inputs == {

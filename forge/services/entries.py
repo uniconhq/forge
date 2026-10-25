@@ -66,7 +66,7 @@ from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_s
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import leaderboards, published, timelines
+from forge.services import entrant_view, leaderboards, timelines
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -124,10 +124,10 @@ async def queue(ctx: Context, organiser: Organiser, task: TaskId) -> tuple[Queue
     """
     require(organiser, task_scope(task), Role.OBSERVER)
     contest = contest_id_of(task_scope(task))
-    settings = await published.contest(ctx, contest)
-    current = await published.task(ctx, task, settings)
+    settings = await entrant_view.contest(ctx, contest)
+    current = await entrant_view.task(ctx, task, settings)
     if current is None:
-        raise NotFound(published.NO_SUCH_TASK)
+        raise NotFound(entrant_view.NO_SUCH_TASK)
     scoring = current.definition.scoring
     if scoring is None:
         raise NotARunTask(NOT_A_RUN_TASK)
@@ -191,8 +191,8 @@ async def enter(
     submission.
     """
     require(organiser, task_scope(task), Role.MANAGER)
-    settings = await published.contest(ctx, contest_id_of(task_scope(task)))
-    current = await published.task(ctx, task, settings)
+    settings = await entrant_view.contest(ctx, contest_id_of(task_scope(task)))
+    current = await entrant_view.task(ctx, task, settings)
     if current is None:
         raise NotFound(NO_SUCH_SUBMISSION)
     scoring = current.definition.scoring
