@@ -35,6 +35,7 @@ class Run:
     id: str
     key: Mapping[str, object]
     early: bool
+    titles: tuple[str | None, ...] | None = None
 
     @property
     def canonical(self) -> str:
@@ -58,6 +59,7 @@ class EntrantInput:
     options: tuple[str, ...] | None
     form: Form
     parts: int | None = None
+    part_details: tuple[tuple[str | None, int], ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)

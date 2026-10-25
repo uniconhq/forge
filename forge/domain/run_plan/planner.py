@@ -19,7 +19,14 @@ from forge.domain.primitives import (
     Port,
     PrimitiveDeclaration,
 )
-from forge.domain.run_plan.models import EntrantEntry, FileFact, Item, PipelineStep, RunStep
+from forge.domain.run_plan.models import (
+    EntrantEntry,
+    FileFact,
+    Item,
+    PartDetails,
+    PipelineStep,
+    RunStep,
+)
 from forge.domain.run_plan.plan_helpers import _declared, _number, _pages, _references_in, _words
 from forge.domain.run_plan.records import (
     _READS,
@@ -398,17 +405,46 @@ class _Planner:
             ]
         if "entrant" in value:
             name = value["entrant"]
-            return [_Copy(_pages(self._max_size(name)), f"the entrant's {name}", name)]
+            part = value["part"] if isinstance(value.get("part"), int) else None
+            return [_Copy(_pages(self._max_size(name, part)), f"the entrant's {name}", name)]
         if "step" in value:
             step = value["step"]
             return [_Copy(self.output_mb[step] * 1024, f"what {step} writes", None)]
         return []
 
-    def _max_size(self, name: str) -> int:
+    def _max_size(self, name: str, part: int | None = None) -> int:
+        """The most a part of an entrant file may hold. A part with its own
+        size uses that; otherwise the input's form, otherwise the default.
+        """
         entrant = self.task.entrant[name]
         if entrant.type not in FILES:
             return 0
+        if (
+            part is not None
+            and entrant.part_details is not None
+            and 1 <= part <= len(entrant.part_details)
+        ):
+            return entrant.part_details[part - 1][1]
         return entrant.form.max_size or DEFAULT_MAX_SIZE
+
+    def _largest(self, name: str) -> int:
+        """The most any part of the input may hold, which is what an old
+        reader of `max_size` still sees.
+        """
+        entrant = self.task.entrant[name]
+        if entrant.type not in FILES:
+            return 0
+        if entrant.part_details:
+            return max(size for _, size in entrant.part_details)
+        return entrant.form.max_size or DEFAULT_MAX_SIZE
+
+    def _part_details(self, name: str) -> tuple[PartDetails, ...] | None:
+        entrant = self.task.entrant[name]
+        if not entrant.part_details:
+            return None
+        return tuple(
+            PartDetails(title=title, max_size=size) for title, size in entrant.part_details
+        )
 
     # A value's program
 
@@ -983,7 +1019,8 @@ class _Planner:
                 type=each.type,
                 options=each.options,
                 parts=each.parts,
-                max_size=self._max_size(name) or None,
+                max_size=self._largest(name) or None,
+                part_details=self._part_details(name),
             )
             for name, each in sorted(self.task.entrant.items())
         }

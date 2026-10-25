@@ -21,9 +21,9 @@ from typing import Any
 import pytest
 from sqlalchemy import select, update
 
-from forge.db.tables import Grading
+from forge.db.tables import Grading, Upload
 from forge.domain.content import Edit
-from forge.domain.errors import ConfirmationRequired, InvalidInputs, NotFound
+from forge.domain.errors import ConfirmationRequired, InvalidInputs, NotFound, TooLarge
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
@@ -41,6 +41,7 @@ from forge.services import (
     landing,
     submissions,
     task_save,
+    uploads,
 )
 from forge.services.task_save import Draft, Published
 from forge.testing import PLACEHOLDER_DIGEST, FakeClock, register_entrant
@@ -50,6 +51,7 @@ from tests.test_run_task import (
     CARTPOLE_FILES,
     CARTPOLE_TASK,
     ISLANDS,
+    TITLED,
     TOUR_FILES,
     TOUR_TASK,
     deployed,
@@ -238,6 +240,96 @@ async def test_a_saved_again_task_keeps_its_run_ids_and_publishes_only_what_is_n
         ("r2", "parts/2.in"),
         ("r3", "parts/3.in"),
     ]
+
+
+async def test_a_titles_only_save_publishes_and_regrades_nothing(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _published(setup, acme, sum_task, "tour")
+    named = TITLED.replace("acme/tour@v1", "unicon/tour@v1").replace(", max_size: 50MB", "")
+
+    saved = await _save(setup, acme, sum_task, {"task.yaml": named.encode(), **TOUR_DATA})
+
+    assert isinstance(saved, Published) and saved.number == 2
+    assert (saved.grading_changed, saved.changes, saved.regraded) == (False, (), 0)
+    assert [run.titles for run in _plan(acme).runs] == [("Small grid",), ("Big grid",)]
+
+
+async def test_a_part_over_its_own_size_is_refused_at_the_slot_and_at_submit(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    text = TITLED.replace("acme/tour@v1", "unicon/tour@v1")
+    await _published(setup, acme, sum_task, "tour", RUNNING.format(visibility="everyone"))
+    contents = {"task.yaml": text.encode(), **TOUR_DATA}
+    try:
+        saved = await _save(setup, acme, sum_task, contents, confirm=True)
+    except ConfirmationRequired as asked:
+        saved = await _save(
+            setup, acme, sum_task, contents, confirm=True, asked=asked.extra["asked"]
+        )
+    assert isinstance(saved, Published)
+    await checked(setup, sum_task)
+    await register_entrant(setup, SPRING, 8)
+    bob = await signed_in(setup, acme.fake, 8)
+    digest = "ab" * 32
+
+    with pytest.raises(TooLarge) as part_two:
+        await uploads.slot(
+            setup,
+            bob,
+            sum_task,
+            input="route",
+            filename="route.txt",
+            size=60 * 1024 * 1024,
+            sha256=digest,
+            part=2,
+        )
+    with pytest.raises(TooLarge) as part_one:
+        await uploads.slot(
+            setup,
+            bob,
+            sum_task,
+            input="route",
+            filename="route.txt",
+            size=20 * 1024 * 1024,
+            sha256=digest,
+            part=1,
+        )
+    assert part_two.value.extra["limit"] == 50 * 1024 * 1024
+    assert part_one.value.extra["limit"] == 10 * 1024 * 1024
+
+    large = await upload(
+        setup, acme.fake, bob, sum_task, b"x" * 20, input="route", filename="route.txt"
+    )
+    # The bytes are small; the row's declared size is what the check reads,
+    # so set it to 20MB, under the largest part and over part 1.
+    async with setup.unit_of_work() as ctx:
+        row = await ctx.db.get(Upload, large.id)
+        assert row is not None
+        row.size = 20 * 1024 * 1024
+    with pytest.raises(TooLarge, match="part 1"):
+        await submissions.submit(
+            setup,
+            bob,
+            sum_task,
+            {"route": SubmittedInput(parts={1: SubmittedInput(uploads=(large.id,))})},
+            idempotency_key="sized-part",
+        )
+    bigger = await upload(
+        setup, acme.fake, bob, sum_task, b"y" * 20, input="route", filename="other.txt"
+    )
+    async with setup.unit_of_work() as ctx:
+        row = await ctx.db.get(Upload, bigger.id)
+        assert row is not None
+        row.size = 60 * 1024 * 1024
+    with pytest.raises(TooLarge, match="part 2"):
+        await submissions.submit(
+            setup,
+            bob,
+            sum_task,
+            {"route": SubmittedInput(parts={2: SubmittedInput(uploads=(bigger.id,))})},
+            idempotency_key="sized-part-2",
+        )
 
 
 async def test_a_task_naming_a_formats_keys_on_the_other_formats_workflow_is_refused(

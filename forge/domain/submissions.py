@@ -72,6 +72,16 @@ with an ending that is not empty, the harness's own rule."""
 
 
 @dataclass(frozen=True, slots=True)
+class FieldPart:
+    """One part of an entrant input: the tuple's title, and the most that
+    part may hold, in bytes.
+    """
+
+    title: str | None
+    max_size: int
+
+
+@dataclass(frozen=True, slots=True)
 class Field:
     """One input the contestant gives: what the plan declares of it, its
     type, an enum's options and whether it is one file per test, and the
@@ -87,6 +97,7 @@ class Field:
     min: int | Decimal | None = None
     max: int | Decimal | None = None
     max_size: int = DEFAULT_MAX_SIZE
+    parts: tuple[FieldPart, ...] | None = None
 
     @property
     def files(self) -> bool:
@@ -151,9 +162,18 @@ def run_fields_of(entrant: Mapping[str, Any], inputs: Mapping[str, Any]) -> tupl
                 min=form.min,
                 max=form.max,
                 max_size=declared.max_size or form.max_size or DEFAULT_MAX_SIZE,
+                parts=_field_parts(declared),
             )
         )
     return tuple(found)
+
+
+def _field_parts(declared: Any) -> tuple[FieldPart, ...] | None:
+    """A plan entry's part titles and sizes, or none when it has none."""
+    raw = getattr(declared, "part_details", None)
+    if not raw:
+        return None
+    return tuple(FieldPart(title=part.title, max_size=part.max_size) for part in raw)
 
 
 @dataclass(frozen=True, slots=True)

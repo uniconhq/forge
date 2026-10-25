@@ -2,7 +2,7 @@ from collections.abc import Mapping, Sequence
 
 from forge.domain.content import named_by
 from forge.domain.plan_basics import PLAN_PATH, Snapshot
-from forge.domain.run_plan.models import Item, RunPlan, RunStep
+from forge.domain.run_plan.models import EntrantEntry, Item, RunPlan, RunStep
 from forge.domain.run_plan.plan_helpers import _leaves
 from forge.domain.run_plan.records import RELEASE_MOVED
 
@@ -70,6 +70,7 @@ def run_plan_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...
         changes.append(f"{_counted(added)} added.")
     if removed:
         changes.append(f"{_counted(removed)} removed.")
+    changes += _sizes(old, new)
     changes += _compared(before.data, after.data, "The file {}")
     moved = any(
         runs_before[run].early != runs_after[run].early for run in runs_before if run in runs_after
@@ -199,6 +200,51 @@ def _compared(before: Mapping[str, object], after: Mapping[str, object], named: 
         elif before[key] != after[key]:
             found.append(f"{named.format(key)} changed.")
     return found
+
+
+def _sizes(before: RunPlan, after: RunPlan) -> list[str]:
+    """A part's largest size that moved. A title is not a change, so a
+    titles-only save says nothing here.
+    """
+    found: list[str] = []
+    for name in sorted(set(before.entrant) | set(after.entrant)):
+        was, now = before.entrant.get(name), after.entrant.get(name)
+        if was is None or now is None:
+            continue
+        count = max(_count(was), _count(now))
+        old_sizes = _part_sizes(was, count)
+        new_sizes = _part_sizes(now, count)
+        if old_sizes == new_sizes:
+            continue
+        if was.parts is None and now.parts is None:
+            found.append(f"The largest size of {name} changed.")
+            continue
+        for index, (old_size, new_size) in enumerate(zip(old_sizes, new_sizes, strict=True)):
+            if old_size != new_size:
+                found.append(f"The largest size of part {index + 1} of {name} changed.")
+    return found
+
+
+def _count(entry: EntrantEntry) -> int:
+    if entry.part_details:
+        return len(entry.part_details)
+    return 1 if entry.max_size is not None else 0
+
+
+def _part_sizes(entry: EntrantEntry, count: int) -> tuple[int | None, ...]:
+    """Each part's size, `count` long. An entry with no part details gives
+    its one size to every part, which is what a reader that knows nothing
+    of parts uses. A shorter list of parts is filled out so a save that
+    adds a part can say which one moved.
+    """
+    if entry.part_details:
+        sizes: list[int | None] = [part.max_size for part in entry.part_details]
+    elif entry.max_size is not None:
+        sizes = [entry.max_size] * count
+    else:
+        sizes = []
+    sizes.extend([None] * (count - len(sizes)))
+    return tuple(sizes)
 
 
 def _counted(runs: Sequence[str]) -> str:

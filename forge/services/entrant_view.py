@@ -239,6 +239,7 @@ class RunsHeld:
     columns: Mapping[str, Column] = field(default_factory=dict)
     compiling: frozenset[str] = frozenset()
     self_reported: frozenset[str] = frozenset()
+    titles: Mapping[str, tuple[str | None, ...]] = field(default_factory=dict)
 
 
 async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
@@ -261,6 +262,7 @@ async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
             {name: entry.column() for name, entry in plan.reports.items()},
             compilers(plan),
             runs.self_reported_values,
+            {run.id: run.titles for run in plan.runs if run.titles is not None},
         )
 
     key = f"published.runs.{published.id}.{version}"

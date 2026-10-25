@@ -154,6 +154,7 @@ def shown(
     released: bool = False,
     everything: bool = False,
     late: Collection[str] = (),
+    titles: Mapping[str, tuple[str | None, ...]] | None = None,
 ) -> Shown:
     """What a reader sees of a grading now: `scoring`, `runs` and `files` the
     task's live publication's, `whole` the grading worked out from both its
@@ -164,16 +165,17 @@ def shown(
     its results are released; with `everything`, as organisers read it.
     Texts are as stored: `bare` takes them out for an entrant.
     """
+    named = titles or {}
     if everything:
-        return _everything(scoring, runs, whole, self_reported)
+        return _everything(scoring, runs, whole, self_reported, named)
     times = times_of(revealed=revealed, released=released)
     listed = {entry for time in times for entry in scoring.show.lists()[time]}
-    held = _held(scoring, runs, whole.grading, files, times)
+    held = _held(scoring, runs, whole.grading, files, times, named)
     view = whole
     unseen: frozenset[str] = frozenset()
     if not (revealed or released or {name for name, _ in held} - whole.grading.early):
         view = early()
-        held = _held(scoring, runs, view.grading, files, times)
+        held = _held(scoring, runs, view.grading, files, times, named)
         unseen = frozenset(late)
     grading = view.grading
     seen = {name for name, _ in held}
@@ -266,6 +268,7 @@ def _everything(
     runs: Sequence[Run],
     whole: Worked,
     self_reported: Collection[str],
+    titles: Mapping[str, tuple[str | None, ...]],
 ) -> Shown:
     grading, outcomes = whole.grading, whole.outcomes
     when = shown_times(scoring.show)
@@ -294,6 +297,7 @@ def _everything(
     shown_runs = tuple(
         {"group": ALL, "place": place, "id": name, "key": key}
         | _seen(entry)
+        | _titled(name, titles)
         | ({"dropped": True} if dropped else {})
         for place, (name, key, entry, dropped) in enumerate(ran, start=1)
     )
@@ -313,6 +317,7 @@ def _held(
     grading: RunGrading,
     files: Collection[str],
     times: Sequence[str],
+    titles: Mapping[str, tuple[str | None, ...]],
 ) -> list[tuple[str, dict[str, Any]]]:
     """Each run shown by a group listed under one of `times`, in the order
     listed, with its id beside what is shown of it.
@@ -335,8 +340,23 @@ def _held(
                 for name, value in key_json(run.key).items()
                 if _file_shown(scoring, value, files, times)
             }
-            found.append((run.id, {"group": group, "place": place, "key": key} | _seen(result)))
+            found.append(
+                (
+                    run.id,
+                    {"group": group, "place": place, "key": key}
+                    | _seen(result)
+                    | _titled(run.id, titles),
+                )
+            )
     return found
+
+
+def _titled(run_id: str, titles: Mapping[str, tuple[str | None, ...]]) -> dict[str, Any]:
+    """The run's tuple titles, left out when it has none."""
+    held = titles.get(run_id)
+    if not held:
+        return {}
+    return {"titles": list(held)}
 
 
 def _seen(result: Mapping[str, Any]) -> dict[str, Any]:

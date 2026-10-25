@@ -135,7 +135,7 @@ def check_run_task(
     )
     early = task.early()
     task = RunTask(
-        tuple(Run(run.id, run.key, run.id in early) for run in runs),
+        tuple(Run(run.id, run.key, run.id in early, run.titles) for run in runs),
         task.groups,
         task.values,
         task.show,

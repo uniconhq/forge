@@ -406,6 +406,96 @@ def test_cartpole_marks_what_the_entrants_weights_could_set(
     assert read.self_reported_values == {"reward", "windy"}
 
 
+TITLED = """\
+name: Tour
+workflow: acme/tour@v1
+inputs:
+  best: 1200
+repeat:
+  - inputs: [input, route]
+    tuples:
+      - {input: parts/1.in, route: entrant, title: Small grid}
+      - {input: parts/2.in, route: entrant, title: Big grid, max_size: 50MB}
+scoring:
+  values:
+    total: {block: sum, over: {runs: all}, of: {run: [all, score]}}
+  show:
+    now: [total, all, parts/]
+"""
+
+
+def test_a_titled_tuple_names_its_run_and_is_not_part_of_the_key(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = ok(tour(primitives, TITLED))
+
+    assert [run.titles for run in task.runs] == [("Small grid",), ("Big grid",)]
+    assert [run.key["route"] for run in task.runs] == [Part(1), Part(2)]
+    assert task.entrant["route"].part_details == (
+        ("Small grid", 10 * 1024 * 1024),
+        ("Big grid", 50 * 1024 * 1024),
+    )
+
+
+def test_a_titled_tuple_holding_two_entrant_inputs_sizes_both(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    text = TITLED.replace(
+        "      - {input: parts/1.in, route: entrant, title: Small grid}\n"
+        "      - {input: parts/2.in, route: entrant, title: Big grid, max_size: 50MB}\n",
+        "      - {input: entrant, route: entrant, title: Both, max_size: 50MB}\n",
+    )
+    task = ok(tour(primitives, text))
+    sized = (("Both", 50 * 1024 * 1024),)
+    assert task.entrant["input"].part_details == sized
+    assert task.entrant["route"].part_details == sized
+
+
+@pytest.mark.parametrize(
+    ("row", "words"),
+    [
+        (
+            "{input: parts/2.in, route: parts/2.out, max_size: 50MB}",
+            "only when it holds entrant",
+        ),
+        (
+            "{input: parts/2.in, route: entrant, title: Big grid, max_size: lots}",
+            "512KB",
+        ),
+        (
+            "{input: parts/2.in, route: entrant, title: Big grid, max_size: 3GB}",
+            "at most 2GB",
+        ),
+        (
+            "{input: parts/2.in, route: entrant, title: " + ("x" * 61) + "}",
+            "at most 60",
+        ),
+        (
+            "{input: parts/2.in, route: entrant, title: Small grid}",
+            "already called Small grid",
+        ),
+        (
+            '{input: parts/2.in, route: entrant, title: "a\\nb"}',
+            "one line",
+        ),
+    ],
+)
+def test_each_bad_tuple_title_or_size_names_itself(row: str, words: str) -> None:
+    text = TITLED.replace(
+        "{input: parts/2.in, route: entrant, title: Big grid, max_size: 50MB}", row
+    )
+    with pytest.raises(InvalidDefinition) as raised:
+        parse_task(text, runs=True)
+    assert any(words in problem["message"] for problem in raised.value.errors)
+
+
+def test_a_repeated_input_cannot_be_named_a_tuple_key() -> None:
+    text = TITLED.replace("inputs: [input, route]", "inputs: [title, route]")
+    with pytest.raises(InvalidDefinition) as raised:
+        parse_task(text, runs=True)
+    assert any("can't be named title" in problem["message"] for problem in raised.value.errors)
+
+
 def test_tour_asks_for_one_route_per_part(primitives: dict[str, PrimitiveDeclaration]) -> None:
     task = ok(tour(primitives))
 

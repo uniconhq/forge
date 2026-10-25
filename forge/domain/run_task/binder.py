@@ -9,7 +9,14 @@ from forge.domain.blocks.catalogue import ALL, EXEC, EXEC_MEMORY_LIMIT, EXEC_TIM
 from forge.domain.blocks.check import ValuesCheck, check_names, check_values
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.content import has_path, path_problem
-from forge.domain.definitions import ENTRANT, TASK_FILE, Form, TaskDefinition, form_problems
+from forge.domain.definitions import (
+    DEFAULT_MAX_SIZE,
+    ENTRANT,
+    TASK_FILE,
+    Form,
+    TaskDefinition,
+    form_problems,
+)
 from forge.domain.grading import Machine
 from forge.domain.plan_basics import PLANS_FOLDER, SECRET_NAME
 from forge.domain.port_values import is_reserved, scalar_to_text, type_in_words
@@ -69,12 +76,16 @@ class _Secret:
 
 @dataclass
 class _Axis:
-    """An axis as bound: its inputs that read, by their column, and its rows."""
+    """An axis as bound: its inputs that read, by their column, its rows,
+    and each tuple's title and size, none where the tuple gives none.
+    """
 
     index: int
     columns: dict[int, str]
     rows: list[tuple[object, ...]]
     given_as: list[object]
+    titles: list[str | None]
+    sizes: list[int | None]
 
 
 class _Binder:
@@ -139,7 +150,7 @@ class _Binder:
             else:
                 self.settings[name] = given
         for index, axis in enumerate(self.task.repeat):
-            self._axis(index, axis.inputs, axis.rows, axis.tuples)
+            self._axis(index, axis.inputs, axis.rows, axis.tuples, axis.titles, axis.sizes)
         for name, wanted in declared.items():
             if name not in self.where and not wanted.optional:
                 self.refuse(
@@ -155,13 +166,21 @@ class _Binder:
             )
 
     def _entrant(
-        self, at: Path, name: str, wanted: RunInput, form: Mapping[str, Any], parts: int | None
+        self,
+        at: Path,
+        name: str,
+        wanted: RunInput,
+        form: Mapping[str, Any],
+        parts: int | None,
+        part_details: tuple[tuple[str | None, int], ...] | None = None,
     ) -> None:
         problems = form_problems(form, wanted.type.value, wanted.options)
         for path, message in problems:
             self.refuse((*at, ENTRANT, *path), message)
         details = Form() if problems else Form.model_validate(form)
-        self.entrant[name] = EntrantInput(name, wanted.type, wanted.options, details, parts)
+        self.entrant[name] = EntrantInput(
+            name, wanted.type, wanted.options, details, parts, part_details
+        )
 
     def _setting_problem(self, wanted: RunInput, given: object) -> str | None:
         if isinstance(given, dict) and "secret" in given:
@@ -188,6 +207,8 @@ class _Binder:
         names: Sequence[str],
         rows: list[tuple[object, ...]],
         given_as: list[object],
+        titles: list[str | None],
+        sizes: list[int | None],
     ) -> None:
         declared = self.workflow.inputs
         columns: dict[int, str] = {}
@@ -209,7 +230,7 @@ class _Binder:
             values = [row[column] for row in rows]
             by_entrant = [value == ENTRANT for value in values]
             if all(by_entrant):
-                self._entrant(at, name, wanted, {}, len(rows))
+                self._entrant(at, name, wanted, {}, len(rows), _part_details(titles, sizes))
                 continue
             if any(by_entrant):
                 first = by_entrant.index(not by_entrant[0])
@@ -224,7 +245,7 @@ class _Binder:
                 if problem is not None:
                     self.refuse(_cell(index, row, column, name, given_as[row]), problem)
             self.repeated[name] = values
-        self.axes.append(_Axis(index, columns, rows, given_as))
+        self.axes.append(_Axis(index, columns, rows, given_as, titles, sizes))
 
     # 8.2: the runs
 
@@ -267,7 +288,10 @@ class _Binder:
         taken = [int(each[1:]) for each in ids.values() if each[1:].isdigit()]
         following = max(taken, default=0) + 1
         runs: list[Run] = []
-        for combination in itertools.product(*keyed):
+        titled = [axis.titles for axis in self.axes]
+        for combination, chosen in zip(
+            itertools.product(*keyed), itertools.product(*titled), strict=True
+        ):
             key: dict[str, object] = {}
             for part in combination:
                 key.update(part)
@@ -275,7 +299,8 @@ class _Binder:
             if text not in ids:
                 ids[text] = f"r{following}"
                 following += 1
-            runs.append(Run(ids[text], key, False))
+            present = tuple(chosen)
+            runs.append(Run(ids[text], key, False, present if any(present) else None))
         self.ids = ids
         return runs
 
@@ -895,3 +920,17 @@ class _Binder:
                 f"{said}, and entrants have submitted, so which inputs are theirs, and of what "
                 "type, cannot change.",
             )
+
+
+def _part_details(
+    titles: list[str | None], sizes: list[int | None]
+) -> tuple[tuple[str | None, int], ...] | None:
+    """Each part's title and largest size, or none when no tuple of the
+    column names either. A tuple without its own size takes the default.
+    """
+    if all(title is None for title in titles) and all(size is None for size in sizes):
+        return None
+    return tuple(
+        (title, size if size is not None else DEFAULT_MAX_SIZE)
+        for title, size in zip(titles, sizes, strict=True)
+    )

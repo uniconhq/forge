@@ -137,7 +137,8 @@ def plan_runs(
         task_files=dict(sorted(task_files.items())),
         entrant=planner.entrant_entries(),
         runs=tuple(
-            RunEntry(id=run.id, key=_key_json(run.key), early=run.early) for run in task.runs
+            RunEntry(id=run.id, key=_key_json(run.key), early=run.early, titles=run.titles)
+            for run in task.runs
         ),
         steps=_named({**planner.run_steps(), **copied}),
         pipelines=pipelines,

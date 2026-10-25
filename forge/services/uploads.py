@@ -135,17 +135,19 @@ async def slot(
     size: int,
     sha256: str,
     content_type: str | None = None,
+    part: int | None = None,
 ) -> Slot:
     """A slot for one file of `size` bytes that goes at `filename` under the
     task's contestant input `input`, whose content hashes to `sha256`,
-    recorded as an upload of the signed-in person.
+    recorded as an upload of the signed-in person. `part` names which part
+    of an input given in parts; without it the largest part's size applies.
     """
     person = await submitters.person(ctx, session, task, submitting=True)
     _, workspace = await submitters.refuse(ctx, person)
     form = await entrant_view.form(ctx, person.published)
     entry = _file_input(form.fields, input)
     _refuse_file(entry, filename, size, sha256, content_type, form.tests)
-    limit = min(entry.max_size, FILE_CEILING)
+    limit = min(_part_limit(entry, part), FILE_CEILING)
     if size > limit:
         raise TooLarge(
             f"The file is larger than the {limit} bytes allowed. Choose a smaller file.",
@@ -168,7 +170,7 @@ async def slot(
         task,
         size,
         rules.open_bytes(
-            min(sum(field.max_size for field in form.fields if field.files), SUBMISSION_CEILING)
+            min(sum(_allowance(field) for field in form.fields if field.files), SUBMISSION_CEILING)
         ),
     )
     place = SubmissionPlace(workspace, task)
@@ -626,6 +628,27 @@ async def _refuse_open(
             limit=rules.OPEN_MAX,
             bytes=most_bytes,
         )
+
+
+def _part_limit(entry: Field, part: int | None) -> int:
+    """The most this file may hold. Without a part, the largest part's size,
+    which is the input's own when it is given once.
+    """
+    if part is None:
+        return entry.max_size
+    if entry.parts is None or not 1 <= part <= len(entry.parts):
+        message = f"There is no part {part} of {entry.id}."
+        raise InvalidInputs(message, errors=[{"input": entry.id, "message": message}])
+    return entry.parts[part - 1].max_size
+
+
+def _allowance(entry: Field) -> int:
+    """What one input may add to the open-upload allowance: every part's
+    size, or the input's own when it is given once.
+    """
+    if entry.parts:
+        return sum(part.max_size for part in entry.parts)
+    return entry.max_size
 
 
 def _file_input(declared: Sequence[Field], input: str) -> Field:

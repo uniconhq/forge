@@ -48,25 +48,40 @@ class PinnedWorkflow(Model):
     files: dict[str, FileFact] = Field(default_factory=dict)
 
 
+class PartDetails(Model):
+    """One part of an entrant input: the tuple's title, and the most that
+    part may hold, in bytes.
+    """
+
+    title: str | None = None
+    max_size: Annotated[int, Field(ge=1)]
+
+
 class EntrantEntry(Model):
     """An input the entrant gives: its type, an enum's options, the parts it
     is given in, and on a file or folder the most it may hold, in bytes.
+    `max_size` is the largest part's when the input is given in parts.
+    `part_details` is one per part, in order, when a part has a title or
+    its own size.
     """
 
     type: Type
     options: tuple[str, ...] | None = None
     parts: Annotated[int, Field(ge=1)] | None = None
     max_size: Annotated[int, Field(ge=1)] | None = None
+    part_details: tuple[PartDetails, ...] | None = None
 
 
 class RunEntry(Model):
-    """A run: its id, its key with a part as `{part: <n>}`, and whether it is
-    early.
+    """A run: its id, its key with a part as `{part: <n>}`, whether it is
+    early, and its tuples' titles, one per axis, none where that tuple
+    has none.
     """
 
     id: RunId
     key: dict[str, Any]
     early: bool
+    titles: tuple[str | None, ...] | None = None
 
 
 class Item(Model):

@@ -60,6 +60,7 @@ from tests.test_run_task import (
     MEAN,
     MEAN_MANIFEST,
     MEAN_PATHS,
+    TITLED,
     TOUR,
     TOUR_FILES,
     TOUR_PATHS,
@@ -495,6 +496,49 @@ def test_cartpole_is_one_early_pipeline(primitives: dict[str, PrimitiveDeclarati
         ("reward", ("weights",)),
         ("verdict", ("weights",)),
     ]
+
+
+def test_a_titled_tour_keeps_each_parts_title_and_size(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(planned(primitives, TITLED, TOUR, TOUR_FILES, TOUR_PATHS))
+
+    details = plan.entrant["route"].part_details or ()
+    assert [(part.title, part.max_size) for part in details] == [
+        ("Small grid", 10 * 1024 * 1024),
+        ("Big grid", 50 * 1024 * 1024),
+    ]
+    assert plan.entrant["route"].max_size == 50 * 1024 * 1024
+    assert [run.titles for run in plan.runs] == [("Small grid",), ("Big grid",)]
+    plain = ok(planned(primitives, TOUR_TASK, TOUR, TOUR_FILES, TOUR_PATHS))
+    assert run_plan_changes(_snapshot(plain), _snapshot(plan)) == (
+        "The largest size of part 2 of route changed.",
+    )
+    renamed = plan.model_copy(
+        update={
+            "runs": tuple(
+                run.model_copy(update={"titles": ("Other",)}) if run.id == "r1" else run
+                for run in plan.runs
+            )
+        }
+    )
+    assert run_plan_changes(_snapshot(plan), _snapshot(renamed)) == ()
+    route = plan.entrant["route"]
+    assert route.part_details is not None
+    added = route.part_details[-1].model_copy(update={"title": "Third", "max_size": 1024})
+    longer = plan.model_copy(
+        update={
+            "entrant": {
+                **plan.entrant,
+                "route": route.model_copy(
+                    update={"parts": 3, "part_details": (*route.part_details, added)}
+                ),
+            }
+        }
+    )
+    assert run_plan_changes(_snapshot(plan), _snapshot(longer)) == (
+        "The largest size of part 3 of route changed.",
+    )
 
 
 def test_tour_gives_each_run_its_own_part(primitives: dict[str, PrimitiveDeclaration]) -> None:

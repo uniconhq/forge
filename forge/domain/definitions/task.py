@@ -82,6 +82,38 @@ def _row_value_problem(value: object) -> str | None:
     return None
 
 
+_TUPLE_KEYS = frozenset({"title", "max_size"})
+TITLE_MOST = 60
+
+
+def _title_problem(value: object) -> str | None:
+    """What is wrong with a tuple's `title`, or none. The words for text
+    that is not one line are the ones `Line` uses.
+    """
+    if not isinstance(value, str):
+        return "This must be text."
+    if not value.strip():
+        return "This cannot be empty."
+    if "\n" in value or "\r" in value:
+        return "This must fit on one line."
+    if len(value) > TITLE_MOST:
+        return "A title is at most 60 characters. Make it shorter."
+    return None
+
+
+def _size_problem(value: object) -> str | None:
+    """What is wrong with a tuple's `max_size`, in the words an entrant
+    input's size uses, or none.
+    """
+    try:
+        size = parse_size(value)
+    except ValueError as exc:
+        return str(exc)
+    if size > FILE_CEILING:
+        return "This must be at most 2GB, the largest file Unicon takes."
+    return None
+
+
 class Axis(Model):
     """One axis of a run task's `repeat` (SIMPLER-CORE.md 8.2): the workflow
     inputs that move together, and one row per tuple, written as a list in
@@ -99,12 +131,45 @@ class Axis(Model):
         problems = Problems()
         seen: set[str] = set()
         for index, name in enumerate(self.inputs):
+            if name in _TUPLE_KEYS:
+                problems.add(
+                    ("inputs", index),
+                    f"{name} is a key a tuple may carry, so a repeated input can't be named "
+                    f"{name}. Rename the input in the workflow.",
+                )
             if name in seen:
                 problems.add(("inputs", index), already_listed(name))
             seen.add(name)
+        titles: set[str] = set()
         for index, row in enumerate(self.tuples):
             for path, message in self._row_problems(row):
                 problems.add(("tuples", index, *path), message)
+            if not isinstance(row, dict):
+                continue
+            if "title" in row:
+                problem = _title_problem(row["title"])
+                if problem is not None:
+                    problems.add(("tuples", index, "title"), problem)
+                elif row["title"] in titles:
+                    problems.add(
+                        ("tuples", index, "title"),
+                        f"Another tuple of this axis is already called {row['title']}. "
+                        "Choose another title.",
+                    )
+                else:
+                    titles.add(row["title"])
+            if "max_size" in row:
+                holds = any(row.get(name) == ENTRANT for name in self.inputs)
+                if not holds:
+                    problems.add(
+                        ("tuples", index, "max_size"),
+                        "A tuple carries max_size only when it holds entrant, which is the "
+                        "part that size limits. Remove it.",
+                    )
+                else:
+                    problem = _size_problem(row["max_size"])
+                    if problem is not None:
+                        problems.add(("tuples", index, "max_size"), problem)
         problems.raise_any()
         return self
 
@@ -116,6 +181,8 @@ class Axis(Model):
                 if name not in row:
                     found.append(((), f"This tuple gives no value for {name}."))
             for key, value in row.items():
+                if key in _TUPLE_KEYS:
+                    continue
                 if key not in self.inputs:
                     found.append(
                         (
@@ -164,6 +231,28 @@ class Axis(Model):
                 found.append(tuple(row))
             else:
                 found.append((row,))
+        return found
+
+    @property
+    def titles(self) -> list[str | None]:
+        """Each tuple's title, none where it gives none. A title is not a
+        value of the run.
+        """
+        found: list[str | None] = []
+        for row in self.tuples:
+            title = row.get("title") if isinstance(row, dict) else None
+            found.append(title if isinstance(title, str) else None)
+        return found
+
+    @property
+    def sizes(self) -> list[int | None]:
+        """Each tuple's `max_size` in bytes, none where it gives none."""
+        found: list[int | None] = []
+        for row in self.tuples:
+            if isinstance(row, dict) and "max_size" in row:
+                found.append(parse_size(row["max_size"]))
+            else:
+                found.append(None)
         return found
 
 

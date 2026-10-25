@@ -145,7 +145,7 @@ from forge.domain.sessions import Session
 from forge.domain.showing import GroupShown, filled_in, shown
 from forge.domain.step_data import RESULT_VERSION
 from forge.domain.submission_state import SubmissionState, told
-from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
+from forge.domain.submissions import Field, Submitted, SubmittedInput, UploadedFile
 from forge.domain.uploads import (
     POINTER_MAX,
     Door,
@@ -660,16 +660,36 @@ async def _chosen(
         )
     form = await entrant_view.form(ctx, person.published)
     declared = {entry.id: entry for entry in form.fields}
+    part_of = {
+        upload: (name, number)
+        for name, given in inputs.items()
+        for number, part in given.parts.items()
+        for upload in part.uploads
+    }
     for row in sorted(rows.values(), key=lambda row: str(row.id)):
         entry = declared.get(row.input_id or "")
-        if entry is not None and _size(row) > entry.max_size:
+        if entry is None:
+            continue
+        number = part_of.get(row.id, (None, None))[1]
+        limit = _part_limit(entry, number)
+        if _size(row) > limit:
+            which = f"{entry.id} part {number}" if number is not None else entry.id
             raise TooLarge(
-                f"A file for {entry.id} is larger than the {entry.max_size} bytes allowed. "
+                f"A file for {which} is larger than the {limit} bytes allowed. "
                 "Choose a smaller file.",
-                limit=entry.max_size,
+                limit=limit,
                 input=entry.id,
             )
     return rows
+
+
+def _part_limit(entry: Field, part: int | None) -> int:
+    """The most one file of `entry` may hold: the named part's size, or the
+    largest part's when the submit does not say which.
+    """
+    if part is not None and entry.parts is not None and 1 <= part <= len(entry.parts):
+        return entry.parts[part - 1].max_size
+    return entry.max_size
 
 
 def _uploads_of(inputs: Mapping[str, SubmittedInput]) -> list[uuid.UUID]:
@@ -1099,6 +1119,7 @@ async def _runs(
         released=released,
         everything=everything,
         late=scored.late,
+        titles=scored.held.titles,
     )
     runs, once = seen.runs, seen.once
     texts_at: dict[run_showing.TextAt, tuple[str, str]] = {}
