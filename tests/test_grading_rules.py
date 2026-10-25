@@ -48,6 +48,23 @@ def test_the_runners_examples_keep_the_contracts(contract: str) -> None:
     assert violation(example, contract) is None
 
 
+def test_the_runners_run_task_result_keeps_its_contract() -> None:
+    example = json.loads(sibling("runner", "examples", "result-v6.json").read_text("utf-8"))
+    assert violation(example, "result") is None
+    assert violation(example, "result", "result_v6") is None
+    assert violation(example, "result", "result_v5") is not None
+
+
+@pytest.mark.parametrize(
+    ("name", "kept"),
+    [("log", True), ("judge.feedback", True), ("judge.x.y", False), ("Judge.x", False)],
+)
+def test_a_text_is_named_by_its_output_or_a_programs(name: str, kept: bool) -> None:
+    example = json.loads(sibling("runner", "examples", "result-v6.json").read_text("utf-8"))
+    example["once"]["texts"]["log"]["name"] = name
+    assert (violation(example, "result", "result_v6") is None) is kept
+
+
 def test_a_document_that_breaks_a_contract_says_where() -> None:
     assert violation({"schema_version": 5}, "result") == (
         "at the top: 'stopped' is a required property"
@@ -105,6 +122,12 @@ def test_a_result_that_keeps_its_schema_is_kept() -> None:
 def test_a_result_that_is_not_one_to_keep_says_why(changes: dict[str, Any], problem: str) -> None:
     found = result_problem(result(**changes))
     assert found is not None and problem in found
+
+
+def test_a_run_task_result_is_never_kept_from_a_run() -> None:
+    example = json.loads(sibling("runner", "examples", "result-v6.json").read_text("utf-8"))
+    found = result_problem(example)
+    assert found is not None and "result.schema.json" in found
 
 
 def test_a_result_that_is_not_an_object_is_not_kept() -> None:

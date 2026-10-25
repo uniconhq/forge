@@ -54,6 +54,10 @@ TABLES = {
     "invites",
     "marks",
     "regrades",
+    "grading_steps",
+    "step_outputs",
+    "publication_objects",
+    "grading_reuses",
 }
 
 

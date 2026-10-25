@@ -30,6 +30,8 @@ COMPLETE = {
     "UNICON_S3_ENDPOINT": "http://garage:3900",
     "UNICON_S3_ACCESS_KEY": "GK-test",
     "UNICON_S3_SECRET_KEY": "s3-secret",
+    "UNICON_S3_LFS_ACCESS_KEY": "GK-lfs",
+    "UNICON_S3_LFS_SECRET_KEY": "lfs-secret",
     "UNICON_HARNESS_IMAGE": "ghcr.io/uniconhq/harness@sha256:" + "1" * 64,
     "UNICON_CLONE_IMAGE": "ghcr.io/uniconhq/clone@sha256:" + "2" * 64,
 }
@@ -50,6 +52,7 @@ def environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "UNICON_MACHINE_URL",
         "UNICON_S3_REGION",
         "UNICON_S3_RESULTS_BUCKET",
+        "UNICON_S3_LFS_BUCKET",
     ]:
         monkeypatch.delenv(name, raising=False)
     for name, value in COMPLETE.items():
@@ -238,7 +241,13 @@ def test_forgejo_without_the_object_store_names_its_variables(
 
 
 def test_the_fake_needs_no_object_store(environment: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("UNICON_S3_ENDPOINT", "UNICON_S3_ACCESS_KEY", "UNICON_S3_SECRET_KEY"):
+    for name in (
+        "UNICON_S3_ENDPOINT",
+        "UNICON_S3_ACCESS_KEY",
+        "UNICON_S3_SECRET_KEY",
+        "UNICON_S3_LFS_ACCESS_KEY",
+        "UNICON_S3_LFS_SECRET_KEY",
+    ):
         monkeypatch.delenv(name)
     monkeypatch.setenv("UNICON_FORGE", "fake")
     assert load_settings().forgejo is None
@@ -377,5 +386,11 @@ def test_forgejo_settings_given_whole_still_need_the_cis() -> None:
                 oauth_client_secret="secret",
                 platform_account="platform",
             ),
-            s3=S3Settings(endpoint="http://garage:3900", access_key="key", secret_key="secret"),
+            s3=S3Settings(
+                endpoint="http://garage:3900",
+                access_key="key",
+                secret_key="secret",
+                lfs_access_key="lfs-key",
+                lfs_secret_key="lfs-secret",
+            ),
         )

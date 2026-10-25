@@ -12,18 +12,23 @@ from forge.db.tables.names import Name
 from forge.db.tables.org_accounts import OrgAccount
 from forge.db.tables.regrades import Regrade
 from forge.db.tables.sessions import Session
+from forge.db.tables.steps import GradingReuse, GradingStep, PublicationObjects, StepOutput
 from forge.db.tables.uploads import Upload
 
 __all__ = [
     "Entrant",
     "EntrantMember",
     "Grading",
+    "GradingReuse",
+    "GradingStep",
     "Invite",
     "Mark",
     "Name",
     "OrgAccount",
+    "PublicationObjects",
     "Regrade",
     "Session",
+    "StepOutput",
     "Upload",
     "metadata",
 ]

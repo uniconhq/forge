@@ -32,19 +32,24 @@ def schema_text(contract: str) -> str:
 
 
 @cache
-def _validator(contract: str) -> Draft202012Validator:
+def _validator(contract: str, branch: str | None = None) -> Draft202012Validator:
     schema: dict[str, Any] = json.loads(schema_text(contract))
+    if branch is not None:
+        schema = {"$defs": schema["$defs"], "$ref": f"#/$defs/{branch}"}
     return Draft202012Validator(schema, format_checker=FormatChecker())
 
 
-def violation(document: object, contract: str) -> str | None:
+def violation(document: object, contract: str, branch: str | None = None) -> str | None:
     """The first way `document` breaks the contract, as `at <path>: <message>`,
-    or none when it keeps it. Errors are taken in the order of where they
-    are, so the same document always reports the same one, and the message
-    is cut short, since some repeat the whole value they failed on.
+    or none when it keeps it; with `branch`, the document the contract's
+    `$defs` names so, such as the primitive's `outputs_file`, so an error
+    says where in it rather than that it is none of the contract's
+    documents. Errors are taken in the order of where they are, so the
+    same document always reports the same one, and the message is cut
+    short, since some repeat the whole value they failed on.
     """
     errors = sorted(
-        _validator(contract).iter_errors(document),
+        _validator(contract, branch).iter_errors(document),
         key=lambda error: [str(part) for part in error.absolute_path],
     )
     if not errors:

@@ -1,0 +1,1371 @@
+"""The door a run task's Woodpecker steps ask for their work through, and
+the store of what they did (SIMPLER-CORE.md 11.6, 11.9, phase 4.8): each
+step's job, the links it uploads by, its done, the pipeline's report, and
+the files the forge serves a step itself.
+
+A step proves itself with a token of its own (`grading.step_token`), named
+for the grading, its attempt and the step, minted when phase 4.9 writes
+the step's settings (`mint`): `data_url`, the door, and `data_token`. The
+token's SHA-256 is kept on the step's row, compared in constant time, and
+the token is never logged nor put in any link. It works until the step
+says it is done, the pipeline's report ends every token of the grading, or
+`MACHINE_WAIT` and `RUN_TIMEOUT` after it was minted pass; a grading that
+has finished takes none. A grading runs one pipeline, so a step's job is
+built from that pipeline's step and no other's, and reuses nothing or
+reuses, for every step alike.
+
+A step's call holds its own row only, never the grading's, so no step
+waits on another's reads of the forge or the store; the report holds the
+grading's row and every step's before it builds the result, so a done
+said at the same moment is either in it or answered as already ended.
+
+**The job** (`step_job`) is built when the step asks, from the plan of the
+publication the grading grades against and its submission: the runs of
+the step still to do, each with its inputs placed, every file a download
+by a presigned link that lives `LINK_LIFE` and reads one object, or a copy
+from the submission the clone step checked out, and a folder with nothing
+in it made empty. A run is left out when its part was not given, when an
+earlier step it reads stopped it, with an outcome not accepted or no such
+output, and when the store holds its item, unless the grading reuses
+nothing; an earlier step that has given nothing at all is a fault of the
+grading, `Misconfigured`, never nothing to do. A step left with no run
+is answered that it has nothing to do (`step_job` gives none), which its
+wrapper ends on with success, so the later steps still run. A task or
+workflow file that is a large-file object of the
+publication's (`publication_objects`) is read from the forge's store by
+link; any other is served through the door (`step_file`), as is a
+`program.yaml` on a boxed primitive's manifest port, which the primitive
+reads as JSON. A task file of a step whose primitive takes the cache is
+placed under the item's cache folder, one per run, or for interact per
+program. A boxed step holds a block of box users while it runs.
+
+**Uploads and done.** The step lists what it will upload, and is handed a
+presigned PUT per file under `results/<grading>/steps/<step>/`, each
+signed for the SHA-256 it listed, so it writes those bytes or nothing,
+then and when said again; once done, the door reads its `outputs.json`,
+checked against what was listed, the contract and the step, asks the
+store that every file an output names is there as listed, and keeps each
+item in `step_outputs`. The first item of an org's key in a pipeline is
+the one reused, until a grading from scratch keeps one of that key,
+which is reused in its place; a step that faulted keeps nothing. A done
+said again is answered the same.
+
+**The report** builds result version 6 and finishes the grading: `done`,
+or `system_error` when a run's verdict is one. It is answered the same
+when said again. Telling anyone else, the retry by itself and the run log
+are phase 4.9's.
+"""
+
+import asyncio
+import hashlib
+import hmac
+import secrets
+import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import timedelta
+from decimal import Decimal
+from typing import Any, cast
+
+from pydantic import ValidationError
+from sqlalchemy import select, text, tuple_, update
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
+
+from forge.db.tables import Grading, GradingReuse, GradingStep, PublicationObjects, StepOutput
+from forge.domain import exact_json
+from forge.domain.content import named_by
+from forge.domain.contracts import violation
+from forge.domain.errors import (
+    Conflict,
+    GradingClosed,
+    InvalidCallback,
+    InvalidToken,
+    Misconfigured,
+    NotFound,
+    PortError,
+    Rejected,
+    Unavailable,
+)
+from forge.domain.grading import (
+    FINISHED,
+    MACHINE_WAIT,
+    RUN_TIMEOUT,
+    GradingStatus,
+    step_token,
+    token_hash,
+)
+from forge.domain.identity import PLATFORM
+from forge.domain.ids import SubmissionId, TaskId, VersionId, WorkflowId
+from forge.domain.plans import PLAN_PATH, spelled
+from forge.domain.primitives import MANIFEST, PROGRAMS
+from forge.domain.program_manifest import parse_program
+from forge.domain.publications import Publication
+from forge.domain.reports import ERROR_LIMIT, RESULT_MAX
+from forge.domain.run_plan import BOXED, PipelineKind, PipelineStep, RunPlan
+from forge.domain.step_data import (
+    BOX_BLOCK,
+    BOX_BLOCKS,
+    BOX_FIRST,
+    CONTRACT_VERSION,
+    JOB_VERSION,
+    LINK_LIFE,
+    NAME,
+    OUTPUTS_FILE,
+    REPORT_STEP,
+    Fault,
+    Faulted,
+    Found,
+    Item,
+    Upload,
+    holds,
+    is_batch,
+    is_step_name,
+    item_key,
+    output_type,
+    read_outputs,
+    read_uploads,
+    reads_from,
+    result_of,
+    results_key,
+    runs_of,
+    skipped_runs,
+    step_order,
+    without,
+)
+from forge.domain.submissions import FILES_FOLDER, SUBMISSION_FILE
+from forge.domain.uploads import POINTER_MOST, may_be_pointer, upload_info
+from forge.log import get_logger
+from forge.runtime.actions import action
+from forge.runtime.context import Context
+from forge.services import gradings
+from forge.services.runs import bearer
+
+log = get_logger(__name__)
+
+STEP_PATH = "/api/v1/gradings/{grading}/steps/{step}"
+"""A step's door, under the machine URL: GET is its job, POST the report
+step's report."""
+UPLOADS_PATH = STEP_PATH + "/uploads"
+DONE_PATH = STEP_PATH + "/done"
+FILE_PATH = STEP_PATH + "/files/{sha256}"
+"""A file the forge serves a step itself, by its SHA-256."""
+TOKEN_LIFE = MACHINE_WAIT + RUN_TIMEOUT
+"""How long a step's token works after it is minted at the latest: the
+longest a pipeline waits for a machine, and the longest it runs."""
+SUBMISSION_MAX = 1024 * 1024
+BOX_TRIES = 32
+HEADS = 16
+"""How many of a step's files the door asks the store about at once."""
+STORE_WAIT = timedelta(seconds=60)
+"""The longest done waits for the store to say every file is there."""
+WRONG_TOKEN = "The token is not this step's, or no longer works."
+NOT_TAKING = "The grading takes no more of its steps' work."
+SECRET_PLANNED = "The plan names a secret, which a save refuses until org secrets exist."
+MISSING = object()
+"""What an input is when an earlier step it reads has given nothing yet."""
+STOPPED = object()
+"""What an input is when an earlier step it reads gave what stops the
+run: an outcome not accepted, or no such output."""
+
+
+@dataclass(frozen=True, slots=True)
+class StepAccess:
+    """What a step's settings carry: its door and its token."""
+
+    data_url: str
+    token: str
+
+
+async def mint(
+    ctx: Context,
+    row: Grading,
+    *,
+    pipeline: PipelineKind,
+    step: str,
+    from_scratch: bool = False,
+) -> StepAccess:
+    """The settings of one Woodpecker step of the grading's `pipeline`, or
+    of its `report` step, kept so its door takes the token. Minting again
+    gives the same token. `NotFound` for a step the pipeline does not
+    hold, `Conflict` for a grading already running another pipeline or
+    whose steps were minted reusing otherwise than `from_scratch` says,
+    and `GradingClosed` for a grading that has finished or a step that is
+    done.
+    """
+    if GradingStatus(row.status) in FINISHED:
+        raise GradingClosed(NOT_TAKING)
+    plan, _ = await _plan(ctx, row)
+    if step != REPORT_STEP and step not in {held.name for held in plan.pipeline(pipeline)}:
+        raise NotFound(f"The {pipeline} pipeline has no step {step}.")
+    kept = {
+        found.step: found
+        for found in (
+            await ctx.db.execute(select(GradingStep).where(GradingStep.grading_id == row.id))
+        ).scalars()
+    }
+    if any(found.pipeline != pipeline for found in kept.values()):
+        raise Conflict("A grading runs one pipeline.")
+    if any(found.from_scratch != from_scratch for found in kept.values()):
+        raise Conflict("A grading reuses nothing, or reuses, for every step alike.")
+    token = step_token(ctx.settings.token_encryption_key_bytes, row.id, row.attempt, step)
+    found = kept.get(step)
+    if found is None:
+        ctx.db.add(
+            GradingStep(
+                grading_id=row.id,
+                step=step,
+                pipeline=pipeline,
+                token_hash=token_hash(token),
+                expires_at=ctx.now + TOKEN_LIFE,
+                from_scratch=from_scratch,
+            )
+        )
+        await ctx.db.flush()
+    elif found.done_at is not None:
+        raise GradingClosed(NOT_TAKING)
+    return StepAccess(data_url=_door(ctx, row.id, step), token=token)
+
+
+@action
+async def step_job(
+    ctx: Context, grading: uuid.UUID, step: str, authorization: str | None
+) -> bytes | None:
+    """The step's job, runner's `job.schema.json`, as JSON, or none when
+    nothing is left for the step to do: every run of it left out, which
+    the door answers 204. `InvalidToken` for a token that is not the
+    step's or no longer works, `GradingClosed` for a grading that has
+    finished.
+    """
+    row, held = await _open(ctx, grading, step, authorization)
+    if step == REPORT_STEP:
+        raise NotFound("The report step has no job.")
+    plan, publication = await _plan(ctx, row)
+    reader = await _Reader.load(ctx, row, held, plan)
+    built = await _Job(ctx, reader, held, publication).build()
+    if built is None:
+        log.info("steps.nothing_left", grading=str(row.id), step=step)
+        return None
+    log.info("steps.job", grading=str(row.id), step=step, items=len(held.items or []))
+    return built
+
+
+@action
+async def step_admits(
+    ctx: Context, grading: uuid.UUID, step: str, authorization: str | None
+) -> None:
+    """Nothing, once the token is the step's and still works, so a door
+    can check it before it reads a large body, which the token is not
+    over. It holds nothing. `InvalidToken` otherwise, and `GradingClosed`
+    for a grading that has finished.
+    """
+    await _open(ctx, grading, step, authorization, lock=False)
+
+
+@action
+async def step_uploads(
+    ctx: Context, grading: uuid.UUID, step: str, authorization: str | None, body: bytes
+) -> dict[str, Any]:
+    """A presigned PUT for each file the step lists, `{"files": {<path>:
+    <link>}}`, each signed for the file's SHA-256, which the step sends in
+    base64 in the header `x-amz-checksum-sha256`; the list kept for its
+    done. The same list sent again is answered again, with links for the
+    same bytes. `InvalidCallback` for a list naming a path the step may not
+    write, over what it may write, sent before the step asked for its job,
+    or other than the list it sent before, since a link for other bytes
+    would let an earlier link write over what done then reads.
+    """
+    row, held = await _open(ctx, grading, step, authorization)
+    if held.job_at is None or step == REPORT_STEP:
+        raise InvalidCallback("The step uploads after it has asked for its job.")
+    plan, _ = await _plan(ctx, row)
+    listed = read_uploads(
+        body,
+        item_mb=_held_step(plan, held).limits.output_mb,
+        items=len(held.items or []),
+    )
+    kept = {path: {"sha256": up.sha256, "size": up.size} for path, up in listed.items()}
+    if held.uploads is not None and held.uploads != kept:
+        raise InvalidCallback("The step listed other uploads before, and keeps to that list.")
+    held.uploads = kept
+    objects = ctx.forge.objects
+
+    def signed() -> dict[str, str]:
+        return {
+            path: objects.put_url(
+                results_key(row.id, step, path), expires_in=LINK_LIFE, sha256=up.sha256
+            )
+            for path, up in listed.items()
+        }
+
+    return {"files": await asyncio.to_thread(signed)}
+
+
+@action
+async def step_done(
+    ctx: Context, grading: uuid.UUID, step: str, authorization: str | None, body: bytes
+) -> None:
+    """The step's word that its uploads are in: its `outputs.json` read and
+    its items kept, or its fault. Its token works no more. Said again, it
+    is answered the same.
+    """
+    row, held = await _proven(ctx, grading, step, authorization)
+    if held.done_at is not None:
+        return
+    _refuse_closed(ctx, row, held)
+    if step == REPORT_STEP or held.uploads is None:
+        raise InvalidCallback("The step lists its uploads before it is done.")
+    plan, _ = await _plan(ctx, row)
+    pipeline_step = _held_step(plan, held)
+    run_step = plan.steps[pipeline_step.step]
+    declared = {path: (entry["sha256"], entry["size"]) for path, entry in held.uploads.items()}
+    items = [(run, key) for run, key in held.items or []]
+    try:
+        content = await _outputs_file(ctx, row.id, step, declared[OUTPUTS_FILE])
+        listed = {path: Upload(sha256, size) for path, (sha256, size) in declared.items()}
+        written = read_outputs(
+            content, run_step, [run for run, _ in items], is_batch(pipeline_step), listed
+        )
+        named = {path: up for item in written for path, up in item.files.items()}
+        await _check_stored(ctx, row.id, step, named)
+    except Fault as fault:
+        held.fault = str(fault).replace("\x00", "")[:ERROR_LIMIT]
+        log.warning("steps.faulted", grading=str(row.id), step=step, fault=held.fault)
+    else:
+        keys = dict(items)
+        org = str(gradings.org_of(row))
+        for item in written:
+            await _keep(
+                ctx,
+                StepOutput(
+                    id=uuid.uuid4(),
+                    org_id=org,
+                    key=keys[item.run],
+                    pipeline=held.pipeline,
+                    reusable=True,
+                    grading_id=row.id,
+                    step=step,
+                    run=item.run,
+                    outputs=item.outputs,
+                    files={
+                        path: {
+                            "object": results_key(row.id, step, path),
+                            "sha256": up.sha256,
+                            "size": up.size,
+                        }
+                        for path, up in item.files.items()
+                    },
+                    measured_at=ctx.now,
+                ),
+                replace=held.from_scratch,
+            )
+    held.done_at = ctx.now
+    held.box_first = None
+    await ctx.db.flush()
+    log.info("steps.done", grading=str(row.id), step=step, faulted=held.fault is not None)
+
+
+@action
+async def step_report(
+    ctx: Context, grading: uuid.UUID, step: str, authorization: str | None, body: bytes
+) -> GradingStatus:
+    """The report step's word that the pipeline has ended: the result
+    built and the grading finished, every token of it ended. Said again,
+    it is answered the same.
+    """
+    if step != REPORT_STEP:
+        raise NotFound("Only the report step reports.")
+    row, held = await _proven(ctx, grading, step, authorization)
+    if held.done_at is None:
+        _refuse_closed(ctx, row, held)
+        held_row = await gradings.find(ctx, grading, lock=True)
+        assert held_row is not None
+        row = held_row
+        await ctx.db.execute(
+            select(GradingStep)
+            .where(GradingStep.grading_id == row.id)
+            .order_by(GradingStep.step)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        try:
+            document = exact_json.loads(body)
+        except UnicodeDecodeError, ValueError, RecursionError:
+            document = None
+        if not isinstance(document, dict):
+            raise InvalidCallback("The report is a JSON object.")
+        await conclude(ctx, row, _kind(held))
+        await ctx.db.execute(
+            update(GradingStep)
+            .where(GradingStep.grading_id == row.id)
+            .values(done_at=ctx.now, box_first=None)
+            .execution_options(synchronize_session=False)
+        )
+        held.done_at = ctx.now
+        await ctx.db.flush()
+    return GradingStatus(row.status)
+
+
+@action
+async def step_file(
+    ctx: Context, grading: uuid.UUID, step: str, sha256: str, authorization: str | None
+) -> bytes:
+    """A file the step's job names that the forge serves itself, by its
+    SHA-256. `NotFound` for one its job does not name. It holds no row, so
+    a step's files are served side by side."""
+    row, held = await _open(ctx, grading, step, authorization, lock=False)
+    source = (held.served or {}).get(sha256)
+    if source is None:
+        raise NotFound("The step's job names no such file.")
+    content = await _served(ctx, row, source)
+    if hashlib.sha256(content).hexdigest() != sha256:
+        raise Misconfigured("A file the forge serves a step is not what its plan pinned.")
+    return content
+
+
+async def pipeline_to_run(
+    ctx: Context, row: Grading, pipeline: PipelineKind, *, from_scratch: bool = False
+) -> tuple[PipelineStep, ...]:
+    """The Woodpecker steps of the grading's `pipeline` left to run: each
+    whose items are all done taken out, and the steps that waited for it
+    waiting for what it waited for. An item is done when the store holds
+    it, when its part was not given, and when an earlier step it reads
+    gave nothing accepted, as its job leaves it out. Every step, from
+    scratch. None left means the pipeline need not run; `conclude` builds
+    its result.
+    """
+    plan, _ = await _plan(ctx, row)
+    steps = plan.pipeline(pipeline)
+    if from_scratch:
+        return steps
+    reader = await _Reader.open(ctx, row, pipeline, plan, from_scratch=False)
+    stored: list[str] = []
+    for held in steps:
+        runs = held.runs if held.runs is not None else (None,)
+        for run in runs:
+            if run in reader.skipped or await reader.stopped(held.step, run):
+                continue
+            if await reader.output_of(held.step, run) is None:
+                break
+        else:
+            stored.append(held.name)
+    return without(steps, stored)
+
+
+async def conclude(ctx: Context, row: Grading, pipeline: PipelineKind) -> None:
+    """Build result version 6 of the grading's `pipeline` from what its
+    steps and the store hold, keep it and finish the grading: `done`, or
+    `system_error` with the first fault, or saying the result is over its
+    bound. A grading that has finished is left as it is.
+    """
+    if GradingStatus(row.status) in FINISHED:
+        return
+    plan, _ = await _plan(ctx, row)
+    reader = await _Reader.open(ctx, row, pipeline, plan, from_scratch=None)
+    faults = {
+        held.step: held.fault
+        for held in (
+            await ctx.db.execute(select(GradingStep).where(GradingStep.grading_id == row.id))
+        ).scalars()
+        if held.fault is not None
+    }
+    graded = {run.id for run in runs_of(plan, pipeline)} - reader.skipped
+    found: dict[Item, Found | Faulted] = {}
+    for step in step_order(plan, pipeline):
+        held_runs = plan.steps[step].items or {}
+        for run in [None] if plan.steps[step].once else sorted(graded.intersection(held_runs)):
+            name = _holding(plan, pipeline, step, run)
+            if name is not None and name in faults:
+                found[(step, run)] = Faulted(f"The step {name} faulted: {faults[name]}")
+                continue
+            got = await reader.output_of(step, run)
+            if got is not None:
+                found[(step, run)] = Found(str(got.id), got.outputs)
+    result = result_of(plan, pipeline, reader.skipped, found)
+    problem = _result_problem(result)
+    if problem is not None:
+        gradings.finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=problem)
+    elif result["error"] is not None:
+        row.result = result
+        gradings.finish(
+            ctx, row, GradingStatus.SYSTEM_ERROR, error=str(result["error"])[:ERROR_LIMIT]
+        )
+    else:
+        row.result = result
+        gradings.finish(ctx, row, GradingStatus.DONE)
+    log.info("steps.concluded", grading=str(row.id), status=row.status)
+
+
+# Who asks
+
+
+async def _proven(
+    ctx: Context, grading: uuid.UUID, step: str, authorization: str | None, *, lock: bool = True
+) -> tuple[Grading, GradingStep]:
+    """The grading, as read, and its step, held unless not to `lock`, once
+    the token proves it the step's: checked on the row as read, then again
+    once held. The token is compared by its SHA-256 in constant time. A
+    step name no plan could give is refused before anything is read.
+    `InvalidToken` otherwise.
+    """
+    token = bearer(authorization) if is_step_name(step) else None
+    if token is not None:
+        given = token_hash(token)
+        found = await _step(ctx, grading, step)
+        if found is not None and hmac.compare_digest(found.token_hash, given):
+            row = await gradings.find(ctx, grading)
+            held = await _step(ctx, grading, step, lock=True) if lock else found
+            if row is not None and held is not None and hmac.compare_digest(held.token_hash, given):
+                return row, held
+    log.info("steps.refused", grading=str(grading), reason="token")
+    raise InvalidToken(WRONG_TOKEN)
+
+
+async def _open(
+    ctx: Context, grading: uuid.UUID, step: str, authorization: str | None, *, lock: bool = True
+) -> tuple[Grading, GradingStep]:
+    """`_proven`, for a step still at work."""
+    row, held = await _proven(ctx, grading, step, authorization, lock=lock)
+    if held.done_at is not None:
+        log.info("steps.refused", grading=str(grading), reason="done")
+        raise InvalidToken(WRONG_TOKEN)
+    _refuse_closed(ctx, row, held)
+    return row, held
+
+
+def _refuse_closed(ctx: Context, row: Grading, held: GradingStep) -> None:
+    if ctx.now >= held.expires_at:
+        log.info("steps.refused", grading=str(row.id), reason="expired")
+        raise InvalidToken(WRONG_TOKEN)
+    if GradingStatus(row.status) in FINISHED:
+        log.info("steps.refused", grading=str(row.id), reason="closed")
+        raise GradingClosed(NOT_TAKING)
+
+
+async def _step(
+    ctx: Context, grading: uuid.UUID, step: str, *, lock: bool = False
+) -> GradingStep | None:
+    query = select(GradingStep).where(GradingStep.grading_id == grading, GradingStep.step == step)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    return (await ctx.db.execute(query)).scalar_one_or_none()
+
+
+def _door(ctx: Context, grading: uuid.UUID, step: str) -> str:
+    return (
+        f"{str(ctx.settings.machine_url).rstrip('/')}{STEP_PATH.format(grading=grading, step=step)}"
+    )
+
+
+# What the grading reads
+
+
+async def _plan(ctx: Context, row: Grading) -> tuple[RunPlan, Publication]:
+    """The run plan of the publication the grading grades against."""
+    try:
+        publication = await gradings.publication_of(ctx, row)
+        found = await ctx.forge.content.read_file(
+            PLATFORM, TaskId(row.task_id), PLAN_PATH, at=publication.version
+        )
+        return RunPlan.from_bytes(found.content), publication
+    except (NotFound, ValidationError) as exc:
+        raise Misconfigured(f"The grading has no run plan: {type(exc).__name__}") from None
+
+
+def _held_step(plan: RunPlan, held: GradingStep) -> PipelineStep:
+    for found in plan.pipeline(_kind(held)):
+        if found.name == held.step:
+            return found
+    raise Misconfigured(f"The plan's {held.pipeline} pipeline has no step {held.step}.")
+
+
+def _kind(held: GradingStep) -> PipelineKind:
+    """The pipeline a step runs in, which its row's check keeps one."""
+    return cast(PipelineKind, held.pipeline)
+
+
+def _holding(plan: RunPlan, pipeline: PipelineKind, step: str, run: str | None) -> str | None:
+    """The Woodpecker step of `pipeline` that does `step` for `run`."""
+    for held in plan.pipeline(pipeline):
+        if held.step == step and (held.runs is None or run in held.runs):
+            return held.name
+    return None
+
+
+class _Reader:
+    """What one grading's items read, each worked out once: the submission's
+    inputs, the runs it skips, each item's key, and each item's stored
+    outputs, its own first, then the store's of the org, from the
+    pipelines its own may reuse, pinned to the one its first read found.
+    From scratch, a step of its own pipeline is read only from its own.
+    """
+
+    def __init__(
+        self,
+        ctx: Context,
+        row: Grading,
+        pipeline: PipelineKind,
+        plan: RunPlan,
+        inputs: Mapping[str, Any],
+        from_scratch: bool | None,
+    ) -> None:
+        self.ctx = ctx
+        self.row = row
+        self.pipeline = pipeline
+        self.plan = plan
+        self.inputs = inputs
+        self.from_scratch = from_scratch
+        self.skipped = skipped_runs(plan, inputs)
+        self.org = str(gradings.org_of(row))
+        self._keys: dict[Item, str | None] = {}
+        self._stopped: set[Item] = set()
+        self._outputs: dict[Item, StepOutput | None] = {}
+        self._hashes: dict[str, str] = {}
+        self._own: dict[str, StepOutput] = {}
+        self._pins: dict[str, uuid.UUID] = {}
+
+    @classmethod
+    async def load(cls, ctx: Context, row: Grading, held: GradingStep, plan: RunPlan) -> _Reader:
+        return await cls.open(ctx, row, _kind(held), plan, from_scratch=held.from_scratch)
+
+    @classmethod
+    async def open(
+        cls,
+        ctx: Context,
+        row: Grading,
+        pipeline: PipelineKind,
+        plan: RunPlan,
+        *,
+        from_scratch: bool | None,
+    ) -> _Reader:
+        """`from_scratch` none reads it from the grading's steps."""
+        if from_scratch is None:
+            from_scratch = bool(
+                (
+                    await ctx.db.execute(
+                        select(GradingStep.from_scratch).where(
+                            GradingStep.grading_id == row.id, GradingStep.from_scratch
+                        )
+                    )
+                ).first()
+            )
+        try:
+            content = await ctx.forge.workspaces.read_submission_file(
+                PLATFORM, SubmissionId(row.submission_id), SUBMISSION_FILE, max_size=SUBMISSION_MAX
+            )
+            document = exact_json.loads(content)
+        except (NotFound, Rejected, ValueError) as exc:
+            raise Misconfigured(f"The submission does not read: {type(exc).__name__}") from None
+        if not isinstance(document, dict) or document.get("schema_version") != 6:
+            raise Misconfigured("The submission is not a run task's.")
+        reader = cls(ctx, row, pipeline, plan, document.get("inputs") or {}, from_scratch)
+        for own in (
+            await ctx.db.execute(select(StepOutput).where(StepOutput.grading_id == row.id))
+        ).scalars():
+            reader._own.setdefault(own.key, own)
+        pins = await ctx.db.execute(
+            select(GradingReuse.key, GradingReuse.output_id).where(
+                GradingReuse.grading_id == row.id
+            )
+        )
+        reader._pins = {pin.key: pin.output_id for pin in pins.all()}
+        return reader
+
+    async def key_of(self, step: str, run: str | None) -> str | None:
+        """The key of `step`'s item for `run`, none when it reads an earlier
+        step's output that is not there or not accepted."""
+        item = (step, None if self.plan.steps[step].once else run)
+        if item not in self._keys:
+            run_step = self.plan.steps[step]
+            if run_step.once or run is None:
+                inputs = run_step.inputs or {}
+            else:
+                inputs = (run_step.items or {})[run].inputs
+            canonical = await self._ports(inputs, item[1])
+            if canonical is STOPPED:
+                self._stopped.add(item)
+            missing = canonical is MISSING or canonical is STOPPED
+            self._keys[item] = None if missing else item_key(run_step.image, canonical)
+        return self._keys[item]
+
+    async def stopped(self, step: str, run: str | None) -> bool:
+        """Whether `step`'s item for `run` will never be done: an earlier
+        step it reads gave what stops the run."""
+        await self.key_of(step, run)
+        return (step, None if self.plan.steps[step].once else run) in self._stopped
+
+    async def output_of(self, step: str, run: str | None) -> StepOutput | None:
+        """`step`'s stored item for `run`, its own grading's first."""
+        item = (step, None if self.plan.steps[step].once else run)
+        if item not in self._outputs:
+            key = await self.key_of(*item)
+            found = self._own.get(key) if key is not None else None
+            mine = self.from_scratch and holds(self.plan, self.pipeline, *item)
+            if found is None and key is not None and not mine:
+                found = await self._stored(key)
+            self._outputs[item] = found
+        return self._outputs[item]
+
+    async def _stored(self, key: str) -> StepOutput | None:
+        """The store's item of `key` for this grading: the one its first
+        read resolved to, kept in `grading_reuses`, so a grading from
+        scratch that makes another the reused one changes nothing here."""
+        ctx, pinned = self.ctx, self._pins.get(key)
+        if pinned is None:
+            rows = (
+                await ctx.db.execute(
+                    select(StepOutput).where(
+                        StepOutput.org_id == self.org,
+                        StepOutput.key == key,
+                        StepOutput.reusable,
+                        StepOutput.pipeline.in_(reads_from(self.pipeline)),
+                    )
+                )
+            ).scalars()
+            order = reads_from(self.pipeline)
+            found = min(rows, key=lambda each: order.index(each.pipeline), default=None)
+            if found is None:
+                return None
+            await ctx.db.execute(
+                insert(GradingReuse)
+                .values(grading_id=self.row.id, key=key, output_id=found.id)
+                .on_conflict_do_nothing(index_elements=["grading_id", "key"])
+            )
+            pinned = await ctx.db.scalar(
+                select(GradingReuse.output_id).where(
+                    GradingReuse.grading_id == self.row.id, GradingReuse.key == key
+                )
+            )
+            assert pinned is not None
+            self._pins[key] = pinned
+            if pinned == found.id:
+                return found
+        return await ctx.db.get(StepOutput, pinned)
+
+    async def _ports(self, values: Mapping[str, Any], run: str | None) -> Any:
+        """Each of `values` by `canon`: `STOPPED` when one is, else
+        `MISSING` when one is."""
+        found: dict[str, Any] = {}
+        for name, value in values.items():
+            found[name] = await self.canon(value, run)
+            if found[name] is STOPPED:
+                return STOPPED
+        return MISSING if any(value is MISSING for value in found.values()) else found
+
+    async def canon(self, value: Any, run: str | None) -> Any:
+        """`value` with every file by its content; `MISSING` when an
+        earlier step it reads has given nothing, `STOPPED` when what it
+        gave stops the run."""
+        if not isinstance(value, dict):
+            return value
+        if "files" in value:
+            files = await self._ports(value["files"], run)
+            return files if files is MISSING or files is STOPPED else {"files": files}
+        if PROGRAMS in value:
+            programs: dict[str, Any] = {}
+            for program, inputs in value[PROGRAMS].items():
+                programs[program] = await self._ports(inputs, run)
+                if programs[program] is STOPPED:
+                    return STOPPED
+            if any(found is MISSING for found in programs.values()):
+                return MISSING
+            return {PROGRAMS: programs}
+        if set(value) == {"value"} or "links" in value or "secret" in value:
+            return value
+        if "task" in value:
+            return _facts(self.plan.task_files, value["task"])
+        if "workflow" in value:
+            return _facts(self.plan.workflow.files, value["workflow"])
+        if "template" in value:
+            parts = [self.entrant_value(part) for part in value["parts"]]
+            return {"value": value["template"].format(*[spelled(part) for part in parts])}
+        if "entrant" in value:
+            return await self._entrant(value)
+        if "step" in value:
+            return await self._output(value, run)
+        raise Misconfigured(f"The plan holds a value this forge cannot read: {sorted(value)}")
+
+    def given(self, value: Mapping[str, Any]) -> Any:
+        """What the submission gives for an entrant value, or its part."""
+        given = self.inputs.get(value["entrant"])
+        if "part" in value and isinstance(given, dict):
+            given = (given.get("parts") or {}).get(str(value["part"]))
+        if not isinstance(given, dict):
+            raise Misconfigured(f"The submission gives nothing for {value['entrant']}.")
+        return given
+
+    def entrant_value(self, value: Mapping[str, Any]) -> Any:
+        given = self.given(value)
+        if "value" not in given:
+            raise Misconfigured(f"The submission gives no value for {value['entrant']}.")
+        return given["value"]
+
+    def entrant_root(self, value: Mapping[str, Any]) -> str:
+        """The folder of the submission an entrant input's files are in."""
+        root = f"{FILES_FOLDER}/{value['entrant']}/"
+        return f"{root}{value['part']}/" if "part" in value else root
+
+    def entrant_files(self, value: Mapping[str, Any]) -> list[str]:
+        given = self.given(value)
+        root = self.entrant_root(value)
+        files = given.get("files")
+        if not isinstance(files, list) or not all(
+            isinstance(path, str)
+            and path.startswith(root)
+            and all(segment not in ("", ".", "..") for segment in path.split("/"))
+            for path in files
+        ):
+            raise Misconfigured(f"The submission's files for {value['entrant']} do not read.")
+        return files
+
+    async def _entrant(self, value: Mapping[str, Any]) -> Any:
+        given = self.given(value)
+        if "value" in given:
+            return {"value": given["value"]}
+        entry = self.plan.entrant[value["entrant"]]
+        root = self.entrant_root(value)
+        hashes = {
+            path.removeprefix(root): await self._hash(path, entry.max_size)
+            for path in self.entrant_files(value)
+        }
+        if entry.type == "file":
+            return {"file": next(iter(hashes.values()), "")}
+        return {"folder": hashes}
+
+    async def _hash(self, path: str, max_size: int | None) -> str:
+        """An entrant file's SHA-256: an upload's own, from its pointer."""
+        if path not in self._hashes:
+            content = await self.ctx.forge.workspaces.read_submission_blob(
+                PLATFORM,
+                SubmissionId(self.row.submission_id),
+                path,
+                max_size=max(max_size or 0, POINTER_MOST),
+            )
+            info = upload_info(content)
+            self._hashes[path] = info.digest if info else hashlib.sha256(content).hexdigest()
+        return self._hashes[path]
+
+    async def _output(self, value: Mapping[str, Any], run: str | None) -> Any:
+        step, name = value["step"], value["output"]
+        found = await self.output_of(step, run)
+        if found is None:
+            return STOPPED if await self.stopped(step, run) else MISSING
+        if found.outputs.get("outcome") != "accepted" or name not in found.outputs:
+            return STOPPED
+        given = found.outputs[name]
+        declared = output_type(self.plan.steps[step], name)
+        if declared is not None and declared[0] == "file":
+            return {"file": found.files[given["file"]]["sha256"]}
+        if declared is not None and declared[0] == "folder":
+            under = given["folder"].rstrip("/") + "/"
+            return {
+                "folder": {
+                    path.removeprefix(under): fact["sha256"]
+                    for path, fact in found.files.items()
+                    if path.startswith(under)
+                }
+            }
+        return {"value": given}
+
+
+def _facts(files: Mapping[str, Any], entry: str) -> dict[str, Any]:
+    if entry.endswith("/"):
+        return {
+            "folder": {
+                path.removeprefix(entry): files[path].sha256
+                for path in sorted(named_by(files, entry))
+            }
+        }
+    return {"file": files[entry].sha256}
+
+
+# The job
+
+
+class _CacheItem:
+    """One item folder of the step's cache: random, made when first used,
+    each name in it once."""
+
+    def __init__(self) -> None:
+        self.folder: str | None = None
+        self.names: set[str] = set()
+
+    def path(self, name: str | None) -> str:
+        if self.folder is None:
+            self.folder = secrets.token_hex(8)
+        if name is None or name in self.names or not NAME.fullmatch(name):
+            name = secrets.token_hex(8)
+        self.names.add(name)
+        return f"cache/{self.folder}/{name}"
+
+
+class _Job:
+    """One step's job, built from the plan's items for its runs."""
+
+    def __init__(
+        self, ctx: Context, reader: _Reader, held: GradingStep, publication: Publication
+    ) -> None:
+        self.ctx = ctx
+        self.reader = reader
+        self.held = held
+        self.plan = reader.plan
+        self.publication = publication
+        self.pipeline_step = _held_step(self.plan, held)
+        self.step = self.plan.steps[self.pipeline_step.step]
+        self.boxed = self.step.primitive.partition("@")[0] in BOXED
+        self.door = _door(ctx, reader.row.id, held.step)
+        self.files: list[dict[str, Any]] = []
+        self.placed: dict[tuple[str, str], str] = {}
+        self.served: dict[str, dict[str, str]] = {}
+        """Each file the door serves the step, by SHA-256: where it is read
+        from and the SHA-256 the plan pinned it by, so serving it reads no
+        plan."""
+        self.objects: frozenset[str] = frozenset()
+
+    async def build(self) -> bytes | None:
+        """The job as JSON, none when no run of the step is left to do."""
+        reader, held = self.reader, self.held
+        items: list[tuple[str | None, str, Mapping[str, Any]]] = []
+        for run, inputs in self.plan.items_of(self.pipeline_step):
+            if run in reader.skipped:
+                continue
+            key = await reader.key_of(self.pipeline_step.step, run)
+            if key is None:
+                if await reader.stopped(self.pipeline_step.step, run):
+                    continue
+                raise Misconfigured(
+                    f"The step {held.step} reads a step that has given nothing"
+                    + (f" for the run {run}." if run else ".")
+                )
+            if not held.from_scratch and await reader.output_of(self.pipeline_step.step, run):
+                continue
+            items.append((run, key, inputs))
+        if not items:
+            return None
+        self.objects = await _objects(self.ctx, reader.row, self.plan, self.publication)
+        placed = [(run, await self._inputs(inputs, run)) for run, _, inputs in items]
+        if is_batch(self.pipeline_step):
+            given: dict[str, Any] = {
+                "schema_version": CONTRACT_VERSION,
+                "batch": [{"run": run, "inputs": inputs} for run, inputs in placed],
+            }
+        else:
+            given = {"schema_version": CONTRACT_VERSION, "inputs": placed[0][1]}
+        document: dict[str, Any] = {
+            "schema_version": JOB_VERSION,
+            "inputs": given,
+            "files": self.files,
+            "uploads": f"{self.door}/uploads",
+            "done": f"{self.door}/done",
+            "time_limit": Decimal(self.pipeline_step.limits.time_ms) / 1000,
+            "fail_on_non_accepted": self.step.once,
+        }
+        if self.boxed:
+            first = await _box_users(self.ctx, held)
+            document["box_users"] = {"first": first, "last": first + BOX_BLOCK - 1}
+        held.items = [[run, key] for run, key, _ in items]
+        held.served = self.served
+        held.job_at = held.job_at or self.ctx.now
+        await self.ctx.db.flush()
+        return exact_json.dumps(document).encode()
+
+    async def _inputs(self, inputs: Mapping[str, Any], run: str | None) -> dict[str, Any]:
+        item = _CacheItem()
+        return {
+            port: await self._value(value, run, item, manifest=port == MANIFEST)
+            for port, value in inputs.items()
+        }
+
+    async def _value(
+        self,
+        value: Mapping[str, Any],
+        run: str | None,
+        item: _CacheItem,
+        *,
+        name: str | None = None,
+        manifest: bool = False,
+    ) -> Any:
+        if set(value) == {"value"}:
+            return value["value"]
+        if "links" in value:
+            return value["links"]
+        if "secret" in value:
+            raise Misconfigured(SECRET_PLANNED)
+        if "files" in value:
+            return {
+                "files": {
+                    key: await self._value(each, run, item, name=key)
+                    for key, each in value["files"].items()
+                }
+            }
+        if PROGRAMS in value:
+            programs: dict[str, Any] = {}
+            for program, inputs in value[PROGRAMS].items():
+                own = _CacheItem()
+                programs[program] = {
+                    port: await self._value(each, run, own, manifest=port == MANIFEST)
+                    for port, each in inputs.items()
+                }
+            return {PROGRAMS: programs}
+        if "template" in value:
+            parts = [self.reader.entrant_value(part) for part in value["parts"]]
+            return value["template"].format(*[spelled(part) for part in parts])
+        if manifest and self.boxed and ("task" in value or "workflow" in value):
+            return {"file": await self._manifest(value)}
+        if "task" in value:
+            return self._task_file(value["task"], item, name)
+        if "workflow" in value:
+            return self._pinned("workflow", value["workflow"], self.plan.workflow.files)
+        if "entrant" in value:
+            return self._entrant(value)
+        if "step" in value:
+            return await self._output(value, run)
+        raise Misconfigured(f"The plan holds a value this forge cannot place: {sorted(value)}")
+
+    def _task_file(self, path: str, item: _CacheItem, name: str | None) -> dict[str, str]:
+        if not self.step.cache or path.endswith("/"):
+            return self._pinned("task", path, self.plan.task_files)
+        fact = self.plan.task_files[path]
+        placed = item.path(name)
+        self.files.append(
+            {
+                "path": placed,
+                "url": self._link("task", path, fact.sha256),
+                "sha256": fact.sha256,
+                "size": fact.size,
+                "cached": True,
+            }
+        )
+        return {"file": placed}
+
+    def _pinned(self, kind: str, entry: str, files: Mapping[str, Any]) -> dict[str, str]:
+        """A task's or workflow's file, or folder, placed under `in/` once
+        however many items read it."""
+        if not entry.endswith("/"):
+            return {
+                "file": self._download(
+                    (kind, entry),
+                    lambda: self._link(kind, entry, files[entry].sha256),
+                    files[entry].sha256,
+                    files[entry].size,
+                )
+            }
+        folder = self._folder()
+        for path in sorted(named_by(files, entry)):
+            fact = files[path]
+            self.files.append(
+                {
+                    "path": _under(folder, path.removeprefix(entry)),
+                    "url": self._link(kind, path, fact.sha256),
+                    "sha256": fact.sha256,
+                    "size": fact.size,
+                }
+            )
+        return self._filled(folder)
+
+    def _download(self, source: tuple[str, str], link: Any, sha256: str, size: int) -> str:
+        if source not in self.placed:
+            path = self._folder()
+            self.files.append({"path": path, "url": link(), "sha256": sha256, "size": size})
+            self.placed[source] = path
+        return self.placed[source]
+
+    def _link(self, kind: str, path: str, sha256: str) -> str:
+        """A task's or workflow's file by link: from the forge's large-file
+        store when it is one of the publication's objects, else through the
+        door."""
+        if sha256 in self.objects:
+            return self.ctx.forge.objects.lfs_get_url(sha256, expires_in=LINK_LIFE)
+        self.served[sha256] = self._source(kind, path, sha256)
+        return f"{self.door}/files/{sha256}"
+
+    def _source(self, kind: str, path: str, sha256: str) -> dict[str, str]:
+        """Where the door reads a file it serves: a task's at the
+        publication's version, a workflow's at the plan's commit."""
+        source = {"kind": kind, "path": path, "sha256": sha256}
+        if kind.endswith("task"):
+            return {**source, "at": self.publication.version}
+        return {**source, "workflow": self.plan.workflow.id, "commit": self.plan.workflow.commit}
+
+    async def _manifest(self, value: Mapping[str, Any]) -> str:
+        """A `program.yaml` on a manifest port, served as the JSON the
+        primitive reads."""
+        kind = "task" if "task" in value else "workflow"
+        files = self.plan.task_files if kind == "task" else self.plan.workflow.files
+        source = self._source(f"manifest_{kind}", value[kind], files[value[kind]].sha256)
+        content = await _served(self.ctx, self.reader.row, source)
+        sha256 = hashlib.sha256(content).hexdigest()
+        self.served[sha256] = source
+        return self._download(
+            ("manifest", sha256), lambda: f"{self.door}/files/{sha256}", sha256, len(content)
+        )
+
+    def _entrant(self, value: Mapping[str, Any]) -> Any:
+        given = self.reader.given(value)
+        if "value" in given:
+            return given["value"]
+        files = self.reader.entrant_files(value)
+        if self.plan.entrant[value["entrant"]].type == "file":
+            if len(files) != 1:
+                raise Misconfigured(f"The submission gives no one file for {value['entrant']}.")
+            workspace = files[0]
+            kind = "file"
+        else:
+            workspace = self.reader.entrant_root(value).rstrip("/")
+            kind = "folder"
+        source = ("workspace", workspace)
+        if source not in self.placed:
+            path = self._folder()
+            self.files.append(
+                {"path": path, "workspace": workspace} if files else {"path": path, "folder": True}
+            )
+            self.placed[source] = path
+        return {kind: self.placed[source]}
+
+    async def _output(self, value: Mapping[str, Any], run: str | None) -> Any:
+        found = await self.reader.output_of(value["step"], run)
+        if found is None:
+            raise Misconfigured(f"The step {value['step']} gave nothing for a run it keyed.")
+        given = found.outputs[value["output"]]
+        declared = output_type(self.plan.steps[value["step"]], value["output"])
+        if declared is None or declared[0] not in ("file", "folder"):
+            return given
+        objects = self.ctx.forge.objects
+        if declared[0] == "file":
+            fact = found.files[given["file"]]
+            return {
+                "file": self._download(
+                    ("object", fact["object"]),
+                    lambda: objects.get_url(fact["object"], expires_in=LINK_LIFE),
+                    fact["sha256"],
+                    fact["size"],
+                )
+            }
+        under = given["folder"].rstrip("/") + "/"
+        folder = self._folder()
+        for path, fact in sorted(found.files.items()):
+            if path.startswith(under):
+                self.files.append(
+                    {
+                        "path": _under(folder, path.removeprefix(under)),
+                        "url": objects.get_url(fact["object"], expires_in=LINK_LIFE),
+                        "sha256": fact["sha256"],
+                        "size": fact["size"],
+                    }
+                )
+        return self._filled(folder)
+
+    def _folder(self) -> str:
+        return f"in/{secrets.token_hex(8)}"
+
+    def _filled(self, folder: str) -> dict[str, str]:
+        """A folder an input names, made empty by the job when no file
+        was placed in it, so its path is there."""
+        if not any(entry["path"].startswith(f"{folder}/") for entry in self.files):
+            self.files.append({"path": folder, "folder": True})
+        return {"folder": folder}
+
+
+def _under(folder: str, relative: str) -> str:
+    """A file of a folder placed under `folder`, refused when a name in its
+    path is not one a job may place."""
+    segments = relative.split("/")
+    if not all(NAME.fullmatch(segment) for segment in segments):
+        raise Misconfigured(f"A folder a step reads holds a name a job cannot place: {relative!r}")
+    return "/".join([folder, *segments])
+
+
+async def _box_users(ctx: Context, held: GradingStep) -> int:
+    """The first of the step's block of box users, held until it is done
+    or its token expires: a block no step still at work holds."""
+    if held.box_first is not None:
+        return held.box_first
+    ended = (
+        select(GradingStep.grading_id, GradingStep.step)
+        .where(
+            GradingStep.box_first.is_not(None),
+            (GradingStep.done_at.is_not(None)) | (GradingStep.expires_at <= ctx.now),
+        )
+        .with_for_update(skip_locked=True)
+    )
+    await ctx.db.execute(
+        update(GradingStep)
+        .where(tuple_(GradingStep.grading_id, GradingStep.step).in_(ended))
+        .values(box_first=None)
+        .execution_options(synchronize_session=False)
+    )
+    for _ in range(BOX_TRIES):
+        first = BOX_FIRST + secrets.randbelow(BOX_BLOCKS) * BOX_BLOCK
+        try:
+            async with ctx.db.begin_nested():
+                held.box_first = first
+                await ctx.db.flush()
+            return first
+        except IntegrityError:
+            held.box_first = None
+    raise Unavailable("No block of box users is free. Try again in a moment.")
+
+
+async def _objects(
+    ctx: Context, row: Grading, plan: RunPlan, publication: Publication
+) -> frozenset[str]:
+    """The SHA-256 of every large-file object among the publication's planned
+    files, the task's and its workflow's, read once and kept."""
+    kept = await ctx.db.get(PublicationObjects, row.publication_id)
+    if kept is not None:
+        return frozenset(kept.objects)
+    found: dict[str, int] = {}
+    task = TaskId(row.task_id)
+    listing = await ctx.forge.content.list_files(PLATFORM, task, at=publication.version)
+    small = [
+        path
+        for path in plan.task_files
+        if path in listing.tokens and may_be_pointer(listing.sizes.get(path))
+    ]
+    blobs = await ctx.forge.content.read_blobs(
+        PLATFORM, task, {listing.tokens[path] for path in small}
+    )
+    for path in small:
+        info = upload_info(blobs.get(listing.tokens[path], b""))
+        if info is not None and info.digest == plan.task_files[path].sha256:
+            found[info.digest] = info.size
+    workflow, commit = WorkflowId(plan.workflow.id), VersionId(plan.workflow.commit)
+    pinned = await ctx.forge.workflows.workflow_files(PLATFORM, workflow, commit)
+    for path, fact in plan.workflow.files.items():
+        if not may_be_pointer(pinned.sizes.get(path)):
+            continue
+        info = upload_info(
+            (await ctx.forge.workflows.read_workflow_at(PLATFORM, workflow, commit, path)).content
+        )
+        if info is not None and info.digest == fact.sha256:
+            found[info.digest] = info.size
+    await ctx.db.execute(
+        insert(PublicationObjects)
+        .values(
+            publication_id=row.publication_id, task_id=row.task_id, objects=found, read_at=ctx.now
+        )
+        .on_conflict_do_nothing(index_elements=["publication_id"])
+    )
+    return frozenset(found)
+
+
+async def _served(ctx: Context, row: Grading, source: Mapping[str, str]) -> bytes:
+    """What the door serves a step for `source` (`_Job._source`): a task's
+    or workflow's file, or a manifest's JSON from one, its YAML checked
+    against the SHA-256 the plan pinned."""
+    kind, path = source["kind"], source["path"]
+    if kind.endswith("task"):
+        content = (
+            await ctx.forge.content.read_file(
+                PLATFORM, TaskId(row.task_id), path, at=VersionId(source["at"])
+            )
+        ).content
+    else:
+        content = (
+            await ctx.forge.workflows.read_workflow_at(
+                PLATFORM, WorkflowId(source["workflow"]), VersionId(source["commit"]), path
+            )
+        ).content
+    if hashlib.sha256(content).hexdigest() != source["sha256"]:
+        raise Misconfigured("A file the forge serves a step is not what its plan pinned.")
+    if kind.startswith("manifest_"):
+        return parse_program(content, path, own_names=frozenset()).as_json()
+    return content
+
+
+# What a step wrote
+
+
+async def _outputs_file(
+    ctx: Context, grading: uuid.UUID, step: str, declared: tuple[str, int]
+) -> bytes:
+    sha256, size = declared
+    try:
+        content = await ctx.forge.objects.read(
+            results_key(grading, step, OUTPUTS_FILE), max_size=size
+        )
+    except NotFound:
+        raise Fault("outputs.json was not uploaded.") from None
+    except Misconfigured:
+        raise
+    except Rejected:
+        raise Fault("outputs.json is larger than the step listed.") from None
+    except PortError as exc:
+        raise Unavailable(f"The results store did not answer: {type(exc).__name__}") from None
+    if len(content) != size or hashlib.sha256(content).hexdigest() != sha256:
+        raise Fault("outputs.json is not what the step listed.")
+    return content
+
+
+async def _check_stored(
+    ctx: Context, grading: uuid.UUID, step: str, named: Mapping[str, Upload]
+) -> None:
+    """`Fault` unless every file an output names is in the store as the
+    step listed it: one listed and never put is not. The first fault ends
+    the checks still under way, and a store that has not answered them all
+    in `STORE_WAIT` is `Unavailable`."""
+    limit = asyncio.Semaphore(HEADS)
+
+    async def check(path: str, listed: Upload) -> None:
+        async with limit:
+            try:
+                found = await ctx.forge.objects.head(results_key(grading, step, path))
+            except NotFound:
+                raise Fault(f"{path} was not uploaded.") from None
+            except Misconfigured:
+                raise
+            except PortError as exc:
+                raise Unavailable(
+                    f"The results store did not answer: {type(exc).__name__}"
+                ) from None
+        if found.size != listed.size or found.sha256 != listed.sha256:
+            raise Fault(f"{path} is not what the step listed.")
+
+    try:
+        async with asyncio.timeout(STORE_WAIT.total_seconds()), asyncio.TaskGroup() as group:
+            for path, listed in sorted(named.items()):
+                group.create_task(check(path, listed))
+    except* TimeoutError:
+        raise Unavailable("The results store did not answer in time.") from None
+    except* (Fault, PortError) as found:
+        raise found.exceptions[0] from None
+
+
+async def _keep(ctx: Context, found: StepOutput, *, replace: bool) -> None:
+    """Keep one item, reused when it is the first of its org's key in its
+    pipeline, and otherwise only the grading's own. To `replace`, from
+    scratch, it is reused in place of the one reused till now, which stays
+    its own grading's."""
+    values = {column.name: getattr(found, column.name) for column in StepOutput.__table__.columns}
+    if replace:
+        await ctx.db.execute(
+            update(StepOutput)
+            .where(
+                StepOutput.org_id == found.org_id,
+                StepOutput.key == found.key,
+                StepOutput.pipeline == found.pipeline,
+                StepOutput.reusable,
+            )
+            .values(reusable=False)
+            .execution_options(synchronize_session=False)
+        )
+    first = await ctx.db.execute(
+        insert(StepOutput)
+        .values(**values)
+        .on_conflict_do_nothing(
+            index_elements=["org_id", "key", "pipeline"], index_where=text("reusable")
+        )
+        .returning(StepOutput.id)
+    )
+    if first.scalar_one_or_none() is None:
+        await ctx.db.execute(insert(StepOutput).values(**{**values, "reusable": False}))
+
+
+def _result_problem(result: Mapping[str, Any]) -> str | None:
+    size = len(exact_json.dumps(result).encode())
+    if size > RESULT_MAX:
+        return f"The result is {size} bytes, more than the {RESULT_MAX} a result may be."
+    broken = violation(result, "result", "result_v6")
+    if broken is not None:
+        return f"The result does not match result.schema.json {broken}"[:ERROR_LIMIT]
+    return None

@@ -92,6 +92,7 @@ if TYPE_CHECKING:
 
 CALLBACK_INFO = b"unicon-grading-callback"
 ENVELOPE_INFO = b"unicon-grading-envelope"
+STEP_INFO = b"unicon-grading-step"
 
 PLATFORM_POOL = "pool:platform"
 """The label every run is pinned to until orgs bring machines of their own:
@@ -375,8 +376,21 @@ def envelope_key(key: bytes, grading: uuid.UUID) -> str:
     return _secret(key, ENVELOPE_INFO, b"envelope", grading)
 
 
+def step_token(key: bytes, grading: uuid.UUID, attempt: int, step: str) -> str:
+    """The token one Woodpecker step of a run task's grading asks its door
+    with: `base64url(HMAC-SHA256(k, "step:<grading>:<attempt>:<step>"))`,
+    `k` derived as for the other two under `STEP_INFO`, so it names the
+    row, the attempt and the step, and no other step's door takes it.
+    """
+    derived = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=STEP_INFO).derive(key)
+    message = b":".join((b"step", str(grading).encode(), str(attempt).encode(), step.encode()))
+    mac = hmac.new(derived, message, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(mac).decode().rstrip("=")
+
+
 def token_hash(token: str) -> bytes:
-    """What a grading's row keeps of its callback token."""
+    """What a grading's row keeps of its callback token, and a step's row of
+    its step token."""
     return hashlib.sha256(token.encode()).digest()
 
 

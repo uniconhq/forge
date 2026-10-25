@@ -72,6 +72,9 @@ S3_VARIABLES = {
     "access_key": "UNICON_S3_ACCESS_KEY",
     "secret_key": "UNICON_S3_SECRET_KEY",
     "results_bucket": "UNICON_S3_RESULTS_BUCKET",
+    "lfs_access_key": "UNICON_S3_LFS_ACCESS_KEY",
+    "lfs_secret_key": "UNICON_S3_LFS_SECRET_KEY",
+    "lfs_bucket": "UNICON_S3_LFS_BUCKET",
 }
 
 MAIL_VARIABLES = {
@@ -136,10 +139,13 @@ class WoodpeckerSettings(BaseModel):
 
 
 class S3Settings(BaseModel):
-    """Where the grading run log store is and the key the platform signs in
+    """Where the grading results store is and the key the platform signs in
     to it with, each read from the variable `S3_VARIABLES` names. `endpoint`
     is the store's internal address; the region is `garage` and the bucket
-    `unicon-results` unless given. What people upload goes into the forge's
+    `unicon-results` unless given. `lfs_access_key` and `lfs_secret_key` are
+    a second key, one that may only read the forge's large-file bucket,
+    `forgejo-lfs` unless given, which a run task's step is handed links
+    into the task's files with. What people upload goes into the forge's
     own store and is none of this (`port/uploads.py`).
     """
 
@@ -150,6 +156,9 @@ class S3Settings(BaseModel):
     access_key: str
     secret_key: SecretStr
     results_bucket: str = "unicon-results"
+    lfs_access_key: str
+    lfs_secret_key: SecretStr
+    lfs_bucket: str = "forgejo-lfs"
 
     @field_validator("*")
     @classmethod

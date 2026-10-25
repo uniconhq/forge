@@ -214,6 +214,9 @@ async def grading_setup(
         secret_key=S3_SECRET_KEY,
         results_bucket="unicon-results",
         machine_url=platform.url,
+        lfs_access_key=S3_ACCESS_KEY,
+        lfs_secret_key=S3_SECRET_KEY,
+        lfs_bucket="forgejo-lfs",
     )
     built = Setup.build(
         settings,

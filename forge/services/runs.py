@@ -228,7 +228,7 @@ async def callback(
     that is no report, and `GradingClosed` for a grading that takes no
     reports now.
     """
-    token = _bearer(authorization)
+    token = bearer(authorization)
     row = None
     if token is not None:
         given = token_hash(token)
@@ -344,7 +344,9 @@ async def _plan(ctx: Context, row: Grading, run: GradingRun, refusal: Exception)
         raise Unavailable("The forge did not answer.") from None
 
 
-def _bearer(authorization: str | None) -> str | None:
+def bearer(authorization: str | None) -> str | None:
+    """The token an `Authorization: Bearer <token>` header carries, none for
+    any other header or none."""
     if not authorization:
         return None
     scheme, _, token = authorization.strip().partition(" ")

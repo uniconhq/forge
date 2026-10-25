@@ -34,6 +34,7 @@ from forge.domain.run_task import check_run_task
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.workflow_definition import parse_run_workflow
 from forge.testing import PLACEHOLDER_DIGEST
+from tests.test_program_manifest import primitive
 from tests.test_run_task import (
     CARTPOLE,
     CARTPOLE_FILES,
@@ -269,6 +270,11 @@ def test_islands_reads_as_written_step_by_step(primitives: dict[str, PrimitiveDe
     assert plan.steps["solution"].boxes == 1 and plan.steps["compile"].boxes is None
     assert violation(exact_json.loads(plan.to_bytes()), "plan") is None
     assert RunPlan.from_bytes(plan.to_bytes()) == plan
+
+
+@pytest.mark.parametrize("name", ["exec", "interact"])
+def test_the_room_kept_for_a_boxed_primitive_is_what_it_keeps(name: str) -> None:
+    assert primitive(name).STEP_MEMORY_KB == PRIMITIVE_ROOM_MB * 1024
 
 
 def test_a_batch_sums_its_runs_time_and_holds_the_most_of_the_rest(
