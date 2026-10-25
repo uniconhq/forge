@@ -145,6 +145,10 @@ def _numbers(outcomes: Mapping[str, Any]) -> dict[str, Fraction | str | None]:
     }
 
 
+def _axes(text: str) -> tuple[tuple[str, ...], ...]:
+    return tuple(tuple(axis.inputs) for axis in parse_task(text).repeat)
+
+
 def _seen(
     scored: Scored,
     *,
@@ -155,6 +159,8 @@ def _seen(
     files: frozenset[str] = ISLAND_FILES,
     self_reported: frozenset[str] = frozenset(),
     late: frozenset[str] = frozenset(),
+    titles: Mapping[str, tuple[str | None, ...]] | None = None,
+    meanings: Mapping[str, tuple[str | None, str | None]] | None = None,
 ) -> Shown:
     return shown(
         _scoring(text),
@@ -166,6 +172,9 @@ def _seen(
         revealed=revealed,
         everything=everything,
         late=late,
+        titles=titles,
+        axes=_axes(text),
+        meanings=meanings,
     )
 
 
@@ -243,9 +252,17 @@ def test_before_the_reveal_only_nows_entries_are_shown_and_after_it_after_closes
     after = _seen(scored, revealed=True)
 
     assert _values(before) == {"sample_score": 1, "sample_time": 12}
-    assert [(run["group"], run["place"], run["key"]) for run in before.runs] == [
-        ("sample_tests", 1, {"input": "samples/1.in", "answer": "samples/1.ans"}),
-        ("sample_tests", 2, {"input": "samples/2.in", "answer": "samples/2.ans"}),
+    assert [(run["group"], run["place"], run["tuples"]) for run in before.runs] == [
+        (
+            "sample_tests",
+            1,
+            [{"title": None, "key": {"input": "samples/1.in", "answer": "samples/1.ans"}}],
+        ),
+        (
+            "sample_tests",
+            2,
+            [{"title": None, "key": {"input": "samples/2.in", "answer": "samples/2.ans"}}],
+        ),
     ]
     assert "id" not in before.runs[0]
     assert _values(after) == {
@@ -261,8 +278,48 @@ def test_before_the_reveal_only_nows_entries_are_shown_and_after_it_after_closes
         ("all", 3),
         ("all", 4),
     ]
-    # No entry of show lists tests/, so a run's key never names its files.
-    assert [run["key"] for run in after.runs[4:]] == [{}, {}]
+    # No entry of show lists tests/, so a run's tuple never names its files.
+    assert [run["tuples"] for run in after.runs[4:]] == [
+        [{"title": None, "key": {}}],
+        [{"title": None, "key": {}}],
+    ]
+
+
+def test_a_run_serves_one_tuple_per_axis_and_each_output_by_its_title() -> None:
+    runs = (
+        Run("r1", {"env": "cartpole", "seed": 1}, True),
+        Run("r2", {"env": "cartpole-wind", "seed": 2}, True),
+    )
+    scored = _islands(
+        _row({"r1": "accepted", "r2": ("wrong_answer", {})}),
+        None,
+        text=CARTPOLE_TASK,
+        runs=runs,
+    )
+
+    seen = _seen(
+        scored,
+        text=CARTPOLE_TASK,
+        runs=runs,
+        files=frozenset(),
+        revealed=True,
+        titles={"r1": ("Big grid", None)},
+        meanings={"time_ms": ("Run time", "ms"), "score": (None, None)},
+    )
+
+    assert seen.runs[0]["tuples"] == [
+        {"title": "Big grid", "key": {"env": "cartpole"}},
+        {"title": None, "key": {"seed": 1}},
+    ]
+    assert seen.runs[1]["tuples"] == [
+        {"title": None, "key": {"env": "cartpole-wind"}},
+        {"title": None, "key": {"seed": 2}},
+    ]
+    assert seen.runs[0]["reports"] == [
+        {"title": "score", "unit": None, "number": 1},
+        {"title": "Run time", "unit": "ms", "number": 12},
+    ]
+    assert seen.runs[1]["reports"] == []
 
 
 def test_a_run_that_faulted_is_told_being_checked_through_an_early_run_only() -> None:
@@ -567,7 +624,9 @@ def test_organisers_see_every_value_and_run_at_once_with_what_each_read() -> Non
         ("all", 4, "r4", False),
         ("all", 5, "r9", True),
     ]
-    assert seen.runs[2]["key"] == {"input": "tests/3.in", "answer": "tests/3.ans"}
+    assert seen.runs[2]["tuples"] == [
+        {"title": None, "key": {"input": "tests/3.in", "answer": "tests/3.ans"}}
+    ]
     assert seen.runs[4]["dropped"] is True
     assert seen.facts == FACTS and seen.compiled == 1 and not seen.later
     assert seen.once["texts"] == {"log": LOG}

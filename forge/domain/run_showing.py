@@ -28,11 +28,13 @@ section 6, item 134).
   then as on a submission with no mark.
 - **A group** listed shows its runs that a row holds: each with the
   group's name and its place in the group from 1 ("Test 3"), never its id,
-  which counts every run of the task; its key, a file or folder it names
-  left out unless `show` shows it then; its verdict, `passed` and reports;
-  and its texts, `label` and `message`. A run in two groups listed is
-  shown in each. **A run no group listed holds is never shown,** early or
-  not: a run can be early only because a value shown then reads it.
+  which counts every run of the task; one tuple per axis, its title and
+  that axis's columns, a file or folder left out unless `show` shows it
+  then; its verdict, `passed` and reports, each output by the title and
+  unit its workflow gives it; and its texts, `label` and `message`. A run
+  in two groups listed is shown in each. **A run no group listed holds is
+  never shown,** early or not: a run can be early only because a value
+  shown then reads it.
 - **What the steps done once reported,** the compile log among them, of
   the rows the entrant reads: each report `show` lists, by its name, once
   any run is shown (stage 5 section 6 item 30); one not listed never, nor
@@ -74,7 +76,7 @@ from forge.domain.run_results import RunGrading, Worked
 from forge.domain.run_task import Run, file_time, holds, key_json, show_names, shown_times
 
 SHOWN_RUN = ("verdict", "passed", "reports", "texts", "label", "message")
-"""What a reader sees of a run's result beside its place and key."""
+"""What a reader sees of a run's result beside its place and tuples."""
 ONE_TEXT = ("label", "message")
 """The texts of a run that are one each, beside those named in `texts`."""
 
@@ -156,6 +158,8 @@ def shown(
     everything: bool = False,
     late: Collection[str] = (),
     titles: Mapping[str, tuple[str | None, ...]] | None = None,
+    axes: Sequence[Sequence[str]] = (),
+    meanings: Mapping[str, tuple[str | None, str | None]] | None = None,
 ) -> Shown:
     """What a reader sees of a grading now: `scoring`, `runs` and `files` the
     task's live publication's, `whole` the grading worked out from both its
@@ -164,19 +168,25 @@ def shown(
     column the entrant could set, and `late` the runs the grading's plan
     ran late; for an entrant, whether the task has revealed and whether
     its results are released; with `everything`, as organisers read it.
-    Texts are as stored: `bare` takes them out for an entrant.
+    `titles` is each run's tuple titles, one per axis; `axes` the column
+    names of each axis, in the task's order, so a served run pairs each
+    title with that axis's columns; `meanings` each output's title and
+    unit, the name standing in where a title was not given. Texts are as
+    stored: `bare` takes them out for an entrant.
     """
     named = titles or {}
+    columns = tuple(tuple(axis) for axis in axes)
+    words = meanings or {}
     if everything:
-        return _everything(scoring, runs, whole, self_reported, named)
+        return _everything(scoring, runs, whole, self_reported, named, columns, words)
     times = times_of(revealed=revealed, released=released)
     listed = {entry for time in times for entry in scoring.show.lists()[time]}
-    held = _held(scoring, runs, whole.grading, files, times, named)
+    held = _held(scoring, runs, whole.grading, files, times, named, columns, words)
     view = whole
     unseen: frozenset[str] = frozenset()
     if not (revealed or released or {name for name, _ in held} - whole.grading.early):
         view = early()
-        held = _held(scoring, runs, view.grading, files, times, named)
+        held = _held(scoring, runs, view.grading, files, times, named, columns, words)
         unseen = frozenset(late)
     grading = view.grading
     seen = {name for name, _ in held}
@@ -278,6 +288,8 @@ def _everything(
     whole: Worked,
     self_reported: Collection[str],
     titles: Mapping[str, tuple[str | None, ...]],
+    axes: Sequence[Sequence[str]],
+    meanings: Mapping[str, tuple[str | None, str | None]],
 ) -> Shown:
     grading, outcomes = whole.grading, whole.outcomes
     when = shown_times(scoring.show)
@@ -305,9 +317,13 @@ def _everything(
         for name, entry in sorted(grading.dropped.items())
     ]
     shown_runs = tuple(
-        {"group": ALL, "place": place, "id": name, "key": key}
-        | _seen(entry)
-        | _titled(name, titles)
+        {
+            "group": ALL,
+            "place": place,
+            "id": name,
+            "tuples": _tuples(key, titles.get(name), axes),
+        }
+        | _seen(entry, meanings)
         | ({"dropped": True} if dropped else {})
         for place, (name, key, entry, dropped) in enumerate(ran, start=1)
     )
@@ -328,6 +344,8 @@ def _held(
     files: Collection[str],
     times: Sequence[str],
     titles: Mapping[str, tuple[str | None, ...]],
+    axes: Sequence[Sequence[str]],
+    meanings: Mapping[str, tuple[str | None, str | None]],
 ) -> list[tuple[str, dict[str, Any]]]:
     """Each run shown by a group listed under one of `times`, in the order
     listed, with its id beside what is shown of it.
@@ -353,24 +371,70 @@ def _held(
             found.append(
                 (
                     run.id,
-                    {"group": group, "place": place, "key": key}
-                    | _seen(result)
-                    | _titled(run.id, titles),
+                    {
+                        "group": group,
+                        "place": place,
+                        "tuples": _tuples(key, titles.get(run.id), axes),
+                    }
+                    | _seen(result, meanings),
                 )
             )
     return found
 
 
-def _titled(run_id: str, titles: Mapping[str, tuple[str | None, ...]]) -> dict[str, Any]:
-    """The run's tuple titles, left out when it has none."""
-    held = titles.get(run_id)
-    if not held:
-        return {}
-    return {"titles": list(held)}
+def _tuples(
+    key: Mapping[str, Any],
+    titles: tuple[str | None, ...] | None,
+    axes: Sequence[Sequence[str]],
+) -> list[dict[str, Any]]:
+    """One `{title, key}` per axis: that tuple's title, none where it has
+    none, and the columns of the axis that `key` still holds. A column of
+    no axis, such as a run the task has since dropped, sits in one more
+    tuple with no title. With no axes, the whole key is that one tuple.
+    """
+    named = list(titles) if titles else []
+    if not axes:
+        title = named[0] if len(named) == 1 else None
+        return [{"title": title, "key": dict(key)}]
+    used: set[str] = set()
+    found: list[dict[str, Any]] = []
+    for index, columns in enumerate(axes):
+        part = {name: key[name] for name in columns if name in key}
+        used.update(part)
+        found.append({"title": named[index] if index < len(named) else None, "key": part})
+    rest = {name: value for name, value in key.items() if name not in used}
+    if rest:
+        found.append({"title": None, "key": rest})
+    return found
 
 
-def _seen(result: Mapping[str, Any]) -> dict[str, Any]:
-    return {name: result[name] for name in SHOWN_RUN if name in result}
+def _seen(
+    result: Mapping[str, Any], meanings: Mapping[str, tuple[str | None, str | None]]
+) -> dict[str, Any]:
+    shown = {name: result[name] for name in SHOWN_RUN if name in result}
+    if "reports" in shown:
+        shown["reports"] = _reports(shown["reports"], meanings)
+    return shown
+
+
+def _reports(
+    raw: object, meanings: Mapping[str, tuple[str | None, str | None]]
+) -> list[dict[str, Any]]:
+    """Each number a run reported, in the order it was stored, named by the
+    title its workflow gives it, or by its own name, with its unit."""
+    if not isinstance(raw, Mapping):
+        return []
+    found: list[dict[str, Any]] = []
+    for name, number in raw.items():
+        title, unit = meanings.get(str(name), (None, None))
+        found.append(
+            {
+                "title": title if isinstance(title, str) and title != "" else str(name),
+                "unit": unit if isinstance(unit, str) and unit != "" else None,
+                "number": number,
+            }
+        )
+    return found
 
 
 def _once(

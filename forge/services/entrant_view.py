@@ -51,13 +51,14 @@ from forge.domain.definitions import (
 )
 from forge.domain.errors import InvalidPath, NotFound, PortError, PublicFileTooLarge, Rejected
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import ContestId, TaskId, VersionId
+from forge.domain.ids import ContestId, TaskId, VersionId, WorkflowId
 from forge.domain.plan_basics import PLAN_PATH
 from forge.domain.publication_record import Publication
 from forge.domain.run_plan import RunPlan
 from forge.domain.run_results import compilers
 from forge.domain.run_task import RUNS_PATH, Run, RunsFile, file_time
 from forge.domain.submissions import Field, run_fields_of
+from forge.domain.workflow_definition import WORKFLOW_FILE, RunOutput, parse_run_workflow
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
@@ -214,8 +215,9 @@ changes, so the time only bounds what is held."""
 class RunsHeld:
     """A task's latest publication as its entrants' results read it:
     its runs in the task's order, every file it holds, each report's
-    column as its plan gives it, the steps whose compile error `compiled`
-    reads (`run_results.compilers`), and the values that read a column the
+    column as its plan gives it, each output's title and unit, the columns
+    of each axis, the steps whose compile error `compiled` reads
+    (`run_results.compilers`), and the values that read a column the
     entrant could set, as its save checked them (#504).
     """
 
@@ -225,6 +227,8 @@ class RunsHeld:
     compiling: frozenset[str] = frozenset()
     self_reported: frozenset[str] = frozenset()
     titles: Mapping[str, tuple[str | None, ...]] = field(default_factory=dict)
+    axes: tuple[tuple[str, ...], ...] = ()
+    meanings: Mapping[str, tuple[str | None, str | None]] = field(default_factory=dict)
 
 
 async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
@@ -248,10 +252,30 @@ async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
             compilers(plan),
             runs.self_reported_values,
             {run.id: run.titles for run in plan.runs if run.titles is not None},
+            tuple(tuple(axis.inputs) for axis in published.definition.repeat),
+            await _output_words(ctx, plan),
         )
 
     key = f"published.runs.{published.id}.{version}"
     return await ctx.memo.remembered(key, FORM_KEPT, read)
+
+
+async def _output_words(ctx: Context, plan: RunPlan) -> dict[str, tuple[str | None, str | None]]:
+    """Each output's title and unit, from the workflow the plan pinned.
+    A publication's workflow reads, as its save wrote it.
+    """
+    found = await ctx.forge.workflows.read_workflow_at(
+        PLATFORM,
+        WorkflowId(plan.workflow.id),
+        VersionId(plan.workflow.commit),
+        WORKFLOW_FILE,
+    )
+    definition = parse_run_workflow(found.content)
+    return {
+        name: (output.title, output.unit)
+        for name, output in definition.outputs.items()
+        if isinstance(output, RunOutput)
+    }
 
 
 async def plan_at(ctx: Context, task: TaskId, version: VersionId) -> RunPlan:

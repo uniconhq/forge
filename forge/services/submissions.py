@@ -1126,6 +1126,8 @@ async def _runs(
         everything=everything,
         late=scored.late,
         titles=scored.held.titles,
+        axes=scored.held.axes,
+        meanings=scored.held.meanings,
     )
     runs, once = seen.runs, seen.once
     texts_at: dict[run_showing.TextAt, tuple[str, str]] = {}

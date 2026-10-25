@@ -363,14 +363,19 @@ async def test_the_entrant_reads_the_runs_of_the_groups_shown_now_and_after_the_
     assert set(grading.runs[0]) == {
         "group",
         "place",
-        "key",
+        "tuples",
         "verdict",
         "passed",
         "reports",
         "texts",
         "message",
     }
-    assert grading.runs[0]["key"] == {"input": "samples/1.in", "answer": "samples/1.ans"}
+    assert grading.runs[0]["tuples"] == [
+        {"title": None, "key": {"input": "samples/1.in", "answer": "samples/1.ans"}}
+    ]
+    by_title = {report["title"]: report for report in grading.runs[0]["reports"]}
+    assert by_title["Run time"] == {"title": "Run time", "unit": "ms", "number": 12}
+    assert by_title["Memory used"] == {"title": "Memory used", "unit": "KB", "number": 1500}
     # When the page reads it again, its late runs then shown.
     assert grading.reveal_at is not None and BEFORE_CLOSE < grading.reveal_at <= AFTER_CLOSE
 
@@ -398,8 +403,11 @@ async def test_the_entrant_reads_the_runs_of_the_groups_shown_now_and_after_the_
         ("all", 3, "accepted"),
         ("all", 4, "accepted"),
     ]
-    # No entry of show lists tests/, so a run's key never names its files.
-    assert [run["key"] for run in grading.runs[4:]] == [{}, {}]
+    # No entry of show lists tests/, so a run's tuple never names its files.
+    assert [run["tuples"] for run in grading.runs[4:]] == [
+        [{"title": None, "key": {}}],
+        [{"title": None, "key": {}}],
+    ]
 
 
 async def test_a_late_row_that_ends_is_told_to_its_entrant_only_after_the_reveal(
@@ -477,8 +485,8 @@ async def test_a_group_moved_to_now_shows_its_runs_where_they_ran_late(
         ("st2_tests", 1, "accepted"),
         ("st2_tests", 2, "accepted"),
     ]
-    # tests/4.in is shown now and tests/3.in is not, so only one key names its file.
-    assert [run["key"] for run in grading.runs[2:]] == [{}, {"input": "tests/4.in"}]
+    # tests/4.in is shown now and tests/3.in is not, so only one tuple names its file.
+    assert [run["tuples"][0]["key"] for run in grading.runs[2:]] == [{}, {"input": "tests/4.in"}]
 
 
 TOTALS = LIVE + (
