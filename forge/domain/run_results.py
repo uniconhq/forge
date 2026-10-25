@@ -28,10 +28,8 @@ A check's runs are worked out the same way, from what its copies of the
 steps got at the save, with `seconds_late` and `seconds` 0, and read
 against what it expects (`check_failing`).
 
-What reaches an entrant, or anything an entrant reads such as a board, is
-`for_entrants`: every value reading an `entered` mark, directly or through
-others, left out, until the grading queue decides when an entry may reach
-its entrant (phase 5.8, stage 5 section 6 item 45).
+Every value is worked out here, one reading an `entered` mark among them;
+what an entrant is served of them is `forge.domain.run_showing`'s.
 """
 
 from collections.abc import Collection, Mapping, Sequence
@@ -40,14 +38,13 @@ from datetime import datetime
 from fractions import Fraction
 from typing import Any
 
-from forge.domain.blocks.catalogue import ALL, ENTERED
+from forge.domain.blocks.catalogue import ALL
 from forge.domain.blocks.evaluate import (
     SYSTEM_ERROR,
     Column,
     Outcome,
     RunResult,
     evaluate,
-    using,
 )
 from forge.domain.blocks.numbers import exact, written
 from forge.domain.checks import MOST_FAILING, VERDICT, failing_words
@@ -90,19 +87,6 @@ class Worked:
     grading: RunGrading
     outcomes: Mapping[str, Outcome]
     facts: Mapping[str, Fraction]
-
-
-def for_entrants(values: Mapping[str, object], worked: Worked) -> Worked:
-    """`worked` as an entrant, or anything an entrant reads, may be given
-    it: each value reading an `entered` mark of `values`, a task's values,
-    directly or through others, left out (stage 5 section 6 item 45).
-    """
-    withheld = using(values, ENTERED)
-    return Worked(
-        worked.grading,
-        {name: outcome for name, outcome in worked.outcomes.items() if name not in withheld},
-        worked.facts,
-    )
 
 
 def compilers(plan: RunPlan) -> frozenset[str]:
@@ -267,7 +251,6 @@ __all__ = [
     "check_failing",
     "compilers",
     "facts_of",
-    "for_entrants",
     "run_grading",
     "worked_out",
 ]

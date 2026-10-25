@@ -81,11 +81,14 @@ person, so its bytes, two gigabytes or two, never pass through the
 platform. A run's log names every test, hidden ones too, so it is the
 organisers' alone. A run task's result is read through
 `forge.domain.run_showing`, its values worked out on read
-(`scores.run_scored`). A text it shows is read one at a time, only
-while the result shows it to that reader: an entrant's by where it is
-shown (`read_text`), never by the stored output that holds it, whose id is
-another entrant's too and says when it was made; organisers' by that
-output (`read_organised_text`).
+(`scores.run_scored`), a mark entered for it counted only once a board
+cell shown to the entrant counted the submission, or, when no cell
+counted it, once the task has revealed (`boards.chosen`, SIMPLER-CORE.md
+14): until then it is worked out as if none were entered. A text it
+shows is read one at a time, only while the result shows it to that
+reader: an entrant's by where it is shown (`read_text`), never by the
+stored output that holds it, whose id is another entrant's too and says
+when it was made; organisers' by that output (`read_organised_text`).
 
 Organisers who observe the task read any row's submission the same way
 (`organised`, TASK-FORMAT.md section 1.7): the same attempt, scored by the
@@ -114,6 +117,9 @@ from forge.db.tables import Upload as UploadRow
 from forge.db.tables.gradings import FRONT
 from forge.domain import exact_json, run_showing
 from forge.domain import submissions as rules
+from forge.domain.blocks.catalogue import ENTERED
+from forge.domain.blocks.evaluate import using
+from forge.domain.boards import entries_open
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Conflict,
@@ -161,7 +167,16 @@ from forge.log import get_logger
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import gradings, published, scores, sessions, submitters, timelines, uploads
+from forge.services import (
+    boards,
+    gradings,
+    published,
+    scores,
+    sessions,
+    submitters,
+    timelines,
+    uploads,
+)
 from forge.services.access import Organiser, require
 from forge.services.published import PublishedTask
 from forge.services.submitters import Person
@@ -901,6 +916,7 @@ async def _read(
     await gradings.notice(ctx, latest, gone)
     await gradings.notice_late(ctx, latest)
     scorer = scores.Scorer(ctx, reading.published)
+    chosen = None if everything or not grouped else await _chosen_by_boards(ctx, reading)
     return [
         await _submission(
             ctx,
@@ -910,10 +926,27 @@ async def _read(
             grouped[found],
             gone,
             scorer,
+            chosen,
             everything=everything,
         )
         for found in sorted(grouped, reverse=True)
     ]
+
+
+async def _chosen_by_boards(ctx: Context, reading: Reading) -> boards.Chosen | None:
+    """What the boards' cells counted of the row's submissions to the task,
+    which its values reading an entered mark wait on; none when the task
+    has no such value."""
+    scoring = reading.published.definition.scoring
+    if scoring is None or not using(scoring.values, ENTERED):
+        return None
+    return await boards.chosen(
+        ctx,
+        contest_id_of(task_scope(reading.task)),
+        reading.settings,
+        ctx.forge.workspaces.owner_of(reading.workspace),
+        reading.published.name,
+    )
 
 
 def _latest(rows: Sequence[Grading]) -> Grading:
@@ -929,12 +962,14 @@ async def _submission(
     rows: Sequence[Grading],
     lost: frozenset[uuid.UUID] = frozenset(),
     scorer: scores.Scorer | None = None,
+    chosen: boards.Chosen | None = None,
     *,
     everything: bool = False,
 ) -> Submission:
     """The submission as its owner reads it, by the attempt of its grading
     that counts (`scores.counted`), with `lost` naming the gradings whose
-    runs the CI has lost; with `everything`, as organisers read it.
+    runs the CI has lost and `chosen` what the boards' cells counted of
+    the row's submissions; with `everything`, as organisers read it.
     """
     settings = reading.settings
     task = reading.published.name
@@ -959,6 +994,7 @@ async def _submission(
         factor,
         settings,
         extension,
+        chosen,
         everything=everything,
     )
     return Submission(reading.task, number, at, late, result)
@@ -973,6 +1009,7 @@ async def _result(
     factor: Fraction,
     settings: ContestDefinition,
     extension: Extension,
+    chosen: boards.Chosen | None = None,
     *,
     everything: bool = False,
 ) -> Result:
@@ -992,7 +1029,15 @@ async def _result(
         and status in scores.FINISHED_WITH_RESULT
     ):
         return await _runs(
-            ctx, scorer.current, row, state, reveal_at, settings, extension, everything=everything
+            ctx,
+            scorer.current,
+            row,
+            state,
+            reveal_at,
+            settings,
+            extension,
+            chosen,
+            everything=everything,
         )
     if status is GradingStatus.CANCELLED:
         return Result(row.id, row.attempt, state, None, None, (), {}, row.cancel_reason)
@@ -1050,6 +1095,7 @@ async def _runs(
     reveal_at: datetime | None,
     settings: ContestDefinition,
     extension: Extension,
+    chosen: boards.Chosen | None,
     *,
     everything: bool,
 ) -> Result:
@@ -1057,7 +1103,11 @@ async def _runs(
     (11.3): its values worked out on read (`scores.run_scored`) and shown
     by what the task's latest publication shows now, `on_release` while
     its results are released (`run_showing.shown`, 9.4), so a group moved
-    to `now` shows its runs even where they ran late. Before the reveal,
+    to `now` shows its runs even where they ran late. Its values are
+    worked out as if no mark were entered until a board cell shown to the
+    entrant counted the submission, of those `chosen` gives, or, when no
+    cell counted it, until the reveal (14), so a mark held back tells
+    nothing a submission with none does not. Before the reveal,
     and with no release, the late row is told to no entrant; after it,
     while that attempt has no result, the grading is told as where it
     stands, `grading` or `delayed`; and a task with
@@ -1066,8 +1116,15 @@ async def _runs(
     once, and where each row stands in the gradings routes.
     """
     late = await scores.late_of(ctx, row)
-    scored = await scores.run_scored(ctx, current, settings, extension, row, late)
     revealed = reveal_at is not None and ctx.now >= reveal_at
+    marks: dict[str, Fraction] | None = None
+    if not everything:
+        counted = chosen or boards.Chosen()
+        number = row.submission_number
+        if not entries_open(number, counted.shown, counted.every, revealed=revealed):
+            # Worked out with no mark, so it reads as a submission with none.
+            marks = {}
+    scored = await scores.run_scored(ctx, current, settings, extension, row, late, marks)
     released = not everything and await published.results_released(ctx, current.id)
     scoring = current.definition.scoring
     assert scoring is not None, "a run task's definition always has scoring"
@@ -1075,7 +1132,7 @@ async def _runs(
         scoring,
         scored.held.runs,
         scored.held.files,
-        scored.organised if everything else scored.whole,
+        scored.whole,
         scored.early,
         scored.self_reported,
         revealed=revealed,

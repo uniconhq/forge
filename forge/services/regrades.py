@@ -407,8 +407,8 @@ async def run_summary(
             stood = await scores.run_scored(
                 ctx, then, settings, extension, earlier, lates.get(earlier.id), held
             )
-            before = stood.organised
-        found = run_changes(before, after.organised)
+            before = stood.whole
+        found = run_changes(before, after.whole)
         if not found:
             continue
         if len(changed) >= CHANGED_SHOWN:

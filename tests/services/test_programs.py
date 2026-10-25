@@ -186,8 +186,11 @@ async def test_a_task_with_a_program_and_an_entered_value_saves_grades_and_score
         None,
         40,
     )
-    # The mean is shown after the close, and an entered mark to no entrant yet.
-    assert set(_values(await _grading(setup, session, islands))) == {"sample_score", "sample_time"}
+    # The mean is shown after the close, and an entered mark no cell counted
+    # from the reveal, read as no mark before it.
+    seen = _values(await _grading(setup, session, islands))
+    assert set(seen) == {"sample_score", "sample_time", "review", "reviewed"}
+    assert (seen["review"], seen["reviewed"]) == (None, None)
 
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
     await entries.enter(setup, manager, islands.task, await _owner(setup), 1, "review", "6")

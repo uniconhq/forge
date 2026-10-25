@@ -14,9 +14,31 @@ A save that gives a value an `entered` block the live version does not
 starts it with no marks (`start_again`), so a value removed and added
 again never takes back its old marks.
 
-Until the grading queue decides when an entry may reach its entrant
-(phase 5.8), a value reading an `entered` block is served to staff alone
-(`run_results.for_entrants`, which `scores.run_scored` applies).
+**The grading queue** (`queue`, #505) is a staff read for an observer of
+the task and above, who read it and nothing more: entering a mark from it
+stays a manager's or admin's. For each row once the task has closed for
+it, its extension included, it lists the row's submissions to the task
+that a cell of any leaderboard counted, as staff read every board, every
+row and no hold (`boards.read`), each with the boards and columns that
+counted it and the mark of each `entered` value, or none while missing.
+It is worked out from what each cell counted on every read; no task
+names a board. A row with nothing counted is left out. A caller with no
+role at the contest, an observer of the task alone, is listed only the
+cells reading this task and no other (`alone`), since which submission a
+cell reading another task counted can tell of that task's values; and
+the read starts no retry of a failure it finds, which only staff's board
+read does (stage 5 section 6, items 100 and 119).
+
+**When an entry shows.** A mark reaches an entrant only once a board
+cell shown to them counted the submission, and `show` lists the value
+then; one no cell counted, by `show` alone once the task has revealed
+(`forge.domain.boards.entries_open`, which the submission's page reads).
+Until then the submission's values are worked out as if no mark were
+entered, so it reads as one with none. So a mark appearing on one
+submission, or held back from it, never tells its entrant which
+submission a hidden cell chose. Staff read every entry at once. Entering
+one nudges nobody, which would tell a mark was entered before it may
+show.
 """
 
 from collections.abc import Iterable
@@ -29,18 +51,22 @@ from typing import Final
 from sqlalchemy import or_, select
 
 from forge.db.tables import Entry, Grading
+from forge.db.tables.gradings import FRONT
 from forge.domain.blocks.catalogue import ENTERED
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.blocks.numbers import exact, written
+from forge.domain.board_checks import boards_of
+from forge.domain.boards import STAFF, alone, counted_in
 from forge.domain.definitions import TaskDefinition
 from forge.domain.errors import InvalidMark, NotARunTask, NotFound
-from forge.domain.ids import TaskId
+from forge.domain.ids import TaskId, WorkspaceId
 from forge.domain.names import WorkspaceOwner
-from forge.domain.roles import Role, contest_id_of, task_scope
+from forge.domain.release import close_of
+from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_scope
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import published
+from forge.services import boards, published, timelines
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -62,6 +88,89 @@ class Entered:
     mark: str
     by: int
     at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class Queued:
+    """A submission a row's cells counted: its number, the board and column
+    of each cell that counted it, and each `entered` value of the task with
+    its mark, none while missing, in the task's order."""
+
+    number: int
+    counted_by: tuple[tuple[str, str], ...]
+    marks: tuple[tuple[str, Fraction | None], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class QueueRow:
+    """One row in the grading queue: who, its name as shown, when the task
+    closed for it, and the submissions its cells counted, oldest first."""
+
+    owner: WorkspaceOwner
+    name: str
+    closed_at: datetime
+    submissions: tuple[Queued, ...]
+
+
+@action
+async def queue(ctx: Context, organiser: Organiser, task: TaskId) -> tuple[QueueRow, ...]:
+    """The grading queue of the task (#505): each row the task has closed
+    for, its extension included, by name, with the submissions to it that
+    a cell of any of the contest's boards counted, as staff read them, each
+    with the marks of the task's `entered` values; for a caller with no
+    role at the contest, only the cells reading this task alone. Needs the
+    observer role at the task. `NotFound` for a task with no publication,
+    `NotARunTask` for one graded test by test.
+    """
+    require(organiser, task_scope(task), Role.OBSERVER)
+    contest = contest_id_of(task_scope(task))
+    settings = await published.contest(ctx, contest)
+    current = await published.task(ctx, task, settings)
+    if current is None:
+        raise NotFound(published.NO_SUCH_TASK)
+    scoring = current.definition.scoring
+    if scoring is None:
+        raise NotARunTask(NOT_A_RUN_TASK)
+    entry = current.entry
+    found = await boards.read(ctx, contest, settings, list(settings.leaderboards), STAFF)
+    cells = None
+    if not holds(organiser.grants, contest_scope(contest), Role.OBSERVER):
+        cells = alone(boards_of(settings), current.name)
+    counted = counted_in(found, current.name, cells)
+    if entry is None or not counted:
+        return ()
+    names = {row.owner: row.name for board in found for row in board.rows}
+    extensions = await timelines.of_owners(ctx, contest, list(counted))
+    closed = {owner: close_of(settings, entry, extensions[owner]) for owner in counted}
+    rows = sorted(
+        (owner for owner in counted if ctx.now >= closed[owner]),
+        key=lambda owner: (names.get(owner, ""), str(owner)),
+    )
+    workspaces = {ctx.forge.workspaces.workspace_of(contest, owner): owner for owner in rows}
+    ids: dict[tuple[WorkspaceOwner, int], str] = {}
+    if workspaces:
+        for workspace, number, submission in await ctx.db.execute(
+            select(Grading.workspace_id, Grading.submission_number, Grading.submission_id)
+            .where(Grading.task_id == task, Grading.workspace_id.in_(sorted(workspaces)), FRONT)
+            .distinct()
+        ):
+            ids[(workspaces[WorkspaceId(workspace)], number)] = submission
+    marks = await entered_for(ctx, task, ids.values())
+    values = [name for name in scoring.values if name in entered_values(current.definition)]
+
+    def queued(owner: WorkspaceOwner, number: int, by: tuple[tuple[str, str], ...]) -> Queued:
+        held = marks.get(ids.get((owner, number), ""), {})
+        return Queued(number, by, tuple((value, held.get(value)) for value in values))
+
+    return tuple(
+        QueueRow(
+            owner,
+            names.get(owner, ""),
+            closed[owner],
+            tuple(queued(owner, number, by) for number, by in sorted(counted[owner].items())),
+        )
+        for owner in rows
+    )
 
 
 @action
@@ -229,4 +338,14 @@ def _stored(text: str) -> str:
     return kept.rstrip("0").rstrip(".") if "." in kept else kept
 
 
-__all__ = ["Entered", "enter", "entered_for", "entered_of", "entered_values", "start_again"]
+__all__ = [
+    "Entered",
+    "QueueRow",
+    "Queued",
+    "enter",
+    "entered_for",
+    "entered_of",
+    "entered_values",
+    "queue",
+    "start_again",
+]

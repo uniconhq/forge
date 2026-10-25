@@ -20,7 +20,10 @@ board's audience, never stored.
 - **The hold** (`holding`, `held_back`): from its `from` until its `until`
   or an early end, every viewer but staff and the row's own entrant reads
   each list with only the submissions made before `from`, the rest
-  counted as held, and a cell on such a row that reads `marked` is hidden.
+  counted as held, and a cell on such a row that reads `marked`, or a
+  value reading an entered mark, is hidden: a pick there may take another
+  submission than the entrant's own row does, and its mark would tell
+  what a cell hidden from the entrant chose (stage 5 section 6, item 117).
 - **A cell is hidden** when it read anything held back (guarantee 2), and
   when it reads another board's column, directly or through others, on a
   row that board does not serve the viewer (rule 5), so `rows: own` and
@@ -44,6 +47,13 @@ board's audience, never stored.
   counted and those it left out as still waiting, each by task and number
   (guarantee 6); a row answers how many of its submissions are held, and,
   told as that is, how many still grade (`still_grading`).
+- **What the cells counted** of a task, row by row (`counted_in`), is
+  what the grading queue lists, and says when a mark entered for a
+  submission reaches its entrant (`entries_open`): once a cell shown to
+  them counted the submission, or, when no cell counted it, from the
+  task's reveal (SIMPLER-CORE.md 14), so a mark never tells which
+  submission a hidden cell chose. The cells reading one task alone
+  (`alone`) are those whose choices tell nothing of another task.
 - **A header** says what a listed column is, the same for every row: its
   name, the decimal places it is shown to, the least and most it can give
   where both are known (stage 5 section 6, item 5), and the self-reported
@@ -58,8 +68,7 @@ from fractions import Fraction
 from forge.domain.blocks.board_check import BoardColumn, BoardsCheck
 from forge.domain.blocks.board_evaluate import Cell, Submitted
 from forge.domain.blocks.bounds import Bounds
-from forge.domain.blocks.catalogue import ALL, ENTERED
-from forge.domain.blocks.evaluate import using
+from forge.domain.blocks.catalogue import ALL
 from forge.domain.definitions import BoardAudience, Hold, Leaderboard, Scoring
 from forge.domain.names import WorkspaceOwner
 from forge.domain.run_showing import ValueShown
@@ -192,11 +201,14 @@ def holding(hold: Hold | None, now: datetime, ended: bool) -> datetime | None:
 
 
 def held_back(
-    lists: Mapping[str, Sequence[Loaded]], since: datetime | None
+    lists: Mapping[str, Sequence[Loaded]],
+    since: datetime | None,
+    entered: Mapping[str, Collection[str]],
 ) -> tuple[dict[str, list[Submitted]], dict[str, int]]:
     """A row's lists by task as a viewer the hold covers reads them: only
-    the submissions made before `since`, `marked` held back on each, and
-    how many each list holds back; every submission when `since` is none."""
+    the submissions made before `since`, `marked` and each task's values
+    reading an entered mark, `entered`, held back on each, and how many
+    each list holds back; every submission when `since` is none."""
     found: dict[str, list[Submitted]] = {}
     held: dict[str, int] = {}
     for task, listed in lists.items():
@@ -204,7 +216,8 @@ def held_back(
             found[task] = [each.results for each in listed]
             continue
         kept = [each.results for each in listed if each.made < since]
-        found[task] = [replace(each, hidden=each.hidden | {MARKED}) for each in kept]
+        hide = {MARKED, *entered.get(task, ())}
+        found[task] = [replace(each, hidden=each.hidden | hide) for each in kept]
         held[task] = len(listed) - len(kept)
     return found, held
 
@@ -217,13 +230,55 @@ def still_grading(lists: Mapping[str, Sequence[Submitted]]) -> dict[str, int]:
 
 def listed_now(scoring: Scoring, times: Collection[str]) -> tuple[frozenset[str], bool]:
     """What `show` lists of a task at the `times` that have come, as anyone
-    but staff may read it on a board: its values, each reading an entered
-    mark left out (item 45), and whether it lists a group, which shows
+    but staff may read it on a board: its values, one reading an entered
+    mark among them, since a cell reads a mark only on a submission it
+    counted (item 117), and whether it lists a group, which shows
     `compiled` with its runs (item 82)."""
     listed = {name for time in times for name in scoring.show.lists()[time]}
-    withheld = using(scoring.values, ENTERED)
-    values = frozenset(name for name in scoring.values if name in listed and name not in withheld)
+    values = frozenset(name for name in scoring.values if name in listed)
     return values, any(name == ALL or name in scoring.groups for name in listed)
+
+
+def counted_in(
+    found: Sequence[Board], task: str, cells: Collection[BoardColumn] | None = None
+) -> dict[WorkspaceOwner, dict[int, tuple[tuple[str, str], ...]]]:
+    """Each row's submissions to `task` that a cell of the boards `found`
+    counted, by number, each with the board and column of every cell that
+    counted it, in the boards' order: what each cell is told counting, so
+    a hidden cell, and a row whose counts are not told, count nothing;
+    with `cells`, only those cells count."""
+    counted: dict[WorkspaceOwner, dict[int, tuple[tuple[str, str], ...]]] = {}
+    for board in found:
+        for row in board.rows:
+            for cell in row.cells:
+                if cells is not None and (board.key, cell.column) not in cells:
+                    continue
+                for each in cell.counted:
+                    if each.task != task:
+                        continue
+                    by = counted.setdefault(row.owner, {}).setdefault(each.number, ())
+                    counted[row.owner][each.number] = (*by, (board.key, cell.column))
+    return counted
+
+
+def entries_open(
+    number: int, shown: Collection[int], every: Collection[int], *, revealed: bool
+) -> bool:
+    """Whether the marks entered for an entrant's submission `number` count
+    in what they are served (SIMPLER-CORE.md 14), which is worked out as if
+    none were entered until then: once a cell shown to them counted it, one
+    of `shown`; or, when no cell counted it, as staff read every board,
+    `every`, once the task has revealed, since no hidden choice is left to
+    tell (stage 5 section 6, item 9)."""
+    return number in shown or (number not in every and revealed)
+
+
+def alone(checked: BoardsCheck, task: str) -> frozenset[BoardColumn]:
+    """The columns reading the results of `task` and of no other task,
+    directly or through the columns they read: which of its submissions
+    such a column counts is chosen by what `task` gives alone."""
+    tasks, _ = _what_columns_read(checked)
+    return frozenset(column for column, read in tasks.items() if read == {task})
 
 
 def results_seen(
@@ -535,7 +590,10 @@ __all__ = [
     "Loaded",
     "Row",
     "Viewer",
+    "alone",
     "boards_read",
+    "counted_in",
+    "entries_open",
     "grading_seen",
     "headers_of",
     "held_back",

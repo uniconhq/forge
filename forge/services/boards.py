@@ -18,10 +18,13 @@ the check a save of the contest's settings runs over them.
   read starts the retry of a failure it finds (`gradings.notice`, stage 5
   section 6, item 100). Each value is
   worked out by the shared scoring (`scores.run_scored`): staff read
-  every value (`organised`); anyone else reads what the row's own entrant
+  every value (`whole`); anyone else reads what the row's own entrant
   is shown now (`run_showing.shown`), so a board never shows more than the
-  task's own page, a value reading an entered mark among what it leaves
-  out (stage 5 section 6, item 45).
+  task's own page: a value reading an entered mark by `show` alone, since
+  a cell reads one only on a submission it counted, and the page serves
+  it there once such a cell is shown (stage 5 section 6, item 117); on a
+  row the hold holds, such a value is hidden, since a pick there may take
+  another submission than the entrant's own row does.
 - **Facts:** `attempt` counts the row's submissions to the task that are
   read, 1 the oldest; `seconds` and `seconds_late` are from the contest's
   start and the row's due on the task, its extension included; `marked`
@@ -37,6 +40,11 @@ the check a save of the contest's settings runs over them.
 - **A read works out** only the boards asked for, the boards their columns
   read, and the columns of those (`BoardsCheck.needed`), and loads only the
   tasks those read.
+- **What a row's cells counted** of one task (`chosen`): those a cell
+  shown to its own entrant counted, and those any cell counted as staff
+  read every board, which the task's page reads to serve an entered mark
+  no sooner than a cell counting it (SIMPLER-CORE.md 14), and the grading
+  queue reads for every row (`entries.queue`).
 
 A save of the contest's settings is checked by `check_contest`: each board
 against the catalogue and against the live publication of each task it
@@ -63,8 +71,8 @@ from forge.domain import run_showing
 from forge.domain.blocks.board_check import BoardsCheck
 from forge.domain.blocks.board_evaluate import Submitted, work_out_row
 from forge.domain.blocks.bounds import Bounds, column_bounds, self_reported_parts, value_bounds
-from forge.domain.blocks.catalogue import ALL
-from forge.domain.blocks.evaluate import RunResult
+from forge.domain.blocks.catalogue import ALL, ENTERED
+from forge.domain.blocks.evaluate import RunResult, using
 from forge.domain.board_checks import Scored, across, boards_of, hold_problems, marks_of
 from forge.domain.board_checks import check_contest as check_boards
 from forge.domain.boards import (
@@ -74,6 +82,7 @@ from forge.domain.boards import (
     Row,
     Viewer,
     boards_read,
+    counted_in,
     grading_seen,
     headers_of,
     held_back,
@@ -128,6 +137,16 @@ publication, which a save row still checks."""
 
 
 @dataclass(frozen=True, slots=True)
+class Chosen:
+    """A row's submissions to one task that the boards' cells counted, by
+    number: `shown`, those a cell shown to the row's own entrant counted;
+    `every`, those any cell of any board counted, as staff read it."""
+
+    shown: frozenset[int] = frozenset()
+    every: frozenset[int] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
 class Side:
     """How a regrade's board diff reads its task on one side: the task as
     it scores there, and the attempts of one submission it reads."""
@@ -153,7 +172,7 @@ async def seen(
         for key, each in settings.leaderboards.items()
         if (board is None or key == board) and sees(each, viewer)
     ]
-    return await read(ctx, contest, settings, keys, viewer)
+    return await read(ctx, contest, settings, keys, viewer, notice=viewer.staff)
 
 
 async def own_rows(
@@ -180,6 +199,25 @@ async def own_rows(
     )
 
 
+async def chosen(
+    ctx: Context, contest: ContestId, settings: ContestDefinition, owner: WorkspaceOwner, task: str
+) -> Chosen:
+    """The submissions of the row `owner` to the task named `task` that
+    the boards' cells counted (`Chosen`): its own row of each board its
+    entrant reads, as they read it, and of every board, as staff read it.
+    A row not approved has none."""
+    if not settings.leaderboards:
+        return Chosen()
+    viewer = Viewer(own=owner)
+    keys = [key for key, each in settings.leaderboards.items() if sees(each, viewer)]
+    own = await read(ctx, contest, settings, keys, viewer, only=owner)
+    staff = await read(ctx, contest, settings, list(settings.leaderboards), STAFF, only=owner)
+    return Chosen(
+        frozenset(counted_in(own, task).get(owner, {})),
+        frozenset(counted_in(staff, task).get(owner, {})),
+    )
+
+
 async def worked_out(
     ctx: Context,
     contest: ContestId,
@@ -188,9 +226,9 @@ async def worked_out(
     side: Side | None = None,
 ) -> tuple[Board, ...]:
     """The boards `keys` of those the check reads, in the file's order, as
-    staff read them: every row, every value, no hold; with `side`, its task
-    read as it says."""
-    return await read(ctx, contest, settings, keys, STAFF, side)
+    staff read them: every row, every value, no hold, a failure found seen
+    to; with `side`, its task read as it says."""
+    return await read(ctx, contest, settings, keys, STAFF, side, notice=True)
 
 
 async def read(
@@ -200,10 +238,15 @@ async def read(
     keys: Collection[str],
     viewer: Viewer,
     side: Side | None = None,
+    only: WorkspaceOwner | None = None,
+    *,
+    notice: bool = False,
 ) -> tuple[Board, ...]:
     """The boards `keys` of those the check reads, in the file's order, as
     `viewer` reads them now; with `side`, staff's, its task read as it
-    says."""
+    says; with `only`, that row alone, its cells as they read on every
+    board; with `notice`, a failure found seen to, which only staff's
+    board read does (item 100)."""
     checked = boards_of(settings)
     wanted = [key for key in settings.leaderboards if key in keys and key in checked.readable]
     if not wanted:
@@ -220,7 +263,9 @@ async def read(
     ]
     if side is not None:
         tasks = [side.current if task.id == side.task else task for task in tasks]
-    owners = await timelines.rows(ctx, contest)
+    owners = [
+        owner for owner in await timelines.rows(ctx, contest) if only is None or owner == only
+    ]
     extensions = await timelines.of_owners(ctx, contest, owners)
     shown = await _names(ctx, owners)
     marked = await marks.of_tasks(ctx, [task.id for task in tasks])
@@ -231,11 +276,13 @@ async def read(
     trees: dict[str, Mapping[str, object]] = {}
     bounds: dict[str, Mapping[str, Bounds]] = {}
     reported: dict[str, frozenset[str]] = {}
+    entered: dict[str, frozenset[str]] = {}
     for task in tasks:
         scoring = task.definition.scoring
         assert scoring is not None
         held = await published.runs_held(ctx, task)
         trees[task.name] = scoring.values
+        entered[task.name] = using(scoring.values, ENTERED)
         groups = {ALL: [RunResult(run.id, "", run.key) for run in held.runs]}
         for name, picked in scoring.groups.items():
             groups[name] = [
@@ -245,7 +292,16 @@ async def read(
         reported[task.name] = held.self_reported
         attempts = side.attempts if side is not None and side.task == task.id else None
         found = await _results(
-            ctx, contest, settings, task, owners, extensions, marked, viewer, attempts
+            ctx,
+            contest,
+            settings,
+            task,
+            owners,
+            extensions,
+            marked,
+            viewer,
+            attempts,
+            notice=notice,
         )
         for owner, listed in found.items():
             results[owner][task.name] = listed
@@ -254,7 +310,9 @@ async def read(
     parts = self_reported_parts(checked, reported)
     rows: list[Row] = []
     for owner in owners:
-        lists, held_counts = held_back(results[owner], since if owner != viewer.own else None)
+        lists, held_counts = held_back(
+            results[owner], since if owner != viewer.own else None, entered
+        )
         rows.append(
             Row(
                 owner,
@@ -294,12 +352,16 @@ async def _results(
     marked: Mapping[tuple[WorkspaceId, TaskId], set[int]],
     viewer: Viewer,
     pick: Callable[[Sequence[Grading]], Sequence[Grading]] | None = None,
+    *,
+    notice: bool = False,
 ) -> dict[WorkspaceOwner, list[Loaded]]:
     """Each row's submissions to a run task, oldest first, each with when
     it was made: as staff read them, every value, or for anyone else as
-    the row's own entrant is shown them now; `pick` the attempts of each
-    submission read, all when none, a submission it leaves none of left
-    out.
+    the row's own entrant is shown them now, a value reading a mark by
+    `show` alone, since a cell reading one counted its submission (stage 5
+    section 6, item 117); `pick` the attempts of each submission read, all
+    when none, a submission it leaves none of left out; with `notice`, a
+    failure found is seen to.
     """
     workspaces = {ctx.forge.workspaces.workspace_of(contest, owner): owner for owner in owners}
     rows = (
@@ -316,7 +378,7 @@ async def _results(
         grouped.setdefault((row.workspace_id, row.submission_number), []).append(row)
     latest = [max(each, key=lambda row: row.attempt) for each in grouped.values()]
     lost = await gradings.lost(ctx, latest)
-    if viewer.staff:
+    if notice:
         # Only staff's read sees to a failure, so a read with no session
         # writes nothing; an entrant's own submission page sees to theirs.
         await gradings.notice(ctx, latest, lost)
@@ -373,7 +435,7 @@ async def _results(
             entered[counted.submission_id],
         )
         if viewer.staff:
-            worked = scored.organised
+            worked = scored.whole
             values = {
                 name: outcome.number
                 for name, outcome in worked.outcomes.items()
@@ -689,10 +751,12 @@ def regrade_sides(
 
 __all__ = [
     "NO_HOLD",
+    "Chosen",
     "ContestCheck",
     "HoldState",
     "Side",
     "check_contest",
+    "chosen",
     "end_hold",
     "hold_state",
     "own_rows",

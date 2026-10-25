@@ -32,6 +32,8 @@ from forge.domain.boards import (
     Row,
     Viewer,
     boards_read,
+    counted_in,
+    entries_open,
     grading_seen,
     headers_of,
     held_back,
@@ -665,9 +667,13 @@ def test_a_sort_key_hidden_on_a_row_past_a_top_n_still_drops_it() -> None:
     assert [(row.name, row.place) for row in seen.rows] == [("r1", None)]
 
 
-def test_a_value_reading_an_entered_mark_and_compiled_with_no_group_shown_are_hidden() -> None:
+def test_a_value_reading_an_entered_mark_waits_by_show_and_compiled_with_no_group_is_hidden() -> (
+    None
+):
     # Guarantee 6: a submission still grading waits only on what its
-    # entrant may be shown, so a waiting count never tells of the rest.
+    # entrant may be shown, so a waiting count never tells of the rest. A
+    # value reading a mark is read by `show` alone: a cell reads it only on
+    # a submission it counted (item 117).
     text = ISLANDS_TASK.replace(
         "    total:\n",
         "    review: {block: entered, at_least: 0, at_most: 10}\n"
@@ -680,13 +686,75 @@ def test_a_value_reading_an_entered_mark_and_compiled_with_no_group_shown_are_hi
     grading = grading_seen(1, {}, scoring.values, values, runs)
     no_group = grading_seen(1, {}, scoring.values, {"sample_score"}, False)
 
-    assert values == {"sample_score", "sample_time"} and runs
-    assert grading.waiting == {"sample_score", "sample_time", "compiled"}
-    assert {"review", "reviewed", "total"} <= grading.hidden
+    assert values == {"review", "reviewed", "sample_score", "sample_time"} and runs
+    assert grading.waiting == {"review", "reviewed", "sample_score", "sample_time", "compiled"}
+    assert {"st1", "st2", "total"} <= grading.hidden
     assert "compiled" in no_group.hidden and "compiled" not in no_group.waiting
     tries = {"block": "count", "over": results("a"), "where": read("a", "compiled")}
     assert column("p", "c", {"a": [no_group]}, tries).hidden
     assert column("p", "c", {"a": [grading]}, tries).waiting == {("a", 1)}
+
+
+def test_what_the_cells_counted_is_listed_by_row_number_board_and_column() -> None:
+    # What the grading queue lists, and when an entry may show (#505).
+    text = GRADEBOOK + (
+        "  latest:\n    audience: {who: everyone}\n"
+        "    columns:\n"
+        "      score: {value: [{block: latest, from: {results: search}}, score]}\n"
+        "      tries: {block: count, over: {results: search}}\n"
+        "    display: [score]\n"
+    )
+    marked = [sub(1, score=0.9, marked=1), sub(2, score=0.5, marked=0)]
+    rows = [(1, "r1", {"search": marked}), (2, "r2", {"search": [sub(1, score=0.4)]})]
+    staff = read_as(text, "gradebook", rows) + read_as(text, "latest", rows)
+    entrant = read_as(text, "gradebook", rows, Viewer(own=owner(1))) + read_as(
+        text, "latest", rows, Viewer(own=owner(1))
+    )
+
+    # Only displayed cells count, `tries` among none, and only the task's.
+    assert counted_in(staff, "search") == {
+        owner(1): {
+            1: (("gradebook", "search_mark"), ("gradebook", "total")),
+            2: (("latest", "score"),),
+        },
+        owner(2): {1: (("gradebook", "search_mark"), ("gradebook", "total"), ("latest", "score"))},
+    }
+    assert counted_in(staff, "cartpole") == {}
+    # A row whose counts are not told counts nothing.
+    assert counted_in(entrant, "search") == {
+        owner(1): {
+            1: (("gradebook", "search_mark"), ("gradebook", "total")),
+            2: (("latest", "score"),),
+        }
+    }
+
+
+def test_a_hidden_cell_counts_nothing() -> None:
+    text = "tasks: [{id: a}]\nleaderboards:\n  s:\n    audience: {who: everyone}\n" + (
+        "    columns:\n"
+        "      best:\n"
+        "        value: [{block: highest, from: {results: a}, by: {value: [a, private]}}, x]\n"
+        "    display: [best]\n"
+    )
+    rows = [(1, "r1", {"a": [hidden_sub(1, "private", x=1), hidden_sub(2, "private", x=2)]})]
+
+    staff = [(1, "r1", {"a": [sub(1, private=5, x=1), sub(2, private=3, x=2)]})]
+
+    entrant = read_as(text, "s", rows, Viewer(own=owner(1)))
+    assert entrant[0].rows[0].cells[0].hidden
+    assert counted_in(entrant, "a") == {}
+    assert counted_in(read_as(text, "s", staff), "a") == {owner(1): {1: (("s", "best"),)}}
+
+
+@pytest.mark.parametrize(
+    ("number", "revealed", "served"),
+    [(1, False, True), (2, False, False), (2, True, False), (3, False, False), (3, True, True)],
+)
+def test_an_entry_shows_once_a_shown_cell_counted_it_or_no_cell_did_from_the_reveal(
+    number: int, revealed: bool, served: bool
+) -> None:
+    # 1 a shown cell counted, 2 only a hidden or staff's cell, 3 no cell.
+    assert entries_open(number, {1}, {1, 2}, revealed=revealed) is served
 
 
 def test_a_cell_is_an_exact_fraction() -> None:
@@ -846,8 +914,8 @@ def test_the_hold_keeps_what_was_made_before_from_and_counts_the_rest_held() -> 
         ]
     }
     open_text = GRADEBOOK.replace("{who: entrants, rows: own}", "{who: everyone}")
-    held, counts = held_back(lists, HOLD_FROM)
-    whole, none = held_back(lists, None)
+    held, counts = held_back(lists, HOLD_FROM, {})
+    whole, none = held_back(lists, None, {})
     others = one(read_as(open_text, "gradebook", [(1, "r1", held)], Viewer(), held={1: counts}))
     own = one(read_as(open_text, "gradebook", [(1, "r1", whole)], Viewer(own=owner(1))))
 

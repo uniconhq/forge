@@ -55,7 +55,6 @@ from forge.domain.run_results import (
     RunGrading,
     Worked,
     facts_of,
-    for_entrants,
     run_grading,
     worked_out,
 )
@@ -308,16 +307,15 @@ class Scorer:
 @dataclass(frozen=True, slots=True)
 class RunScored:
     """A run task's grading worked out on read: the live publication's runs
-    and plan, the grading from both its rows and from its early row alone,
-    each as an entrant may be given it (`run_results.for_entrants`), the
-    grading from both rows with every value, for organisers alone
-    (`organised`), and the values reading a column the entrant could set.
+    and plan, the grading from both its rows, every value, as organisers
+    read it, and from its early row alone, which `run_showing.shown`
+    serves an entrant from, and the values reading a column the entrant
+    could set.
     """
 
     held: RunsHeld
     whole: Worked
     early: Worked
-    organised: Worked
     self_reported: frozenset[str]
 
 
@@ -375,12 +373,11 @@ async def run_scored(
     or failed, or not made since the early row failed. Any other, such as
     one a later save added, never ran (`run_results`). The marks entered
     for the submission's `entered` values are read with them (`entries`),
-    unless the caller read them already, as `marks`.
-    `whole` and `early` leave out every value reading a mark
-    (`run_results.for_entrants`), so whatever an entrant reads, a board
-    among them, is built from them; `organised` keeps every value. A
-    program waits while its row is to give it, and for staff once its row
-    ended with a fault and no number for it. Worked out on every read,
+    unless the caller read them already, as `marks`. Every value is worked
+    out, one reading a mark among them: an entrant's page gives no marks
+    while what the boards' cells counted holds them back (`submissions`).
+    A program waits while its row is to give it, and for staff once its
+    row ended with a fault and no number for it. Worked out on every read,
     never stored (stage 5 section 6, item 1).
     """
     scoring = current.definition.scoring
@@ -435,14 +432,7 @@ async def run_scored(
         compiling=held.compiling,
         programs_waiting=programs_early,
     )
-    everything = work(whole)
-    return RunScored(
-        held,
-        for_entrants(scoring.values, everything),
-        for_entrants(scoring.values, work(alone)),
-        everything,
-        held.self_reported,
-    )
+    return RunScored(held, work(whole), work(alone), held.self_reported)
 
 
 async def _planned(

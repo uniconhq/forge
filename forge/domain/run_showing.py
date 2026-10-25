@@ -18,7 +18,11 @@ group to `now` (phase 4.10).
   waits for staff is told so ("being checked") only as its runs are: when
   every run it waits on is early, or shown; otherwise it is left out until
   they are. Each carries whether it reads, directly or through others, a
-  column the entrant could set (#504).
+  column the entrant could set (#504). A value reading an entered mark is
+  worked out by the caller as if no mark were entered until a board cell
+  shown to the entrant counted the submission, or, when none counted it,
+  until the reveal (`forge.domain.boards.entries_open`, SIMPLER-CORE.md
+  14), so it reads then as on a submission with no mark.
 - **A group** listed shows its runs that a row holds: each with the
   group's name and its place in the group from 1 ("Test 3"), never its id,
   which counts every run of the task; its key, a file or folder it names
@@ -151,9 +155,7 @@ def shown(
     values reading a column the entrant could set; for an entrant, whether
     the task has revealed and whether its results are released; with
     `everything`, as organisers read it. Texts are as stored: `bare` takes
-    them out for an entrant. `whole` and `early` are as an entrant may be
-    given them (`run_results.for_entrants`), with `everything` `whole` with
-    every value; a value they leave out is not shown.
+    them out for an entrant.
     """
     if everything:
         return _everything(scoring, runs, whole, self_reported)
@@ -168,9 +170,8 @@ def shown(
     seen = {name for name, _ in held}
     values: list[ValueShown] = []
     for name in scoring.values:
-        outcome = view.outcomes.get(name)
-        if outcome is None or name not in listed:
-            # A value `for_entrants` left out is no entrant's.
+        outcome = view.outcomes[name]
+        if name not in listed:
             continue
         if outcome.waiting:
             waits = {run for run in outcome.runs if grading.read[run].verdict == SYSTEM_ERROR}
