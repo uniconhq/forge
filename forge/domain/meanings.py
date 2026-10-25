@@ -19,7 +19,8 @@ from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 
-from forge.domain.scoring import Better, Measure
+from forge.domain.blocks.numbers import Better
+from forge.domain.scoring import Measure
 from forge.domain.workflow_definition import Fold
 
 

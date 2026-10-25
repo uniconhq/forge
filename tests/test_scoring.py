@@ -9,22 +9,19 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import Any
 
+from forge.domain.blocks.numbers import Better, exact, written
 from forge.domain.definitions import Group, Relative, Show
 from forge.domain.scoring import (
     BEFORE_REVEAL,
     EVERYTHING,
-    Better,
     Measure,
     best_of,
     credit_of,
-    decimal_of,
     everywhere,
-    exact,
     fold,
     late_factor,
     points_seen,
     score,
-    written,
 )
 from forge.domain.workflow_definition import Fold
 
@@ -341,14 +338,3 @@ def test_a_task_with_no_rule_weights_gives_no_points_whatever_its_worth() -> Non
     scored = score(result(passing(ids)), ids, {"main": group()}, None, {}, worth=100)
     assert not scored.gives_points
     assert points_seen(scored, EVERYTHING, None) is None
-
-
-def test_numbers_are_exact_and_written_as_decimals() -> None:
-    assert exact(Decimal("0.1")) + exact(Decimal("0.2")) == exact(Decimal("0.3"))  # type: ignore[operator]
-    assert exact(True) is None
-    assert exact("1") is None
-    assert written(Fraction(1, 8)) == "0.125"
-    assert written(Fraction(330, 4)) == "82.5"
-    assert written(Fraction(100)) == "100"
-    assert written(Fraction(1, 3)) == "0." + "3" * 30
-    assert decimal_of(Fraction(2, 3)) == Decimal("0." + "6" * 29 + "7")

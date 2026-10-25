@@ -6,6 +6,7 @@ is an exact rational (`fractions.Fraction`), written as a decimal by
 `written`.
 """
 
+from forge.domain.blocks.numbers import Better, written
 from forge.domain.boards import (
     Cell,
     Column,
@@ -16,7 +17,7 @@ from forge.domain.boards import (
 )
 from forge.domain.definitions import Over, Select, Who
 from forge.domain.names import EntrantOwner
-from forge.domain.scoring import Better, Points, written
+from forge.domain.scoring import Points
 from forge.services.boards import OrganisedBoard, organised, seen
 from forge.services.marks import Marks, held, mark, unmark
 

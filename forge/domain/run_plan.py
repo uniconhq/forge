@@ -1395,6 +1395,7 @@ class _Planner:
             found[name] = ReportEntry(
                 step=report.step,
                 output=f"{report.program}.{report.output}" if report.program else report.output,
+                better=port.better if number and port is not None else None,
                 at_least=port.at_least if number and port is not None else None,
                 at_most=port.at_most if number and port is not None else None,
             )

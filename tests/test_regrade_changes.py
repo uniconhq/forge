@@ -9,6 +9,7 @@ graded.
 from datetime import UTC, datetime
 from fractions import Fraction
 
+from forge.domain.blocks.numbers import Better
 from forge.domain.ids import PublicationId, VersionId
 from forge.domain.publications import Publication
 from forge.domain.regrades import (
@@ -19,7 +20,6 @@ from forge.domain.regrades import (
     counted,
     counted_under,
 )
-from forge.domain.scoring import Better
 
 
 def _points(points: int, *, stopped: str | None = None) -> Side:

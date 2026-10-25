@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from forge.domain import exact_json
+from forge.domain.blocks.numbers import Better, written
 from forge.domain.contracts import violation
 from forge.domain.definitions import parse_task, starter_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine
@@ -43,7 +44,7 @@ from forge.domain.plans import (
 )
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.publications import read_note, write_note
-from forge.domain.scoring import Better, fold, written
+from forge.domain.scoring import fold
 from forge.domain.showing import NOTHING_SEALED, Sealed
 from forge.domain.workflow_definition import Fold, WorkflowDefinition, parse_workflow
 from forge.domain.yaml_models import InvalidDefinition, Problem

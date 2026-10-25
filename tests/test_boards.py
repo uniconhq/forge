@@ -9,6 +9,7 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import Any
 
+from forge.domain.blocks.numbers import Better
 from forge.domain.board_checks import (
     breaches,
     counts_nothing,
@@ -33,7 +34,7 @@ from forge.domain.boards import (
 from forge.domain.definitions import Group, Leaderboard, Select, Show
 from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner
-from forge.domain.scoring import Better, Measure, Points, Scored, score
+from forge.domain.scoring import Measure, Points, Scored, score
 from forge.domain.workflow_definition import Fold
 
 START = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)

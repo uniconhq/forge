@@ -31,6 +31,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 
+from forge.domain.blocks.numbers import Better, written
 from forge.domain.boards import PENALTY, POINTS, in_scope
 from forge.domain.definitions import (
     ContestDefinition,
@@ -42,7 +43,7 @@ from forge.domain.definitions import (
     key_name,
 )
 from forge.domain.meanings import ValueMeaning, in_sentence
-from forge.domain.scoring import ZERO, Better, Measure, rule_weight, written
+from forge.domain.scoring import ZERO, Measure, rule_weight
 from forge.domain.workflow_definition import Fold
 
 

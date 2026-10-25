@@ -8,11 +8,14 @@ container holds the files it copies; and what a save changes is said.
 
 import hashlib
 from collections.abc import Mapping
+from fractions import Fraction
 from typing import Any
 
 import pytest
 
 from forge.domain import exact_json
+from forge.domain.blocks.evaluate import Column
+from forge.domain.blocks.numbers import Better
 from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, parse_task
@@ -271,6 +274,17 @@ def test_islands_reads_as_written_step_by_step(primitives: dict[str, PrimitiveDe
     assert set(plan.task_files) == ISLANDS_PATHS - {"task.yaml", "statement.md"}
     assert plan.entrant["code"].max_size == 1048576
     assert plan.reports["score"].step == "compare"
+    # Each number's worse side is read from the plan: a wrong answer's score
+    # counts as 0, and its time has no bound to count as.
+    assert {
+        name: (each.better, each.at_least, each.at_most) for name, each in plan.reports.items()
+    } == {
+        "score": ("higher", 0, 1),
+        "time_ms": ("lower", 0, None),
+        "memory_kb": ("lower", 0, None),
+        "log": (None, None, None),
+    }
+    assert plan.reports["score"].column() == Column(Better.HIGHER, Fraction(0), Fraction(1))
     assert plan.steps["solution"].boxes == 1 and plan.steps["compile"].boxes is None
     assert violation(exact_json.loads(plan.to_bytes()), "plan") is None
     assert RunPlan.from_bytes(plan.to_bytes()) == plan
@@ -526,7 +540,7 @@ repeat:
     tuples: [1, 2]
 scoring:
   values:
-    total: {block: sum_runs, over: {runs: all}, of: {run: [all, time_ms]}}
+    total: {block: sum, over: {runs: all}, of: {run: [all, time_ms]}}
   show:
     after_close: [total]
 """
@@ -706,7 +720,7 @@ scoring:
   groups:
     shown: {input: [samples/1.in]}
   values:
-    fast: {block: max_runs, over: {runs: shown}, of: {run: [shown, time_ms]}}
+    fast: {block: max, over: {runs: shown}, of: {run: [shown, time_ms]}}
   show:
     now: [shown, samples/]
     after_close: [fast, all]
@@ -814,7 +828,7 @@ repeat:
     tuples: [samples/1.in]
 scoring:
   values:
-    total: {block: sum_runs, over: {runs: all}, of: {run: [all, score]}}
+    total: {block: sum, over: {runs: all}, of: {run: [all, score]}}
   show:
     now: [total, samples/]
 """
@@ -874,8 +888,8 @@ def test_the_entrants_code_beside_a_workflow_file_is_tainted(
 
 
 BUILT_TASK = LINKED_TASK.replace(
-    "    fast: {block: max_runs",
-    "    built: {fact: compiled}\n    fast: {block: max_runs",
+    "    fast: {block: max",
+    "    built: {fact: compiled}\n    fast: {block: max",
 ).replace(
     "    now: [shown, samples/]\n    after_close: [fast, all]\n",
     "    now: [built, samples/]\n    after_close: [shown, fast, all]\n",

@@ -54,6 +54,8 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, PlainValidator, model_validator
 
 from forge.domain import exact_json
+from forge.domain.blocks.evaluate import Column
+from forge.domain.blocks.numbers import Better, exact
 from forge.domain.content import path_problem
 from forge.domain.contracts import violation
 from forge.domain.definitions import (
@@ -74,7 +76,7 @@ from forge.domain.primitives import (
     Port,
     PrimitiveDeclaration,
 )
-from forge.domain.scoring import Better, Measure, exact
+from forge.domain.scoring import Measure
 from forge.domain.showing import NOTHING_SEALED, Sealed
 from forge.domain.types import FILES, SCALARS, Type
 from forge.domain.workflow_definition import (
@@ -210,10 +212,22 @@ class ContestantInput(Model):
 
 
 class ReportEntry(Model):
+    """One name a plan reports: the step and output it reads, and, for a
+    number of a run task's plan, which way is better and its bounds, so a
+    missing report's worst bound is read from the plan alone.
+    """
+
     step: Annotated[str, Field(pattern=STEP_ID)]
     output: Annotated[str, Field(min_length=1)]
+    better: Better | None = None
     at_least: Number | None = None
     at_most: Number | None = None
+
+    def column(self) -> Column:
+        """The entry as the blocks read a report: which way is better and
+        its bounds, exact.
+        """
+        return Column(self.better, exact(self.at_least), exact(self.at_most))
 
 
 class Plan(Model):

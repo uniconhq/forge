@@ -55,7 +55,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BeforeValidator, Field, PlainValidator, ValidationError, model_validator
 
-from forge.domain.scoring import Better
+from forge.domain.blocks.numbers import Better
 from forge.domain.types import FILES, PORT_TYPES, VALUE_TYPES, Type, declared
 from forge.domain.workflow_definition import Options
 from forge.domain.yaml_models import (

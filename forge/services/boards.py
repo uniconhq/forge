@@ -38,6 +38,7 @@ from sqlalchemy import select
 from forge.db.tables import Entrant, Grading
 from forge.db.tables.gradings import FRONT
 from forge.domain import release as rules
+from forge.domain.blocks.numbers import Better, exact
 from forge.domain.board_checks import (
     Breach,
     Covered,
@@ -72,7 +73,7 @@ from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
 from forge.domain.release import Extension, reveal_of
 from forge.domain.roles import Role, contest_scope, holds
-from forge.domain.scoring import ZERO, Better, Points, exact
+from forge.domain.scoring import ZERO, Points
 from forge.domain.sessions import Session
 from forge.domain.yaml_models import Problem
 from forge.log import get_logger

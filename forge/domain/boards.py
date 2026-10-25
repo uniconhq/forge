@@ -38,6 +38,7 @@ from datetime import datetime
 from enum import IntEnum, StrEnum
 from fractions import Fraction
 
+from forge.domain.blocks.numbers import Better
 from forge.domain.definitions import Leaderboard, Over, Penalty, Select, Show, Who
 from forge.domain.meanings import ValueMeaning
 from forge.domain.names import WorkspaceOwner
@@ -45,7 +46,6 @@ from forge.domain.scoring import (
     BEFORE_REVEAL,
     EVERYTHING,
     ZERO,
-    Better,
     Points,
     Scored,
     Seen,

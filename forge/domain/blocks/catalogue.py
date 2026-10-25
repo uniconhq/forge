@@ -1,8 +1,10 @@
 """Every block a task's value may use, with its inputs and the kind each
 takes (SIMPLER-CORE.md 14, #511; the leaderboards note's 6.1). It is the
 one allowlist: the editor offers these and nothing else, and the forge runs
-these and nothing else, so a block a version is saved with is never
-dropped, since a published task grades the same forever.
+these and nothing else. Once the simpler core ships, a block a version is
+saved with is never dropped, since a published task grades the same
+forever; until then nothing is published (#513), so stage 4's fold names
+could give way to the spec's.
 
 A value is saved as its tree, never as formula text: a node is
 `{block: <name>, <input>: ..., ...}`, an input taking one node or a list of
@@ -15,12 +17,15 @@ them, and a leaf is one of:
 - `{value: <name>}`, another of the task's values;
 - `{fact: <name>}`, a fact of the submission (`TASK_FACTS`).
 
-Every block gives a number. A fold (`min_runs`, `max_runs`, `sum_runs`,
-`count_runs`) reads a group's runs: its `of` and `where` are read once for
-each of them, `weights` gives a run a weight by one repeated input's value,
-`{<input>: {<value>: <weight>}}`, a run it does not name weighing 1, and
-`missing` says what a missing report counts as, `skip` to leave the run
-out, or a number.
+Every block gives a number. A block has one form or more, each the inputs
+it takes for one kind of thing it is given: `min` and `max` take numbers or
+a group's runs, and the check tells which form a node means from what it is
+given. A fold, a form given a group's runs (`min`, `max`, `sum`, `count`),
+reads them: its `of`
+and `where` are read once for each of them, `weights` gives a run a weight
+by one repeated input's value, `{<input>: {<value>: <weight>}}`, a run it
+does not name weighing 1, and `missing` says what a missing report counts
+as, `skip` to leave the run out, or a number.
 """
 
 from collections.abc import Mapping
@@ -52,17 +57,27 @@ class BlockInput:
 
 
 @dataclass(frozen=True, slots=True)
-class Block:
-    """One block: its name, what it gives in words, and its inputs."""
+class Form:
+    """One way a block is given its inputs: what it is given, in words, and
+    its inputs.
+    """
 
-    name: str
-    words: str
+    given: str
     inputs: Mapping[str, BlockInput] = field(default_factory=dict)
 
     @property
     def fold(self) -> bool:
-        """Whether the block folds over a group's runs."""
+        """Whether the form folds over a group's runs."""
         return "over" in self.inputs
+
+
+@dataclass(frozen=True, slots=True)
+class Block:
+    """One block: its name, what it gives in words, and its forms."""
+
+    name: str
+    words: str
+    forms: tuple[Form, ...]
 
 
 SKIP = "skip"
@@ -77,16 +92,23 @@ which depends on the entrant's other submissions, nor `marked`, which
 changes until the close."""
 LEAVES = ("runs", "run", "value", "fact")
 
+NUMBERS = "numbers"
+RUNS = "a group's runs"
+
 _PAIR = BlockInput(Kind.NUMBER, least=2, most=2)
 _SOME = BlockInput(Kind.NUMBER, least=2)
 _ONE = BlockInput(Kind.NUMBER)
 
 
+def _numbers(of: BlockInput) -> Form:
+    return Form(NUMBERS, {"of": of})
+
+
 def _number(name: str, words: str, of: BlockInput) -> Block:
-    return Block(name, words, {"of": of})
+    return Block(name, words, (_numbers(of),))
 
 
-def _fold(name: str, words: str, *, of: bool, weights: bool) -> Block:
+def _fold(*, of: bool, weights: bool) -> Form:
     inputs = {"over": BlockInput(Kind.RUNS)}
     if of:
         inputs["of"] = BlockInput(Kind.NUMBER, per_run=True)
@@ -94,7 +116,7 @@ def _fold(name: str, words: str, *, of: bool, weights: bool) -> Block:
     if weights:
         inputs["weights"] = BlockInput(Kind.WEIGHTS, optional=True)
     inputs["missing"] = BlockInput(Kind.MISSING, optional=True)
-    return Block(name, words, inputs)
+    return Form(RUNS, inputs)
 
 
 CATALOGUE: Mapping[str, Block] = {
@@ -116,15 +138,25 @@ CATALOGUE: Mapping[str, Block] = {
         Block(
             "if",
             "then when test is not 0, else else, reading only the branch it takes",
-            {"test": _ONE, "then": _ONE, "else": _ONE},
+            (Form(NUMBERS, {"test": _ONE, "then": _ONE, "else": _ONE}),),
         ),
-        _number("min", "the least of its inputs", _SOME),
-        _number("max", "the most of its inputs", _SOME),
+        Block(
+            "min",
+            "the least of its inputs, or of a column over a group's runs",
+            (_numbers(_SOME), _fold(of=True, weights=False)),
+        ),
+        Block(
+            "max",
+            "the most of its inputs, or of a column over a group's runs",
+            (_numbers(_SOME), _fold(of=True, weights=False)),
+        ),
         _number("floor", "its input rounded down to a whole number", _ONE),
         _number("ceil", "its input rounded up to a whole number", _ONE),
-        _fold("min_runs", "the least of a column over a group's runs", of=True, weights=False),
-        _fold("max_runs", "the most of a column over a group's runs", of=True, weights=False),
-        _fold("sum_runs", "a column summed over a group's runs", of=True, weights=True),
-        _fold("count_runs", "how many of a group's runs there are", of=False, weights=True),
+        Block("sum", "a column summed over a group's runs", (_fold(of=True, weights=True),)),
+        Block(
+            "count",
+            "how many of a group's runs there are, their weights summed when weighed",
+            (_fold(of=False, weights=True),),
+        ),
     )
 }

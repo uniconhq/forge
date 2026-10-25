@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from forge.domain.blocks.numbers import Better
 from forge.domain.errors import Rejected
 from forge.domain.plans import check_workflow
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
@@ -30,7 +31,6 @@ from forge.domain.run_workflow import (
     check_run_workflow,
     manifest_paths,
 )
-from forge.domain.scoring import Better
 from forge.domain.types import Type
 from forge.domain.workflow_combine import combinable
 from forge.domain.workflow_definition import (

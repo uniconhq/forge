@@ -7,8 +7,8 @@ from decimal import Decimal
 from fractions import Fraction
 
 from forge.domain import exact_json
+from forge.domain.blocks.numbers import written
 from forge.domain.plans import spelled
-from forge.domain.scoring import written
 from forge.domain.yaml_models import load_yaml
 
 NINES = "9" * 5000

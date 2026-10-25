@@ -138,6 +138,9 @@ forge/api/
   boards.py     seen, organised, held, mark, unmark, written, and the
                 Standings, Key, Column, NotInView, Ranked, Cell,
                 OrganisedBoard, Marks, Points and EntrantOwner they return
+  blocks.py     CATALOGUE, every block a value may use, LEAVES, TASK_FACTS
+                and SKIP, and the Block, Form, BlockInput and Kind it is
+                made of
   gradings.py   cancel, retry, rejudge, list, run_log, task_of, feed,
                 queue_depth, and the GradingRecord, Rejudged, FeedEntry,
                 Submitter, QueueDepth and GradingStatus they return; list

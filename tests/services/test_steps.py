@@ -1030,7 +1030,7 @@ inputs:
   board: boards/1.txt
 scoring:
   values:
-    time: {block: max_runs, over: {runs: all}, of: {run: [all, time]}}
+    time: {block: max, over: {runs: all}, of: {run: [all, time]}}
   show: {now: [time, all, boards/]}
 """
 

@@ -20,83 +20,24 @@ section 3), so changing how a task scores regrades nothing.
   tests when it is `always` or the task has revealed. Everything is shown
   once revealed, which is also how organisers see every number live.
 
-Every number is the exact rational of the decimal it was written as: a
-result's numbers arrive as `Decimal` (`forge.domain.exact_json`) and a
-YAML number as the shortest decimal that reads back as it (`repr`), so
-`0.8` is 4/5 whichever file it came from. Only `decimal_of` rounds, and
-only a rational that is no finite decimal, such as 1/3.
+Every number is exact, as `forge.domain.blocks.numbers` reads and writes
+it.
 """
 
-import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal, localcontext
-from enum import StrEnum
 from fractions import Fraction
 from typing import Any
 
+from forge.domain.blocks.numbers import Better, exact, written
 from forge.domain.definitions import Group, Relative, Show
 from forge.domain.workflow_definition import Fold
 
 ACCEPTED = "accepted"
-SIGNIFICANT = 30
-"""The significant digits a rational that is no finite decimal is given in,
-far past any two numbers a board tells apart."""
 
 ZERO = Fraction(0)
 ONE = Fraction(1)
-
-
-def exact(value: object) -> Fraction | None:
-    """The exact rational of a number as written, or none for anything that
-    is not a finite number (text, `true`, a missing value).
-    """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return Fraction(value)
-    if isinstance(value, Decimal):
-        return Fraction(value) if value.is_finite() else None
-    if isinstance(value, float):
-        return Fraction(repr(value)) if math.isfinite(value) else None
-    if isinstance(value, Fraction):
-        return value
-    return None
-
-
-def decimal_of(number: Fraction) -> Decimal:
-    """`number` as a decimal: exactly when it is one, and to `SIGNIFICANT`
-    digits when it is not.
-    """
-    rest = number.denominator
-    twos = fives = 0
-    while rest % 2 == 0:
-        rest //= 2
-        twos += 1
-    while rest % 5 == 0:
-        rest //= 5
-        fives += 1
-    if rest == 1:
-        scale = max(twos, fives)
-        digits = number.numerator * 10**scale // number.denominator
-        # Built from the int's own digits, never its text, which Python
-        # refuses past 4300 digits.
-        whole = Decimal(digits).as_tuple()
-        return Decimal((whole.sign, whole.digits, -scale))
-    with localcontext() as context:
-        context.prec = SIGNIFICANT
-        return Decimal(number.numerator) / Decimal(number.denominator)
-
-
-def written(number: Fraction) -> str:
-    """`number` as the plain decimal digits it is served and noted as."""
-    return format(decimal_of(number), "f")
-
-
-class Better(StrEnum):
-    HIGHER = "higher"
-    LOWER = "lower"
 
 
 @dataclass(frozen=True, slots=True)

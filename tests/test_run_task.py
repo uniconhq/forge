@@ -187,11 +187,11 @@ scoring:
     sample_score:
       block: div
       of:
-        - {block: sum_runs, over: {runs: sample_tests}, of: {run: [sample_tests, score]}}
-        - {block: count_runs, over: {runs: sample_tests}}
-    sample_time: {block: max_runs, over: {runs: sample_tests}, of: {run: [sample_tests, time_ms]}}
-    st1: {block: min_runs, over: {runs: st1_tests}, of: {run: [st1_tests, score]}}
-    st2: {block: min_runs, over: {runs: st2_tests}, of: {run: [st2_tests, score]}}
+        - {block: sum, over: {runs: sample_tests}, of: {run: [sample_tests, score]}}
+        - {block: count, over: {runs: sample_tests}}
+    sample_time: {block: max, over: {runs: sample_tests}, of: {run: [sample_tests, time_ms]}}
+    st1: {block: min, over: {runs: st1_tests}, of: {run: [st1_tests, score]}}
+    st2: {block: min, over: {runs: st2_tests}, of: {run: [st2_tests, score]}}
     total:
       block: add
       of:
@@ -235,13 +235,13 @@ scoring:
     reward:
       block: div
       of:
-        - {block: sum_runs, over: {runs: all}, of: {run: [all, reward]}}
-        - {block: count_runs, over: {runs: all}}
+        - {block: sum, over: {runs: all}, of: {run: [all, reward]}}
+        - {block: count, over: {runs: all}}
     windy:
       block: div
       of:
-        - {block: sum_runs, over: {runs: windy_runs}, of: {run: [windy_runs, reward]}}
-        - {block: count_runs, over: {runs: windy_runs}}
+        - {block: sum, over: {runs: windy_runs}, of: {run: [windy_runs, reward]}}
+        - {block: count, over: {runs: windy_runs}}
   show:
     now: [reward]
     after_close: [windy, all]
@@ -259,7 +259,7 @@ repeat:
       - [parts/2.in, entrant]
 scoring:
   values:
-    total: {block: sum_runs, over: {runs: all}, of: {run: [all, score]}}
+    total: {block: sum, over: {runs: all}, of: {run: [all, score]}}
   show:
     now: [total, all, parts/]
 """
@@ -414,8 +414,7 @@ def test_a_number_the_entrant_gives_in_parts_is_a_self_reported_column(
         .replace("entrant]", "entrant, entrant]")
         .replace(
             "  values:\n",
-            "  values:\n    claimed: {block: sum_runs, over: {runs: all}, "
-            "of: {run: [all, best]}}\n",
+            "  values:\n    claimed: {block: sum, over: {runs: all}, of: {run: [all, best]}}\n",
         )
     )
 
@@ -735,7 +734,7 @@ inputs:
   judge_time_limit: 3
 scoring:
   values:
-    moves: {block: max_runs, over: {runs: all}, of: {run: [all, moves]}}
+    moves: {block: max, over: {runs: all}, of: {run: [all, moves]}}
   show: {now: [moves]}
 """
 JUDGED_PATHS = frozenset({"task.yaml", "judge/judge.py", "judge/program.yaml"})
@@ -1014,10 +1013,16 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "no column called points",
         ),
         (
+            "{block: count, over: {runs: sample_tests}}",
+            "{block: count, over: {runs: sample_tests}, colour: red}",
+            "scoring.values.sample_score.of[1].colour",
+            "no input called colour",
+        ),
+        (
             "of: {run: [st1_tests, score]}",
             "of: {run: [st1_tests, score]}, colour: red",
-            "scoring.values.st1.colour",
-            "no input called colour",
+            "scoring.values.st1",
+            "min is given numbers or a group's runs, and these inputs fit no form of it",
         ),
         (
             "of: {run: [st1_tests, score]}",
@@ -1026,26 +1031,26 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "skip",
         ),
         (
-            "{block: count_runs, over: {runs: sample_tests}}",
-            "{block: count_runs}",
+            "{block: count, over: {runs: sample_tests}}",
+            "{block: count}",
             "scoring.values.sample_score.of[1].over",
             "needs its input over",
         ),
         (
-            "{block: count_runs, over: {runs: sample_tests}}",
-            "{block: count_runs, over: {runs: sample_tests}, weights: {input: {tests/9.in: 2}}}",
+            "{block: count, over: {runs: sample_tests}}",
+            "{block: count, over: {runs: sample_tests}, weights: {input: {tests/9.in: 2}}}",
             "scoring.values.sample_score.of[1].weights.input.tests/9.in",
             "No run has input",
         ),
         (
-            "{block: count_runs, over: {runs: sample_tests}}",
-            "{block: count_runs, over: {runs: sample_tests}, weights: {code: {a: 2}}}",
+            "{block: count, over: {runs: sample_tests}}",
+            "{block: count, over: {runs: sample_tests}, weights: {code: {a: 2}}}",
             "scoring.values.sample_score.of[1].weights.code",
             "cannot weigh",
         ),
         (
-            "{block: count_runs, over: {runs: sample_tests}}",
-            "{block: count_runs, over: {runs: sample_tests}, weights: {input: {samples/1.in: 0}}}",
+            "{block: count, over: {runs: sample_tests}}",
+            "{block: count, over: {runs: sample_tests}, weights: {input: {samples/1.in: 0}}}",
             "scoring.values.sample_score.of[1].weights.input.samples/1.in",
             "more than 0",
         ),
@@ -1123,7 +1128,7 @@ def test_a_value_cannot_read_itself_through_others(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     text = ISLANDS.replace(
-        "st2: {block: min_runs, over: {runs: st2_tests}, of: {run: [st2_tests, score]}}",
+        "st2: {block: min, over: {runs: st2_tests}, of: {run: [st2_tests, score]}}",
         "st2: {block: add, of: [{value: total}, 1]}",
     )
 

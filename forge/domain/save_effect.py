@@ -28,6 +28,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 
+from forge.domain.blocks.numbers import exact, written
 from forge.domain.board_checks import group_max
 from forge.domain.boards import in_scope
 from forge.domain.definitions import (
@@ -43,7 +44,7 @@ from forge.domain.definitions import (
     worth_of,
 )
 from forge.domain.meanings import in_sentence
-from forge.domain.scoring import ZERO, exact, rule_weight, written
+from forge.domain.scoring import ZERO, rule_weight
 
 RESULTS_CHANGE = "Results change."
 NO_RESULT_CHANGES = "Nobody's result changes."

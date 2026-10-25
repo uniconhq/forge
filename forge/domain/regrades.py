@@ -36,9 +36,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from fractions import Fraction
 
+from forge.domain.blocks.numbers import Better
 from forge.domain.ids import PublicationId
 from forge.domain.publications import Publication
-from forge.domain.scoring import Better
 
 
 class RegradeCause(StrEnum):

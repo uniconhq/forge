@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from forge.domain import exact_json
+from forge.domain.blocks.numbers import Better
 from forge.domain.program_manifest import (
     EXEC_OWN_NAMES,
     INTERACT_OWN_NAMES,
@@ -24,7 +25,6 @@ from forge.domain.program_manifest import (
     Report,
     parse_program,
 )
-from forge.domain.scoring import Better
 from forge.domain.workflow_definition import REPORT_NAME
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from tests.conftest import sibling
