@@ -43,7 +43,9 @@ from forge.domain.run_plan import (
 from forge.domain.run_task import check_run_task
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.workflow_definition import parse_run_workflow
+from forge.domain.yaml_models import load_yaml, one_line
 from forge.testing import PLACEHOLDER_DIGEST
+from tests.conftest import sibling
 from tests.test_program_manifest import primitive
 from tests.test_run_task import (
     CARTPOLE,
@@ -1874,3 +1876,30 @@ def test_checks_taking_the_save_past_the_wall_are_refused_at_checks(
             "25. Give fewer checks."
         ]
     }
+
+
+def unwrapped(name: str) -> PrimitiveDeclaration:
+    """`primitive-<name>` with `forms.one` lifted back to the top."""
+    document = load_yaml(sibling(f"primitive-{name}", "primitive.yaml").read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    document["image"] = f"ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}"
+    one = document.pop("forms")["one"]
+    document.pop("description", None)
+    if "description" in one:
+        document["description"] = one.pop("description")
+    document.update(one)
+    return parse_primitive(one_line(document))
+
+
+def test_lifting_execs_one_form_plans_the_same_bytes(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plain = {**primitives, "unicon/exec@v1": unwrapped("exec")}
+    workflow, files = deployed("unicon/classic@v3")
+    for task, paths, manifests in (
+        (ISLANDS, ISLANDS_PATHS, None),
+        (MEAN, MEAN_PATHS, {PROGRAM_YAML: MEAN_MANIFEST}),
+    ):
+        first = planned(primitives, task, workflow, files, paths, manifests=manifests)
+        second = planned(plain, task, workflow, files, paths, manifests=manifests)
+        assert ok(first).to_bytes() == ok(second).to_bytes()

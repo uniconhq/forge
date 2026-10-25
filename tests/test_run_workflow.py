@@ -952,6 +952,57 @@ def test_a_sum_or_a_max_over_the_programs_sizes_the_container(
         "gpus": 0,
     }
     assert interact.item_limits({}, {"only": {"time_limit": Decimal("0.0001")}})["memory_mb"] == 512
+    assert interact.limits is not None
     assert interact.item_limits({}) == interact.limits.as_mapping()
-    sized = exec_.item_limits({"time_limit": 10, "memory_limit": 256})
+    one = exec_.for_step(("program", "time_limit", "memory_limit"), "unicon/exec@v1")
+    assert isinstance(one, PrimitiveDeclaration)
+    sized = one.item_limits({"time_limit": 10, "memory_limit": 256})
     assert (sized["time_ms"], sized["memory_mb"]) == (23000, 512)
+
+
+TWO = parse_primitive(
+    f"""\
+schema_version: 6
+image: ghcr.io/acme/two@{DIGEST}
+forms:
+  one:
+    limits: {{time_ms: 1, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1, gpus: 0}}
+    inputs:
+      program: {{type: text}}
+    outputs:
+      outcome: outcome
+  several:
+    limits: {{time_ms: 2, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1, gpus: 0}}
+    inputs:
+      bundle: {{type: text}}
+    outputs:
+      outcome: outcome
+"""
+)
+
+
+def test_a_step_giving_one_forms_inputs_checks_as_that_form() -> None:
+    given = {"steps": [{"id": "run", "use": "acme/two@v1", "with": {"program": "hello"}}]}
+    found = checked({"acme/two@v1": TWO}, given, None)
+
+    assert found.problems == []
+    resolved = found.steps["run"].declaration
+    assert resolved.forms == {} and set(resolved.inputs) == {"program"}
+    assert resolved.limits is not None and resolved.limits.time_ms == 1
+
+
+def test_a_step_giving_inputs_of_both_forms_or_of_neither_is_refused() -> None:
+    held = {"acme/two@v1": TWO}
+    words = (
+        "The step's inputs fit no form of acme/two@v1. "
+        "Give every required input of one form and no input it lacks: "
+        "one (program), several (bundle)."
+    )
+    both = {
+        "steps": [
+            {"id": "run", "use": "acme/two@v1", "with": {"program": "hello", "bundle": "there"}}
+        ]
+    }
+    neither = {"steps": [{"id": "run", "use": "acme/two@v1"}]}
+    assert problems(held, both) == [{"path": "steps[0].use", "message": words}]
+    assert problems(held, neither) == [{"path": "steps[0].use", "message": words}]

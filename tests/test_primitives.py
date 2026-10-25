@@ -26,6 +26,7 @@ from forge.domain.primitives import (
     FromSum,
     Port,
     PrimitiveDeclaration,
+    PrimitiveForm,
     parse_primitive,
 )
 from forge.domain.types import Type
@@ -59,7 +60,7 @@ def test_the_three_seeded_primitives_parse() -> None:
     assert compile_.inputs["source"].runs is True
     assert compile_.inputs["language"].options == ("c", "cpp", "java", "python")
     assert compile_.inputs["entry"].optional is True
-    assert compile_.limits.as_mapping() == {
+    assert compile_.limits is not None and compile_.limits.as_mapping() == {
         "time_ms": 60000,
         "cpu_ms": 60000,
         "memory_mb": 1024,
@@ -467,7 +468,12 @@ def mirrored(name: str) -> PrimitiveDeclaration:
 
 
 def test_exec_reads_the_cache_names_files_and_takes_outputs_from_a_manifest() -> None:
-    exec_ = mirrored("exec")
+    formed = mirrored("exec")
+    stepped = formed.for_step(
+        ("program", "time_limit", "memory_limit"), "unicon/exec@v1"
+    )
+    assert isinstance(stepped, PrimitiveDeclaration)
+    exec_ = stepped
 
     assert (exec_.schema_version, exec_.cache, exec_.batch, exec_.outputs_from) == (
         6,
@@ -831,3 +837,124 @@ def test_a_limit_over_programs_is_refused_in_a_version_5_declaration() -> None:
         problems
     )
     assert {"path": "inputs.programs.type", "message": "This needs schema_version: 6."} in problems
+
+
+_LIMITS = "{time_ms: 1, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1, gpus: 0}"
+FORMS = f"""\
+schema_version: 6
+image: ghcr.io/uniconhq/primitive-probe@{DIGEST}
+forms:
+  one:
+    description: Runs one program.
+    limits: {_LIMITS}
+    inputs:
+      program: {{type: text}}
+    outputs:
+      outcome: outcome
+  several:
+    limits: {{time_ms: 2, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1, gpus: 0}}
+    inputs:
+      bundle: {{type: text}}
+    outputs:
+      outcome: outcome
+"""
+
+
+def test_a_two_form_declaration_parses() -> None:
+    declared = parse_primitive(FORMS)
+
+    assert declared.limits is None and set(declared.forms) == {"one", "several"}
+    assert declared.forms["one"].description == "Runs one program."
+    assert set(declared.forms["one"].inputs) == {"program"}
+
+
+def test_a_form_key_at_the_top_beside_forms_is_refused() -> None:
+    assert refused(FORMS + f"limits: {_LIMITS}\n") == [
+        {
+            "path": "limits",
+            "message": "A primitive with forms gives this on each form, not here.",
+        }
+    ]
+
+
+def test_forms_need_schema_version_6() -> None:
+    assert refused(FORMS.replace("schema_version: 6\n", "")) == [
+        {"path": "schema_version", "message": "This needs schema_version: 6."}
+    ]
+
+
+def test_a_fifth_form_is_refused() -> None:
+    extra = ""
+    for name in ("a", "b", "c"):
+        extra += (
+            f"  {name}:\n    limits: {_LIMITS}\n    inputs:\n      {name}: {{type: text}}\n"
+            "    outputs:\n      outcome: outcome\n"
+        )
+    assert refused(FORMS + extra) == [
+        {"path": "forms", "message": "A primitive has at most 4 forms."}
+    ]
+
+
+def test_a_form_name_must_be_a_port_name() -> None:
+    text = FORMS.replace("  one:\n", "  One:\n")
+    [problem] = refused(text)
+    assert problem["path"] == "forms.One"
+    assert problem["message"].startswith("A form's name may use only")
+
+
+def test_a_form_needs_a_required_input_of_its_own() -> None:
+    text = FORMS.replace(
+        "      program: {type: text}\n",
+        "      program: {type: text}\n      only: {type: text}\n",
+        1,
+    ).replace("      bundle: {type: text}\n", "      program: {type: text}\n")
+    assert refused(text) == [
+        {
+            "path": "forms.several",
+            "message": "A form needs a required input no other form declares.",
+        }
+    ]
+
+
+def test_for_step_picks_the_one_form_the_inputs_fit() -> None:
+    declared = parse_primitive(FORMS)
+    one = declared.for_step(("program",), "acme/two@v1")
+    several = declared.for_step(("bundle",), "acme/two@v1")
+    assert isinstance(one, PrimitiveDeclaration) and isinstance(several, PrimitiveDeclaration)
+    assert one.forms == {} and set(one.inputs) == {"program"} and one.limits is not None
+    assert one.limits.time_ms == 1
+    assert several.forms == {} and set(several.inputs) == {"bundle"}
+    assert several.limits is not None and several.limits.time_ms == 2
+    formless = parse_primitive(BASE + OUTCOME)
+    assert formless.for_step(("program",), "acme/two@v1") is formless
+
+
+def test_for_step_refuses_inputs_that_fit_no_form_or_more_than_one() -> None:
+    declared = parse_primitive(FORMS)
+    none = declared.for_step(("other",), "acme/two@v1")
+    assert none == (
+        "The step's inputs fit no form of acme/two@v1. "
+        "Give every required input of one form and no input it lacks: "
+        "one (program), several (bundle)."
+    )
+    both = PrimitiveDeclaration.model_construct(
+        schema_version=6,
+        image=declared.image,
+        forms={
+            "one": PrimitiveForm.model_construct(
+                limits=declared.forms["one"].limits,
+                inputs=declared.forms["one"].inputs,
+                outputs=declared.forms["one"].outputs,
+            ),
+            "several": PrimitiveForm.model_construct(
+                limits=declared.forms["several"].limits,
+                inputs=declared.forms["one"].inputs,
+                outputs=declared.forms["several"].outputs,
+            ),
+        },
+    )
+    assert both.for_step(("program",), "acme/two@v1") == (
+        "The step's inputs fit more than one form of acme/two@v1. "
+        "Give every required input of one form and no input it lacks: "
+        "one (program), several (program)."
+    )

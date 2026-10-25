@@ -1358,6 +1358,9 @@ class _Planner:
                 "time_limit": {"value": program.time_limit},
                 "memory_limit": {"value": program.memory_limit},
             }
+            resolved = run.for_step(tuple(inputs), EXEC_USE)
+            assert isinstance(resolved, PrimitiveDeclaration)
+            run = resolved
             copies = [
                 _Copy(compiled["output_mb"] * 1024, f"the program of {name}", None),
                 _Copy(_pages(self.task_files[program.manifest].size), program.manifest, None),

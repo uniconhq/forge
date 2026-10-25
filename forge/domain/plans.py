@@ -1310,6 +1310,7 @@ class _Compiler:
         what the workflow gives the step's ports.
         """
         raised: list[dict[str, int]] = []
+        assert declaration.limits is not None
         least = declaration.limits.as_mapping()
         for test, inputs in runs:
             # A sum or max over a programs port is contract 6's, which

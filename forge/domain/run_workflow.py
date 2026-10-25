@@ -450,6 +450,12 @@ class _Checker:
                 "unicon/exec@v1.",
             )
             return
+        resolved = declaration.for_step(tuple(given), use)
+        if isinstance(resolved, str):
+            self.refused.add(step_id)
+            self.refuse((*where, "use"), resolved)
+            return
+        declaration = resolved
         at = (*where, "with")
         self._ports(at, use, declaration.inputs, given)
         raised = {
