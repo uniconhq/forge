@@ -76,9 +76,10 @@ from forge.domain.grading import (
 from forge.domain.identity import PLATFORM, AsOrgAccount, User
 from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.names import EntrantOwner
-from forge.domain.plans import PLAN_PATH, Plan
+from forge.domain.plan_basics import PLAN_PATH
+from forge.domain.plans import Plan
 from forge.domain.roles import Role, RoleGrant, Scope
-from forge.domain.showing import SubmissionState
+from forge.domain.submission_state import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
 from forge.services import (

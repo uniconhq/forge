@@ -36,7 +36,8 @@ from forge.domain.errors import NotFound
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import PublicationId
-from forge.domain.plans import PLAN_PATH, Plan
+from forge.domain.plan_basics import PLAN_PATH
+from forge.domain.plans import Plan
 from forge.domain.release import Extension, due_of
 from forge.domain.run_results import (
     RunGrading,

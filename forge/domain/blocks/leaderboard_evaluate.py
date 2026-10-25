@@ -64,7 +64,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-from forge.domain.blocks.board_check import BoardColumn, BoardsCheck, column_at
+from forge.domain.blocks.board_check import ColumnRef, LeaderboardsCheck, column_at
 from forge.domain.blocks.catalogue import ASC, CATALOGUE, PICKS, SKIP
 from forge.domain.blocks.check import direct_reads, form_of, leaf_of
 from forge.domain.blocks.evaluate import over_numbers
@@ -128,21 +128,23 @@ _MISSING = Cell()
 
 
 def work_out_row(
-    boards: Mapping[str, Leaderboard],
-    checked: BoardsCheck,
+    leaderboards: Mapping[str, Leaderboard],
+    checked: LeaderboardsCheck,
     results: Mapping[str, Sequence[Submitted]],
     trees: Mapping[str, Mapping[str, object]],
-) -> dict[BoardColumn, Cell]:
+) -> dict[ColumnRef, Cell]:
     """Every column of the boards the check reads, for one row: `results`
     the row's submissions to each task, oldest first, a task with none left
     out, and `trees` each task's values' trees, which `best_each` reads."""
     row = _Row(results, trees)
     hiding = checked.hiding()
-    for board, name in checked.order:
-        row.board = board
-        through = checked.through.get((board, name), frozenset())
-        hides = hiding.get((board, name), frozenset())
-        row.done[(board, name)] = row.node(boards[board].columns[name], {}, through, hides)
+    for leaderboard, name in checked.order:
+        row.leaderboard = leaderboard
+        through = checked.through.get((leaderboard, name), frozenset())
+        hides = hiding.get((leaderboard, name), frozenset())
+        row.done[(leaderboard, name)] = row.node(
+            leaderboards[leaderboard].columns[name], {}, through, hides
+        )
     return row.done
 
 
@@ -157,8 +159,8 @@ class _Row:
     ) -> None:
         self.results = results
         self.trees = trees
-        self.done: dict[BoardColumn, Cell] = {}
-        self.board = ""
+        self.done: dict[ColumnRef, Cell] = {}
+        self.leaderboard = ""
 
     def node(
         self,
@@ -185,20 +187,20 @@ class _Row:
             raise ValueError(f"{tree!r} is not a node of a column's tree")
         kind, named = leaf
         if kind == "column":
-            return self.done[column_at(self.board, named)]
+            return self.done[column_at(self.leaderboard, named)]
         if kind == "value" and isinstance(named, list):
             of, name = named
             if isinstance(of, str) and of in scope:
                 return _read(scope[of], name)
             picked = (
-                self.done[(self.board, of)]
+                self.done[(self.leaderboard, of)]
                 if isinstance(of, str)
                 else self.node(of, scope, frozenset({name}), frozenset({name}))
             )
             if picked.picked is None:
                 return _MISSING.having(picked)
             return _read(picked.picked, name).having(picked)
-        raise ValueError(f"{tree!r} gives no number on a board")
+        raise ValueError(f"{tree!r} gives no number on a leaderboard")
 
     def block(
         self,
@@ -211,7 +213,7 @@ class _Row:
         block = CATALOGUE.get(name) if isinstance(name, str) else None
         form = form_of(block, tree) if block is not None else None
         if block is None or form is None:
-            raise ValueError(f"{tree!r} fits no block a board has")
+            raise ValueError(f"{tree!r} fits no block a leaderboard has")
         if form.goes_over is not None:
             source = tree[form.goes_over]
             assert isinstance(source, dict)

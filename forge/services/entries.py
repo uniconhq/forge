@@ -55,18 +55,18 @@ from forge.db.tables.gradings import FRONT
 from forge.domain.blocks.catalogue import ENTERED
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.blocks.numbers import exact, written
-from forge.domain.board_checks import boards_of
-from forge.domain.boards import STAFF, alone, counted_in
 from forge.domain.definitions import TaskDefinition
 from forge.domain.errors import InvalidMark, NotARunTask, NotFound
 from forge.domain.ids import TaskId, WorkspaceId
+from forge.domain.leaderboard_task_check import leaderboards_of
+from forge.domain.leaderboards import STAFF, alone, counted_in
 from forge.domain.names import WorkspaceOwner
 from forge.domain.release import close_of
 from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_scope
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, published, timelines
+from forge.services import leaderboards, published, timelines
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -132,14 +132,14 @@ async def queue(ctx: Context, organiser: Organiser, task: TaskId) -> tuple[Queue
     if scoring is None:
         raise NotARunTask(NOT_A_RUN_TASK)
     entry = current.entry
-    found = await boards.read(ctx, contest, settings, list(settings.leaderboards), STAFF)
+    found = await leaderboards.read(ctx, contest, settings, list(settings.leaderboards), STAFF)
     cells = None
     if not holds(organiser.grants, contest_scope(contest), Role.OBSERVER):
-        cells = alone(boards_of(settings), current.name)
+        cells = alone(leaderboards_of(settings), current.name)
     counted = counted_in(found, current.name, cells)
     if entry is None or not counted:
         return ()
-    names = {row.owner: row.name for board in found for row in board.rows}
+    names = {row.owner: row.name for leaderboard in found for row in leaderboard.rows}
     extensions = await timelines.of_owners(ctx, contest, list(counted))
     closed = {owner: close_of(settings, entry, extensions[owner]) for owner in counted}
     rows = sorted(

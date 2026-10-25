@@ -1,393 +1,396 @@
-"""A row's marks (C1): up to the task's `marks` of its own submissions,
-frozen at its close, and only while a leaderboard reads which of the
-task's submissions an entrant marks; a task's `marks` never lowered below
-what a row holds. And an organiser's read of an entrant's submission,
-which shows what the entrant's own read holds back.
+"""The contest's leaderboards as each viewer reads them (SIMPLER-CORE.md
+10.2, the leaderboards note's 6.3): a visitor and an entrant read a board
+for everyone with each row's values as that row's entrant is shown them,
+and only their own row of the gradebook; a withdrawn task's columns are
+listed to no entrant, and a header tells a task's bounds only once it is
+released; the hold keeps every row but the viewer's own as it stood at
+its `from`, counting the rest held, until its `until` or a manager of the
+contest ends it early, asked first, the end kept with who and when, a
+hold written again with a later `from` holding afresh; and the contest
+home shows an entrant their own row of each board they read.
 """
 
-import asyncio
-import contextlib
 import uuid
-from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
+from fractions import Fraction
 from typing import Any
 
-import pytest
-from sqlalchemy import update
-
 from forge.db.tables import Grading
-from forge.domain.content import Edit
-from forge.domain.errors import (
-    Forbidden,
-    MarkLimit,
-    MarksFrozen,
-    MarksOff,
-    NotApproved,
-    NotFound,
-)
 from forge.domain.grading import GradingStatus
-from forge.domain.identity import PLATFORM, User
-from forge.domain.ids import TaskId
-from forge.domain.names import EntrantOwner
-from forge.domain.roles import Role, RoleGrant, Scope
-from forge.domain.sessions import Session
-from forge.domain.showing import SubmissionState
+from forge.domain.leaderboards import Counted, LeaderboardCell, LeaderboardView, LeaderboardViewRow
+from forge.domain.roles import Scope
 from forge.domain.submissions import SubmittedInput
-from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import (
-    contest_home,
-    entrants,
-    files,
-    gradings,
-    identity,
-    marks,
-    publications,
-    submissions,
-)
-from forge.services.access import Organiser
-from forge.services.publications import Draft, Published
+from forge.services import contest_home, leaderboards, submissions
 from forge.testing import FakeClock
-from tests.services.conftest import (
-    RUNNING,
-    SPRING,
-    Acme,
-    Entered,
-    organiser,
-    signed_in,
-    upload,
-    write_contest,
+from tests.services.conftest import SPRING, Acme, signed_in, upload, write_contest
+from tests.services.test_examples import BASE, _judged, _task, _workflows
+from tests.services.test_pipelines import (
+    ACCEPTED_EARLY,
+    ACCEPTED_LATE,
+    AFTER_CLOSE,
+    BEFORE_CLOSE,
+    LIVE,
+    _checked,
+    _ended,
+    _rows,
+    _staff,
+    _submit,
 )
+from tests.services.test_steps import CODE, Islands
 
-END = datetime(2026, 9, 26, 15, 0, tzinfo=UTC)
-
-BOARDS = """\
+CONTEST = Scope("acme", "spring")
+LEADERBOARDS = """\
 leaderboards:
-  final:
-    title: Final
+  standings:
+    title: Standings
+    audience: {who: everyone}
     columns:
-      picked: {block: latest, from: {results: sum}, where: {value: [sum, marked]}}
-      points: {block: otherwise, of: [{value: [{column: picked}, total]}, 0]}
-    sort: [{points: desc}]
-    display: [points]
+      sample:
+        block: otherwise
+        of: [{value: [{block: latest, from: {results: islands}}, sample_score]}, 0]
+      total:
+        block: otherwise
+        of: [{value: [{block: latest, from: {results: islands}}, total]}, 0]
+      tries: {block: count, over: {results: islands}}
+    sort: [{sample: desc}, {tries: asc}]
+    display: [sample, total, tries]
+  gradebook:
+    audience: {who: entrants, rows: own}
+    columns:
+      total:
+        block: otherwise
+        of: [{value: [{block: latest, from: {results: islands}}, total]}, 0]
+    sort: [{total: desc}]
+    display: [total]
 """
-"""A board reading which of sum's submissions an entrant marks."""
+"""A board for everyone over islands' sample score, shown at once, and its
+total, shown after the close; and a gradebook each entrant reads alone."""
 
-GROUPS = b"""\
-test_groups:
-  main: {each: 100}
-  small: {pass: 30, show: verdict}
-  large: {pass: 70, show: after_close}
-"""
-
-RESULT: dict[str, Any] = {
-    "schema_version": 5,
-    "stopped": None,
-    "stopped_by": None,
-    "tests": [
-        {"test": "large/1", "outcome": "wrong_answer", "values": {"time_ms": 30, "memory_kb": 9}},
-        {"test": "main/1", "outcome": "accepted", "values": {"time_ms": 10, "memory_kb": 7}},
-        {"test": "small/1", "outcome": "accepted", "values": {"time_ms": 20, "memory_kb": 8}},
-    ],
-    "values": {},
-    "run_log": None,
-    "error": None,
-}
-
-EVERY_TEST: dict[str, Any] = {
-    **RESULT,
-    "tests": [{**test, "outcome": "accepted"} for test in RESULT["tests"]],
-}
+OPEN = LIVE + LEADERBOARDS
+HOLD_FROM = datetime(2026, 9, 26, 14, tzinfo=UTC)
+HELD = LIVE + "hold: {from: 2026-09-26T14:00:00Z, until: staff}\n" + LEADERBOARDS
+"""The boards, held from 14:00 until staff end it."""
 
 
-def contest(extra: str = "", entry: str = "") -> str:
-    """The running contest, with `entry` on sum's entry and `extra` after."""
-    return RUNNING.format(visibility="everyone") + entry + extra
+def at(hour: int, minute: int) -> datetime:
+    return datetime(2026, 9, 26, hour, minute, tzinfo=UTC)
 
 
-async def _task_yaml(acme: Acme, task: TaskId) -> bytes:
-    return (await acme.fake.content.read_file(PLATFORM, task, "task.yaml")).content
+async def _graded(setup: Setup) -> None:
+    """Every early row still running ended with every run accepted."""
+    for row in await _rows(setup, "early"):
+        if row.status is not GradingStatus.DONE:
+            await _ended(setup, row, ACCEPTED_EARLY, ACCEPTED_LATE)
 
 
-async def _save(
-    setup: Setup, acme: Acme, task: TaskId, files_: Mapping[str, bytes]
-) -> Published | Draft:
-    head = await acme.fake.content.list_files(PLATFORM, task)
-    return await publications.save(
-        setup,
-        acme.ada,
-        task,
-        {path: Edit(content, head.tokens.get(path)) for path, content in files_.items()},
-        confirm=True,
-    )
-
-
-async def _three_groups(setup: Setup, acme: Acme, task: TaskId) -> Published:
-    current = await _task_yaml(acme, task)
-    start = current.index(b"test_groups:")
-    changed = {"task.yaml": current[:start] + GROUPS}
-    for group in ("small", "large"):
-        changed[f"tests/{group}/1/input"] = b"1 1\n"
-        changed[f"tests/{group}/1/answer"] = b"2\n"
-    saved = await _save(setup, acme, task, changed)
-    assert isinstance(saved, Published), saved
-    return saved
-
-
-async def _submit(setup: Setup, acme: Acme, entered: Entered, key: str) -> int:
-    return await _submit_as(setup, acme, entered.session, entered.task, key)
-
-
-async def _submit_as(setup: Setup, acme: Acme, session: Session, task: TaskId, key: str) -> int:
-    made = await upload(setup, acme.fake, session, task, key.encode())
-    submission = await submissions.submit(
-        setup,
-        session,
-        task,
-        {
-            "submission": SubmittedInput(uploads=(made.id,)),
-            "language": SubmittedInput(value="python"),
-        },
-        idempotency_key=key,
-    )
-    return submission.number
-
-
-async def _graded(setup: Setup, number: int, result: dict[str, Any]) -> None:
-    async with setup.unit_of_work() as ctx:
-        await ctx.db.execute(
-            update(Grading)
-            .where(Grading.submission_number == number)
-            .values(status="done", result=result)
-        )
-
-
-@pytest.fixture
-async def ranked(setup: Setup, acme: Acme, entered: Entered, clock: FakeClock) -> Entered:
-    """bob's two graded submissions to sum, under the board: the first,
-    at 12:00, passes main and small; the second, at 12:01, everything.
-    """
-    await write_contest(acme.fake, contest(BOARDS))
-    await _three_groups(setup, acme, entered.task)
-    first = await _submit(setup, acme, entered, "key-0001-aaaa")
-    await _graded(setup, first, RESULT)
-    clock.advance(timedelta(minutes=1))
-    second = await _submit(setup, acme, entered, "key-0002-bbbb")
-    await _graded(setup, second, EVERY_TEST)
-    return entered
-
-
-async def test_a_contest_stored_with_the_retired_on_system_error_still_reads_everywhere(
-    setup: Setup, acme: Acme, ranked: Entered
-) -> None:
-    # A form of an earlier release wrote it; nothing took its place.
-    await write_contest(acme.fake, contest(BOARDS) + "on_system_error: grading\n")
-
-    (task,) = (await contest_home.home(setup, ranked.session, SPRING)).tasks
-
-    assert task.name == "sum"
-    assert (await contest_home.task(setup, ranked.session, ranked.task)).marks == 1
-    assert (await marks.held(setup, ranked.session, ranked.task)).most == 1
-
-
-async def _contestant(setup: Setup, acme: Acme, user_id: int, name: str) -> Session:
-    acme.fake.add_user(user_id, name)
-    session = await signed_in(setup, acme.fake, user_id)
-    entrant = await entrants.register(setup, session, SPRING)
-    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await entrants.approve(setup, manager, SPRING, entrant.id)
+async def _entrant(setup: Setup, acme: Acme, islands: Islands, user: int) -> Any:
+    """A new entrant, signed in as `user`, named for it, with one
+    submission of islands graded."""
+    acme.fake.add_user(user, f"entrant{user}")
+    session = await _submit(setup, acme, islands, user=user)
+    await _graded(setup)
     return session
 
 
-async def test_a_mark_holds_up_to_the_tasks_marks_and_freezes_at_the_close(
-    setup: Setup, acme: Acme, ranked: Entered, clock: FakeClock
-) -> None:
-    empty = await marks.held(setup, ranked.session, ranked.task)
-    assert (empty.numbers, empty.most, empty.closes_at, empty.frozen) == ((), 1, END, False)
-
-    marked = await marks.mark(setup, ranked.session, ranked.task, 2)
-    again = await marks.mark(setup, ranked.session, ranked.task, 2)
-    with pytest.raises(MarkLimit) as limit:
-        await marks.mark(setup, ranked.session, ranked.task, 1)
-    with pytest.raises(NotFound):
-        await marks.mark(setup, ranked.session, ranked.task, 7)
-
-    assert marked.numbers == again.numbers == (2,)
-    assert limit.value.extra["limit"] == 1
-
-    unmarked = await marks.unmark(setup, ranked.session, ranked.task, 2)
-    assert unmarked.numbers == ()
-    await marks.mark(setup, ranked.session, ranked.task, 1)
-    clock.set(END)
-    await identity.current(ranked.session.id, setup=setup)
-    with pytest.raises(MarksFrozen):
-        await marks.unmark(setup, ranked.session, ranked.task, 1)
-    assert (await marks.held(setup, ranked.session, ranked.task)).frozen
-
-
-async def test_a_task_no_board_reads_the_marks_of_takes_no_marks(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    await write_contest(acme.fake, contest())
-    with pytest.raises(MarksOff):
-        await marks.held(setup, entered.session, entered.task)
-    assert (await contest_home.task(setup, entered.session, entered.task)).marks is None
-
-    await write_contest(acme.fake, contest(BOARDS))
-    assert (await contest_home.task(setup, entered.session, entered.task)).marks == 1
-
-
-async def test_someone_not_approved_is_not_told_whether_a_task_takes_marks(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    acme.fake.add_user(30, "cyd")
-    cyd = await signed_in(setup, acme.fake, 30)
-    for settings in (contest(), contest(BOARDS)):
-        await write_contest(acme.fake, settings)
-        with pytest.raises(NotApproved):
-            await marks.held(setup, cyd, entered.task)
-        assert (await contest_home.task(setup, cyd, entered.task)).marks is None
-
-
-async def test_another_persons_submission_is_not_theirs_to_mark(
-    setup: Setup, acme: Acme, ranked: Entered
-) -> None:
-    cyd = await _contestant(setup, acme, 30, "cyd")
-
-    with pytest.raises(NotFound):
-        await marks.mark(setup, cyd, ranked.task, 1)
-
-
-async def _write(setup: Setup, acme: Acme, content: str) -> files.Written:
-    current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
-    written = await files.write(
-        setup, acme.ada, SPRING, "contest.yaml", content.encode(), current.token
-    )
-    assert isinstance(written, files.Written)
-    return written
-
-
-async def _refused(setup: Setup, acme: Acme, content: str) -> list[tuple[str, str]]:
-    with pytest.raises(InvalidDefinition) as refused:
-        await _write(setup, acme, content)
-    return [(problem["path"], problem["message"]) for problem in refused.value.errors]
-
-
-async def test_a_tasks_marks_are_not_lowered_below_what_a_row_holds(
-    setup: Setup, acme: Acme, ranked: Entered
-) -> None:
-    await write_contest(acme.fake, contest(BOARDS, "    marks: 2\n"))
-    await marks.mark(setup, ranked.session, ranked.task, 1)
-    await marks.mark(setup, ranked.session, ranked.task, 2)
-
-    refused = await _refused(setup, acme, contest(BOARDS, "    marks: 1\n"))
-    dropped = await _refused(setup, acme, contest(BOARDS))
-
-    said = "1 entrant has marked 2 submissions on sum, so it cannot allow fewer marks."
-    assert refused == [("tasks[0].marks", said)]
-    assert dropped == [("tasks[0]", said)]
-    assert await _write(setup, acme, contest(BOARDS, "    marks: 3\n"))
-
-
-def _observer_of(acme: Acme, scope: Scope) -> Organiser:
-    """Someone checked as an observer at `scope` and nothing else."""
-    return Organiser(
-        user=User(id=9, username="eve"),
-        grants=(RoleGrant(scope, Role.OBSERVER),),
-        scope=scope,
-        role=Role.OBSERVER,
-        identity=acme.ada.identity,
-    )
-
-
-async def test_an_organiser_reads_a_hidden_groups_outcome_and_tests_before_the_reveal(
-    setup: Setup, acme: Acme, ranked: Entered
-) -> None:
-    observer = _observer_of(acme, Scope("acme", "spring", "sum"))
-
-    seen = await submissions.organised(
-        setup, observer, ranked.task, EntrantOwner(ranked.entrant), 1
-    )
-    own = await submissions.one(setup, ranked.session, ranked.task, 1)
-
-    assert seen.grading is not None and own.grading is not None
-    assert seen.grading.status is GradingStatus.DONE
-    assert own.grading.status is SubmissionState.GRADED
-    by_group = {group.group: group for group in seen.grading.groups}
-    large = by_group["large"]
-    assert large.outcome == "wrong_answer"
-    assert large.tests is not None and [test["test"] for test in large.tests] == ["large/1"]
-    assert large.shown_at == END
-    small = by_group["small"]
-    assert small.tests is not None and small.shown_at == END
-    assert by_group["main"].shown_at is None
-    assert seen.grading.outcome == "wrong_answer"
-    assert (seen.number, seen.submitted_at) == (own.number, own.submitted_at)
-
-
-async def test_a_contestants_own_read_is_unchanged_by_an_organisers(
-    setup: Setup, acme: Acme, ranked: Entered
-) -> None:
-    before = await submissions.one(setup, ranked.session, ranked.task, 1)
-
-    await submissions.organised(
+async def _again(setup: Setup, acme: Acme, islands: Islands, session: Any) -> None:
+    """Another submission of islands by the entrant, graded."""
+    made = await upload(setup, acme.fake, session, islands.task, CODE, input="code")
+    await submissions.submit(
         setup,
-        _observer_of(acme, Scope("acme", "spring")),
-        ranked.task,
-        EntrantOwner(ranked.entrant),
-        1,
+        session,
+        islands.task,
+        {"code": SubmittedInput(uploads=(made.id,)), "language": SubmittedInput(value="python")},
+        idempotency_key=uuid.uuid4().hex,
     )
-    after = await submissions.one(setup, ranked.session, ranked.task, 1)
-
-    assert after == before
-    assert before.grading is not None
-    large = next(group for group in before.grading.groups if group.group == "large")
-    assert (large.outcome, large.tests, large.shown_at) == (None, None, END)
+    await setup.settle()
+    await _graded(setup)
 
 
-async def test_an_organiser_without_the_observer_role_at_the_task_is_refused(
-    setup: Setup, acme: Acme, ranked: Entered
+def _cells(row: LeaderboardViewRow) -> list[tuple[str, Fraction | None, bool]]:
+    return [(cell.column, cell.number, cell.hidden) for cell in row.cells]
+
+
+def _rows_of(leaderboard: LeaderboardView) -> list[tuple[str, int | None, int]]:
+    return [(row.name, row.place, row.held) for row in leaderboard.rows]
+
+
+async def _standings(setup: Setup, session: Any) -> LeaderboardView:
+    found = await leaderboards.seen(setup, session, SPRING, "standings")
+    assert len(found) == 1
+    return found[0]
+
+
+async def test_everyone_reads_each_row_as_its_own_entrant_is_shown_it(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
-    elsewhere = _observer_of(acme, Scope("acme", "spring", "product"))
+    clock.set(at(13, 0))
+    islands = await _checked(setup, acme, contest=OPEN)
+    first = await _entrant(setup, acme, islands, 20)
+    await _entrant(setup, acme, islands, 21)
+    clock.set(BEFORE_CLOSE)
+    staff = await _staff(setup, acme)
 
-    with pytest.raises(Forbidden):
-        await submissions.organised(setup, elsewhere, ranked.task, EntrantOwner(ranked.entrant), 1)
-    with pytest.raises(Forbidden):
-        await gradings.list(setup, elsewhere, ranked.task)
+    visitor = await leaderboards.seen(setup, None, SPRING)
+    entrant = await leaderboards.seen(setup, first, SPRING)
+    [everyone, staffs] = await leaderboards.seen(setup, staff, SPRING)
+
+    # A visitor reads the board for everyone and no gradebook. The total
+    # is shown only after the close, so it has no number on any row, and
+    # why, and what each cell counted, is told to nobody but the row's own
+    # entrant (item 127).
+    assert [leaderboard.key for leaderboard in visitor] == ["standings"]
+    [standings] = visitor
+    assert _rows_of(standings) == [("entrant20", 1, 0), ("entrant21", 1, 0)]
+    for row in standings.rows:
+        assert _cells(row) == [
+            ("sample", Fraction(1), False),
+            ("total", None, False),
+            ("tries", Fraction(1), False),
+        ]
+        assert not row.told and row.cells[0].counted == ()
+    # An entrant also reads their own gradebook row, with no place, and is
+    # told what their own cells counted.
+    assert [leaderboard.key for leaderboard in entrant] == ["standings", "gradebook"]
+    mine, other = entrant[0].rows
+    assert mine.told and mine.cells[0].counted == (Counted("islands", 1),)
+    assert not other.told
+    [row] = entrant[1].rows
+    assert (row.name, row.place, row.cells) == (
+        "entrant20",
+        None,
+        (LeaderboardCell("total", None, hidden=True),),
+    )
+    # Staff read every value, of both boards.
+    assert [cell.number for cell in everyone.rows[0].cells] == [1, 100, 1]
+    assert [len(staffs.rows), staffs.rows[0].cells[0].number] == [2, 100]
+
+    clock.set(AFTER_CLOSE)
+    after = await _standings(setup, None)
+    assert [cell.number for cell in after.rows[1].cells] == [1, 100, 1]
 
 
-async def test_a_row_with_no_such_submission_is_no_such_submission(
-    setup: Setup, acme: Acme, ranked: Entered
+async def test_a_withdrawn_tasks_columns_are_listed_to_no_entrant_and_read_nothing(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
-    observer = _observer_of(acme, Scope("acme", "spring"))
+    clock.set(at(13, 0))
+    islands = await _checked(setup, acme, contest=OPEN)
+    first = await _entrant(setup, acme, islands, 20)
+    await write_contest(
+        acme.fake, OPEN.replace("  - id: islands\n", "  - {id: islands, withdrawn: true}\n")
+    )
+    staff = await _staff(setup, acme)
 
-    for owner, number in ((EntrantOwner(ranked.entrant), 3), (EntrantOwner(uuid.uuid4()), 1)):
-        with pytest.raises(NotFound):
-            await submissions.organised(setup, observer, ranked.task, owner, number)
+    entrant = await _standings(setup, first)
+    staffs = await _standings(setup, staff)
+
+    assert (entrant.headers, entrant.rows[0].cells, entrant.rows[0].place) == ((), (), None)
+    assert entrant.dropped == ("sample", "tries")
+    # Staff still read the columns, over no results.
+    assert [header.name for header in staffs.headers] == ["sample", "total", "tries"]
+    assert [cell.number for cell in staffs.rows[0].cells] == [0, 0, 0]
 
 
-async def test_a_mark_in_flight_and_a_save_lowering_marks_never_leave_a_row_over_them(
-    setup: Setup, acme: Acme, ranked: Entered, monkeypatch: pytest.MonkeyPatch
+async def test_a_header_gives_anyone_but_staff_only_the_bounds_of_what_they_are_shown(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
-    """A mark holds the contest's rules before it reads how many marks the
-    task takes, so a save lowering them waits and counts the new mark, or
-    the mark reads the lowered number (C1)."""
-    await write_contest(acme.fake, contest(BOARDS, "    marks: 3\n"))
-    await marks.mark(setup, ranked.session, ranked.task, 1)
-    change = marks._change
-    saving: list[asyncio.Task[Any]] = []
+    # Item 126: total is shown after the close, so before it only staff
+    # read its bounds; sample's read what is shown now.
+    clock.set(at(13, 0))
+    islands = await _checked(setup, acme, contest=OPEN)
+    entrant = await _entrant(setup, acme, islands, 20)
+    staff = await _staff(setup, acme)
 
-    async def save_meanwhile(*args: Any, **kwargs: Any) -> Any:
-        lowered = contest(BOARDS, "    marks: 1\n")
-        saving.append(asyncio.create_task(_write(setup, acme, lowered)))
-        await asyncio.wait(saving, timeout=3)
-        return await change(*args, **kwargs)
+    def bounds(leaderboard: LeaderboardView) -> list[tuple[str, Fraction | None, Fraction | None]]:
+        return [(each.name, each.at_least, each.at_most) for each in leaderboard.headers]
 
-    monkeypatch.setattr(marks, "_change", save_meanwhile)
-    with contextlib.suppress(MarkLimit):
-        await marks.mark(setup, ranked.session, ranked.task, 2)
-    saved = await asyncio.gather(*saving, return_exceptions=True)
+    clock.set(BEFORE_CLOSE)
+    assert bounds(await _standings(setup, None)) == [
+        ("sample", 0, 1),
+        ("total", None, None),
+        ("tries", 0, 50),
+    ]
+    assert bounds(await _standings(setup, entrant)) == bounds(await _standings(setup, None))
+    total = ("total", Fraction(0), Fraction(100))
+    assert bounds(await _standings(setup, staff))[1] == total
+    clock.set(AFTER_CLOSE)
+    assert bounds(await _standings(setup, None))[1] == total
 
-    held = len((await marks.held(setup, ranked.session, ranked.task)).numbers)
-    allowed = 1 if not isinstance(saved[0], BaseException) else 3
-    assert held <= allowed, (held, saved)
+
+MIXED = """\
+tasks:
+  - id: a
+  - {id: b, release_at: 2026-09-26T13:00:00Z}
+leaderboards:
+  both:
+    audience: {who: everyone}
+    columns:
+      tries:
+        block: add
+        of: [{block: count, over: {results: a}}, {block: count, over: {results: b}}]
+      best:
+        block: add
+        of:
+          - {block: max, over: {results: a}, of: {value: [a, score]}}
+          - {block: max, over: {results: b}, of: {value: [b, score]}}
+    display: [tries, best]
+"""
+"""A board whose columns each read a task released at the start and one
+released at 13:00."""
+
+
+async def test_a_task_not_yet_released_gives_a_header_no_bounds_but_to_staff(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    # Item 126: neither b's submissions.max nor its values' bounds are
+    # told before its release, so a column reading it has none.
+    clock.set(at(12, 0))
+    await _workflows(acme)
+    await write_contest(acme.fake, BASE + MIXED)
+    shown = _judged(
+        "Task",
+        "    score: {block: max, over: {runs: all}, of: {run: [all, score]}}\n",
+        "    now: [score, all]\n",
+    )
+    await _task(setup, acme, "a", shown)
+    await _task(setup, acme, "b", shown)
+    staff = await _staff(setup, acme)
+
+    async def bounds(session: Any) -> list[tuple[str, Fraction | None, Fraction | None]]:
+        [leaderboard] = await leaderboards.seen(setup, session, SPRING, "both")
+        return [(each.name, each.at_least, each.at_most) for each in leaderboard.headers]
+
+    every = [("tries", Fraction(0), Fraction(100)), ("best", Fraction(0), Fraction(2))]
+    assert await bounds(None) == [("tries", None, None), ("best", None, None)]
+    assert await bounds(staff) == every
+    clock.set(at(13, 0))
+    assert await bounds(None) == every
+
+
+async def _held_contest(setup: Setup, acme: Acme, clock: FakeClock, contest: str) -> Any:
+    """entrant20 submitting at 13:00 and 14:30, entrant21 at 14:45, each
+    graded; both sessions, read at 14:50."""
+    clock.set(at(13, 0))
+    islands = await _checked(setup, acme, contest=contest)
+    first = await _entrant(setup, acme, islands, 20)
+    clock.set(at(14, 30))
+    await _again(setup, acme, islands, first)
+    clock.set(at(14, 45))
+    second = await _entrant(setup, acme, islands, 21)
+    clock.set(BEFORE_CLOSE)
+    return first, second
+
+
+async def test_the_hold_keeps_other_rows_as_they_stood_at_from_and_counts_the_rest(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    first, _ = await _held_contest(setup, acme, clock, HELD)
+    staff = await _staff(setup, acme)
+
+    visitor = await _standings(setup, None)
+    entrant = await _standings(setup, first)
+    staffs = await _standings(setup, staff)
+
+    # Others read entrant20 with only the submission made before 14:00,
+    # and entrant21 with none, each told how many are held; a row with
+    # nothing left reads no hidden value, so its total is the fallback.
+    assert visitor.held_from == HOLD_FROM
+    assert _rows_of(visitor) == [("entrant20", 1, 1), ("entrant21", 2, 1)]
+    assert [cell.number for cell in visitor.rows[0].cells] == [1, None, 1]
+    assert [cell.number for cell in visitor.rows[1].cells] == [0, 0, 0]
+    # Their own row is whole to its entrant; the other is held.
+    assert _rows_of(entrant) == [("entrant20", 1, 0), ("entrant21", 2, 1)]
+    assert entrant.rows[0].cells[2] == LeaderboardCell(
+        "tries", Fraction(2), (Counted("islands", 1), Counted("islands", 2))
+    )
+    # Staff read every row whole.
+    assert staffs.held_from is None
+    assert [row.held for row in staffs.rows] == [0, 0]
+    assert [(row.name, row.cells[2].number) for row in staffs.rows] == [
+        ("entrant21", Fraction(1)),
+        ("entrant20", Fraction(2)),
+    ]
+
+
+async def test_the_contest_home_shows_an_entrant_their_own_row_of_each_leaderboard(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    first, second = await _held_contest(setup, acme, clock, HELD)
+
+    home = await contest_home.home(setup, first, SPRING)
+    staff_home = await contest_home.home(setup, await signed_in(setup, acme.fake, 7), SPRING)
+
+    assert [(leaderboard.key, _rows_of(leaderboard)) for leaderboard in home.standing] == [
+        ("standings", [("entrant20", 1, 0)]),
+        ("gradebook", [("entrant20", None, 0)]),
+    ]
+    assert [cell.number for cell in home.standing[0].rows[0].cells] == [1, None, 2]
+    assert staff_home.standing == ()
+    # The other entrant's own row is whole to them, past the hold.
+    other = await contest_home.home(setup, second, SPRING)
+    assert [cell.number for cell in other.standing[0].rows[0].cells] == [1, None, 1]
+
+
+RANKED = OPEN.replace("sort: [{sample: desc}, {tries: asc}]", "sort: [{total: desc}]", 1)
+"""The boards, the one for everyone ranked by the total shown after the
+close."""
+
+
+async def _late_running(setup: Setup, row: Grading) -> None:
+    """A late row of the early row `row`, still running."""
+    async with setup.unit_of_work() as ctx:
+        early = await ctx.db.get(Grading, row.id)
+        assert early is not None
+        ctx.db.add(
+            Grading(
+                task_id=early.task_id,
+                workspace_id=early.workspace_id,
+                submission_id=early.submission_id,
+                submission_number=early.submission_number,
+                submission_version=early.submission_version,
+                submitted_at=early.submitted_at,
+                publication_id=early.publication_id,
+                pipeline="late",
+                early_id=early.id,
+                regrade_id=early.regrade_id,
+                attempt=1,
+                status=GradingStatus.RUNNING,
+                queued_at=ctx.now,
+            )
+        )
+
+
+async def test_a_value_whose_late_runs_still_run_after_the_reveal_waits_for_every_viewer(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(at(13, 0))
+    islands = await _checked(setup, acme, contest=RANKED)
+    sessions = []
+    for user in (20, 21):
+        acme.fake.add_user(user, f"entrant{user}")
+        sessions.append(await _submit(setup, acme, islands, user=user))
+    done, running = await _rows(setup, "early")
+    await _ended(setup, done, ACCEPTED_EARLY, ACCEPTED_LATE)
+    await _ended(setup, running, ACCEPTED_EARLY, None)
+    await _late_running(setup, running)
+    clock.set(AFTER_CLOSE)
+
+    visitor = await _standings(setup, None)
+    staff = await _standings(setup, await _staff(setup, acme))
+    graded, grading = staff.rows
+    own = await _standings(setup, sessions[[20, 21].index(int(grading.name[-2:]))])
+
+    # The grading row's total still waits on its late runs, so the latest
+    # pick passes over its submission and the total falls back to 0, as
+    # staff read it; it is hidden from nobody, so the board keeps its
+    # places.
+    assert visitor.dropped == ()
+    assert _rows_of(visitor) == [(graded.name, 1, 0), (grading.name, 2, 0)]
+    assert [_cells(row) for row in visitor.rows] == [_cells(row) for row in staff.rows]
+    assert _cells(visitor.rows[1])[1] == ("total", Fraction(0), False)
+    # Only its own entrant, and staff, are told it waits.
+    waits = (Counted("islands", running.submission_number),)
+    assert grading.cells[1].waiting == waits
+    assert own.rows[1].cells[1].waiting == waits
+    assert not visitor.rows[1].told
+    assert [row.grading for row in (own.rows[1], grading, visitor.rows[1])] == [1, 1, 0]

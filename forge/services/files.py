@@ -66,7 +66,7 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, places, publications, published, timelines
+from forge.services import leaderboards, places, publications, published, timelines
 from forge.services.access import Organiser, require
 from forge.services.publications import Draft, Published
 
@@ -271,7 +271,7 @@ async def write(
         await timelines.hold_rules(ctx, contest)
         standing = await _last_read(ctx, organiser, contest, before)
         problems = await timelines.check_contest(ctx, contest, standing, after)
-        checked = await boards.check_contest(ctx, contest, standing, after)
+        checked = await leaderboards.check_contest(ctx, contest, standing, after)
         problems += checked.problems
         notes = checked.notes
         if problems:

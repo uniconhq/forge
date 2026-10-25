@@ -50,13 +50,8 @@ from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, Port
 from forge.domain.identity import AsUser, Identity, User
 from forge.domain.ids import OrgId, VersionId, WorkflowId
 from forge.domain.names import validate_name
-from forge.domain.plans import (
-    check_workflow,
-    natural,
-    reserved_inputs,
-    stray_report_units,
-    stray_units,
-)
+from forge.domain.plans import check_workflow, reserved_inputs, stray_report_units
+from forge.domain.port_values import natural, stray_units
 from forge.domain.primitives import PrimitiveDeclaration
 from forge.domain.program_manifest import MAX_MANIFEST
 from forge.domain.roles import Role, Scope, holds

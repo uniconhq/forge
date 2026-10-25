@@ -22,15 +22,15 @@ from sqlalchemy import func, select, update
 
 from forge.db.tables import Entry, Grading
 from forge.db.tables.entrants import Entrant
-from forge.domain.boards import BoardCell, Counted
 from forge.domain.errors import Forbidden, InvalidMark, NotFound
 from forge.domain.grading import GradingStatus
+from forge.domain.leaderboards import Counted, LeaderboardCell
 from forge.domain.names import EntrantOwner
 from forge.domain.release import Extension
 from forge.domain.roles import Role, Scope, contest_id_of, task_scope
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import boards, entries, gradings, marks, published, scores, submissions
+from forge.services import entries, gradings, leaderboards, marks, published, scores, submissions
 from forge.testing import FakeClock, register_entrant
 from tests.services.conftest import SPRING, Acme, organiser, signed_in, upload
 from tests.services.test_pipelines import (
@@ -444,7 +444,7 @@ async def test_a_mark_entered_from_the_queue_reaches_the_row_only_as_its_cell_do
     # The task has not revealed, since entrant21's extension runs on: the
     # gradebook's cell counted the first submission, so its mark shows
     # there and on that submission, and nothing of the second's.
-    [gradebook] = await boards.seen(setup, session, SPRING)
+    [gradebook] = await leaderboards.seen(setup, session, SPRING)
     assert [(each.column, each.number) for each in gradebook.rows[0].cells] == [
         ("review", Fraction(7))
     ]
@@ -472,23 +472,23 @@ async def test_an_entry_on_a_submission_chosen_by_a_hidden_value_shows_only_with
     await entries.enter(setup, manager, islands.task, owner, 1, "review", "7")
     clock.set(BEFORE_CLOSE)
 
-    [board] = await boards.seen(setup, session, SPRING)
+    [leaderboard] = await leaderboards.seen(setup, session, SPRING)
     seen = [
         _values(each.grading)
         for each in await submissions.mine(setup, session, islands.task)
         if each.grading
     ]
-    assert board.rows[0].cells[0].hidden
+    assert leaderboard.rows[0].cells[0].hidden
     assert all((each["review"], each["reviewed"]) == (None, None) for each in seen)
 
     clock.set(AFTER_CLOSE)
-    [board] = await boards.seen(setup, session, SPRING)
+    [leaderboard] = await leaderboards.seen(setup, session, SPRING)
     newest, oldest = [
         _values(each.grading)
         for each in await submissions.mine(setup, session, islands.task)
         if each.grading
     ]
-    assert board.rows[0].cells[0].number == 7
+    assert leaderboard.rows[0].cells[0].number == 7
     assert (oldest["review"], newest["review"]) == (7, None)
 
 
@@ -509,13 +509,13 @@ async def test_a_longer_extension_on_another_row_keeps_a_mark_back_until_the_rev
     # entrant20's row alone.
     clock.set(AFTER_CLOSE)
 
-    [board] = await boards.seen(setup, session, SPRING)
+    [leaderboard] = await leaderboards.seen(setup, session, SPRING)
     newest, oldest = [
         _values(each.grading)
         for each in await submissions.mine(setup, session, islands.task)
         if each.grading
     ]
-    assert board.rows[0].cells[0].hidden
+    assert leaderboard.rows[0].cells[0].hidden
     assert (oldest["review"], newest["review"]) == (None, None)
 
     clock.set(AFTER_CLOSE + timedelta(minutes=10))
@@ -540,7 +540,7 @@ async def test_an_entry_a_cell_never_shown_counted_stays_hidden_after_the_reveal
     await entries.enter(setup, manager, islands.task, owner, 2, "review", "3")
     clock.set(AFTER_CLOSE)
 
-    [board] = await boards.seen(setup, session, SPRING)
+    [leaderboard] = await leaderboards.seen(setup, session, SPRING)
     newest, oldest = [
         _values(each.grading)
         for each in await submissions.mine(setup, session, islands.task)
@@ -550,7 +550,7 @@ async def test_an_entry_a_cell_never_shown_counted_stays_hidden_after_the_reveal
     # The board chose the first by a total no entrant is ever shown, so its
     # mark waits for that cell; the second's, which no cell counted, stays
     # back too, else the one with no mark would be the hidden choice.
-    assert board.rows[0].cells[0].hidden
+    assert leaderboard.rows[0].cells[0].hidden
     assert (oldest["review"], oldest["reviewed"]) == (None, None)
     assert (newest["review"], newest["reviewed"]) == (None, None)
 
@@ -600,10 +600,10 @@ async def _page(setup: Setup, session: Any, islands: Any) -> dict[int, dict[str,
 
 
 @pytest.mark.parametrize(
-    ("board", "chosen"), [(BEST, 1), (LATEST_BY_TOTAL, 2)], ids=["highest", "latest"]
+    ("leaderboard", "chosen"), [(BEST, 1), (LATEST_BY_TOTAL, 2)], ids=["highest", "latest"]
 )
 async def test_a_mark_held_back_reads_as_no_mark_at_all(
-    setup: Setup, acme: Acme, spring: str, clock: FakeClock, board: str, chosen: int
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock, leaderboard: str, chosen: int
 ) -> None:
     # Each board chooses by a total no entrant is ever shown: BEST the
     # highest, the oldest of a tie (1); LATEST_BY_TOTAL the latest with a
@@ -612,7 +612,7 @@ async def test_a_mark_held_back_reads_as_no_mark_at_all(
     # `given`, which reads it only on a branch not taken, 1, so nothing
     # tells which one the board chose.
     clock.set(datetime(2026, 9, 26, 13, 0, tzinfo=UTC))
-    islands = await _checked(setup, acme, GIVEN, board)
+    islands = await _checked(setup, acme, GIVEN, leaderboard)
     session, owner = await _entrant(setup, acme, 20)
     await _submitted(setup, acme, clock, islands, session)
     await _submitted(setup, acme, clock, islands, session)
@@ -620,7 +620,7 @@ async def test_a_mark_held_back_reads_as_no_mark_at_all(
     await entries.enter(setup, manager, islands.task, owner, chosen, "review", "7")
     clock.set(AFTER_CLOSE)
 
-    [seen] = await boards.seen(setup, session, SPRING)
+    [seen] = await leaderboards.seen(setup, session, SPRING)
     page = await _page(setup, session, islands)
 
     assert seen.rows[0].cells[0].hidden
@@ -654,7 +654,7 @@ HELD_MARK = (
 submission with the highest total."""
 
 
-async def test_the_hold_hides_a_mark_on_a_row_it_holds_and_a_staff_boards_count_holds_it_back(
+async def test_the_hold_hides_a_mark_on_a_row_it_holds_and_a_staff_leaderboards_count_holds_it_back(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(datetime(2026, 9, 26, 13, 0, tzinfo=UTC))
@@ -671,19 +671,19 @@ async def test_the_hold_hides_a_mark_on_a_row_it_holds_and_a_staff_boards_count_
 
     for when in (BEFORE_CLOSE, AFTER_CLOSE):
         clock.set(when)
-        [visitor] = await boards.seen(setup, None, SPRING)
-        [as_other] = await boards.seen(setup, other, SPRING)
-        [own] = await boards.seen(setup, session, SPRING)
+        [visitor] = await leaderboards.seen(setup, None, SPRING)
+        [as_other] = await leaderboards.seen(setup, other, SPRING)
+        [own] = await leaderboards.seen(setup, session, SPRING)
         page = await _page(setup, session, islands)
 
         # Item 117: the hold leaves only 1 on the row for anyone else, so
         # its mark would tell what the staff board chose; the cell is hidden,
         # as one reading `marked` is. The entrant's own row counts 2.
-        for board in (visitor, as_other):
-            [row] = [row for row in board.rows if row.owner == owner]
-            assert row.cells[0] == BoardCell("review", None)
+        for leaderboard in (visitor, as_other):
+            [row] = [row for row in leaderboard.rows if row.owner == owner]
+            assert row.cells[0] == LeaderboardCell("review", None)
         [mine] = [row for row in own.rows if row.owner == owner]
-        assert mine.cells[0] == BoardCell("review", Fraction(0), (Counted("islands", 2),))
+        assert mine.cells[0] == LeaderboardCell("review", Fraction(0), (Counted("islands", 2),))
         # Item 118: only the staff board counted 1, so its mark stays back,
         # past the reveal too, reading as no mark.
         assert (page[1]["review"], page[1]["reviewed"]) == (None, None)
@@ -712,7 +712,7 @@ THROUGH_PICK = LIVE + (
 staff board reading that pick's total, shown only after the close."""
 
 
-async def test_a_board_the_entrant_never_reads_keeps_back_no_mark_their_own_cell_counted(
+async def test_a_leaderboard_the_entrant_never_reads_keeps_back_no_mark_their_own_cell_counted(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     # Item 118: the entrant's own cells are read on the boards they read
@@ -728,10 +728,12 @@ async def test_a_board_the_entrant_never_reads_keeps_back_no_mark_their_own_cell
     await entries.enter(setup, manager, islands.task, owner, 2, "review", "7")
     clock.set(BEFORE_CLOSE)
 
-    [board] = await boards.seen(setup, session, SPRING)
+    [leaderboard] = await leaderboards.seen(setup, session, SPRING)
     page = await _page(setup, session, islands)
 
-    assert board.rows[0].cells[0] == BoardCell("review", Fraction(7), (Counted("islands", 2),))
+    assert leaderboard.rows[0].cells[0] == LeaderboardCell(
+        "review", Fraction(7), (Counted("islands", 2),)
+    )
     assert (page[2]["review"], page[1]["review"]) == (7, None)
 
 
@@ -847,9 +849,9 @@ async def test_an_unmarked_submission_keeps_a_sum_missing_and_is_queued_until_ma
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
     clock.set(datetime(2026, 9, 26, 15, 5, tzinfo=UTC))
 
-    async def reviews() -> BoardCell:
-        [board] = await boards.seen(setup, session, SPRING)
-        return board.rows[0].cells[0]
+    async def reviews() -> LeaderboardCell:
+        [leaderboard] = await leaderboards.seen(setup, session, SPRING)
+        return leaderboard.rows[0].cells[0]
 
     await entries.enter(setup, manager, islands.task, owner, 1, "review", "4")
     [row] = await entries.queue(setup, manager, islands.task)
@@ -897,8 +899,8 @@ async def test_otherwise_counts_a_mark_still_to_come_in_a_task_value_and_on_a_le
     clock.set(datetime(2026, 9, 26, 15, 5, tzinfo=UTC))
 
     async def numbers() -> list[Fraction | None]:
-        [board] = await boards.seen(setup, session, SPRING)
-        return [cell.number for cell in board.rows[0].cells]
+        [leaderboard] = await leaderboards.seen(setup, session, SPRING)
+        return [cell.number for cell in leaderboard.rows[0].cells]
 
     unmarked = await numbers()
     await entries.enter(setup, manager, islands.task, owner, 1, "review", "4")

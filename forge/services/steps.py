@@ -109,11 +109,11 @@ from forge.domain.grading import (
 )
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import SubmissionId, TaskId, VersionId, WorkflowId
-from forge.domain.plans import PLAN_PATH, spelled
+from forge.domain.plan_basics import ERROR_LIMIT, PLAN_PATH, RESULT_MAX
+from forge.domain.port_values import spelled
 from forge.domain.primitives import MANIFEST, PROGRAMS
 from forge.domain.program_manifest import parse_program
 from forge.domain.publications import Publication
-from forge.domain.reports import ERROR_LIMIT, RESULT_MAX
 from forge.domain.run_plan import (
     BOXED,
     RUN_ENTRY_KB,

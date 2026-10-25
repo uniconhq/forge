@@ -186,7 +186,7 @@ LEAVES = ("runs", "run", "value", "fact", "results", "column", "name")
 TASK_LEAVES = ("runs", "run", "value", "fact")
 """The leaves a task's value may hold; a board's column holds `value`,
 `results`, `column` and `name`."""
-BOARD_LEAVES = ("value", "results", "column", "name")
+LEADERBOARD_LEAVES = ("value", "results", "column", "name")
 DESC = "desc"
 ASC = "asc"
 PICKS = ("first", "latest", "highest", "lowest")

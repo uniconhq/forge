@@ -88,7 +88,7 @@ from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, VALUE_NAME, Scoring, TaskDefinition
 from forge.domain.grading import WALL_CEILING, Machine, Slot, wall_of
-from forge.domain.plans import (
+from forge.domain.plan_basics import (
     PLAN_PATH,
     PRIMITIVE,
     STEP_ID,
@@ -96,9 +96,8 @@ from forge.domain.plans import (
     ReportEntry,
     Snapshot,
     StepLimits,
-    _escaped,
-    spelled,
 )
+from forge.domain.port_values import escaped, spelled
 from forge.domain.primitives import (
     BATCH_SCALED,
     LIMIT_NAMES,
@@ -1176,15 +1175,15 @@ class _Planner:
         parts: list[dict[str, Any]] = []
         last = 0
         for match, found in references(raw, runs=True):
-            text += _escaped(raw[last : match.start()])
+            text += escaped(raw[last : match.start()])
             last = match.end()
             if found.name in self.entrant:
                 text += f"{{{len(parts)}}}"
                 parts.append(self._entrant(found.name, run))
             else:
                 given = self._given(found.name, run)
-                text += _escaped(spelled(given) if given is not _ABSENT else "")
-        text += _escaped(raw[last:])
+                text += escaped(spelled(given) if given is not _ABSENT else "")
+        text += escaped(raw[last:])
         if not parts:
             return {"value": text.replace("{{", "{").replace("}}", "}")}
         return {"template": text, "parts": parts}

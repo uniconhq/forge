@@ -53,7 +53,8 @@ from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner
 from forge.domain.publications import write_note
 from forge.domain.roles import Role, Scope
-from forge.domain.showing import GroupShown, Sealed, SubmissionState
+from forge.domain.showing import GroupShown, Sealed
+from forge.domain.submission_state import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import pointer_text
 from forge.domain.workflow_definition import Fold

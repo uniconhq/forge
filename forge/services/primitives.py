@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from forge.domain.errors import Forbidden, NotFound
 from forge.domain.identity import AsUser, Identity
-from forge.domain.plans import natural
+from forge.domain.port_values import natural
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.roles import PRIMITIVE_OWNER, primitive_id_of
 from forge.domain.sessions import Session

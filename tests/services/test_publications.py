@@ -39,7 +39,8 @@ from forge.domain.errors import (
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, TaskId
-from forge.domain.plans import PLAN_PATH, Plan
+from forge.domain.plan_basics import PLAN_PATH
+from forge.domain.plans import Plan
 from forge.domain.publications import write_note
 from forge.domain.roles import Role, RoleGrant, Scope, contest_id_of, task_scope
 from forge.domain.save_effect import SaveEffect

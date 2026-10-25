@@ -109,7 +109,6 @@ from forge.db.tables import Grading
 from forge.db.tables.gradings import FRONT
 from forge.domain.blocks.catalogue import EXEC
 from forge.domain.blocks.evaluate import blocks_in
-from forge.domain.board_checks import Scored, across, boards_of
 from forge.domain.content import (
     ConflictToken,
     Edit,
@@ -150,19 +149,19 @@ from forge.domain.errors import (
 from forge.domain.grading import PLATFORM_MACHINE, GradingStatus, run_machine
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import PublicationId, TaskId, VersionId, WorkflowId
+from forge.domain.leaderboard_task_check import Scored, across, leaderboards_of
+from forge.domain.plan_basics import PLAN_PATH, Snapshot
 from forge.domain.plans import (
-    PLAN_PATH,
     Compiled,
     Plan,
-    Snapshot,
     check_workflow,
     compile_plan,
     grading_changes,
     group_problems,
-    is_reserved,
     read_tests,
     test_yaml_paths,
 )
+from forge.domain.port_values import is_reserved
 from forge.domain.primitives import PrimitiveDeclaration
 from forge.domain.publications import Check, Publication, write_note
 from forge.domain.regrades import RegradeCause
@@ -836,7 +835,7 @@ async def _check_runs(
     problems = [
         *found.problems,
         *await _shown_before_runs(ctx, task, definition, present, found.task),
-        *await _board_reads(ctx, task, definition),
+        *await _leaderboard_reads(ctx, task, definition),
     ]
     if problems:
         return Checked(definition, None, tuple(problems), pins)
@@ -1324,7 +1323,7 @@ async def _definition_of(
     return await ctx.memo.remembered(key, GROUPS_KEPT, read)
 
 
-async def _board_reads(
+async def _leaderboard_reads(
     ctx: Context, task: TaskId, definition: TaskDefinition
 ) -> builtins.list[Problem]:
     """What the contest's leaderboards ask of the task (stage 5, phase 5.7),
@@ -1345,7 +1344,7 @@ async def _board_reads(
         return []
     values = definition.scoring.values
     problems: builtins.list[Problem] = []
-    for each in across(contest, boards_of(contest), {name: Scored(values)}):
+    for each in across(contest, leaderboards_of(contest), {name: Scored(values)}):
         path = f"scoring.values.{each.value}" if each.value in values else "scoring.values"
         problem = Problem(path=path, message=each.saved)
         if problem not in problems:

@@ -41,8 +41,8 @@ from enum import StrEnum
 from fractions import Fraction
 
 from forge.domain.blocks.evaluate import RunResult
-from forge.domain.boards import Board, Counted, Header
 from forge.domain.ids import PublicationId
+from forge.domain.leaderboards import Counted, Header, LeaderboardView
 from forge.domain.names import WorkspaceOwner
 from forge.domain.publications import Publication
 from forge.domain.run_results import Worked
@@ -206,7 +206,7 @@ class RowDiff:
 
 
 @dataclass(frozen=True, slots=True)
-class BoardDiff:
+class LeaderboardDiff:
     """One board that reads a regraded task, as staff read it, every row
     and cell and no hold (stage 5 section 6, items 4 and 71): its key and
     title, its displayed columns' headers as they stand after, the keys it
@@ -215,7 +215,7 @@ class BoardDiff:
     since the publication the results counted under before no longer
     reads, as the summary counts those submissions `unread`."""
 
-    board: str
+    leaderboard: str
     title: str
     headers: tuple[Header, ...]
     sort: tuple[tuple[str, str], ...]
@@ -223,9 +223,11 @@ class BoardDiff:
     unread: bool = False
 
 
-def board_diff(
-    before: Board, after: Board, regrading: Mapping[WorkspaceOwner, tuple[Counted, ...]]
-) -> BoardDiff:
+def leaderboard_diff(
+    before: LeaderboardView,
+    after: LeaderboardView,
+    regrading: Mapping[WorkspaceOwner, tuple[Counted, ...]],
+) -> LeaderboardDiff:
     """A board worked out before a regrade and after, row by row,
     `regrading` each row's submissions the regrade is still grading."""
     was = {row.owner: row for row in before.rows}
@@ -251,7 +253,7 @@ def board_diff(
                 regrading.get(row.owner, ()),
             )
         )
-    return BoardDiff(after.key, after.title, after.headers, after.sort, tuple(rows))
+    return LeaderboardDiff(after.key, after.title, after.headers, after.sort, tuple(rows))
 
 
 @dataclass(frozen=True, slots=True)

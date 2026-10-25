@@ -46,27 +46,27 @@ from sqlalchemy import select
 
 from forge.db.tables import Grading, Regrade
 from forge.db.tables.gradings import FRONT
-from forge.domain.board_checks import boards_of
-from forge.domain.boards import Counted
 from forge.domain.definitions import TASK_FILE, ContestDefinition, parse_task
 from forge.domain.errors import NotFound, PortError
 from forge.domain.grading import UNFINISHED, GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, PublicationId, TaskId, WorkspaceId
+from forge.domain.leaderboard_task_check import leaderboards_of
+from forge.domain.leaderboards import Counted
 from forge.domain.names import WorkspaceOwner
 from forge.domain.regrades import (
     GRADED,
-    BoardDiff,
     ChangeKind,
     Compared,
+    LeaderboardDiff,
     RegradeCause,
     Side,
     ValueChange,
     VerdictChange,
-    board_diff,
     change_of,
     counted,
     counted_under,
+    leaderboard_diff,
     run_changes,
 )
 from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_scope
@@ -76,10 +76,10 @@ from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
-    boards,
     entrants,
     entries,
     gradings,
+    leaderboards,
     names,
     published,
     scores,
@@ -159,7 +159,7 @@ class RunSummary:
     unread: int
     changed: tuple[SubmissionChange, ...]
     more_changed: int
-    boards: tuple[BoardDiff, ...] | None
+    leaderboards: tuple[LeaderboardDiff, ...] | None
 
 
 CHANGED_SHOWN = 100
@@ -422,8 +422,8 @@ async def run_summary(
                 more_verdicts=found.more_verdicts,
             )
         )
-    boards = (
-        await _board_diffs(
+    leaderboards = (
+        await _leaderboard_diffs(
             ctx,
             contest,
             settings,
@@ -446,7 +446,7 @@ async def run_summary(
         unread=unread,
         changed=tuple(changed),
         more_changed=more,
-        boards=boards,
+        leaderboards=leaderboards,
     )
 
 
@@ -470,7 +470,7 @@ async def _as_of(
     return replace(current, publication=found, definition=definition)
 
 
-async def _board_diffs(
+async def _leaderboard_diffs(
     ctx: Context,
     contest: ContestId,
     settings: ContestDefinition,
@@ -478,7 +478,7 @@ async def _board_diffs(
     then: published.PublishedTask | None,
     now: published.PublishedTask,
     regrading: Mapping[WorkspaceOwner, tuple[Counted, ...]],
-) -> tuple[BoardDiff, ...]:
+) -> tuple[LeaderboardDiff, ...]:
     """Each board that reads the regrade's task, directly or through
     another board's column, worked out for staff before the regrade and
     after (`boards.regrade_sides`), in the file's order: `then` the task as
@@ -486,22 +486,24 @@ async def _board_diffs(
     row's submissions the regrade is still grading. When `then` no longer
     reads, each board is given `unread`, with no rows, as the summary
     counts its submissions (stage 5 section 6, item 71)."""
-    checked = boards_of(settings)
+    checked = leaderboards_of(settings)
     keys = [key for key in checked.reading(now.name) if key in checked.readable]
     if not keys:
         return ()
     if then is None:
         return tuple(
-            BoardDiff(key, board.title_or(key), (), board.sort, (), unread=True)
-            for key, board in settings.leaderboards.items()
+            LeaderboardDiff(key, leaderboard.title_or(key), (), leaderboard.sort, (), unread=True)
+            for key, leaderboard in settings.leaderboards.items()
             if key in keys
         )
-    before_side, after_side = boards.regrade_sides(
+    before_side, after_side = leaderboards.regrade_sides(
         regrade.id, regrade.started_at, now.id, then, now
     )
-    before = await boards.worked_out(ctx, contest, settings, keys, before_side)
-    after = await boards.worked_out(ctx, contest, settings, keys, after_side)
-    return tuple(board_diff(was, now_, regrading) for was, now_ in zip(before, after, strict=True))
+    before = await leaderboards.worked_out(ctx, contest, settings, keys, before_side)
+    after = await leaderboards.worked_out(ctx, contest, settings, keys, after_side)
+    return tuple(
+        leaderboard_diff(was, now_, regrading) for was, now_ in zip(before, after, strict=True)
+    )
 
 
 async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition | None:

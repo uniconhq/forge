@@ -45,7 +45,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from forge.domain.blocks.board_check import BoardColumn, BoardsCheck, check_boards, column_at
+from forge.domain.blocks.board_check import (
+    ColumnRef,
+    LeaderboardsCheck,
+    check_leaderboards,
+    column_at,
+)
 from forge.domain.blocks.catalogue import (
     CATALOGUE,
     ENTERED,
@@ -78,7 +83,7 @@ class Across:
     of it, it is about; what the contest's save says; and what the task's
     save says, when it is the task that would break the board."""
 
-    board: str
+    leaderboard: str
     column: str
     at: Path
     task: str
@@ -87,18 +92,18 @@ class Across:
     saved: str
 
 
-def boards_of(settings: ContestDefinition) -> BoardsCheck:
+def leaderboards_of(settings: ContestDefinition) -> LeaderboardsCheck:
     """The contest's boards checked, as they are read."""
-    return check_boards(settings.leaderboards, [task.id for task in settings.tasks])
+    return check_leaderboards(settings.leaderboards, [task.id for task in settings.tasks])
 
 
 def check_contest(
     settings: ContestDefinition, tasks: Mapping[str, Scored] | None = None
-) -> tuple[Found, BoardsCheck]:
+) -> tuple[Found, LeaderboardsCheck]:
     """Every problem with the contest's boards, each at its path, and a
     task's `marks` that no board reads; with `tasks`, each refusal across
     files against them (`across`); and the boards as checked."""
-    checked = boards_of(settings)
+    checked = leaderboards_of(settings)
     found = list(checked.problems)
     for index, entry in enumerate(settings.tasks):
         if entry.marks is not None and not checked.reads(entry.id, MARKED):
@@ -158,18 +163,18 @@ def hold_problems(
 
 
 def across(
-    settings: ContestDefinition, checked: BoardsCheck, tasks: Mapping[str, Scored]
+    settings: ContestDefinition, checked: LeaderboardsCheck, tasks: Mapping[str, Scored]
 ) -> list[Across]:
     """Each refusal across files of the boards whose own check found
     nothing, against `tasks`, by name; a task not among them is not
     resolved."""
     marked = {name: using(scored.values, ENTERED) for name, scored in tasks.items()}
     found: list[Across] = []
-    for key, board in settings.leaderboards.items():
+    for key, leaderboard in settings.leaderboards.items():
         if any(path[:2] == ("leaderboards", key) for path, _ in checked.problems):
             continue
-        for column, tree in board.columns.items():
-            walk = _Walk(checked, tasks, marked, key, board.title_or(key), column, settings)
+        for column, tree in leaderboard.columns.items():
+            walk = _Walk(checked, tasks, marked, key, leaderboard.title_or(key), column, settings)
             walk.node(("leaderboards", key, "columns", column), tree)
             found += walk.found
     return found
@@ -193,10 +198,10 @@ class _Walk:
 
     def __init__(
         self,
-        checked: BoardsCheck,
+        checked: LeaderboardsCheck,
         tasks: Mapping[str, Scored],
         marked: Mapping[str, frozenset[str]],
-        board: str,
+        leaderboard: str,
         title: str,
         column: str,
         settings: ContestDefinition,
@@ -204,14 +209,14 @@ class _Walk:
         self.checked = checked
         self.tasks = tasks
         self.marked = marked
-        self.board = board
+        self.leaderboard = leaderboard
         self.title = title
         self.column = column
         self.ids = frozenset(task.id for task in settings.tasks)
         self.found: list[Across] = []
 
     def refuse(self, at: Path, task: str, value: str, message: str, saved: str) -> None:
-        self.found.append(Across(self.board, self.column, at, task, value, message, saved))
+        self.found.append(Across(self.leaderboard, self.column, at, task, value, message, saved))
 
     def node(self, at: Path, node: object) -> None:
         if isinstance(node, list):
@@ -256,7 +261,7 @@ class _Walk:
         if isinstance(of, str):
             if of in self.ids:
                 return frozenset({of})
-            shape = self.checked.shapes.get(self.board, {}).get(of)
+            shape = self.checked.shapes.get(self.leaderboard, {}).get(of)
             return shape.of_tasks if shape is not None else frozenset()
         if not isinstance(of, dict):
             return frozenset()
@@ -264,8 +269,8 @@ class _Walk:
             leaf = leaf_of(of)
             if leaf is None or leaf[0] != "column":
                 return frozenset()
-            board, name = column_at(self.board, leaf[1])
-            shape = self.checked.shapes.get(board, {}).get(name)
+            leaderboard, name = column_at(self.leaderboard, leaf[1])
+            shape = self.checked.shapes.get(leaderboard, {}).get(name)
             return shape.of_tasks if shape is not None else frozenset()
         if of["block"] in PICKS:
             source = of.get("from")
@@ -318,7 +323,7 @@ class _Walk:
         """Each task's value or fact a tree reads, through the columns it
         reads too, by task."""
         found: set[tuple[str, str]] = set()
-        columns: set[BoardColumn] = set()
+        columns: set[ColumnRef] = set()
         waiting = [tree]
         while waiting:
             node = waiting.pop()
@@ -337,20 +342,20 @@ class _Walk:
             if leaf is None:
                 continue
             if leaf[0] == "column":
-                columns.add(column_at(self.board, leaf[1]))
+                columns.add(column_at(self.leaderboard, leaf[1]))
             elif leaf[0] == "value" and isinstance(leaf[1], list):
                 of, name = leaf[1]
                 found |= {(task, str(name)) for task in self.given(of)}
                 if isinstance(of, dict):
                     waiting.append(of)
                 elif isinstance(of, str) and of not in self.ids:
-                    columns.add((self.board, of))
+                    columns.add((self.leaderboard, of))
         return found | self.through_columns(columns)
 
-    def through_columns(self, columns: set[BoardColumn]) -> set[tuple[str, str]]:
+    def through_columns(self, columns: set[ColumnRef]) -> set[tuple[str, str]]:
         """What `columns` read, and the columns they read, by task."""
         found: set[tuple[str, str]] = set()
-        seen: set[BoardColumn] = set()
+        seen: set[ColumnRef] = set()
         waiting = list(columns)
         while waiting:
             at = waiting.pop()
@@ -450,7 +455,7 @@ def marks_of(settings: ContestDefinition, entry: ContestTask) -> int | None:
     reads the task's `marked`, or none."""
     if entry.marks is not None:
         return entry.marks
-    return 1 if boards_of(settings).reads(entry.id, MARKED) else None
+    return 1 if leaderboards_of(settings).reads(entry.id, MARKED) else None
 
 
 __all__ = [
@@ -458,8 +463,8 @@ __all__ = [
     "Across",
     "Scored",
     "across",
-    "boards_of",
     "check_contest",
     "hold_problems",
+    "leaderboards_of",
     "marks_of",
 ]

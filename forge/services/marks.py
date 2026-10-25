@@ -21,10 +21,10 @@ from datetime import datetime
 from sqlalchemy import delete, func, select, text
 
 from forge.db.tables import Grading, Mark
-from forge.domain.board_checks import marks_of
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import MarkLimit, MarksFrozen, MarksOff, NotApproved, NotFound
 from forge.domain.ids import TaskId, WorkspaceId
+from forge.domain.leaderboard_task_check import marks_of
 from forge.domain.registration import Status
 from forge.domain.release import close_of
 from forge.domain.roles import contest_id_of, task_scope

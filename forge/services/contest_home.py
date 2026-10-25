@@ -37,11 +37,11 @@ from datetime import datetime
 
 from forge.db.tables import Entrant
 from forge.domain import release as rules
-from forge.domain.board_checks import marks_of
-from forge.domain.boards import Board
 from forge.domain.definitions import ContestDefinition, ContestVisibility, State, Submissions
 from forge.domain.errors import NotFound
 from forge.domain.ids import ContestId, TaskId
+from forge.domain.leaderboard_task_check import marks_of
+from forge.domain.leaderboards import LeaderboardView
 from forge.domain.names import EntrantOwner, ScopeNames
 from forge.domain.registration import Status
 from forge.domain.release import Closed, Extension, close_of, due_of
@@ -50,7 +50,7 @@ from forge.domain.sessions import Session
 from forge.domain.submissions import Field
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, entrants, invites, names, published, release, timelines
+from forge.services import entrants, invites, leaderboards, names, published, release, timelines
 from forge.services.entrants import Mine
 from forge.services.published import PublicFile, PublishedTask
 from forge.services.release import TaskRelease
@@ -111,7 +111,7 @@ class ContestHome:
     organises: bool
     now: datetime
     tasks: tuple[TaskEntry, ...]
-    standing: tuple[Board, ...] = ()
+    standing: tuple[LeaderboardView, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,10 +178,10 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
     """
     settings, person = await release.seen(ctx, session, contest)
     extension = release.row_extension(person)
-    standing: tuple[Board, ...] = ()
+    standing: tuple[LeaderboardView, ...] = ()
     if person.entrant is not None and _approved(person.entrant):
         owner = EntrantOwner(person.entrant.id)
-        standing = await boards.own_rows(ctx, contest, settings, owner)
+        standing = await leaderboards.own_rows(ctx, contest, settings, owner)
     await ctx.let_go()
     now = ctx.now
     shown = [

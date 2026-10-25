@@ -84,7 +84,7 @@ from forge.domain.grading import (
 )
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import OrgId, PublicationId, SubmissionId, TaskId, VersionId
-from forge.domain.plans import PLAN_PATH
+from forge.domain.plan_basics import PLAN_PATH
 from forge.domain.publications import Check, FailedCheck, Publication, failed_checks
 from forge.domain.regrades import RegradeCause
 from forge.domain.roles import contest_id_of, task_scope

@@ -34,7 +34,7 @@ its title where the workflow gives one (M58).
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from forge.domain.blocks.board_check import BoardsCheck, check_boards
+from forge.domain.blocks.board_check import LeaderboardsCheck, check_leaderboards
 from forge.domain.checks import check_only
 from forge.domain.definitions import ContestDefinition, Rate, Scoring, Show, TaskDefinition
 from forge.domain.run_task import SHOWN_WORDS, show_names, shown_times
@@ -213,15 +213,15 @@ def _scores(
     # No board counts a withdrawn task, so a save of one moves none; and a
     # board reads no task graded test by test (stage 5 section 6, item 70).
     checked = (
-        check_boards(contest.leaderboards, [each.id for each in contest.tasks])
+        check_leaderboards(contest.leaderboards, [each.id for each in contest.tasks])
         if contest is not None
         and not (entry is not None and entry.withdrawn)
         and after.scoring is not None
         else None
     )
-    boards = _titles(contest, checked, checked.reading(task)) if checked is not None else []
+    leaderboards = _titles(contest, checked, checked.reading(task)) if checked is not None else []
     if before is None and unread:
-        return [UNREAD_SCORES, _scored_again(boards)], True
+        return [UNREAD_SCORES, _scored_again(leaderboards)], True
     if after.scoring is not None:
         return _run_scores(task, before, after.scoring, contest, checked)
     if before is None:
@@ -236,12 +236,16 @@ def _scores(
 
 
 def _titles(
-    contest: ContestDefinition | None, checked: BoardsCheck | None, keys: Sequence[str]
+    contest: ContestDefinition | None, checked: LeaderboardsCheck | None, keys: Sequence[str]
 ) -> list[str]:
     """The titles of the boards `keys`, in the file's order."""
     if contest is None or checked is None:
         return []
-    return [board.title_or(key) for key, board in contest.leaderboards.items() if key in keys]
+    return [
+        leaderboard.title_or(key)
+        for key, leaderboard in contest.leaderboards.items()
+        if key in keys
+    ]
 
 
 def _run_scores(
@@ -249,7 +253,7 @@ def _run_scores(
     before: TaskDefinition | None,
     after: Scoring,
     contest: ContestDefinition | None,
-    checked: BoardsCheck | None,
+    checked: LeaderboardsCheck | None,
 ) -> tuple[list[str], bool]:
     """A run task's scoring changes in words: each group and value added,
     removed or changed, a value changed when its tree is or when a group or

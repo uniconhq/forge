@@ -25,7 +25,7 @@ from forge.domain.grading import LOST_CHECK_AFTER, GradingStatus, RunState
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import RunId
 from forge.domain.roles import Role, Scope
-from forge.domain.showing import SubmissionState
+from forge.domain.submission_state import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
 from forge.services import gradings, publications, submissions

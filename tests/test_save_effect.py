@@ -337,7 +337,7 @@ def test_a_run_task_moving_only_what_is_shown_scores_nothing_again() -> None:
     assert first.scores == ("sum now counts on the leaderboard Standings.",)
 
 
-def test_a_board_reading_the_task_through_another_boards_column_is_named_too() -> None:
+def test_a_leaderboard_reading_the_task_through_another_leaderboards_column_is_named_too() -> None:
     through = CONTEST.model_copy(
         update={
             "leaderboards": {

@@ -24,7 +24,7 @@ from forge.domain.errors import Conflict, Unavailable
 from forge.domain.grading import NEVER_BEGAN, OVERDUE, GradingStatus, callback_token, envelope_key
 from forge.domain.ids import RunId
 from forge.domain.roles import Role, Scope
-from forge.domain.showing import SubmissionState
+from forge.domain.submission_state import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
 from forge.services import gradings, runs, submissions

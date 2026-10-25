@@ -21,16 +21,16 @@ from typing import Any
 
 import pytest
 
-from forge.domain.boards import Board, BoardRow
 from forge.domain.errors import SubmissionLimit
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
+from forge.domain.leaderboards import LeaderboardView, LeaderboardViewRow
 from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
-from forge.services import boards, entries, marks, submissions
+from forge.services import entries, hold, leaderboards, marks, submissions
 from forge.testing import FakeClock, register_entrant
 from tests.services.conftest import (
     RUNNING,
@@ -52,7 +52,7 @@ from tests.services.test_pipelines import (
 )
 from tests.services.test_run_task_saves import ISLANDS_DATA, TASKS, _primitives, checked
 from tests.services.test_steps import CODE, _report, _save
-from tests.test_boards import GRADEBOOK, ICPC, OLYMPIAD
+from tests.test_leaderboards import GRADEBOOK, ICPC, OLYMPIAD
 from tests.test_run_task import CARTPOLE_FILES
 
 CONTEST = Scope("acme", "spring")
@@ -109,7 +109,7 @@ scoring:
 """TASK-FORMAT.md 3.7's Kaggle task: one axis over the two splits, each
 split's RMSE a value, the public one shown during the contest."""
 HOUSE_DATA = {"answers/public.csv": b"1,100\n", "answers/private.csv": b"2,200\n"}
-KAGGLE_BOARDS = """\
+KAGGLE_LEADERBOARDS = """\
 tasks:
   - {id: house-prices, marks: 2}
 leaderboards:
@@ -345,21 +345,21 @@ def _cartpole(reward: int) -> dict[str, Any]:
     return _result({f"r{n}": ("accepted", {"reward": reward}) for n in range(1, 7)})
 
 
-def _numbers(row: BoardRow) -> dict[str, Fraction | None]:
+def _numbers(row: LeaderboardViewRow) -> dict[str, Fraction | None]:
     return {cell.column: cell.number for cell in row.cells}
 
 
-def _hidden(row: BoardRow) -> list[str]:
+def _hidden(row: LeaderboardViewRow) -> list[str]:
     return [cell.column for cell in row.cells if cell.hidden]
 
 
-def _places(board: Board) -> list[tuple[str, int | None, int]]:
-    return [(row.name, row.place, row.held) for row in board.rows]
+def _places(leaderboard: LeaderboardView) -> list[tuple[str, int | None, int]]:
+    return [(row.name, row.place, row.held) for row in leaderboard.rows]
 
 
-async def _board(setup: Setup, session: Any, key: str) -> Board:
-    [board] = await boards.seen(setup, session, SPRING, key)
-    return board
+async def _leaderboard(setup: Setup, session: Any, key: str) -> LeaderboardView:
+    [leaderboard] = await leaderboards.seen(setup, session, SPRING, key)
+    return leaderboard
 
 
 async def test_ana_and_ben_rank_over_a_and_b_as_the_note_writes_through_the_hold(
@@ -386,9 +386,9 @@ async def test_ana_and_ben_rank_over_a_and_b_as_the_note_writes_through_the_hold
     clock.set(at(14, 40))
     staff = await _staff(setup, acme)
 
-    as_staff = await _board(setup, staff, "standings")
-    as_ben = await _board(setup, ben, "standings")
-    as_ana = await _board(setup, ana, "standings")
+    as_staff = await _leaderboard(setup, staff, "standings")
+    as_ben = await _leaderboard(setup, ben, "standings")
+    as_ana = await _leaderboard(setup, ana, "standings")
 
     # Staff: one solve each; Ana's a_tries is 1, the compile error no
     # try, and her a_time 21 + 20 = 41; Ben's 270; Ana first.
@@ -425,17 +425,17 @@ async def test_ana_and_ben_rank_over_a_and_b_as_the_note_writes_through_the_hold
     assert as_ana.held_from == at(14, 0)
 
     manager = await organiser(setup, acme.fake, 7, CONTEST, Role.MANAGER)
-    assert await boards.end_hold(setup, manager, SPRING, confirmed=True)
+    assert await hold.end_hold(setup, manager, SPRING, confirmed=True)
 
     # The hold ended: every viewer sees what Ben saw.
     for session in (ana, ben, None):
-        board = await _board(setup, session, "standings")
-        assert _places(board) == _places(as_ben)
-        assert [_numbers(row) for row in board.rows] == [_numbers(row) for row in as_ben.rows]
-        assert [_hidden(row) for row in board.rows] == [_hidden(row) for row in as_ben.rows]
+        leaderboard = await _leaderboard(setup, session, "standings")
+        assert _places(leaderboard) == _places(as_ben)
+        assert [_numbers(row) for row in leaderboard.rows] == [_numbers(row) for row in as_ben.rows]
+        assert [_hidden(row) for row in leaderboard.rows] == [_hidden(row) for row in as_ben.rows]
 
 
-async def test_islands_with_its_checks_ranks_on_the_olympiad_board_by_the_best_of_each(
+async def test_islands_with_its_checks_ranks_on_the_olympiad_leaderboard_by_the_best_of_each(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(at(10, 5))
@@ -464,19 +464,19 @@ async def test_islands_with_its_checks_ranks_on_the_olympiad_board_by_the_best_o
     # the column reading them has no number on any row, not points so far,
     # and is no sort key: no places. Ana is told why on her own row alone.
     clock.set(at(14, 50))
-    before = await _board(setup, ana, "results")
+    before = await _leaderboard(setup, ana, "results")
     assert _places(before) == [("ana", None, 0), ("ben", None, 0)]
     assert [_numbers(row) for row in before.rows] == [{"islands_score": None}] * 2
     assert [_hidden(row) for row in before.rows] == [["islands_score"], []]
     assert before.dropped == ("islands_score",)
     # Staff read every value at once.
-    assert [_numbers(row) for row in (await _board(setup, staff, "results")).rows] == [
+    assert [_numbers(row) for row in (await _leaderboard(setup, staff, "results")).rows] == [
         {"islands_score": 100},
         {"islands_score": 40},
     ]
 
     clock.set(at(15, 5))
-    after = await _board(setup, None, "results")
+    after = await _leaderboard(setup, None, "results")
     assert _places(after) == [("ana", 1, 0), ("ben", 2, 0)]
     assert [_numbers(row) for row in after.rows] == [{"islands_score": 100}, {"islands_score": 40}]
 
@@ -502,13 +502,13 @@ async def test_the_course_gradebook_reads_cartpole_and_the_search_mark_entered_f
         await _submit(setup, acme, session, cartpole, _cartpole(reward), field="weights")
 
     # Everyone reads cartpole_ranking, each row's best reward shown now.
-    ranking = await _board(setup, None, "cartpole_ranking")
+    ranking = await _leaderboard(setup, None, "cartpole_ranking")
     assert _places(ranking) == [("ana", 1, 0), ("ben", 2, 0)]
     assert [_numbers(row) for row in ranking.rows] == [{"reward": 500}, {"reward": 237}]
     # Ana reads her own gradebook row, with no place (item 86): no mark
     # yet, so search_mark is 0, and cartpole counts in full, 500 being
     # past 475.
-    [mine] = (await _board(setup, ana, "gradebook")).rows
+    [mine] = (await _leaderboard(setup, ana, "gradebook")).rows
     assert (mine.name, mine.place) == ("ana", None)
     assert _numbers(mine) == {"search_mark": 0, "cartpole_best": 500, "total": Fraction(1, 2)}
 
@@ -527,13 +527,13 @@ async def test_the_course_gradebook_reads_cartpole_and_the_search_mark_entered_f
     )
     await entries.enter(setup, manager, search, row.owner, 1, "score", "0.8")
 
-    [mine] = (await _board(setup, ana, "gradebook")).rows
+    [mine] = (await _leaderboard(setup, ana, "gradebook")).rows
     assert _numbers(mine) == {
         "search_mark": Fraction(4, 5),
         "cartpole_best": 500,
         "total": Fraction(9, 10),
     }
-    [bens] = (await _board(setup, ben, "gradebook")).rows
+    [bens] = (await _leaderboard(setup, ben, "gradebook")).rows
     assert _numbers(bens) == {
         "search_mark": 0,
         "cartpole_best": 237,
@@ -546,7 +546,7 @@ async def test_kaggle_ranks_each_split_lowest_first_and_a_malformed_file_nowhere
 ) -> None:
     clock.set(at(10, 5))
     await _workflows(acme)
-    await write_contest(acme.fake, BASE + KAGGLE_BOARDS)
+    await write_contest(acme.fake, BASE + KAGGLE_LEADERBOARDS)
     house = await _task(setup, acme, "house-prices", HOUSE_PRICES, HOUSE_DATA)
     ana = await _entrant(setup, acme, 20, "ana")
     ben = await _entrant(setup, acme, 21, "ben")
@@ -571,7 +571,7 @@ async def test_kaggle_ranks_each_split_lowest_first_and_a_malformed_file_nowhere
     # The public board ranks by each row's best public RMSE, lowest first:
     # Ana's second, at 12:00, then Ben's. Cy's only submission has no
     # RMSE, so no pick, and his row sorts last with nothing in it.
-    public = await _board(setup, None, "public_board")
+    public = await _leaderboard(setup, None, "public_board")
     assert [row.name for row in public.rows] == ["ana", "ben", "cy"]
     assert [_numbers(row) for row in public.rows] == [
         {"public": Fraction(1, 5), "public_at": 7200},
@@ -581,7 +581,7 @@ async def test_kaggle_ranks_each_split_lowest_first_and_a_malformed_file_nowhere
     assert [row.place for row in public.rows[:2]] == [1, 2]
     # The private board picks by the private RMSE, shown only after the
     # close, so before it no row has a number there and nothing is placed.
-    private = await _board(setup, None, "private_board")
+    private = await _leaderboard(setup, None, "private_board")
     assert [_numbers(row) for row in private.rows] == [{"private": None, "at": None}] * 3
     assert {row.place for row in private.rows} == {None}
     assert private.dropped == ("private", "at")
@@ -590,7 +590,7 @@ async def test_kaggle_ranks_each_split_lowest_first_and_a_malformed_file_nowhere
     # nobody, gives his private 0.35; Ana's marks give 0.4, her malformed
     # one skipped, not counted as best; Cy still last.
     clock.set(at(15, 5))
-    private = await _board(setup, None, "private_board")
+    private = await _leaderboard(setup, None, "private_board")
     assert [row.name for row in private.rows] == ["ben", "ana", "cy"]
     assert [_numbers(row)["private"] for row in private.rows] == [
         Fraction(7, 20),
@@ -613,7 +613,7 @@ async def test_a_course_keeps_the_best_two_homework_and_a_final_takes_one_submis
     clock.set(at(11, 0))
     for task, accepted in zip(homework, (4, 1, 3), strict=True):
         await _submit(setup, acme, ana, task, _tests(accepted))
-    [before] = (await _board(setup, ana, "grades")).rows
+    [before] = (await _leaderboard(setup, ana, "grades")).rows
     await _submit(setup, acme, ana, final, _tests(2))
     with pytest.raises(SubmissionLimit):
         await _submit(setup, acme, ana, final, _tests(4))
@@ -628,5 +628,5 @@ async def test_a_course_keeps_the_best_two_homework_and_a_final_takes_one_submis
         "final_score": None,
         "total": None,
     }
-    [after] = (await _board(setup, ana, "grades")).rows
+    [after] = (await _leaderboard(setup, ana, "grades")).rows
     assert (_numbers(after)["final_score"], _numbers(after)["total"]) == (Fraction(2), Fraction(9))

@@ -1058,10 +1058,12 @@ async def test_an_interact_programs_cached_files_are_each_in_its_own_item(
     job = await _job(setup, row, "game", access)
 
     programs = job["inputs"]["inputs"]["programs"]["programs"]
-    boards = [programs[name]["files"]["files"]["board"]["file"] for name in ("first", "second")]
-    items = {board.split("/")[1] for board in boards}
-    assert len(items) == 2 and all(board.endswith("/board") for board in boards)
-    assert all(_download(job, board)["cached"] is True for board in boards)
+    leaderboards = [
+        programs[name]["files"]["files"]["board"]["file"] for name in ("first", "second")
+    ]
+    items = {leaderboard.split("/")[1] for leaderboard in leaderboards}
+    assert len(items) == 2 and all(leaderboard.endswith("/board") for leaderboard in leaderboards)
+    assert all(_download(job, leaderboard)["cached"] is True for leaderboard in leaderboards)
     assert job["box_users"]["last"] - job["box_users"]["first"] == BOX_BLOCK - 1
     measured: dict[str, Any] = {"time_ms": 3, "memory_kb": 1, "ended": "finished", "ended_at": 3}
     outputs: dict[str, Any] = {"outcome": "accepted", "facts": {"file": "out/facts"}}

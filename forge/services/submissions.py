@@ -117,7 +117,6 @@ from forge.domain import exact_json, run_showing
 from forge.domain import submissions as rules
 from forge.domain.blocks.catalogue import ENTERED
 from forge.domain.blocks.evaluate import using
-from forge.domain.boards import entries_open
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Conflict,
@@ -137,20 +136,16 @@ from forge.domain.errors import (
 from forge.domain.grading import GradingStatus, Place
 from forge.domain.identity import AsUser
 from forge.domain.ids import PublicationId, SubmissionId, TaskId, WorkspaceId
+from forge.domain.leaderboards import entries_open
 from forge.domain.meanings import ValueMeaning, shown_meanings
 from forge.domain.names import WorkspaceOwner
 from forge.domain.release import Extension
 from forge.domain.roles import Role, contest_id_of, task_scope
 from forge.domain.run_showing import TextAt, ValueShown
 from forge.domain.sessions import Session
-from forge.domain.showing import (
-    GroupShown,
-    SubmissionState,
-    filled_in,
-    shown,
-    told,
-)
+from forge.domain.showing import GroupShown, filled_in, shown
 from forge.domain.step_data import RESULT_VERSION
+from forge.domain.submission_state import SubmissionState, told
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
 from forge.domain.uploads import (
     POINTER_MAX,
@@ -165,8 +160,8 @@ from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
-    boards,
     gradings,
+    leaderboards,
     published,
     scores,
     sessions,
@@ -905,7 +900,7 @@ async def _read(
     await gradings.notice(ctx, latest, gone)
     await gradings.notice_late(ctx, latest)
     graded = scores.GradedOf(ctx, reading.published)
-    chosen = None if everything or not grouped else await _chosen_by_boards(ctx, reading)
+    chosen = None if everything or not grouped else await _chosen_by_leaderboards(ctx, reading)
     return [
         await _submission(
             ctx,
@@ -922,14 +917,14 @@ async def _read(
     ]
 
 
-async def _chosen_by_boards(ctx: Context, reading: Reading) -> boards.Chosen | None:
+async def _chosen_by_leaderboards(ctx: Context, reading: Reading) -> leaderboards.Chosen | None:
     """What the boards' cells counted of the row's submissions to the task,
     which its values reading an entered mark wait on; none when the task
     has no such value."""
     scoring = reading.published.definition.scoring
     if scoring is None or not using(scoring.values, ENTERED):
         return None
-    return await boards.chosen(
+    return await leaderboards.chosen(
         ctx,
         contest_id_of(task_scope(reading.task)),
         reading.settings,
@@ -951,7 +946,7 @@ async def _submission(
     rows: Sequence[Grading],
     lost: frozenset[uuid.UUID] = frozenset(),
     graded: scores.GradedOf | None = None,
-    chosen: boards.Chosen | None = None,
+    chosen: leaderboards.Chosen | None = None,
     *,
     everything: bool = False,
 ) -> Submission:
@@ -993,7 +988,7 @@ async def _result(
     reveal_at: datetime | None,
     settings: ContestDefinition,
     extension: Extension,
-    chosen: boards.Chosen | None = None,
+    chosen: leaderboards.Chosen | None = None,
     *,
     everything: bool = False,
 ) -> Result:
@@ -1061,7 +1056,7 @@ async def _runs(
     reveal_at: datetime | None,
     settings: ContestDefinition,
     extension: Extension,
-    chosen: boards.Chosen | None,
+    chosen: leaderboards.Chosen | None,
     *,
     everything: bool,
 ) -> Result:
@@ -1085,7 +1080,7 @@ async def _runs(
     revealed = reveal_at is not None and ctx.now >= reveal_at
     marks: dict[str, Fraction] | None = None
     if not everything:
-        counted = chosen or boards.Chosen()
+        counted = chosen or leaderboards.Chosen()
         number = row.submission_number
         if not entries_open(number, counted.shown):
             # Worked out with no mark, so it reads as a submission with none.

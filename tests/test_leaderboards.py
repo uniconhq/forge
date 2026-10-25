@@ -17,38 +17,15 @@ import pytest
 from forge.domain.blocks.board_check import (
     MOST_COLUMNS,
     MOST_LEADERBOARDS,
-    BoardsCheck,
-    check_boards,
+    LeaderboardsCheck,
+    check_leaderboards,
 )
-from forge.domain.blocks.board_evaluate import Cell, Submitted, work_out_row
 from forge.domain.blocks.bounds import column_bounds, self_reported_parts, value_bounds
 from forge.domain.blocks.catalogue import CATALOGUE, Scope
 from forge.domain.blocks.check import check_values
 from forge.domain.blocks.evaluate import Column, RunResult
+from forge.domain.blocks.leaderboard_evaluate import Cell, Submitted, work_out_row
 from forge.domain.blocks.numbers import Better
-from forge.domain.board_checks import Scored, across, check_contest, hold_problems, marks_of
-from forge.domain.boards import (
-    STAFF,
-    Board,
-    BoardCell,
-    Counted,
-    Header,
-    Loaded,
-    Row,
-    Viewer,
-    boards_read,
-    counted_in,
-    entries_open,
-    grading_seen,
-    headers_of,
-    held_back,
-    holding,
-    listed_now,
-    read_boards,
-    results_seen,
-    seen_bounds,
-    still_grading,
-)
 from forge.domain.definitions import (
     ContestDefinition,
     Hold,
@@ -56,6 +33,35 @@ from forge.domain.definitions import (
     Leaderboard,
     parse_contest,
     parse_task,
+)
+from forge.domain.leaderboard_task_check import (
+    Scored,
+    across,
+    check_contest,
+    hold_problems,
+    marks_of,
+)
+from forge.domain.leaderboards import (
+    STAFF,
+    Counted,
+    Header,
+    LeaderboardCell,
+    LeaderboardView,
+    Loaded,
+    Row,
+    Viewer,
+    counted_in,
+    entries_open,
+    grading_seen,
+    headers_of,
+    held_back,
+    holding,
+    leaderboards_read,
+    listed_now,
+    read_leaderboards,
+    results_seen,
+    seen_bounds,
+    still_grading,
 )
 from forge.domain.names import EntrantOwner
 from forge.domain.run_showing import ValueShown
@@ -214,8 +220,8 @@ def contest(text: str) -> ContestDefinition:
     return parse_contest(HEAD + text, saved=True)
 
 
-def checked(settings: ContestDefinition) -> BoardsCheck:
-    return check_boards(settings.leaderboards, [task.id for task in settings.tasks])
+def checked(settings: ContestDefinition) -> LeaderboardsCheck:
+    return check_leaderboards(settings.leaderboards, [task.id for task in settings.tasks])
 
 
 def problems(text: str) -> list[tuple[str, str]]:
@@ -240,14 +246,14 @@ def cells(
     return work_out_row(settings.leaderboards, found, results, trees or {})
 
 
-def column(board: str, name: str, results: dict[str, list[Submitted]], tree: object) -> Cell:
+def column(leaderboard: str, name: str, results: dict[str, list[Submitted]], tree: object) -> Cell:
     """One column `name` of a board over tasks a and b, worked out."""
     settings = contest("tasks: [{id: a}, {id: b}]\n")
-    leaderboard = Leaderboard.model_validate({"columns": {name: tree}})
-    boards = {board: leaderboard}
-    found = check_boards(boards, [task.id for task in settings.tasks])
+    defined = Leaderboard.model_validate({"columns": {name: tree}})
+    leaderboards = {leaderboard: defined}
+    found = check_leaderboards(leaderboards, [task.id for task in settings.tasks])
     assert not found.problems, found.problems
-    return work_out_row(boards, found, results, {})[(board, name)]
+    return work_out_row(leaderboards, found, results, {})[(leaderboard, name)]
 
 
 def results(task: str) -> dict[str, str]:
@@ -304,7 +310,7 @@ def test_the_olympiad_takes_the_best_of_each_subtask_over_every_submission() -> 
     assert best.counted == {("islands", 1), ("islands", 2)}
 
 
-def test_the_icpc_board_counts_wrong_tries_before_the_first_solve() -> None:
+def test_the_icpc_leaderboard_counts_wrong_tries_before_the_first_solve() -> None:
     # Ana: a wrong at 0:10, a compile error at 0:15, accepted at 0:21; b
     # wrong and never solved.
     ana = {
@@ -404,7 +410,7 @@ def test_a_pick_takes_a_newest_submission_whose_waiting_value_it_does_not_read()
     assert reads_total.waiting == {("a", 2)}
 
 
-def test_a_column_read_from_another_board_works_out_and_names_the_task() -> None:
+def test_a_column_read_from_another_leaderboard_works_out_and_names_the_task() -> None:
     text = (
         "tasks: [{id: a}, {id: b}]\nleaderboards:\n"
         "  one:\n    columns:\n"
@@ -414,16 +420,16 @@ def test_a_column_read_from_another_board_works_out_and_names_the_task() -> None
         "  three:\n    columns:\n      tries: {column: [one, other]}\n"
     )
     found = cells(text, {"a": [sub(1, total=40), sub(2, total=80)]})
-    boards = checked(contest(text))
+    leaderboards = checked(contest(text))
 
     assert found[("two", "half")].number == 40
     assert found[("two", "half")].counted == {("a", 2)}
     # A board reading a task only through another board's column reads it.
-    assert boards.reading("a") == ["one", "two"]
-    assert boards.reads("a", "total") == ["one", "two"]
-    assert boards.reading("b") == ["one", "three"]
+    assert leaderboards.reading("a") == ["one", "two"]
+    assert leaderboards.reads("a", "total") == ["one", "two"]
+    assert leaderboards.reading("b") == ["one", "three"]
     # A read of two works out only its columns and those they read.
-    assert boards.needed(["two"]).order == (("one", "best"), ("two", "half"))
+    assert leaderboards.needed(["two"]).order == (("one", "best"), ("two", "half"))
 
 
 def owner(entrant: int) -> EntrantOwner:
@@ -438,7 +444,7 @@ def read_as(
     *,
     released: list[str] | None = None,
     held: Mapping[int, Mapping[str, int]] | None = None,
-) -> tuple[Board, ...]:
+) -> tuple[LeaderboardView, ...]:
     """The board `key` as `viewer` reads it, each row given by its entrant,
     name and results as the viewer reads them; empty when they see none."""
     settings = contest(text)
@@ -454,7 +460,7 @@ def read_as(
         )
         for entrant, name, lists in rows
     ]
-    return read_boards(
+    return read_leaderboards(
         settings.leaderboards,
         found,
         [key],
@@ -465,12 +471,12 @@ def read_as(
     )
 
 
-def one(boards: tuple[Board, ...]) -> Board:
-    assert len(boards) == 1
-    return boards[0]
+def one(leaderboards: tuple[LeaderboardView, ...]) -> LeaderboardView:
+    assert len(leaderboards) == 1
+    return leaderboards[0]
 
 
-def test_the_three_boards_rank_rows_with_shared_places() -> None:
+def test_the_three_leaderboards_rank_rows_with_shared_places() -> None:
     solved = [sub(1, attempt=1, seconds=1200, compiled=1, solved=1)]
     standings = one(
         read_as(
@@ -535,7 +541,7 @@ def test_a_cell_is_hidden_when_a_pick_compared_a_value_not_shown() -> None:
     staff = one(read_as(GRADEBOOK, "cartpole_ranking", [(1, "r1", lists)]))
 
     # Why it has no number is told on no row but the viewer's own (item 127).
-    assert seen.rows[0].cells == (BoardCell("reward", None),)
+    assert seen.rows[0].cells == (LeaderboardCell("reward", None),)
     assert staff.rows[0].cells[0].number == 10
 
 
@@ -560,11 +566,13 @@ def test_best_each_is_hidden_when_a_value_it_reads_is_not_shown_on_any_submissio
         "value": {"name": "total"},
         "directions": {"st1": "desc", "st2": "desc"},
     }
-    boards = {"p": Leaderboard.model_validate({"columns": {"c": tree}})}
-    found = check_boards(boards, ["a"])
+    leaderboards = {"p": Leaderboard.model_validate({"columns": {"c": tree}})}
+    found = check_leaderboards(leaderboards, ["a"])
 
     def best(*listed: Submitted) -> Cell:
-        return work_out_row(boards, found, {"a": list(listed)}, {"a": ISLANDS_VALUES})[("p", "c")]
+        return work_out_row(leaderboards, found, {"a": list(listed)}, {"a": ISLANDS_VALUES})[
+            ("p", "c")
+        ]
 
     assert best(sub(1, st1=1, st2=0), hidden_sub(2, "st2", st1=0)).hidden
     assert not best(sub(1, st1=1, st2=0), sub(2, st1=0, st2=1)).hidden
@@ -609,8 +617,8 @@ def kaggle(number: int, public: int, private: int, *, shown: bool) -> Submitted:
     return results_seen(number, {}, values, 1, ["public", "private"], listed, True)
 
 
-def test_the_kaggle_private_board_is_hidden_until_private_is_shown() -> None:
-    def private(shown: bool) -> Board:
+def test_the_kaggle_private_leaderboard_is_hidden_until_private_is_shown() -> None:
+    def private(shown: bool) -> LeaderboardView:
         lists = {"k": [kaggle(1, 80, 70, shown=shown), kaggle(2, 90, 60, shown=shown)]}
         return one(read_as(KAGGLE, "private", [(1, "r1", lists), (2, "r2", {})], Viewer()))
 
@@ -619,8 +627,8 @@ def test_the_kaggle_private_board_is_hidden_until_private_is_shown() -> None:
         read_as(KAGGLE, "public", [(1, "r1", {"k": [kaggle(1, 80, 70, shown=False)]})], Viewer())
     )
 
-    assert before.rows[0].cells == (BoardCell("score", None),)
-    assert after.rows[0].cell("score") == BoardCell("score", Fraction(60))
+    assert before.rows[0].cells == (LeaderboardCell("score", None),)
+    assert after.rows[0].cell("score") == LeaderboardCell("score", Fraction(60))
     # A hidden key is no sort key: no places until it is shown.
     assert before.dropped == ("score",) and before.sort == ()
     assert [row.place for row in before.rows] == [None, None]
@@ -639,10 +647,10 @@ def test_a_value_listed_now_but_not_yet_shown_waits_and_one_not_listed_is_hidden
     assert late.waiting == {"private", "compiled"} and not late.hidden
     assert not early.waiting and early.hidden == {"private", "compiled"}
     rows = [(1, "r1", {"k": [kaggle(1, 80, 70, shown=True)]}), (2, "r2", {"k": [late]})]
-    board = one(read_as(KAGGLE, "private", rows, Viewer()))
-    assert board.dropped == ()
-    assert [(row.name, row.place) for row in board.rows] == [("r1", 1), ("r2", 2)]
-    assert board.rows[1].cells == (BoardCell("score", None),)
+    leaderboard = one(read_as(KAGGLE, "private", rows, Viewer()))
+    assert leaderboard.dropped == ()
+    assert [(row.name, row.place) for row in leaderboard.rows] == [("r1", 1), ("r2", 2)]
+    assert leaderboard.rows[1].cells == (LeaderboardCell("score", None),)
 
 
 def test_a_sort_key_hidden_on_one_row_drops_places_for_every_row() -> None:
@@ -703,7 +711,7 @@ def test_a_value_reading_an_entered_mark_waits_by_show_and_compiled_with_no_grou
     assert column("p", "c", {"a": [grading]}, tries).waiting == {("a", 1)}
 
 
-def test_compiled_listed_by_its_name_reads_on_a_board_with_no_group_shown() -> None:
+def test_compiled_listed_by_its_name_reads_on_a_leaderboard_with_no_group_shown() -> None:
     # Item 124: show lists compiled by its name, so a board reads it, and
     # it waits while the submission grades, with no group shown.
     text = ISLANDS_TASK.replace(
@@ -721,7 +729,7 @@ def test_compiled_listed_by_its_name_reads_on_a_board_with_no_group_shown() -> N
     assert column("p", "c", {"a": [graded]}, tries).number == 0
 
 
-def test_what_the_cells_counted_is_listed_by_row_number_board_and_column() -> None:
+def test_what_the_cells_counted_is_listed_by_row_number_leaderboard_and_column() -> None:
     # What the grading queue lists, and when an entry may show (#505).
     text = GRADEBOOK + (
         "  latest:\n    audience: {who: everyone}\n"
@@ -811,7 +819,9 @@ leaderboards:
 staff's reading the private score through that pick."""
 
 
-def test_a_staff_board_reading_through_a_public_boards_pick_hides_nothing_of_it() -> None:
+def test_a_staff_leaderboard_reading_through_a_public_leaderboards_pick_hides_nothing_of_it() -> (
+    None
+):
     # Item 98: only what the boards read for a viewer read through a pick
     # hides it, so staff's private read hides no public cell, while the
     # pick takes the same submission on every board.
@@ -820,17 +830,19 @@ def test_a_staff_board_reading_through_a_public_boards_pick_hides_nothing_of_it(
     assert not found.problems, found.problems
     lists = [{"k": [kaggle(1, 80, 70, shown=False)]}, {"k": [kaggle(1, 70, 60, shown=False)]}]
 
-    def public(boards: BoardsCheck) -> Board:
+    def public(leaderboards: LeaderboardsCheck) -> LeaderboardView:
         worked = [
             Row(
-                owner(entrant), f"r{entrant}", work_out_row(settings.leaderboards, boards, each, {})
+                owner(entrant),
+                f"r{entrant}",
+                work_out_row(settings.leaderboards, leaderboards, each, {}),
             )
             for entrant, each in enumerate(lists, 1)
         ]
         return one(
-            read_boards(
+            read_leaderboards(
                 settings.leaderboards,
-                boards,
+                leaderboards,
                 ["public"],
                 worked,
                 Viewer(),
@@ -839,7 +851,7 @@ def test_a_staff_board_reading_through_a_public_boards_pick_hides_nothing_of_it(
             )
         )
 
-    seen = public(found.needed(boards_read(found, ["public"])))
+    seen = public(found.needed(leaderboards_read(found, ["public"])))
     assert found.through[("public", "last")] == {"public", "private"}
     assert seen.dropped == ()
     assert [(row.name, row.place, row.cells[0].number) for row in seen.rows] == [
@@ -860,7 +872,7 @@ def test_a_staff_board_reading_through_a_public_boards_pick_hides_nothing_of_it(
         True,
     )
     lists[0] = {"k": [kaggle(1, 80, 70, shown=True), newest]}
-    assert public(found.needed(boards_read(found, ["public"]))).rows[0].cells[0].number == 80
+    assert public(found.needed(leaderboards_read(found, ["public"]))).rows[0].cells[0].number == 80
 
 
 def test_a_hidden_value_still_waiting_changes_no_cell_reading_shown_ones() -> None:
@@ -881,7 +893,7 @@ def test_waiting_is_told_only_to_the_rows_own_entrant_and_staff() -> None:
     mine, other = entrant.rows
     assert mine.told and mine.cells[0].waiting == (Counted("cartpole", 2),)
     assert mine.cells[0].counted == (Counted("cartpole", 1),)
-    assert not other.told and other.cells == (BoardCell("reward", Fraction(10)),)
+    assert not other.told and other.cells == (LeaderboardCell("reward", Fraction(10)),)
     assert all(row.cells[0].waiting == (Counted("cartpole", 2),) for row in staff.rows)
 
 
@@ -945,15 +957,15 @@ def test_the_hold_keeps_what_was_made_before_from_and_counts_the_rest_held() -> 
     assert counts == {"search": 2} and none == {}
     assert others.rows[0].held == 2
     # The search mark reads `marked`, which may change under the hold.
-    assert others.rows[0].cell("search_mark") == BoardCell("search_mark", None)
-    assert others.rows[0].cell("cartpole_best") == BoardCell("cartpole_best", Fraction(0))
+    assert others.rows[0].cell("search_mark") == LeaderboardCell("search_mark", None)
+    assert others.rows[0].cell("cartpole_best") == LeaderboardCell("cartpole_best", Fraction(0))
     assert own.rows[0].held == 0
-    assert own.rows[0].cell("search_mark") == BoardCell(
+    assert own.rows[0].cell("search_mark") == LeaderboardCell(
         "search_mark", Fraction(1, 2), (Counted("search", 1),)
     )
 
 
-def test_a_rows_held_count_on_a_board_counts_only_the_tasks_it_reads() -> None:
+def test_a_rows_held_count_on_a_leaderboard_counts_only_the_tasks_it_reads() -> None:
     # Item 91: the ranking reads cartpole alone, so search's held
     # submissions are not counted on it.
     rows = [rewards(1, 10)]
@@ -1016,11 +1028,13 @@ def test_a_public_column_reading_the_gradebook_shows_only_on_the_viewers_own_row
     staff = one(read_as(text, "mine", rows))
 
     assert entrant.rows[0].cells[0].number == Fraction(1, 2)
-    assert entrant.rows[1].cells[0] == BoardCell("total", None)
+    assert entrant.rows[1].cells[0] == LeaderboardCell("total", None)
     assert [row.cells[0].number for row in staff.rows] == [Fraction(1, 2), Fraction(0)]
 
 
-def test_boards_reading_each_other_read_a_board_not_read_yet_as_serving_no_row() -> None:
+def test_leaderboards_reading_each_other_read_a_leaderboard_not_read_yet_as_serving_no_row() -> (
+    None
+):
     # Item 89: neither board can be read first, so the first in the file
     # reads the other's column hidden on every row; the second reads the
     # first once it is read.
@@ -1038,8 +1052,11 @@ def test_boards_reading_each_other_read_a_board_not_read_yet_as_serving_no_row()
     second = one(read_as(text, "two", rows, Viewer()))
     staff = one(read_as(text, "one", rows))
 
-    assert first.rows[0].cells == (BoardCell("n", Fraction(1)), BoardCell("x", None))
-    assert second.rows[0].cells == (BoardCell("m", Fraction(1)), BoardCell("y", Fraction(1)))
+    assert first.rows[0].cells == (LeaderboardCell("n", Fraction(1)), LeaderboardCell("x", None))
+    assert second.rows[0].cells == (
+        LeaderboardCell("m", Fraction(1)),
+        LeaderboardCell("y", Fraction(1)),
+    )
     assert [cell.number for cell in staff.rows[0].cells] == [1, 1]
 
 
@@ -1054,8 +1071,8 @@ def test_the_gradebooks_headers_carry_bounds_and_the_self_reported_mark_no_cell_
     parts = self_reported_parts(found, {"search": frozenset(), "cartpole": frozenset({"reward"})})
     headers = headers_of("gradebook", settings.leaderboards["gradebook"], bounds, parts)
     worked = work_out_row(settings.leaderboards, found, {"cartpole": [sub(1, reward=475)]}, {})
-    board = one(
-        read_boards(
+    leaderboard = one(
+        read_leaderboards(
             settings.leaderboards,
             found,
             ["gradebook"],
@@ -1066,12 +1083,12 @@ def test_the_gradebooks_headers_carry_bounds_and_the_self_reported_mark_no_cell_
         )
     )
 
-    assert board.headers == (
+    assert leaderboard.headers == (
         Header("search_mark", None, Fraction(0), Fraction(1)),
         Header("cartpole_best", None, Fraction(0), Fraction(500), (("cartpole", "reward"),)),
         Header("total", 2, Fraction(0), Fraction(1), (("cartpole", "reward"),)),
     )
-    assert "self_reported" not in BoardCell.__dataclass_fields__
+    assert "self_reported" not in LeaderboardCell.__dataclass_fields__
 
 
 def test_a_header_names_no_self_reported_value_of_a_task_not_released() -> None:
@@ -1091,12 +1108,12 @@ def test_a_header_names_no_self_reported_value_of_a_task_not_released() -> None:
     worked = [Row(owner(1), "r1", work_out_row(settings.leaderboards, found, {}, {}))]
 
     def header(viewer: Viewer) -> Header:
-        board = one(
-            read_boards(
+        leaderboard = one(
+            read_leaderboards(
                 settings.leaderboards, found, ["s"], worked, viewer, released=["a"], headers=headers
             )
         )
-        return board.headers[0]
+        return leaderboard.headers[0]
 
     assert header(Viewer()).self_reported == (("a", "score"),)
     assert header(STAFF).self_reported == (("a", "score"), ("b", "reward"))
@@ -1105,15 +1122,15 @@ def test_a_header_names_no_self_reported_value_of_a_task_not_released() -> None:
 # Each board block
 
 
-def test_every_board_block_has_a_test() -> None:
+def test_every_leaderboard_block_has_a_test() -> None:
     # otherwise is a task value's too (item 128), its board meaning tested
     # in test_otherwise_and_sum_best_and_missing_spreading.
-    board = {
+    leaderboard = {
         name
         for name, block in CATALOGUE.items()
         if any(form.scope is Scope.BOARD for form in block.forms)
     }
-    assert board == {
+    assert leaderboard == {
         "first",
         "latest",
         "highest",
@@ -1237,12 +1254,12 @@ def test_best_each_works_the_value_out_again_from_the_best_of_each_it_reads() ->
     listed = {"a": [sub(1, st1=1, st2=0), sub(2, st1=0, st2=1), sub(3, st1=1, st2=1)]}
 
     settings_trees = {"a": ISLANDS_VALUES}
-    boards = {"p": Leaderboard.model_validate({"columns": {"c": tree}})}
-    found = check_boards(boards, ["a"])
-    cell = work_out_row(boards, found, listed, settings_trees)[("p", "c")]
+    leaderboards = {"p": Leaderboard.model_validate({"columns": {"c": tree}})}
+    found = check_leaderboards(leaderboards, ["a"])
+    cell = work_out_row(leaderboards, found, listed, settings_trees)[("p", "c")]
     # A value reading a run directly cannot be worked out again.
     runs = work_out_row(
-        boards, found, listed, {"a": {**ISLANDS_VALUES, "total": ISLANDS_VALUES["st1"]}}
+        leaderboards, found, listed, {"a": {**ISLANDS_VALUES, "total": ISLANDS_VALUES["st1"]}}
     )
 
     assert cell.number == 100
@@ -1256,9 +1273,9 @@ def test_a_missing_input_makes_best_each_missing_unless_its_missing_says_otherwi
     listed = {"a": [sub(1, st1=1), sub(2, st1=0, st2=1)]}
 
     def cell(given: dict[str, object]) -> Cell:
-        boards = {"p": Leaderboard.model_validate({"columns": {"c": given}})}
-        found = check_boards(boards, ["a"])
-        return work_out_row(boards, found, listed, {"a": ISLANDS_VALUES})[("p", "c")]
+        leaderboards = {"p": Leaderboard.model_validate({"columns": {"c": given}})}
+        found = check_leaderboards(leaderboards, ["a"])
+        return work_out_row(leaderboards, found, listed, {"a": ISLANDS_VALUES})[("p", "c")]
 
     missing = cell(tree)
     assert (missing.number, missing.counted) == (None, frozenset({("a", 1)}))
@@ -1351,19 +1368,19 @@ def test_otherwise_over_a_value_held_back_leaves_its_submission_out_and_hides() 
 # The board check
 
 
-def test_the_three_boards_of_simpler_core_10_pass_the_check() -> None:
+def test_the_three_leaderboards_of_simpler_core_10_pass_the_check() -> None:
     for text in (GRADEBOOK, OLYMPIAD, ICPC):
         assert problems(text) == []
 
 
-def test_a_board_with_no_audience_is_staffs() -> None:
+def test_a_leaderboard_with_no_audience_is_staffs() -> None:
     settings = contest("tasks: [{id: a}]\nleaderboards:\n  standings: {}\n")
 
     assert settings.leaderboards["standings"].audience.who == "staff"
     assert settings.leaderboards["standings"].title_or("standings") == "standings"
 
 
-def test_own_rows_for_everyone_and_old_boards_are_refused_at_parse() -> None:
+def test_own_rows_for_everyone_and_old_leaderboards_are_refused_at_parse() -> None:
     with pytest.raises(InvalidDefinition) as own:
         contest("leaderboards:\n  s: {audience: {who: everyone, rows: own}}\n")
     with pytest.raises(InvalidDefinition) as old:
@@ -1382,7 +1399,7 @@ def test_own_rows_for_everyone_and_old_boards_are_refused_at_parse() -> None:
     assert [error["path"] for error in task.value.errors] == ["leaderboards.s"]
 
 
-def board(columns: Mapping[str, object], **more: object) -> str:
+def leaderboard(columns: Mapping[str, object], **more: object) -> str:
     document: dict[str, object] = {"columns": columns, **more}
     return "tasks: [{id: a}, {id: b-c}]\nleaderboards:\n  s: " + one_line(document) + "\n"
 
@@ -1448,13 +1465,13 @@ COUNT = {"block": "count", "over": results("a")}
         ),
     ],
 )
-def test_each_refusal_of_the_board_check(
+def test_each_refusal_of_the_leaderboard_check(
     columns: dict[str, object], more: dict[str, object], path: str
 ) -> None:
-    assert path in [each for each, _ in problems(board(columns, **more))]
+    assert path in [each for each, _ in problems(leaderboard(columns, **more))]
 
 
-def test_a_loop_across_boards_and_a_column_another_board_lacks_are_refused() -> None:
+def test_a_loop_across_leaderboards_and_a_column_another_leaderboard_lacks_are_refused() -> None:
     text = (
         "tasks: [{id: a}]\nleaderboards:\n"
         "  one: {columns: {x: {column: [two, y]}}}\n"
@@ -1468,7 +1485,7 @@ def test_a_loop_across_boards_and_a_column_another_board_lacks_are_refused() -> 
     assert checked(contest(text)).readable == frozenset()
 
 
-def test_a_board_reading_a_refused_board_is_not_read() -> None:
+def test_a_leaderboard_reading_a_refused_leaderboard_is_not_read() -> None:
     text = (
         "tasks: [{id: a}]\nleaderboards:\n"
         "  one: {columns: {x: {block: nope}}}\n"
@@ -1478,17 +1495,19 @@ def test_a_board_reading_a_refused_board_is_not_read() -> None:
     assert checked(contest(text)).readable == frozenset({"three"})
 
 
-def test_a_board_of_too_many_columns_is_refused() -> None:
+def test_a_leaderboard_of_too_many_columns_is_refused() -> None:
     columns = {f"c{index}": 1 for index in range(MOST_COLUMNS + 1)}
-    assert [path for path, _ in problems(board(columns))] == ["leaderboards.s.columns"]
+    assert [path for path, _ in problems(leaderboard(columns))] == ["leaderboards.s.columns"]
 
 
 def test_a_contest_of_more_than_20_leaderboards_is_refused() -> None:
-    boards = {f"b{index}": Leaderboard(columns={"c": 1}) for index in range(MOST_LEADERBOARDS)}
+    leaderboards = {
+        f"b{index}": Leaderboard(columns={"c": 1}) for index in range(MOST_LEADERBOARDS)
+    }
     assert MOST_LEADERBOARDS == 20
-    assert check_boards(boards, []).problems == []
-    boards["more"] = Leaderboard(columns={"c": 1})
-    assert check_boards(boards, []).problems == [
+    assert check_leaderboards(leaderboards, []).problems == []
+    leaderboards["more"] = Leaderboard(columns={"c": 1})
+    assert check_leaderboards(leaderboards, []).problems == [
         (
             ("leaderboards",),
             "This contest has 21 leaderboards. A contest has at most 20, so working them out "
@@ -1497,7 +1516,7 @@ def test_a_contest_of_more_than_20_leaderboards_is_refused() -> None:
     ]
 
 
-def test_a_task_value_using_a_board_block_or_leaf_is_refused() -> None:
+def test_a_task_value_using_a_leaderboard_block_or_leaf_is_refused() -> None:
     for tree in (
         {"block": "first", "from": results("a")},
         {"block": "max", "over": results("a"), "of": 1},
@@ -1508,7 +1527,7 @@ def test_a_task_value_using_a_board_block_or_leaf_is_refused() -> None:
         assert found.problems, tree
 
 
-def test_marks_go_with_a_board_reading_marked() -> None:
+def test_marks_go_with_a_leaderboard_reading_marked() -> None:
     unread = "tasks: [{id: search, marks: 2}]\n"
     read_marked = (
         "tasks: [{id: search, marks: 2}, {id: other}]\nleaderboards:\n  g:\n    columns:\n"
@@ -1609,7 +1628,7 @@ def test_the_gradebooks_total_carries_its_bounds_and_seconds_late_none() -> None
 
 def test_a_division_by_bounds_holding_0_and_a_fold_over_results_by_submissions() -> None:
     settings = contest(
-        board(
+        leaderboard(
             {
                 "n": COUNT,
                 "sm": {"block": "sum", "over": results("a"), "of": read("a", "score")},
@@ -1630,7 +1649,7 @@ def test_a_division_by_bounds_holding_0_and_a_fold_over_results_by_submissions()
 def test_a_folds_bounds_over_results_widen_by_its_missing_number() -> None:
     fold = {"block": "max", "over": results("a"), "of": read("a", "score")}
     settings = contest(
-        board({"wide": {**fold, "missing": 5}, "low": {**fold, "missing": -1}, "plain": fold})
+        leaderboard({"wide": {**fold, "missing": 5}, "low": {**fold, "missing": -1}, "plain": fold})
     )
     found = checked(settings)
     bounds = column_bounds(
@@ -1644,7 +1663,9 @@ def test_a_folds_bounds_over_results_widen_by_its_missing_number() -> None:
 
 def test_best_eachs_bounds_are_worked_out_again_from_each_read_widened_by_its_missing() -> None:
     tree = best_each("total")
-    settings = contest(board({"wide": {**tree, "missing": 5}, "skip": {**tree, "missing": "skip"}}))
+    settings = contest(
+        leaderboard({"wide": {**tree, "missing": 5}, "skip": {**tree, "missing": "skip"}})
+    )
     found = checked(settings)
     one = (Fraction(0), Fraction(1))
     tasks = {"a": {"st1": one, "st2": one, "total": (Fraction(0), Fraction(100))}}
@@ -1760,7 +1781,7 @@ SCORED = {"a": Scored(MARKED_VALUES)}
 
 
 def across_problems(columns: Mapping[str, object]) -> list[tuple[str, str]]:
-    found, _ = check_contest(contest(board(columns)), SCORED)
+    found, _ = check_contest(contest(leaderboard(columns)), SCORED)
     return [(".".join(str(part) for part in path), message) for path, message in found]
 
 
@@ -1941,7 +1962,7 @@ def test_best_each_refuses_a_value_using_otherwise_by_its_name_and_works_none_ou
             ],
         },
     }
-    text = board({"c": best_each("kept")})
+    text = leaderboard({"c": best_each("kept")})
     found, _ = check_contest(contest(text), {"a": Scored(values)})
     listed = {"a": [sub(1, st1=1, st2=0.5), sub(2, st1=0.5, st2=1)]}
 
@@ -1977,19 +1998,21 @@ def test_what_reads_a_mark_without_choosing_by_it_and_a_task_not_resolved_pass()
     assert across_problems(columns) == []
 
 
-def test_a_board_whose_own_check_fails_is_not_checked_across_files() -> None:
+def test_a_leaderboard_whose_own_check_fails_is_not_checked_across_files() -> None:
     columns = {"c": read(LATEST, "nope"), "d": {"block": "nope"}}
 
     assert [path for path, _ in across_problems(columns)] == ["leaderboards.s.columns.d.block"]
 
 
-def test_a_refusal_across_files_says_at_a_tasks_save_which_board_and_column_it_breaks() -> None:
-    settings = contest(board({"c": {"block": "otherwise", "of": [read(LATEST, "total"), 0]}}))
+def test_a_refusal_across_files_says_at_a_tasks_save_which_leaderboard_and_column_it_breaks() -> (
+    None
+):
+    settings = contest(leaderboard({"c": {"block": "otherwise", "of": [read(LATEST, "total"), 0]}}))
     values = {name: tree for name, tree in MARKED_VALUES.items() if name != "total"}
 
     [found] = across(settings, checked(settings), {"a": Scored(values)})
 
-    assert (found.board, found.column, found.task, found.value) == ("s", "c", "a", "total")
+    assert (found.leaderboard, found.column, found.task, found.value) == ("s", "c", "a", "total")
     assert found.saved == (
         "The leaderboard s reads total of a in its column c, so a must keep a value called "
         "total. Take it out of that column first."

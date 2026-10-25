@@ -54,7 +54,7 @@ from typing import Any
 
 from forge.domain.content import has_path
 from forge.domain.meanings import ReportMeaning
-from forge.domain.plans import (
+from forge.domain.port_values import (
     Kind,
     Refused,
     a_type,

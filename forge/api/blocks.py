@@ -11,10 +11,10 @@ backend's workflow and publication schemas to read.
 """
 
 from forge.domain.blocks.catalogue import (
-    BOARD_LEAVES,
     CATALOGUE,
     FACTS,
     LANGUAGES,
+    LEADERBOARD_LEAVES,
     LEAVES,
     SKIP,
     TASK_FACTS,
@@ -28,10 +28,10 @@ from forge.domain.blocks.catalogue import (
 from forge.domain.blocks.numbers import Better
 
 __all__ = [
-    "BOARD_LEAVES",
     "CATALOGUE",
     "FACTS",
     "LANGUAGES",
+    "LEADERBOARD_LEAVES",
     "LEAVES",
     "SKIP",
     "TASK_FACTS",

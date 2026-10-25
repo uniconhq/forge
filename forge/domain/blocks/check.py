@@ -287,7 +287,7 @@ class _Checker:
             case Kind.RUNS:
                 self._runs(at, node)
             case Kind.RESULTS | Kind.NAME | Kind.DIRECTIONS:
-                self.refuse(at, ONLY_BOARDS)
+                self.refuse(at, ONLY_LEADERBOARDS)
             case Kind.WEIGHTS:
                 self._weights(at, node)
             case Kind.MISSING:
@@ -328,7 +328,7 @@ class _Checker:
             return
         kind, named = leaf
         if kind not in TASK_LEAVES or (kind == "value" and isinstance(named, list)):
-            self.refuse(at, ONLY_BOARDS)
+            self.refuse(at, ONLY_LEADERBOARDS)
             return
         match kind:
             case "runs":
@@ -377,7 +377,9 @@ class _Checker:
             return
         if form.scope is Scope.BOARD:
             self.refuse(
-                at, f"{block.name} given {form.given} is for a leaderboard's column. {ONLY_BOARDS}"
+                at,
+                f"{block.name} given {form.given} is for a leaderboard's column. "
+                f"{ONLY_LEADERBOARDS}",
             )
             return
         for key in node:
@@ -518,7 +520,7 @@ class _Checker:
                 self.refuse(where, "A weight is a number more than 0.")
 
 
-ONLY_BOARDS = (
+ONLY_LEADERBOARDS = (
     "A task's value reads one submission's runs and facts; a task's results, a "
     "submission's results and a leaderboard's columns are read on a leaderboard only."
 )

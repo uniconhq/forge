@@ -69,7 +69,7 @@ from forge.domain.blocks.check import ValuesCheck, check_names, check_values, sa
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.blocks.numbers import Better
 from forge.domain.checks import TaskCheck, check_checks
-from forge.domain.content import named_by, names_path, path_problem
+from forge.domain.content import has_path, named_by, names_path, path_problem
 from forge.domain.definitions import (
     ENTRANT,
     TASK_FILE,
@@ -80,14 +80,8 @@ from forge.domain.definitions import (
     form_problems,
 )
 from forge.domain.grading import Machine
-from forge.domain.plans import (
-    PLANS_FOLDER,
-    SECRET_NAME,
-    a_type,
-    has_path,
-    is_reserved,
-    spelled,
-)
+from forge.domain.plan_basics import PLANS_FOLDER, SECRET_NAME
+from forge.domain.port_values import a_type, is_reserved, spelled
 from forge.domain.primitives import PROGRAMS, Port
 from forge.domain.program_manifest import (
     EXEC_OWN_NAMES,

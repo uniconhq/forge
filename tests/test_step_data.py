@@ -22,7 +22,7 @@ from forge.domain.clock import FakeClock
 from forge.domain.contracts import violation
 from forge.domain.errors import Forbidden, InvalidCallback, NotFound, Rejected
 from forge.domain.grading import step_token
-from forge.domain.reports import RESULT_MAX
+from forge.domain.plan_basics import RESULT_MAX
 from forge.domain.run_plan import RunEntry, RunPlan
 from forge.domain.step_data import (
     OUTPUTS_MAX,

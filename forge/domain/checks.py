@@ -37,8 +37,8 @@ from forge.domain.blocks.evaluate import using
 from forge.domain.blocks.numbers import exact
 from forge.domain.content import has_path, names_path
 from forge.domain.definitions import Check, Form, TaskDefinition
+from forge.domain.plan_basics import RESULT_MAX
 from forge.domain.primitives import STEP_OUTCOMES
-from forge.domain.reports import RESULT_MAX
 from forge.domain.types import FILES, Type
 from forge.domain.yaml_models import Path, Problem, is_number, path_text
 

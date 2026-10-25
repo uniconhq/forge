@@ -27,7 +27,7 @@ from forge.domain.errors import ConfirmationRequired, InvalidInputs, NotFound
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
-from forge.domain.plans import PLAN_PATH
+from forge.domain.plan_basics import PLAN_PATH
 from forge.domain.run_plan import FileFact, RunPlan
 from forge.domain.run_task import RUNS_PATH, RunsFile
 from forge.domain.submissions import SubmittedInput
@@ -488,7 +488,7 @@ BOARD = (
 )
 
 
-async def test_a_contest_gives_a_run_task_a_due_and_a_board_but_no_worth_or_late_share(
+async def test_a_contest_gives_a_run_task_a_due_and_a_leaderboard_but_no_worth_or_late_share(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     # A stored contest still giving a worth or a late share reads with them

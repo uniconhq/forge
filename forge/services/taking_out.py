@@ -45,7 +45,6 @@ from sqlalchemy import delete, func, select, update
 from forge.db.tables import Entrant, Grading, Name, Upload
 from forge.db.tables import Invite as InviteRow
 from forge.db.tables.gradings import FRONT
-from forge.domain.board_checks import boards_of
 from forge.domain.content import File
 from forge.domain.contest_entries import NoEntry, Unlisted, with_withdrawn, without_entry
 from forge.domain.definitions import CONTEST_FILE, parse_contest
@@ -60,13 +59,14 @@ from forge.domain.errors import (
 from forge.domain.identity import PLATFORM, AsOrgAccount
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.invites import InviteStatus
+from forge.domain.leaderboard_task_check import leaderboards_of
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, contest_id_of, contest_scope, task_scope
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, making, names, org_accounts, places, published, timelines
+from forge.services import leaderboards, making, names, org_accounts, places, published, timelines
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -167,7 +167,7 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
         if problem not in _saved_problems(found.content)
     ]
     problems += await timelines.check_contest(ctx, contest, before, after)
-    checked = await boards.check_contest(ctx, contest, before, after)
+    checked = await leaderboards.check_contest(ctx, contest, before, after)
     problems += checked.problems
     if problems:
         raise InvalidDefinition(CONTEST_FILE, problems)
@@ -268,8 +268,12 @@ async def _remove(
     before a step that fails is put back, as `create` undoes a try.
     """
     settings = parse_contest(found.content)
-    keys = boards_of(settings).reading(name)
-    naming = [board.title_or(key) for key, board in settings.leaderboards.items() if key in keys]
+    keys = leaderboards_of(settings).reading(name)
+    naming = [
+        leaderboard.title_or(key)
+        for key, leaderboard in settings.leaderboards.items()
+        if key in keys
+    ]
     if naming:
         raise TakeOutRefused(
             f"The leaderboard {naming[0]} reads the results of {name}. Take {name} out of that "

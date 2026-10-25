@@ -35,7 +35,7 @@ import math
 from collections.abc import Mapping, Sequence
 from fractions import Fraction
 
-from forge.domain.blocks.board_check import BoardColumn, BoardsCheck, column_at
+from forge.domain.blocks.board_check import ColumnRef, LeaderboardsCheck, column_at
 from forge.domain.blocks.catalogue import CATALOGUE, ENTERED, SKIP, Kind
 from forge.domain.blocks.check import form_of, leaf_of, same_value
 from forge.domain.blocks.evaluate import MOST_BITS, Column, RunResult, in_order
@@ -232,40 +232,42 @@ def fact_bounds(name: str, most: int | None) -> Bounds:
 
 
 def column_bounds(
-    boards: Mapping[str, Leaderboard],
-    checked: BoardsCheck,
+    leaderboards: Mapping[str, Leaderboard],
+    checked: LeaderboardsCheck,
     tasks: Mapping[str, Mapping[str, Bounds]],
     most: Mapping[str, int | None],
     trees: Mapping[str, Mapping[str, object]],
-) -> dict[BoardColumn, Bounds]:
+) -> dict[ColumnRef, Bounds]:
     """Each number column's bounds, of the boards worked out on read:
     `tasks` each task's values' bounds, a task the board reads with none
     there giving none, `most` each task's `submissions.max`, and `trees`
     each task's values' trees, which `best_each` with a `missing` number
     works out again."""
-    found: dict[BoardColumn, Bounds] = {}
-    for board, name in checked.order:
-        shape = checked.shapes[board][name]
+    found: dict[ColumnRef, Bounds] = {}
+    for leaderboard, name in checked.order:
+        shape = checked.shapes[leaderboard][name]
         if shape.kind is not Kind.NUMBER:
             continue
-        reader = _ColumnBounds(board, boards[board], checked, tasks, most, trees, found)
-        found[(board, name)] = reader.node(boards[board].columns[name], ())
+        reader = _ColumnBounds(
+            leaderboard, leaderboards[leaderboard], checked, tasks, most, trees, found
+        )
+        found[(leaderboard, name)] = reader.node(leaderboards[leaderboard].columns[name], ())
     return found
 
 
 class _ColumnBounds:
     def __init__(
         self,
-        board: str,
-        leaderboard: Leaderboard,
-        checked: BoardsCheck,
+        leaderboard: str,
+        from_contest: Leaderboard,
+        checked: LeaderboardsCheck,
         tasks: Mapping[str, Mapping[str, Bounds]],
         most: Mapping[str, int | None],
         trees: Mapping[str, Mapping[str, object]],
-        done: Mapping[BoardColumn, Bounds],
+        done: Mapping[ColumnRef, Bounds],
     ) -> None:
-        self.board = board
         self.leaderboard = leaderboard
+        self.from_contest = from_contest
         self.checked = checked
         self.tasks = tasks
         self.most = most
@@ -280,7 +282,7 @@ class _ColumnBounds:
 
     def submission_tasks(self, node: object) -> frozenset[str]:
         if isinstance(node, str):
-            shape = self.checked.shapes[self.board].get(node)
+            shape = self.checked.shapes[self.leaderboard].get(node)
             return shape.of_tasks if shape is not None else frozenset()
         if isinstance(node, dict) and "block" in node:
             if node["block"] == "otherwise" and isinstance(node.get("of"), list):
@@ -290,8 +292,8 @@ class _ColumnBounds:
             return frozenset({str(leaf[1])}) if leaf is not None else frozenset()
         leaf = leaf_of(node) if isinstance(node, dict) else None
         if leaf is not None and leaf[0] == "column":
-            board, name = column_at(self.board, leaf[1])
-            shape = self.checked.shapes.get(board, {}).get(name)
+            leaderboard, name = column_at(self.leaderboard, leaf[1])
+            shape = self.checked.shapes.get(leaderboard, {}).get(name)
             return shape.of_tasks if shape is not None else frozenset()
         return frozenset()
 
@@ -330,7 +332,7 @@ class _ColumnBounds:
                 return None
             kind, named = leaf
             if kind == "column":
-                return self.done.get(column_at(self.board, named))
+                return self.done.get(column_at(self.leaderboard, named))
             if kind == "value" and isinstance(named, list):
                 of, name = named
                 if isinstance(of, str) and of in scope:
@@ -384,20 +386,20 @@ class _ColumnBounds:
 
 
 def self_reported_parts(
-    checked: BoardsCheck, reported: Mapping[str, frozenset[str]]
-) -> dict[BoardColumn, tuple[tuple[str, str], ...]]:
+    checked: LeaderboardsCheck, reported: Mapping[str, frozenset[str]]
+) -> dict[ColumnRef, tuple[tuple[str, str], ...]]:
     """Each column's self-reported parts: each task and value it reads,
     directly or through the columns it reads, that reads a column the
     entrant could set, `reported` each task's such values (#504)."""
-    found: dict[BoardColumn, tuple[tuple[str, str], ...]] = {}
-    for board, name in checked.order:
-        shape = checked.shapes[board][name]
+    found: dict[ColumnRef, tuple[tuple[str, str], ...]] = {}
+    for leaderboard, name in checked.order:
+        shape = checked.shapes[leaderboard][name]
         parts = {
             (task, value) for task, value in shape.reads if value in reported.get(task, frozenset())
         }
         for other in shape.columns:
             parts.update(found.get(other, ()))
-        found[(board, name)] = tuple(sorted(parts))
+        found[(leaderboard, name)] = tuple(sorted(parts))
     return found
 
 

@@ -13,7 +13,6 @@ from typing import Any
 
 import pytest
 
-from forge.domain.board_checks import marks_of
 from forge.domain.definitions import (
     CONTEST_ADMIN_KEYS,
     DEFAULT_RATE,
@@ -40,6 +39,7 @@ from forge.domain.definitions import (
     title_of,
 )
 from forge.domain.errors import ServiceError
+from forge.domain.leaderboard_task_check import marks_of
 from forge.domain.workflow_definition import WorkflowRef
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line, parse_size
 
@@ -206,14 +206,19 @@ def test_a_contest_leaves_the_optional_blocks_to_their_defaults() -> None:
     assert contest.registration.ways == (Way(signup=SignupWay(approval=Approval.MANUAL)),)
     assert contest.registration.invite_way is None
     assert contest.registration.capacity is None
-    board = contest.leaderboards["standings"]
-    assert (board.title, board.audience.who, board.audience.rows, board.sort) == (
+    leaderboard = contest.leaderboards["standings"]
+    assert (
+        leaderboard.title,
+        leaderboard.audience.who,
+        leaderboard.audience.rows,
+        leaderboard.sort,
+    ) == (
         None,
         "staff",
         "all",
         (),
     )
-    assert (board.columns, board.display, contest.hold) == ({}, (), None)
+    assert (leaderboard.columns, leaderboard.display, contest.hold) == ({}, (), None)
     entry = contest.tasks[0]
     assert (entry.release_at, entry.due, entry.closes, entry.marks) == (None, None, None, None)
     assert contest.release_of(entry) == START
@@ -304,7 +309,7 @@ def test_a_stored_contest_whose_tasks_still_give_worth_reads_with_it_ignored() -
     assert paths(contest_problems(text)) == ["tasks[0].worth", "tasks[1].late_per_day"]
 
 
-def test_a_stored_contest_with_old_boards_or_freeze_at_reads_with_no_boards() -> None:
+def test_a_stored_contest_with_old_leaderboards_or_freeze_at_reads_with_no_leaderboards() -> None:
     text = (
         HEAD
         + "freeze_at: 2026-06-01T13:00:00Z\n"
@@ -454,8 +459,8 @@ def test_the_contest_admin_keys_leave_start_and_end_to_the_managers() -> None:
 # C1 within contest.yaml
 
 
-def entry_problems(entry: str, boards: str = "") -> list[Problem]:
-    return contest_problems(HEAD + f"tasks: [{entry}]\n" + boards)
+def entry_problems(entry: str, leaderboards: str = "") -> list[Problem]:
+    return contest_problems(HEAD + f"tasks: [{entry}]\n" + leaderboards)
 
 
 def test_a_full_timeline_in_order_is_valid() -> None:

@@ -71,12 +71,12 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from fractions import Fraction
 
-from forge.domain.blocks.board_check import BoardColumn, BoardsCheck
-from forge.domain.blocks.board_evaluate import Cell, Submitted
+from forge.domain.blocks.board_check import ColumnRef, LeaderboardsCheck
 from forge.domain.blocks.bounds import Bounds, value_bounds
 from forge.domain.blocks.catalogue import ALL, SHOWN_FACTS
 from forge.domain.blocks.evaluate import Column, RunResult
-from forge.domain.definitions import BoardAudience, Hold, Leaderboard, Scoring
+from forge.domain.blocks.leaderboard_evaluate import Cell, Submitted
+from forge.domain.definitions import Hold, Leaderboard, LeaderboardAudience, Scoring
 from forge.domain.names import WorkspaceOwner
 from forge.domain.run_showing import ValueShown
 
@@ -106,7 +106,7 @@ class Counted:
 
 
 @dataclass(frozen=True, slots=True)
-class BoardCell:
+class LeaderboardCell:
     """One listed column of a row: its number, none when missing or hidden;
     whether it is hidden from the viewer, told as its counts are, so a
     cell with no number on another row says no more; the submissions it
@@ -121,7 +121,7 @@ class BoardCell:
 
 
 @dataclass(frozen=True, slots=True)
-class BoardRow:
+class LeaderboardViewRow:
     """One entrant's row: who, its name as shown, its place, none when the
     viewer is given none, its listed cells in order, how many of its
     submissions the hold keeps from the viewer, whether what each cell
@@ -132,17 +132,17 @@ class BoardRow:
     owner: WorkspaceOwner
     name: str
     place: int | None
-    cells: tuple[BoardCell, ...]
+    cells: tuple[LeaderboardCell, ...]
     held: int = 0
     told: bool = True
     grading: int = 0
 
-    def cell(self, column: str) -> BoardCell | None:
+    def cell(self, column: str) -> LeaderboardCell | None:
         return next((each for each in self.cells if each.column == column), None)
 
 
 @dataclass(frozen=True, slots=True)
-class Board:
+class LeaderboardView:
     """A leaderboard as one viewer reads it: its key, its title, who it is
     for, its listed columns' headers, the keys it was sorted by for them,
     the sort keys dropped for them, its rows in order, and the moment the
@@ -150,10 +150,10 @@ class Board:
 
     key: str
     title: str
-    audience: BoardAudience
+    audience: LeaderboardAudience
     headers: tuple[Header, ...]
     sort: tuple[tuple[str, str], ...]
-    rows: tuple[BoardRow, ...]
+    rows: tuple[LeaderboardViewRow, ...]
     dropped: tuple[str, ...] = ()
     held_from: datetime | None = None
 
@@ -187,14 +187,14 @@ class Row:
 
     owner: WorkspaceOwner
     name: str
-    cells: Mapping[BoardColumn, Cell]
+    cells: Mapping[ColumnRef, Cell]
     held: Mapping[str, int] = field(default_factory=dict)
     grading: Mapping[str, int] = field(default_factory=dict)
 
 
-def sees(board: Leaderboard, viewer: Viewer) -> bool:
+def sees(leaderboard: Leaderboard, viewer: Viewer) -> bool:
     """Whether the viewer reads the board at all (rule 9)."""
-    who = board.audience.who
+    who = leaderboard.audience.who
     return viewer.staff or who == "everyone" or (who == "entrants" and viewer.own is not None)
 
 
@@ -271,7 +271,7 @@ def seen_bounds(
 
 
 def counted_in(
-    found: Sequence[Board], task: str, cells: Collection[BoardColumn] | None = None
+    found: Sequence[LeaderboardView], task: str, cells: Collection[ColumnRef] | None = None
 ) -> dict[WorkspaceOwner, dict[int, tuple[tuple[str, str], ...]]]:
     """Each row's submissions to `task` that a cell of the boards `found`
     counted, by number, each with the board and column of every cell that
@@ -279,16 +279,16 @@ def counted_in(
     a hidden cell, and a row whose counts are not told, count nothing;
     with `cells`, only those cells count."""
     counted: dict[WorkspaceOwner, dict[int, tuple[tuple[str, str], ...]]] = {}
-    for board in found:
-        for row in board.rows:
+    for leaderboard in found:
+        for row in leaderboard.rows:
             for cell in row.cells:
-                if cells is not None and (board.key, cell.column) not in cells:
+                if cells is not None and (leaderboard.key, cell.column) not in cells:
                     continue
                 for each in cell.counted:
                     if each.task != task:
                         continue
                     by = counted.setdefault(row.owner, {}).setdefault(each.number, ())
-                    counted[row.owner][each.number] = (*by, (board.key, cell.column))
+                    counted[row.owner][each.number] = (*by, (leaderboard.key, cell.column))
     return counted
 
 
@@ -303,7 +303,7 @@ def entries_open(number: int, shown: Collection[int]) -> bool:
     return number in shown
 
 
-def alone(checked: BoardsCheck, task: str) -> frozenset[BoardColumn]:
+def alone(checked: LeaderboardsCheck, task: str) -> frozenset[ColumnRef]:
     """The columns reading the results of `task` and of no other task,
     directly or through the columns they read: which of its submissions
     such a column counts is chosen by what `task` gives alone."""
@@ -362,22 +362,22 @@ def grading_seen(
 
 def headers_of(
     key: str,
-    board: Leaderboard,
+    leaderboard: Leaderboard,
     bounds: Mapping[tuple[str, str], Bounds],
     reported: Mapping[tuple[str, str], tuple[tuple[str, str], ...]],
 ) -> tuple[Header, ...]:
     """The headers of `board`'s displayed columns, in order."""
     found: list[Header] = []
-    for name, places in board.display:
+    for name, places in leaderboard.display:
         held = bounds.get((key, name))
         least, most = held if held is not None else (None, None)
         found.append(Header(name, places, least, most, reported.get((key, name), ())))
     return tuple(found)
 
 
-def read_boards(
-    boards: Mapping[str, Leaderboard],
-    checked: BoardsCheck,
+def read_leaderboards(
+    leaderboards: Mapping[str, Leaderboard],
+    checked: LeaderboardsCheck,
     wanted: Sequence[str],
     rows: Sequence[Row],
     viewer: Viewer,
@@ -385,7 +385,7 @@ def read_boards(
     released: Collection[str],
     headers: Mapping[str, tuple[Header, ...]],
     held_from: datetime | None = None,
-) -> tuple[Board, ...]:
+) -> tuple[LeaderboardView, ...]:
     """The boards `wanted` as `viewer` reads them, in that order: `rows`
     every row with every column the check orders worked out for this
     viewer, `released` the tasks released and not withdrawn, `headers` each
@@ -395,13 +395,13 @@ def read_boards(
     the columns reading it (rule 5)."""
     tasks, others = _what_columns_read(checked)
     served: dict[str, frozenset[WorkspaceOwner]] = {}
-    found: dict[str, Board] = {}
-    for key in _board_order(checked):
-        board = boards[key]
-        if not sees(board, viewer):
+    found: dict[str, LeaderboardView] = {}
+    for key in _leaderboard_order(checked):
+        leaderboard = leaderboards[key]
+        if not sees(leaderboard, viewer):
             served[key] = frozenset()
             continue
-        read = _Read(key, board, viewer, tasks, others, served, released)
+        read = _Read(key, leaderboard, viewer, tasks, others, served, released)
         found[key] = read.read(rows, headers.get(key, ()), held_from)
         served[key] = frozenset(row.owner for row in found[key].rows)
     return tuple(found[key] for key in wanted if key in found)
@@ -413,27 +413,29 @@ class _Read:
     def __init__(
         self,
         key: str,
-        board: Leaderboard,
+        leaderboard: Leaderboard,
         viewer: Viewer,
-        tasks: Mapping[BoardColumn, frozenset[str]],
-        others: Mapping[BoardColumn, frozenset[str]],
+        tasks: Mapping[ColumnRef, frozenset[str]],
+        others: Mapping[ColumnRef, frozenset[str]],
         served: Mapping[str, frozenset[WorkspaceOwner]],
         released: Collection[str],
     ) -> None:
         self.key = key
-        self.board = board
+        self.leaderboard = leaderboard
         self.viewer = viewer
         self.others = others
         self.served = served
         self.released = released
         self.listed = [
             name
-            for name in board.shown
+            for name in leaderboard.shown
             if viewer.staff
             or not tasks.get((key, name))
             or any(task in released for task in tasks[(key, name)])
         ]
-        self.tasks = frozenset().union(*(tasks.get((key, name), ()) for name in board.columns))
+        self.tasks = frozenset().union(
+            *(tasks.get((key, name), ()) for name in leaderboard.columns)
+        )
 
     def hidden(self, row: Row, name: str) -> bool:
         """Whether the column `name` is hidden on `row` for the viewer."""
@@ -448,17 +450,17 @@ class _Read:
 
     def read(
         self, rows: Sequence[Row], headers: tuple[Header, ...], held_from: datetime | None
-    ) -> Board:
-        board, viewer = self.board, self.viewer
-        own = board.audience.rows == "own" and not viewer.staff
+    ) -> LeaderboardView:
+        leaderboard, viewer = self.leaderboard, self.viewer
+        own = leaderboard.audience.rows == "own" and not viewer.staff
         candidates = [row for row in rows if not own or row.owner == viewer.own]
         keys = tuple(
             (name, way)
-            for name, way in board.sort
+            for name, way in leaderboard.sort
             if name in self.listed and not any(self.hidden(row, name) for row in candidates)
         )
-        dropped = tuple(name for name, way in board.sort if (name, way) not in keys)
-        placed = bool(board.sort) and not dropped and not own
+        dropped = tuple(name for name, way in leaderboard.sort if (name, way) not in keys)
+        placed = bool(leaderboard.sort) and not dropped and not own
 
         def order(row: Row) -> tuple[object, ...]:
             found: list[object] = []
@@ -481,10 +483,10 @@ class _Read:
                 place, last = index, current
             places[row.owner] = place
         shown = tuple(self._row(row, places[row.owner] if placed else None) for row in kept)
-        return Board(
+        return LeaderboardView(
             self.key,
-            board.title_or(self.key),
-            board.audience,
+            leaderboard.title_or(self.key),
+            leaderboard.audience,
             tuple(self._header(header) for header in headers if header.name in self.listed),
             keys,
             shown,
@@ -505,7 +507,7 @@ class _Read:
         """The rows the audience serves the viewer, in order: with a number,
         that many from the top and those tied with the last on the keys
         left, none tied when no key is left, and the viewer's own."""
-        rows = self.board.audience.rows
+        rows = self.leaderboard.audience.rows
         if not isinstance(rows, int):
             return list(listed)
         kept = list(listed[:rows])
@@ -517,19 +519,19 @@ class _Read:
             kept.append(mine)
         return kept
 
-    def _row(self, row: Row, place: int | None) -> BoardRow:
+    def _row(self, row: Row, place: int | None) -> LeaderboardViewRow:
         told = self.viewer.staff or row.owner == self.viewer.own
-        cells: list[BoardCell] = []
+        cells: list[LeaderboardCell] = []
         for name in self.listed:
             cell = row.cells[(self.key, name)]
             if self.hidden(row, name):
                 # Why a cell has no number is told only where its counts
                 # are, so on another row hidden, waiting and missing read
                 # alike (item 127).
-                cells.append(BoardCell(name, None, hidden=told))
+                cells.append(LeaderboardCell(name, None, hidden=told))
                 continue
             cells.append(
-                BoardCell(
+                LeaderboardCell(
                     name,
                     cell.number,
                     _counted(cell.counted) if told else (),
@@ -538,7 +540,7 @@ class _Read:
             )
         held = sum(count for task, count in row.held.items() if task in self.tasks)
         grading = sum(count for task, count in row.grading.items() if task in self.tasks)
-        return BoardRow(
+        return LeaderboardViewRow(
             row.owner, row.name, place, tuple(cells), held, told, grading if told else 0
         )
 
@@ -548,91 +550,91 @@ def _counted(found: Collection[tuple[str, int]]) -> tuple[Counted, ...]:
 
 
 def _what_columns_read(
-    checked: BoardsCheck,
-) -> tuple[dict[BoardColumn, frozenset[str]], dict[BoardColumn, frozenset[str]]]:
+    checked: LeaderboardsCheck,
+) -> tuple[dict[ColumnRef, frozenset[str]], dict[ColumnRef, frozenset[str]]]:
     """For each column the check orders, every task whose results it reads
     and every other board whose column it reads, directly or through the
     columns it reads. The order has each column after those it reads, so
     one pass gathers both."""
-    tasks: dict[BoardColumn, frozenset[str]] = {}
-    others: dict[BoardColumn, frozenset[str]] = {}
-    for board, name in checked.order:
-        shape = checked.shapes[board][name]
+    tasks: dict[ColumnRef, frozenset[str]] = {}
+    others: dict[ColumnRef, frozenset[str]] = {}
+    for leaderboard, name in checked.order:
+        shape = checked.shapes[leaderboard][name]
         read_tasks = set(shape.tasks)
-        read_boards: set[str] = set()
+        read_leaderboards: set[str] = set()
         for other in shape.columns:
             read_tasks |= tasks.get(other, frozenset())
-            read_boards |= others.get(other, frozenset())
-            read_boards.add(other[0])
-        read_boards.discard(board)
-        tasks[(board, name)] = frozenset(read_tasks)
-        others[(board, name)] = frozenset(read_boards)
+            read_leaderboards |= others.get(other, frozenset())
+            read_leaderboards.add(other[0])
+        read_leaderboards.discard(leaderboard)
+        tasks[(leaderboard, name)] = frozenset(read_tasks)
+        others[(leaderboard, name)] = frozenset(read_leaderboards)
     return tasks, others
 
 
-def boards_read(checked: BoardsCheck, wanted: Collection[str]) -> list[str]:
+def leaderboards_read(checked: LeaderboardsCheck, wanted: Collection[str]) -> list[str]:
     """`wanted` and every board a column of theirs reads, directly or
     through other boards, in the file's order: each read whole, since what
     a board serves a viewer bounds a column reading it (rule 5)."""
     found = set(wanted)
     waiting = list(wanted)
     while waiting:
-        board = waiting.pop()
-        for shape in checked.shapes.get(board, {}).values():
+        leaderboard = waiting.pop()
+        for shape in checked.shapes.get(leaderboard, {}).values():
             for other, _ in shape.columns:
                 if other not in found:
                     found.add(other)
                     waiting.append(other)
-    return [board for board in checked.shapes if board in found]
+    return [leaderboard for leaderboard in checked.shapes if leaderboard in found]
 
 
-def _board_order(checked: BoardsCheck) -> list[str]:
+def _leaderboard_order(checked: LeaderboardsCheck) -> list[str]:
     """The boards the check orders, each after the boards its columns read,
     those reading each other last in the file's order: a column reading a
     board not read yet is hidden from anyone but staff, which errs towards
     hiding."""
-    boards = list(dict.fromkeys(board for board, _ in checked.order))
+    leaderboards = list(dict.fromkeys(leaderboard for leaderboard, _ in checked.order))
     reads = {
-        board: {
+        leaderboard: {
             other
-            for name in checked.shapes[board]
-            for other, _ in checked.shapes[board][name].columns
-            if other != board
+            for name in checked.shapes[leaderboard]
+            for other, _ in checked.shapes[leaderboard][name].columns
+            if other != leaderboard
         }
-        for board in boards
+        for leaderboard in leaderboards
     }
     order: list[str] = []
-    waiting = list(boards)
+    waiting = list(leaderboards)
     while waiting:
-        ready = [board for board in waiting if reads[board] <= set(order)]
+        ready = [leaderboard for leaderboard in waiting if reads[leaderboard] <= set(order)]
         if not ready:
             return order + waiting
         order += ready
-        waiting = [board for board in waiting if board not in order]
+        waiting = [leaderboard for leaderboard in waiting if leaderboard not in order]
     return order
 
 
 __all__ = [
     "MARKED",
     "STAFF",
-    "Board",
-    "BoardCell",
-    "BoardRow",
     "Counted",
     "Header",
+    "LeaderboardCell",
+    "LeaderboardView",
+    "LeaderboardViewRow",
     "Loaded",
     "Row",
     "Viewer",
     "alone",
-    "boards_read",
     "counted_in",
     "entries_open",
     "grading_seen",
     "headers_of",
     "held_back",
     "holding",
+    "leaderboards_read",
     "listed_now",
-    "read_boards",
+    "read_leaderboards",
     "results_seen",
     "seen_bounds",
     "sees",

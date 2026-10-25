@@ -19,9 +19,9 @@ from forge.domain.plans import (
     reported,
     reserved_inputs,
     stray_report_units,
-    stray_units,
     value_meanings,
 )
+from forge.domain.port_values import stray_units
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.types import Type
 from forge.domain.workflow_definition import (

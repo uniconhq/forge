@@ -21,10 +21,10 @@ from typing import Any
 from forge.domain import exact_json
 from forge.domain.contracts import violation
 from forge.domain.errors import InvalidCallback
+from forge.domain.plan_basics import ERROR_LIMIT as ERROR_LIMIT
+from forge.domain.plan_basics import RESULT_MAX as RESULT_MAX
 
 STEP_LIMIT = 200
-ERROR_LIMIT = 500
-RESULT_MAX = 1024 * 1024
 
 
 class Event(StrEnum):

@@ -189,7 +189,8 @@ from forge.domain.ids import (
 )
 from forge.domain.live import Nudge, NudgeKind
 from forge.domain.names import EntrantOwner, is_username
-from forge.domain.plans import PLAN_PATH, Plan
+from forge.domain.plan_basics import PLAN_PATH
+from forge.domain.plans import Plan
 from forge.domain.publications import Publication
 from forge.domain.regrades import Compared, RegradeCause
 from forge.domain.roles import (

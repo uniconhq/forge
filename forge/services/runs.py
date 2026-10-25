@@ -91,8 +91,9 @@ from forge.domain.grading import (
     wall_seconds,
 )
 from forge.domain.ids import OrgId, TaskId
+from forge.domain.plan_basics import ERROR_LIMIT
 from forge.domain.plans import Plan
-from forge.domain.reports import ERROR_LIMIT, Event, read_report, result_problem
+from forge.domain.reports import Event, read_report, result_problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context

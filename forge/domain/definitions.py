@@ -76,7 +76,6 @@ __all__ = [
     "TASK_FILE",
     "Approval",
     "Axis",
-    "BoardAudience",
     "Check",
     "ContestDefinition",
     "ContestTask",
@@ -88,6 +87,7 @@ __all__ = [
     "InvalidDefinition",
     "InviteWay",
     "Leaderboard",
+    "LeaderboardAudience",
     "Locks",
     "Rate",
     "Registration",
@@ -352,7 +352,7 @@ class Entrants(Model):
         return self
 
 
-BOARD_NAME = re.compile(r"^[a-z][a-z0-9_-]*$")
+COLUMN_NAME = re.compile(r"^[a-z][a-z0-9_-]*$")
 """A board's column's name: lower case letters, digits, hyphens and
 underscores, starting with a letter, as a formula reads it once each `-`
 is written `_`."""
@@ -369,7 +369,7 @@ def _rows(value: object) -> Literal["all", "own"] | int:
     )
 
 
-class BoardAudience(Model):
+class LeaderboardAudience(Model):
     """Who reads a board (SIMPLER-CORE.md 10.2 rule 9): `who`, staff,
     entrants or everyone, and which `rows` they are given: every row, each
     entrant's own, or a number of top rows, those tied with the last and
@@ -380,7 +380,7 @@ class BoardAudience(Model):
     rows: Annotated[Literal["all", "own"] | int, PlainValidator(_rows)] = "all"
 
     @model_validator(mode="after")
-    def _check(self) -> BoardAudience:
+    def _check(self) -> LeaderboardAudience:
         if self.rows == "own" and self.who == "everyone":
             fail(
                 [
@@ -394,12 +394,12 @@ class BoardAudience(Model):
         return self
 
 
-STAFF_ONLY = BoardAudience()
+STAFF_ONLY = LeaderboardAudience()
 """A board with no `audience`: staff's alone (#512)."""
 
 
 def _column_name(value: object) -> str:
-    if not isinstance(value, str) or not BOARD_NAME.match(value) or len(value) > COLUMN_LONGEST:
+    if not isinstance(value, str) or not COLUMN_NAME.match(value) or len(value) > COLUMN_LONGEST:
         raise ValueError(
             f"{value!r} cannot be a column's name. Use at most {COLUMN_LONGEST} lower case "
             "letters, digits, hyphens (-) and underscores (_), starting with a letter."
@@ -447,7 +447,7 @@ class Leaderboard(Model):
     """
 
     title: Line | None = None
-    audience: BoardAudience = STAFF_ONLY
+    audience: LeaderboardAudience = STAFF_ONLY
     columns: dict[Annotated[str, PlainValidator(_column_name)], Any] = Field(default_factory=dict)
     sort: tuple[Annotated[tuple[str, str], PlainValidator(_sort_key)], ...] = ()
     display: tuple[Annotated[tuple[str, int | None], PlainValidator(_shown)], ...] = ()
@@ -1038,12 +1038,12 @@ def _is_list(value: object) -> bool:
     return isinstance(value, list)
 
 
-_OLD_BOARDS = (
+_OLD_LEADERBOARDS = (
     "Leaderboards are now keyed by name, each with its columns written as blocks, such as "
-    "standings: {columns: {...}, sort: [...], display: [...]}. Write each board under its "
+    "standings: {columns: {...}, sort: [...], display: [...]}. Write each leaderboard under its "
     "name."
 )
-_OLD_BOARD_KEY = (
+_OLD_LEADERBOARD_KEY = (
     "A leaderboard is now its columns, written as blocks, with sort, display and audience. "
     "Write which submission counts and how rows rank as columns, and remove this."
 )
@@ -1096,9 +1096,9 @@ CONTEST_RETIRED = (
         "A task no longer takes a share off per late day: a late penalty is a value of the "
         "task that reads seconds_late, or a leaderboard column that reads it. Remove this.",
     ),
-    Retired(("leaderboards",), _OLD_BOARDS, _is_list),
+    Retired(("leaderboards",), _OLD_LEADERBOARDS, _is_list),
     *(
-        Retired(("leaderboards", ANY_KEY, key), _OLD_BOARD_KEY)
+        Retired(("leaderboards", ANY_KEY, key), _OLD_LEADERBOARD_KEY)
         for key in (
             "name",
             "tasks",
@@ -1177,7 +1177,7 @@ same way: a task gives no points since stage 5 (stage 5 section 6, item
 123)."""
 
 
-def _old_boards(document: dict[str, Any]) -> bool:
+def _old_leaderboards(document: dict[str, Any]) -> bool:
     return isinstance(document.get("leaderboards"), list)
 
 
@@ -1190,7 +1190,7 @@ def parse_contest(text: bytes | str, *, saved: bool = False) -> ContestDefinitio
     """
     document = load_mapping(CONTEST_FILE, text)
     if not saved:
-        old = _old_boards(document)
+        old = _old_leaderboards(document)
         document = {
             key: value
             for key, value in document.items()

@@ -27,7 +27,7 @@ from forge.domain.ids import TaskId
 from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import boards, files, publications
+from forge.services import files, leaderboards, publications
 from forge.services.publications import Draft, Published
 from tests.services.conftest import RUNNING, SPRING, Acme, make_task, write_contest
 from tests.services.test_run_task_saves import TASKS, _primitives, checked
@@ -125,7 +125,7 @@ def _column(tree: str, sort: str = "") -> str:
 
 
 @pytest.mark.parametrize(
-    ("board", "path"),
+    ("leaderboard", "path"),
     [
         # A value islands does not give.
         (
@@ -169,16 +169,16 @@ def _column(tree: str, sort: str = "") -> str:
     ],
 )
 async def test_each_refusal_at_the_contests_save(
-    setup: Setup, acme: Acme, spring: str, board: str, path: str
+    setup: Setup, acme: Acme, spring: str, leaderboard: str, path: str
 ) -> None:
     await _live(setup, acme)
 
-    found = await _refused(setup, acme, DRAFT + board)
+    found = await _refused(setup, acme, DRAFT + leaderboard)
 
     assert path in [each for each, _ in found]
 
 
-async def test_a_board_reading_what_islands_gives_is_saved_and_names_resolve_against_the_live_one(
+async def test_a_leaderboard_reading_what_islands_gives_is_saved_and_names_resolve_against_the_live(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     await _live(setup, acme)
@@ -341,7 +341,7 @@ async def _check_refused(setup: Setup, publication: str) -> None:
         )
 
 
-async def test_a_board_reading_a_value_a_save_still_checked_drops_is_refused_until_it_is_refused(
+async def test_a_leaderboard_reading_a_value_a_save_still_checked_drops_is_refused_until_refused(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     task = await _live(setup, acme)
@@ -355,7 +355,7 @@ async def test_a_board_reading_a_value_a_save_still_checked_drops_is_refused_unt
             "leaderboards.s.columns.c.of[0].value[1]",
             "islands has no value called graded. Its values are sample_score, sample_time, st1, "
             "st2 and total. A leaderboard also reads the facts attempt, seconds, seconds_late, "
-            "marked and compiled. " + boards.CHECKING.format(task="islands"),
+            "marked and compiled. " + leaderboards.CHECKING.format(task="islands"),
         )
     ]
     # A value neither gives is refused once, as the live one says it.
@@ -375,7 +375,7 @@ async def test_a_board_reading_a_value_a_save_still_checked_drops_is_refused_unt
     await _write(setup, acme, DRAFT + LATEST_GRADED)
 
 
-async def test_a_board_choosing_by_a_value_a_save_still_checked_makes_read_a_mark_is_refused(
+async def test_a_leaderboard_choosing_by_a_value_a_save_still_checked_makes_read_a_mark_is_refused(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     task = await _live(setup, acme)
@@ -394,10 +394,10 @@ async def test_a_board_choosing_by_a_value_a_save_still_checked_makes_read_a_mar
 
     assert [path for path, _ in found] == ["leaderboards.s.columns.c.by"]
     assert found[0][1].startswith("highest chooses which submission of islands counts by st1")
-    assert found[0][1].endswith(boards.CHECKING.format(task="islands"))
+    assert found[0][1].endswith(leaderboards.CHECKING.format(task="islands"))
 
 
-async def test_a_board_reading_a_value_a_first_save_still_checked_does_not_give_is_refused(
+async def test_a_leaderboard_reading_a_value_a_first_save_still_checked_does_not_give_is_refused(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     task = await _made(acme, setup)

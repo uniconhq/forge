@@ -23,9 +23,8 @@ from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, parse_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine, Slot, run_machine
-from forge.domain.plans import PLAN_PATH, Snapshot, StepLimits
+from forge.domain.plan_basics import PLAN_PATH, RESULT_MAX, Snapshot, StepLimits
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
-from forge.domain.reports import RESULT_MAX
 from forge.domain.run_plan import (
     PRIMITIVE_ROOM_MB,
     PROGRAM_USES,

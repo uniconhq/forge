@@ -17,12 +17,11 @@ from forge.domain.showing import (
     Graded,
     GroupShown,
     Sealed,
-    SubmissionState,
     group_of,
     shown,
-    told,
     under,
 )
+from forge.domain.submission_state import SubmissionState, told
 
 REVEAL = datetime(2026, 6, 1, 14, tzinfo=UTC)
 

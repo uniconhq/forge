@@ -1171,7 +1171,7 @@ def test_a_value_shown_now_reading_compiled_makes_the_compile_early(
     assert task.runs_file().compile_early
 
 
-def test_every_result_a_board_reads_of_a_task_is_listed_in_show_by_its_name(
+def test_every_result_a_leaderboard_reads_of_a_task_is_listed_in_show_by_its_name(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     # A board reads a task's values and the facts (stage 5 section 6 item
