@@ -1216,7 +1216,7 @@ async def test_the_task_form_reads_the_inputs_its_workflow_declares(
 ) -> None:
     form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
-    assert (form.workflow, form.problem) == ("unicon/classic@v3", None)
+    assert (form.workflow, form.problem, form.text_values) == ("unicon/classic@v3", None, ())
     assert [(field.id, field.type) for field in form.inputs] == [
         ("code", "folder"),
         ("language", "enum"),

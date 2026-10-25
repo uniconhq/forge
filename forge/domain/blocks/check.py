@@ -785,6 +785,38 @@ def forms_words(block: Block, leaving_out: Scope) -> str:
     )
 
 
+def text_values_of(document: Mapping[str, object], declared: Mapping[str, str]) -> tuple[str, ...]:
+    """The names of a task's values that give text, in the file's order, as
+    a save's check reads them: a text, a value that gives text, or a run's
+    `verdict` or a repeated input `declared` calls text. A workflow output
+    stays a number. None of them when the document names no values.
+    """
+    scoring = document.get("scoring")
+    if not isinstance(scoring, Mapping):
+        return ()
+    values = scoring.get("values")
+    if not isinstance(values, Mapping):
+        return ()
+    groups = scoring.get("groups")
+    group_names = (
+        [name for name in groups if isinstance(name, str)] if isinstance(groups, Mapping) else []
+    )
+    texts = {"verdict"}
+    repeat = document.get("repeat")
+    if isinstance(repeat, list):
+        for axis in repeat:
+            if not isinstance(axis, Mapping):
+                continue
+            inputs = axis.get("inputs")
+            if not isinstance(inputs, list):
+                continue
+            for name in inputs:
+                if isinstance(name, str) and declared.get(name) == "text":
+                    texts.add(name)
+    checked = check_values(values, groups=group_names, columns={}, keys={}, texts=texts)
+    return tuple(name for name, kind in checked.kinds.items() if kind is Kind.TEXT)
+
+
 def tree_size(tree: object) -> tuple[int, int]:
     """How many nodes a value's tree holds and how deep it is, walked
     without recursion: every number, leaf and block a block's inputs give,

@@ -1,5 +1,6 @@
 from dataclasses import dataclass, replace
 
+from forge.domain.blocks.check import text_values_of
 from forge.domain.definitions import TASK_FILE
 from forge.domain.errors import InvalidName, NotFound
 from forge.domain.ids import TaskId
@@ -43,7 +44,9 @@ class WorkflowForm:
     that cannot be read or is in an old form; `graded`, whether the task has
     a graded submission; and `newer`, the workflow's latest version when it
     comes after the one the task names, which the task keeps until someone
-    saves it naming another (Task 10.6.5).
+    saves it naming another (Task 10.6.5). `text_values` names the values
+    that give text, in the file's order, none when the settings cannot be
+    read; a workflow output stays a number.
     """
 
     workflow: str | None
@@ -51,6 +54,7 @@ class WorkflowForm:
     problem: str | None = None
     graded: bool = False
     newer: str | None = None
+    text_values: tuple[str, ...] | None = None
 
 
 @action
@@ -75,26 +79,37 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
             None, problem="The task's settings are missing. Add them and save again."
         )
     try:
-        named = load_mapping(TASK_FILE, found.content).get("workflow")
+        document = load_mapping(TASK_FILE, found.content)
     except InvalidDefinition as invalid:
         return WorkflowForm(None, problem=invalid.errors[0]["message"])
+    named = document.get("workflow")
+    plain = text_values_of(document, {})
     if not isinstance(named, str):
-        return WorkflowForm(None, problem="The task does not name a workflow yet. Choose one.")
+        return WorkflowForm(
+            None,
+            problem="The task does not name a workflow yet. Choose one.",
+            text_values=plain,
+        )
     try:
         ref = parse_workflow_ref(named.strip())
     except InvalidName as invalid:
-        return WorkflowForm(named, problem=invalid.detail)
+        return WorkflowForm(named, problem=invalid.detail, text_values=plain)
     newer = await workflows.newer_version(ctx, organiser.identity, ref)
     opened = await _workflow(ctx, organiser.identity, ref)
     workflow = opened.found.definition if opened.found is not None else None
     problems = opened.problems
     if workflow is None:
         return WorkflowForm(
-            str(ref), problem=problems[0]["message"] if problems else None, newer=newer
+            str(ref),
+            problem=problems[0]["message"] if problems else None,
+            newer=newer,
+            text_values=plain,
         )
+    types = {name: each.type.value for name, each in workflow.inputs.items()}
     return WorkflowForm(
         str(ref),
         newer=newer,
+        text_values=text_values_of(document, types),
         inputs=tuple(
             DeclaredInput(
                 id=name,

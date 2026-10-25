@@ -26,6 +26,7 @@ from forge.domain.blocks.check import (
     Found,
     check_names,
     check_values,
+    text_values_of,
     tree_size,
 )
 from forge.domain.blocks.evaluate import (
@@ -895,3 +896,43 @@ def test_a_name_a_formula_would_not_read_as_a_name_is_refused() -> None:
         assert groups == [(("groups", word), f"{word} {sentence} Choose another name.")]
         assert values == [(("values", word), f"{word} {sentence} Choose another name.")]
     assert check_names(["index", "total_in", "n_ot"], ["main"]) == []
+
+
+def test_a_value_gives_text_from_a_text_a_text_column_or_another_value_not_an_output() -> None:
+    document = {
+        "repeat": [{"inputs": ["name", "seed"]}],
+        "scoring": {
+            "values": {
+                "total": {
+                    "block": "sum",
+                    "over": {"runs": "all"},
+                    "of": {"run": ["all", "time_ms"]},
+                },
+                "first_failed": {
+                    "block": "otherwise",
+                    "of": [
+                        {"run": [{"block": "first", "from": {"runs": "all"}}, "verdict"]},
+                        {"text": "none"},
+                    ],
+                },
+                "medal": {
+                    "block": "if",
+                    "test": {"value": "total"},
+                    "then": {"text": "gold"},
+                    "else": {"text": "silver"},
+                },
+                "badge": {"value": "medal"},
+                "first_name": {"run": [{"block": "first", "from": {"runs": "all"}}, "name"]},
+            }
+        },
+    }
+
+    assert text_values_of(document, {"name": "text", "seed": "number"}) == (
+        "first_failed",
+        "medal",
+        "badge",
+        "first_name",
+    )
+    # A workflow output stays a number, so reading time_ms does not give text.
+    assert text_values_of(document, {}) == ("first_failed", "medal", "badge")
+    assert text_values_of({}, {}) == ()
