@@ -39,6 +39,7 @@ numbers by name alone, and a page names each by its key.
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Literal
 
 import yaml
 
@@ -47,11 +48,18 @@ from forge.domain.meanings import ValueMeaning, meanings_noted, with_measures
 from forge.domain.scoring import Measure, measure_noted
 from forge.domain.showing import NOTHING_SEALED, Sealed
 
+Check = Literal["checking", "refused", "replaced"]
+"""Where a run task's publication stands while its save row has not let it
+take over: still `checking`; `refused`, its checking ended without every
+run accepted; or `replaced`, its checking stopped by a later save."""
+
 
 @dataclass(frozen=True, slots=True)
 class Publication:
     """One publication: its id, its number among the task's publications,
-    the version it froze, what its note says and when it was made.
+    the version it froze, what its note says and when it was made; and for
+    an organiser, `check`, where a run task's one stands while it has not
+    taken over, none once it has or when it needs no checking.
     """
 
     id: PublicationId
@@ -65,6 +73,7 @@ class Publication:
     measures: Mapping[str, Measure] = field(default_factory=dict)
     titles: Mapping[str, str] = field(default_factory=dict)
     meanings: tuple[ValueMeaning, ...] = ()
+    check: Check | None = None
 
 
 @dataclass(frozen=True, slots=True)

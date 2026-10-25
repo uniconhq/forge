@@ -105,6 +105,7 @@ from sqlalchemy import func, select, text
 
 from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
+from forge.db.tables.gradings import FRONT
 from forge.domain import exact_json
 from forge.domain import submissions as rules
 from forge.domain.definitions import ContestDefinition
@@ -247,7 +248,7 @@ async def submit(
     opened = False
     if (
         workspace is not None
-        and not any(given.uploads for given in inputs.values())
+        and not _uploads_of(inputs)
         and not await _submitted_before(ctx, workspace, task)
     ):
         # A first submission of nothing but typed values names no upload, so
@@ -290,11 +291,11 @@ async def submit(
         # gradings are all gone still has its place made here.
         await submitters.open_place(ctx, person)
     form = await published.form(ctx, person.published)
-    layout = rules.lay_out(
-        form.fields,
-        form.tests,
-        inputs,
-        {upload.id: _uploaded(upload) for upload in chosen.values()},
+    uploaded = {upload.id: _uploaded(upload) for upload in chosen.values()}
+    layout = (
+        rules.lay_out_runs(form.fields, form.parts, inputs, uploaded)
+        if form.runs
+        else rules.lay_out(form.fields, form.tests, inputs, uploaded)
     )
     files = {SUBMISSION_FILE: layout.document}
     user = AsUser(person.session.user_id, await sessions.credential_for(ctx, person.session.id))
@@ -400,7 +401,7 @@ async def _uncounted(ctx: Context, workspace: WorkspaceId, task: TaskId) -> set[
     """
     rows = (
         await ctx.db.execute(
-            select(Grading).where(Grading.workspace_id == workspace, Grading.task_id == task)
+            select(Grading).where(Grading.workspace_id == workspace, Grading.task_id == task, FRONT)
         )
     ).scalars()
     grouped: dict[str, builtins.list[Grading]] = {}
@@ -608,7 +609,7 @@ async def _chosen(
     each is the person's own for this task, checked, unused and in time, and
     each file within its input's `max_size`.
     """
-    named = [upload for given in inputs.values() for upload in given.uploads]
+    named = _uploads_of(inputs)
     rows = await uploads.owned(ctx, person.session.user_id, person.task, set(named))
     foreign = sorted({str(upload) for upload in named if upload not in rows})
     if foreign:
@@ -639,6 +640,16 @@ async def _chosen(
                 input=entry.id,
             )
     return rows
+
+
+def _uploads_of(inputs: Mapping[str, SubmittedInput]) -> list[uuid.UUID]:
+    """Every upload the submit names, a run task's parts' among them."""
+    return [
+        upload
+        for given in inputs.values()
+        for each in (given, *given.parts.values())
+        for upload in each.uploads
+    ]
 
 
 def _size(row: UploadRow) -> int:
@@ -786,7 +797,7 @@ async def _read(
     organisers read them.
     """
     query = select(Grading).where(
-        Grading.workspace_id == reading.workspace, Grading.task_id == reading.task
+        Grading.workspace_id == reading.workspace, Grading.task_id == reading.task, FRONT
     )
     if number is not None:
         query = query.where(Grading.submission_number == number)
@@ -797,6 +808,7 @@ async def _read(
     latest = [_latest(found) for found in grouped.values()]
     gone = await gradings.lost(ctx, latest)
     await gradings.notice(ctx, latest, gone)
+    await gradings.notice_late(ctx, latest)
     scorer = scores.Scorer(ctx, reading.published)
     return [
         await _submission(

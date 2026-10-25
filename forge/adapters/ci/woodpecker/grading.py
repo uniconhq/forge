@@ -54,6 +54,37 @@ the run's workspace volume, which is what the envelope tells the harness.
 The deployment sets Woodpecker's pipeline timeout,
 `WOODPECKER_DEFAULT_PIPELINE_TIMEOUT`, to the platform's `RUN_TIMEOUT`.
 
+A run task's grading runs otherwise (phase 4.9): each of its pipelines is
+a manual pipeline on the org's dispatch repository, `unicon-dispatch`,
+activated once and trusted for `volumes` alone, started on `main` with:
+
+    UNICON_GRADING_ID           the grading's row
+    UNICON_PIPELINE             save, early or late
+    UNICON_PUBLICATION_COMMIT   the commit the publication froze
+    UNICON_SUBMISSION_REPO      the submission's repository, but for a save
+    UNICON_SUBMISSION_COMMIT    its commit, but for a save
+    UNICON_COMPUTE              the label of the pool that may take it
+
+and answered with one workflow, `grading`:
+
+- `when` the run is started by hand, and `labels` the pool's and, for a
+  pipeline holding an `exec` or `interact` step, the machine shape's,
+  since a label picks a machine for the whole pipeline;
+- under `clone:`, one step, `clone`, the clone image by digest with
+  `remote`, `sha` and `ref` set, `lfs` off, since each upload reaches its
+  step by a link of its own, and no `environment`, so it stays a plugin
+  and is lent the credential when the image is on the CI's trusted-clone
+  list, checking the submission out into the workspace; a save has no
+  submission, and clones nothing (`skip_clone`);
+- under `steps:`, each step with its image by digest and its
+  `settings`, `volumes` with the org's cache, `unicon-cache-<org>:/cache`,
+  for a step that takes it, `backend_options.docker.user` for a step the
+  spec runs as the grading's user, and `depends_on`; the report step's
+  `when` lets it run after a step that failed.
+
+No step carries `commands`, `entrypoint` or `environment`, so an `exec` or
+`interact` step stays a plugin the CI's privileged list can name.
+
 The extension's request is signed by the CI's ed25519 key (RFC 9421,
 `signatures.py`). The key is read from `GET /api/signature/public-key` with
 the administrator's token and kept; a request that does not verify has the
@@ -82,6 +113,7 @@ from forge.adapters.ci.woodpecker.ci_login import CiLogin
 from forge.adapters.ci.woodpecker.ci_state import WoodpeckerState, read_state, written
 from forge.adapters.ci.woodpecker.http import CI_ADMIN, Caller, Http, json_of, segment
 from forge.adapters.ids import (
+    DISPATCH_REPO,
     PUBLISHED_PREFIX,
     SUBMISSION_PREFIX,
     MalformedId,
@@ -102,6 +134,10 @@ from forge.domain.grading import (
     GradingRun,
     InboundAnswer,
     InboundRequest,
+    PipelineLookup,
+    PipelineRun,
+    PipelineSpec,
+    PipelineStepSpec,
     RunLookup,
     RunPlaces,
     RunSpec,
@@ -110,6 +146,7 @@ from forge.domain.grading import (
 from forge.domain.identity import AsOrgAccount, CiState, OrgAccountRef
 from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.names import service_account_name
+from forge.domain.workflow_definition import CLONE_STEP
 from forge.log import get_logger
 
 log = get_logger(__name__)
@@ -120,6 +157,7 @@ PUBLICATION_VARIABLE = "UNICON_PUBLICATION_COMMIT"
 SUBMISSION_REPO_VARIABLE = "UNICON_SUBMISSION_REPO"
 SUBMISSION_VARIABLE = "UNICON_SUBMISSION_COMMIT"
 COMPUTE_VARIABLE = "UNICON_COMPUTE"
+PIPELINE_VARIABLE = "UNICON_PIPELINE"
 
 WORKFLOW_NAME = "grading"
 WORKSPACE = "/woodpecker"
@@ -130,6 +168,8 @@ LFS_CACHE_PATH = "/lfs-cache"
 VOLUME_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 """What an org's name may be to name a volume, within Docker's rule for a
 volume name."""
+CACHE_PREFIX = "unicon-cache-"
+CACHE_PATH = "/cache"
 FILTER_VOLUME = "unicon-filter:/run/unicon:ro"
 FILTER_SOCKET = "unix:///run/unicon/docker.sock"
 
@@ -150,12 +190,14 @@ PASSWORD_BYTES = 24
 @dataclass(frozen=True, slots=True)
 class _Ask:
     """The extension's question once its signature is checked: the task
-    whose run it is, the grading id the run was started with as it was
-    given, every variable it was started with, and where the CI clones the
-    task from.
+    whose run it is, none for a pipeline on the org's dispatch repository,
+    the org whose repository it is, the grading id the run was started with
+    as it was given, every variable it was started with, and where the CI
+    clones the repository from.
     """
 
-    task: TaskId
+    task: TaskId | None
+    org: OrgId
     grading: str | None
     variables: Mapping[str, str]
     clone_url: str
@@ -174,6 +216,24 @@ def run_variables(run: GradingRun) -> dict[str, str]:
         SUBMISSION_VARIABLE: str(run.submission_version),
         COMPUTE_VARIABLE: run.compute,
     }
+
+
+def pipeline_variables(run: PipelineRun) -> dict[str, str]:
+    """The variables a run task's pipeline is started with, the same every
+    time for the same pipeline, and the only ones the extension answers it
+    started with.
+    """
+    variables = {
+        GRADING_VARIABLE: str(run.grading),
+        PIPELINE_VARIABLE: run.pipeline,
+        PUBLICATION_VARIABLE: str(run.publication_version),
+        COMPUTE_VARIABLE: run.compute,
+    }
+    if run.submission is not None:
+        workspace, task, _ = parse_submission(run.submission)
+        variables[SUBMISSION_REPO_VARIABLE] = f"{workspace.org}/{workspace.submission_repo(task)}"
+        variables[SUBMISSION_VARIABLE] = str(run.submission_version)
+    return variables
 
 
 class WoodpeckerGrading:
@@ -249,8 +309,14 @@ class WoodpeckerGrading:
         conflict; its settings are applied again either way.
         """
         ref = parse_task(task)
-        account = _acting_for(as_, ref.org)
-        repo_id = await self._host.repo_id(ref.org, ref.repo)
+        return await self._activate(_acting_for(as_, ref.org), ref.org, ref.repo)
+
+    async def activate_dispatch(self, as_: AsOrgAccount, org: OrgId) -> bool:
+        """As `activate`, for the org's dispatch repository."""
+        return await self._activate(_acting_for(as_, org), org, DISPATCH_REPO)
+
+    async def _activate(self, account: AsOrgAccount, org: str, repo: str) -> bool:
+        repo_id = await self._host.repo_id(org, repo)
         try:
             activated = json_of(
                 await self._ci.call(
@@ -259,7 +325,7 @@ class WoodpeckerGrading:
             )
             new = True
         except Conflict:
-            activated = await self._lookup(account, ref.org, ref.repo)
+            activated = await self._lookup(account, org, repo)
             new = False
         await self._ci.call(
             CI_ADMIN,
@@ -267,7 +333,7 @@ class WoodpeckerGrading:
             f"/api/repos/{activated['id']}",
             json={"trusted": {"network": False, "volumes": True, "security": False}},
         )
-        await self._host.remove_hooks(ref.org, ref.repo, self._ci_public_url)
+        await self._host.remove_hooks(org, repo, self._ci_public_url)
         return new
 
     async def deactivate(self, as_: AsOrgAccount, task: TaskId) -> None:
@@ -291,13 +357,22 @@ class WoodpeckerGrading:
         starts it, and is answered from the platform's records then.
         """
         ref = parse_task(run.task)
-        account = _acting_for(as_, ref.org)
-        repo = await self._lookup(account, ref.org, ref.repo)
+        return await self._start(_acting_for(as_, ref.org), ref.org, ref.repo, run_variables(run))
+
+    async def start_pipeline(self, as_: AsOrgAccount, run: PipelineRun) -> RunId:
+        return await self._start(
+            _acting_for(as_, run.org), run.org, DISPATCH_REPO, pipeline_variables(run)
+        )
+
+    async def _start(
+        self, account: AsOrgAccount, org: str, name: str, variables: Mapping[str, str]
+    ) -> RunId:
+        repo = await self._lookup(account, org, name)
         started = await self._ci.call(
             account,
             "POST",
             f"/api/repos/{repo['id']}/pipelines",
-            json={"branch": self._host.default_branch, "variables": run_variables(run)},
+            json={"branch": self._host.default_branch, "variables": dict(variables)},
         )
         body = started.json() if started.content else None
         if not isinstance(body, dict) or not isinstance(body.get("number"), int):
@@ -361,16 +436,30 @@ class WoodpeckerGrading:
         return view
 
     async def answer(
-        self, request: InboundRequest, lookup: RunLookup, *, now: datetime
+        self,
+        request: InboundRequest,
+        lookup: RunLookup,
+        *,
+        now: datetime,
+        run_tasks: PipelineLookup,
     ) -> InboundAnswer:
         """The configuration extension. Of the two checks that decide what a
         run runs, `lookup` keeps the platform's, a grading of that task being
         started, and this the CI's: anyone who may start a manual pipeline
         on the task's repository may pass variables of their own, a harness
         image among them, so a run started with any variable but exactly
-        those `run_variables` gives is answered with nothing.
+        those `run_variables` gives is answered with nothing. A pipeline on
+        the org's dispatch repository is found by `run_tasks`, and held to
+        `pipeline_variables` the same way.
         """
         ask = await self._ask(request, now)
+        if ask.task is None:
+            pipeline, steps = await run_tasks(ask.grading, ask.org)
+            if dict(ask.variables) != pipeline_variables(pipeline):
+                raise VariablesDiffer(
+                    "the pipeline was not started with the variables its grading starts it with"
+                )
+            return _configs(self._pipeline(pipeline, ask, steps))
         run, spec = await lookup(ask.grading, ask.task)
         if dict(ask.variables) != run_variables(run):
             raise VariablesDiffer(
@@ -391,10 +480,12 @@ class WoodpeckerGrading:
         if not isinstance(repo, dict) or not isinstance(pipeline, dict):
             raise Rejected("the CI's request names no repository or run")
         owner, name = _owner_and_name(repo)
-        try:
-            task = task_of_repo(owner, name)
-        except MalformedId as exc:
-            raise Rejected(f"the CI asks about {owner}/{name}, which is no task") from exc
+        task: TaskId | None = None
+        if name != DISPATCH_REPO:
+            try:
+                task = task_of_repo(owner, name).id
+            except MalformedId as exc:
+                raise Rejected(f"the CI asks about {owner}/{name}, which is no task") from exc
         variables = pipeline.get("variables") or {}
         if not isinstance(variables, dict) or not all(
             isinstance(key, str) and isinstance(value, str) for key, value in variables.items()
@@ -404,7 +495,8 @@ class WoodpeckerGrading:
         if not isinstance(clone_url, str) or not clone_url:
             raise Rejected("the CI's request names no clone URL")
         return _Ask(
-            task=task.id,
+            task=task,
+            org=OrgId(owner),
             grading=variables.get(GRADING_VARIABLE),
             variables=dict(variables),
             clone_url=clone_url,
@@ -458,9 +550,33 @@ class WoodpeckerGrading:
                 }
             ],
         }
-        data = yaml.safe_dump(workflow, sort_keys=False, default_flow_style=False)
-        body = {"configs": [{"name": WORKFLOW_NAME, "data": data}]}
-        return InboundAnswer(body=json.dumps(body).encode(), content_type="application/json")
+        return _configs(workflow)
+
+    def _pipeline(self, run: PipelineRun, ask: _Ask, spec: PipelineSpec) -> dict[str, Any]:
+        """The workflow of a run task's pipeline: the submission checked out
+        into the workspace, then each step of `spec`."""
+        labels = dict(item for label in spec.labels for item in _labels(label).items())
+        workflow: dict[str, Any] = {"when": [{"event": "manual"}], "labels": labels}
+        if run.submission is None:
+            workflow["skip_clone"] = True
+        else:
+            workspace, task, number = parse_submission(run.submission)
+            workflow["clone"] = [
+                {
+                    "name": CLONE_STEP,
+                    "image": spec.clone_image,
+                    "settings": {
+                        "remote": _remote(
+                            ask.clone_url, workspace.org, workspace.submission_repo(task)
+                        ),
+                        "sha": str(run.submission_version),
+                        "ref": f"refs/tags/{SUBMISSION_PREFIX}{number}",
+                        "lfs": False,
+                    },
+                }
+            ]
+        workflow["steps"] = [_step(step, cache_volume(str(run.org))) for step in spec.steps]
+        return workflow
 
     def run_places(self, run: GradingRun) -> RunPlaces:
         task, publication = parse_publication(run.publication)
@@ -541,6 +657,30 @@ class WoodpeckerGrading:
         )
 
 
+def _configs(workflow: Mapping[str, Any]) -> InboundAnswer:
+    data = yaml.safe_dump(dict(workflow), sort_keys=False, default_flow_style=False)
+    body = {"configs": [{"name": WORKFLOW_NAME, "data": data}]}
+    return InboundAnswer(body=json.dumps(body).encode(), content_type="application/json")
+
+
+def _step(step: PipelineStepSpec, cache: str) -> dict[str, Any]:
+    """One step of a run task's pipeline, as a plugin: no `commands`,
+    `entrypoint` or `environment`."""
+    found: dict[str, Any] = {
+        "name": step.name,
+        "image": step.image,
+        "settings": dict(step.settings),
+    }
+    if step.cache:
+        found["volumes"] = [cache]
+    if step.user is not None:
+        found["backend_options"] = {"docker": {"user": f"{step.user}:{step.user}"}}
+    found["depends_on"] = list(step.depends_on)
+    if step.always:
+        found["when"] = [{"status": ["success", "failure"]}]
+    return found
+
+
 def _verify_with(key: Ed25519PublicKey, request: InboundRequest, now: datetime) -> None:
     signatures.verify(
         key,
@@ -592,6 +732,14 @@ def lfs_cache_volume(org: str) -> str:
     if not VOLUME_PART.fullmatch(org):
         raise Rejected(f"the org {org!r} names no volume")
     return f"{LFS_CACHE_PREFIX}{org}:{LFS_CACHE_PATH}"
+
+
+def cache_volume(org: str) -> str:
+    """The mount of the machine's cache of task files for the org's run
+    tasks, a volume of the org's own, as `lfs_cache_volume` names one."""
+    if not VOLUME_PART.fullmatch(org):
+        raise Rejected(f"the org {org!r} names no volume")
+    return f"{CACHE_PREFIX}{org}:{CACHE_PATH}"
 
 
 def _clone(

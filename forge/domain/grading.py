@@ -79,13 +79,13 @@ from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from forge.domain.errors import InvalidReason
-from forge.domain.ids import AgentId, PublicationId, SubmissionId, TaskId, VersionId
+from forge.domain.ids import AgentId, OrgId, PublicationId, SubmissionId, TaskId, VersionId
 
 if TYPE_CHECKING:
     from forge.domain.plans import Plan
@@ -97,6 +97,10 @@ STEP_INFO = b"unicon-grading-step"
 PLATFORM_POOL = "pool:platform"
 """The label every run is pinned to until orgs bring machines of their own:
 only a machine the platform controls declares it."""
+BOXED_SHAPE = "shape:rootless"
+"""The label a run task's pipeline holding an `exec` or `interact` step
+carries beside its pool's, so only a machine of the shape phase 4.1 picked
+takes it: Woodpecker's labels pick a machine for a whole pipeline."""
 
 RUN_TIMEOUT = timedelta(minutes=30)
 CHECKOUT_ALLOWANCE = timedelta(minutes=4)
@@ -343,6 +347,61 @@ grading id the run names, as it was given, and the task the CI asks about.
 It answers with the run and what it runs only for a grading of that task
 whose run is being started, and refuses anything else, so what runs comes
 from the platform's records and never from the request."""
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineRun:
+    """One pipeline of a run task's grading (phase 4.9), in the platform's
+    words: the grading's row and which of its pipelines, `save`, `early` or
+    `late`, the org on whose dispatch repository it runs, the commit the
+    publication froze, the submission with the version its files went in
+    with, none for a save, and the label of the machines that may take it.
+    """
+
+    grading: uuid.UUID
+    pipeline: str
+    org: OrgId
+    publication_version: VersionId
+    submission: SubmissionId | None
+    submission_version: VersionId | None
+    compute: str
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineStepSpec:
+    """One Woodpecker step of a pipeline: its name, its image by digest, its
+    settings, the steps it waits for, whether it takes the org's cache,
+    the user its container runs as, none for a step that runs as its image
+    says, and whether it runs whatever the steps it waits for ended with,
+    as the report step does.
+    """
+
+    name: str
+    image: str
+    settings: Mapping[str, Any]
+    depends_on: tuple[str, ...] = ()
+    cache: bool = False
+    user: int | None = None
+    always: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineSpec:
+    """What a pipeline runs, read from the platform's records as it is
+    started: the image its checkout of the submission is made with, its
+    steps in order, the report's last, and the labels of the machines that
+    may take it.
+    """
+
+    clone_image: str
+    steps: tuple[PipelineStepSpec, ...]
+    labels: tuple[str, ...]
+
+
+PipelineLookup = Callable[[str | None, OrgId], Awaitable[tuple[PipelineRun, PipelineSpec]]]
+"""`RunLookup` for a pipeline on an org's dispatch repository: by the
+grading id the pipeline names, as it was given, and the org whose
+repository the CI asks about."""
 
 
 @dataclass(frozen=True, slots=True)

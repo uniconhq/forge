@@ -36,6 +36,7 @@ from fractions import Fraction
 from sqlalchemy import select
 
 from forge.db.tables import Entrant, Grading
+from forge.db.tables.gradings import FRONT
 from forge.domain import release as rules
 from forge.domain.board_checks import (
     Breach,
@@ -542,6 +543,7 @@ async def _entries(
                 select(Grading).where(
                     Grading.task_id == task.id,
                     Grading.workspace_id.in_(sorted(workspaces)),
+                    FRONT,
                 )
             )
         ).all()
@@ -551,6 +553,7 @@ async def _entries(
         latest = [max(each, key=lambda row: row.attempt) for each in grouped.values()]
         lost = await gradings.lost(ctx, latest)
         await gradings.notice(ctx, latest, lost)
+        await gradings.notice_late(ctx, latest)
         scorer = scores.Scorer(ctx, task)
         by_owner: dict[WorkspaceOwner, list[Entry]] = {}
         for (workspace, number), attempts in grouped.items():

@@ -41,6 +41,7 @@ from fractions import Fraction
 from sqlalchemy import select
 
 from forge.db.tables import Grading, Regrade
+from forge.db.tables.gradings import FRONT
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import NotFound, PortError
 from forge.domain.grading import UNFINISHED, GradingStatus
@@ -255,14 +256,14 @@ async def _read(
     their submission's latest starts its retry by itself.
     """
     mine = builtins.list(
-        await ctx.db.scalars(select(Grading).where(Grading.regrade_id == regrade.id))
+        await ctx.db.scalars(select(Grading).where(Grading.regrade_id == regrade.id, FRONT))
     )
     if not mine:
         return []
     attempts: dict[str, builtins.list[Grading]] = {}
     for row in await ctx.db.scalars(
         select(Grading).where(
-            Grading.submission_id.in_(sorted({row.submission_id for row in mine}))
+            Grading.submission_id.in_(sorted({row.submission_id for row in mine})), FRONT
         )
     ):
         attempts.setdefault(row.submission_id, []).append(row)

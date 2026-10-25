@@ -642,7 +642,8 @@ def _run_report(value: object) -> str | RunReport:
 
 _RunReportEntry = Annotated[str | RunReport, PlainValidator(_run_report)]
 
-PIPELINE_STEPS = ("clone", "report")
+CLONE_STEP = "clone"
+PIPELINE_STEPS = (CLONE_STEP, "report")
 """The names of the steps Unicon adds to a grading's pipelines beside the
 workflow's own, which a run workflow's step ids may not take, since a step
 of the plan is named by its id: `clone`, which checks the submission out,

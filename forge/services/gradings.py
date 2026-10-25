@@ -85,6 +85,19 @@ An organiser managing the task reads its gradings and acts on one:
   alone. It is read whole up to `RUN_LOG_MAX` bytes and refused above
   (`log_too_large`), and a store that fails is told in fixed words.
 
+A run task's grading runs as Woodpecker pipelines (`forge.services.pipelines`,
+phase 4.9), a row each: the `early` row is the grading as its entrant and
+every reader above knows it (`FRONT`), and a `late` row, made when the early
+one ends `done`, follows it, told to organisers alone. A row's attempts are
+counted on its line, its submission's rows of its pipeline, so a late row is
+retried, cancelled and found lost by itself as any row is, and only the
+early row decides whether a submission holds a place under
+`submissions.max`. Every read of early rows that looks for failures looks
+at their submissions' latest late rows too (`notice_late`), since no
+entrant reads those. A `save` row checks a publication rather than a
+submission; no list here reads it, and its organisers' reads look for its
+failures (`pipelines.checks`).
+
 An organiser of a contest reads its gradings together:
 
 - `feed` lists every grading of the contest's tasks the organiser observes,
@@ -117,13 +130,14 @@ from collections import Counter
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal, cast
 
 from pydantic import ValidationError
 from sqlalchemy import ColumnElement, and_, exists, func, not_, or_, select, tuple_
 from sqlalchemy.orm import aliased
 
 from forge.db.tables import Entrant, Grading, Regrade
+from forge.db.tables.gradings import EARLY, FRONT, LATE, SAVE
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Conflict,
@@ -148,6 +162,7 @@ from forge.domain.grading import (
     WAITING,
     GradingRun,
     GradingStatus,
+    PipelineRun,
     Place,
     RunSpec,
     RunState,
@@ -190,7 +205,7 @@ from forge.domain.submissions import Submitted
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import entrants, names, org_accounts, published, timelines
+from forge.services import entrants, names, org_accounts, pipelines, published, timelines
 from forge.services.access import Organiser, require
 from forge.services.credentials import CannotDecrypt
 
@@ -229,6 +244,10 @@ ENVELOPE_PATH = "/api/v1/gradings/{grading}/envelope"
 key as `?key=`."""
 CALLBACK_PATH = "/api/v1/gradings/{grading}/callback"
 """Where a run reports, under the machine URL."""
+
+
+Listed = Literal["early", "late"]
+"""The rows an organiser's list reads: every one but a save's."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,6 +302,8 @@ class GradingRecord:
     retry_limit: int | None = None
     regrade: uuid.UUID | None = None
     change: Compared | None = None
+    pipeline: Listed = EARLY
+    early: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,11 +372,11 @@ def new_row(
     ctx: Context,
     *,
     task: TaskId,
-    workspace: WorkspaceId,
-    submission: SubmissionId,
-    number: int,
-    version: VersionId,
-    submitted_at: datetime,
+    workspace: str | None,
+    submission: str | None,
+    number: int | None,
+    version: str | None,
+    submitted_at: datetime | None,
     publication: PublicationId,
     attempt: int,
     key: str | None,
@@ -363,14 +384,21 @@ def new_row(
     automatic: bool = False,
     regrade: uuid.UUID | None = None,
     over_limit: int | None = None,
+    pipeline: str = EARLY,
+    early: uuid.UUID | None = None,
+    unwaited: bool = False,
 ) -> Grading:
     """A new `queued` grading, added to the unit of work, with the hash of
     its run's callback token, whose run starts once the unit of work
-    commits; `automatic` when the platform makes it by itself, retrying the
+    commits, in the background when it is `unwaited`, since nobody asking
+    waits on it; a start that never runs leaves the row `queued`, which a
+    read finds overdue and retries (`notice`). `automatic` when the platform
+    makes it by itself, retrying the
     attempt before it, and `regrade` naming the regrade of many it belongs
     to. With `over_limit`, the task's `submissions.max` its entrant has no
     room left under, it is ended `over_limit` at once instead, and nothing
-    runs.
+    runs. A run task's late row names the `early` row it follows, and a
+    save row has no submission.
     """
     row = Grading(
         id=new_id(),
@@ -388,6 +416,8 @@ def new_row(
         queued_at=ctx.now,
         automatic=automatic,
         regrade_id=regrade,
+        pipeline=pipeline,
+        early_id=early,
     )
     row.callback_token_hash = token_hash(callback_token_of(ctx, row))
     ctx.db.add(row)
@@ -401,7 +431,10 @@ def new_row(
     async def start_it(later: Context) -> None:
         await start(later, grading)
 
-    ctx.after_commit(start_it)
+    if unwaited:
+        ctx.in_background(start_it)
+    else:
+        ctx.after_commit(start_it)
     return row
 
 
@@ -449,6 +482,14 @@ async def start(ctx: Context, grading: uuid.UUID) -> None:
         await _not_started(ctx, grading, exc, NO_ANSWER)
         return
     try:
+        planned = row.pipeline != EARLY or await pipelines.planned(ctx, row)
+    except Unavailable as exc:
+        await _not_started(ctx, grading, exc, NO_ANSWER)
+        return
+    if planned:
+        await _start_pipeline(ctx, grading, row, account)
+        return
+    try:
         run = await run_of(ctx, row)
     except NotFound as exc:
         await _not_started(ctx, grading, exc, PUBLICATION_GONE)
@@ -488,16 +529,92 @@ async def start(ctx: Context, grading: uuid.UUID) -> None:
 
 
 async def _superseded(ctx: Context, row: Grading) -> bool:
-    """Whether a later attempt of the same submission exists."""
+    """Whether a later attempt on the row's line exists."""
     later = await ctx.db.scalar(
-        select(Grading.id)
-        .where(
-            Grading.submission_id == row.submission_id,
-            Grading.attempt > row.attempt,
-        )
-        .limit(1)
+        select(Grading.id).where(_on_line(row), Grading.attempt > row.attempt).limit(1)
     )
     return later is not None
+
+
+def _on_line(row: Grading) -> ColumnElement[bool]:
+    """The rows on `row`'s line: its submission's of its pipeline, or a save
+    row's publication's."""
+    if row.pipeline == SAVE:
+        return and_(Grading.pipeline == SAVE, Grading.publication_id == row.publication_id)
+    return and_(Grading.pipeline == row.pipeline, Grading.submission_id == row.submission_id)
+
+
+async def _start_pipeline(
+    ctx: Context, grading: uuid.UUID, row: Grading, account: AsOrgAccount
+) -> None:
+    """`start` for a run task's row: its steps' settings minted, a user
+    taken for it and committed, then its pipeline started on the org's
+    dispatch repository, which is made and activated the first time a
+    start finds it missing. A pipeline with nothing left to run is not
+    started: the row is concluded at once from what the store holds, the
+    platform's images needed or not.
+    """
+    try:
+        run = await pipelines.prepare(ctx, row)
+    except pipelines.NoImage as exc:
+        await _not_started(ctx, grading, exc, str(exc))
+        return
+    except NotFound as exc:
+        await _not_started(ctx, grading, exc, PUBLICATION_GONE)
+        return
+    except (Misconfigured, Forbidden, Conflict) as exc:
+        await _not_started(ctx, grading, exc, NO_RUN)
+        return
+    except PortError as exc:
+        await _not_started(ctx, grading, exc, NO_ANSWER)
+        return
+    if run is None:
+        return
+    await ctx.db.commit()
+    try:
+        found = await _start_on_dispatch(ctx, account, run)
+    except (PortError, CannotDecrypt) as exc:
+        reason = _start_failure(exc) if isinstance(exc, PortError) else ACCOUNT_NOT_READY
+        await _not_started(ctx, grading, exc, reason)
+        return
+    held = await find(ctx, grading, lock=True)
+    if held is None or held.status != GradingStatus.QUEUED or await _superseded(ctx, held):
+        log.info("gradings.start_overtaken", grading=str(grading), run=found)
+        await _cancel_quietly(ctx, found)
+        return
+    held.status = GradingStatus.DISPATCHED
+    held.run_id = found
+    held.dispatched_at = ctx.now
+    changed(ctx, held)
+    log.info("gradings.dispatched", grading=str(held.id), run=found, pipeline=held.pipeline)
+
+
+async def _start_on_dispatch(ctx: Context, account: AsOrgAccount, run: PipelineRun) -> RunId:
+    """Start the pipeline, making and activating the org's dispatch
+    repository first when the CI does not know it, and signing the org's
+    account in again once when the CI refuses it, as `_start_run` does.
+    """
+    try:
+        return await _start_signed_in(ctx, account, run)
+    except NotFound:
+        log.info("gradings.dispatch_made", org=run.org)
+        await ctx.forge.content.create_dispatch(run.org)
+        try:
+            await ctx.forge.grading.activate_dispatch(account, run.org)
+        except Forbidden:
+            account = await org_accounts.renew(ctx, account)
+            await ctx.db.commit()
+            await ctx.forge.grading.activate_dispatch(account, run.org)
+        return await _start_signed_in(ctx, account, run)
+
+
+async def _start_signed_in(ctx: Context, account: AsOrgAccount, run: PipelineRun) -> RunId:
+    try:
+        return await ctx.forge.grading.start_pipeline(account, run)
+    except Forbidden:
+        account = await org_accounts.renew(ctx, account)
+        await ctx.db.commit()
+        return await ctx.forge.grading.start_pipeline(account, run)
 
 
 async def _start_run(ctx: Context, account: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
@@ -662,10 +779,13 @@ def changed(ctx: Context, row: Grading, *, organisers_only: bool = False) -> Non
     forge will ever name one. Progress goes to the organisers alone
     (`organisers_only`): a per-test step reports it once a test, hidden ones
     too, so a nudge to the row on each would count and time a hidden
-    group's tests (TASK-FORMAT.md section 3.5).
+    group's tests (TASK-FORMAT.md section 3.5). So does every move of a run
+    task's late or save row, which no entrant is told of (11.8).
     """
     owner = (
-        None if organisers_only else ctx.forge.workspaces.owner_of(WorkspaceId(row.workspace_id))
+        None
+        if organisers_only or row.pipeline != EARLY
+        else ctx.forge.workspaces.owner_of(WorkspaceId(row.workspace_id))
     )
     ctx.nudge(
         Nudge(
@@ -763,7 +883,7 @@ async def _places(
     """
     grouped: dict[int, builtins.list[Grading]] = {}
     for row in await ctx.db.scalars(
-        select(Grading).where(Grading.workspace_id == workspace, Grading.task_id == task)
+        select(Grading).where(Grading.workspace_id == workspace, Grading.task_id == task, FRONT)
     ):
         grouped.setdefault(row.submission_number, []).append(row)
     return {number: place_of(ctx, attempts, lost) for number, attempts in grouped.items()}
@@ -775,10 +895,11 @@ async def _over_limit(
     """The task's `submissions.max` when grading `row`'s submission again now,
     `attempts` being all of its attempts, would end it over the limit: it
     waits for room (`waits_for_room`) and its entrant has none left for it
-    (`room`); none otherwise. Read under the task's hold, so no submit or
+    (`room`); none otherwise, and always for a run task's late row, which
+    holds no place of its own. Read under the task's hold, so no submit or
     other retry takes a place meanwhile.
     """
-    if not waits_for_room(ctx, attempts, lost):
+    if row.pipeline != EARLY or not waits_for_room(ctx, attempts, lost):
         return None
     limit = await task_limit(ctx, TaskId(row.task_id))
     if limit is None:
@@ -797,7 +918,7 @@ async def retry_limits(
     """
     waiting: dict[tuple[str, str], builtins.list[Grading]] = {}
     for row in rows:
-        if GradingStatus(row.status) is not GradingStatus.DONE:
+        if row.pipeline == EARLY and GradingStatus(row.status) is not GradingStatus.DONE:
             waiting.setdefault((row.task_id, row.workspace_id), []).append(row)
     if not waiting:
         return {}
@@ -806,7 +927,7 @@ async def retry_limits(
     for (task, workspace), latest in waiting.items():
         attempts: dict[int, builtins.list[Grading]] = {}
         for row in await ctx.db.scalars(
-            select(Grading).where(Grading.workspace_id == workspace, Grading.task_id == task)
+            select(Grading).where(Grading.workspace_id == workspace, Grading.task_id == task, FRONT)
         ):
             attempts.setdefault(row.submission_number, []).append(row)
         asking = [
@@ -853,6 +974,31 @@ async def notice(ctx: Context, rows: Iterable[Grading], lost: Collection[uuid.UU
             await retry_by_itself(later, grading)
 
         ctx.in_background(retry_it)
+
+
+async def notice_late(ctx: Context, fronts: Iterable[Grading]) -> None:
+    """The lost check and the retry by itself (`notice`) over the latest
+    late row of each submission of `fronts`, the early rows a read finds:
+    no entrant reads a late row, so whatever reads its early row sees to it
+    as it does to that one.
+    """
+    submissions = sorted({row.submission_id for row in fronts})
+    if not submissions:
+        return
+    rows = (
+        (
+            await ctx.db.execute(
+                select(Grading)
+                .where(Grading.submission_id.in_(submissions), Grading.pipeline == LATE)
+                .order_by(Grading.submission_id, Grading.attempt.desc())
+                .distinct(Grading.submission_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if rows:
+        await notice(ctx, rows, await lost(ctx, rows))
 
 
 def start_waits(ctx: Context, row: Grading) -> bool:
@@ -904,7 +1050,7 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
         return None
     await timelines.hold_task(ctx, TaskId(found.task_id))
     gone = await lost(ctx, [found])
-    attempts = await _attempts(ctx, [found.submission_id])
+    attempts = await _line(ctx, found)
     row = next(attempt for attempt in attempts if attempt.id == grading)
     if row.automatic or any(other.attempt > row.attempt for other in attempts):
         return None
@@ -1074,7 +1220,7 @@ async def cancel(
     found = await _managed(ctx, organiser, grading, lock=False)
     await timelines.hold_task(ctx, TaskId(found.task_id))
     gone = await lost(ctx, [found])
-    attempts = await _attempts(ctx, [found.submission_id])
+    attempts = await _line(ctx, found)
     row = next(attempt for attempt in attempts if attempt.id == grading)
     status = status_of(ctx, row, gone)
     if status is not GradingStatus.SYSTEM_ERROR:
@@ -1114,7 +1260,7 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     found = await _managed(ctx, organiser, grading, lock=False)
     await timelines.hold_task(ctx, TaskId(found.task_id))
     gone = await lost(ctx, [found])
-    attempts = await _attempts(ctx, [found.submission_id])
+    attempts = await _line(ctx, found)
     row = next(attempt for attempt in attempts if attempt.id == grading)
     status = status_of(ctx, row, gone)
     if status not in FINISHED:
@@ -1206,7 +1352,7 @@ async def list(
         (
             await ctx.db.execute(
                 select(Grading)
-                .where(Grading.task_id == task)
+                .where(Grading.task_id == task, Grading.pipeline != SAVE)
                 .order_by(Grading.queued_at.desc(), Grading.id.desc())
                 .limit(max(1, min(limit, LIST_LIMIT)))
             )
@@ -1261,7 +1407,7 @@ async def feed(
     contest.
     """
     observed = observed_tasks(organiser, contest)
-    where = [in_contest(contest, observed)]
+    where = [in_contest(contest, observed), Grading.pipeline != SAVE]
     if task is not None:
         if observed is not None and task not in observed:
             return ()
@@ -1328,7 +1474,9 @@ async def queue_depth(ctx: Context, organiser: Organiser, contest: ContestId) ->
         (
             await ctx.db.execute(
                 select(Grading).where(
-                    in_contest(contest, observed), or_(Grading.status.in_(WAITING), failing)
+                    in_contest(contest, observed),
+                    Grading.pipeline != SAVE,
+                    or_(Grading.status.in_(WAITING), failing),
                 )
             )
         )
@@ -1398,13 +1546,15 @@ async def narrowed(
 
 
 def _is_latest() -> ColumnElement[bool]:
-    """The rows that are their submission's latest attempt, told in the
-    query: no attempt of the same submission after them.
+    """The rows that are their line's latest attempt, told in the query: no
+    attempt of the same submission and pipeline after them.
     """
     later = aliased(Grading)
     return not_(
         exists().where(
-            later.submission_id == Grading.submission_id, later.attempt > Grading.attempt
+            later.submission_id == Grading.submission_id,
+            later.pipeline == Grading.pipeline,
+            later.attempt > Grading.attempt,
         )
     )
 
@@ -1561,46 +1711,51 @@ def record(
         limit=row.submission_limit if status is GradingStatus.OVER_LIMIT else None,
         retry_limit=retry_limit if latest else None,
         regrade=row.regrade_id,
+        pipeline=cast(Listed, row.pipeline),
+        early=row.early_id,
     )
 
 
 async def latest_of(ctx: Context, rows: Iterable[Grading]) -> frozenset[uuid.UUID]:
-    """The gradings among `rows` that are the latest attempt of their
-    submission, worked out over every attempt of it, read or not.
+    """The gradings among `rows`, none a save row, that are the latest
+    attempt on their line, worked out over every attempt of it, read or not.
     """
     listed = builtins.list(rows)
     submissions = sorted({row.submission_id for row in listed})
     if not submissions:
         return frozenset()
     found = await ctx.db.execute(
-        select(Grading.submission_id, func.max(Grading.attempt))
+        select(Grading.submission_id, Grading.pipeline, func.max(Grading.attempt))
         .where(Grading.submission_id.in_(submissions))
-        .group_by(Grading.submission_id)
+        .group_by(Grading.submission_id, Grading.pipeline)
     )
-    last: dict[str, int] = dict(found.all())
-    return frozenset(row.id for row in listed if row.attempt == last.get(row.submission_id))
+    last = {(submission, pipeline): attempt for submission, pipeline, attempt in found.all()}
+    return frozenset(
+        row.id for row in listed if row.attempt == last.get((row.submission_id, row.pipeline))
+    )
 
 
 async def last_goods(ctx: Context, rows: Iterable[Grading]) -> dict[uuid.UUID, int]:
-    """For each grading among `rows`, the latest earlier attempt of its
-    submission that finished with a result, worked out over every attempt
-    of it, read or not; a grading with none is left out.
+    """For each grading among `rows`, none a save row, the latest earlier
+    attempt on its line that finished with a result, worked out over every
+    attempt of it, read or not; a grading with none is left out.
     """
     listed = builtins.list(rows)
     submissions = sorted({row.submission_id for row in listed})
     if not submissions:
         return {}
     found = await ctx.db.execute(
-        select(Grading.submission_id, Grading.attempt).where(
+        select(Grading.submission_id, Grading.pipeline, Grading.attempt).where(
             Grading.submission_id.in_(submissions), GOOD
         )
     )
-    done: dict[str, builtins.list[int]] = {}
-    for submission, attempt in found.all():
-        done.setdefault(submission, []).append(attempt)
+    done: dict[tuple[str, str], builtins.list[int]] = {}
+    for submission, pipeline, attempt in found.all():
+        done.setdefault((submission, pipeline), []).append(attempt)
     goods: dict[uuid.UUID, int] = {}
     for row in listed:
-        earlier = [attempt for attempt in done.get(row.submission_id, ()) if attempt < row.attempt]
+        line = (row.submission_id, row.pipeline)
+        earlier = [attempt for attempt in done.get(line, ()) if attempt < row.attempt]
         if earlier:
             goods[row.id] = max(earlier)
     return goods
@@ -1611,10 +1766,10 @@ async def _managed(
 ) -> Grading:
     """The grading, held until the unit of work ends when `lock`, for an
     organiser who manages its task. `NotFound` for one whose task they do
-    not observe.
+    not observe, and for a save's row, which no organiser acts on yet.
     """
     row = await find(ctx, grading, lock=lock)
-    if row is None:
+    if row is None or row.pipeline == SAVE:
         raise NotFound(NO_SUCH_GRADING)
     scope = task_scope(TaskId(row.task_id))
     if not holds(organiser.grants, scope, Role.OBSERVER):
@@ -1623,8 +1778,8 @@ async def _managed(
     return row
 
 
-async def _attempts(ctx: Context, submissions: Sequence[str]) -> builtins.list[Grading]:
-    """Every attempt of the submissions, held until the unit of work ends and
+async def _line(ctx: Context, row: Grading) -> builtins.list[Grading]:
+    """Every attempt on `row`'s line, held until the unit of work ends and
     read afresh, in the order a rejudge takes them, so a retry and a rejudge
     never wait on each other in a circle.
     """
@@ -1632,7 +1787,7 @@ async def _attempts(ctx: Context, submissions: Sequence[str]) -> builtins.list[G
         (
             await ctx.db.execute(
                 select(Grading)
-                .where(Grading.submission_id.in_(builtins.list(submissions)))
+                .where(_on_line(row))
                 .order_by(Grading.submission_id, Grading.attempt)
                 .with_for_update()
                 .execution_options(populate_existing=True)
@@ -1651,17 +1806,17 @@ def _next_attempt(
     regrade: uuid.UUID | None = None,
     over_limit: int | None = None,
 ) -> Grading:
-    """The next attempt of `row`'s submission against `publication`, in the
+    """The next attempt on `row`'s line against `publication`, in the
     regrade `regrade` when given and otherwise in the one `row` belongs to,
     ended at once over the limit with `over_limit`.
     """
     return new_row(
         ctx,
         task=TaskId(row.task_id),
-        workspace=WorkspaceId(row.workspace_id),
-        submission=SubmissionId(row.submission_id),
+        workspace=row.workspace_id,
+        submission=row.submission_id,
         number=row.submission_number,
-        version=VersionId(row.submission_version),
+        version=row.submission_version,
         submitted_at=row.submitted_at,
         publication=publication,
         attempt=max(other.attempt for other in attempts) + 1,
@@ -1670,13 +1825,60 @@ def _next_attempt(
         automatic=automatic,
         regrade=regrade or row.regrade_id,
         over_limit=over_limit,
+        pipeline=row.pipeline,
+        early=row.early_id,
     )
 
 
-def _stop_quietly(ctx: Context, row: Grading) -> None:
-    """Cancel an unfinished grading a rejudge replaces, and its run at the CI
-    once the rejudge has committed; a run the CI does not stop is refused its
-    reports, since the grading is cancelled.
+async def follow(ctx: Context, early: Grading) -> Grading | None:
+    """The late row of a run task's early row that has just ended `done`,
+    none when a later early attempt of its submission is already made: the
+    next attempt on the submission's late line, against the early row's
+    publication and in its regrade, each late row still unfinished stopped
+    first, and started in the background, so the report that calls this
+    waits on no start. The late line is held after the early row the report
+    holds, the order a regrade holds them in, so the two never wait on each
+    other in a circle.
+    """
+    if await _superseded(ctx, early):
+        return None
+    lates = builtins.list(
+        (
+            await ctx.db.execute(
+                select(Grading)
+                .where(Grading.submission_id == early.submission_id, Grading.pipeline == LATE)
+                .order_by(Grading.attempt)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalars()
+    )
+    for row in lates:
+        if GradingStatus(row.status) in UNFINISHED:
+            stop(ctx, row)
+    return new_row(
+        ctx,
+        task=TaskId(early.task_id),
+        workspace=early.workspace_id,
+        submission=early.submission_id,
+        number=early.submission_number,
+        version=early.submission_version,
+        submitted_at=early.submitted_at,
+        publication=PublicationId(early.publication_id),
+        attempt=max((row.attempt for row in lates), default=0) + 1,
+        key=None,
+        submitted_by=early.submitted_by,
+        regrade=early.regrade_id,
+        pipeline=LATE,
+        early=early.id,
+        unwaited=True,
+    )
+
+
+def stop(ctx: Context, row: Grading) -> None:
+    """Cancel an unfinished grading a rejudge, a later late row or a later
+    save replaces, and its run at the CI once that has committed; a run the
+    CI does not stop is refused its reports, since the grading is cancelled.
     """
     if GradingStatus(row.status) in AT_THE_CI and row.run_id is not None:
         _cancel_after_commit(ctx, RunId(row.run_id))
@@ -1740,7 +1942,7 @@ async def to_regrade(ctx: Context, task: TaskId, *, limit: int | None = None) ->
         (
             await ctx.db.execute(
                 select(Grading)
-                .where(Grading.task_id == task)
+                .where(Grading.task_id == task, FRONT)
                 .order_by(Grading.submission_id, Grading.attempt)
             )
         )
@@ -1784,18 +1986,45 @@ async def regrade(
     no room gets an attempt ended `over_limit` at once, and one already
     over the limit with none is left as it is. Every attempt made belongs to
     one regrade of many recorded for it, none when it makes none.
+
+    A run task is graded again on its early rows alone: each new early row
+    makes its late row when it ends `done`, and the store runs again only
+    what changed (11.6, 11.8). A late row still unfinished is stopped when
+    its submission is graded again or it grades against another
+    publication, so no late row of an old grading runs on.
     """
     # Which runs the CI has lost is asked before any row is locked, since
     # asking takes the CI's time; the task itself is held by the caller.
     gone = await lost(
         ctx,
-        (await ctx.db.execute(select(Grading).where(Grading.task_id == task))).scalars().all(),
+        (await ctx.db.execute(select(Grading).where(Grading.task_id == task, FRONT)))
+        .scalars()
+        .all(),
     )
     rows = (
         (
             await ctx.db.execute(
                 select(Grading)
-                .where(Grading.task_id == task)
+                .where(Grading.task_id == task, FRONT)
+                .order_by(Grading.submission_id, Grading.attempt)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # A run task's late rows are held after its early rows, as `follow` holds
+    # them after the early row it follows.
+    lates = (
+        (
+            await ctx.db.execute(
+                select(Grading)
+                .where(
+                    Grading.task_id == task,
+                    Grading.pipeline == LATE,
+                    Grading.status.in_([status.value for status in UNFINISHED]),
+                )
                 .order_by(Grading.submission_id, Grading.attempt)
                 .with_for_update()
                 .execution_options(populate_existing=True)
@@ -1817,6 +2046,10 @@ async def regrade(
             left_running += 1
         elif not (submission in refused and status is GradingStatus.OVER_LIMIT):
             made.append((submission, row))
+    again = {submission for submission, _ in made}
+    for late in lates:
+        if late.submission_id in again or late.publication_id != publication:
+            stop(ctx, late)
     if not made:
         log.info("gradings.rejudged", task=task, publication=publication, queued=0)
         return Rejudged(task, publication, 0, 0, left_running)
@@ -1832,7 +2065,7 @@ async def regrade(
     queued = cancelled = over_limit = 0
     for submission, row in made:
         if status_of(ctx, row, gone) in UNFINISHED:
-            _stop_quietly(ctx, row)
+            stop(ctx, row)
             cancelled += 1
         elif GradingStatus(row.status) in UNFINISHED:
             finish(ctx, row, GradingStatus.SYSTEM_ERROR, error=overdue_of(ctx, row, gone))

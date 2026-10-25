@@ -9,7 +9,7 @@ submitted; a self-reported report asks once, and the save is refused
 until that question is answered; what was shown is not hidden again; the
 files `show` lists are served from their time on, and no other, the
 reveal's from its instant and a release's not yet; the contest gives a
-run task no worth, due or board; and nobody submits to one yet.
+run task no worth, due or board; and an entrant submits to one in parts.
 """
 
 import hashlib
@@ -18,9 +18,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from sqlalchemy import select, update
 
+from forge.db.tables import Grading
 from forge.domain.content import Edit
 from forge.domain.errors import ConfirmationRequired, InvalidInputs, NotFound
+from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
 from forge.domain.plans import PLAN_PATH
@@ -37,12 +40,11 @@ from forge.services import (
     landing,
     publications,
     submissions,
-    uploads,
 )
 from forge.services.publications import Draft, Published
 from forge.testing import PLACEHOLDER_DIGEST, FakeClock, register_entrant
 from tests.conftest import sibling
-from tests.services.conftest import RUNNING, SPRING, Acme, signed_in, write_contest
+from tests.services.conftest import RUNNING, SPRING, Acme, signed_in, upload, write_contest
 from tests.test_run_task import (
     CARTPOLE_FILES,
     CARTPOLE_TASK,
@@ -132,7 +134,19 @@ async def _published(
     except ConfirmationRequired as asked:
         result = await _save(setup, acme, task, contents, confirm=True, asked=asked.extra["asked"])
     assert isinstance(result, Published), result
+    await checked(setup, task)
     return result
+
+
+async def checked(setup: Setup, task: TaskId) -> None:
+    """Each save row of `task` ended `done` with every run accepted, as its
+    save pipeline would, so the publications it checks take over."""
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Grading)
+            .where(Grading.task_id == task, Grading.pipeline == "save")
+            .values(status=GradingStatus.DONE, result={"schema_version": 6, "runs": []})
+        )
 
 
 def _runs_file(acme: Acme) -> RunsFile:
@@ -478,6 +492,7 @@ async def test_a_contest_gives_a_run_task_no_worth_due_or_board(
     board = await _save(setup, acme, sum_task, contents, confirm=True)
     await write_contest(acme.fake, DRAFT)
     assert isinstance(await _save(setup, acme, sum_task, contents, confirm=True), Published)
+    await checked(setup, sum_task)
 
     assert _errors(worth) == [
         (
@@ -507,25 +522,39 @@ async def test_a_contest_gives_a_run_task_no_worth_due_or_board(
         assert [error["path"] for error in refused.value.errors] == [path]
 
 
-async def test_nobody_submits_to_a_run_task_yet(setup: Setup, acme: Acme, sum_task: TaskId) -> None:
+async def test_an_entrant_submits_to_a_run_task_and_its_early_row_is_queued(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
     await _published(setup, acme, sum_task, "tour", RUNNING.format(visibility="everyone"))
     await register_entrant(setup, SPRING, 8)
     bob = await signed_in(setup, acme.fake, 8)
-
-    with pytest.raises(InvalidInputs, match="scored by its runs"):
-        await uploads.slot(
-            setup, bob, sum_task, input="route", filename="route.txt", size=1, sha256="0" * 64
-        )
-    with pytest.raises(InvalidInputs, match="scored by its runs"):
+    first, second = [
+        await upload(setup, acme.fake, bob, sum_task, route, input="route", filename="route.txt")
+        for route in (b"1 2 3\n", b"3 2 1\n")
+    ]
+    with pytest.raises(InvalidInputs, match="route"):
         await submissions.submit(
             setup,
             bob,
             sum_task,
-            {"route": SubmittedInput(value="1")},
-            idempotency_key="run-task-1",
+            {"route": SubmittedInput(uploads=(first.id,))},
+            idempotency_key="run-task-0",
         )
+
+    given = SubmittedInput(
+        parts={1: SubmittedInput(uploads=(first.id,)), 2: SubmittedInput(uploads=(second.id,))}
+    )
+    made = await submissions.submit(
+        setup, bob, sum_task, {"route": given}, idempotency_key="run-task-1"
+    )
+
     page = await contest_home.task(setup, bob, sum_task)
-    assert page.inputs == ()
+    assert [field.id for field in page.inputs] == ["route"]
+    async with setup.unit_of_work() as ctx:
+        rows = (await ctx.db.scalars(select(Grading).where(Grading.task_id == sum_task))).all()
+    assert [(row.pipeline, row.submission_number) for row in rows if row.pipeline != "save"] == [
+        ("early", made.number)
+    ]
 
 
 async def test_asking_before_a_save_promises_no_regrade_of_a_run_task(

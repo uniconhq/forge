@@ -44,6 +44,7 @@ from sqlalchemy import delete, func, select, update
 
 from forge.db.tables import Entrant, Grading, Name, Upload
 from forge.db.tables import Invite as InviteRow
+from forge.db.tables.gradings import FRONT
 from forge.domain.content import File
 from forge.domain.contest_entries import NoEntry, Unlisted, with_withdrawn, without_entry
 from forge.domain.definitions import CONTEST_FILE, parse_contest
@@ -101,7 +102,7 @@ async def submission_counts(ctx: Context, tasks: list[TaskId]) -> dict[TaskId, i
         return {}
     made = (
         select(Grading.task_id, Grading.workspace_id, Grading.submission_number)
-        .where(Grading.task_id.in_(tasks))
+        .where(Grading.task_id.in_(tasks), FRONT)
         .distinct()
         .subquery()
     )

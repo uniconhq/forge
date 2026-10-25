@@ -61,8 +61,7 @@ steps in order, and refuses before anything is written.
    counted as the regrade (6) chooses them, and what the save does
    (`domain.save_effect`): whether anyone's result changes, what runs
    again, each scoring change, old and new, with the boards counted again,
-   and what entrants read that changes. A run task grades nothing yet, so
-   nothing of it is graded again; and a save of one asks before it
+   and what entrants read that changes. A save of a run task asks before it
    publishes, whether or not the contest runs, when a column the entrant
    could set is new or set through other inputs than under the latest
    publication (#504), one question asking both.
@@ -87,7 +86,11 @@ steps in order, and refuses before anything is written.
    submission to the task: a new attempt of each one's latest attempt
    against it, as a rejudge makes (`gradings.regrade`), the delayed ones
    held to their entrants' room under the `submissions.max` the save
-   published (#445), all kept as one regrade the save started (#448).
+   published (#445), all kept as one regrade the save started (#448). A
+   run task's publication whose plan holds steps done at the save is first
+   checked by a save row of its own, which cancels any still checking an
+   earlier one (`pipelines.queue_save`); it becomes the task's, and
+   regrades, only once that row ends `done` with every run accepted.
 7. A task's first publication starts making its place to submit for every
    approved entrant, once the save has committed and without the save
    waiting for it (`places`).
@@ -103,6 +106,7 @@ from datetime import timedelta
 from sqlalchemy import exists, select
 
 from forge.db.tables import Grading
+from forge.db.tables.gradings import FRONT
 from forge.domain.board_checks import Covered, covered
 from forge.domain.content import (
     ConflictToken,
@@ -158,7 +162,7 @@ from forge.domain.plans import (
     test_yaml_paths,
 )
 from forge.domain.primitives import PrimitiveDeclaration
-from forge.domain.publications import Publication, write_note
+from forge.domain.publications import Check, Publication, write_note
 from forge.domain.regrades import RegradeCause
 from forge.domain.release import has_started, in_words, reveal_of
 from forge.domain.roles import (
@@ -213,8 +217,10 @@ from forge.services import (
     boards,
     gradings,
     names,
+    pipelines,
     places,
     primitives,
+    published,
     timelines,
     uploads,
     workflows,
@@ -247,7 +253,9 @@ class Published:
     changed how the task grades and what, what the save says of the task
     beside publishing it, its sealed steps and a bounded value its `credit`
     does not name, how many submissions it queued to be graded again, and
-    what it did, in the words a running contest asks with before a save.
+    what it did, in the words a running contest asks with before a save;
+    and `check`, where a run task's publication stands while its save row
+    has not let it take over (`pipelines.checks`), none otherwise.
     """
 
     publication: PublicationId
@@ -257,6 +265,7 @@ class Published:
     notes: tuple[str, ...]
     regraded: int
     effect: SaveEffect
+    check: Check | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,21 +350,23 @@ async def save(
         version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, checked.errors, ())
 
-    publications = await ctx.forge.workspaces.list_publications(task)
-    latest = publications[-1] if publications else None
+    # A run task's publication still checked, or refused, is not the task's,
+    # so a save says what it changes against the one entrants are graded on.
+    await pipelines.take_over(ctx, task)
+    made = await ctx.forge.workspaces.list_publications(task)
+    live = await published.live(ctx, task, made)
+    latest = live[-1] if live else None
+    newest = made[-1] if made else None
     changed: tuple[str, ...] = ()
     read = ReadChanges()
     anew = True
     worded = False
-    previous: RunsFile | None = None
     if latest is not None:
         before, published_files = await _published_snapshot(ctx, as_, task, latest)
         differ = await _differing(ctx, as_, task, head, written, published_files)
         if checked.run_task is not None:
-            # A run task grades nothing yet, so what its plan changes is said
-            # and graded again by no one; its plan and runs file say whether
-            # anything moved.
-            previous = _runs_file(before.plans.get(RUNS_PATH))
+            # What a run task's plan changes is said from its plan and runs
+            # file, which say whether anything moved.
             after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
             changed = run_plan_changes(before, after)
             scoring = checked.definition.scoring if checked.definition is not None else None
@@ -384,8 +395,15 @@ async def save(
         return _draft(organiser, task, version, (), changed)
     assert checked.definition is not None
     basis = f"{head.version}:{latest.id if latest is not None else ''}"
+    # What the organiser confirmed is the latest publication's, taken over
+    # or not.
     question = (
-        self_reported_question(checked.run_task, previous) if checked.run_task is not None else None
+        self_reported_question(
+            checked.run_task,
+            await _runs_file_of(ctx, task, newest) if newest is not None else None,
+        )
+        if checked.run_task is not None
+        else None
     )
     # A self-reported column is confirmed only by an answer to the question
     # that named it: a bare confirm, or one to another question, is no answer.
@@ -406,12 +424,24 @@ async def save(
         if checked.run_plan is not None
         else ()
     )
-    if latest is not None and version == latest.version and not worded:
+    if newest is not None and version == newest.version and not worded:
         effect = await _effect(
             ctx, task, checked.definition, latest, (), 0, ReadChanges(), checked.compiled
         )
+        again = (
+            await pipelines.check_again(ctx, task, newest.id, checked.run_plan, organiser.user.id)
+            if checked.run_plan is not None
+            else None
+        )
         return Published(
-            latest.id, latest.number, latest.grading_changed, latest.changes, notes, 0, effect
+            newest.id,
+            newest.number,
+            newest.grading_changed,
+            newest.changes,
+            notes,
+            0,
+            effect,
+            again,
         )
     notes = (*notes, *await _report(ctx, task, checked.definition, checked))
     note = (
@@ -429,6 +459,12 @@ async def save(
     )
     publication = await ctx.forge.workspaces.publish(task, version, note)
     number = await _number_of(ctx, task, publication)
+    checking: Check | None = None
+    if checked.run_plan is not None:
+        saving = await pipelines.queue_save(
+            ctx, task, publication, checked.run_plan, organiser.user.id
+        )
+        checking = "checking" if saving is not None else None
     regraded = 0
     if _regrades(changed, checked):
         regraded = (
@@ -444,7 +480,7 @@ async def save(
     effect = await _effect(
         ctx, task, checked.definition, latest, changed, regraded, read, checked.compiled
     )
-    if latest is None:
+    if newest is None:
         places.ahead_at(ctx, task)
     log.info(
         "publications.published",
@@ -456,15 +492,17 @@ async def save(
         regraded=regraded,
         user_id=organiser.user.id,
     )
-    return Published(publication, number, bool(changed), changed, notes, regraded, effect)
+    return Published(publication, number, bool(changed), changed, notes, regraded, effect, checking)
 
 
 def _regrades(changed: tuple[str, ...], checked: Checked) -> bool:
-    """Whether the save grades the task's submissions again: when what it
-    grades changed, but never for a run task, whose store decides what runs
-    again by key (SIMPLER-CORE.md 11.6).
+    """Whether the save grades the task's submissions again now: when what
+    it grades changed, the store running again only what changed by key for
+    a run task (SIMPLER-CORE.md 11.6); but not for a run task whose plan
+    holds steps done at the save, which grades them again once its save row
+    lets it take over (`pipelines`).
     """
-    return bool(changed) and checked.run_task is None
+    return bool(changed) and (checked.run_plan is None or not checked.run_plan.pipeline("save"))
 
 
 async def _ask(
@@ -666,6 +704,8 @@ async def _check_runs(
         for path in sorted(manifest_files(definition, resolved) & present)
         if (content := await _content(ctx, as_, task, path, head, written)) is not None
     }
+    # Run ids continue from the latest publication, taken over or not, so no
+    # id a publication gave is ever given to another key.
     publications = await ctx.forge.workspaces.list_publications(task)
     previous = await _runs_file_of(ctx, task, publications[-1]) if publications else None
     if previous is None and publications:
@@ -846,16 +886,17 @@ def _runs_file(content: bytes | None) -> RunsFile | None:
 
 async def _submitted(ctx: Context, task: TaskId) -> bool:
     """Whether anyone has submitted to the task."""
-    return bool(await ctx.db.scalar(select(exists().where(Grading.task_id == task))))
+    return bool(await ctx.db.scalar(select(exists().where(Grading.task_id == task, FRONT))))
 
 
 async def _format_kept(
     ctx: Context, task: TaskId, definition: TaskDefinition
 ) -> builtins.list[Problem]:
-    """Once anyone has submitted, the task keeps its latest publication's
-    format: a submission to one is laid out as the other cannot read.
+    """Once anyone has submitted, the task keeps the format of the
+    publication it is graded on: a submission to one is laid out as the
+    other cannot read.
     """
-    publications = await ctx.forge.workspaces.list_publications(task)
+    publications = await published.live(ctx, task)
     if not publications:
         return []
     before = await _definition_of(ctx, task, publications[-1])
@@ -995,7 +1036,7 @@ async def _graded_under(ctx: Context, task: TaskId) -> set[str]:
         (
             await ctx.db.scalars(
                 select(Grading.publication_id)
-                .where(Grading.task_id == task, Grading.status == GradingStatus.DONE)
+                .where(Grading.task_id == task, Grading.status == GradingStatus.DONE, FRONT)
                 .distinct()
             )
         ).all()
@@ -1281,10 +1322,10 @@ async def _workflow(ctx: Context, as_: Identity, ref: WorkflowRef) -> _Opened:
 async def _moved_workflows(
     ctx: Context, task: TaskId, definition: TaskDefinition, pins: Mapping[str, str]
 ) -> builtins.list[Problem]:
-    """A problem at each workflow name the latest publication used for
-    another workflow than the one it names now.
+    """A problem at each workflow name the publication the task is graded on
+    used for another workflow than the one it names now.
     """
-    publications = await ctx.forge.workspaces.list_publications(task)
+    publications = await published.live(ctx, task)
     pinned = publications[-1].workflows if publications else {}
     ref = definition.workflow
     name = f"{ref.owner}/{ref.name}"
@@ -1647,10 +1688,14 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
 @action
 async def list(ctx: Context, organiser: Organiser, task: TaskId) -> tuple[Publication, ...]:
     """Every publication of the task, oldest first, each saying whether it
-    changed how the task grades. Needs the observer role at the task.
+    changed how the task grades, and a run task's that has not taken over
+    where it stands (`pipelines.checks`). Needs the observer role at the
+    task.
     """
     require(organiser, task_scope(task), Role.OBSERVER)
-    return await ctx.forge.workspaces.list_publications(task)
+    made = await ctx.forge.workspaces.list_publications(task)
+    found = await pipelines.checks(ctx, task)
+    return tuple(replace(each, check=found.get(each.id)) for each in made)
 
 
 async def _held_pointer(

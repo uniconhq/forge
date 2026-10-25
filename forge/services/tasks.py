@@ -42,7 +42,7 @@ contest does not list is not on it.
 """
 
 import builtins
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -70,7 +70,15 @@ from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import making, names, org_accounts, publications, published, taking_out
+from forge.services import (
+    making,
+    names,
+    org_accounts,
+    pipelines,
+    publications,
+    published,
+    taking_out,
+)
 from forge.services.access import Organiser, require
 from forge.services.taking_out import TakeOut
 
@@ -243,12 +251,16 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
     """Where the task's files stand against its latest publication. When the
     head is not what that publication froze, the head is checked the way a
     save checks it, as the organiser, so the errors are always the current
-    ones. Needs the observer role at the task.
+    ones. A run task's latest publication that has not taken over says
+    where it stands (`pipelines.checks`). Needs the observer role at the
+    task.
     """
     require(organiser, task_scope(task), Role.OBSERVER)
     head = await ctx.forge.content.list_files(organiser.identity, task)
     made = await ctx.forge.workspaces.list_publications(task)
     latest = made[-1] if made else None
+    if latest is not None:
+        latest = replace(latest, check=(await pipelines.checks(ctx, task)).get(latest.id))
     token = head.tokens.get(STATEMENT_FILE)
     written = token is not None and await published.statement_written_at(
         ctx, task, head.version, token

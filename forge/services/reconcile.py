@@ -37,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from forge.db.tables import Grading
+from forge.db.tables.gradings import FRONT
 from forge.domain.errors import Forbidden, NotFound, PortError
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, OrgId, TaskId, WorkspaceId
@@ -155,7 +156,7 @@ async def _task(
     graded = set(
         (
             await ctx.db.execute(
-                select(Grading.submission_id).where(Grading.task_id == task.id).distinct()
+                select(Grading.submission_id).where(Grading.task_id == task.id, FRONT).distinct()
             )
         ).scalars()
     )

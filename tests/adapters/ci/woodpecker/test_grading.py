@@ -4,13 +4,17 @@ task deactivated and forgotten as the org account, the org account's CI user
 deleted, a start answered without a run refused, a run found by its grading id, where
 the CI has a run told by its queue and, for one in no queue, its pipeline, the
 extension's request checked against the CI's key as RFC 9421 lays it out,
-and the answer with its three steps.
+and the answer with its three steps; and a run task's pipeline started on
+the org's dispatch repository, activated trusted for volumes alone, and
+answered with its checkout and each step a plugin, a save's with no
+checkout, and nothing for a pipeline started with other variables.
 """
 
 import base64
 import hashlib
 import json
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -28,7 +32,17 @@ from forge.domain.errors import (
     Unavailable,
     VariablesDiffer,
 )
-from forge.domain.grading import GradingRun, InboundRequest, RunLookup, RunSpec, RunState
+from forge.domain.grading import (
+    GradingRun,
+    InboundRequest,
+    PipelineLookup,
+    PipelineRun,
+    PipelineSpec,
+    PipelineStepSpec,
+    RunLookup,
+    RunSpec,
+    RunState,
+)
 from forge.domain.identity import AsOrgAccount, CiState, OrgAccountRef
 from forge.domain.ids import OrgId, PublicationId, RunId, SubmissionId, TaskId, VersionId
 from forge.domain.names import EntrantOwner
@@ -318,6 +332,10 @@ async def test_a_start_for_another_org_is_forbidden(woodpecker: WoodpeckerCi) ->
         await woodpecker.grading.start_run(other, RUN, SPEC)
 
 
+async def _no_pipeline(grading: str | None, org: OrgId) -> tuple[PipelineRun, PipelineSpec]:
+    raise AssertionError("a task's run is never looked up as a pipeline")
+
+
 def _lookup(seen: list[tuple[str | None, TaskId]] | None = None) -> RunLookup:
     """The platform's half of the check, answering with `RUN` and `SPEC`
     and noting what it was asked.
@@ -338,7 +356,9 @@ async def test_a_signed_request_is_answered_for_the_run_it_asks_about(
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
 
     seen: list[tuple[str | None, TaskId]] = []
-    await woodpecker.grading.answer(_signed(key, _ask_body()), _lookup(seen), now=NOW)
+    await woodpecker.grading.answer(
+        _signed(key, _ask_body()), _lookup(seen), now=NOW, run_tasks=_no_pipeline
+    )
 
     assert seen == [(str(GRADING), TaskId("acme/spring/sum"))]
     assert recorder.headers("GET", "/api/signature/public-key") == ["Bearer ci-admin"]
@@ -349,7 +369,9 @@ async def test_the_key_is_read_once_and_kept(woodpecker: WoodpeckerCi, recorder:
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
 
     for _ in range(3):
-        await woodpecker.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
+        await woodpecker.grading.answer(
+            _signed(key, _ask_body()), _lookup(), now=NOW, run_tasks=_no_pipeline
+        )
 
     assert recorder.calls().count("GET /api/signature/public-key") == 1
 
@@ -390,7 +412,10 @@ async def test_a_request_that_does_not_verify_is_forbidden(
 
     with pytest.raises(Forbidden):
         await woodpecker.grading.answer(
-            InboundRequest(made.method, TARGET, made.headers, made.body), _lookup(), now=NOW
+            InboundRequest(made.method, TARGET, made.headers, made.body),
+            _lookup(),
+            now=NOW,
+            run_tasks=_no_pipeline,
         )
 
 
@@ -399,14 +424,20 @@ async def test_a_request_that_does_not_verify_has_the_key_read_again_once(
 ) -> None:
     old, new = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(old), _pem_answer(new))
-    await woodpecker.grading.answer(_signed(old, _ask_body()), _lookup(), now=NOW)
+    await woodpecker.grading.answer(
+        _signed(old, _ask_body()), _lookup(), now=NOW, run_tasks=_no_pipeline
+    )
     woodpecker.grading._key_read_at -= 120
 
-    await woodpecker.grading.answer(_signed(new, _ask_body()), _lookup(), now=NOW)
+    await woodpecker.grading.answer(
+        _signed(new, _ask_body()), _lookup(), now=NOW, run_tasks=_no_pipeline
+    )
 
     assert recorder.calls().count("GET /api/signature/public-key") == 2
     with pytest.raises(Forbidden):
-        await woodpecker.grading.answer(_signed(old, _ask_body()), _lookup(), now=NOW)
+        await woodpecker.grading.answer(
+            _signed(old, _ask_body()), _lookup(), now=NOW, run_tasks=_no_pipeline
+        )
     assert recorder.calls().count("GET /api/signature/public-key") == 2
 
 
@@ -419,10 +450,14 @@ async def test_a_key_that_could_not_be_read_is_not_asked_for_again_within_a_minu
 
     for _ in range(3):
         with pytest.raises(Unavailable):
-            await woodpecker.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
+            await woodpecker.grading.answer(
+                _signed(key, _ask_body()), _lookup(), now=NOW, run_tasks=_no_pipeline
+            )
     assert recorder.calls().count("GET /api/signature/public-key") == 1
     woodpecker.grading._key_read_at -= 120
-    await woodpecker.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
+    await woodpecker.grading.answer(
+        _signed(key, _ask_body()), _lookup(), now=NOW, run_tasks=_no_pipeline
+    )
 
     assert recorder.calls().count("GET /api/signature/public-key") == 2
 
@@ -437,7 +472,9 @@ async def test_a_signed_request_about_no_task_is_rejected(
     ).encode()
 
     with pytest.raises(Rejected):
-        await woodpecker.grading.answer(_signed(key, body), _lookup(), now=NOW)
+        await woodpecker.grading.answer(
+            _signed(key, body), _lookup(), now=NOW, run_tasks=_no_pipeline
+        )
 
 
 async def test_the_answer_is_two_full_clone_steps_and_the_harness(
@@ -445,8 +482,12 @@ async def test_the_answer_is_two_full_clone_steps_and_the_harness(
 ) -> None:
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
-    answer = await woodpecker.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
-    again = await woodpecker.grading.answer(_signed(key, _ask_body()), _lookup(), now=NOW)
+    answer = await woodpecker.grading.answer(
+        _signed(key, _ask_body()), _lookup(), now=NOW, run_tasks=_no_pipeline
+    )
+    again = await woodpecker.grading.answer(
+        _signed(key, _ask_body()), _lookup(), now=NOW, run_tasks=_no_pipeline
+    )
 
     assert answer == again
     assert answer.content_type == "application/json"
@@ -519,7 +560,9 @@ async def test_a_run_started_with_any_other_variable_is_answered_with_nothing(
     variables = {**VARIABLES, variable: VARIABLES.get(variable, "ghcr.io/someone/harness") + "x"}
 
     with pytest.raises(VariablesDiffer):
-        await woodpecker.grading.answer(_signed(key, _ask_body(variables)), _lookup(), now=NOW)
+        await woodpecker.grading.answer(
+            _signed(key, _ask_body(variables)), _lookup(), now=NOW, run_tasks=_no_pipeline
+        )
 
 
 @pytest.mark.parametrize(
@@ -539,7 +582,9 @@ async def test_a_run_started_with_a_variable_dropped_or_added_is_answered_with_n
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
 
     with pytest.raises(VariablesDiffer):
-        await woodpecker.grading.answer(_signed(key, _ask_body(variables)), _lookup(), now=NOW)
+        await woodpecker.grading.answer(
+            _signed(key, _ask_body(variables)), _lookup(), now=NOW, run_tasks=_no_pipeline
+        )
 
 
 async def test_what_the_platform_refuses_is_refused_and_nothing_is_answered(
@@ -552,7 +597,9 @@ async def test_what_the_platform_refuses_is_refused_and_nothing_is_answered(
         raise CiRequestRefused("not this one")
 
     with pytest.raises(CiRequestRefused):
-        await woodpecker.grading.answer(_signed(key, _ask_body()), refused, now=NOW)
+        await woodpecker.grading.answer(
+            _signed(key, _ask_body()), refused, now=NOW, run_tasks=_no_pipeline
+        )
 
 
 async def test_a_request_that_does_not_verify_is_never_looked_up(
@@ -563,8 +610,206 @@ async def test_a_request_that_does_not_verify_is_never_looked_up(
     seen: list[tuple[str | None, TaskId]] = []
 
     with pytest.raises(Forbidden):
-        await woodpecker.grading.answer(_signed(other, _ask_body()), _lookup(seen), now=NOW)
+        await woodpecker.grading.answer(
+            _signed(other, _ask_body()), _lookup(seen), now=NOW, run_tasks=_no_pipeline
+        )
     assert seen == []
+
+
+PIPELINE = PipelineRun(
+    grading=GRADING,
+    pipeline="early",
+    org=OrgId("acme"),
+    publication_version=VersionId(TASK_COMMIT),
+    submission=SubmissionId(f"acme/spring/@{U8}/sum#2"),
+    submission_version=VersionId(SUBMISSION_COMMIT),
+    compute="pool:platform",
+)
+PIPELINE_VARIABLES = {
+    "UNICON_GRADING_ID": str(GRADING),
+    "UNICON_PIPELINE": "early",
+    "UNICON_PUBLICATION_COMMIT": TASK_COMMIT,
+    "UNICON_COMPUTE": "pool:platform",
+    "UNICON_SUBMISSION_REPO": f"acme/spring.sum.{U8}.sub",
+    "UNICON_SUBMISSION_COMMIT": SUBMISSION_COMMIT,
+}
+COMPILE = "ghcr.io/uniconhq/primitive-compile@sha256:" + "3" * 64
+EXEC = "ghcr.io/uniconhq/primitive-exec@sha256:" + "4" * 64
+BASE = "ghcr.io/uniconhq/primitive-base@sha256:" + "5" * 64
+PIPELINE_SPEC = PipelineSpec(
+    clone_image=CLONE,
+    steps=(
+        PipelineStepSpec("compile", COMPILE, {"data_url": "u1", "data_token": "t1"}, user=10007),
+        PipelineStepSpec(
+            "solution", EXEC, {"data_url": "u2", "data_token": "t2"}, ("compile",), cache=True
+        ),
+        PipelineStepSpec(
+            "report",
+            BASE,
+            {"mode": "report", "data_url": "u3", "data_token": "t3"},
+            ("compile", "solution"),
+            user=10007,
+            always=True,
+        ),
+    ),
+    labels=("pool:platform", "shape:rootless"),
+)
+
+
+def _dispatch_body(variables: dict[str, str]) -> bytes:
+    return json.dumps(
+        {
+            "repo": {
+                "owner": "acme",
+                "name": "unicon-dispatch",
+                "full_name": "acme/unicon-dispatch",
+                "clone_url": "http://forgejo:3000/acme/unicon-dispatch.git",
+            },
+            "pipeline": {"event": "manual", "number": 7, "variables": variables},
+        }
+    ).encode()
+
+
+def _pipelines(
+    run: PipelineRun = PIPELINE, seen: list[tuple[str | None, OrgId]] | None = None
+) -> PipelineLookup:
+    async def lookup(grading: str | None, org: OrgId) -> tuple[PipelineRun, PipelineSpec]:
+        if seen is not None:
+            seen.append((grading, org))
+        return run, PIPELINE_SPEC
+
+    return lookup
+
+
+async def _never_a_task(grading: str | None, task: TaskId) -> tuple[GradingRun, RunSpec]:
+    raise AssertionError("a pipeline is never looked up as a task's run")
+
+
+async def test_a_pipeline_starts_on_the_dispatch_repository_with_its_variables(
+    woodpecker: WoodpeckerCi, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/repos/lookup/acme/unicon-dispatch", ok({"id": 6}))
+    recorder.on("POST", "/api/repos/6/pipelines", ok({"number": 3, "status": "pending"}))
+
+    assert await woodpecker.grading.start_pipeline(ACME, PIPELINE) == "6/3"
+    assert grading.pipeline_variables(PIPELINE) == PIPELINE_VARIABLES
+    assert recorder.sent("POST", "/api/repos/6/pipelines") == [
+        {"branch": "main", "variables": PIPELINE_VARIABLES}
+    ]
+    with pytest.raises(Forbidden):
+        await woodpecker.grading.start_pipeline(ACME, replace(PIPELINE, org=OrgId("beta")))
+
+
+async def test_the_dispatch_repository_is_activated_trusted_for_volumes_alone(
+    woodpecker: WoodpeckerCi, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/repos/acme/unicon-dispatch", ok({"id": 56}))
+    recorder.on("POST", "/api/repos", ok({"id": 6}))
+    recorder.on("GET", "/api/v1/repos/acme/unicon-dispatch/hooks", ok([]))
+
+    assert await woodpecker.grading.activate_dispatch(ACME, OrgId("acme"))
+    assert recorder.sent("PATCH", "/api/repos/6") == [
+        {"trusted": {"network": False, "volumes": True, "security": False}}
+    ]
+
+
+async def test_a_pipeline_is_answered_with_its_checkout_and_each_step_a_plugin(
+    woodpecker: WoodpeckerCi, recorder: Recorder
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
+    seen: list[tuple[str | None, OrgId]] = []
+
+    answer = await woodpecker.grading.answer(
+        _signed(key, _dispatch_body(PIPELINE_VARIABLES)),
+        _never_a_task,
+        now=NOW,
+        run_tasks=_pipelines(seen=seen),
+    )
+
+    assert seen == [(str(GRADING), "acme")]
+    [config] = json.loads(answer.body)["configs"]
+    assert yaml.safe_load(config["data"]) == {
+        "when": [{"event": "manual"}],
+        "labels": {"pool": "platform", "shape": "rootless"},
+        "clone": [
+            {
+                "name": "clone",
+                "image": CLONE,
+                "settings": {
+                    "remote": f"http://forgejo:3000/acme/spring.sum.{U8}.sub.git",
+                    "sha": SUBMISSION_COMMIT,
+                    "ref": "refs/tags/submission/2",
+                    "lfs": False,
+                },
+            }
+        ],
+        "steps": [
+            {
+                "name": "compile",
+                "image": COMPILE,
+                "settings": {"data_url": "u1", "data_token": "t1"},
+                "backend_options": {"docker": {"user": "10007:10007"}},
+                "depends_on": [],
+            },
+            {
+                "name": "solution",
+                "image": EXEC,
+                "settings": {"data_url": "u2", "data_token": "t2"},
+                "volumes": ["unicon-cache-acme:/cache"],
+                "depends_on": ["compile"],
+            },
+            {
+                "name": "report",
+                "image": BASE,
+                "settings": {"mode": "report", "data_url": "u3", "data_token": "t3"},
+                "backend_options": {"docker": {"user": "10007:10007"}},
+                "depends_on": ["compile", "solution"],
+                "when": [{"status": ["success", "failure"]}],
+            },
+        ],
+    }
+
+
+async def test_a_save_pipeline_checks_nothing_out(
+    woodpecker: WoodpeckerCi, recorder: Recorder
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
+    save = replace(PIPELINE, pipeline="save", submission=None, submission_version=None)
+
+    answer = await woodpecker.grading.answer(
+        _signed(key, _dispatch_body(grading.pipeline_variables(save))),
+        _never_a_task,
+        now=NOW,
+        run_tasks=_pipelines(save),
+    )
+
+    workflow = yaml.safe_load(json.loads(answer.body)["configs"][0]["data"])
+    assert workflow["skip_clone"] is True and "clone" not in workflow
+
+
+@pytest.mark.parametrize(
+    "variables",
+    [
+        pytest.param({**PIPELINE_VARIABLES, "UNICON_PIPELINE": "late"}, id="another-pipeline"),
+        pytest.param({**PIPELINE_VARIABLES, "CI_DEBUG": "1"}, id="one-added"),
+        pytest.param(
+            {k: v for k, v in PIPELINE_VARIABLES.items() if k != "UNICON_COMPUTE"},
+            id="one-dropped",
+        ),
+    ],
+)
+async def test_a_pipeline_started_with_other_variables_is_answered_with_nothing(
+    woodpecker: WoodpeckerCi, recorder: Recorder, variables: dict[str, str]
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
+
+    with pytest.raises(VariablesDiffer):
+        await woodpecker.grading.answer(
+            _signed(key, _dispatch_body(variables)), _never_a_task, now=NOW, run_tasks=_pipelines()
+        )
 
 
 def test_each_org_has_its_own_store_of_large_files() -> None:

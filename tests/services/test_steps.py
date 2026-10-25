@@ -89,18 +89,24 @@ async def islands(setup: Setup, acme: Acme, spring: str) -> Islands:
 
 
 async def _islands(
-    setup: Setup, acme: Acme, *, before: Callable[[TaskId], None] | None = None
+    setup: Setup,
+    acme: Acme,
+    *,
+    before: Callable[[TaskId], None] | None = None,
+    text: str = TASKS["islands"][0],
+    contest: str = DRAFT,
 ) -> Islands:
-    """islands saved and published over the workflow `unicon/islands@v1`,
-    `before` called on the task once it is made."""
+    """islands saved as `text` and published over the workflow
+    `unicon/islands@v1` in `contest`, `before` called on the task once it
+    is made."""
     task = await make_task(setup, acme, "islands")
     _primitives(acme)
-    text, held, data = TASKS["islands"]
+    _, held, data = TASKS["islands"]
     workflow = await acme.fake.workflows.create_workflow(
         PLATFORM, "unicon", "islands", dict(held), Visibility.PUBLIC
     )
     await acme.fake.workflows.create_workflow_version(PLATFORM, workflow, "v1")
-    await write_contest(acme.fake, DRAFT)
+    await write_contest(acme.fake, contest)
     if before is not None:
         before(task)
         data = {

@@ -6,8 +6,12 @@ no read access to a contest or a task at the forge, and visitors have no
 credential at all, so the package applies the contest's visibility and the
 release rules itself before it hands anything on.
 
-A task with no publication has nothing to show. A task whose latest
-publication cannot be read as `task.yaml` shows nothing either, which cannot
+A task with no publication has nothing to show. A run task's publication
+whose plan holds steps done at the save is not the task's until its save
+row ends `done` with every run accepted (`forge.services.pipelines`), so
+while it is checked, or once it is refused, the task is as the publication
+before froze it, and with none before it has nothing to show (`live`). A
+task whose latest publication cannot be read as `task.yaml` shows nothing either, which cannot
 happen through a save, since only a valid save publishes.
 
 Of a task's files, its readers are served its statement and the files under
@@ -22,10 +26,15 @@ file, and one larger than `PUBLIC_MOST` is refused with
 answer as one that is not there, so its errors reach nobody but the log.
 """
 
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from sqlalchemy import select
+
+from forge.db.tables import Grading
+from forge.db.tables.gradings import PASSED, SAVE
 from forge.domain.content import check_path
 from forge.domain.definitions import (
     CONTEST_FILE,
@@ -44,9 +53,10 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.publications import Publication
+from forge.domain.run_plan import RunPlan
 from forge.domain.run_task import file_time
 from forge.domain.showing import generation_of
-from forge.domain.submissions import Field, fields_of
+from forge.domain.submissions import Field, fields_of, run_fields_of
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
@@ -127,7 +137,7 @@ async def task(
             return None
     await ctx.let_go()
     try:
-        publications = await ctx.forge.workspaces.list_publications(task)
+        publications = await live(ctx, task)
     except NotFound:
         return None
     if not publications:
@@ -150,6 +160,29 @@ async def task(
         settings.label_of(name),
         every,
     )
+
+
+async def live(
+    ctx: Context, task: TaskId, made: Sequence[Publication] | None = None
+) -> list[Publication]:
+    """The task's publications that are its own, oldest first, from `made`
+    when the caller has listed them: every one but a run task's that its
+    save row has not let take over, its latest attempt not `done` with every
+    run accepted, told in the query. `NotFound` for no such task.
+    """
+    if made is None:
+        made = await ctx.forge.workspaces.list_publications(task)
+    latest = (
+        select(Grading.publication_id, PASSED.label("passed"))
+        .where(Grading.task_id == task, Grading.pipeline == SAVE)
+        .order_by(Grading.publication_id, Grading.attempt.desc())
+        .distinct(Grading.publication_id)
+        .subquery()
+    )
+    held: set[str] = set(
+        await ctx.db.scalars(select(latest.c.publication_id).where(latest.c.passed.is_not(True)))
+    )
+    return [each for each in made if each.id not in held]
 
 
 async def tasks(
@@ -177,14 +210,15 @@ class TaskForm:
     """What a submission to a task is made of: the inputs the contestant
     gives, as its plan declares them with the task's form details, and the
     tests of the plan, which a per-test input's files are named for; or,
-    for a run task (`runs`), nothing yet, since a submission to one is laid
-    out and graded from a later stage on, and a submit or an upload to one
-    is refused.
+    for a run task (`runs`), the entrant's inputs its run plan declares,
+    with no tests, and how many parts each input given in parts has
+    (`parts`), its submission laid out as version 6.
     """
 
     fields: tuple[Field, ...]
     tests: tuple[str, ...]
     runs: bool = False
+    parts: Mapping[str, int] = field(default_factory=dict)
 
 
 FORM_KEPT = timedelta(hours=1)
@@ -194,13 +228,16 @@ changes, so the time only bounds what is held."""
 
 async def form(ctx: Context, published: PublishedTask) -> TaskForm:
     """The task's form at its latest publication, read from its plan."""
-    if published.definition.runs:
-        return TaskForm((), (), runs=True)
 
     async def read() -> TaskForm:
         found = await ctx.forge.content.read_file(
             PLATFORM, published.id, PLAN_PATH, at=published.publication.version
         )
+        if published.definition.runs:
+            planned = RunPlan.from_bytes(found.content)
+            parts = {name: each.parts for name, each in planned.entrant.items() if each.parts}
+            fields = run_fields_of(planned.entrant, published.definition.inputs)
+            return TaskForm(fields, (), runs=True, parts=parts)
         plan = Plan.from_bytes(found.content)
         fields = fields_of(
             plan.contestant, published.definition.inputs, published.publication.titles

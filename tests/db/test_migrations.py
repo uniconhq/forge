@@ -275,6 +275,121 @@ def test_a_submission_has_one_grading_per_attempt(migrated_database_url: str) ->
     engine.dispose()
 
 
+def test_each_pipeline_of_a_submission_counts_its_own_attempts_and_only_a_save_has_none(
+    migrated_database_url: str,
+) -> None:
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        _grading(connection, "done", None, None, 1, stage=None)
+        _row(connection, pipeline="'late'", **SUBMISSION)
+        _row(connection, pipeline="'save'")
+    for given in (
+        {"pipeline": "'late'", **SUBMISSION},
+        {"pipeline": "'save'"},
+        {"pipeline": "'early'"},
+        {"pipeline": "'save'", **SUBMISSION},
+    ):
+        with pytest.raises(IntegrityError), engine.begin() as connection:
+            _row(connection, **given)
+    engine.dispose()
+
+
+def test_no_two_rows_not_finished_share_a_user(migrated_database_url: str) -> None:
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        _row(connection, pipeline="'save'", status="'done'", run_user="10001")
+        _row(connection, pipeline="'save'", run_user="10001", publication_id="'p2'")
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        _row(
+            connection,
+            pipeline="'save'",
+            status="'running'",
+            run_user="10001",
+            publication_id="'p3'",
+        )
+    engine.dispose()
+
+
+def test_going_back_from_pipelines_deletes_what_was_a_late_or_save_rows(
+    migrated_database_url: str,
+) -> None:
+    early, save = "'00000000-0000-0000-0000-000000000001'", "'00000000-0000-0000-0000-000000000002'"
+    made, kept = "'00000000-0000-0000-0000-0000000000a1'", "'00000000-0000-0000-0000-0000000000a2'"
+    engine = create_engine(migrated_database_url)
+    with engine.begin() as connection:
+        _row(connection, id=early, **SUBMISSION)
+        _row(connection, id=save, pipeline="'save'")
+        for grading in (early, save):
+            connection.execute(
+                text(
+                    "INSERT INTO grading_steps (grading_id, step, pipeline, token_hash, "
+                    f"expires_at) VALUES ({grading}, 'compile', 'early', '\\x00', now())"
+                )
+            )
+        for output, grading, key in ((made, save, "k1"), (kept, early, "k2")):
+            connection.execute(
+                text(
+                    "INSERT INTO step_outputs (id, org_id, key, pipeline, reusable, grading_id, "
+                    "step, outputs, files, measured_at) VALUES "
+                    f"({output}, 'acme', '{key}', 'early', true, {grading}, 'compile', '{{}}', "
+                    "'{}', now())"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO grading_reuses (grading_id, key, output_id) "
+                    f"VALUES ({early}, '{key}', {output})"
+                )
+            )
+    engine.dispose()
+
+    command.downgrade(alembic_config(migrated_database_url), "0023")
+
+    engine = create_engine(migrated_database_url)
+    with engine.connect() as connection:
+        found: dict[str, list[str]] = {
+            table: list(connection.execute(text(f"SELECT {column} FROM {table}")).scalars())
+            for table, column in (
+                ("gradings", "id::text"),
+                ("grading_steps", "grading_id::text"),
+                ("step_outputs", "id::text"),
+                ("grading_reuses", "key"),
+            )
+        }
+    engine.dispose()
+    assert found == {
+        "gradings": [early.strip("'")],
+        "grading_steps": [early.strip("'")],
+        "step_outputs": [kept.strip("'")],
+        "grading_reuses": ["k2"],
+    }
+    upgrade_to_head(migrated_database_url)
+
+
+SUBMISSION = {
+    "workspace_id": "'acme/spring/@u7'",
+    "submission_id": "'acme/spring/@u7/sum#1'",
+    "submission_number": "1",
+    "submission_version": "'c'",
+    "submitted_at": "now()",
+}
+
+
+def _row(connection: Any, **given: str) -> None:
+    """A grading row of acme/spring/sum, queued, with each column `given`
+    as SQL."""
+    values = {
+        "id": "gen_random_uuid()",
+        "task_id": "'acme/spring/sum'",
+        "publication_id": "'acme/spring/sum#1'",
+        "status": "'queued'",
+        **given,
+    }
+    connection.execute(
+        text(f"INSERT INTO gradings ({', '.join(values)}) VALUES ({', '.join(values.values())})")
+    )
+
+
 def test_going_back_from_submissions_keeps_the_rows_within_the_old_checks(
     migrated_database_url: str,
 ) -> None:

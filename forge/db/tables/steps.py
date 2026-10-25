@@ -29,7 +29,8 @@ for a grading already under way.
 
 `publication_objects` is the SHA-256 and size of every large-file object a
 publication's planned files are, the task's and its workflow's, read once:
-the only hashes the forge signs a link into the large-file store for.
+with the uploads a submission took (`uploads`, consumed by it), the only
+hashes the forge signs a link into the large-file store for.
 """
 
 import uuid

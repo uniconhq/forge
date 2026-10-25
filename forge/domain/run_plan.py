@@ -470,6 +470,24 @@ def order_problems(
     return problems
 
 
+def cache_problems(checked: RunWorkflowCheck) -> list[Problem]:
+    """A problem for each step whose primitive reads the task's files
+    through the machine's cache but makes no isolate boxes: the cache is
+    root's, and only `exec` and `interact` run as root, every other step as
+    the grading's own user, which cannot read it.
+    """
+    return [
+        Problem(
+            path="workflow",
+            message=f"The step {step.id} uses {step.use}, which reads the task's files "
+            "through the machine's cache, but only primitives that run programs in boxes "
+            "may, such as unicon/exec.",
+        )
+        for step in checked.steps.values()
+        if step.declaration.cache and step.use.partition("@")[0] not in BOXED
+    ]
+
+
 def plan_runs(
     definition: TaskDefinition,
     workflow: RunWorkflow,
@@ -503,7 +521,7 @@ def plan_runs(
     )
     for step in workflow.steps:
         planner.bind(step.id, step.with_)
-    problems = order_problems(planner.classes, planner.reads)
+    problems = [*cache_problems(checked), *order_problems(planner.classes, planner.reads)]
     if problems:
         return RunPlanCheck(problems, None)
     pipelines = planner.pipelines()

@@ -277,6 +277,24 @@ def test_the_room_kept_for_a_boxed_primitive_is_what_it_keeps(name: str) -> None
     assert primitive(name).STEP_MEMORY_KB == PRIMITIVE_ROOM_MB * 1024
 
 
+def test_only_a_boxed_primitive_reads_the_cache(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    assert ok(islands(primitives)).steps["solution"].cache
+    cached = primitives["unicon/compile@v3"].model_copy(update={"cache": True})
+
+    found = islands({**primitives, "unicon/compile@v3": cached})
+
+    assert refused(found) == {
+        "workflow": [
+            f"The step {step} uses unicon/compile@v3, which reads the task's files through "
+            "the machine's cache, but only primitives that run programs in boxes may, such as "
+            "unicon/exec."
+            for step in ("compile", "diff")
+        ]
+    }
+
+
 def test_a_batch_sums_its_runs_time_and_holds_the_most_of_the_rest(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:

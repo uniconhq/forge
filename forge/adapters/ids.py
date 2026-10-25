@@ -13,6 +13,11 @@ in a fixed word that says what it is:
     <org>/<contest>.<task>.<owner>.sub
     <owner>/<name>.workflow
     unicon/<name>.primitive
+    <org>/unicon-dispatch
+
+The last, one per org, holds nothing of its own: a run task's gradings run
+as manual pipelines on it (phase 4.9). Its name has no dot, so no
+contest, task or workspace is ever named so.
 
 The owner of a workspace is an entrant, `entrant.<id>`, its id as 32 hex
 digits, and is read back as everything between the second dot and the final
@@ -53,6 +58,10 @@ SUBMISSION = "sub"
 WORKFLOW = "workflow"
 PRIMITIVE = "primitive"
 
+DISPATCH_REPO = "unicon-dispatch"
+DISPATCH_FILES = {
+    "README.md": b"Unicon runs this org's run task gradings here. Nothing in it is read.\n"
+}
 PUBLISHED_PREFIX = "published/"
 SUBMISSION_PREFIX = "submission/"
 PROTECTED_PREFIXES = (PUBLISHED_PREFIX, SUBMISSION_PREFIX)

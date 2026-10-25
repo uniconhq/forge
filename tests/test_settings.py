@@ -279,6 +279,8 @@ def test_forgejo_needs_both_images(
     [
         ("UNICON_HARNESS_IMAGE", "harness_image", "ghcr.io/uniconhq/harness:latest"),
         ("UNICON_CLONE_IMAGE", "clone_image", "ghcr.io/uniconhq/clone:v1"),
+        ("UNICON_PRIMITIVE_BASE_IMAGE", "primitive_base_image", "ghcr.io/uniconhq/base:v1"),
+        ("UNICON_PLUGIN_GIT_IMAGE", "plugin_git_image", "woodpeckerci/plugin-git:2.10.1"),
     ],
 )
 def test_an_image_is_the_one_given_and_always_by_digest(
@@ -297,6 +299,16 @@ def test_an_image_is_the_one_given_and_always_by_digest(
     with pytest.raises(SystemExit):
         load_settings()
     assert f"{variable}: Value error, is not an image by digest" in capsys.readouterr().err
+
+
+def test_a_pipelines_images_are_none_while_left_empty(
+    environment: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UNICON_PRIMITIVE_BASE_IMAGE", "")
+    monkeypatch.setenv("UNICON_PLUGIN_GIT_IMAGE", "")
+
+    settings = load_settings()
+    assert (settings.primitive_base_image, settings.plugin_git_image) == (None, None)
 
 
 def test_the_fake_names_placeholder_images_unless_given(

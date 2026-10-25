@@ -62,6 +62,8 @@ IMAGE_VARIABLES = {
 FAKE_IMAGES = {
     "harness_image": "ghcr.io/uniconhq/harness@sha256:" + "0" * 64,
     "clone_image": "ghcr.io/uniconhq/clone@sha256:" + "0" * 64,
+    "primitive_base_image": "ghcr.io/uniconhq/primitive-base@sha256:" + "0" * 64,
+    "plugin_git_image": "docker.io/woodpeckerci/plugin-git@sha256:" + "0" * 64,
 }
 """The images the fake forge's plans and runs name unless given. It runs
 neither, so a placeholder digest does."""
@@ -256,8 +258,13 @@ class Settings(BaseSettings):
     is mailed. `harness_image` is the harness every plan names, by digest, and
     `clone_image` the image the CI checks a task and a submission out with,
     by digest, both required with `forgejo`: they are the deployment's
-    choice, from its image manifest. The fake runs neither and names a
-    placeholder unless given.
+    choice, from its image manifest. A run task's pipelines name two more,
+    by digest: `primitive_base_image`, the step wrapper's base image its
+    report step runs, and `plugin_git_image`, Woodpecker's clone plugin.
+    They are optional until the release manifest names the base image
+    (phase 4.10), and a run task's grading started without them ends in
+    `system_error` saying which. The fake runs none and names a
+    placeholder for each unless given.
 
     `database_pool_size` connections to the database stay open in each
     process, `database_pool_overflow` more are opened in a rush, and a
@@ -302,6 +309,8 @@ class Settings(BaseSettings):
     mail: MailSettings | None = None
     harness_image: str
     clone_image: str
+    primitive_base_image: str | None = None
+    plugin_git_image: str | None = None
 
     session_hard_ttl: timedelta = timedelta(days=30)
     session_idle_ttl: timedelta = timedelta(days=14)
@@ -396,10 +405,17 @@ class Settings(BaseSettings):
             values["internal_url"] = data["forge_public_url"]
         return {**data, "forgejo": values, "woodpecker": ci_values}
 
-    @field_validator("harness_image", "clone_image")
+    @field_validator("primitive_base_image", "plugin_git_image", mode="before")
     @classmethod
-    def _an_image_by_digest(cls, value: str) -> str:
-        if not IMAGE.match(value):
+    def _none_while_empty(cls, value: object) -> object:
+        """An optional image left empty, as a deployment's environment
+        passes one its manifest does not name, is none."""
+        return None if value == "" else value
+
+    @field_validator("harness_image", "clone_image", "primitive_base_image", "plugin_git_image")
+    @classmethod
+    def _an_image_by_digest(cls, value: str | None) -> str | None:
+        if value is not None and not IMAGE.match(value):
             raise ValueError(
                 "is not an image by digest, such as ghcr.io/uniconhq/harness@sha256:..."
             )

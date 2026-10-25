@@ -265,7 +265,7 @@ async def test_a_run_is_started_with_what_its_plan_runs(
         (NotFound("no plans/plan.json"), gradings.NO_RUN),
         (Forbidden("not the platform's to read"), gradings.NO_RUN),
         ("not a plan", gradings.NO_RUN),
-        (Unavailable("down"), gradings.NO_RUN),
+        (Unavailable("down"), gradings.NO_ANSWER),
     ],
 )
 async def test_a_run_whose_plan_cannot_be_read_is_not_started(
@@ -278,8 +278,9 @@ async def test_a_run_whose_plan_cannot_be_read_is_not_started(
     reason: str,
 ) -> None:
     """Ended as it was when the CI asked for the plan while starting the run,
-    and the platform's refusal or its 503 made the CI answer the start with
-    no run: a system error saying the CI started none.
+    and the platform's refusal made the CI answer the start with no run: a
+    system error saying the CI started none; a forge that does not answer
+    while the plan is asked about ends it unanswered, to be tried again.
     """
     read_file = acme.fake.content.read_file
 

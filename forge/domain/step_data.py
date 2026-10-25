@@ -472,6 +472,15 @@ def result_of(
     }
 
 
+def all_accepted(result: Mapping[str, Any] | None) -> bool:
+    """Whether result version 6 accepts every run it grades, a skipped one
+    among them: what a save's checking needs for its publication to take
+    over."""
+    return result is not None and all(
+        run.get("verdict") in ("accepted", "skipped") for run in result.get("runs", ())
+    )
+
+
 def runs_of(plan: RunPlan, kind: PipelineKind) -> list[RunEntry]:
     """The runs a `kind` pipeline grades: every run for the save's, else
     the early ones or the late ones."""

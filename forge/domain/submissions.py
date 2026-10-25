@@ -52,7 +52,7 @@ import yaml
 
 from forge.domain import exact_json
 from forge.domain.contracts import violation
-from forge.domain.definitions import DEFAULT_MAX_SIZE, Form
+from forge.domain.definitions import DEFAULT_MAX_SIZE, ENTRANT, Form
 from forge.domain.errors import InvalidInputs
 from forge.domain.ids import SubmissionId, VersionId
 from forge.domain.run_task import Part, Run
@@ -122,6 +122,35 @@ def fields_of(
                 min=form.min,
                 max=form.max,
                 max_size=form.max_size if form.max_size is not None else DEFAULT_MAX_SIZE,
+            )
+        )
+    return tuple(found)
+
+
+def run_fields_of(entrant: Mapping[str, Any], inputs: Mapping[str, Any]) -> tuple[Field, ...]:
+    """A run task's entrant inputs, each from its run plan's `entrant` entry
+    and the form details `task.yaml` gives an input made the entrant's,
+    `{entrant: {...}}`: in the order `inputs` lists them, then the rest by
+    name. None is per test, and a file's most size is the plan's.
+    """
+    order = [name for name in inputs if name in entrant]
+    order += sorted(name for name in entrant if name not in order)
+    found = []
+    for name in order:
+        declared = entrant[name]
+        given = inputs.get(name)
+        details = given.get(ENTRANT) if isinstance(given, dict) else None
+        form = Form.model_validate(details) if isinstance(details, dict) else Form()
+        found.append(
+            Field(
+                id=name,
+                type=Type(declared.type),
+                label=form.label or name,
+                options=tuple(form.options or declared.options or ()) or None,
+                default=form.default,
+                min=form.min,
+                max=form.max,
+                max_size=declared.max_size or form.max_size or DEFAULT_MAX_SIZE,
             )
         )
     return tuple(found)

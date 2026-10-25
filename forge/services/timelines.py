@@ -54,6 +54,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select, text
 
 from forge.db.tables import Entrant, Grading
+from forge.db.tables.gradings import FRONT
 from forge.domain.definitions import ContestDefinition, ContestTask, State, letters
 from forge.domain.errors import InvalidExtension, NotFound
 from forge.domain.identity import PLATFORM
@@ -199,7 +200,7 @@ async def submissions(
             Grading.submission_number,
             func.min(Grading.submitted_at),
         )
-        .where(Grading.task_id.in_(list(names_of)))
+        .where(Grading.task_id.in_(list(names_of)), FRONT)
         .group_by(Grading.task_id, Grading.workspace_id, Grading.submission_number)
     )
     owners: dict[str, Extension] = {}
@@ -270,9 +271,11 @@ async def _not_ready(
     ctx: Context, after: ContestDefinition, tasks: Mapping[str, TaskId]
 ) -> list[Problem]:
     """C5, for the save that opens the contest: each task it lists, but a
-    withdrawn one, that has no publication, or whose latest publication's
-    statement is not written (M57), at the `state` line, named by its letter
-    and name as the opening checklist names it.
+    withdrawn one, that has no publication it is graded on, a run task's
+    still checked or refused not counted (`published.live`), or whose
+    latest such publication's statement is not written (M57), at the
+    `state` line, named by its letter and name as the opening checklist
+    names it.
     """
     problems: list[Problem] = []
     for index, entry in enumerate(after.tasks):
@@ -281,9 +284,9 @@ async def _not_ready(
             continue
         named = f"{letters(index)} · {entry.id}"
         try:
-            made = await ctx.forge.workspaces.list_publications(task)
+            made = await published.live(ctx, task)
         except NotFound:
-            made = ()
+            made = []
         if not made:
             problems.append(Problem(path="state", message=f"{named}: it is not published yet."))
         elif not await published.statement_written_at(ctx, task, made[-1].version, made[-1].id):
@@ -536,7 +539,7 @@ async def _own(
     names_of = {task_id: name for name, task_id in tasks.items()}
     rows = await ctx.db.execute(
         select(Grading.task_id, Grading.submission_number, func.min(Grading.submitted_at))
-        .where(Grading.workspace_id == workspace, Grading.task_id.in_(list(names_of)))
+        .where(Grading.workspace_id == workspace, Grading.task_id.in_(list(names_of)), FRONT)
         .group_by(Grading.task_id, Grading.submission_number)
     )
     found: dict[str, list[tuple[int, datetime]]] = {}
