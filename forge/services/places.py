@@ -9,12 +9,14 @@ meanwhile has the access just given taken back from everyone.
 
 With `places_ahead` on, places are made before anyone needs them: approving
 an entrant starts making its places at every task the contest has
-published, and a task's first publication starts making it for every
-approved entrant. Each starts once the request that approved or published
-has committed, and that request answers without waiting for it
-(`Context.in_background`). The work takes `AHEAD_AT_ONCE` turns in a
-process, apart from the turns the first uploads take (`submitters`), so a
-crowd approved at once never holds an upload back, and the tasks it makes
+published, and a task's first live publication starts making it for every
+approved entrant: the save that publishes it, or, for one checked first,
+the take-over of its passed check (`pipelines.take_over`). Each starts
+once the request that approved, published or took over has committed, and
+that request answers without waiting for it (`Context.in_background`).
+The work takes `AHEAD_AT_ONCE` turns in a process, apart from the turns the
+first uploads take (`submitters`), so a crowd approved at once never holds
+an upload back, and the tasks it makes
 places at are read once a minute per contest and not once per entrant. The
 first upload to a task makes its place whenever it finds it missing, so
 work that a restart cuts short, or that stops at a forge that does not

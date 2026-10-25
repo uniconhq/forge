@@ -25,8 +25,8 @@ async def list_publications(
     ctx: Context, organiser: Organiser, task: TaskId
 ) -> tuple[Publication, ...]:
     """Every publication of the task, oldest first, each saying whether it
-    changed how the task grades, and a run task's that has not taken over
-    where it stands (`pipelines.checks`), and one refused each check that
+    changed how the task grades, and one that has not taken over where it
+    stands (`pipelines.checks`), and one refused each check that
     failed it. Needs the observer role at the task.
     """
     require(organiser, task_scope(task), Role.OBSERVER)

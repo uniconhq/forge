@@ -1,11 +1,9 @@
-import re
 from datetime import timedelta
 from typing import Annotated, Any
 
-from pydantic import Field, PlainValidator, model_validator
+from pydantic import Field, model_validator
 
-from forge.domain.definitions.basics import Count, Seconds, Show
-from forge.domain.definitions.classic import Group, Relative, _credit
+from forge.domain.definitions.basics import Count, Seconds
 from forge.domain.workflow_definition import Options, Ref
 from forge.domain.yaml_models import Line, Model, Number, Problems, Size, already_listed, parse_size
 
@@ -47,8 +45,6 @@ disk one person's submissions take in the store every contest shares; it is
 also what the open-upload allowance is counted against (`domain.uploads`).
 Raising it costs disk and nothing else."""
 
-NAME = re.compile(r"^[A-Za-z0-9_-]+$")
-
 
 class Form(Model):
     """The form details of an input the contestant gives, all optional: its
@@ -66,7 +62,7 @@ class Form(Model):
 
 
 ENTRANT = "entrant"
-"""What makes an input the entrant's in a run task's `inputs`, alone or as
+"""What makes an input the entrant's in a task's `inputs`, alone or as
 the key of its form details, and what stands for the entrant's value in a
 tuple of `repeat`."""
 
@@ -82,8 +78,40 @@ def _row_value_problem(value: object) -> str | None:
     return None
 
 
+_TUPLE_KEYS = frozenset({"title", "max_size"})
+TITLE_MOST = 60
+
+
+def _title_problem(value: object) -> str | None:
+    """What is wrong with a tuple's `title`, or none. The words for text
+    that is not one line are the ones `Line` uses.
+    """
+    if not isinstance(value, str):
+        return "This must be text."
+    if not value.strip():
+        return "This cannot be empty."
+    if "\n" in value or "\r" in value:
+        return "This must fit on one line."
+    if len(value) > TITLE_MOST:
+        return "A title is at most 60 characters. Make it shorter."
+    return None
+
+
+def _size_problem(value: object) -> str | None:
+    """What is wrong with a tuple's `max_size`, in the words an entrant
+    input's size uses, or none.
+    """
+    try:
+        size = parse_size(value)
+    except ValueError as exc:
+        return str(exc)
+    if size > FILE_CEILING:
+        return "This must be at most 2GB, the largest file Unicon takes."
+    return None
+
+
 class Axis(Model):
-    """One axis of a run task's `repeat` (SIMPLER-CORE.md 8.2): the workflow
+    """One axis of a task's `repeat` (SIMPLER-CORE.md 8.2): the workflow
     inputs that move together, and one row per tuple, written as a list in
     the order of `inputs`, as the value alone when the axis repeats one
     input, or as a mapping of each input to its value, so no two get
@@ -99,12 +127,45 @@ class Axis(Model):
         problems = Problems()
         seen: set[str] = set()
         for index, name in enumerate(self.inputs):
+            if name in _TUPLE_KEYS:
+                problems.add(
+                    ("inputs", index),
+                    f"{name} is a key a tuple may carry, so a repeated input can't be named "
+                    f"{name}. Rename the input in the workflow.",
+                )
             if name in seen:
                 problems.add(("inputs", index), already_listed(name))
             seen.add(name)
+        titles: set[str] = set()
         for index, row in enumerate(self.tuples):
             for path, message in self._row_problems(row):
                 problems.add(("tuples", index, *path), message)
+            if not isinstance(row, dict):
+                continue
+            if "title" in row:
+                problem = _title_problem(row["title"])
+                if problem is not None:
+                    problems.add(("tuples", index, "title"), problem)
+                elif row["title"] in titles:
+                    problems.add(
+                        ("tuples", index, "title"),
+                        f"Another tuple of this axis is already called {row['title']}. "
+                        "Choose another title.",
+                    )
+                else:
+                    titles.add(row["title"])
+            if "max_size" in row:
+                holds = any(row.get(name) == ENTRANT for name in self.inputs)
+                if not holds:
+                    problems.add(
+                        ("tuples", index, "max_size"),
+                        "A tuple carries max_size only when it holds entrant, which is the "
+                        "part that size limits. Remove it.",
+                    )
+                else:
+                    problem = _size_problem(row["max_size"])
+                    if problem is not None:
+                        problems.add(("tuples", index, "max_size"), problem)
         problems.raise_any()
         return self
 
@@ -116,6 +177,8 @@ class Axis(Model):
                 if name not in row:
                     found.append(((), f"This tuple gives no value for {name}."))
             for key, value in row.items():
+                if key in _TUPLE_KEYS:
+                    continue
                 if key not in self.inputs:
                     found.append(
                         (
@@ -166,9 +229,31 @@ class Axis(Model):
                 found.append((row,))
         return found
 
+    @property
+    def titles(self) -> list[str | None]:
+        """Each tuple's title, none where it gives none. A title is not a
+        value of the run.
+        """
+        found: list[str | None] = []
+        for row in self.tuples:
+            title = row.get("title") if isinstance(row, dict) else None
+            found.append(title if isinstance(title, str) else None)
+        return found
+
+    @property
+    def sizes(self) -> list[int | None]:
+        """Each tuple's `max_size` in bytes, none where it gives none."""
+        found: list[int | None] = []
+        for row in self.tuples:
+            if isinstance(row, dict) and "max_size" in row:
+                found.append(parse_size(row["max_size"]))
+            else:
+                found.append(None)
+        return found
+
 
 class ShowTimes(Model):
-    """A run task's `show` (SIMPLER-CORE.md 9.4): the values, groups and
+    """A task's `show` (SIMPLER-CORE.md 9.4): the values, groups and
     task files entrants see as soon as a grading ends, at the reveal, and
     once staff release the task's results.
     """
@@ -183,7 +268,7 @@ class ShowTimes(Model):
 
 
 class Scoring(Model):
-    """A run task's `scoring` (SIMPLER-CORE.md 9): its groups of runs, each
+    """A task's `scoring` (SIMPLER-CORE.md 9): its groups of runs, each
     picked by repeated input values; its values, each a tree of blocks
     (`forge.domain.blocks`); and what entrants see when. What each reads is
     checked against the task's runs and the workflow's columns at the save
@@ -196,11 +281,11 @@ class Scoring(Model):
 
 
 class Check(Model):
-    """One of a run task's `checks` (SIMPLER-CORE.md 9.6): a made-up
+    """One of a task's `checks` (SIMPLER-CORE.md 9.6): a made-up
     submission, `submit`, giving each entrant input by its name, a task
     path for a file or folder, a list of them in tuple order for one given
     in parts, a value otherwise; and what it must get, `expect`: a
-    `verdict` every run must get, a number for each value named, or both.
+    `verdict` every run must get, a number or text for each value named, or both.
     What each names is checked against the task at its save
     (`forge.domain.checks`).
     """
@@ -210,142 +295,17 @@ class Check(Model):
 
 
 class TaskDefinition(Model):
-    """A `task.yaml`, in one of two formats, as its workflow's: a workflow
-    with a test block is graded test by test, under `test_groups` and
-    `credit`; a run workflow (SIMPLER-CORE.md 8 and 9) runs once per
-    combination of `repeat`'s tuples, is scored by `scoring`, which such a
-    task always has (`runs`), and may list `checks`, graded at its save.
-    `inputs` defaults to none, `credit` to an accepted test earning 1, and
+    """A `task.yaml` (SIMPLER-CORE.md 8 and 9): the workflow it runs, once
+    per combination of `repeat`'s tuples, the inputs it gives that workflow
+    or makes the entrant's, its `scoring`, which every task has, and the
+    `checks` graded at its save. `inputs` defaults to none, and
     `submissions` to 50 at one every 30 seconds.
     """
 
     name: Line
     workflow: Ref
     inputs: dict[str, Any] = Field(default_factory=dict)
-    credit: Annotated[str | Relative, PlainValidator(_credit)] | None = None
-    test_groups: dict[str, Group] = Field(default_factory=dict, min_length=1)
     repeat: list[Axis] = Field(default_factory=list)
-    scoring: Scoring | None = None
+    scoring: Scoring
     checks: list[Check] = Field(default_factory=list)
     submissions: Submissions = Submissions()
-
-    @property
-    def runs(self) -> bool:
-        """Whether the task is in the run format, its workflow a run workflow."""
-        return self.scoring is not None
-
-    @model_validator(mode="after")
-    def _check(self) -> TaskDefinition:
-        problems = Problems()
-        for name, group in self.test_groups.items():
-            for path, message in self._group_problems(name, group):
-                problems.add(("test_groups", name, *path), message)
-        if self.credit is not None and not self.gives_points:
-            problems.add(
-                ("credit",),
-                "No test group gives points, so what an accepted test earns changes nothing. "
-                "Give a test group points, or let an accepted test earn 1.",
-            )
-        problems.raise_any()
-        return self
-
-    def _group_problems(self, name: str, group: Group) -> list[tuple[tuple[str, ...], str]]:
-        """T1, T2 as far as the file says, and T6."""
-        found: list[tuple[tuple[str, ...], str]] = []
-        if not NAME.match(name):
-            found.append(
-                (
-                    (),
-                    "A test group's name may use only letters, digits, hyphens (-) and "
-                    "underscores (_).",
-                )
-            )
-        if group.pass_at is not None:
-            if group.pass_ is None:
-                found.append(
-                    (
-                        ("pass_at",),
-                        'This applies only when the group gives points under "at least a share '
-                        'of its tests must pass". Give those points, or leave this empty.',
-                    )
-                )
-            if not 0 < group.pass_at <= 1:
-                found.append(
-                    (
-                        ("pass_at",),
-                        "This must be more than 0 and at most 1, such as 0.5 for half the tests.",
-                    )
-                )
-        if group.worst is not None and self.credit is None:
-            found.append(
-                (
-                    ("worst",),
-                    "Each test here either passes or fails, so the lowest test score is the "
-                    'same as "every test must pass". Give these points there instead.',
-                )
-            )
-        if group.test_weights is not None:
-            for test, weight in group.test_weights.items():
-                if not NAME.match(test):
-                    found.append(
-                        (
-                            ("test_weights", test),
-                            "A test's name may use only letters, digits, hyphens (-) and "
-                            "underscores (_).",
-                        )
-                    )
-                elif weight <= 0:
-                    found.append(
-                        (
-                            ("test_weights", test),
-                            f"{name}/{test} has a weight of {weight}, and a weight must be "
-                            "more than 0. Put a test that should count for nothing in a test "
-                            "group that gives no points.",
-                        )
-                    )
-            reads = group.each is not None or (
-                group.pass_ is not None and group.pass_at is not None and group.pass_at < 1
-            )
-            if not reads:
-                found.append(
-                    (
-                        ("test_weights",),
-                        f"The test weights on {name} change nothing. They count only "
-                        "towards points for each test passed, or when the share of tests "
-                        "that must pass is below 1.",
-                    )
-                )
-        if group.show is Show.VERDICT:
-            problem = self._verdict_problem(name, group)
-            if problem is not None:
-                found.append((("show",), problem))
-        return found
-
-    def _verdict_problem(self, name: str, group: Group) -> str | None:
-        """T6: a verdict shows only all-or-nothing points."""
-        if group.each is not None:
-            return (
-                f"{name} shows entrants only its outcome until the reveal, but points for "
-                "each test passed would tell them how many of its tests passed. Give its "
-                'points under "every test must pass" instead, or change "When entrants see '
-                'results".'
-            )
-        if group.worst is not None:
-            return (
-                f"{name} shows entrants only its outcome until the reveal, but points for "
-                "the lowest test score would tell them how its worst test did. Give its "
-                'points under "every test must pass" instead, or change "When entrants see '
-                'results".'
-            )
-        if isinstance(self.credit, Relative):
-            return (
-                "This test group shows entrants only its outcome until the reveal, but its "
-                "points would change as other entrants do better on its hidden tests. Show "
-                "its results to entrants at once or only at the reveal."
-            )
-        return None
-
-    @property
-    def gives_points(self) -> bool:
-        """Whether some group carries a rule weight, `W > 0`."""
-        return any(group.weight > 0 for group in self.test_groups.values())

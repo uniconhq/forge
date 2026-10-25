@@ -108,7 +108,7 @@ def contest(
 
 def code(*uploads: Any) -> dict[str, SubmittedInput]:
     return {
-        "submission": SubmittedInput(uploads=tuple(uploads)),
+        "code": SubmittedInput(uploads=tuple(uploads)),
         "language": SubmittedInput(value="python"),
     }
 

@@ -71,7 +71,7 @@ async def _over_limit(
     """The task's `submissions.max` when grading `row`'s submission again now,
     `attempts` being all of its attempts, would end it over the limit: it
     waits for room (`waits_for_room`) and its entrant has none left for it
-    (`room`); none otherwise, and always for a run task's late row, which
+    (`room`); none otherwise, and always for a task's late row, which
     holds no place of its own. Read under the task's hold, so no submit or
     other retry takes a place meanwhile.
     """

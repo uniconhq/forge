@@ -2,21 +2,14 @@
 
 A rejudge of a task and the regrade every submission to it gets when a save
 publishes a change to how it grades are each one regrade, by what started
-it (`RegradeCause`). Each submission's latest attempt of it is compared with
+it (`RegradeCause`). Each submission's latest attempt of it is set beside
 the result that counted for that submission when the regrade began, the
-latest earlier attempt that finished with one, both as organisers see
-results: every group, nothing held back (`Side`). The earlier one is read
-as it counted just before the regrade began, with the test groups of the
-publication then the task's latest (`counted_under`). Nothing is scored, so
-what it changed is told by its tests' verdicts alone (stage 5 section 6,
-item 123), as one `ChangeKind`:
+latest earlier attempt that finished with one, and where it stands is one
+`ChangeKind`:
 
-- `up` and `down`, a larger or smaller share of its tests accepted;
-- `stopped`, it now stops before its tests where the result it replaced did
-  not: in the classic workflow, it now fails to compile;
-- `unchanged`, all of that the same;
-- `new`, it had no result to compare with, or one of the two could not be
-  read, its publication no longer reading;
+- `regraded`, it finished with a result and had one before, whatever its
+  values did, which `run_changes` says;
+- `new`, it finished with a result and had none to compare with;
 - `running`, still being graded; `failed`, no result yet, its latest
   attempt a system error or cancelled; and `over_limit`, ended without
   being graded since its entrant had no room left under `submissions.max`.
@@ -24,7 +17,7 @@ item 123), as one `ChangeKind`:
 A regrade's summary counts its submissions by change, `graded` being those
 that finished with a result.
 
-A run task's regrade is summed up by what it changed, not by a direction
+What a regrade changed is summed up by what it changed, not by a direction
 (SIMPLER-CORE.md 11.8, stage 5 section 6 item 4): each value of a
 submission whose number changed, old to new, and each run whose verdict
 changed, so a submission that now fails to compile is told
@@ -60,48 +53,27 @@ class RegradeCause(StrEnum):
 class ChangeKind(StrEnum):
     """What a regrade did to one submission, as the module says."""
 
-    UP = "up"
-    DOWN = "down"
-    STOPPED = "stopped"
-    UNCHANGED = "unchanged"
+    REGRADED = "regraded"
     NEW = "new"
     RUNNING = "running"
     FAILED = "failed"
     OVER_LIMIT = "over_limit"
 
 
-GRADED = (ChangeKind.UP, ChangeKind.DOWN, ChangeKind.STOPPED, ChangeKind.UNCHANGED, ChangeKind.NEW)
+GRADED = (ChangeKind.REGRADED, ChangeKind.NEW)
 """The changes of a submission whose regrade finished with a result."""
 
 
 @dataclass(frozen=True, slots=True)
-class Side:
-    """One result a regrade compares, as organisers see it: its attempt,
-    how many of its tests were accepted of how many it has, and the outcome
-    that stopped its run before its tests, none when nothing did.
-    """
-
-    attempt: int
-    accepted: int
-    tests: int
-    stopped: str | None = None
-
-    @property
-    def share(self) -> Fraction | None:
-        """The part of its tests accepted, none with no tests."""
-        return Fraction(self.accepted, self.tests) if self.tests else None
-
-
-@dataclass(frozen=True, slots=True)
 class Compared:
-    """What a regrade did to one submission: the change, the result it
-    replaced, none when there was none or it could not be read, and its
-    own, none while it has none or it could not be read.
+    """What a regrade did to one submission: the change, the attempt whose
+    result it replaced, none when there was none, and its own attempt, none
+    while it has no result.
     """
 
     change: ChangeKind
-    earlier: Side | None
-    now: Side | None
+    earlier: int | None
+    now: int | None
 
 
 def counted_under(
@@ -111,8 +83,7 @@ def counted_under(
     against `against` began, of the task's `publications`: `against` itself
     for a rejudge, which publishes nothing; for a save's regrade, the latest
     publication before the one the save made, or `against` when there is
-    none. A result that counted then is read as that publication showed it
-    (`showing.under`).
+    none.
     """
     if cause is RegradeCause.REJUDGE:
         return against
@@ -121,18 +92,12 @@ def counted_under(
     return max(before, key=lambda each: each.number).id if before else against
 
 
-def change_of(earlier: Side | None, now: Side | None) -> ChangeKind:
-    """What a regrade's result `now` changed against `earlier`, the result it
-    replaced; `new` when there is no earlier one, or either could not be
-    read (none). Only a finished result is asked about here.
+def change_of(earlier: int | None) -> ChangeKind:
+    """Where a regrade's finished result stands beside `earlier`, the
+    attempt whose result it replaced: `new` when there is none. Only a
+    finished result is asked about here.
     """
-    if earlier is None or now is None:
-        return ChangeKind.NEW
-    if now.stopped is not None and earlier.stopped is None:
-        return ChangeKind.STOPPED
-    if now.share is not None and earlier.share is not None and now.share != earlier.share:
-        return ChangeKind.UP if now.share > earlier.share else ChangeKind.DOWN
-    return ChangeKind.UNCHANGED
+    return ChangeKind.NEW if earlier is None else ChangeKind.REGRADED
 
 
 def counted(changes: Iterable[ChangeKind]) -> dict[ChangeKind, int]:
@@ -145,7 +110,7 @@ def counted(changes: Iterable[ChangeKind]) -> dict[ChangeKind, int]:
 
 @dataclass(frozen=True, slots=True)
 class ValueChange:
-    """One value of a run task's submission that a regrade changed: its
+    """One value of a task's submission that a regrade changed: its
     name, its number before and after, none where it had none or waits,
     and whether it waits after, for a run or for staff."""
 
@@ -153,6 +118,8 @@ class ValueChange:
     before: Fraction | None
     after: Fraction | None
     waiting: bool = False
+    text_before: str | None = None
+    text_after: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,10 +150,12 @@ class CellDiff:
     before: Fraction | None
     after: Fraction | None
     waiting: tuple[Counted, ...] = ()
+    text_before: str | None = None
+    text_after: str | None = None
 
     @property
     def changed(self) -> bool:
-        return self.before != self.after
+        return self.before != self.after or self.text_before != self.text_after
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +209,8 @@ def leaderboard_diff(
                 old.number if then is not None and (old := then.cell(cell.column)) else None,
                 cell.number,
                 cell.waiting,
+                old.text if then is not None and (old := then.cell(cell.column)) else None,
+                cell.text,
             )
             for cell in row.cells
         )
@@ -283,9 +254,11 @@ def run_changes(before: Worked | None, after: Worked) -> RunChanges:
         was, now = then.get(name), after.outcomes.get(name)
         old = was.number if was is not None else None
         new = now.number if now is not None else None
+        old_text = was.text if was is not None else None
+        new_text = now.text if now is not None else None
         waits = now is not None and now.waiting
-        if old != new or (was is not None and was.waiting) != waits:
-            values.append(ValueChange(name, old, new, waits))
+        if old != new or old_text != new_text or (was is not None and was.waiting) != waits:
+            values.append(ValueChange(name, old, new, waits, old_text, new_text))
     read_before = before.grading.read if before is not None else {}
     read_after = after.grading.read
     verdicts: list[VerdictChange] = []

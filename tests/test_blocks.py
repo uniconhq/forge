@@ -17,14 +17,16 @@ import pytest
 
 from forge.domain import exact_json
 from forge.domain.blocks.bounds import value_bounds
-from forge.domain.blocks.catalogue import CATALOGUE, Scope
+from forge.domain.blocks.catalogue import CATALOGUE, Kind, Scope
 from forge.domain.blocks.check import (
     MOST_DEPTH,
     MOST_GROUPS,
     MOST_NODES,
     MOST_VALUES,
     Found,
+    check_names,
     check_values,
+    text_values_of,
     tree_size,
 )
 from forge.domain.blocks.evaluate import (
@@ -36,7 +38,12 @@ from forge.domain.blocks.evaluate import (
     in_order,
     using,
 )
+from forge.domain.blocks.formula_words import UNREADABLE
 from forge.domain.blocks.numbers import Better, decimal_of, exact, written
+from forge.domain.checks import check_checks
+from forge.domain.definitions import Check, Scoring
+from forge.domain.run_results import check_failing
+from forge.domain.run_task import Run
 
 COLUMNS = {
     "score": Column(Better.HIGHER, Fraction(0), Fraction(1)),
@@ -159,6 +166,36 @@ EACH_BLOCK: list[tuple[str, object, Fraction]] = [
     ("count", fold("count", "all"), Fraction(2)),
     ("min", fold("min", "all", "time_ms"), Fraction(30)),
     ("max", fold("max", "all", "time_ms"), Fraction(50)),
+    (
+        "first",
+        {"run": [{"block": "first", "from": {"runs": "all"}}, "score"]},
+        Fraction(1),
+    ),
+    (
+        "last",
+        {"run": [{"block": "last", "from": {"runs": "all"}}, "score"]},
+        Fraction(1, 2),
+    ),
+    (
+        "highest",
+        {
+            "run": [
+                {"block": "highest", "from": {"runs": "all"}, "by": {"run": ["all", "score"]}},
+                "score",
+            ]
+        },
+        Fraction(1),
+    ),
+    (
+        "lowest",
+        {
+            "run": [
+                {"block": "lowest", "from": {"runs": "all"}, "by": {"run": ["all", "score"]}},
+                "time_ms",
+            ]
+        },
+        Fraction(50),
+    ),
     ("entered", {"block": "entered", "at_least": 0, "at_most": 10}, Fraction(7)),
     (
         "exec",
@@ -189,6 +226,96 @@ def test_each_block_works_out_exactly(name: str, tree: object, expected: Fractio
         {"v": tree}, runs=RUNS, entered={"v": Fraction(7)}, programs={"v": Fraction(3, 4)}
     )
     assert found == expected
+
+
+FIRST_FAILED = {
+    "block": "otherwise",
+    "of": [
+        {
+            "run": [
+                {
+                    "block": "first",
+                    "from": {"runs": "all"},
+                    "where": {"block": "eq", "of": [{"run": ["all", "passed"]}, 0]},
+                },
+                "verdict",
+            ]
+        },
+        {"text": "none"},
+    ],
+}
+"""islands' first failed run: its verdict, or "none" when every run passed."""
+
+
+def _text_columns() -> dict[str, str | None]:
+    return {**CHECKED_COLUMNS, "verdict": "verdict is text, and this reads a number."}
+
+
+def test_first_failed_is_the_first_failed_runs_verdict_or_none() -> None:
+    found = check_values(
+        {"first_failed": FIRST_FAILED},
+        groups=[],
+        columns=_text_columns(),
+        keys={},
+        texts={"verdict"},
+    )
+    assert not found.problems, found.problems
+    assert found.kinds["first_failed"] is Kind.TEXT
+
+    failed = worked(
+        {"first_failed": FIRST_FAILED},
+        [run("r1"), run("r2", "wrong_answer"), run("r3", "time_limit")],
+    )
+    assert failed["first_failed"].text == "wrong_answer"
+    assert failed["first_failed"].missing is False
+
+    none = worked({"first_failed": FIRST_FAILED}, [run("r1"), run("r2")])
+    assert none["first_failed"].text == "none"
+
+
+def test_adding_to_a_text_value_is_refused_at_its_path() -> None:
+    found = check_values(
+        {
+            "first_failed": FIRST_FAILED,
+            "total": {"block": "add", "of": [{"value": "first_failed"}, 1]},
+        },
+        groups=[],
+        columns=_text_columns(),
+        keys={},
+        texts={"verdict"},
+    )
+    refused = [problem for problem in found.problems if problem[0] == ("values", "total", "of", 0)]
+    assert refused
+    assert "first_failed is text" in refused[0][1]
+
+
+def test_a_check_may_expect_the_text_a_value_gives() -> None:
+    values = {"first_failed": FIRST_FAILED}
+    kinds = check_values(
+        values, groups=[], columns=_text_columns(), keys={}, texts={"verdict"}
+    ).kinds
+    problems, checks = check_checks(
+        [Check.model_validate({"submit": {}, "expect": {"first_failed": "wrong_answer"}})],
+        {},
+        [],
+        values,
+        kinds,
+    )
+    assert not problems
+    assert checks[0].values["first_failed"] == "wrong_answer"
+
+    scoring = Scoring(values=values)
+    runs = (Run("r1", {}, True), Run("r2", {}, True))
+    result = {
+        "runs": [
+            {"id": "r1", "verdict": "accepted", "reports": {}},
+            {"id": "r2", "verdict": "wrong_answer", "reports": {}},
+        ],
+        "once": {"reports": {}, "outcomes": {}},
+    }
+    assert check_failing(scoring, runs, {}, [], result, {"first_failed": "wrong_answer"}) == []
+    missed = check_failing(scoring, runs, {}, [], result, {"first_failed": "accepted"})
+    assert missed and "wrong_answer" in missed[0]
 
 
 def test_thirds_add_up_to_one_and_1200_over_1500_is_four_fifths() -> None:
@@ -759,3 +886,53 @@ def test_a_value_holds_one_exec_block_and_its_name_fits_its_steps() -> None:
             "steps are named after it.",
         )
     ]
+
+
+def test_a_name_a_formula_would_not_read_as_a_name_is_refused() -> None:
+    sentence = "is a word a formula reads as an operator, so it can't name a value."
+    for word in UNREADABLE:
+        groups = check_names([word], [])
+        values = check_names(["main"], [word])
+        assert groups == [(("groups", word), f"{word} {sentence} Choose another name.")]
+        assert values == [(("values", word), f"{word} {sentence} Choose another name.")]
+    assert check_names(["index", "total_in", "n_ot"], ["main"]) == []
+
+
+def test_a_value_gives_text_from_a_text_a_text_column_or_another_value_not_an_output() -> None:
+    document = {
+        "repeat": [{"inputs": ["name", "seed"]}],
+        "scoring": {
+            "values": {
+                "total": {
+                    "block": "sum",
+                    "over": {"runs": "all"},
+                    "of": {"run": ["all", "time_ms"]},
+                },
+                "first_failed": {
+                    "block": "otherwise",
+                    "of": [
+                        {"run": [{"block": "first", "from": {"runs": "all"}}, "verdict"]},
+                        {"text": "none"},
+                    ],
+                },
+                "medal": {
+                    "block": "if",
+                    "test": {"value": "total"},
+                    "then": {"text": "gold"},
+                    "else": {"text": "silver"},
+                },
+                "badge": {"value": "medal"},
+                "first_name": {"run": [{"block": "first", "from": {"runs": "all"}}, "name"]},
+            }
+        },
+    }
+
+    assert text_values_of(document, {"name": "text", "seed": "number"}) == (
+        "first_failed",
+        "medal",
+        "badge",
+        "first_name",
+    )
+    # A workflow output stays a number, so reading time_ms does not give text.
+    assert text_values_of(document, {}) == ("first_failed", "medal", "badge")
+    assert text_values_of({}, {}) == ()

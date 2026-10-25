@@ -308,11 +308,26 @@ class State:
         if repo.scope is None or repo.owner not in self.orgs:
             return False
         return any(
-            scope.covers(repo.scope)
-            and (scope.contest is None or scope in repo.teams)
-            and RANK[held] >= RANK[role]
-            and user_id in members
+            self._reaches(scope, repo) and RANK[held] >= RANK[role] and user_id in members
             for (scope, held), members in self.orgs[repo.owner].roles.items()
+        )
+
+    def _reaches(self, scope: Scope, repo: Repo) -> bool:
+        """Whether a role at `scope` reaches `repo`: the scope covers the
+        repository's own, or it is a task of the repository's contest and
+        that task's roles are attached, which is how a task's staff read
+        its submission repositories.
+        """
+        if repo.scope is None:
+            return False
+        if scope.covers(repo.scope):
+            return scope.contest is None or scope in repo.teams
+        return (
+            scope.task is not None
+            and repo.scope.task is None
+            and scope.org == repo.scope.org
+            and scope.contest == repo.scope.contest
+            and scope in repo.teams
         )
 
 

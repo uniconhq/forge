@@ -1,7 +1,7 @@
-"""A run task's gradings as Woodpecker pipelines (SIMPLER-CORE.md 11.3,
+"""A task's gradings as Woodpecker pipelines (SIMPLER-CORE.md 11.3,
 11.7, 11.8, phase 4.9).
 
-A run task's grading is a row per pipeline (`forge.services.gradings`). Its
+A task's grading is a row per pipeline (`forge.services.gradings`). Its
 `early` row runs the steps of the runs shown during the contest, and once it
 ends `done` its `late` row runs the rest (`gradings.follow`); a plan with
 nothing early has an early row with nothing to run, which ends `done` at
@@ -57,8 +57,8 @@ that refused one (`FailedCheck`, SIMPLER-CORE.md 9.6); the lost check and the
 retry by itself run over each publication's latest save row as over any
 row read, and a take-over still waiting is finished in the background. A
 save of the same files as a publication whose checking was refused, or
-that has no save row since the save that made it failed after
-publishing, checks it again (`check_again`).
+that is `unchecked` since the save that made it failed after
+publishing, checks it again (`check_again`). Nothing refuses that save.
 """
 
 import uuid
@@ -70,7 +70,6 @@ from sqlalchemy.exc import IntegrityError
 
 from forge.db.tables import Grading, GradingStep
 from forge.db.tables.gradings import EARLY, LATE, PASSED, SAVE
-from forge.domain import exact_json
 from forge.domain.errors import CiRequestRefused, Misconfigured, NotFound, PortError, Unavailable
 from forge.domain.grading import (
     BOXED_SHAPE,
@@ -82,9 +81,7 @@ from forge.domain.grading import (
     PipelineSpec,
     PipelineStepSpec,
 )
-from forge.domain.identity import PLATFORM
 from forge.domain.ids import OrgId, PublicationId, SubmissionId, TaskId, VersionId
-from forge.domain.plan_basics import PLAN_PATH
 from forge.domain.publication_record import Check, FailedCheck, Publication, failed_checks
 from forge.domain.regrades import RegradeCause
 from forge.domain.roles import contest_id_of, task_scope
@@ -92,7 +89,7 @@ from forge.domain.run_plan import BOXED, PipelineKind, RunPlan, slot_of
 from forge.domain.step_data import REPORT_STEP, all_accepted, without
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import entrant_view, gradings, names, steps, timelines
+from forge.services import entrant_view, gradings, names, places, steps, timelines
 
 log = get_logger(__name__)
 
@@ -103,7 +100,7 @@ USER_LAST = 19_999
 USER_TRIES = 32
 NO_USER = "No user is free for a grading's steps. Try again in a moment."
 REFUSED = "The platform does not answer this request."
-NO_IMAGE = "The platform names no image for a run task's {name} step."
+NO_IMAGE = "The platform names no image for a task's {name} step."
 REPORT_MODE = "report"
 
 
@@ -114,41 +111,20 @@ WITHDRAWN = (
 
 
 class NoImage(Misconfigured):
-    """The platform names no image a run task's pipeline needs."""
+    """The platform names no image a task's pipeline needs."""
 
 
 class ImageWithdrawn(Misconfigured):
-    """A step left to run names an image the platform has withdrawn, a run
-    task's or one the harness runs (`gradings.spec_of`)."""
-
-
-async def planned(ctx: Context, row: Grading) -> bool:
-    """Whether the publication the row grades against froze a run task's
-    plan, version 6. A plan that is not there, is refused or does not
-    read says no, so today's start says why; a forge that does not answer
-    raises its `Unavailable`, so the start fails as unanswered and is
-    tried again, never by today's path.
-    """
-    try:
-        publication = await gradings.publication_of(ctx, row)
-        found = await ctx.forge.content.read_file(
-            PLATFORM, TaskId(row.task_id), PLAN_PATH, at=publication.version
-        )
-        document = exact_json.loads(found.content)
-    except Unavailable:
-        raise
-    except PortError, ValueError:
-        return False
-    return isinstance(document, dict) and document.get("schema_version") == 6
+    """A step left to run names an image the platform has withdrawn."""
 
 
 async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
-    """The pipeline to start for a `queued` run task's row, its steps
+    """The pipeline to start for a `queued` row, its steps
     minted and a user taken for it, or none once the row is concluded at
     once since nothing is left to run. `Misconfigured` for a row whose plan
     does not read, `NotFound` when its publication is gone, and
     `Unavailable` when no user is free, `NoImage` when the platform names
-    no image for the report or the clone, and `ImageWithdrawn` when a step
+    no image for the report step, and `ImageWithdrawn` when a step
     left to run names an image the platform has withdrawn. A late row
     reuses, or runs everything again, as its early row's steps were minted
     to.
@@ -163,10 +139,8 @@ async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
             await concluded(ctx, held)
             log.info("pipelines.nothing_to_run", grading=str(row.id), pipeline=pipeline)
         return None
-    images = {"report": ctx.settings.primitive_base_image, "clone": ctx.settings.plugin_git_image}
-    for name, image in images.items():
-        if image is None:
-            raise NoImage(NO_IMAGE.format(name=name))
+    if ctx.settings.primitive_base_image is None:
+        raise NoImage(NO_IMAGE.format(name=REPORT_STEP))
     plan, _ = await steps.plan_of(ctx, row)
     for held_step in left:
         image = plan.steps[held_step.step].image
@@ -181,7 +155,7 @@ async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
 
 async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[PipelineRun, PipelineSpec]:
     """The platform's half of what decides a pipeline: the pipeline and its
-    steps, for a run task's row of `org` whose pipeline is being started.
+    steps, for a row of `org` whose pipeline is being started.
     `CiRequestRefused` for any other, and `Unavailable` when the forge does
     not answer.
     """
@@ -234,8 +208,7 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
             )
         )
     report = ctx.settings.primitive_base_image
-    clone = ctx.settings.plugin_git_image
-    if report is None or clone is None:
+    if report is None:
         log.warning("pipelines.config_refused", reason="images", grading=grading)
         raise CiRequestRefused(REFUSED)
     found.append(
@@ -263,7 +236,9 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
     # A step reads the submission from the checkout only through an entrant
     # input, so a pipeline of compares alone clones nothing.
     clones = any(plan.files_read(each).entrant for each in left)
-    return run, PipelineSpec(clone_image=clone, steps=tuple(found), labels=labels, clones=clones)
+    return run, PipelineSpec(
+        clone_image=ctx.settings.plugin_git_image, steps=tuple(found), labels=labels, clones=clones
+    )
 
 
 async def concluded(ctx: Context, row: Grading) -> None:
@@ -327,7 +302,7 @@ def accepted(row: Grading) -> bool:
 async def queue_save(
     ctx: Context, task: TaskId, publication: PublicationId, plan: RunPlan, by: int | None
 ) -> Grading | None:
-    """The save row that checks a run task's new `publication` before it
+    """The save row that checks a task's new `publication` before it
     takes over, none when its plan holds no step done at the save. Every
     save row of the task still unfinished is cancelled first, since a later
     save replaces what it checked. Called under the task's hold.
@@ -373,7 +348,7 @@ async def checks(ctx: Context, task: TaskId, made: Sequence[Publication]) -> dic
     over stands, by its id, for its organisers, from its latest save row:
     the lost check asked of each, and its retry by itself started as any row
     read; a `system_error` still `checking` while that retry may come; and
-    `refused` for one checked first that has no row, its save having failed
+    `unchecked` for one checked first that has no row, its save having failed
     after it was made. A take-over still waiting is finished in the
     background.
     """
@@ -393,7 +368,7 @@ async def checks(ctx: Context, task: TaskId, made: Sequence[Publication]) -> dic
     await gradings.notice(ctx, rows, gone)
     if any(accepted(row) and row.taken_over_at is None for row in rows):
         _take_over_later(ctx, task)
-    found: dict[str, Check] = {each.id: "refused" for each in made if each.checked_first}
+    found: dict[str, Check] = {each.id: "unchecked" for each in made if each.checked_first}
     for row in rows:
         check = _check_of(ctx, row, gone)
         if check is None:
@@ -434,10 +409,11 @@ async def check_again(
     ctx: Context, task: TaskId, publication: PublicationId, plan: RunPlan, by: int | None
 ) -> Check | None:
     """Where a save of the same files as `publication` leaves it: checked
-    again, by a new save row, when its checking was refused or replaced, or
-    checked at last when its plan holds steps done at the save and it has
-    no row, since the save that made it failed after publishing. Called
-    under the task's hold.
+    again, by a new save row, when its checking was refused, replaced or
+    `unchecked`, the last when its plan holds steps done at the save and
+    it has no row, since the save that made it failed after publishing.
+    Called under the task's hold. An `unchecked` publication refuses no
+    save.
     """
     latest = await ctx.db.scalar(
         select(Grading)
@@ -446,10 +422,10 @@ async def check_again(
         .limit(1)
     )
     if latest is None:
-        check: Check | None = "refused" if plan.pipeline("save") else None
+        check: Check | None = "unchecked" if plan.pipeline("save") else None
     else:
         check = _check_of(ctx, latest)
-    if check in ("refused", "replaced"):
+    if check in ("refused", "replaced", "unchecked"):
         await queue_save(ctx, task, publication, plan, by)
         log.info("pipelines.checked_again", task=task, publication=publication)
         return "checking"
@@ -488,7 +464,11 @@ async def take_over(ctx: Context, task: TaskId) -> None:
     passed and is not marked taken over. The task is graded again against
     its publication when that is still the task's and changed how it
     grades, then the row is marked, in one unit of work under the task's
-    hold, so a take-over is done once.
+    hold, so a take-over is done once. A take-over that makes the task's
+    first live publication starts making its places ahead, as a save does
+    that makes one live at once (`places.ahead_at`); one after a
+    publication live already, such as one that needed no check while an
+    earlier one waited for its own, makes none again.
     """
     await timelines.hold_task(ctx, task)
     waiting = (
@@ -510,6 +490,10 @@ async def take_over(ctx: Context, task: TaskId) -> None:
     if not waiting:
         return
     current = await entrant_view.task(ctx, task)
+    taking = {row.publication_id for row in waiting}
+    if current is not None and all(each.id in taking for each in current.publications):
+        # No publication was live before this take-over.
+        places.ahead_at(ctx, task)
     for row in waiting:
         row.taken_over_at = ctx.now
         if current is None or current.publication.id != row.publication_id:

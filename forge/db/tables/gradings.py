@@ -11,14 +11,16 @@ against it. `submitted_at` is when the submit was taken, by the package's
 clock, which is what a task's rate is counted by. `idempotency_key` is the
 key the submit that made the row was sent with, on the row a submit makes
 and on no retry or rejudge, unique for a workspace and task.
-`callback_token_hash` is the SHA-256 of the one token its run reports back
-with, stored at the insert.
+`callback_token_hash` is the SHA-256 of the one token a run of the grading
+format before pipelines reported back with, kept on the rows that had one
+and written on no new row.
 
 `queued_at` is when the row was made, by the package's clock. `run_id` is
 its run at the CI, `dispatched_at` when that run was started,
-`started_at` when its harness fetched the envelope and `deadline_at` the
-run's deadline from then. `progress` is the last progress its run reported,
-`{"step", "done", "total"}`, and `error` a line for staff about a grading
+`started_at` when its first step asked for its job and `deadline_at` the
+run's deadline from then. `progress` is the last progress a run of the
+grading format before pipelines reported, `{"step", "done", "total"}`,
+written on no new row, and `error` a line for staff about a grading
 that ended in `system_error`, kept when staff then cancel it with
 `cancel_reason`, the sentence its contestant reads. `automatic` marks the
 attempt the platform made by itself when the one before it ended in
@@ -28,18 +30,17 @@ itself, but waits for staff. `submission_limit` is the task's
 `regrade_id` names the regrade of many (`Regrade`) the attempt belongs to:
 one it made, or a retry of one of those; none on any other.
 
-A run task's grading is a row per pipeline (`pipeline`): `early`, which
-every grading of today's tasks is too, `late`, with `early_id` naming the
-early row it follows, none on a lone late row, and `save`, a
-publication's own checking, which has no submission, so the submission's
-columns are empty on it and on no other. A submission's attempts are
-counted per pipeline (its line), a publication's save attempts once each.
-`run_user` is the user the row's steps run as, while it is not finished
-unique among the rows not finished. `taken_over_at` is when a save row that
-passed let its publication take over, the task graded again when that
-changed how it grades; none while that waits. `released_split` says the
-grading takes its plan's released split (`RunPlan.for_split`): its early
-row was made while the task's results were released, and its late row and
+A grading is a row per pipeline (`pipeline`): `early`, `late`, with
+`early_id` naming the early row it follows, none on a lone late row, and
+`save`, a publication's own checking, which has no submission, so the
+submission's columns are empty on it and on no other. A submission's
+attempts are counted per pipeline (its line), a publication's save attempts
+once each. `run_user` is the user the row's steps run as, while it is not
+finished unique among the rows not finished. `taken_over_at` is when a save
+row that passed let its publication take over, the task graded again when
+that changed how it grades; none while that waits. `released_split` says the
+grading takes its plan's released split (`RunPlan.for_split`): its early row
+was made while the task's results were released, and its late row and
 retries keep what their grading was made with.
 """
 
@@ -151,9 +152,9 @@ class Grading(Base, Timestamped):
 
 
 FRONT = Grading.pipeline == EARLY
-"""The rows that are a submission's grading as its entrant knows it: every
-row of today's tasks, and a run task's early row; not a late row, which
-follows one, nor a save row, which has no submission."""
+"""The rows that are a submission's grading as its entrant knows it: its
+early row; not a late row, which follows one, nor a save row, which has no
+submission."""
 
 
 def _failing(holds: str, items: str) -> str:

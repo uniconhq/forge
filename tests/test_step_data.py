@@ -1,4 +1,4 @@
-"""What a run task's step is handed and hands back, without its door: the
+"""What a task's step is handed and hands back, without its door: the
 upload list a step may send, what its `outputs.json` must be, an item's
 key, the pipeline left once stored steps are taken out, result version 6
 built from a fake set of outputs, a step's token, the name Forgejo keeps a
@@ -202,7 +202,7 @@ def test_a_batch_answers_its_runs_in_order(islands: RunPlan) -> None:
     ("content", "fault"),
     [
         (b"{", "not JSON"),
-        (b'{"schema_version": 5, "outputs": {"outcome": "accepted"}}', "version 6"),
+        (b'{"schema_version": 5, "outputs": {"outcome": "accepted"}}', "6 was expected"),
         (b'{"schema_version": 6, "error": "No isolate."}', "The step failed: No isolate."),
         (b'{"schema_version": 6, "verdict": "accepted"}', "contract"),
         (_batch("r2", "r1", outcome="wrong_answer"), "in their order"),

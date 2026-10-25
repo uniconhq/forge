@@ -1,16 +1,15 @@
-"""A primitive's declaration, its `primitive.yaml` (TASK-FORMAT.md section
-1.4, the runner's `primitive.schema.json`, versions 5 and 6): the contract
-version it speaks, the image it runs from by digest, whose own entrypoint is
-the program a step runs, whether it takes a batch of tests in one run,
+"""A primitive's declaration, its `primitive.yaml` (the runner's
+`primitive.schema.json`, version 6): the contract version it speaks, 6, the
+image it runs from by digest, whether it takes many runs in one container,
 whether its container may reach the network, the container's six limits for
 one run or one item of a batch, the limits it raises from a number input,
 and its input and output ports. The file names neither the primitive nor
 its version: the repo at the forge is the name and the tag the version. The
-compiler reads one for every `use:` a workflow names and copies what the
-plan needs of it into each step; the harness never reads it.
+planner reads one for every `use:` a workflow names and copies what the
+plan needs of it into each step.
 
 `limits_from` raises a limit from an input, so the container never dies
-before the primitive's own per-test limit does: `{time_ms: {input:
+before the primitive's own per-run limit does: `{time_ms: {input:
 time_limit, scale: 1000, add: 2000}}` makes the step's `time_ms` at least
 `time_limit * 1000 + 2000`.
 
@@ -27,9 +26,9 @@ compiles`, `compile_error: it does not compile` (P2). The keys are the words
 a step may report, and the port is the only one that takes it. Like a title
 or a description, it changes nothing a plan holds.
 
-`schema_version: 6`, 5 when left out, is the contract the stage 4 primitives
-speak, and only it has these, each read and kept here; what they add to a
-step's outputs is worked out per step, since it depends on what is wired in:
+`schema_version: 6` is required, the one contract a primitive speaks. Each
+of these is read and kept here; what they add to a step's outputs is worked
+out per step, since it depends on what is wired in:
 
 - a `named_files` input, with `runs`, whose `names`, when given, are the
   names its files must have;
@@ -111,15 +110,14 @@ STEP_OUTCOMES = (
     "runtime_error",
     "compile_error",
 )
-"""The outcomes a step may report, in the runner's order: `skipped` is the
-harness's word for a test it did not run, and a primitive that could not
+"""The outcomes a step may report, in the runner's order: `skipped` is
+Unicon's word for a run it did not run, and a primitive that could not
 work says so with `error`, which becomes a `system_error`."""
 BATCH_SCALED = ("time_ms", "cpu_ms")
 """The limits a batch step sums over its items; the others hold for each
 item as they are."""
 RUNS_TYPES = FILES | {Type.NAMED_FILES}
 """The input types that say whether the primitive runs what arrives there."""
-NEEDS_6 = "This needs schema_version: 6."
 
 Flag = Annotated[bool, Field(strict=True)]
 
@@ -139,13 +137,13 @@ Limit = Annotated[int, Field(strict=True, ge=1)]
 
 
 def _version(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value not in (5, 6):
-        raise ValueError("This must be 5 or 6.")
+    if isinstance(value, bool) or not isinstance(value, int) or value != 6:
+        raise ValueError("This must be 6.")
     return value
 
 
 Version = Annotated[int, PlainValidator(_version)]
-"""The contract version a primitive speaks, 5 or 6."""
+"""The contract version a primitive speaks, 6."""
 
 
 def _outcome_word(value: object) -> str:
@@ -298,7 +296,7 @@ class FromInput(_Raise):
 
 
 class FromSum(_Raise):
-    """In contract 6, a limit raised from the sum of a number input over
+    """A limit raised from the sum of a number input over
     every program of a programs port, `<port>.<input>`.
     """
 
@@ -311,7 +309,7 @@ class FromSum(_Raise):
 
 
 class FromMax(_Raise):
-    """In contract 6, a limit raised from the largest of a number input
+    """A limit raised from the largest of a number input
     over every program of a programs port, `<port>.<input>`.
     """
 
@@ -350,9 +348,8 @@ def _limit_from(value: object) -> FromInput | FromSum | FromMax:
 
 
 LimitFrom = Annotated[FromInput | FromSum | FromMax, PlainValidator(_limit_from)]
-"""Where a limit is raised from: exactly one of a number input, or in
-contract 6 the sum or the largest of a number input over every program of a
-programs port.
+"""Where a limit is raised from: exactly one of a number input, or the sum
+or the largest of a number input over every program of a programs port.
 """
 
 
@@ -374,13 +371,13 @@ class PrimitiveForm(Model):
 
 
 class PrimitiveDeclaration(Model):
-    """A `primitive.yaml`. `schema_version` is 5 when left out; `batch`,
-    `network` and `cache` default to off, and `limits_from`, `outputs_from`
+    """A `primitive.yaml`. `schema_version` is required; `batch`, `network`
+    and `cache` default to off, and `limits_from`, `outputs_from`
     and `inputs` to none. `title` and `description` are for the workflow
     editor, and change nothing a plan holds.
     """
 
-    schema_version: Version = 5
+    schema_version: Version
     title: Line | None = None
     description: Line | None = None
     image: Image
@@ -435,9 +432,8 @@ class PrimitiveDeclaration(Model):
             problems.add(("limits",), "This is required.")
             problems.raise_any()
             return self
-        six = self.schema_version == 6
-        _input_problems(problems, ("inputs",), self.inputs, six=six, inner=False)
-        _output_problems(problems, ("outputs",), self.outputs, six=six, inner=False)
+        _input_problems(problems, ("inputs",), self.inputs, inner=False)
+        _output_problems(problems, ("outputs",), self.outputs, inner=False)
         outcome = self.outputs.get("outcome")
         if outcome is None or outcome.type is not Type.OUTCOME:
             problems.add(
@@ -448,10 +444,6 @@ class PrimitiveDeclaration(Model):
                 ("outputs", "outcome", "optional"),
                 "The outcome cannot be optional: every step gives one.",
             )
-        if not six:
-            for key in ("cache", "outputs_from"):
-                if key in self.model_fields_set:
-                    problems.add((key,), NEEDS_6)
         programs = {name for name, port in self.inputs.items() if port.type is Type.PROGRAMS}
         for name in sorted(programs - {PROGRAMS}):
             problems.add(("inputs", name), "A programs port must be called programs.")
@@ -497,9 +489,6 @@ class PrimitiveDeclaration(Model):
                 over, named = (
                     ("sum", source.sum) if isinstance(source, FromSum) else ("max", source.max)
                 )
-                if not six:
-                    problems.add(("limits_from", limit, over), NEEDS_6)
-                    continue
                 port_name, _, number = named.partition(".")
                 over_port = self.inputs.get(port_name)
                 if over_port is None or over_port.type is not Type.PROGRAMS:
@@ -521,8 +510,6 @@ class PrimitiveDeclaration(Model):
         the rule that every form has a required input of its own.
         """
         problems = Problems()
-        if self.schema_version != 6:
-            problems.add(("schema_version",), NEEDS_6)
         if len(self.forms) > 4:
             problems.add(("forms",), "A primitive has at most 4 forms.")
         for key in FORM_AT_TOP:
@@ -645,7 +632,7 @@ def _outcomes(problems: Problems, where: Path, ports: Mapping[str, Port]) -> Non
 
 
 def _input_problems(
-    problems: Problems, where: Path, ports: Mapping[str, Port], *, six: bool, inner: bool
+    problems: Problems, where: Path, ports: Mapping[str, Port], *, inner: bool
 ) -> None:
     """What is wrong with a declaration's input ports at `where`, or a
     programs port's (`inner`), which take neither programs nor links.
@@ -654,17 +641,13 @@ def _input_problems(
     _outcomes(problems, where, ports)
     for name, port in ports.items():
         at = (*where, name)
-        if port.type in PORT_TYPES and not six:
-            problems.add((*at, "type"), NEEDS_6)
-        elif inner and port.type in (Type.PROGRAMS, Type.LINKS):
+        if inner and port.type in (Type.PROGRAMS, Type.LINKS):
             problems.add((*at, "type"), "A program's input cannot be programs or links.")
         elif port.type not in VALUE_TYPES and port.type not in PORT_TYPES:
             problems.add(
                 (*at, "type"),
                 "An input must be text, a number, true or false, an enum, a file, a folder, "
-                "named files, programs or links."
-                if six
-                else "An input must be text, a number, true or false, an enum, a file or a folder.",
+                "named files, programs or links.",
             )
         if port.type in RUNS_TYPES and port.runs is None:
             problems.add(
@@ -679,8 +662,8 @@ def _input_problems(
                 problems.add((*at, key), "This applies only to an output.")
         if port.type is Type.PROGRAMS:
             inputs, outputs = port.inputs or {}, port.outputs or {}
-            _input_problems(problems, (*at, "inputs"), inputs, six=six, inner=True)
-            _output_problems(problems, (*at, "outputs"), outputs, six=six, inner=True)
+            _input_problems(problems, (*at, "inputs"), inputs, inner=True)
+            _output_problems(problems, (*at, "outputs"), outputs, inner=True)
             program = inputs.get("program")
             if program is None or program.type is not Type.FILE or program.runs is not True:
                 problems.add(
@@ -691,7 +674,7 @@ def _input_problems(
 
 
 def _output_problems(
-    problems: Problems, where: Path, ports: Mapping[str, Port], *, six: bool, inner: bool
+    problems: Problems, where: Path, ports: Mapping[str, Port], *, inner: bool
 ) -> None:
     """What is wrong with a declaration's output ports at `where`, or what
     a programs port gives of each program (`inner`), which has no outcome.
@@ -711,10 +694,6 @@ def _output_problems(
             )
         elif port.type is Type.OUTCOME and (inner or name != "outcome"):
             problems.add(at, "Only the output called outcome can be of type outcome.")
-        if not six:
-            for key in ("better", "at_least", "at_most"):
-                if getattr(port, key) is not None:
-                    problems.add((*at, key), NEEDS_6)
 
 
 def _values_key(value: object) -> bool:

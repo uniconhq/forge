@@ -35,6 +35,7 @@ class Run:
     id: str
     key: Mapping[str, object]
     early: bool
+    titles: tuple[str | None, ...] | None = None
 
     @property
     def canonical(self) -> str:
@@ -58,6 +59,7 @@ class EntrantInput:
     options: tuple[str, ...] | None
     form: Form
     parts: int | None = None
+    part_details: tuple[tuple[str | None, int], ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +173,7 @@ class ProgramValue:
 
 @dataclass(frozen=True, slots=True)
 class RunTask:
-    """A run task as its save checked it: its runs in order, each group's
+    """A task as its save checked it: its runs in order, each group's
     runs by id, `all` among them, what each value reads, `show`, the
     entrant's inputs, the settings the task gives once, the columns
     self-reported with the entrant inputs that make them so, the id of
@@ -310,7 +312,7 @@ class RunTask:
 
 @dataclass(frozen=True, slots=True)
 class RunTaskCheck:
-    """Every problem a run task is refused for, each at its path in
+    """Every problem a task is refused for, each at its path in
     `task.yaml`, and the task as checked when there is none. There is
     always one or the other: a task whenever no problem is found.
     """

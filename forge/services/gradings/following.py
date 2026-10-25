@@ -11,7 +11,7 @@ from forge.services.gradings.starting import _superseded, new_row
 
 
 async def follow(ctx: Context, early: Grading) -> Grading | None:
-    """The late row of a run task's early row that has just ended `done`,
+    """The late row of a task's early row that has just ended `done`,
     none when a later early attempt of its submission is already made: the
     next attempt on the submission's late line, against the early row's
     publication and in its regrade, each late row still unfinished stopped

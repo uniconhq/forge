@@ -10,19 +10,20 @@ whole expansion, and flattens what it read into primitive steps.
 
 from dataclasses import dataclass
 
-from forge.domain.errors import Forbidden, NotFound
+from forge.domain.errors import Forbidden, NotFound, Rejected
 from forge.domain.identity import Identity
 from forge.domain.ids import VersionId, WorkflowId
 from forge.domain.primitives import PrimitiveDeclaration
 from forge.domain.program_manifest import MAX_MANIFEST
 from forge.domain.run_workflow import WorkflowFiles, manifest_paths
+from forge.domain.uploads import upload_info
 from forge.domain.workflow_boxes import FlatWorkflow, flatten, over_cap
 from forge.domain.workflow_definition import (
     MAX_USES,
     WORKFLOW_FILE,
     RunWorkflow,
     WorkflowRef,
-    read_workflow,
+    parse_run_workflow,
 )
 from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
 from forge.runtime.context import Context
@@ -32,9 +33,6 @@ _CANNOT_OPEN = (
     "Unicon cannot open {use}: there is no such primitive or workflow at that "
     "version, or it is not shared with you."
 )
-_TEST_FORMAT = (
-    "{use} is a workflow in the format graded test by test, and a box can only use a run workflow."
-)
 _OLD = (
     "The workflow {use} is written in an older form that Unicon no longer reads, so its "
     "owner needs to make a new version of it. {detail}"
@@ -42,17 +40,30 @@ _OLD = (
 
 
 @dataclass(frozen=True, slots=True)
+class PinnedUse:
+    """One inner workflow version, in pin order from 1: the `use:` text, the
+    workflow and commit it was read at, and the forge's own key for it."""
+
+    use: str
+    workflow: WorkflowId
+    at: VersionId
+    key: str
+
+
+@dataclass(frozen=True, slots=True)
 class Expanded:
     """What expanding a run workflow found. `flat` is none when the workflow
     would hold itself, the expansion uses more than 32 versions, or the flat
     list itself is refused. `primitives` is every primitive `use:` that did
-    read, by its text. `inner_files` is each pin's files, from pin 1.
+    read, by its text. `inner_files` is each pin's files, from pin 1, and
+    `pins` the workflow each of those pins was read from, in order.
     """
 
     flat: FlatWorkflow | None
     primitives: dict[str, PrimitiveDeclaration]
     inner_files: dict[int, WorkflowFiles]
     problems: list[Problem]
+    pins: tuple[PinnedUse, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +81,7 @@ async def files_at(
     ctx: Context, as_: Identity, workflow: WorkflowId, at: VersionId, definition: RunWorkflow
 ) -> WorkflowFiles:
     """The workflow's files at the commit `at`, read as `as_`, as making a
-    version checks them and a run task's save checks them again: every
+    version checks them and a task's save checks them again: every
     path with its size, and each one wired into a manifest port that is
     there. One listed that does not read as a file is left out, so the
     check refuses it as missing at the manifest port; one listed as over
@@ -80,6 +91,7 @@ async def files_at(
     paths = set(listed.tokens)
     manifests: dict[str, bytes] = {}
     oversized: set[str] = set()
+    sizes = dict(listed.sizes)
     for path in sorted(manifest_paths(definition) & paths):
         if listed.sizes.get(path, 0) > MAX_MANIFEST:
             oversized.add(path)
@@ -89,8 +101,21 @@ async def files_at(
         except NotFound:
             paths.discard(path)
             continue
-        manifests[path] = read.content
-    sizes = {path: size for path, size in listed.sizes.items() if path in paths}
+        content = read.content
+        if info := upload_info(content):
+            sizes[path] = info.size
+            if info.size > MAX_MANIFEST:
+                oversized.add(path)
+                continue
+            try:
+                content = await ctx.forge.workflows.read_workflow_media(
+                    as_, workflow, at, path, max_size=MAX_MANIFEST
+                )
+            except Rejected:
+                oversized.add(path)
+                continue
+        manifests[path] = content
+    sizes = {path: size for path, size in sizes.items() if path in paths}
     return WorkflowFiles(frozenset(paths), manifests, frozenset(oversized), sizes)
 
 
@@ -106,6 +131,7 @@ async def expand(
     inners: dict[str, RunWorkflow] = {}
     pins: dict[str, int] = {}
     inner_files: dict[int, WorkflowFiles] = {}
+    held: list[PinnedUse] = []
     seen: dict[str, _Use] = {}
     problems: list[Problem] = []
     blocked = False
@@ -136,15 +162,14 @@ async def expand(
         except NotFound, Forbidden:
             return _Use("bad", _CANNOT_OPEN.format(use=use))
         try:
-            definition = read_workflow(file.content)
+            definition = parse_run_workflow(file.content)
         except InvalidDefinition as invalid:
             return _Use("bad", _OLD.format(use=use, detail=invalid.detail))
-        if not isinstance(definition, RunWorkflow):
-            return _Use("bad", _TEST_FORMAT.format(use=use))
         pin = len(pins) + 1
         pins[use] = pin
         inners[use] = definition
         inner_files[pin] = await files_at(ctx, as_, workflow_id, at, definition)
+        held.append(PinnedUse(use, workflow_id, at, key))
         return _Use("workflow", key=key)
 
     async def descend(definition: RunWorkflow, prefix: str, on_path: tuple[str, ...]) -> None:
@@ -165,6 +190,7 @@ async def expand(
                             f"`{step_path}` uses {step.use}, and {step.use.owner}/{step.use.name} "
                             "is already on that path, so the workflow would hold itself."
                         ),
+                        step=step_path,
                     )
                 )
                 blocked = True
@@ -189,8 +215,8 @@ async def expand(
             problems.append(problem)
         blocked = True
     if blocked:
-        return Expanded(None, found, inner_files, problems)
+        return Expanded(None, found, inner_files, problems, tuple(held))
     flat = flatten(workflow, inners, pins)
     if isinstance(flat, list):
-        return Expanded(None, found, inner_files, [*problems, *flat])
-    return Expanded(flat, found, inner_files, problems)
+        return Expanded(None, found, inner_files, [*problems, *flat], tuple(held))
+    return Expanded(flat, found, inner_files, problems, tuple(held))

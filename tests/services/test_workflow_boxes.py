@@ -7,15 +7,17 @@ from pathlib import Path
 
 import pytest
 
-from forge.domain.identity import AsUser
+from forge.domain.errors import NotFound
+from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.sessions import Session
 from forge.domain.workflow_boxes import flatten, placed
-from forge.domain.workflow_definition import RunWorkflow, read_workflow
+from forge.domain.workflow_definition import RunWorkflow, parse_run_workflow
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import sessions, workflows
 from forge.services.workflow_boxes import Expanded, expand
+from forge.services.workflows import Box, BoxInput, BoxOutput
 from forge.testing import PLACEHOLDER_DIGEST
 from tests.conftest import sibling
 from tests.services.conftest import Acme, signed_in
@@ -87,7 +89,7 @@ steps:
     with:
       output: ${{ steps.solution.output }}
       answer: ${{ inputs.answer }}
-reports:
+outputs:
   score: ${{ steps.judge.score }}
   time_ms: {from: "${{ steps.solution.time_ms }}", title: Run time, unit: ms}
   memory_kb: {from: "${{ steps.solution.memory_kb }}", title: Memory used, unit: KB}
@@ -205,13 +207,6 @@ def _held(folder: Path) -> dict[str, bytes]:
     }
 
 
-def _run_primitives(acme: Acme) -> None:
-    for name in ("exec", "compile"):
-        text = sibling(f"primitive-{name}", "primitive.yaml").read_bytes()
-        image = f"image: ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}\n".encode()
-        acme.fake.primitives.add(name, {"v1" if name == "exec" else "v3": image + text})
-
-
 def _noop(acme: Acme, versions: int) -> None:
     acme.fake.primitives.add("noop", {f"v{number}": NOOP for number in range(1, versions + 1)})
 
@@ -244,15 +239,12 @@ async def _version(
 
 
 def _run(text: str) -> RunWorkflow:
-    found = read_workflow(text.encode())
-    assert isinstance(found, RunWorkflow)
-    return found
+    return parse_run_workflow(text.encode())
 
 
 async def test_a_boxed_classic_matches_the_flat_one_but_for_paths_and_the_pin(
     setup: Setup, acme: Acme
 ) -> None:
-    _run_primitives(acme)
     bob = await _own(setup, acme)
     await _version(setup, acme, bob, "build", BUILD)
     judge_files = {
@@ -276,7 +268,7 @@ async def test_a_boxed_classic_matches_the_flat_one_but_for_paths_and_the_pin(
     assert diff["source"] == "${{ workflow@2.diff/ }}"
     assert flat.workflow.steps[3].with_["manifest"] == "${{ workflow@2.diff/program.yaml }}"
     assert flat.workflow.steps[1].with_["program"] == "${{ steps.build/compile.program }}"
-    assert flat.workflow.reports["score"] == "${{ steps.judge/compare.score }}"
+    assert flat.workflow.outputs["score"] == "${{ steps.judge/compare.score }}"
 
     classic = _held(CLASSIC)
     classic_files = WorkflowFiles(
@@ -312,7 +304,6 @@ async def test_a_boxed_classic_matches_the_flat_one_but_for_paths_and_the_pin(
 async def test_an_output_read_through_two_boxes_keeps_the_ports_meaning(
     setup: Setup, acme: Acme
 ) -> None:
-    _run_primitives(acme)
     bob = await _own(setup, acme)
     judge_files = {
         path: content for path, content in _held(CLASSIC).items() if path != "workflow.yaml"
@@ -347,7 +338,6 @@ async def test_an_output_read_through_two_boxes_keeps_the_ports_meaning(
 async def test_an_optional_input_left_out_drops_the_port_and_reads_empty_in_text(
     setup: Setup, acme: Acme
 ) -> None:
-    _run_primitives(acme)
     bob = await _own(setup, acme)
     await _version(setup, acme, bob, "optional", OPTIONAL)
     outer = """\
@@ -373,7 +363,7 @@ def test_an_optional_input_left_out_of_text_reads_empty() -> None:
     inner = _run(TOLD)
     note = inner.inputs["note"].model_copy(update={"optional": True})
     inner = RunWorkflow.model_construct(
-        inputs={**inner.inputs, "note": note}, steps=inner.steps, reports={}, outputs={}
+        inputs={**inner.inputs, "note": note}, steps=inner.steps, outputs={}
     )
     outer = _run(
         "inputs:\n  code: {type: folder}\nsteps:\n  - id: build\n    use: bob/told@v1\n"
@@ -405,6 +395,7 @@ async def test_a_loop_of_two_is_refused_at_the_outer_box_naming_the_path(
                 "`inner/back` uses bob/a@v1, and bob/a is already on that path, so the "
                 "workflow would hold itself."
             ),
+            "step": "inner/back",
         }
     ]
 
@@ -424,15 +415,15 @@ async def test_a_workflow_holding_itself_is_refused_when_the_check_names_it(
         "`again` uses bob/held@v1, and bob/held is already on that path, so the workflow "
         "would hold itself."
     )
-    assert found == ({"path": "steps[0].use", "message": message},)
+    assert found == ({"path": "steps[0].use", "message": message, "step": "again"},)
     repo = acme.fake.state.repos[("bob", "held.workflow")]
     acme.fake.state.commit(repo, {"workflow.yaml": draft.encode()}, "self", 8)
     with pytest.raises(InvalidDefinition) as refused:
         await workflows.create_version(setup, bob, "bob", "held", "v2")
-    assert refused.value.errors == [{"path": "steps[0].use", "message": message}]
+    assert refused.value.errors == [{"path": "steps[0].use", "message": message, "step": "again"}]
 
 
-async def test_a_box_that_cannot_be_opened_or_is_graded_test_by_test_is_refused(
+async def test_a_box_that_cannot_be_opened_or_is_in_an_older_form_is_refused(
     setup: Setup, acme: Acme
 ) -> None:
     _noop(acme, 1)
@@ -448,22 +439,21 @@ async def test_a_box_that_cannot_be_opened_or_is_graded_test_by_test_is_refused(
             ),
         },
     )
-    graded = "steps:\n  - id: box\n    use: unicon/classic@v2\n"
-    assert await workflows.check(setup, bob, graded) == (
-        {
-            "path": "steps[0].use",
-            "message": (
-                "unicon/classic@v2 is a workflow in the format graded test by test, "
-                "and a box can only use a run workflow."
-            ),
-        },
+    await workflows.create(setup, bob, "bob", "graded")
+    repo = acme.fake.state.repos[("bob", "graded.workflow")]
+    acme.fake.state.commit(repo, {"workflow.yaml": b"test: {input: file}\nsteps: []\n"}, "old", 8)
+    acme.fake.state.create_version(PLATFORM, repo, "v1")
+    graded = "steps:\n  - id: box\n    use: bob/graded@v1\n"
+    [problem] = await workflows.check(setup, bob, graded)
+    assert problem["path"] == "steps[0].use"
+    assert problem["message"].startswith(
+        "The workflow bob/graded@v1 is written in an older form that Unicon no longer reads"
     )
 
 
 async def test_a_box_with_is_refused_for_an_unknown_key_a_missing_one_and_a_bad_value(
     setup: Setup, acme: Acme
 ) -> None:
-    _run_primitives(acme)
     bob = await _own(setup, acme)
     await _version(setup, acme, bob, "build", BUILD)
 
@@ -525,7 +515,6 @@ steps:
 async def test_a_problem_inside_a_box_names_the_step_and_the_outer_box(
     setup: Setup, acme: Acme
 ) -> None:
-    _run_primitives(acme)
     bob = await _own(setup, acme)
     await _version(setup, acme, bob, "comp", COMP)
     outer = """\
@@ -554,7 +543,6 @@ steps:
 
 
 async def test_a_written_workflow_pin_is_refused(setup: Setup, acme: Acme) -> None:
-    _run_primitives(acme)
     bob = await _own(setup, acme)
     text = """\
 steps:
@@ -572,7 +560,6 @@ steps:
 async def test_an_exec_programs_step_inside_a_box_keeps_its_programs(
     setup: Setup, acme: Acme
 ) -> None:
-    _run_primitives(acme)
     bob = await _own(setup, acme)
     await _version(setup, acme, bob, "play", PLAY)
     outer = """\
@@ -626,3 +613,62 @@ async def test_the_cap_counts_every_use_of_the_expansion(setup: Setup, acme: Acm
             ),
         },
     )
+
+
+TIMED = """\
+inputs:
+  code: {type: folder, title: Solution}
+  language: {type: enum, options: [python], title: Language}
+  note: {type: text, optional: true, title: Note}
+steps:
+  - id: compile
+    use: unicon/compile@v3
+    with:
+      source: ${{ inputs.code }}
+      language: ${{ inputs.language }}
+      entry: ${{ inputs.note }}
+  - id: run
+    use: unicon/exec@v1
+    with:
+      program: ${{ steps.compile.program }}
+      time_limit: 1
+      memory_limit: 256
+outputs:
+  program: ${{ steps.compile.program }}
+  time_ms: ${{ steps.run.time_ms }}
+"""
+
+
+async def test_a_run_workflow_version_is_a_box_with_its_inputs_and_outputs(
+    setup: Setup, acme: Acme
+) -> None:
+    bob = await _own(setup, acme)
+    await _version(setup, acme, bob, "timed", TIMED)
+    await _version(setup, acme, bob, "timed", TIMED + "\n", version="v2")
+
+    face = await workflows.box(setup, bob, "bob/timed@v1")
+    later = await workflows.box(setup, bob, "bob/timed@v2")
+
+    assert face == Box(
+        True,
+        (
+            BoxInput("code", "folder", None, False, "Solution", None),
+            BoxInput("language", "enum", ("python",), False, "Language", None),
+            BoxInput("note", "text", None, True, "Note", None),
+        ),
+        (
+            BoxOutput("program", "file", None, None, None, None, None),
+            BoxOutput("time_ms", "number", None, None, "lower", 0, None),
+        ),
+        "v2",
+    )
+    assert later.newer_version is None
+
+
+async def test_a_box_the_caller_cannot_read_is_not_found(setup: Setup, acme: Acme) -> None:
+    bob = await _own(setup, acme)
+    await _version(setup, acme, bob, "timed", TIMED)
+    ada = await signed_in(setup, acme.fake, 7)
+
+    with pytest.raises(NotFound, match="There is no workflow bob/timed@v1 that you can read"):
+        await workflows.box(setup, ada, "bob/timed@v1")

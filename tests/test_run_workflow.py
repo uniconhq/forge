@@ -1,5 +1,5 @@
-"""The run workflow (SIMPLER-CORE.md 7): a file with no test block is one,
-`unicon/classic@v3` and `unicon/interactive@v1` from deploy's checkout parse
+"""The run workflow (SIMPLER-CORE.md 7): a file with a test block is
+refused, `unicon/classic@v3` and `unicon/interactive@v1` from deploy's checkout parse
 and type against the contract 6 primitives beside this repo, a report of a
 manifest is checked against its `program.yaml` and means what that file
 says, the ports only contract 6 has take their own shapes, each refusal of
@@ -16,8 +16,6 @@ from typing import Any
 import pytest
 
 from forge.domain.blocks.numbers import Better
-from forge.domain.errors import Rejected
-from forge.domain.plans import check_workflow
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.program_manifest import MAX_MANIFEST
 from forge.domain.run_workflow import (
@@ -32,22 +30,18 @@ from forge.domain.run_workflow import (
     manifest_paths,
 )
 from forge.domain.types import Type
-from forge.domain.workflow_combine import combinable
 from forge.domain.workflow_definition import (
     PIPELINE_STEPS,
     SELF_REPORTED_GIVEN,
     BadReference,
     Reference,
     RunWorkflow,
-    WorkflowDefinition,
     parse_reference,
     parse_run_workflow,
-    parse_workflow,
-    read_workflow,
     reserved_message,
 )
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line
-from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES, RUN_WORKFLOWS
+from forge.testing import PLACEHOLDER_DIGEST, RUN_WORKFLOWS
 from tests.conftest import sibling
 
 CLASSIC_V3 = "unicon/classic@v3"
@@ -79,12 +73,11 @@ outputs:
 
 @pytest.fixture(scope="module")
 def primitives() -> dict[str, PrimitiveDeclaration]:
-    """The primitives the two workflows use, and today's three at `v2`."""
+    """The primitives the two workflows use."""
     return {
         "unicon/exec@v1": mirrored("exec"),
         "unicon/compile@v3": mirrored("compile"),
         "acme/pick@v1": PICK,
-        **{f"unicon/{name}@v2": parse_primitive(text) for name, text in PRIMITIVES.items()},
     }
 
 
@@ -142,18 +135,24 @@ def step(given: dict[str, Any], step_id: str) -> dict[str, Any]:
 # The format
 
 
-def test_a_file_without_a_test_block_is_a_run_workflow() -> None:
-    assert isinstance(read_workflow(CLASSIC), WorkflowDefinition)
-    run = read_workflow("steps:\n  - {id: a, use: unicon/compile@v3}\n")
+def test_a_file_with_a_test_block_is_refused() -> None:
+    run = parse_run_workflow("steps:\n  - {id: a, use: unicon/compile@v3}\n")
     assert isinstance(run, RunWorkflow)
-    assert run.reports == {}
+    assert run.outputs == {}
+    given = document(CLASSIC_V3)
+    given["test"] = {"input": "file"}
+
+    [problem] = refused(given)
+
+    assert problem["path"] == "test"
+    assert "repeat" in problem["message"]
 
 
 @pytest.mark.parametrize("ref", list(RUN_WORKFLOWS))
 def test_each_built_in_run_workflow_parses_and_types(
     primitives: dict[str, PrimitiveDeclaration], ref: str
 ) -> None:
-    workflow = read_workflow((folder(ref) / "workflow.yaml").read_bytes())
+    workflow = parse_run_workflow((folder(ref) / "workflow.yaml").read_bytes())
 
     assert isinstance(workflow, RunWorkflow)
     assert check_run_workflow(workflow, primitives, files(ref)).problems == []
@@ -164,7 +163,7 @@ def test_references_read_a_workflows_files_and_a_programs_outputs() -> None:
     assert parse_reference("workflow.diff/program.yaml") == Reference(
         "workflow", "diff/program.yaml"
     )
-    entrant = parse_reference("steps.game.entrant.time_ms", runs=True)
+    entrant = parse_reference("steps.game.entrant.time_ms")
     assert entrant == Reference("steps", "game", "time_ms", "entrant")
     assert entrant.port == "entrant.time_ms"
     assert str(entrant) == "${{ steps.game.entrant.time_ms }}"
@@ -184,25 +183,20 @@ def test_references_read_a_workflows_files_and_a_programs_outputs() -> None:
         "workflow.diff/ x",
     ):
         with pytest.raises(BadReference):
-            parse_reference(bad, runs=True)
+            parse_reference(bad)
 
 
-def test_a_bad_reference_lists_the_forms_its_format_has() -> None:
-    with pytest.raises(BadReference) as runs:
-        parse_reference("secrets.key", runs=True)
-    assert str(runs.value) == (
-        "Unicon cannot read ${{ secrets.key }}. Write ${{ inputs.<id> }}, "
-        "${{ steps.<id>.<output> }}, ${{ steps.<id>.<program>.<output> }} or "
-        "${{ workflow.<path> }}."
-    )
-    with pytest.raises(BadReference) as today:
-        parse_reference("steps.a.b.c")
-    assert str(today.value) == (
-        "Unicon cannot read ${{ steps.a.b.c }}. Write ${{ inputs.<id> }}, "
-        "${{ steps.<id>.<output> }} or ${{ test.<field> }}."
-    )
+def test_a_bad_reference_lists_the_forms_a_reference_has() -> None:
+    for bad in ("secrets.key", "test.input"):
+        with pytest.raises(BadReference) as raised:
+            parse_reference(bad)
+        assert str(raised.value) == (
+            f"Unicon cannot read ${{{{ {bad} }}}}. Write ${{{{ inputs.<id> }}}}, "
+            "${{ steps.<id>.<output> }}, ${{ steps.<id>.<program>.<output> }} or "
+            "${{ workflow.<path> }}."
+        )
     with pytest.raises(BadReference) as spaced:
-        parse_reference("workflow.diff/ x", runs=True)
+        parse_reference("workflow.diff/ x")
     assert str(spaced.value) == (
         "Unicon cannot read ${{ workflow.diff/ x }}. No part of the path can start or end "
         "with a space."
@@ -215,9 +209,9 @@ def test_a_bad_reference_lists_the_forms_its_format_has() -> None:
         (("inputs", "code"), "contestant"),
         (("inputs", "code"), "per_test"),
         (("steps", 0), "per_test"),
-        (("reports", "time_ms"), "fold"),
-        (("reports", "time_ms"), "better"),
-        (("reports", "time_ms"), "at_least"),
+        (("outputs", "time_ms"), "fold"),
+        (("outputs", "time_ms"), "better"),
+        (("outputs", "time_ms"), "at_least"),
     ],
 )
 def test_what_a_run_workflow_does_not_have_is_refused_at_its_path(
@@ -235,37 +229,42 @@ def test_what_a_run_workflow_does_not_have_is_refused_at_its_path(
     assert problem["path"] == f"{where.replace('.[', '[')}.{key}"
 
 
-def test_a_report_block_is_called_reports_here() -> None:
+@pytest.mark.parametrize("key", ["report", "reports"])
+def test_a_reports_key_is_named_outputs(key: str) -> None:
     given = document(CLASSIC_V3)
-    given["report"] = given.pop("reports")
+    given[key] = given.pop("outputs")
 
-    assert [problem["path"] for problem in refused(given)] == ["report"]
+    [problem] = refused(given)
+
+    assert problem["path"] == key
+    assert "Rename it outputs." in problem["message"]
+
+
+def test_a_file_output_is_not_a_column(primitives: dict[str, PrimitiveDeclaration]) -> None:
+    given = document(CLASSIC_V3)
+    given["outputs"]["program"] = "${{ steps.compile.program }}"
+
+    found = checked(primitives, given, files(CLASSIC_V3))
+
+    assert found.problems == []
+    assert "program" not in found.reports
+    assert found.outputs["program"].port is not None
+    assert found.outputs["program"].port.type is Type.FILE
+    assert "score" in found.reports
 
 
 @pytest.mark.parametrize("name", ["verdict", "passed", "time_limit"])
 def test_a_report_named_verdict_passed_or_like_an_input_is_refused(name: str) -> None:
     given = document(CLASSIC_V3)
-    given["reports"][name] = "${{ steps.solution.time_ms }}"
+    given["outputs"][name] = "${{ steps.solution.time_ms }}"
 
     [problem] = refused(given)
 
-    assert problem["path"] == f"reports.{name}"
+    assert problem["path"] == f"outputs.{name}"
     if name == "time_limit":
         assert "an input of the workflow" in problem["message"]
     else:
         assert "what it gives every run" in problem["message"]
-
-
-@pytest.mark.parametrize("name", ["verdict", "passed"])
-def test_todays_format_still_reports_verdict_and_passed(name: str) -> None:
-    """A version saved before the run workflow may report either, and a
-    task's save still reads it.
-    """
-    given = load_yaml(CLASSIC)
-    assert isinstance(given, dict)
-    given["report"][name] = "${{ steps.compile.compile_log }}"
-
-    assert name in parse_workflow(one_line(given)).report
 
 
 @pytest.mark.parametrize("name", ["verdict", "passed", "outcome", "points"])
@@ -343,29 +342,7 @@ def test_a_program_setting_named_by_a_number_is_refused_beside_unknown_names(
     ]
 
 
-def test_a_run_workflow_cannot_be_combined() -> None:
-    run = read_workflow((folder(CLASSIC_V3) / "workflow.yaml").read_bytes())
-
-    with pytest.raises(Rejected, match="unicon/classic@v3 has no test block"):
-        combinable(CLASSIC_V3, run)
-    assert combinable("unicon/classic@v2", parse_workflow(CLASSIC)) == parse_workflow(CLASSIC)
-
-
 # Steps and their ports
-
-
-def test_a_contract_5_step_is_refused_here(primitives: dict[str, PrimitiveDeclaration]) -> None:
-    given = document(CLASSIC_V3)
-    step(given, "compile")["use"] = "unicon/compile@v2"
-
-    assert problems(primitives, given) == [
-        {
-            "path": "steps[0].use",
-            "message": "unicon/compile@v2 is written for workflows with a test block, and this "
-            "one has none, so it describes one run. Use a primitive written for runs, such as "
-            "unicon/exec@v1.",
-        }
-    ]
 
 
 def test_a_run_workflow_has_no_test_fields(primitives: dict[str, PrimitiveDeclaration]) -> None:
@@ -375,7 +352,7 @@ def test_a_run_workflow_has_no_test_fields(primitives: dict[str, PrimitiveDeclar
     [problem] = problems(primitives, given)
 
     assert problem["path"] == "steps[1].with.stdin"
-    assert problem["message"].startswith("A workflow without a test block has no test fields")
+    assert problem["message"].startswith("Unicon cannot read ${{ test.input }}.")
 
 
 def test_a_step_output_cannot_raise_a_limit(primitives: dict[str, PrimitiveDeclaration]) -> None:
@@ -476,20 +453,6 @@ def test_without_its_files_a_workflows_paths_are_checked_for_their_form_alone(
     assert checked(primitives, given, None).problems == []
 
 
-def test_only_a_run_workflow_reads_its_own_files() -> None:
-    given = load_yaml(CLASSIC)
-    assert isinstance(given, dict)
-    given["steps"][0]["with"]["source"] = "${{ workflow.src/ }}"
-
-    [problem] = check_workflow(
-        parse_workflow(one_line(given)),
-        {f"unicon/{name}@v2": parse_primitive(text) for name, text in PRIMITIVES.items()},
-    )
-
-    assert problem["path"] == "steps[0].with.source"
-    assert problem["message"].startswith("Only a workflow without a test block")
-
-
 # Manifests and what they report
 
 
@@ -532,11 +495,11 @@ def test_an_output_neither_the_primitive_nor_the_manifest_gives_is_refused_namin
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     given = document(CLASSIC_V3)
-    given["reports"]["nope"] = "${{ steps.compare.nope }}"
+    given["outputs"]["nope"] = "${{ steps.compare.nope }}"
 
     assert problems(primitives, given) == [
         {
-            "path": "reports.nope",
+            "path": "outputs.nope",
             "message": "The step compare has no output called nope: neither unicon/exec@v1 "
             "gives it nor diff/program.yaml reports it.",
         }
@@ -579,7 +542,7 @@ def test_a_manifest_from_a_steps_output_is_refused(
 ) -> None:
     given = document(CLASSIC_V3)
     step(given, "compare")["with"]["manifest"] = "${{ steps.solution.output }}"
-    del given["reports"]["score"]
+    del given["outputs"]["score"]
 
     assert problems(primitives, given) == [
         {"path": "steps[3].with.manifest", "message": MANIFEST_FROM_STEP}
@@ -592,12 +555,12 @@ def test_a_manifest_from_an_input_leaves_its_reports_to_the_tasks_save(
     given = document(CLASSIC_V3)
     given["inputs"]["checker"] = "file"
     step(given, "compare")["with"]["manifest"] = "${{ inputs.checker }}"
-    given["reports"]["score"] = {"from": "${{ steps.compare.score }}", "unit": "points"}
+    given["outputs"]["score"] = {"from": "${{ steps.compare.score }}", "unit": "points"}
 
     found = checked(primitives, given, files(CLASSIC_V3))
 
     assert found.problems == []
-    assert found.deferred == [Deferred("reports.score", "compare", None, "score", None, True)]
+    assert found.deferred == [Deferred("outputs.score", "compare", None, "score", None, True)]
     assert found.reports["score"].port is None
     assert found.reports["score"].meaning("unicon/exec@v1") is None
     manifest = found.steps["compare"].program.manifest
@@ -629,7 +592,7 @@ def test_an_input_the_organisers_program_loads_makes_its_reports_self_reported(
     given = document(CLASSIC_V3)
     given["inputs"]["helper"] = {"type": "file"}
     step(given, "compare")["with"]["loads"] = {"helper.py": "${{ inputs.helper }}"}
-    given["reports"]["note"] = "${{ steps.compare.message }}"
+    given["outputs"]["note"] = "${{ steps.compare.message }}"
 
     found = checked(primitives, given, files(CLASSIC_V3))
 
@@ -645,7 +608,7 @@ def test_the_verdict_and_texts_of_the_organisers_programs_are_not_self_reported(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     given = document(CLASSIC_V3)
-    given["reports"]["note"] = "${{ steps.compare.message }}"
+    given["outputs"]["note"] = "${{ steps.compare.message }}"
 
     found = checked(primitives, given, files(CLASSIC_V3))
 
@@ -661,8 +624,8 @@ def test_a_text_the_entrants_program_writes_beside_its_reports_is_self_reported(
 ) -> None:
     given = document(CLASSIC_V3)
     step(given, "compare")["with"]["program"] = "${{ steps.compile.program }}"
-    given["reports"]["note"] = f"${{{{ steps.compare.{text} }}}}"
-    given["reports"]["solution_note"] = f"${{{{ steps.solution.{text} }}}}"
+    given["outputs"]["note"] = f"${{{{ steps.compare.{text} }}}}"
+    given["outputs"]["solution_note"] = f"${{{{ steps.solution.{text} }}}}"
 
     found = checked(primitives, given, files(CLASSIC_V3))
 
@@ -677,15 +640,15 @@ def test_a_report_never_names_what_only_staff_see(
     primitives: dict[str, PrimitiveDeclaration], output: str
 ) -> None:
     given = document(CLASSIC_V3)
-    given["reports"]["note"] = f"${{{{ steps.compare.{output} }}}}"
+    given["outputs"]["note"] = f"${{{{ steps.compare.{output} }}}}"
 
     found = checked(primitives, given, files(CLASSIC_V3))
 
     assert found.problems == [
         {
-            "path": "reports.note",
-            "message": f"{output} is only for staff to see, and a report is shown to "
-            "entrants. Report another output, or leave this one to staff.",
+            "path": "outputs.note",
+            "message": f"{output} is only for staff to see, and an output is read by a task and "
+            "by a box. Give another output, or leave this one to staff.",
         }
     ]
 
@@ -708,7 +671,7 @@ def test_a_programs_reports_are_its_outputs_and_may_be_missing(
     step(given, "game")["with"]["programs"]["judge"]["manifest"] = (
         "${{ workflow.judge/program.yaml }}"
     )
-    given["reports"]["score"] = "${{ steps.game.judge.score }}"
+    given["outputs"]["score"] = "${{ steps.game.judge.score }}"
     judge_files = files(
         INTERACTIVE_V1,
         {"judge/program.yaml": b"reports:\n  score: {better: higher, at_least: 0, at_most: 1}\n"},
@@ -721,14 +684,14 @@ def test_a_programs_reports_are_its_outputs_and_may_be_missing(
     assert (score.type, score.optional, score.better) == (Type.NUMBER, True, Better.HIGHER)
     assert found.reports["score"].self_reported_by == {"judge", "judge_language"}
     step(given, "decide")["with"]["time_limit"] = "${{ steps.game.judge.score }}"
-    given["reports"]["oops"] = "${{ steps.game.entrant.score }}"
+    given["outputs"]["oops"] = "${{ steps.game.entrant.score }}"
     assert checked(primitives, given, judge_files).problems == [
         {
             "path": "steps[4].with.time_limit",
             "message": "This value raises a limit, so it must be known when the task is saved.",
         },
         {
-            "path": "reports.oops",
+            "path": "outputs.oops",
             "message": "The step game has no output called entrant.score: unicon/exec@v1 "
             "gives no score of a program, and entrant is given no manifest that reports one.",
         },
@@ -739,7 +702,7 @@ def test_interactive_v1_records_the_entrant_input_reaching_only_the_entrant_prog
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     given = document(INTERACTIVE_V1)
-    given["reports"]["score"] = "${{ steps.game.judge.score }}"
+    given["outputs"]["score"] = "${{ steps.game.judge.score }}"
 
     found = checked(primitives, given, files(INTERACTIVE_V1))
 
@@ -753,7 +716,7 @@ def test_interactive_v1_records_the_entrant_input_reaching_only_the_entrant_prog
     assert "facts" in judge.manifest.own_names
     assert judge.self_reportable is False
     assert found.reports["score"].self_reported_by == {"judge", "judge_language"}
-    assert found.deferred == [Deferred("reports.score", "game", "judge", "score", None)]
+    assert found.deferred == [Deferred("outputs.score", "game", "judge", "score", None)]
     assert found.time_limits == [
         TimeLimitOrder(
             "steps[2].with.programs.judge.time_limit",

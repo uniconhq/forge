@@ -32,6 +32,7 @@ from tests.services.conftest import (
     SPRING,
     Acme,
     Entered,
+    checked,
     make_task,
     organiser,
     publish,
@@ -95,7 +96,7 @@ async def test_an_observer_reads_the_file_the_tree_and_the_history_as_themself(
 
     assert found.content.startswith(b"# The task's settings")
     assert [entry.path for entry in listed] == ["statement.md", "task.yaml", "tests"]
-    assert [entry.path for entry in folder] == ["tests/main"]
+    assert [entry.path for entry in folder] == ["tests/1.ans", "tests/1.in"]
     assert [change.message for change in changes] == ["Create"]
     assert {
         call.identity
@@ -317,7 +318,7 @@ async def _submitted(setup: Setup, acme: Acme, entered: Entered) -> None:
         entered.session,
         entered.task,
         {
-            "submission": SubmittedInput(uploads=(made.id,)),
+            "code": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key="key-0001-aaaa",
@@ -598,6 +599,7 @@ async def test_a_contest_opens_only_once_each_task_is_published_with_its_stateme
     await files.write(
         setup, acme.ada, sum_task, "statement.md", b"Add two numbers.\n", statement.token
     )
+    await checked(setup, sum_task)
 
     assert unpublished == [("state", "A · sum: it is not published yet.")]
     assert placeholder == [("state", "A · sum: its statement is not written yet.")]
@@ -612,6 +614,7 @@ async def test_a_withdrawn_task_does_not_keep_a_contest_from_opening_nor_does_a_
     await files.write(
         setup, acme.ada, sum_task, "statement.md", b"Add two numbers.\n", statement.token
     )
+    await checked(setup, sum_task)
     await make_task(setup, acme, "product")
     draft = (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content
     withdrawn = draft.replace(b"- id: product", b"- {id: product, withdrawn: true}")
@@ -715,30 +718,28 @@ async def test_a_listing_gives_each_small_text_files_start_in_one_read_of_them_a
         acme.ada,
         sum_task,
         {
-            "tests/main/1/input": Edit(b"1 2\n" + b"9 " * 600, head.tokens["tests/main/1/input"]),
-            "tests/main/1/answer": Edit(b"", head.tokens["tests/main/1/answer"]),
-            "tests/main/1/picture.bin": Edit(b"\x89PNG\x00\x01", None),
-            "tests/main/1/latin.txt": Edit("café".encode("latin-1"), None),
-            "tests/main/1/long.txt": Edit("ü".encode() * 100, None),
+            "tests/1.in": Edit(b"1 2\n" + b"9 " * 600, head.tokens["tests/1.in"]),
+            "tests/1.ans": Edit(b"", head.tokens["tests/1.ans"]),
+            "tests/picture.bin": Edit(b"\x89PNG\x00\x01", None),
+            "tests/latin.txt": Edit("café".encode("latin-1"), None),
+            "tests/long.txt": Edit("ü".encode() * 100, None),
         },
     )
     assert isinstance(saved, (Published, task_save.Draft))
     acme.fake.reset_calls()
 
-    listed = {
-        entry.path: entry for entry in await files.tree(setup, acme.ada, sum_task, "tests/main/1")
-    }
+    listed = {entry.path: entry for entry in await files.tree(setup, acme.ada, sum_task, "tests")}
 
     starts = {path.rsplit("/", 1)[1]: entry.start for path, entry in listed.items()}
     # Over a kilobyte, not text, or not UTF-8: no start; empty: an empty one.
     assert starts == {
-        "answer": "",
-        "input": None,
+        "1.ans": "",
+        "1.in": None,
         "latin.txt": None,
         "long.txt": "ü" * 80,
         "picture.bin": None,
     }
-    assert listed["tests/main/1/input"].size == 4 + 1200
+    assert listed["tests/1.in"].size == 4 + 1200
     (batch,) = acme.fake.calls_to("read_blobs")
     assert len(batch.arguments["tokens"]) == 4
     assert acme.fake.calls_to("read_file") == []
@@ -827,7 +828,7 @@ async def test_a_manager_is_refused_an_admin_only_key_of_a_task_and_of_a_contest
             manager,
             sum_task,
             "task.yaml",
-            task_yaml.content.replace(b"test_groups:", b"submissions: {max: 3}\ntest_groups:"),
+            task_yaml.content.replace(b"scoring:", b"submissions: {max: 3}\nscoring:"),
             task_yaml.token,
         )
     with pytest.raises(AdminOnly):

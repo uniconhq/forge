@@ -1,9 +1,8 @@
 """Making a task is a request a manager of its contest makes, done before it
-answers: the place with the starter `task.yaml`, `statement.md`, no
-`public/` and one test, `tests/main/1/`, then the roles of the contest and
-the task with its protection and its publications reserved, then its
-activation at the CI as the org's account, then its entry at the end of the
-`tasks` list in `contest.yaml`, written as the platform: `{id}` in a draft
+answers: the place with the starter `task.yaml`, `statement.md` and one
+test, `tests/1.in` and `tests/1.ans`, then the roles of the contest and the
+task with its protection and its publications reserved, then its entry at
+the end of the `tasks` list in `contest.yaml`, written as the platform: `{id}` in a draft
 contest, and in a published one with `release_at` and `closes` at the
 contest's end, so work in progress shows nothing. Nothing is published; a
 task the list holds already is left as it is, and a `contest.yaml` that does
@@ -21,7 +20,6 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.adapters.ci.fake import token_in
 from forge.domain.content import Edit
 from forge.domain.definitions import (
     STARTER_STATEMENT,
@@ -30,13 +28,13 @@ from forge.domain.definitions import (
     statement_written,
 )
 from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable
-from forge.domain.identity import PLATFORM, AsOrgAccount, User
-from forge.domain.ids import ContestId, OrgId, TaskId
+from forge.domain.identity import PLATFORM, User
+from forge.domain.ids import ContestId, TaskId
 from forge.domain.names import Named
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import making, names, org_accounts, reconcile, task_save, tasks
+from forge.services import making, names, reconcile, task_save, tasks
 from forge.services.access import Organiser
 from forge.testing import logged
 from tests.services.conftest import (
@@ -53,11 +51,10 @@ from tests.services.conftest import (
 STEPS = [
     ("content", "create_task"),
     ("content", "secure"),
-    ("grading", "activate"),
     ("content", "read_file"),
     ("content", "write_file"),
 ]
-REMOVALS = {"write_file", "deactivate", "delete_place"}
+REMOVALS = {"write_file", "delete_place"}
 
 CONTEST_HEAD = (
     "name: Spring 2026\nstart: 2026-10-01T10:00:00Z\nend: 2026-10-01T15:00:00Z\n"
@@ -76,9 +73,6 @@ async def test_a_contest_manager_makes_the_task_with_its_files(
     made = await tasks.create(setup, bob, spring, "sum", title="Sum of Two")
 
     assert made == Named(SUM, "sum")
-    (activated,) = acme.fake.calls_to("activate")
-    assert isinstance(activated.identity, AsOrgAccount)
-    assert activated.identity.org == "acme"
     assert [call.operation for call in acme.fake.calls if call.identity == PLATFORM] == [
         "exists",
         "create_task",
@@ -87,18 +81,10 @@ async def test_a_contest_manager_makes_the_task_with_its_files(
         "write_file",
     ]
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
-    assert sorted(repo.files) == [
-        "statement.md",
-        "task.yaml",
-        "tests/main/1/answer",
-        "tests/main/1/input",
-    ]
-    assert (repo.files["tests/main/1/input"], repo.files["tests/main/1/answer"]) == (
-        b"1 2\n",
-        b"3\n",
-    )
+    assert sorted(repo.files) == ["statement.md", "task.yaml", "tests/1.ans", "tests/1.in"]
+    assert (repo.files["tests/1.in"], repo.files["tests/1.ans"]) == (b"1 2\n", b"3\n")
     starter = parse_task(repo.files["task.yaml"])
-    assert (starter.name, str(starter.workflow)) == ("Sum of Two", "unicon/classic@v2")
+    assert (starter.name, str(starter.workflow)) == ("Sum of Two", "unicon/classic@v3")
     assert repo.teams == {Scope("acme", "spring"), Scope("acme", "spring", "sum")}
     assert repo.reserved == {"published/"}
     assert repo.rewrites_refused is True
@@ -188,9 +174,9 @@ async def test_a_failure_fails_the_request_and_leaves_the_name_free(
     setup: Setup, acme: Acme, spring: ContestId, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def down(*args: Any, **kwargs: Any) -> None:
-        raise Unavailable("the CI went away")
+        raise Unavailable("the forge went away")
 
-    monkeypatch.setattr(acme.fake.grading, "activate", down)
+    monkeypatch.setattr(acme.fake.content, "secure", down)
 
     with pytest.raises(Unavailable):
         await tasks.create(setup, acme.ada, spring, "sum")
@@ -234,7 +220,6 @@ async def test_a_failure_at_any_step_removes_what_the_earlier_ones_made_and_the_
     made = await tasks.create(setup, acme.ada, spring, "sum")
 
     assert made == Named(SUM, "sum")
-    assert SUM in acme.fake.ci.activated
 
 
 async def test_a_commit_that_fails_after_every_step_removes_the_task_and_its_entry(
@@ -253,7 +238,6 @@ async def test_a_commit_that_fails_after_every_step_removes_the_task_and_its_ent
     assert [call.operation for call in acme.fake.calls if call.operation in REMOVALS] == [
         "write_file",
         "write_file",
-        "deactivate",
         "delete_place",
     ]
     assert forge_state(acme.fake) == before
@@ -293,10 +277,9 @@ async def test_an_entry_an_organiser_changed_since_is_left_and_logged(
     (left,) = logged(caplog, "tasks.undo_left")
     assert (left["kind"], left["key"], left["error"]) == ("contest_entry", SPRING, "Conflict")
     assert ("acme", "spring.sum.task") not in acme.fake.state.repos
-    assert SUM not in acme.fake.ci.activated
 
 
-async def test_a_removal_that_fails_is_logged_and_the_rest_still_run(
+async def test_a_removal_that_fails_is_logged_and_the_steps_own_error_raised(
     setup: Setup,
     acme: Acme,
     spring: ContestId,
@@ -307,22 +290,21 @@ async def test_a_removal_that_fails_is_logged_and_the_rest_still_run(
         raise Rejected("the forge said no")
 
     async def down(*args: Any, **kwargs: Any) -> Any:
-        raise Unavailable("the CI went away")
+        raise Unavailable("the forge went away")
 
     monkeypatch.setattr(acme.fake.content, "read_file", refused)
-    monkeypatch.setattr(acme.fake.grading, "deactivate", down)
+    monkeypatch.setattr(acme.fake.content, "delete_place", down)
     with pytest.raises(Rejected) as failed:
         await tasks.create(setup, acme.ada, spring, "sum")
 
     assert failed.value.detail == making.SAID[Rejected]
     (left,) = logged(caplog, "tasks.undo_left")
     assert (left["kind"], left["key"], left["task"], left["error"]) == (
-        "activation",
+        "task",
         SUM,
         SUM,
         "Unavailable",
     )
-    assert ("acme", "spring.sum.task") not in acme.fake.state.repos
 
 
 async def test_a_task_made_in_full_removes_nothing(
@@ -332,11 +314,8 @@ async def test_a_task_made_in_full_removes_nothing(
 
     await tasks.create(setup, acme.ada, spring, "sum")
 
-    assert [
-        call for call in acme.fake.calls if call.operation in {"deactivate", "delete_place"}
-    ] == []
+    assert [call for call in acme.fake.calls if call.operation == "delete_place"] == []
     assert logged(caplog, "tasks.undone") == []
-    assert SUM in acme.fake.ci.activated
 
 
 async def test_the_tasks_of_a_contest_are_listed_as_the_organiser(
@@ -396,19 +375,6 @@ async def test_a_task_says_whether_its_published_statement_is_written_and_its_he
     assert statement_written(b"\nWrite the statement entrants read here.  \r\n") is False
     assert statement_written(None) is False
     assert statement_written(STARTER_STATEMENT + b"Add two numbers.\n") is True
-
-
-async def test_a_task_whose_activation_the_ci_refuses_signs_the_org_account_in_again(
-    setup: Setup, acme: Acme, spring: ContestId
-) -> None:
-    async with setup.unit_of_work() as ctx:
-        lost = await org_accounts.identity(ctx, OrgId("acme"))
-    acme.fake.ci.revoked_ci_tokens.add(token_in(lost.ci_state))
-
-    await tasks.create(setup, acme.ada, spring, "sum")
-
-    assert len(acme.fake.calls_to("activate")) == 2
-    assert len(acme.fake.calls_to("refresh")) == 1
 
 
 STANDING = CONTEST_HEAD + (

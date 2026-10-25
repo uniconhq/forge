@@ -1,12 +1,12 @@
-"""The object store the platform keeps grading run logs and run task steps'
-outputs in, and the read-only way into the forge's own large-file store a
-run task's step fetches the task's files by. A person's files go into the
-forge's large-file store through the upload door (`port.uploads`), and never
-pass through the platform.
+"""The object store the platform keeps task steps' outputs in, and the
+read-only way into the forge's own large-file store a task's step fetches
+the task's files by. A person's files go into the forge's large-file store
+through the upload door (`port.uploads`), and never pass through the
+platform.
 
 A grading machine is handed URLs signed for the address machines reach the
-platform at, each for one object, and writes its log and a step's outputs
-straight there, and reads an earlier step's outputs and the task's large
+platform at, each for one object, and writes a step's outputs straight
+there, and reads an earlier step's outputs and the task's large
 files from there; the platform only reads what arrived.
 """
 

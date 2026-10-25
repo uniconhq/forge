@@ -85,6 +85,7 @@ class Submitted:
     numbers: Mapping[str, Fraction] = field(default_factory=dict)
     waiting: frozenset[str] = frozenset()
     hidden: frozenset[str] = frozenset()
+    texts: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +105,7 @@ class Cell:
     waiting: frozenset[SubmissionAt] = frozenset()
     hidden: bool = False
     missing: bool = False
+    text: str | None = None
 
     def having(self, *others: Cell) -> Cell:
         """This, with what `others` counted, left out and read added, and
@@ -116,12 +118,13 @@ class Cell:
             self.waiting.union(*(other.waiting for other in others)),
             self.hidden or any(other.hidden for other in others),
             self.missing,
+            self.text,
         )
 
     @property
     def nothing(self) -> bool:
         """Whether it is missing, or none."""
-        return self.number is None and self.picked is None
+        return self.number is None and self.picked is None and self.text is None
 
 
 _MISSING = Cell()
@@ -180,6 +183,8 @@ class _Row:
             return Cell(number)
         if not isinstance(tree, dict):
             raise ValueError(f"{tree!r} is not a node of a column's tree")
+        if set(tree) == {"text"} and isinstance(tree.get("text"), str):
+            return Cell(text=tree["text"])
         if "block" in tree:
             return self.block(tree, scope, through, hides)
         leaf = leaf_of(tree)
@@ -245,6 +250,12 @@ class _Row:
             return self.node(inputs[1], scope, through, hides).having(first)
         got = [self.node(each, scope) for each in inputs]
         read = _MISSING.having(*got)
+        if block.name in ("eq", "ne") and any(each.text is not None for each in got):
+            # Text compares to text only, as in a task's values.
+            if any(each.text is None or each.number is not None for each in got):
+                return read
+            same = got[0].text == got[1].text
+            return Cell(Fraction(1 if same == (block.name == "eq") else 0)).having(read)
         if any(each.number is None for each in got):
             return read
         numbers = [each.number for each in got if each.number is not None]
@@ -470,6 +481,8 @@ def _read(picked: tuple[str, Submitted], name: str) -> Cell:
         return Cell(hidden=True)
     if name in submitted.waiting:
         return Cell(waiting=frozenset({(task, submitted.number)}))
+    if name in submitted.texts:
+        return Cell(text=submitted.texts[name])
     return Cell(submitted.numbers.get(name))
 
 

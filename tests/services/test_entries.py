@@ -87,7 +87,9 @@ async def _organised(setup: Setup, acme: Acme, task: Any) -> dict[str, Any]:
     return _values(seen.grading)
 
 
-async def _enter(setup: Setup, acme: Acme, task: Any, mark: str, value: str = "review") -> Any:
+async def _enter(
+    setup: Setup, acme: Acme, task: Any, mark: str | None, value: str = "review"
+) -> Any:
     return await entries.enter(setup, acme.ada, task, await _owner(setup), 1, value, mark)
 
 
@@ -123,7 +125,7 @@ async def test_a_value_is_missing_until_a_mark_is_entered_and_the_latest_counts(
     assert await _entries(setup) == [("review", "7.5", 7), ("review", "10", 7)]
 
 
-@pytest.mark.parametrize("mark", ["10.000001", "-0.5", "1e1", "seven", "", "NaN", "Infinity"])
+@pytest.mark.parametrize("mark", ["10.000001", "-0.5", "1e1", "seven", "NaN", "Infinity"])
 async def test_a_mark_outside_its_bounds_or_not_a_plain_number_is_refused(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock, mark: str
 ) -> None:
@@ -135,6 +137,37 @@ async def test_a_mark_outside_its_bounds_or_not_a_plain_number_is_refused(
 
     assert refused.value.detail == "Enter a number from 0 to 10 for review, such as 0."
     assert await _entries(setup) == []
+
+
+async def test_an_empty_mark_clears_it_and_the_entry_is_kept(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, session = await _graded_both(setup, acme, REVIEWED, BEST)
+    await _enter(setup, acme, islands.task, "7.50")
+
+    clock.advance(timedelta(minutes=1))
+    cleared = await _enter(setup, acme, islands.task, "")
+    assert (cleared.mark, cleared.by, cleared.at) == (None, 7, clock.now())
+    assert (await _organised(setup, acme, islands.task))["review"] is None
+    clock.set(AFTER_CLOSE)
+    [leaderboard] = await leaderboards.seen(setup, session, SPRING)
+    assert leaderboard.rows[0].cells[0].number is None
+
+    await _enter(setup, acme, islands.task, None)
+    again = await _enter(setup, acme, islands.task, "4")
+    assert again.mark == "4"
+    assert (await _organised(setup, acme, islands.task))["review"] == 4
+    async with setup.unit_of_work() as ctx:
+        rows = (
+            await ctx.db.execute(
+                select(
+                    Entry.mark, Entry.entered_by, Entry.entered_at, Entry.submission_id
+                ).order_by(Entry.seq)
+            )
+        ).all()
+    assert [(mark, by) for mark, by, _, _ in rows] == [("7.5", 7), (None, 7), (None, 7), ("4", 7)]
+    assert all(at is not None and submission is not None for _, _, at, submission in rows)
 
 
 @pytest.mark.parametrize("value", ["reviewed", "total", "nothing"])

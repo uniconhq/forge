@@ -19,8 +19,9 @@ it sends carries anything a person could read: a nudge is a kind and an
 id.
 
 Nudges are published by the units of work that make the change
-(`Context.nudge`): a grading's status changes in `gradings` and `runs`, and
-a thread's in `events`, from the forge's push.
+(`Context.nudge`): a grading's status changes in `gradings` and `runs`, a
+save row's end tells the task's organisers its checks ended (`checks`, the
+publication's id), and a thread's in `events`, from the forge's push.
 """
 
 import asyncio

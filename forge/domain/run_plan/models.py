@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field
@@ -48,25 +48,40 @@ class PinnedWorkflow(Model):
     files: dict[str, FileFact] = Field(default_factory=dict)
 
 
+class PartDetails(Model):
+    """One part of an entrant input: the tuple's title, and the most that
+    part may hold, in bytes.
+    """
+
+    title: str | None = None
+    max_size: Annotated[int, Field(ge=1)]
+
+
 class EntrantEntry(Model):
     """An input the entrant gives: its type, an enum's options, the parts it
     is given in, and on a file or folder the most it may hold, in bytes.
+    `max_size` is the largest part's when the input is given in parts.
+    `part_details` is one per part, in order, when a part has a title or
+    its own size.
     """
 
     type: Type
     options: tuple[str, ...] | None = None
     parts: Annotated[int, Field(ge=1)] | None = None
     max_size: Annotated[int, Field(ge=1)] | None = None
+    part_details: tuple[PartDetails, ...] | None = None
 
 
 class RunEntry(Model):
-    """A run: its id, its key with a part as `{part: <n>}`, and whether it is
-    early.
+    """A run: its id, its key with a part as `{part: <n>}`, whether it is
+    early, and its tuples' titles, one per axis, none where that tuple
+    has none.
     """
 
     id: RunId
     key: dict[str, Any]
     early: bool
+    titles: tuple[str | None, ...] | None = None
 
 
 class Item(Model):
@@ -175,12 +190,13 @@ class FilesRead:
 
 
 class RunPlan(Model):
-    """A run task's plan, in the shape of the runner's plan schema
+    """A task's plan, in the shape of the runner's plan schema
     version 6.
     """
 
     schema_version: Literal[6] = SCHEMA_VERSION
     workflow: PinnedWorkflow
+    inner_workflows: tuple[PinnedWorkflow, ...] = ()
     task_files: dict[str, FileFact]
     entrant: dict[str, EntrantEntry]
     runs: tuple[RunEntry, ...]
@@ -196,6 +212,8 @@ class RunPlan(Model):
         two spaces of indent and a final newline, the same bytes every time.
         """
         document = self.model_dump(by_alias=True, exclude_none=True)
+        if not document.get("inner_workflows"):
+            document.pop("inner_workflows", None)
         return (exact_json.dumps(document, sort_keys=True, indent=2) + "\n").encode()
 
     @classmethod
@@ -208,6 +226,13 @@ class RunPlan(Model):
         except ValueError:
             return cls.model_validate_json(data)
         return cls.model_validate(document)
+
+    def pinned(self, pin: int) -> PinnedWorkflow:
+        """The workflow of pin `pin`: the task's own for 0, and inner pin k
+        at index k - 1."""
+        if pin == 0:
+            return self.workflow
+        return self.inner_workflows[pin - 1]
 
     def pipeline(self, kind: PipelineKind) -> tuple[PipelineStep, ...]:
         """The steps of one pipeline, none when it is left out."""
@@ -270,7 +295,8 @@ class RunPlan(Model):
                 if "task" in value:
                     task |= named_by(self.task_files, value["task"])
                 elif "workflow" in value:
-                    workflow |= named_by(self.workflow.files, value["workflow"])
+                    pin = value.get("pin", 0)
+                    workflow |= named_by(self.pinned(pin).files, value["workflow"])
                 elif "entrant" in value:
                     entrant.add((value["entrant"], value.get("part")))
                 elif "step" in value:
@@ -301,7 +327,7 @@ class RunPlan(Model):
 
 @dataclass(frozen=True, slots=True)
 class RunPlanCheck:
-    """Every problem a run task's plan is refused for, each at its path in
+    """Every problem a task's plan is refused for, each at its path in
     `task.yaml`, and the plan when there is none.
     """
 
@@ -312,8 +338,10 @@ class RunPlanCheck:
 @dataclass(frozen=True, slots=True)
 class FilesNamed:
     """The task's files and folders, and the workflow's, that a step is
-    given in some run, a folder ending in `/`.
+    given in some run, a folder ending in `/`. `inner` is the same for
+    each pin from 1.
     """
 
     task: frozenset[str]
     workflow: frozenset[str]
+    inner: dict[int, frozenset[str]] = field(default_factory=dict)

@@ -1,7 +1,5 @@
 import json
 import re
-from collections.abc import Iterable
-from decimal import MAX_PREC, Decimal, localcontext
 from enum import StrEnum
 from typing import Annotated
 
@@ -15,8 +13,6 @@ from forge.domain.yaml_models import name_rule
 CONTEST_FILE = "contest.yaml"
 TASK_FILE = "task.yaml"
 STATEMENT_FILE = "statement.md"
-TESTS_FOLDER = "tests/"
-PUBLIC_FOLDER = "public/"
 
 Flag = Annotated[bool, Field(strict=True)]
 
@@ -40,17 +36,6 @@ class ContestVisibility(StrEnum):
 class Approval(StrEnum):
     AUTO = "auto"
     MANUAL = "manual"
-
-
-class Show(StrEnum):
-    """When contestants see a test group's results: as soon as a grading
-    ends; its outcome now and its tests at the task's reveal; or, but for
-    its name, everything at the reveal.
-    """
-
-    ALWAYS = "always"
-    VERDICT = "verdict"
-    AFTER_CLOSE = "after_close"
 
 
 def _pattern(value: object) -> str:
@@ -99,17 +84,6 @@ def _domain(value: object) -> str:
 
 
 Domain = Annotated[str, PlainValidator(_domain)]
-
-
-def exact_sum(values: Iterable[int | Decimal]) -> int | Decimal:
-    """The numbers summed with no rounding: a sum of finite decimals is one,
-    and Decimal's usual 28 digits would round a long weight's last ones.
-    """
-    total: int | Decimal = 0
-    with localcontext(prec=MAX_PREC):
-        for value in values:
-            total += value
-    return total
 
 
 def _yaml_text(value: str) -> str:

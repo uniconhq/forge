@@ -1,4 +1,4 @@
-"""A run task's plan (SIMPLER-CORE.md 11.1 to 11.4, 15.4 and 15.5): islands
+"""A task's plan (SIMPLER-CORE.md 11.1 to 11.4, 15.4 and 15.5): islands
 reads step by step as written; each step is placed by what it reads; a
 grading is an early and a late pipeline, never mixed; taint follows a
 hidden file into the steps that run the entrant's code beside it, and the
@@ -60,6 +60,7 @@ from tests.test_run_task import (
     MEAN,
     MEAN_MANIFEST,
     MEAN_PATHS,
+    TITLED,
     TOUR,
     TOUR_FILES,
     TOUR_PATHS,
@@ -135,7 +136,7 @@ def planned(
     in `paths` 3 bytes long but those `sizes` gives, and hashed as if it held
     its path.
     """
-    definition = parse_task(task, runs=True)
+    definition = parse_task(task)
     parsed = parse_run_workflow(workflow)
     checked = check_run_workflow(parsed, primitives, WorkflowFiles(frozenset(files), files))
     assert checked.problems == []
@@ -497,6 +498,49 @@ def test_cartpole_is_one_early_pipeline(primitives: dict[str, PrimitiveDeclarati
     ]
 
 
+def test_a_titled_tour_keeps_each_parts_title_and_size(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(planned(primitives, TITLED, TOUR, TOUR_FILES, TOUR_PATHS))
+
+    details = plan.entrant["route"].part_details or ()
+    assert [(part.title, part.max_size) for part in details] == [
+        ("Small grid", 10 * 1024 * 1024),
+        ("Big grid", 50 * 1024 * 1024),
+    ]
+    assert plan.entrant["route"].max_size == 50 * 1024 * 1024
+    assert [run.titles for run in plan.runs] == [("Small grid",), ("Big grid",)]
+    plain = ok(planned(primitives, TOUR_TASK, TOUR, TOUR_FILES, TOUR_PATHS))
+    assert run_plan_changes(_snapshot(plain), _snapshot(plan)) == (
+        "The largest size of part 2 of route changed.",
+    )
+    renamed = plan.model_copy(
+        update={
+            "runs": tuple(
+                run.model_copy(update={"titles": ("Other",)}) if run.id == "r1" else run
+                for run in plan.runs
+            )
+        }
+    )
+    assert run_plan_changes(_snapshot(plan), _snapshot(renamed)) == ()
+    route = plan.entrant["route"]
+    assert route.part_details is not None
+    added = route.part_details[-1].model_copy(update={"title": "Third", "max_size": 1024})
+    longer = plan.model_copy(
+        update={
+            "entrant": {
+                **plan.entrant,
+                "route": route.model_copy(
+                    update={"parts": 3, "part_details": (*route.part_details, added)}
+                ),
+            }
+        }
+    )
+    assert run_plan_changes(_snapshot(plan), _snapshot(longer)) == (
+        "The largest size of part 3 of route changed.",
+    )
+
+
 def test_tour_gives_each_run_its_own_part(primitives: dict[str, PrimitiveDeclaration]) -> None:
     plan = ok(planned(primitives, TOUR_TASK, TOUR, TOUR_FILES, TOUR_PATHS))
 
@@ -579,7 +623,7 @@ steps:
       stdin: ${{ steps.generate.output }}
       time_limit: 1
       memory_limit: 64
-reports:
+outputs:
   time_ms: ${{ steps.solution.time_ms }}
 """
 GENERATED_FILES = {"workflow.yaml": GENERATED.encode(), "gen/gen.py": b"print(1)\n"}
@@ -647,7 +691,7 @@ steps:
       stdin: ${{ inputs.input }}
       time_limit: 1
       memory_limit: 64
-reports:
+outputs:
   time_ms: ${{ steps.solution.time_ms }}
 """
 SELF_TESTED_TASK = """\
@@ -770,7 +814,7 @@ steps:
       stdin: ${{ inputs.input }}
       time_limit: 1
       memory_limit: 64
-reports:
+outputs:
   time_ms: ${{ steps.run.time_ms }}
 """
 LINKED_TASK = """\
@@ -882,7 +926,7 @@ steps:
       stdin: ${{ inputs.input }}
       time_limit: 1
       memory_limit: 64
-reports:
+outputs:
   score: ${{ steps.judge.score }}
 """
 SECRET_TASK = """\
@@ -1075,7 +1119,7 @@ steps:
       stdin: ${{ inputs.input }}
       time_limit: 1
       memory_limit: 64
-reports:
+outputs:
   time_ms: ${{ steps.run.time_ms }}
 """
 PER_LANGUAGE_TASK = """\
@@ -1144,7 +1188,7 @@ steps:
       stdin: ${{ inputs.input }}
       time_limit: ${{ inputs.time_limit }}
       memory_limit: 64
-reports:
+outputs:
   time_ms: ${{ steps.solution.time_ms }}
 """
 WARMED_TASK = """\
@@ -1251,7 +1295,7 @@ steps:
   - id: judge
     use: acme/judge@v1
     with: {program: "${{ steps.compile.program }}", data: "${{ inputs.input }}"}
-reports:
+outputs:
   time_ms: ${{ steps.third.time_ms }}
 """
 SIDE_BY_SIDE_TASK = """\
@@ -1366,7 +1410,7 @@ def test_a_step_bigger_than_the_biggest_slot_is_refused(
     files = {"workflow.yaml": SIDE_BY_SIDE.encode()}
     checked = check_run_workflow(workflow, primitives, WorkflowFiles(frozenset(files), files))
     found = check_run_task(
-        parse_task(SIDE_BY_SIDE_TASK.replace("memory: 3000", "memory: 30000"), runs=True),
+        parse_task(SIDE_BY_SIDE_TASK.replace("memory: 3000", "memory: 30000")),
         workflow,
         checked,
         frozenset({"task.yaml", "tests/1.in", "tests/2.in"}),

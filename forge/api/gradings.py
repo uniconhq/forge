@@ -20,7 +20,6 @@ from forge.services.gradings import (
     queue_depth,
     rejudge,
     retry,
-    run_log,
     task_of,
 )
 
@@ -37,6 +36,5 @@ __all__ = [
     "queue_depth",
     "rejudge",
     "retry",
-    "run_log",
     "task_of",
 ]

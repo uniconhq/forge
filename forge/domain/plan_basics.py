@@ -44,11 +44,11 @@ class StepLimits(Model):
 
 class ReportEntry(Model):
     """One name a plan reports: the step and output it reads, and, for a
-    number of a run task's plan, which way is better and its bounds, so a
+    number of a task's plan, which way is better and its bounds, so a
     missing report's worst bound is read from the plan alone.
     """
 
-    step: Annotated[str, Field(pattern=STEP_ID)]
+    step: Annotated[str, Field(pattern=FLAT_STEP_ID)]
     output: Annotated[str, Field(min_length=1)]
     better: Better | None = None
     at_least: Number | None = None

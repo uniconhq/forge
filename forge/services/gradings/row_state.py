@@ -131,13 +131,13 @@ def _may_read_as(status: GradingStatus, now: datetime) -> ColumnElement[bool]:
 
 async def lost(ctx: Context, rows: Iterable[Grading]) -> frozenset[uuid.UUID]:
     """The gradings among `rows` whose run the CI no longer holds, or holds
-    as finished while the grading still waits for its envelope: a run that
-    ended before the harness began, its checkout failed or the run killed at
-    the CI, is as lost as one the CI dropped. Only a grading worth asking
-    about is asked about, each run at most once every `RUN_STATE_KEPT` by
-    this process, and the connection is let go of before the CI is asked. A
-    CI that does not answer loses nothing: the grading reads as its row
-    says.
+    as finished while the grading still waits for its first step: a run
+    that ended before its first step asked for its job, its checkout failed
+    or the run killed at the CI, is as lost as one the CI dropped. Only a
+    grading worth asking about is asked about, each run at most once every
+    `RUN_STATE_KEPT` by this process, and the connection is let go of before
+    the CI is asked. A CI that does not answer loses nothing: the grading
+    reads as its row says.
     """
     asking = [
         (row.id, RunId(row.run_id))

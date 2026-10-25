@@ -183,8 +183,8 @@ class ConfirmationRequired(ServiceError):
     results, or a take-back, carries `action`, which one. A save during a
     running contest would publish. `changes` lists what
     would change how the task grades, in words a person reads, `regrades`
-    how many submissions the save would grade again, for a run task once
-    its save is checked, and `results_change`, `summary`, `runs_again`,
+    how many submissions the save would grade again once its save is
+    checked, and `results_change`, `summary`, `runs_again`,
     `scores` and `reading` what it does (`domain.save_effect`), and `asked`
     the head and latest publication it was worked out from; the same save
     sent again with the confirmation and `asked` publishes it while neither
@@ -192,14 +192,6 @@ class ConfirmationRequired(ServiceError):
     """
 
     code = "confirmation_required"
-
-
-class NotARunTask(ServiceError):
-    """An action only a run task has, such as releasing its results, asked
-    of a task that is not one.
-    """
-
-    code = "not_a_run_task"
 
 
 class RegistrationRefused(ServiceError):
@@ -378,8 +370,9 @@ class RateLimited(SubmitRefused):
 
 class TooLarge(SubmitRefused):
     """A file, or the submission as a whole, is larger than the task allows.
-    `limit` is the most allowed in bytes, and `input` the input whose limit it
-    is, or none for the task's limit on a whole submission.
+    `limit` is the most allowed in bytes, `input` the input whose limit it
+    is, or none for the task's limit on a whole submission, and `part` the
+    part of that input, or none when no part was named.
     """
 
     code = "too_large"
@@ -422,16 +415,8 @@ class InvalidInputs(SubmitRefused):
     code = "invalid_inputs"
 
 
-class LogTooLarge(ServiceError):
-    """A run log is larger than the platform reads back for an organiser,
-    which no harness writes. `limit` is the most shown, in bytes.
-    """
-
-    code = "log_too_large"
-
-
 class PublicFileTooLarge(ServiceError):
-    """A file under a task's `public/` is larger than the platform serves
+    """A file a task shows its readers is larger than the platform serves
     of it to a reader. `limit` is the most served, in bytes.
     """
 

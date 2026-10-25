@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from forge.domain.errors import Forbidden, Rejected
 from forge.domain.identity import AsUser, Identity
 from forge.domain.uploads import Door, read_pointer
-from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace
+from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace, WorkflowPlace
 
 
 def repo_of(place: UploadPlace) -> str:
@@ -36,6 +36,9 @@ def repo_of(place: UploadPlace) -> str:
 
 def _repo_of(place: UploadPlace) -> str:
     match place:
+        case WorkflowPlace(workflow=workflow):
+            owner, name = workflow.split("/")
+            return f"{owner}/{name}.workflow"
         case SubmissionPlace(workspace=workspace, task=task):
             return f"{workspace}::{task}"
         case TaskPlace(task=task):

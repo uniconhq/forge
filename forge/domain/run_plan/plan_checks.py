@@ -19,10 +19,14 @@ def files_named(workflow: RunWorkflow, task: RunTask) -> FilesNamed:
     named_task: set[str] = {program.folder for program in task.programs.values()}
     named_task |= check_paths(task.checks)
     named_workflow: set[str] = set()
+    inner: dict[int, set[str]] = {}
     for step in workflow.steps:
         for found in _references_in(step.with_.values()):
             if found.kind == "workflow":
-                named_workflow.add(found.name)
+                if found.pin:
+                    inner.setdefault(found.pin, set()).add(found.name)
+                else:
+                    named_workflow.add(found.name)
                 continue
             declared = workflow.inputs.get(found.name) if found.kind == "inputs" else None
             if declared is None or declared.type not in FILES:
@@ -34,7 +38,11 @@ def files_named(workflow: RunWorkflow, task: RunTask) -> FilesNamed:
                 value = run.key.get(found.name)
                 if isinstance(value, str):
                     named_task.add(value)
-    return FilesNamed(frozenset(named_task), frozenset(named_workflow))
+    return FilesNamed(
+        frozenset(named_task),
+        frozenset(named_workflow),
+        {pin: frozenset(paths) for pin, paths in inner.items()},
+    )
 
 
 def order_problems(

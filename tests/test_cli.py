@@ -53,9 +53,4 @@ def test_reconcile_runs_the_pass_once_and_logs_what_it_did(
         for line in capsys.readouterr().err.splitlines()
         if '"reconcile.done"' in line
     ]
-    assert (done["contests"], done["submissions"], done["inserted"], done["activated"]) == (
-        0,
-        0,
-        0,
-        0,
-    )
+    assert (done["contests"], done["submissions"], done["inserted"]) == (0, 0, 0)

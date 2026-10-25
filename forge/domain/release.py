@@ -21,7 +21,7 @@ A submission made after the row's due, the entry's `due` plus the row's
 extension on the task, is late. A task reveals, showing what was held back,
 once it has closed for every row, the longest extension on it included.
 
-A run task's values read two facts of time (SIMPLER-CORE.md 9.2), each
+A task's values read two facts of time (SIMPLER-CORE.md 9.2), each
 worked out on every read, never stored, so a changed due or extension
 changes only the values that read them: `seconds_late`, how far a
 submission is after the row's due, and `seconds`, how far it is after the

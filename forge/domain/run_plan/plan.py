@@ -54,9 +54,10 @@ def plan_runs(
     task_files: Mapping[str, FileFact],
     workflow_files: Mapping[str, FileFact],
     machine: Machine,
+    inner_workflows: tuple[PinnedWorkflow, ...] = (),
     programs: Mapping[str, PrimitiveDeclaration] | None = None,
 ) -> RunPlanCheck:
-    """The plan of the run task `definition`, as `check_run_task` checked it
+    """The plan of the task `definition`, as `check_run_task` checked it
     (`task`) against its workflow resolved at `commit` (`checked`).
     `task_files` and `workflow_files` hold the facts of every file
     `files_named` names, each folder's files each by itself; `machine` is
@@ -69,7 +70,6 @@ def plan_runs(
     task's results are released (`RunPlan.released`), each fitted to the
     machine.
     """
-    assert definition.scoring is not None, "a run task has scoring once it is checked"
     planner = _Planner(
         definition,
         definition.scoring,
@@ -79,6 +79,7 @@ def plan_runs(
         task_files,
         workflow_files,
         machine,
+        {index: pin.files for index, pin in enumerate(inner_workflows, start=1)},
     )
     for step in workflow.steps:
         planner.bind(step.id, step.with_)
@@ -131,10 +132,12 @@ def plan_runs(
         workflow=PinnedWorkflow(
             ref=ref, id=workflow_id, commit=commit, files=dict(sorted(workflow_files.items()))
         ),
+        inner_workflows=inner_workflows,
         task_files=dict(sorted(task_files.items())),
         entrant=planner.entrant_entries(),
         runs=tuple(
-            RunEntry(id=run.id, key=_key_json(run.key), early=run.early) for run in task.runs
+            RunEntry(id=run.id, key=_key_json(run.key), early=run.early, titles=run.titles)
+            for run in task.runs
         ),
         steps=_named({**planner.run_steps(), **copied}),
         pipelines=pipelines,

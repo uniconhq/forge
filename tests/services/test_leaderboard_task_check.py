@@ -29,8 +29,8 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import files, leaderboards, task_save
 from forge.services.task_save import Draft, Published
-from tests.services.conftest import RUNNING, SPRING, Acme, make_task, write_contest
-from tests.services.test_run_task_saves import TASKS, _primitives, checked
+from tests.services.conftest import RUNNING, SPRING, Acme, checked, make_task, write_contest
+from tests.services.test_run_task_saves import TASKS
 
 DRAFT = (
     RUNNING.format(visibility="everyone")
@@ -70,7 +70,6 @@ async def _made(acme: Acme, setup: Setup, contest: str = DRAFT) -> TaskId:
     """islands made, not yet saved, its workflow public at `v1`, in
     `contest`."""
     task = await make_task(setup, acme, "islands")
-    _primitives(acme)
     _, held, _ = TASKS["islands"]
     workflow = await acme.fake.workflows.create_workflow(
         PLATFORM, "unicon", "islands", dict(held), Visibility.PUBLIC

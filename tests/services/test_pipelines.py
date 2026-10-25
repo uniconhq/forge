@@ -1,4 +1,4 @@
-"""A run task's gradings as pipelines on the org's dispatch repository
+"""A task's gradings as pipelines on the org's dispatch repository
 (SIMPLER-CORE.md 11.3, 11.7, 11.8), against the fake CI, which asks the
 platform what each pipeline is as it starts it, as Woodpecker does:
 islands' early pipeline holds the compile and the sample runs, its late
@@ -32,7 +32,7 @@ whose work never ran is finished by the next read; and the platform
 answers a pipeline only while its row starts, and only for the variables
 it was started with; a save's checks are graded by its own pipeline, and
 one that does not get what it expects refuses the save, saying why; and
-a run task's regrade is summed up by each value and verdict it changed,
+a task's regrade is summed up by each value and verdict it changed,
 for a manager of the task, a save moving the pin asking first.
 """
 
@@ -75,10 +75,10 @@ from forge.domain.identity import PLATFORM, AsOrgAccount, User
 from forge.domain.ids import OrgId, RunId, TaskId
 from forge.domain.keys import key_from_name
 from forge.domain.leaderboards import Counted
-from forge.domain.live import Nudge
+from forge.domain.live import Audience, Nudge, NudgeKind, hears
 from forge.domain.names import EntrantOwner
 from forge.domain.regrades import ValueChange, VerdictChange
-from forge.domain.roles import Role, RoleGrant, Scope
+from forge.domain.roles import Role, RoleGrant, Scope, task_scope
 from forge.domain.run_plan import PipelineKind
 from forge.domain.run_showing import TextAt
 from forge.domain.submission_state import SubmissionState
@@ -100,6 +100,8 @@ from forge.services import (
 )
 from forge.services.access import Organiser
 from forge.services.gradings import START_RETRY_WAIT
+from forge.services.gradings.following import stop as stop_row
+from forge.services.gradings.lookups import finish as end_row
 from forge.services.pipelines import USER_FIRST
 from forge.services.task_save import Draft, Published
 from forge.settings import Settings
@@ -160,7 +162,7 @@ def asked(
     async def asking(as_: AsOrgAccount, run: PipelineRun) -> RunId:
         made = await start(as_, run)
         request = acme.fake.grading.config_request(
-            None, pipeline_variables(run), now=clock.now(), org=run.org
+            run.org, pipeline_variables(run), now=clock.now()
         )
         answers.append(json.loads((await runs.config(setup, request)).body))
         return made
@@ -361,14 +363,19 @@ async def test_the_entrant_reads_the_runs_of_the_groups_shown_now_and_after_the_
     assert set(grading.runs[0]) == {
         "group",
         "place",
-        "key",
+        "tuples",
         "verdict",
         "passed",
         "reports",
         "texts",
         "message",
     }
-    assert grading.runs[0]["key"] == {"input": "samples/1.in", "answer": "samples/1.ans"}
+    assert grading.runs[0]["tuples"] == [
+        {"title": None, "key": {"input": "samples/1.in", "answer": "samples/1.ans"}}
+    ]
+    by_title = {report["title"]: report for report in grading.runs[0]["reports"]}
+    assert by_title["Run time"] == {"title": "Run time", "unit": "ms", "number": 12}
+    assert by_title["Memory used"] == {"title": "Memory used", "unit": "KB", "number": 1500}
     # When the page reads it again, its late runs then shown.
     assert grading.reveal_at is not None and BEFORE_CLOSE < grading.reveal_at <= AFTER_CLOSE
 
@@ -396,8 +403,11 @@ async def test_the_entrant_reads_the_runs_of_the_groups_shown_now_and_after_the_
         ("all", 3, "accepted"),
         ("all", 4, "accepted"),
     ]
-    # No entry of show lists tests/, so a run's key never names its files.
-    assert [run["key"] for run in grading.runs[4:]] == [{}, {}]
+    # No entry of show lists tests/, so a run's tuple never names its files.
+    assert [run["tuples"] for run in grading.runs[4:]] == [
+        [{"title": None, "key": {}}],
+        [{"title": None, "key": {}}],
+    ]
 
 
 async def test_a_late_row_that_ends_is_told_to_its_entrant_only_after_the_reveal(
@@ -475,8 +485,8 @@ async def test_a_group_moved_to_now_shows_its_runs_where_they_ran_late(
         ("st2_tests", 1, "accepted"),
         ("st2_tests", 2, "accepted"),
     ]
-    # tests/4.in is shown now and tests/3.in is not, so only one key names its file.
-    assert [run["key"] for run in grading.runs[2:]] == [{}, {"input": "tests/4.in"}]
+    # tests/4.in is shown now and tests/3.in is not, so only one tuple names its file.
+    assert [run["tuples"][0]["key"] for run in grading.runs[2:]] == [{}, {"input": "tests/4.in"}]
 
 
 TOTALS = LIVE + (
@@ -1017,7 +1027,7 @@ async def test_a_row_with_nothing_to_run_ends_without_the_platforms_images(
     [late] = await _rows(setup, "late")
     assert (late.status, late.error) == (
         GradingStatus.SYSTEM_ERROR,
-        "The platform names no image for a run task's report step.",
+        "The platform names no image for a task's report step.",
     )
 
 
@@ -1161,9 +1171,9 @@ async def test_a_save_whose_checker_does_not_compile_is_refused_and_the_old_vers
 
 
 async def _held_back_then_checked(setup: Setup, acme: Acme, islands: Islands) -> None:
-    """A run task's save that failed once its publication was made: the
+    """A task's save that failed once its publication was made: the
     task stays as the publication before froze it, shown to its organisers
-    as refused, until a save of the same files queues its check, which
+    as unchecked, until a save of the same files queues its check, which
     lets it take over once it passes."""
     made = await acme.fake.workspaces.list_publications(islands.task)
     assert [each.id for each in made][:-1] == [islands.publication]
@@ -1174,7 +1184,7 @@ async def _held_back_then_checked(setup: Setup, acme: Acme, islands: Islands) ->
     assert [row.publication_id for row in await _rows(setup, "save")] == [islands.publication]
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
     listed = await task_save.list_publications(setup, manager, islands.task)
-    assert [each.check for each in listed] == [None, "refused"]
+    assert [each.check for each in listed] == [None, "unchecked"]
 
     again = await _save(setup, acme, islands.task, {})
 
@@ -1371,7 +1381,7 @@ async def test_a_pipeline_no_slot_holds_is_not_answered(
     async def shrunk(as_: AsOrgAccount, run: PipelineRun) -> RunId:
         started.append(run)
         request = acme.fake.grading.config_request(
-            None, pipeline_variables(run), now=clock.now(), org=run.org
+            run.org, pipeline_variables(run), now=clock.now()
         )
         with monkeypatch.context() as patched:
             patched.setattr(setup.settings, "slot_sizes", (Slot("tiny", 1, 64),))
@@ -1398,13 +1408,11 @@ async def test_the_platform_answers_a_pipeline_only_while_it_starts_with_its_own
             {**pipeline_variables(run), "UNICON_PIPELINE": "late"},
             {**pipeline_variables(run), "UNICON_EXTRA": "1"},
         ):
-            request = acme.fake.grading.config_request(
-                None, variables, now=clock.now(), org=run.org
-            )
+            request = acme.fake.grading.config_request(run.org, variables, now=clock.now())
             with pytest.raises(CiRequestRefused):
                 await runs.config(setup, request)
         other = acme.fake.grading.config_request(
-            None, pipeline_variables(run), now=clock.now(), org=OrgId("beta")
+            OrgId("beta"), pipeline_variables(run), now=clock.now()
         )
         with pytest.raises(CiRequestRefused):
             await runs.config(setup, other)
@@ -1414,9 +1422,7 @@ async def test_the_platform_answers_a_pipeline_only_while_it_starts_with_its_own
     await _submit(setup, acme, islands)
 
     [run] = started
-    request = acme.fake.grading.config_request(
-        None, pipeline_variables(run), now=clock.now(), org=run.org
-    )
+    request = acme.fake.grading.config_request(run.org, pipeline_variables(run), now=clock.now())
     with pytest.raises(CiRequestRefused):
         await runs.config(setup, request)
 
@@ -1520,17 +1526,27 @@ async def test_a_saves_checks_are_graded_by_its_pipeline_and_each_gets_what_it_e
 
 
 async def test_a_check_that_does_not_get_what_it_expects_refuses_its_save_saying_why(
-    setup: Setup, acme: Acme, spring: str
+    setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     islands = await _checked(setup, acme)
     text = TASKS["islands"][0] + CHECKS
     saved = await _save(setup, acme, islands.task, {"task.yaml": text.encode(), **CHECK_FILES})
     assert saved.check == "checking"
     _, save = await _rows(setup, "save")
+    told: list[Nudge] = []
+    nudge = Context.nudge
+
+    def heard(ctx: Context, made: Nudge) -> None:
+        told.append(made)
+        nudge(ctx, made)
+
+    monkeypatch.setattr(Context, "nudge", heard)
 
     await _checks_run(setup, acme, save.id, good={"r4": "wrong_answer"}, diff=False)
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
+    [checks] = [each for each in told if each.kind is NudgeKind.CHECKS]
+    assert checks.id == save.publication_id and checks.entrant is None
 
     async with setup.unit_of_work() as ctx:
         current = await entrant_view.task(ctx, islands.task)
@@ -1547,6 +1563,68 @@ async def test_a_check_that_does_not_get_what_it_expects_refuses_its_save_saying
     assert failed.outcomes == {"compile": "accepted"} and failed.error is None
     state = await tasks.state(setup, manager, islands.task)
     assert state.latest is not None and state.latest.failed_checks == listed[1].failed_checks
+
+
+async def test_each_end_of_a_save_row_nudges_the_tasks_organisers(
+    setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A save row that ends done, with a system error, or cancelled by a
+    later save each tells the task's organisers once, naming the
+    publication. An entrant is not told, and an early row's end is not
+    this nudge. A save whose checks refuse it ends done, and that path
+    sends the same nudge."""
+    islands = await _checked(setup, acme)
+    text = TASKS["islands"][0] + CHECKS
+    await _save(setup, acme, islands.task, {"task.yaml": text.encode(), **CHECK_FILES})
+    _, save = await _rows(setup, "save")
+    told: list[Nudge] = []
+    nudge = Context.nudge
+
+    def heard(ctx: Context, made: Nudge) -> None:
+        told.append(made)
+        nudge(ctx, made)
+
+    monkeypatch.setattr(Context, "nudge", heard)
+
+    async def ended(status: GradingStatus) -> Nudge:
+        told.clear()
+        async with setup.unit_of_work() as ctx:
+            row = await ctx.db.scalar(select(Grading).where(Grading.id == save.id))
+            assert row is not None
+            end_row(ctx, row, status)
+        checks = [each for each in told if each.kind is NudgeKind.CHECKS]
+        assert len(checks) == 1
+        return checks[0]
+
+    done = await ended(GradingStatus.DONE)
+    faulted = await ended(GradingStatus.SYSTEM_ERROR)
+    told.clear()
+    async with setup.unit_of_work() as ctx:
+        row = await ctx.db.scalar(select(Grading).where(Grading.id == save.id))
+        assert row is not None
+        stop_row(ctx, row)
+    [cancelled] = [each for each in told if each.kind is NudgeKind.CHECKS]
+    for each in (done, faulted, cancelled):
+        assert each.id == save.publication_id
+        assert (each.user, each.entrant, each.contest) == (None, None, None)
+        assert each.scope == task_scope(islands.task)
+    organiser = Audience(7, (RoleGrant(task_scope(islands.task), Role.OBSERVER),), frozenset())
+    member = Audience(8, (), frozenset({SPRING}), frozenset({"someone"}))
+    elsewhere = Audience(
+        9, (RoleGrant(Scope("acme", "spring", "other"), Role.OBSERVER),), frozenset()
+    )
+    assert hears(organiser, done)
+    assert not hears(member, done)
+    assert not hears(elsewhere, done)
+
+    await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    told.clear()
+    async with setup.unit_of_work() as ctx:
+        row = await ctx.db.scalar(select(Grading).where(Grading.id == early.id))
+        assert row is not None
+        end_row(ctx, row, GradingStatus.DONE)
+    assert [each for each in told if each.kind is NudgeKind.CHECKS] == []
 
 
 async def test_a_check_that_faults_ends_the_save_row_a_system_error_and_it_is_tried_again(
@@ -1617,7 +1695,7 @@ async def test_checks_at_a_publication_whose_settings_do_not_read_fail_saying_so
     assert current is not None and current.publication.id == islands.publication
 
 
-# A run task's regrade summary
+# A task's regrade summary
 
 
 RUNS = {

@@ -1,4 +1,4 @@
-"""What a run task's grading keeps of its Woodpecker steps, the store of
+"""What a task's grading keeps of its Woodpecker steps, the store of
 step outputs, and the large-file objects a publication's planned files are
 (SIMPLER-CORE.md 11.6, 11.9).
 

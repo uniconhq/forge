@@ -154,7 +154,9 @@ class Shown:
 def shown_under(scoring: Scoring, paths: Collection[str]) -> Shown:
     """What `scoring`'s `show` lists, its files those of `paths`, the task's
     files as the same save left them. An entry naming none of them is a
-    name: a group, a value or a report, which the save checked.
+    name: a group, a value or a report, which the save checked; but a
+    folder, ending in `/`, is never a name, and one holding nothing yet,
+    such as `public/` before the statement has a picture, shows nothing.
     """
     names = show_names(scoring)
     files: dict[str, tuple[str, str]] = {}
@@ -172,7 +174,7 @@ def shown_under(scoring: Scoring, paths: Collection[str]) -> Shown:
         {
             entry: time
             for entry, time in listed.items()
-            if entry in names or not named_by(paths, entry)
+            if entry in names or not (entry.endswith("/") or named_by(paths, entry))
         },
         files,
     )

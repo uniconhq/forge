@@ -1,0 +1,4 @@
+# What the diff script reports, read by exec as its manifest and by the
+# save when it checks a step that reads the score.
+reports:
+  score: {better: higher, at_least: 0, at_most: 1}

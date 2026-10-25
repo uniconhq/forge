@@ -15,7 +15,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from forge.domain.content import Edit
 from forge.domain.definitions import Rate
 from forge.domain.errors import NotFound
 from forge.domain.identity import PLATFORM
@@ -25,8 +24,7 @@ from forge.domain.release import Closed
 from forge.domain.roles import Role, Scope
 from forge.domain.types import Type
 from forge.runtime.setup import Setup
-from forge.services import contest_home, contests, entrants, task_save
-from forge.services.task_save import Published
+from forge.services import contest_home, contests, entrants
 from forge.testing import FakeClock, register_entrant
 from tests.services.conftest import (
     ACME,
@@ -171,36 +169,8 @@ async def test_a_task_page_gives_the_published_statement_caps_and_form(
     assert page.statement == statement.content.decode()
     assert (page.submissions.max, page.submissions.rate) == (50, Rate(count=1, per=30))
     assert [(field.id, field.type, field.label, field.options) for field in page.inputs] == [
-        ("submission", Type.FILE, "Your solution", None),
+        ("code", Type.FOLDER, "Your solution", None),
         ("language", Type.ENUM, "Language", ("python",)),
-    ]
-
-
-async def test_an_input_the_task_gives_no_label_is_named_by_its_workflows_title(
-    setup: Setup, acme: Acme, published: list[TaskId]
-) -> None:
-    sum_task = TaskId("acme/spring/sum")
-    head = await acme.fake.content.list_files(PLATFORM, sum_task)
-    current = await acme.fake.content.read_file(PLATFORM, sum_task, "task.yaml")
-    unlabelled = current.content.replace(b"{label: Your solution}", b"{}").replace(
-        b"label: Language, ", b""
-    )
-    assert unlabelled.count(b"label") == 0
-    saved = await task_save.save(
-        setup,
-        acme.ada,
-        sum_task,
-        {"task.yaml": Edit(unlabelled, head.tokens["task.yaml"])},
-        confirm=True,
-    )
-    assert isinstance(saved, Published), saved
-    bob = await signed_in(setup, acme.fake, 8)
-
-    page = await contest_home.task(setup, bob, sum_task)
-
-    assert [(field.id, field.label) for field in page.inputs] == [
-        ("submission", "Solution"),
-        ("language", "Language"),
     ]
 
 

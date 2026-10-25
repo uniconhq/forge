@@ -11,14 +11,10 @@ from forge.db.tables.gradings import SAVE
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Forbidden,
-    LogTooLarge,
-    Misconfigured,
     NotFound,
     PortError,
-    Rejected,
-    Unavailable,
 )
-from forge.domain.grading import RUN_LOG_MAX, WAITING, GradingStatus, log_key
+from forge.domain.grading import WAITING, GradingStatus
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.domain.names import EntrantOwner, is_username
 from forge.domain.roles import (
@@ -36,12 +32,8 @@ from forge.runtime.context import Context
 from forge.services import entrant_view, entrants, names
 from forge.services.access import Organiser, require
 from forge.services.gradings.attempt_history import last_goods, latest_of, record
-from forge.services.gradings.lookups import find
 from forge.services.gradings.records import (
     LIST_LIMIT,
-    LOG_STORE_UNAVAILABLE,
-    NO_LOG,
-    NO_SUCH_GRADING,
     FeedEntry,
     GradingRecord,
     QueueDepth,
@@ -339,45 +331,3 @@ async def _submitters(ctx: Context, records: Sequence[GradingRecord]) -> dict[uu
         )
         for found in records
     }
-
-
-@action
-async def run_log(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> bytes:
-    """The log of the grading's run, for an organiser observing its task.
-    `NotFound` for a grading whose task they do not observe, or one with no
-    log, `LogTooLarge` for a log over `RUN_LOG_MAX` bytes, which is never
-    read whole, and `Unavailable` when the store fails.
-    """
-    row = await find(ctx, grading)
-    if row is None or not holds(organiser.grants, task_scope(TaskId(row.task_id)), Role.OBSERVER):
-        raise NotFound(NO_SUCH_GRADING)
-    if row.log_key is None:
-        raise NotFound(NO_LOG)
-    key = log_key(row.id, row.attempt)
-    await ctx.let_go()
-    try:
-        return await ctx.forge.objects.read(key, max_size=RUN_LOG_MAX)
-    except NotFound as exc:
-        log.warning("gradings.log_missing", grading=str(grading))
-        raise NotFound(NO_LOG) from exc
-    except Misconfigured as exc:
-        raise _log_failure(exc, grading) from None
-    except Rejected as exc:
-        log.warning("gradings.log_too_large", grading=str(grading), detail=exc.detail)
-        raise LogTooLarge(
-            f"The grading's log is larger than the {RUN_LOG_MAX} bytes Unicon shows.",
-            limit=RUN_LOG_MAX,
-        ) from None
-    except PortError as exc:
-        raise _log_failure(exc, grading) from None
-
-
-def _log_failure(exc: PortError, grading: uuid.UUID) -> Unavailable:
-    """What an organiser is told when the log store fails, in fixed words.
-    What the store said goes to the log; its own codes name buckets and
-    keys.
-    """
-    log.warning(
-        "gradings.log_unreadable", grading=str(grading), error=type(exc).__name__, detail=exc.detail
-    )
-    return Unavailable(LOG_STORE_UNAVAILABLE)

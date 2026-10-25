@@ -14,6 +14,7 @@ done as the platform once the forge has said, to the person's own
 credential, that they may write the workflow.
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from forge.adapters.git.forgejo.repos import DEFAULT_BRANCH, Repos
@@ -25,7 +26,7 @@ from forge.adapters.ids import (
     WorkflowRef,
     parse_workflow,
 )
-from forge.domain.content import ConflictToken, File, Files, FileSet
+from forge.domain.content import ConflictToken, File, Files, FileSet, WrittenEdit
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, Identity, Platform, User
 from forge.domain.ids import VersionId, WorkflowId, is_commit
@@ -152,6 +153,35 @@ class ForgejoWorkflows:
             as_, ref.owner, ref.repo, {path: content}, expected={path: expected}, message=message
         )
         return await self._repos.read_file(as_, ref.owner, ref.repo, path, at=str(version))
+
+    async def write_workflow_files(
+        self,
+        as_: Identity,
+        workflow: WorkflowId,
+        changes: Mapping[str, WrittenEdit],
+        *,
+        message: str,
+    ) -> VersionId:
+        ref = parse_workflow(workflow)
+        await self._require_mark(as_, ref)
+        return await self._repos.commit_files(
+            as_,
+            ref.owner,
+            ref.repo,
+            {path: edit.content for path, edit in changes.items()},
+            expected={path: edit.token for path, edit in changes.items()},
+            message=message,
+        )
+
+    async def read_workflow_media(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str, *, max_size: int
+    ) -> bytes:
+        ref = parse_workflow(workflow)
+        await self._require_mark(as_, ref)
+        _require_commit(at)
+        return await self._repos.read_raw(
+            as_, ref.owner, ref.repo, path, at=str(at), max_size=max_size
+        )
 
     async def read_workflow_file(
         self, as_: Identity, workflow: WorkflowId, version: str, path: str

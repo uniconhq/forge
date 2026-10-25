@@ -1,4 +1,4 @@
-"""A run task (SIMPLER-CORE.md 8 and 9): the islands, cartpole and tour
+"""A task (SIMPLER-CORE.md 8 and 9): the islands, cartpole and tour
 tasks parse into their runs, keys and early runs; repeat crosses its axes,
 first outermost, keeps each tuple's values together and keys a run an
 entrant fills by its part; each refusal of 8.5 and 9.5 names its path; a
@@ -96,7 +96,7 @@ steps:
       args: "--env ${{ inputs.env }} --seed ${{ inputs.seed }} --episodes ${{ inputs.episodes }}"
       time_limit: 60
       memory_limit: 1024
-reports:
+outputs:
   reward: ${{ steps.episode.reward }}
 """
 """An RL task's run workflow: the organiser's runner loads the entrant's
@@ -126,7 +126,7 @@ steps:
       args: "${{ inputs.best }}"
       time_limit: 5
       memory_limit: 256
-reports:
+outputs:
   length: ${{ steps.check.length }}
   score: ${{ steps.check.score }}
 """
@@ -169,7 +169,7 @@ steps:
           time_limit: ${{ inputs.judge_time_limit }}
           memory_limit: 256
       links: [entrant -> judge, judge -> entrant]
-reports:
+outputs:
   moves: {from: "${{ steps.game.judge.moves }}", unit: moves}
 """
 """An interactive workflow whose judge's manifest is the task's, so what
@@ -291,7 +291,7 @@ def check(
     secrets: frozenset[str] = frozenset(),
     machine: Machine = PLATFORM_MACHINE,
 ) -> RunTaskCheck:
-    definition = parse_task(task, runs=True)
+    definition = parse_task(task)
     parsed = parse_run_workflow(workflow)
     checked = check_run_workflow(parsed, primitives, WorkflowFiles(frozenset(files), files))
     assert checked.problems == []
@@ -404,6 +404,96 @@ def test_cartpole_marks_what_the_entrants_weights_could_set(
     # The save keeps the values it checked, which a result marks.
     read = RunsFile.from_bytes(task.runs_file().to_bytes())
     assert read.self_reported_values == {"reward", "windy"}
+
+
+TITLED = """\
+name: Tour
+workflow: acme/tour@v1
+inputs:
+  best: 1200
+repeat:
+  - inputs: [input, route]
+    tuples:
+      - {input: parts/1.in, route: entrant, title: Small grid}
+      - {input: parts/2.in, route: entrant, title: Big grid, max_size: 50MB}
+scoring:
+  values:
+    total: {block: sum, over: {runs: all}, of: {run: [all, score]}}
+  show:
+    now: [total, all, parts/]
+"""
+
+
+def test_a_titled_tuple_names_its_run_and_is_not_part_of_the_key(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = ok(tour(primitives, TITLED))
+
+    assert [run.titles for run in task.runs] == [("Small grid",), ("Big grid",)]
+    assert [run.key["route"] for run in task.runs] == [Part(1), Part(2)]
+    assert task.entrant["route"].part_details == (
+        ("Small grid", 10 * 1024 * 1024),
+        ("Big grid", 50 * 1024 * 1024),
+    )
+
+
+def test_a_titled_tuple_holding_two_entrant_inputs_sizes_both(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    text = TITLED.replace(
+        "      - {input: parts/1.in, route: entrant, title: Small grid}\n"
+        "      - {input: parts/2.in, route: entrant, title: Big grid, max_size: 50MB}\n",
+        "      - {input: entrant, route: entrant, title: Both, max_size: 50MB}\n",
+    )
+    task = ok(tour(primitives, text))
+    sized = (("Both", 50 * 1024 * 1024),)
+    assert task.entrant["input"].part_details == sized
+    assert task.entrant["route"].part_details == sized
+
+
+@pytest.mark.parametrize(
+    ("row", "words"),
+    [
+        (
+            "{input: parts/2.in, route: parts/2.out, max_size: 50MB}",
+            "only when it holds entrant",
+        ),
+        (
+            "{input: parts/2.in, route: entrant, title: Big grid, max_size: lots}",
+            "512KB",
+        ),
+        (
+            "{input: parts/2.in, route: entrant, title: Big grid, max_size: 3GB}",
+            "at most 2GB",
+        ),
+        (
+            "{input: parts/2.in, route: entrant, title: " + ("x" * 61) + "}",
+            "at most 60",
+        ),
+        (
+            "{input: parts/2.in, route: entrant, title: Small grid}",
+            "already called Small grid",
+        ),
+        (
+            '{input: parts/2.in, route: entrant, title: "a\\nb"}',
+            "one line",
+        ),
+    ],
+)
+def test_each_bad_tuple_title_or_size_names_itself(row: str, words: str) -> None:
+    text = TITLED.replace(
+        "{input: parts/2.in, route: entrant, title: Big grid, max_size: 50MB}", row
+    )
+    with pytest.raises(InvalidDefinition) as raised:
+        parse_task(text)
+    assert any(words in problem["message"] for problem in raised.value.errors)
+
+
+def test_a_repeated_input_cannot_be_named_a_tuple_key() -> None:
+    text = TITLED.replace("inputs: [input, route]", "inputs: [title, route]")
+    with pytest.raises(InvalidDefinition) as raised:
+        parse_task(text)
+    assert any("can't be named title" in problem["message"] for problem in raised.value.errors)
 
 
 def test_tour_asks_for_one_route_per_part(primitives: dict[str, PrimitiveDeclaration]) -> None:
@@ -783,13 +873,13 @@ def test_a_manifest_the_task_gives_is_read_and_its_reports_checked(
     assert manifest_files(parse_task(JUDGED_TASK), checked) == {"judge/program.yaml"}
     assert ok(judged(primitives)).values.reads["moves"].columns == {("all", "moves")}
     assert at(judged(primitives, manifest=b"reports:\n  score: {}\n"), "inputs.judge_manifest") == [
-        "judge/program.yaml reports no moves, which the workflow reads at reports.moves."
+        "judge/program.yaml reports no moves, which the workflow reads at outputs.moves."
     ]
     assert at(
         judged(primitives, manifest=b"reports:\n  moves: {type: text}\n"), "inputs.judge_manifest"
     ) == [
         "judge/program.yaml reports moves as text, and the workflow gives it a unit at "
-        "reports.moves, which only a number takes."
+        "outputs.moves, which only a number takes."
     ]
     assert at(judged(primitives, manifest=b"reports: [1]\n"), "inputs.judge_manifest")
 
@@ -1007,7 +1097,7 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "of: {run: [st1_tests, score]}",
             "of: {run: [st1_tests, verdict]}",
             "scoring.values.st1.of",
-            "verdict is words",
+            "verdict is text",
         ),
         (
             "of: {run: [st1_tests, score]}",
@@ -1073,7 +1163,7 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "now: [sample_score",
             "now: [sample_scor",
             "scoring.show.now[0]",
-            "names no group, value, report, file or folder",
+            "names no group, value, output, file or folder",
         ),
         (
             "now: [sample_score",
@@ -1082,7 +1172,7 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "already listed under now",
         ),
         ("samples/]", "samples/, samples/]", "scoring.show.now[4]", "already listed above"),
-        ("samples/]", "examples/]", "scoring.show.now[3]", "no files in examples/"),
+        ("samples/]", "examples/1.in]", "scoring.show.now[3]", "no file examples/1.in"),
         ("samples/]", "plans/plan.json]", "scoring.show.now[3]", "serves none"),
         ("samples/]", "task.yaml]", "scoring.show.now[3]", "task.yaml names the task's hidden"),
         (
@@ -1090,12 +1180,6 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "[st1, st2, total, all, samples/2.ans]",
             "scoring.show.after_close[4]",
             "samples/2.ans is in samples/, which is shown as soon as a grading ends",
-        ),
-        (
-            "[st1, st2, total, all]",
-            "[st1, st2, total, all, samples/1/]",
-            "scoring.show.after_close[4]",
-            "no files in samples/1/",
         ),
         (
             "[st1, st2, total, all]",
@@ -1112,6 +1196,13 @@ def test_each_scoring_refusal_names_its_path(
     found = islands(primitives, ISLANDS.replace(old, new, 1))
 
     assert any(words in message for message in at(found, path)), found.problems
+
+
+def test_a_folder_shown_may_hold_no_files_yet(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    """Such as `public/` before the statement has a picture."""
+    ok(islands(primitives, ISLANDS.replace("samples/]", "samples/, pictures/]", 1)))
 
 
 def test_a_number_is_one_key_however_it_is_written(
@@ -1279,7 +1370,7 @@ def test_show_lists_a_report_by_its_name_but_not_one_also_a_file_of_the_task(
 
     ok(islands(primitives, text))
     assert at(islands(primitives, text, paths=ISLANDS_PATHS | {"log"}), "scoring.show.now[4]") == [
-        "log names both a report of the workflow and a file of the task, so show cannot tell "
+        "log names both an output of the workflow and a file of the task, so show cannot tell "
         "which it lists. Rename the file."
     ]
     # A report listed is a name, so taking it out of show is hiding it.
@@ -1350,6 +1441,22 @@ def test_a_shown_file_is_compared_by_path_whichever_entry_lists_it() -> None:
             "they have been shown cannot be hidden again. List it as soon as before.",
         }
     ]
+
+
+def test_an_empty_folder_shown_is_no_name_and_its_files_once_added_are_shown() -> None:
+    """Such as `public/` before and after the statement's first picture."""
+    text = ISLANDS.replace("samples/]", "samples/, pictures/]")
+    before = shown_under(_scoring(text), ISLANDS_PATHS)
+
+    assert "pictures/" not in before.names
+    assert hidden_again(before, _scoring(text), ISLANDS_PATHS | {"pictures/a.png"}) == []
+    assert hidden_again(before, _scoring(ISLANDS), ISLANDS_PATHS) == []
+    shown = shown_under(_scoring(text), ISLANDS_PATHS | {"pictures/a.png"})
+    assert shown.files["pictures/a.png"] == ("now", "pictures/")
+    assert [
+        problem["message"].split(",")[0]
+        for problem in hidden_again(shown, _scoring(ISLANDS), ISLANDS_PATHS | {"pictures/a.png"})
+    ] == ["Entrants have been shown pictures/ as soon as a grading ends"]
 
 
 def test_what_was_shown_is_the_soonest_any_publication_showed_it() -> None:
@@ -1549,7 +1656,7 @@ def test_an_exec_value_names_its_program_and_runs_late_unless_shown_during_the_c
     checked = check_run_workflow(
         parse_run_workflow(workflow), primitives, WorkflowFiles(frozenset(files), files)
     )
-    assert manifest_files(parse_task(MEAN, runs=True), checked) == {"programs/mean/program.yaml"}
+    assert manifest_files(parse_task(MEAN), checked) == {"programs/mean/program.yaml"}
 
     task = ok(mean(primitives))
     assert task.programs["mean"] == ProgramValue(
@@ -1804,17 +1911,14 @@ def test_a_check_expecting_a_value_that_reads_a_mark_is_refused_at_the_save(
 
 def test_a_check_needs_something_to_expect() -> None:
     with pytest.raises(InvalidDefinition) as raised:
-        parse_task(
-            f"{ISLANDS}checks:\n  - {{submit: {{code: checks/good}}, expect: {{}}}}\n", runs=True
-        )
+        parse_task(f"{ISLANDS}checks:\n  - {{submit: {{code: checks/good}}, expect: {{}}}}\n")
 
     assert any(problem["path"] == "checks[0].expect" for problem in raised.value.extra["errors"])
 
 
 def test_a_file_only_a_check_names_is_never_shown() -> None:
     definition = parse_task(
-        (ISLANDS + CHECKS).replace("    now: [sample_score,", "    now: [checks/, sample_score,"),
-        runs=True,
+        (ISLANDS + CHECKS).replace("    now: [sample_score,", "    now: [checks/, sample_score,")
     )
 
     assert check_only(definition, "checks/good/main.cpp")
@@ -1824,7 +1928,7 @@ def test_a_file_only_a_check_names_is_never_shown() -> None:
     assert check_only(definition, "checks/slow/a.cpp")
     assert not check_only(definition, "samples/1.in")
     # A file the task gives a setting or a tuple is the task's as well.
-    shared = parse_task((ISLANDS + CHECKS).replace("checks/empty/", "samples/"), runs=True)
+    shared = parse_task((ISLANDS + CHECKS).replace("checks/empty/", "samples/"))
     assert not check_only(shared, "samples/1.in")
 
 

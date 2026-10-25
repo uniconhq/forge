@@ -114,11 +114,7 @@ async def public_file(ctx: Context, task: TaskId, path: str) -> PublicFile:
     contest = contest_id_of(task_scope(task))
     settings = await _public_settings(ctx, contest, entrant_view.NO_SUCH_TASK)
     found = await _released(ctx, task, settings)
-    reveal = (
-        await timelines.reveal(ctx, contest, settings, found.name)
-        if found.definition.runs
-        else None
-    )
+    reveal = await timelines.reveal(ctx, contest, settings, found.name)
     return await entrant_view.public_file(ctx, found, path, reveal=reveal)
 
 

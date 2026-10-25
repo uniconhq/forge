@@ -7,7 +7,7 @@ when the check passes. `guards` refuses a save that must not write,
 the publications. See TASK-FORMAT.md section 2 and SIMPLER-CORE.md.
 """
 
-from forge.services.task_save.checking import _ask, _check_runs, _checked_first, _parsed, check
+from forge.services.task_save.checking import _ask, _check_runs, _checked_first, check
 from forge.services.task_save.effect import _differing, _programs_again, _report, _save_effect
 from forge.services.task_save.guards import (
     _leaderboard_reads,
@@ -17,20 +17,16 @@ from forge.services.task_save.guards import (
     _refuse_reserved,
     _refuse_untokened_removals,
     _served,
-    _shown_before,
     _shown_before_runs,
     _task_revealed,
 )
 from forge.services.task_save.listing import _held_pointer, _resolve, list_publications
 from forge.services.task_save.records import (
     CHANGED_CONTENT,
-    GROUPS_KEPT,
     LANDED_UNDER,
-    OPENNESS,
     PIN_ANSWER,
     PIN_MOVED,
     SAVE_MESSAGE,
-    SHOWN_WORDS,
     Checked,
     Draft,
     Published,
@@ -42,7 +38,6 @@ from forge.services.task_save.sources import (
     _digest,
     _Found,
     _graded_under,
-    _groups_of,
     _moved_workflows,
     _number_of,
     _Opened,
@@ -61,14 +56,12 @@ from forge.services.task_save.stored_facts import (
     RUNS_UNREAD,
     _batches,
     _fact_of,
-    _format_kept,
     _marks_digest,
     _task_facts,
     _workflow_facts,
     _workflow_problem,
 )
 from forge.services.task_save.task_form import (
-    DeclaredField,
     DeclaredInput,
     WorkflowForm,
     _workflow_form,
@@ -86,16 +79,12 @@ from forge.services.task_save.writing import (
 __all__ = [
     "CHANGED_CONTENT",
     "FACTS_BATCH",
-    "GROUPS_KEPT",
     "LANDED_UNDER",
-    "OPENNESS",
     "PIN_ANSWER",
     "PIN_MOVED",
     "RUNS_UNREAD",
     "SAVE_MESSAGE",
-    "SHOWN_WORDS",
     "Checked",
-    "DeclaredField",
     "DeclaredInput",
     "Draft",
     "Published",
@@ -114,9 +103,7 @@ __all__ = [
     "_digest",
     "_draft",
     "_fact_of",
-    "_format_kept",
     "_graded_under",
-    "_groups_of",
     "_held_pointer",
     "_landed_under",
     "_leaderboard_reads",
@@ -124,7 +111,6 @@ __all__ = [
     "_moved_workflows",
     "_number_of",
     "_own_since",
-    "_parsed",
     "_plan_files",
     "_present",
     "_primitives",
@@ -141,7 +127,6 @@ __all__ = [
     "_save_effect",
     "_saved_snapshot",
     "_served",
-    "_shown_before",
     "_shown_before_runs",
     "_submitted",
     "_task_facts",

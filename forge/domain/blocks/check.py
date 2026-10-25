@@ -37,6 +37,7 @@ from forge.domain.blocks.catalogue import (
     LANGUAGES,
     LEAVES,
     NUMBERS,
+    PICKS,
     SKIP,
     TASK_FACTS,
     TASK_LEAVES,
@@ -46,6 +47,7 @@ from forge.domain.blocks.catalogue import (
     Kind,
     Scope,
 )
+from forge.domain.blocks.formula_words import unreadable_problem
 from forge.domain.blocks.tree_reads import reached
 from forge.domain.definitions import VALUE_NAME
 from forge.domain.yaml_models import Path, is_number
@@ -90,6 +92,7 @@ class ValuesCheck:
 
     problems: Found
     reads: Mapping[str, Reads] = field(default_factory=dict)
+    kinds: Mapping[str, Kind] = field(default_factory=dict)
 
     def through(self, name: str) -> Reads:
         """What the value `name` reads, directly or through the values it
@@ -129,7 +132,8 @@ def same_value(first: object, second: object) -> bool:
 
 def check_names(groups: Iterable[str], values: Iterable[str]) -> Found:
     """Group and value names: each written as a value's name is, none
-    `all`, none named like a fact, and none both a group and a value.
+    `all`, none named like a fact, none a word a formula reads as an
+    operator or a constant, and none both a group and a value.
     """
     found: Found = []
     taken = set(groups)
@@ -154,6 +158,8 @@ def check_names(groups: Iterable[str], values: Iterable[str]) -> Found:
                         f"{{fact: {name}}}. Choose another name.",
                     )
                 )
+            elif (problem := unreadable_problem(name)) is not None:
+                found.append((at, problem))
             elif kind == "values" and name in taken:
                 found.append(
                     (
@@ -171,11 +177,14 @@ def check_values(
     groups: Collection[str],
     columns: Mapping[str, str | None],
     keys: Mapping[str, Sequence[object]],
+    texts: Collection[str] = (),
 ) -> ValuesCheck:
     """Check each of a task's values, `groups` the task's groups besides
     `all`, `columns` each column of a run, with none for a number a fold may
-    read and the reason for any other, and `keys` each repeated input the
-    organiser fills with the values its runs take, which `weights` may name.
+    read and the reason for any other, `texts` the columns that are text a
+    formula may read (`verdict` and a repeated input's text; a step's text
+    output is not among them), and `keys` each repeated input the organiser
+    fills with the values its runs take, which `weights` may name.
     """
     too_many: Found = [
         (
@@ -191,7 +200,7 @@ def check_values(
     ]
     if too_many:
         return ValuesCheck(too_many)
-    checker = _Checker(values, set(groups) | {ALL}, columns, keys)
+    checker = _Checker(values, set(groups) | {ALL}, columns, keys, set(texts))
     reads: dict[str, Reads] = {}
     for name, tree in values.items():
         checker.reading = _Reading()
@@ -204,7 +213,7 @@ def check_values(
                 "stays quick.",
             )
         else:
-            checker.node(("values", name), tree, BlockInput(Kind.NUMBER), None)
+            checker.node(("values", name), tree, BlockInput(Kind.NUMBER_OR_TEXT), None)
         found = checker.reading
         reads[name] = Reads(
             frozenset(found.groups),
@@ -227,7 +236,8 @@ def check_values(
                 "its program's steps are named after it.",
             )
     checker.problems.extend(_loops(reads))
-    return ValuesCheck(checker.problems, reads)
+    kinds = {name: checker._value_kind(name, set()) for name in values}
+    return ValuesCheck(checker.problems, reads, kinds)
 
 
 @dataclass
@@ -258,11 +268,14 @@ class _Checker:
         groups: set[str],
         columns: Mapping[str, str | None],
         keys: Mapping[str, Sequence[object]],
+        texts: set[str],
     ) -> None:
         self.values = values
         self.groups = groups
         self.columns = columns
         self.keys = keys
+        self.texts = texts
+        self.value_kinds: dict[str, Kind] = {}
         self.problems: Found = []
         self.reading = _Reading()
 
@@ -278,6 +291,17 @@ class _Checker:
             if isinstance(node, bool) or not is_number(node):
                 self.refuse(at, "Give a number written out here, such as 0 or 10.")
             return
+        if isinstance(node, dict) and wanted.kind in (
+            Kind.NUMBER,
+            Kind.TEXT,
+            Kind.NUMBER_OR_TEXT,
+            Kind.EITHER,
+            Kind.RUN,
+        ):
+            got = self._tree_gives(node, set())
+            if not _fits_kind(wanted.kind, got):
+                self.refuse(at, _kind_message(node, got))
+                return
         match wanted.kind:
             case Kind.RUNS:
                 self._runs(at, node)
@@ -292,8 +316,18 @@ class _Checker:
                         f"Give what a missing report counts as: {SKIP}, to leave the run out, "
                         "or a number.",
                     )
-            case Kind.NUMBER | Kind.EITHER:
-                self._number(at, node, over)
+            case Kind.RUN:
+                if not isinstance(node, dict) or "block" not in node:
+                    self.refuse(at, "Pick a run with first, last, highest or lowest.")
+                    return
+                self._block(at, node, over)
+            case Kind.NUMBER | Kind.EITHER | Kind.NUMBER_OR_TEXT | Kind.TEXT:
+                self._number(
+                    at,
+                    node,
+                    over,
+                    text=wanted.kind in (Kind.NUMBER_OR_TEXT, Kind.TEXT),
+                )
             case Kind.PATH:
                 if not _folder(node):
                     self.refuse(
@@ -305,7 +339,7 @@ class _Checker:
                 if node not in LANGUAGES:
                     self.refuse(at, f"Give the program's language, one of {', '.join(LANGUAGES)}.")
 
-    def _number(self, at: Path, node: object, over: str | None) -> None:
+    def _number(self, at: Path, node: object, over: str | None, *, text: bool = False) -> None:
         if isinstance(node, bool):
             self.refuse(at, "Give a number, 1 or 0, not true or false.")
             return
@@ -325,6 +359,16 @@ class _Checker:
         if kind not in TASK_LEAVES or (kind == "value" and isinstance(named, list)):
             self.refuse(at, ONLY_LEADERBOARDS)
             return
+        if kind == "text":
+            if text and isinstance(named, str):
+                return
+            self.refuse(
+                at,
+                'Give text in quotes, such as "none".'
+                if text
+                else "This is text, and this reads a number.",
+            )
+            return
         match kind:
             case "runs":
                 self.refuse(
@@ -333,7 +377,7 @@ class _Checker:
                     f"{{block: count, over: {{runs: {named}}}}}.",
                 )
             case "run":
-                self._column(at, named, over)
+                self._column(at, named, over, text=text)
             case "value":
                 if not isinstance(named, str) or named not in self.values:
                     self.refuse(at, f"There is no value called {named}.")
@@ -395,6 +439,9 @@ class _Checker:
         inner = over
         if form.fold:
             inner = self._fold_group(node.get("over"))
+        elif form.gives is Kind.RUN:
+            inner = self._fold_group(node.get("from"))
+        self._mixed(at, form, node)
         for key, wanted in form.inputs.items():
             if key not in node:
                 if not wanted.optional:
@@ -450,13 +497,37 @@ class _Checker:
             return
         self.reading.groups.add(named)
 
-    def _column(self, at: Path, named: object, over: str | None) -> None:
+    def _mixed(self, at: Path, form: Form, node: Mapping[str, object]) -> None:
+        """Refuse `==`, `!=`, `if` or `otherwise` given a number and a text."""
+        kinds: list[Kind] = []
+        for key, wanted in form.inputs.items():
+            if wanted.kind is not Kind.NUMBER_OR_TEXT or key not in node:
+                continue
+            given = node[key]
+            for each in given if isinstance(given, list) else [given]:
+                kinds.append(self._tree_gives(each, set()))
+        if Kind.TEXT in kinds and Kind.NUMBER in kinds:
+            self.refuse(at, "Give two numbers or two texts, not one of each.")
+
+    def _column(self, at: Path, named: object, over: str | None, *, text: bool = False) -> None:
+        if (
+            isinstance(named, list)
+            and len(named) == 2
+            and isinstance(named[0], dict)
+            and isinstance(named[1], str)
+        ):
+            self._picked(at, named[0], named[1], text=text)
+            return
         if (
             not isinstance(named, list)
             or len(named) != 2
             or not all(isinstance(part, str) for part in named)
         ):
-            self.refuse(at, "Give a run's column as {run: [<group>, <column>]}.")
+            self.refuse(
+                at,
+                "Give a run's column as {run: [<group>, <column>]}, or a picked run's as "
+                "{run: [<pick>, <column>]}.",
+            )
             return
         group, column = named
         if over is None:
@@ -480,12 +551,91 @@ class _Checker:
                 f"A run has no column called {column}. Its columns are {', '.join(self.columns)}.",
             )
             return
-        reason = self.columns[column]
-        if reason is not None:
-            self.refuse(at, reason)
+        if not self._readable(at, column, text=text):
             return
         self.reading.groups.add(group)
         self.reading.columns.add((group, column))
+
+    def _picked(self, at: Path, pick: Mapping[str, object], column: str, *, text: bool) -> None:
+        if "block" not in pick:
+            self.refuse(at, "Give a picked run's column as {run: [<pick>, <column>]}.")
+            return
+        self.node((*at, "run", 0), pick, BlockInput(Kind.RUN), None)
+        group = self._fold_group(pick.get("from"))
+        if not self._readable(at, column, text=text):
+            return
+        if group is not None:
+            self.reading.groups.add(group)
+            self.reading.columns.add((group, column))
+
+    def _readable(self, at: Path, column: str, *, text: bool) -> bool:
+        if column not in self.columns:
+            self.refuse(
+                at,
+                f"A run has no column called {column}. Its columns are {', '.join(self.columns)}.",
+            )
+            return False
+        reason = self.columns[column]
+        if reason is not None and not (text and column in self.texts):
+            self.refuse(at, reason)
+            return False
+        return True
+
+    def _tree_gives(self, node: object, seen: set[str]) -> Kind:
+        """What `node` gives, from the form and its children: a number when
+        it is not a tree that gives text or a run."""
+        if isinstance(node, bool) or not isinstance(node, dict):
+            return Kind.NUMBER
+        if set(node) == {"text"} and isinstance(node.get("text"), str):
+            return Kind.TEXT
+        if "block" in node and isinstance(node["block"], str):
+            block = CATALOGUE.get(node["block"])
+            form = form_of(block, node, Scope.LEADERBOARD) if block is not None else None
+            if form is None:
+                return Kind.NUMBER
+            if form.gives is Kind.RUN:
+                return Kind.RUN
+            if form.gives is Kind.NUMBER:
+                return Kind.NUMBER
+            if form.gives in (Kind.NUMBER_OR_TEXT, Kind.EITHER):
+                kinds = [
+                    self._tree_gives(each, seen)
+                    for key, wanted in form.inputs.items()
+                    if wanted.kind is Kind.NUMBER_OR_TEXT and key in node
+                    for each in (node[key] if isinstance(node[key], list) else [node[key]])
+                ]
+                if Kind.TEXT in kinds and Kind.NUMBER not in kinds and Kind.RUN not in kinds:
+                    return Kind.TEXT
+                if Kind.RUN in kinds:
+                    return Kind.RUN
+            return Kind.NUMBER
+        leaf = leaf_of(node)
+        if leaf is None:
+            return Kind.NUMBER
+        kind, named = leaf
+        if kind == "value" and isinstance(named, str):
+            return self._value_kind(named, seen)
+        if kind == "run":
+            return self._column_kind(named)
+        return Kind.NUMBER
+
+    def _value_kind(self, name: str, seen: set[str]) -> Kind:
+        cached = self.value_kinds.get(name)
+        if cached is not None:
+            return cached
+        if name not in self.values or name in seen:
+            return Kind.NUMBER
+        seen.add(name)
+        kind = self._tree_gives(self.values[name], seen)
+        seen.remove(name)
+        self.value_kinds[name] = kind
+        return kind
+
+    def _column_kind(self, named: object) -> Kind:
+        column = named[1] if isinstance(named, list) and len(named) == 2 else None
+        if isinstance(column, str) and column in self.texts:
+            return Kind.TEXT
+        return Kind.NUMBER
 
     def _weights(self, at: Path, node: object) -> None:
         if not isinstance(node, dict) or len(node) != 1:
@@ -557,12 +707,61 @@ def _fits(form: Form, node: Mapping[str, object]) -> bool:
             gathered = leaf[0] if leaf is not None and leaf[0] in _GATHERED else None
             if gathered != _GATHERED_BY.get(wanted.kind):
                 return False
+            hint = _hint(each)
+            if wanted.kind is Kind.NUMBER_OR_TEXT and hint == "submission":
+                return False
+            if wanted.kind is Kind.EITHER and hint == "text":
+                return False
     return True
 
 
 _GATHERED = ("runs", "results")
 """The leaves that give many, which tell a fold's forms apart."""
 _GATHERED_BY = {Kind.RUNS: "runs", Kind.RESULTS: "results"}
+_SUBMISSION_BLOCKS = frozenset((*PICKS, "best_each"))
+
+
+def _hint(node: object) -> str | None:
+    """What a child is, when that chooses `otherwise`'s form: text written
+    out, or a block that gives a submission's results."""
+    if not isinstance(node, dict):
+        return None
+    if set(node) == {"text"}:
+        return "text"
+    if node.get("block") in _SUBMISSION_BLOCKS:
+        return "submission"
+    return None
+
+
+def _kind_message(node: object, got: Kind) -> str:
+    """Why `node`, which gives `got`, is refused where a different kind is read."""
+    if got is Kind.TEXT:
+        named = node.get("value") if isinstance(node, dict) else None
+        if isinstance(node, dict) and isinstance(node.get("run"), list):
+            column = node["run"][1]
+            if isinstance(column, str):
+                named = column
+        what = named if isinstance(named, str) else "This"
+        return f"{what} is text, and this reads a number."
+    if got is Kind.RUN:
+        return "This gives a run. Read one of its columns, as {run: [<pick>, <column>]}."
+    return "This gives a number, and this reads a run."
+
+
+def _fits_kind(wanted: Kind, got: Kind) -> bool:
+    """Whether an input that takes `wanted` may be given something that
+    gives `got`."""
+    if wanted is Kind.NUMBER:
+        return got is Kind.NUMBER
+    if wanted is Kind.TEXT:
+        return got is Kind.TEXT
+    if wanted is Kind.NUMBER_OR_TEXT:
+        return got in (Kind.NUMBER, Kind.TEXT)
+    if wanted is Kind.EITHER:
+        return got in (Kind.NUMBER, Kind.SUBMISSION, Kind.EITHER)
+    if wanted is Kind.RUN:
+        return got is Kind.RUN
+    return True
 
 
 def forms_words(block: Block, leaving_out: Scope) -> str:
@@ -584,6 +783,38 @@ def forms_words(block: Block, leaving_out: Scope) -> str:
         f"{block.name} is given {' or '.join(form.given for form in forms)}, and these "
         f"inputs fit no form of it. It takes, {takes}."
     )
+
+
+def text_values_of(document: Mapping[str, object], declared: Mapping[str, str]) -> tuple[str, ...]:
+    """The names of a task's values that give text, in the file's order, as
+    a save's check reads them: a text, a value that gives text, or a run's
+    `verdict` or a repeated input `declared` calls text. A workflow output
+    stays a number. None of them when the document names no values.
+    """
+    scoring = document.get("scoring")
+    if not isinstance(scoring, Mapping):
+        return ()
+    values = scoring.get("values")
+    if not isinstance(values, Mapping):
+        return ()
+    groups = scoring.get("groups")
+    group_names = (
+        [name for name in groups if isinstance(name, str)] if isinstance(groups, Mapping) else []
+    )
+    texts = {"verdict"}
+    repeat = document.get("repeat")
+    if isinstance(repeat, list):
+        for axis in repeat:
+            if not isinstance(axis, Mapping):
+                continue
+            inputs = axis.get("inputs")
+            if not isinstance(inputs, list):
+                continue
+            for name in inputs:
+                if isinstance(name, str) and declared.get(name) == "text":
+                    texts.add(name)
+    checked = check_values(values, groups=group_names, columns={}, keys={}, texts=texts)
+    return tuple(name for name, kind in checked.kinds.items() if kind is Kind.TEXT)
 
 
 def tree_size(tree: object) -> tuple[int, int]:

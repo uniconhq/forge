@@ -206,7 +206,7 @@ async def test_an_extension_on_a_task_opens_that_task_alone_past_its_close(
         bob,
         sum_task,
         {
-            "submission": SubmittedInput(uploads=(made.id,)),
+            "code": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key="key-0001-aaaa",

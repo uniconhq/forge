@@ -1,0 +1,32 @@
+title: Compile
+description: Compiles source files or a notebook into one program.
+schema_version: 6
+batch: false
+network: false
+limits: {time_ms: 60000, cpu_ms: 60000, memory_mb: 1024, pids: 128, output_mb: 64, gpus: 0}
+inputs:
+  source:
+    type: folder
+    runs: true
+    description: The source files to compile, with their layout.
+  language:
+    type: enum
+    options: [c, cpp, java, python, ipynb]
+    description: The language the source files are written in.
+  entry:
+    type: text
+    optional: true
+    description: The file the program starts from, such as src/Main.java.
+outputs:
+  program:
+    type: file
+    description: The compiled program, ready to run.
+  log:
+    type: text
+    description: Everything the compiler printed.
+  outcome:
+    type: outcome
+    description: Whether the source compiled.
+    outcomes:
+      accepted: the source compiles
+      compile_error: it does not compile, or the compiler goes over a limit

@@ -1,10 +1,10 @@
-"""Mending the platform's records, the forge's and the CI's, after a restore
-or an upgrade. A database
+"""Mending the platform's records and the forge's after a restore or an
+upgrade. A database
 restored from a backup lacks the gradings of every submission made since
 the backup, and the forge is where submissions are kept, so `unicon-forge
-reconcile` reads them there, once, when the operator runs it. The CI's own
-database, restored from a dump taken at another moment or alone, may not
-know a task made since, and nothing else would activate it again. And a
+reconcile` reads them there, once, when the operator runs it. A CI that
+does not know an org's dispatch repository has it activated again by the
+next start of a grading there (`gradings.start`). And a
 contest or task made before a change to what keeps a place right at the
 forge, such as the platform writing its files alone (#443), is not made
 again, so this puts that right too.
@@ -17,18 +17,16 @@ missing or wrong. A place the forge fails on is logged and the rest still
 run.
 
 After that, for each contest of every org the platform made and each task
-with a publication, it activates the task at the CI as the org's account,
-which changes nothing for a task the CI knows. Then, for each entrant of
-the contest, whatever became of it, it lists its submissions of the task
-and inserts, for any that has no grading at all, one queued grading against
-the task's current publication, attempt 1, with the idempotency key its
-protected version's note carries and nobody named as its submitter, which
-the forge's list does not say; its run starts once it commits. A submit
-of the same submission sent again meanwhile cannot make a second row: the
-key is unique for a workspace and task. A task the
-CI cannot activate is logged and its gradings are still inserted, since a
-grading whose run cannot start ends as a system error, which the first
-read a minute later retries once by itself and staff after that.
+with a publication, for each entrant of the contest, whatever became of it,
+it lists its submissions of the task and inserts, for any that has no
+grading at all, one queued grading against the task's current publication,
+attempt 1, with the idempotency key its protected version's note carries
+and nobody named as its submitter, which the forge's list does not say; its
+run starts once it commits. A submit of the same submission sent again
+meanwhile cannot make a second row: the key is unique for a workspace and
+task. A grading whose run cannot start
+ends as a system error, which the first read a minute later retries once by
+itself and staff after that.
 """
 
 from dataclasses import dataclass
@@ -38,10 +36,9 @@ from sqlalchemy.exc import IntegrityError
 
 from forge.db.tables import Grading
 from forge.db.tables.gradings import FRONT
-from forge.domain.errors import Forbidden, NotFound, PortError
+from forge.domain.errors import NotFound, PortError
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import ContestId, OrgId, TaskId, WorkspaceId
-from forge.domain.roles import task_scope
+from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.log import get_logger
 from forge.runtime.context import Context
 from forge.services import entrant_view, entrants, gradings, org_accounts
@@ -54,24 +51,21 @@ log = get_logger(__name__)
 class Reconciled:
     """What a run did: how many contests it read, how many submissions it
     found at the forge, how many gradings it inserted for the ones that had
-    none, how many published tasks it activated that the CI did not
-    know, and how many contests and tasks it had to secure again.
+    none, and how many contests and tasks it had to secure again.
     """
 
     contests: int
     submissions: int
     inserted: int
-    activated: int
     secured: int = 0
 
 
 async def reconcile(ctx: Context) -> Reconciled:
-    """Secure every contest and task again, activate every published task
-    at the CI and give every submission without gradings its gradings, over
-    every contest.
+    """Secure every contest and task again and give every submission
+    without gradings its gradings, over every contest.
     """
     secured = await _secure_every_place(ctx)
-    contests = seen = inserted = activated = 0
+    contests = seen = inserted = 0
     for contest, settings in await entrant_view.every_contest(ctx):
         contests += 1
         try:
@@ -81,7 +75,6 @@ async def reconcile(ctx: Context) -> Reconciled:
             continue
         workspaces = await entrants.workspaces_of(ctx, contest)
         for task in tasks:
-            activated += await _activate(ctx, task)
             found, made = await _task(ctx, task, workspaces)
             seen += found
             inserted += made
@@ -90,10 +83,9 @@ async def reconcile(ctx: Context) -> Reconciled:
         contests=contests,
         submissions=seen,
         inserted=inserted,
-        activated=activated,
         secured=secured,
     )
-    return Reconciled(contests, seen, inserted, activated, secured)
+    return Reconciled(contests, seen, inserted, secured)
 
 
 async def _secure_every_place(ctx: Context) -> int:
@@ -130,26 +122,6 @@ async def _secure_every_place(ctx: Context) -> int:
     return secured
 
 
-async def _activate(ctx: Context, task: PublishedTask) -> int:
-    """1 when the CI did not know the task and now does, else 0. The org's
-    account is signed in again once when the CI refuses it, as at the
-    task's creation.
-    """
-    try:
-        account = await org_accounts.identity(ctx, OrgId(task_scope(task.id).org))
-        try:
-            new = await ctx.forge.grading.activate(account, task.id)
-        except Forbidden:
-            account = await org_accounts.renew(ctx, account)
-            new = await ctx.forge.grading.activate(account, task.id)
-    except PortError as exc:
-        log.warning("reconcile.activation_failed", task=task.id, error=type(exc).__name__)
-        return 0
-    if new:
-        log.info("reconcile.activated", task=task.id)
-    return int(new)
-
-
 async def _task(
     ctx: Context, task: PublishedTask, workspaces: list[WorkspaceId]
 ) -> tuple[int, int]:
@@ -165,7 +137,7 @@ async def _task(
     # waiting on the forge calls below: a row made as a release or a
     # take-back lands takes either split, and either is safe, since what is
     # shown is decided when served (stage 5 section 6 item 32).
-    released = bool(task.definition.runs) and await entrant_view.results_released(ctx, task.id)
+    released = await entrant_view.results_released(ctx, task.id)
     for workspace in workspaces:
         try:
             submissions = await ctx.forge.workspaces.list_submissions(workspace, task.id)

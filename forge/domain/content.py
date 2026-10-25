@@ -61,16 +61,12 @@ def path_problem(
     *,
     folder: bool | None,
     of: Literal["task", "workflow"] = "task",
-    today: bool = False,
 ) -> str | None:
     """What is wrong with `value` as the path of a file or folder of a task
     or workflow, if anything, said to the person who wrote it: a relative
     path of named parts, none `.` or `..`, none starting or ending with a
     space, and no backslash or control character. A folder's path ends in
-    `/` and a file's does not; `folder` none takes either. A task of
-    today's format (`today`) keeps the rule its versions were saved under,
-    which allows a part with a space at its edge and leaves control
-    characters to `check_path`.
+    `/` and a file's does not; `folder` none takes either.
     """
     if not isinstance(value, str) or not value:
         return f"Give the path of a file or folder in the {of}, such as {_EXAMPLES[of]}."
@@ -79,9 +75,9 @@ def path_problem(
     parts = value.removesuffix("/").split("/")
     if any(part in ("", ".", "..") for part in parts):
         return "The path cannot have empty, . or .. parts."
-    if not today and any(part != part.strip(" ") for part in parts):
+    if any(part != part.strip(" ") for part in parts):
         return "No part of the path can start or end with a space."
-    if not today and any(ord(character) < 32 or ord(character) == 127 for character in value):
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
         return "The path cannot hold a control character, such as a tab or a new line."
     if folder is True and not value.endswith("/"):
         return "This is a folder, so its path ends with /, such as data/."

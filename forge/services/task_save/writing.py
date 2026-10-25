@@ -40,7 +40,7 @@ async def _contest_running(ctx: Context, task: TaskId) -> bool:
 async def _plan_files(
     ctx: Context, as_: Identity, task: TaskId, head: FileSet, checked: Checked
 ) -> dict[str, bytes | None]:
-    """The plan the save writes, or a run task's runs file, when it is new
+    """The plan the save writes, or a task's runs file, when it is new
     or differs from the head's, and none for every other file under
     `plans/` at the head, which the save removes.
     """

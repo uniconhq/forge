@@ -1,4 +1,4 @@
-"""Staff releasing a run task's results and taking a release back
+"""Staff releasing a task's results and taking a release back
 (SIMPLER-CORE.md 9.4, stage 5 section 6 items 2 and 10): what `on_release`
 lists is shown to entrants, its values, runs and files, only while the
 results are released, and an entrant reads the early row alone until the
@@ -25,7 +25,6 @@ from forge.domain.errors import (
     ConfirmationRequired,
     Forbidden,
     InvalidExtension,
-    NotARunTask,
     NotFound,
 )
 from forge.domain.grading import GradingStatus
@@ -49,7 +48,7 @@ from forge.services import (
 from forge.services.results import ResultsState
 from forge.services.task_save import Draft, Published
 from forge.testing import FakeClock
-from tests.services.conftest import SPRING, Acme, Entered
+from tests.services.conftest import SPRING, Acme
 from tests.services.test_pipelines import (
     AFTER_CLOSE,
     BEFORE_CLOSE,
@@ -266,13 +265,6 @@ async def test_a_manager_of_the_contest_releases_and_an_observer_is_refused(
     state = await results.state(setup, _held(acme, ISLANDS, Role.OBSERVER), islands.task)
     assert state.released
     assert [each.by for each in state.history] == [9]
-
-
-async def test_a_task_that_does_not_grade_by_runs_has_no_results_to_release(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    with pytest.raises(NotARunTask):
-        await results.release(setup, acme.ada, entered.task, confirmed=True)
 
 
 async def test_an_extension_is_refused_while_released_and_allowed_after_a_take_back(

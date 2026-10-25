@@ -100,6 +100,15 @@ CONTEST_RETIRED = (
 
 TASK_RETIRED = (
     Retired(
+        ("test_groups",),
+        "A task's tests are now the runs its repeat makes, grouped under scoring's groups. "
+        "Move them there, and remove this.",
+    ),
+    Retired(
+        ("credit",),
+        "What a task's runs earn is now said by scoring's values. Remove this.",
+    ),
+    Retired(
         ("release_at",),
         "A task's release time is now set in the contest, on the task's timeline. Set it "
         "there, and remove this.",
@@ -107,7 +116,7 @@ TASK_RETIRED = (
     Retired(
         ("hidden",),
         "A task is now shown from its release time in the contest. To hide results until "
-        'the reveal, set a test group\'s "When entrants see results". Remove this.',
+        "the reveal, list them under scoring's show after_close. Remove this.",
     ),
     Retired(
         ("limits",),
@@ -116,12 +125,13 @@ TASK_RETIRED = (
     ),
     Retired(
         ("subtasks",),
-        "Subtasks are now test groups. Add a test group for each, and remove this.",
+        "Subtasks are now groups of runs. Add a group under scoring's groups for each, and "
+        "remove this.",
     ),
     Retired(
         ("stages",),
-        "This setting is no longer used. To hide results, set a test group's \"When entrants "
-        'see results"; which submission counts is set on each leaderboard. Remove this.',
+        "This setting is no longer used. To hide results, list them under scoring's show "
+        "after_close; which submission counts is set on each leaderboard. Remove this.",
     ),
     Retired(
         ("inputs", "contestant"),

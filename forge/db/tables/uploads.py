@@ -17,7 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from forge.db.base import Base, Timestamped
 from forge.domain.ids import new_id
 
-PURPOSES = ("submission", "task_file")
+PURPOSES = ("submission", "task_file", "workflow_file")
 STATUSES = ("waiting", "verified", "consumed")
 
 
@@ -27,6 +27,7 @@ class Upload(Base, Timestamped):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=new_id)
     owner_user_id: Mapped[int] = mapped_column(BigInteger)
     purpose: Mapped[str]
+    workflow_id: Mapped[str | None]
     task_id: Mapped[str | None]
     input_id: Mapped[str | None]
     repo_path: Mapped[str | None]

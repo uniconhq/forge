@@ -1,6 +1,6 @@
 """Taking a task out of its contest (#450): a manager of the contest removes
 a task nobody has submitted to, its entry, its place at the forge with its
-roles, its activation and its name going, the letters after it moving up;
+roles and its name going, the letters after it moving up;
 and withdraws one with submissions, which keeps its entry and its letter
 but leaves every entrant's read of the contest, a submit and every
 leaderboard, its submissions staying for the organisers, until it is put
@@ -58,13 +58,17 @@ PRODUCT = TaskId("acme/spring/product")
 MAX = TaskId("acme/spring/max")
 STANDINGS = "leaderboards:\n  standings: {title: Standings, audience: {who: everyone}}\n"
 PASSED: dict[str, Any] = {
-    "schema_version": 5,
-    "stopped": None,
-    "stopped_by": None,
-    "tests": [{"test": "main/1", "outcome": "accepted", "values": {}}],
-    "values": {},
-    "run_log": None,
-    "error": None,
+    "schema_version": 6,
+    "runs": [
+        {
+            "id": "r1",
+            "key": {"input": "tests/1.in", "answer": "tests/1.ans"},
+            "verdict": "accepted",
+            "passed": 1,
+            "reports": {},
+            "texts": {},
+        }
+    ],
 }
 
 
@@ -88,7 +92,7 @@ async def _submit(setup: Setup, acme: Acme, session: Session, task: TaskId, key:
         session,
         task,
         {
-            "submission": SubmittedInput(uploads=(made.id,)),
+            "code": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key=key,
@@ -99,7 +103,9 @@ async def _submit(setup: Setup, acme: Acme, session: Session, task: TaskId, key:
 async def _passed(setup: Setup, task: TaskId) -> None:
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(
-            update(Grading).where(Grading.task_id == task).values(status="done", result=PASSED)
+            update(Grading)
+            .where(Grading.task_id == task, Grading.pipeline != "save")
+            .values(status="done", result=PASSED)
         )
 
 
@@ -124,10 +130,8 @@ async def test_a_task_nobody_submitted_to_is_removed_and_the_letters_after_it_mo
     assert done is TakeOut.REMOVE
     assert b"product" not in await _settings(acme)
     assert ("acme", "spring.product.task") not in acme.fake.state.repos
-    assert PRODUCT not in acme.fake.ci.activated
-    assert [call.operation for call in acme.fake.calls if call.operation != "read_file"][-4:] == [
+    assert [call.operation for call in acme.fake.calls if call.operation != "read_file"][-3:] == [
         "write_file",
-        "deactivate",
         "delete_submission_place",
         "delete_place",
     ]

@@ -9,14 +9,21 @@ from forge.domain.blocks.catalogue import ALL, EXEC, EXEC_MEMORY_LIMIT, EXEC_TIM
 from forge.domain.blocks.check import ValuesCheck, check_names, check_values
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.content import has_path, path_problem
-from forge.domain.definitions import ENTRANT, TASK_FILE, Form, TaskDefinition, form_problems
+from forge.domain.definitions import (
+    DEFAULT_MAX_SIZE,
+    ENTRANT,
+    TASK_FILE,
+    Form,
+    TaskDefinition,
+    form_problems,
+)
 from forge.domain.grading import Machine
 from forge.domain.plan_basics import PLANS_FOLDER, SECRET_NAME
 from forge.domain.port_values import is_reserved, scalar_to_text, type_in_words
 from forge.domain.primitives import PROGRAMS, Port
 from forge.domain.program_manifest import EXEC_OWN_NAMES, PROGRAM_FILE, parse_program
 from forge.domain.run_task.models import EntrantInput, ProgramValue, Run, RunsFile
-from forge.domain.run_task.records import MOST_RUNS, SECRETS_LATER, VERDICT_WORDS, Part
+from forge.domain.run_task.records import MOST_RUNS, SECRETS_LATER, Part
 from forge.domain.run_task.show_rules import (
     _compiled_later,
     _under_sooner,
@@ -69,12 +76,16 @@ class _Secret:
 
 @dataclass
 class _Axis:
-    """An axis as bound: its inputs that read, by their column, and its rows."""
+    """An axis as bound: its inputs that read, by their column, its rows,
+    and each tuple's title and size, none where the tuple gives none.
+    """
 
     index: int
     columns: dict[int, str]
     rows: list[tuple[object, ...]]
     given_as: list[object]
+    titles: list[str | None]
+    sizes: list[int | None]
 
 
 class _Binder:
@@ -139,7 +150,7 @@ class _Binder:
             else:
                 self.settings[name] = given
         for index, axis in enumerate(self.task.repeat):
-            self._axis(index, axis.inputs, axis.rows, axis.tuples)
+            self._axis(index, axis.inputs, axis.rows, axis.tuples, axis.titles, axis.sizes)
         for name, wanted in declared.items():
             if name not in self.where and not wanted.optional:
                 self.refuse(
@@ -155,13 +166,21 @@ class _Binder:
             )
 
     def _entrant(
-        self, at: Path, name: str, wanted: RunInput, form: Mapping[str, Any], parts: int | None
+        self,
+        at: Path,
+        name: str,
+        wanted: RunInput,
+        form: Mapping[str, Any],
+        parts: int | None,
+        part_details: tuple[tuple[str | None, int], ...] | None = None,
     ) -> None:
         problems = form_problems(form, wanted.type.value, wanted.options)
         for path, message in problems:
             self.refuse((*at, ENTRANT, *path), message)
         details = Form() if problems else Form.model_validate(form)
-        self.entrant[name] = EntrantInput(name, wanted.type, wanted.options, details, parts)
+        self.entrant[name] = EntrantInput(
+            name, wanted.type, wanted.options, details, parts, part_details
+        )
 
     def _setting_problem(self, wanted: RunInput, given: object) -> str | None:
         if isinstance(given, dict) and "secret" in given:
@@ -188,6 +207,8 @@ class _Binder:
         names: Sequence[str],
         rows: list[tuple[object, ...]],
         given_as: list[object],
+        titles: list[str | None],
+        sizes: list[int | None],
     ) -> None:
         declared = self.workflow.inputs
         columns: dict[int, str] = {}
@@ -209,7 +230,7 @@ class _Binder:
             values = [row[column] for row in rows]
             by_entrant = [value == ENTRANT for value in values]
             if all(by_entrant):
-                self._entrant(at, name, wanted, {}, len(rows))
+                self._entrant(at, name, wanted, {}, len(rows), _part_details(titles, sizes))
                 continue
             if any(by_entrant):
                 first = by_entrant.index(not by_entrant[0])
@@ -224,7 +245,7 @@ class _Binder:
                 if problem is not None:
                     self.refuse(_cell(index, row, column, name, given_as[row]), problem)
             self.repeated[name] = values
-        self.axes.append(_Axis(index, columns, rows, given_as))
+        self.axes.append(_Axis(index, columns, rows, given_as, titles, sizes))
 
     # 8.2: the runs
 
@@ -267,7 +288,10 @@ class _Binder:
         taken = [int(each[1:]) for each in ids.values() if each[1:].isdigit()]
         following = max(taken, default=0) + 1
         runs: list[Run] = []
-        for combination in itertools.product(*keyed):
+        titled = [axis.titles for axis in self.axes]
+        for combination, chosen in zip(
+            itertools.product(*keyed), itertools.product(*titled), strict=True
+        ):
             key: dict[str, object] = {}
             for part in combination:
                 key.update(part)
@@ -275,7 +299,8 @@ class _Binder:
             if text not in ids:
                 ids[text] = f"r{following}"
                 following += 1
-            runs.append(Run(ids[text], key, False))
+            present = tuple(chosen)
+            runs.append(Run(ids[text], key, False, present if any(present) else None))
         self.ids = ids
         return runs
 
@@ -284,8 +309,6 @@ class _Binder:
     def groups(self, runs: Sequence[Run]) -> dict[str, tuple[str, ...]]:
         found: dict[str, tuple[str, ...]] = {ALL: tuple(run.id for run in runs)}
         scoring = self.task.scoring
-        if scoring is None:
-            return found
         for name, picks in scoring.groups.items():
             at: Path = ("scoring", "groups", name)
             if not picks:
@@ -333,11 +356,8 @@ class _Binder:
 
     # 9.2 and 9.5: names and values
 
-    def scoring(self, runs: Sequence[Run], manifests: Mapping[str, bytes]) -> ValuesCheck | None:
+    def scoring(self, runs: Sequence[Run], manifests: Mapping[str, bytes]) -> ValuesCheck:
         scoring = self.task.scoring
-        if scoring is None:
-            self.refuse(("scoring",), "This is required.")
-            return None
         for path, message in check_names(scoring.groups, scoring.values):
             self.refuse(("scoring", *path), message)
         for kind, names in (("groups", scoring.groups), ("values", scoring.values)):
@@ -354,37 +374,50 @@ class _Binder:
                 f"{ALL} is a path in the task, and the name of the group of every run, so "
                 "show could not tell them apart. Rename it in the task's files.",
             )
+        columns, texts = self._columns(manifests)
         found = check_values(
             scoring.values,
             groups=[*scoring.groups],
-            columns=self._columns(manifests),
+            columns=columns,
             keys=self.repeated,
+            texts=texts,
         )
         for path, message in found.problems:
             self.refuse(("scoring", *path), message)
         return found
 
-    def _columns(self, manifests: Mapping[str, bytes]) -> dict[str, str | None]:
+    def _columns(self, manifests: Mapping[str, bytes]) -> tuple[dict[str, str | None], set[str]]:
         """Each column of a run, none for a number a fold may read and the
-        reason for any other.
+        reason for any other, and the columns that are text a formula may
+        read: `verdict` and a repeated input's text. A step's text output
+        is shown with the run and is not among them.
         """
         columns: dict[str, str | None] = {}
+        texts: set[str] = set()
         for name in [*self.repeated, *(name for name, each in self.entrant.items() if each.parts)]:
             kind = self.workflow.inputs[name].type
-            columns[name] = (
-                None
-                if kind is Type.NUMBER
-                else f"{name} is {type_in_words(kind)}, and blocks read numbers only."
-            )
+            if kind is Type.NUMBER:
+                columns[name] = None
+            elif kind is Type.TEXT:
+                columns[name] = f"{name} is text, and this reads a number."
+                texts.add(name)
+            else:
+                columns[name] = f"{name} is {type_in_words(kind)}, and blocks read numbers only."
         for name, report in self.checked.reports.items():
             port = report.port or self._deferred_port(report, manifests)
+            if port is not None and port.type not in (Type.NUMBER, Type.TEXT):
+                continue
             if port is None or port.type is Type.NUMBER:
                 columns[name] = None
             else:
-                columns[name] = f"{name} is text, and blocks read numbers only."
-        columns["verdict"] = VERDICT_WORDS
+                columns[name] = (
+                    f"{name} is text, shown with its run, and a formula reads verdict "
+                    "and a repeated input's text."
+                )
+        columns["verdict"] = "verdict is text, and this reads a number."
+        texts.add("verdict")
         columns["passed"] = None
-        return columns
+        return columns, texts
 
     def _deferred_port(self, report: ResolvedReport, manifests: Mapping[str, bytes]) -> Port | None:
         """The type a report of a manifest the task gives has, in the first
@@ -418,7 +451,7 @@ class _Binder:
         scoring = self.task.scoring
         refused = {path[1] for path, _ in values.problems if len(path) > 1 and path[0] == "values"}
         found: dict[str, ProgramValue] = {}
-        for name, tree in (scoring.values if scoring is not None else {}).items():
+        for name, tree in scoring.values.items():
             nodes = blocks_in(tree, EXEC)
             if name in refused or len(nodes) != 1:
                 continue
@@ -483,10 +516,8 @@ class _Binder:
 
     # 9.4: show
 
-    def show(self) -> None:
+    def show(self, manifests: Mapping[str, bytes]) -> None:
         scoring = self.task.scoring
-        if scoring is None:
-            return
         names = show_names(scoring)
         seen: dict[str, str] = {}
         for time, entries in scoring.show.lists().items():
@@ -510,13 +541,16 @@ class _Binder:
                 if entry in names:
                     continue
                 if entry in self.checked.reports:
-                    if entry in self.paths:
-                        self.refuse(
-                            at,
-                            f"{entry} names both a report of the workflow and a file of the task, "
-                            "so show cannot tell which it lists. Rename the file.",
-                        )
-                    continue
+                    report = self.checked.reports[entry]
+                    port = report.port or self._deferred_port(report, manifests)
+                    if port is None or port.type in (Type.NUMBER, Type.TEXT):
+                        if entry in self.paths:
+                            self.refuse(
+                                at,
+                                f"{entry} names both an output of the workflow and a file of the "
+                                "task, so show cannot tell which it lists. Rename the file.",
+                            )
+                        continue
                 problem = self._shown_path_problem(entry)
                 if problem is not None:
                     self.refuse(at, problem)
@@ -530,8 +564,8 @@ class _Binder:
         problem = path_problem(entry, folder=folder)
         if problem is not None or not (folder or "/" in entry or entry in self.paths):
             return (
-                f"{entry} names no group, value, report, file or folder of the task. Give a "
-                "group, a value, compiled or a report by its name, a file by its path, or a "
+                f"{entry} names no group, value, output, file or folder of the task. Give a "
+                "group, a value, compiled or an output by its name, a file by its path, or a "
                 "folder with a / at its end."
             )
         if is_reserved(entry):
@@ -541,10 +575,10 @@ class _Binder:
                 f"{TASK_FILE} names the task's hidden files and gives its settings, so it is "
                 "never served. Remove it."
             )
-        if not has_path(self.paths, entry):
-            return (
-                f"The task has no files in {entry}." if folder else f"The task has no file {entry}."
-            )
+        # A folder may hold nothing yet, such as `public/` before the
+        # statement has a picture: it serves what it holds when it is shown.
+        if not folder and not has_path(self.paths, entry):
+            return f"The task has no file {entry}."
         return None
 
     # 8.1, kept: limits, secrets, manifests
@@ -631,7 +665,7 @@ class _Binder:
         if not isinstance(raw, str):
             return None
         try:
-            found = whole_reference(raw, runs=True)
+            found = whole_reference(raw)
         except BadReference:
             return None
         if found is None or found.kind != "inputs":
@@ -895,3 +929,17 @@ class _Binder:
                 f"{said}, and entrants have submitted, so which inputs are theirs, and of what "
                 "type, cannot change.",
             )
+
+
+def _part_details(
+    titles: list[str | None], sizes: list[int | None]
+) -> tuple[tuple[str | None, int], ...] | None:
+    """Each part's title and largest size, or none when no tuple of the
+    column names either. A tuple without its own size takes the default.
+    """
+    if all(title is None for title in titles) and all(size is None for size in sizes):
+        return None
+    return tuple(
+        (title, size if size is not None else DEFAULT_MAX_SIZE)
+        for title, size in zip(titles, sizes, strict=True)
+    )
