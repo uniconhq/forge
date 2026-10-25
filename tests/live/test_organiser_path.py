@@ -6,7 +6,8 @@ contest and a task and the poller makes those; they save the starter
 `task.yaml` with one change and the statement written, and it is
 published, its plan committed in the
 same commit; a bad save is a draft
-with its errors and no new tag. Then the contest is published and running,
+with its errors and no new tag. Once that publication's check has passed,
+the contest is published and running,
 a second person registers and is approved, the poller opens their desk and a
 place for the published task that they write, they read the contest's home
 and the task's statement, a visitor reads the same statement, a task
@@ -15,6 +16,8 @@ access away and keeps the repositories. Everything made at both services is
 removed afterwards.
 """
 
+import asyncio
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -110,6 +113,21 @@ def _running(title: str) -> bytes:
     ).encode()
 
 
+async def _until_its_check_passes(setup: Setup, organiser: Any, task: TaskId) -> None:
+    """A publication whose plan checks at the save is not the task's until
+    that check passes, and a contest will not open on it before then."""
+    deadline = time.monotonic() + 120
+    while True:
+        standing = await tasks.state(setup, organiser, task)
+        latest = standing.latest
+        assert latest is not None
+        if latest.check is None:
+            return
+        assert latest.check == "checking", latest.check
+        assert time.monotonic() < deadline, "the publication is still being checked"
+        await asyncio.sleep(1)
+
+
 def _permission(admin: httpx.Client, org: str, repo: str, login: str) -> str:
     found = admin.get(f"/api/v1/repos/{org}/{repo}/collaborators/{login}/permission")
     assert found.status_code == 200, found.text
@@ -185,6 +203,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     with pytest.raises(NotFound):
         await files.read(live_setup, organiser, task, "plans/final.json")
 
+    await _until_its_check_passes(live_setup, organiser, task)
     settings = await files.read(live_setup, organiser, contest, "contest.yaml")
     await files.write(
         live_setup, organiser, contest, "contest.yaml", _running("Spring"), settings.token
