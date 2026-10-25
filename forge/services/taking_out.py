@@ -167,7 +167,7 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
         if problem not in _saved_problems(found.content)
     ]
     problems += await timelines.check_contest(ctx, contest, before, after)
-    checked = await boards.check_contest(ctx, contest, after)
+    checked = await boards.check_contest(ctx, contest, before, after)
     problems += checked.problems
     if problems:
         raise InvalidDefinition(CONTEST_FILE, problems)

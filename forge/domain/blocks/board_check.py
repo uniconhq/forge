@@ -2,7 +2,7 @@
 leaderboards note's 5.3 to 5.5 and 6.2): a contest's leaderboards against
 the catalogue, as far as `contest.yaml` alone says. What needs a task's own
 file, such as whether `islands.solved` is one of its values, is checked
-across files (stage 5, phase 5.7).
+across files (`forge.domain.board_checks`).
 
 - **Kinds.** Every node is a block the catalogue has in a form a board may
   use (`Scope`), or a leaf a board reads; each input is given what it

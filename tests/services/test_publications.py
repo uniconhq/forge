@@ -1668,19 +1668,11 @@ WORTH = RUNNING + "    worth: 50\n"
 DUE = RUNNING + "    due: 2026-09-26T14:00:00Z\n"
 
 
-@pytest.mark.parametrize(
-    ("contest", "line"),
-    [
-        (WORTH, "gives it a worth of 50"),
-        (DUE, "gives it a due time"),
-    ],
-    ids=["worth", "due"],
-)
 async def test_a_task_left_giving_no_points_is_refused_while_its_contest_entry_scores_it(
-    setup: Setup, acme: Acme, sum_task: TaskId, contest: str, line: str
+    setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     await _published(setup, acme, sum_task)
-    await write_contest(acme.fake, contest.format(state="draft"))
+    await write_contest(acme.fake, WORTH.format(state="draft"))
 
     result = await _save(setup, acme, sum_task, _with(acme, b"{each: 100}", b"{}"))
 
@@ -1688,12 +1680,24 @@ async def test_a_task_left_giving_no_points_is_refused_while_its_contest_entry_s
     assert [(error["path"], error["message"]) for error in result.errors] == [
         (
             "test_groups",
-            f"No test group gives points, so sum gives no points, but the contest {line}. Remove "
-            "that from the contest first.",
+            "No test group gives points, so sum gives no points, but the contest gives it a "
+            "worth of 50. Remove that from the contest first.",
         )
     ]
     await write_contest(acme.fake, RUNNING.format(state="draft"))
     assert isinstance(await _save(setup, acme, sum_task, {}), Published)
+
+
+async def test_a_task_left_giving_no_points_may_keep_its_due(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _published(setup, acme, sum_task)
+    await write_contest(acme.fake, DUE.format(state="draft"))
+
+    result = await _save(setup, acme, sum_task, _with(acme, b"{each: 100}", b"{}"))
+
+    # Any task may have a due (stage 5, phase 5.7).
+    assert isinstance(result, Published), result
 
 
 async def test_the_task_form_reads_the_inputs_and_test_fields_its_workflow_declares(

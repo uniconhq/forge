@@ -22,8 +22,9 @@ task's submissions oldest first, every number an exact fraction.
   directly over the results, each in its direction, the oldest on a tie,
   and works the value out again from them with the task's own tree; it is
   missing when that tree reads anything but those values and numbers, or
-  a direction is not given, which the save refuses across files (phase
-  5.7).
+  a direction is not given, which the save refuses across files
+  (`forge.domain.board_checks`), so only a task's version still to be
+  checked could give it.
 - **Waiting.** A value of a submission still being worked out, or waiting
   for staff, is left out of every block that reads it, as a missing one
   is, and the submission is recorded as left out waiting (guarantee 5). A

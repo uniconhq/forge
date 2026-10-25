@@ -454,6 +454,20 @@ async def check_again(
     return check
 
 
+async def checking(ctx: Context, publication: PublicationId) -> bool:
+    """Whether a save row still checks `publication` before it takes over,
+    as `checks` tells its organisers: its latest row not finished, or a
+    system error its retry by itself may still follow. One refused,
+    replaced or with no row never takes over by itself."""
+    latest = await ctx.db.scalar(
+        select(Grading)
+        .where(Grading.pipeline == SAVE, Grading.publication_id == publication)
+        .order_by(Grading.attempt.desc())
+        .limit(1)
+    )
+    return latest is not None and _check_of(ctx, latest) == "checking"
+
+
 def _check_of(ctx: Context, row: Grading, lost: Collection[uuid.UUID] = ()) -> Check | None:
     status = gradings.status_of(ctx, row, lost)
     if status in UNFINISHED:

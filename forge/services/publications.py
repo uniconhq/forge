@@ -21,11 +21,14 @@ steps in order, and refuses before anything is written.
    to the workflow's inputs, its sealed steps found and its fit checked; and
    a group's `show` neither hides what was shown under any publication a
    graded submission ran under nor is left unsaid on a group added once the
-   task has a graded submission (T7, T10); and a task that gives no points
-   is refused while its contest's entry for it gives it a `worth` or a
-   `due`. What a leaderboard asks of the task is checked across files in
-   stage 5's phase 5.7. A workflow is named `<owner>/<name>`, the owner an org by its name or a
-   person by their username; when the latest publication used a workflow of
+   task has a graded submission (T7, T10); a task that gives no points
+   is refused while its contest's entry for it gives it a `worth`; and the
+   task keeps every value a leaderboard of its contest reads, by its name,
+   and gives no column a reason to be refused across files, such as a
+   value a pick chooses by now reading a mark (`board_checks.across`), each
+   problem naming the board and the column. A workflow is named
+   `<owner>/<name>`, the owner an org by its name or a person by their
+   username; when the latest publication used a workflow of
    that name and it is now another workflow, by the forge's own id for it,
    the state is refused at that line, since the owner may have been renamed
    and the name taken by someone else. No org holds a secret yet, so a
@@ -108,6 +111,7 @@ from forge.db.tables import Grading
 from forge.db.tables.gradings import FRONT
 from forge.domain.blocks.catalogue import EXEC
 from forge.domain.blocks.evaluate import blocks_in
+from forge.domain.board_checks import Scored, across, boards_of
 from forge.domain.content import (
     ConflictToken,
     Edit,
@@ -733,6 +737,7 @@ async def check(
     problems.extend(group_problems(definition, tests, present))
     problems.extend(await _shown_before(ctx, task, definition))
     problems.extend(await _contest_points(ctx, task, definition))
+    problems.extend(await _board_reads(ctx, task, definition))
     if problems:
         return Checked(definition, None, tuple(problems), pins)
     try:
@@ -841,6 +846,7 @@ async def _check_runs(
         *found.problems,
         *await _shown_before_runs(ctx, task, definition, present, found.task),
         *await _contest_points(ctx, task, definition),
+        *await _board_reads(ctx, task, definition),
     ]
     if problems:
         return Checked(definition, None, tuple(problems), pins)
@@ -1342,10 +1348,10 @@ async def _contest_points(
     ctx: Context, task: TaskId, definition: TaskDefinition
 ) -> builtins.list[Problem]:
     """Check 10's last part: a task that gives no points is refused while
-    its contest's entry for it gives it a `worth` or a `due`, naming the
-    contest's line, since every save of the contest would be refused there
-    from then on; a run task may have a `due`, which its values read as
-    `seconds_late`, but not a `late_per_day`.
+    its contest's entry for it gives it a `worth`, naming the contest's
+    line, since every save of the contest would be refused there from then
+    on; a run task may not take a `late_per_day` either. Any task may have
+    a `due` (stage 5, phase 5.7).
     """
     if definition.gives_points:
         return []
@@ -1360,8 +1366,6 @@ async def _contest_points(
         said = []
         if entry.worth is not None:
             said.append(f"gives it a worth of {spelled(entry.worth)}")
-        if entry.due is not None and not definition.runs:
-            said.append("gives it a due time")
         if entry.late_per_day is not None and definition.runs:
             said.append("takes a share of its points for each late day")
         if definition.runs:
@@ -1383,6 +1387,35 @@ async def _contest_points(
             )
             for line in said
         )
+    return problems
+
+
+async def _board_reads(
+    ctx: Context, task: TaskId, definition: TaskDefinition
+) -> builtins.list[Problem]:
+    """What the contest's leaderboards ask of the task (stage 5, phase 5.7),
+    against the values the save would give it: every value a column reads
+    of it is kept, by its name, and no column would be refused across files
+    for what the task's values now read (`board_checks.across`). Each
+    problem names the board and the column, at the value it is about when
+    the task still gives it, else at `scoring.values`. A board whose own
+    check finds anything is the contest's to mend, and asks nothing here;
+    a task graded test by test gives a board no results, and is not
+    checked.
+    """
+    if definition.scoring is None:
+        return []
+    contest = await _contest(ctx, task)
+    name = (await names.names_of(ctx, [task])).get(task)
+    if contest is None or name is None or not contest.leaderboards:
+        return []
+    values = definition.scoring.values
+    problems: builtins.list[Problem] = []
+    for each in across(contest, boards_of(contest), {name: Scored(values)}):
+        path = f"scoring.values.{each.value}" if each.value in values else "scoring.values"
+        problem = Problem(path=path, message=each.saved)
+        if problem not in problems:
+            problems.append(problem)
     return problems
 
 

@@ -438,7 +438,8 @@ class Leaderboard(Model):
     """One board (SIMPLER-CORE.md 10, the leaderboards note's 5.10): its
     `title`, the key when left out; who reads it, staff alone when left
     out; its `columns`, each a tree of blocks, checked against the
-    catalogue at the contest's save (`forge.domain.board_checks`); the
+    catalogue and the tasks they read at the contest's save and at a
+    task's (`forge.domain.board_checks`); the
     columns it `sort`s by, in turn, each `desc` or `asc`; and those it
     `display`s, in order, each with how many decimal `places` it is shown
     to, a column's number itself kept exact.
@@ -473,7 +474,9 @@ def _hold_end(value: object) -> datetime | Literal["staff"]:
 
 class Hold(Model):
     """The contest's hold, the freeze (SIMPLER-CORE.md 10.2 rule 10): from
-    `from`, a time, until `until`, a time or `staff`, who end it."""
+    `from`, a time, until `until`, a time or `staff`, who end it. That
+    `from` lies inside the contest, and is not set to a time passed, is the
+    save's (`forge.domain.board_checks.hold_problems`)."""
 
     from_: AwareTime = Field(alias="from")
     until: Annotated[datetime | Literal["staff"], PlainValidator(_hold_end)]

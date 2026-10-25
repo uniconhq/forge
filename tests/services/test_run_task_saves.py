@@ -484,7 +484,7 @@ async def test_after_close_is_served_from_the_reveal_and_on_release_never_yet(
 
 BOARD = (
     "leaderboards:\n  standings:\n    columns:\n"
-    "      score: {value: [{block: latest, from: {results: sum}}, score]}\n"
+    "      score: {value: [{block: latest, from: {results: sum}}, total]}\n"
 )
 
 

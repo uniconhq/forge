@@ -39,8 +39,12 @@ the check a save of the contest's settings runs over them.
   tasks those read.
 
 A save of the contest's settings is checked by `check_contest`: each board
-against the catalogue (`board_checks`), and a task's marks not lowered
-below the marks a row holds on it.
+against the catalogue and against the live publication of each task it
+reads (`board_checks`), and against its newest while a save row still
+checks that one, the hold's `from` inside the contest and never set or
+moved to a time passed, and a task's marks not lowered below the marks a
+row holds on it. A save of a task a board reads is checked against the
+boards by the save itself (`publications`).
 """
 
 import uuid
@@ -61,7 +65,7 @@ from forge.domain.blocks.board_evaluate import Submitted, work_out_row
 from forge.domain.blocks.bounds import Bounds, column_bounds, self_reported_parts, value_bounds
 from forge.domain.blocks.catalogue import ALL
 from forge.domain.blocks.evaluate import RunResult
-from forge.domain.board_checks import boards_of, marks_of
+from forge.domain.board_checks import Scored, across, boards_of, hold_problems, marks_of
 from forge.domain.board_checks import check_contest as check_boards
 from forge.domain.boards import (
     STAFF,
@@ -80,7 +84,7 @@ from forge.domain.boards import (
     sees,
     still_grading,
 )
-from forge.domain.definitions import ContestDefinition, Hold
+from forge.domain.definitions import TASK_FILE, ContestDefinition, Hold, parse_task
 from forge.domain.definitions import State as ContestState
 from forge.domain.errors import ConfirmationRequired, NotFound
 from forge.domain.identity import PLATFORM
@@ -93,7 +97,7 @@ from forge.domain.run_results import facts_of
 from forge.domain.run_task import holds as run_holds
 from forge.domain.scoring import State
 from forge.domain.sessions import Session
-from forge.domain.yaml_models import Problem, path_text
+from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -103,6 +107,7 @@ from forge.services import (
     gradings,
     marks,
     names,
+    pipelines,
     published,
     release,
     scores,
@@ -114,6 +119,12 @@ from forge.services.published import PublishedTask
 log = get_logger(__name__)
 
 NO_HOLD: Final = "The contest has no hold to end."
+CHECKING: Final = (
+    "This is {task} as its newest save gives it, still being checked: it takes over once its "
+    "check passes."
+)
+"""Said after a refusal across files found only against a task's newest
+publication, which a save row still checks."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -499,22 +510,95 @@ class ContestCheck:
 
 
 async def check_contest(
-    ctx: Context, contest: ContestId, settings: ContestDefinition
+    ctx: Context,
+    contest: ContestId,
+    before: ContestDefinition | None,
+    settings: ContestDefinition,
 ) -> ContestCheck:
-    """The boards' check for a save of the contest's settings, each refusal
-    at its path; and C1's last rule, a task's marks not lowered below the
-    marks a row holds on it."""
-    found, _ = check_boards(settings)
+    """The boards' check for a save of the contest's settings from
+    `before`, each refusal at its path: each board against the catalogue
+    and against the live publication of each task it reads, a task with
+    none yet left to its first save (`board_checks.across`), and against
+    its newest while a save row still checks that one, since it then takes
+    over with no save to check the boards again (`_checking`); the hold's
+    `from` inside the contest, and never set or moved to a time passed;
+    and C1's last rule, a task's marks not lowered below the marks a row
+    holds on it."""
+    listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
+    ids = {each.name: TaskId(each.id) for each in listed}
+    found, checked = check_boards(settings, await _scored(ctx, settings, ids))
+    for each in across(settings, checked, await _checking(ctx, settings, ids)):
+        if all(at != each.at for at, _ in found):
+            found.append((each.at, f"{each.message} {CHECKING.format(task=each.task)}"))
+    found += hold_problems(before, settings, ctx.now)
     problems = [Problem(path=path_text(path), message=message) for path, message in found]
-    problems += await _held_marks(ctx, contest, settings)
+    problems += await _held_marks(ctx, settings, ids)
     return ContestCheck(problems, [])
 
 
+async def _scored(
+    ctx: Context, settings: ContestDefinition, ids: Mapping[str, TaskId]
+) -> dict[str, Scored]:
+    """Each task scored by its runs that a board reads a value of, by name,
+    as its live publication gives its values; a task with no live
+    publication, or graded test by test, is left out."""
+    read = {task for task, _ in _values_read(boards_of(settings))}
+    found: dict[str, Scored] = {}
+    for name in sorted(read):
+        task = ids.get(name)
+        current = await published.task(ctx, task, settings, name) if task is not None else None
+        if current is None:
+            continue
+        scoring = current.definition.scoring
+        if scoring is not None:
+            found[name] = Scored(scoring.values)
+    return found
+
+
+async def _checking(
+    ctx: Context, settings: ContestDefinition, ids: Mapping[str, TaskId]
+) -> dict[str, Scored]:
+    """Each task scored by its runs that a board reads a value of, by name,
+    as its newest publication gives its values while that one is not live
+    and a save row still checks it (`pipelines.checking`). Only the newest
+    can be, since each save stops the checking of the one before."""
+    read = {task for task, _ in _values_read(boards_of(settings))}
+    found: dict[str, Scored] = {}
+    for name in sorted(read):
+        task = ids.get(name)
+        if task is None:
+            continue
+        await ctx.let_go()
+        try:
+            made = await ctx.forge.workspaces.list_publications(task)
+        except NotFound:
+            continue
+        live = {each.id for each in await published.live(ctx, task, made)}
+        if not made or made[-1].id in live or not await pipelines.checking(ctx, made[-1].id):
+            continue
+        newest = await ctx.forge.content.read_file(PLATFORM, task, TASK_FILE, at=made[-1].version)
+        try:
+            scoring = parse_task(newest.content).scoring
+        except InvalidDefinition:
+            continue
+        if scoring is not None:
+            found[name] = Scored(scoring.values)
+    return found
+
+
+def _values_read(checked: BoardsCheck) -> set[tuple[str, str]]:
+    """Every task's value or fact a column of any board reads directly."""
+    return {
+        each
+        for columns in checked.shapes.values()
+        for shape in columns.values()
+        for each in shape.reads
+    }
+
+
 async def _held_marks(
-    ctx: Context, contest: ContestId, settings: ContestDefinition
+    ctx: Context, settings: ContestDefinition, ids: Mapping[str, TaskId]
 ) -> list[Problem]:
-    listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
-    ids = {each.name: TaskId(each.id) for each in listed}
     problems: list[Problem] = []
     for index, entry in enumerate(settings.tasks):
         allowed = marks_of(settings, entry)

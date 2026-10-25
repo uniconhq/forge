@@ -21,7 +21,7 @@ from forge.domain.blocks.catalogue import CATALOGUE, Scope
 from forge.domain.blocks.check import check_values
 from forge.domain.blocks.evaluate import Column, RunResult
 from forge.domain.blocks.numbers import Better
-from forge.domain.board_checks import check_contest, marks_of
+from forge.domain.board_checks import Scored, across, check_contest, hold_problems, marks_of
 from forge.domain.boards import (
     STAFF,
     Board,
@@ -1411,3 +1411,221 @@ def test_a_hold_is_from_a_time_until_a_time_or_staff() -> None:
     ):
         with pytest.raises(InvalidDefinition):
             contest(wrong)
+
+
+def _hold(from_: str, start: str = "09:00", end: str = "14:00") -> ContestDefinition:
+    head = HEAD.replace("09:00", start).replace("14:00", end)
+    return parse_contest(head + f"hold: {{from: 2026-06-01T{from_}:00Z, until: staff}}\n")
+
+
+EARLY = datetime(2026, 6, 1, 7, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("from_", ["08:00", "09:00", "14:00", "14:30"])
+def test_a_hold_from_outside_the_contest_is_refused_at_its_from(from_: str) -> None:
+    found = hold_problems(None, _hold(from_), EARLY)
+
+    assert [path for path, _ in found] == [("hold", "from")]
+    assert "after the contest's start" in found[0][1]
+
+
+def test_moving_the_end_or_the_start_past_the_holds_from_is_refused_naming_the_hold() -> None:
+    before = _hold("13:00")
+
+    ended = hold_problems(before, _hold("13:00", end="12:30"), EARLY)
+    started = hold_problems(before, _hold("13:00", start="13:30"), EARLY)
+
+    assert ended == [
+        (
+            ("end",),
+            "The leaderboards' hold starts on 1 June 2026 at 13:00 UTC, so the contest must end "
+            "after it. Move the hold's from first, or take the hold out.",
+        )
+    ]
+    assert [path for path, _ in started] == [("start",)]
+    assert hold_problems(before, _hold("13:00", end="16:00"), EARLY) == []
+
+
+def test_a_hold_set_or_moved_to_a_time_passed_is_refused_and_one_left_as_it_was_is_not() -> None:
+    now = datetime(2026, 6, 1, 12, 30, tzinfo=UTC)
+    standing = _hold("12:00")
+
+    assert hold_problems(standing, _hold("12:00"), now) == []
+    assert hold_problems(standing, _hold("13:00"), now) == []
+    for before in (None, contest(""), _hold("13:00")):
+        found = hold_problems(before, _hold("12:00"), now)
+        assert found == [
+            (
+                ("hold", "from"),
+                "1 June 2026 at 12:00 UTC has passed, so a hold from then would hide submissions "
+                "others have already seen on the leaderboards. Give a time still to come.",
+            )
+        ]
+
+
+# Across files
+
+MARKED_VALUES: dict[str, object] = {
+    **ISLANDS_VALUES,
+    "review": {"block": "entered", "at_least": 0, "at_most": 10},
+    "graded": {"block": "add", "of": [{"value": "total"}, {"value": "review"}]},
+    "late": {"block": "sub", "of": [{"value": "total"}, {"fact": "seconds_late"}]},
+    "fast": {"block": "min", "over": {"runs": "all"}, "of": {"run": ["all", "time_ms"]}},
+}
+"""Task a's values: islands' and a mark, one reading it, one reading a fact
+and one folding over runs."""
+
+SCORED = {"a": Scored(MARKED_VALUES)}
+
+
+def across_problems(columns: Mapping[str, object]) -> list[tuple[str, str]]:
+    found, _ = check_contest(contest(board(columns)), SCORED)
+    return [(".".join(str(part) for part in path), message) for path, message in found]
+
+
+def best_each(value: str, **directions: str) -> dict[str, object]:
+    return {
+        "block": "best_each",
+        "from": results("a"),
+        "value": {"name": value},
+        "directions": directions or {"st1": "desc", "st2": "desc"},
+    }
+
+
+LATEST = {"block": "latest", "from": results("a")}
+
+
+@pytest.mark.parametrize(
+    ("columns", "path", "words"),
+    [
+        # A name a task does not give, read in a where, through a pick
+        # column or through a pick in place.
+        (
+            {"c": {"block": "count", "over": results("a"), "where": read("a", "nope")}},
+            "leaderboards.s.columns.c.where.value.1",
+            "a has no value called nope. Its values are fast, graded, late, review, st1, st2 "
+            "and total. A leaderboard also reads the facts attempt, seconds, seconds_late, "
+            "marked and compiled.",
+        ),
+        ({"p": PICK, "c": read("p", "nope")}, "leaderboards.s.columns.c.value.1", "nope"),
+        ({"c": read(LATEST, "nope")}, "leaderboards.s.columns.c.value.1", "nope"),
+        # A choice reading a mark: a pick's by and where, directly, through
+        # a value or through another column; a fold's where; max's and sum's of.
+        (
+            {"p": {"block": "highest", "from": results("a"), "by": read("a", "review")}},
+            "leaderboards.s.columns.p.by",
+            "highest chooses which submission of a counts by review, which reads a mark staff "
+            "enter, so the grading queue, which lists the submissions each cell counts for "
+            "marking, would wait on the mark itself. Choose by a value that reads no mark.",
+        ),
+        (
+            {
+                "p": {
+                    "block": "latest",
+                    "from": results("a"),
+                    "where": {"block": "gt", "of": [read("a", "graded"), 5]},
+                }
+            },
+            "leaderboards.s.columns.p.where",
+            "by graded",
+        ),
+        (
+            {
+                "g": {"block": "otherwise", "of": [read(LATEST, "graded"), 0]},
+                "p": {
+                    "block": "first",
+                    "from": results("a"),
+                    "where": {"block": "gt", "of": [{"column": "g"}, 1]},
+                },
+            },
+            "leaderboards.s.columns.p.where",
+            "by graded",
+        ),
+        (
+            {"c": {"block": "count", "over": results("a"), "where": read("a", "review")}},
+            "leaderboards.s.columns.c.where",
+            "count chooses",
+        ),
+        (
+            {"c": {"block": "max", "over": results("a"), "of": read("a", "review")}},
+            "leaderboards.s.columns.c.of",
+            "max chooses",
+        ),
+        # A sum leaves out each submission whose of is missing, so one not
+        # yet marked would never be counted.
+        (
+            {"c": {"block": "sum", "over": results("a"), "of": read("a", "review")}},
+            "leaderboards.s.columns.c.of",
+            "sum chooses",
+        ),
+        # best_each: a value reading a fact, runs, or a mark directly; a
+        # direction left out; a value reading a mark through what it reads;
+        # names the task does not give.
+        (
+            {"c": best_each("late", total="desc")},
+            "leaderboards.s.columns.c.value",
+            "best_each works late out again from the best of each value it reads directly, "
+            "but late reads the fact seconds_late directly, so no one best of it would be "
+            "right. Give best_each a value that reads only other values and numbers.",
+        ),
+        ({"c": best_each("fast")}, "leaderboards.s.columns.c.value", "a group's runs"),
+        ({"c": best_each("review")}, "leaderboards.s.columns.c.value", "a mark staff enter"),
+        (
+            {"c": best_each("total", st1="desc")},
+            "leaderboards.s.columns.c.directions",
+            "total reads st2 directly, so give each of them a direction here, desc for higher "
+            "is better or asc for lower.",
+        ),
+        (
+            {"c": best_each("graded", total="desc", review="desc")},
+            "leaderboards.s.columns.c.value",
+            "and review reads a mark staff enter",
+        ),
+        ({"c": best_each("nope")}, "leaderboards.s.columns.c.value", "no value called nope"),
+        (
+            {"c": best_each("total", st1="desc", st2="desc", zz="asc")},
+            "leaderboards.s.columns.c.directions.zz",
+            "no value called zz",
+        ),
+    ],
+)
+def test_each_refusal_across_files(columns: dict[str, object], path: str, words: str) -> None:
+    found = across_problems(columns)
+
+    assert [each for each, _ in found] == [path]
+    assert words in found[0][1]
+
+
+def test_what_reads_a_mark_without_choosing_by_it_and_a_task_not_resolved_pass() -> None:
+    marked_pick = {"block": "latest", "from": results("a"), "where": read("a", "marked")}
+    columns = {
+        # A mark read on the latest submission, which counts while unmarked.
+        "reviewed": {"block": "otherwise", "of": [read(LATEST, "review"), 0]},
+        # A mark read through a pick chosen by marked, as the gradebook does.
+        "picked": {"block": "otherwise", "of": [read(marked_pick, "graded"), 0]},
+        "best": best_each("total"),
+        # Facts of any task, and b-c, whose live publication is not known.
+        "tries": {"block": "count", "over": results("a"), "where": read("a", "compiled")},
+        "other": read({"block": "first", "from": results("b-c")}, "anything"),
+    }
+
+    assert across_problems(columns) == []
+
+
+def test_a_board_whose_own_check_fails_is_not_checked_across_files() -> None:
+    columns = {"c": read(LATEST, "nope"), "d": {"block": "nope"}}
+
+    assert [path for path, _ in across_problems(columns)] == ["leaderboards.s.columns.d.block"]
+
+
+def test_a_refusal_across_files_says_at_a_tasks_save_which_board_and_column_it_breaks() -> None:
+    settings = contest(board({"c": {"block": "otherwise", "of": [read(LATEST, "total"), 0]}}))
+    values = {name: tree for name, tree in MARKED_VALUES.items() if name != "total"}
+
+    [found] = across(settings, checked(settings), {"a": Scored(values)})
+
+    assert (found.board, found.column, found.task, found.value) == ("s", "c", "a", "total")
+    assert found.saved == (
+        "The leaderboard s reads total of a in its column c, so a must keep a value called "
+        "total. Take it out of that column first."
+    )
