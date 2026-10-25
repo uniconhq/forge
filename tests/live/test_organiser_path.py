@@ -16,17 +16,18 @@ access away and keeps the repositories. Everything made at both services is
 removed afterwards.
 """
 
-import asyncio
-import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 import pytest
+from sqlalchemy import update
 
+from forge.db.tables import Grading
 from forge.domain.content import Edit
 from forge.domain.errors import NotFound
+from forge.domain.grading import GradingStatus
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.names import EntrantOwner, Named
 from forge.domain.registration import Status
@@ -41,6 +42,7 @@ from forge.services import (
     files,
     landing,
     orgs,
+    pipelines,
     sessions,
     task_save,
     tasks,
@@ -113,19 +115,23 @@ def _running(title: str) -> bytes:
     ).encode()
 
 
-async def _until_its_check_passes(setup: Setup, organiser: Any, task: TaskId) -> None:
-    """A publication whose plan checks at the save is not the task's until
-    that check passes, and a contest will not open on it before then."""
-    deadline = time.monotonic() + 120
-    while True:
-        standing = await tasks.state(setup, organiser, task)
-        latest = standing.latest
-        assert latest is not None
-        if latest.check is None:
-            return
-        assert latest.check == "checking", latest.check
-        assert time.monotonic() < deadline, "the publication is still being checked"
-        await asyncio.sleep(1)
+async def _checked(setup: Setup, task: TaskId) -> None:
+    """Each save row of `task` ended `done` with every run accepted, as its
+    save pipeline would, and the publication it checks taken over. A
+    publication whose plan checks at the save is not the task's until then,
+    and a contest will not open on it. The stack's CI asks the stack's own
+    platform what a run is, and this one runs beside it on its own
+    database, so the run is never started here; the browser tests check a
+    save for real."""
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Grading)
+            .where(Grading.task_id == task, Grading.pipeline == "save")
+            .values(status=GradingStatus.DONE, result={"schema_version": 6, "runs": []})
+        )
+    async with setup.unit_of_work() as ctx:
+        await pipelines.take_over(ctx, task)
+    await setup.settle()
 
 
 def _permission(admin: httpx.Client, org: str, repo: str, login: str) -> str:
@@ -203,7 +209,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     with pytest.raises(NotFound):
         await files.read(live_setup, organiser, task, "plans/final.json")
 
-    await _until_its_check_passes(live_setup, organiser, task)
+    await _checked(live_setup, task)
     settings = await files.read(live_setup, organiser, contest, "contest.yaml")
     await files.write(
         live_setup, organiser, contest, "contest.yaml", _running("Spring"), settings.token
