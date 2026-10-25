@@ -1,44 +1,37 @@
 """Grading as the package and the port describe it: where one grading of one
-submission stands, the runs and agents at the CI, what one
-grading run is, the requests the CI makes about one and the answer it is
-given, the two secrets a run is handed, and the clock a run keeps to.
+submission stands, the runs and agents at the CI, what one pipeline of a
+grading is, the requests the CI makes about one and the answer it is
+given, the token each of its steps is handed, and the clock a run keeps to.
 
-A grading run proves who it is with two secrets derived from
-`UNICON_TOKEN_ENCRYPTION_KEY`, the grading's id and which of its runs it is,
-so neither is stored: the callback token the harness reports back with,
-whose SHA-256 the grading's row keeps, and the envelope key the envelope's
-URL carries. Each is `base64url(HMAC-SHA256(k, "<purpose>:" || grading id))`,
-the id written as its canonical text and the result without padding, with
-`k` derived from the key by HKDF-SHA256 under an info naming the purpose. A
-grading has one run: a retry or a rejudge is a new row with a new id, so it
-is handed new secrets.
+A step of a grading proves who it is with a token derived from
+`UNICON_TOKEN_ENCRYPTION_KEY`, the grading's id, its attempt and the step's
+name (`step_token`), so the token is not stored: the step's row keeps its
+SHA-256. A retry or a rejudge is a new row with a new id, so it is handed
+new tokens.
 
 The times agree with each other and with the CI. A machine gives one run
 `RUN_TIMEOUT`, the longest the CI lets a run take, which the deployment
-sets to 30 minutes. Of that, the two checkouts
-are allowed `CHECKOUT_ALLOWANCE` and the reports `REPORT_ALLOWANCE`, which
-leaves `WALL_CEILING` for the harness: an envelope's `limits.wall_seconds` is
-what its plan's steps may take, their time limits summed with a margin for
-each container and one for the run, which a save refuses above the ceiling
-(the plan's fit, `forge.domain.plans`).
+sets to 30 minutes. Of that, the checkout is allowed `CHECKOUT_ALLOWANCE`
+and the report `REPORT_ALLOWANCE`, which leaves `WALL_CEILING` for the
+steps: what a pipeline's steps may take is their time limits summed with a
+margin for each container and one for the run (`wall_of`), which a save
+refuses above the ceiling (`forge.domain.run_plan`).
 
 A plan must also fit a machine: every step's memory and GPUs within what the
 machines a task may run on have, and no step reaching the network on a
 machine that gives none. Until computes advertise their machines (feature
-12), every task runs on the platform's pool, whose machines take a step of
-up to `PLATFORM_MACHINE`, the socket filter's own memory ceiling, no GPU and
-no network. A run's
-deadline is written when its harness first fetches the envelope, the wall
-clock and the reporting allowance after it, so a run that waited for a
-machine loses none of its time.
+12), every task runs on the platform's pool (`run_machine`), no GPU and no
+network. A run's deadline is written when its first step asks for its job,
+the wall clock and the reporting allowance after it, so a run that waited
+for a machine loses none of its time.
 
 A grading that is past what each of its states may take reads as a system
 error, whatever its row still says, so nothing waits for ever and it is
 tried again (`overdue`): one still `queued` `START_WAIT` after it
 was made, since its run is started as soon as it is committed; one
 `dispatched` `MACHINE_WAIT` after its run was started, a run no machine took
-or that never reached the harness; and one `running` past its deadline,
-whose token is refused from then on.
+or whose first step never asked for its job; and one `running` past its
+deadline, whose tokens are refused from then on.
 
 A `dispatched` grading may also have a run the CI has lost: one it dropped
 for good after the machine it handed the run to went quiet, while still
@@ -79,23 +72,25 @@ from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import Any
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from forge.domain.errors import InvalidReason
-from forge.domain.ids import AgentId, PublicationId, SubmissionId, TaskId, VersionId
+from forge.domain.ids import AgentId, OrgId, SubmissionId, VersionId
 
-if TYPE_CHECKING:
-    from forge.domain.plans import Plan
-
-CALLBACK_INFO = b"unicon-grading-callback"
-ENVELOPE_INFO = b"unicon-grading-envelope"
+STEP_INFO = b"unicon-grading-step"
 
 PLATFORM_POOL = "pool:platform"
 """The label every run is pinned to until orgs bring machines of their own:
 only a machine the platform controls declares it."""
+BOXED_SHAPE = "shape:rootless"
+"""The label a task's pipeline holding an `exec` step
+carries beside its pool's, so only a machine of the shape phase 4.1 picked
+takes it: Woodpecker's labels pick a machine for a whole pipeline."""
+SIZE_LABEL = "size"
+"""The label naming the slot a task's pipeline needs, `size:<slot>`."""
 
 RUN_TIMEOUT = timedelta(minutes=30)
 CHECKOUT_ALLOWANCE = timedelta(minutes=4)
@@ -113,20 +108,45 @@ LOST = "The machine that grades lost this grading before it began."
 
 
 @dataclass(frozen=True, slots=True)
+class Slot:
+    """One size of a grading machine's slots: its name, the value of the
+    `size` label its agents and the pipelines it fits carry, its cores, the
+    most boxes a stage of a pipeline in it runs at once, and its memory in
+    megabytes. The sizes are one table in deploy's settings
+    (`machine/slots.json`), which a machine's setup reads to share its
+    cores and memory out among agents, one per slot, and the forge reads
+    as `UNICON_SLOT_SIZES`.
+    """
+
+    name: str
+    cores: int
+    memory_mb: int
+
+
+@dataclass(frozen=True, slots=True)
 class Machine:
     """The most one step may ask of a machine: memory in megabytes, GPU
-    devices, and whether it may reach the network.
+    devices, and whether it may reach the network; and the sizes of the
+    slots a task's pipelines run in, smallest first.
     """
 
     memory_mb: int
     gpus: int
     network: bool
+    slots: tuple[Slot, ...] = ()
 
 
 PLATFORM_MACHINE = Machine(memory_mb=16384, gpus=0, network=False)
-"""What a machine of the platform's pool gives one step: the socket filter's
-default memory ceiling (`UNICON_FILTER_MAX_MEMORY_MB`), no GPU and no
-network."""
+"""What a machine of the platform's pool gives one step where no slot sizes
+are known: 16 GB of memory, no GPU and no network."""
+
+
+def run_machine(slots: Collection[Slot]) -> Machine:
+    """What a task's step may take on the platform's machines: the
+    biggest slot's memory, no GPU and no network, with every slot, smallest
+    first, for the planner to fit each pipeline in one."""
+    ordered = tuple(sorted(slots, key=lambda slot: slot.memory_mb))
+    return Machine(memory_mb=ordered[-1].memory_mb, gpus=0, network=False, slots=ordered)
 
 
 class RunState(StrEnum):
@@ -145,7 +165,7 @@ class GradingStatus(StrEnum):
     """Where one grading stands. `queued` waits for its run to be started,
     which happens as soon as the request that made it commits; `dispatched`
     is held by the CI, waiting for a machine or checking out; `running` has
-    had its envelope fetched by the harness. It ends `done` with a result,
+    had a step ask for its job. It ends `done` with a result,
     `system_error`, a grading that failed for a reason of the platform's,
     never a grade: its run could not be started, or did not report before
     its deadline; `cancelled`, by staff ending one in `system_error`, or
@@ -282,39 +302,6 @@ class Enrolment:
 
 
 @dataclass(frozen=True, slots=True)
-class GradingRun:
-    """What one run of one grading is, in the platform's words: the grading,
-    the task and the publication it grades against with the version that
-    publication froze, the submission with the version its files went in
-    with, where the run fetches its envelope, and the label of the machines
-    that may take it. The port turns it into the CI's own terms: the
-    variables a run is started with and the steps it is answered with.
-    """
-
-    grading: uuid.UUID
-    task: TaskId
-    publication: PublicationId
-    publication_version: VersionId
-    submission: SubmissionId
-    submission_version: VersionId
-    envelope_url: str
-    compute: str
-
-
-@dataclass(frozen=True, slots=True)
-class RunSpec:
-    """What a run runs, read from the platform's own records as it is
-    started: the harness image the plan of its publication names, by digest,
-    and the image its two checkouts are made with. A CI that is handed a run
-    has all of it at the start; one that asks what a run is is answered
-    from it.
-    """
-
-    harness_image: str
-    clone_image: str
-
-
-@dataclass(frozen=True, slots=True)
 class InboundRequest:
     """A request the CI made to the platform, as it arrived: its method, its
     target, the path and query exactly as sent, its headers, looked up
@@ -336,75 +323,93 @@ class InboundAnswer:
     content_type: str
 
 
-RunLookup = Callable[[str | None, TaskId], Awaitable[tuple[GradingRun, RunSpec]]]
-"""How an implementation whose CI asks what a run is finds the run: by the
-grading id the run names, as it was given, and the task the CI asks about.
-It answers with the run and what it runs only for a grading of that task
-whose run is being started, and refuses anything else, so what runs comes
-from the platform's records and never from the request."""
+@dataclass(frozen=True, slots=True)
+class PipelineRun:
+    """One pipeline of a task's grading (phase 4.9), in the platform's
+    words: the grading's row and which of its pipelines, `save`, `early` or
+    `late`, the org on whose dispatch repository it runs, the commit the
+    publication froze, the submission with the version its files went in
+    with, none for a save, and the label of the machines that may take it.
+    """
+
+    grading: uuid.UUID
+    pipeline: str
+    org: OrgId
+    publication_version: VersionId
+    submission: SubmissionId | None
+    submission_version: VersionId | None
+    compute: str
 
 
 @dataclass(frozen=True, slots=True)
-class RunPlaces:
-    """Where a run is at the forge and on the machine: the task, the
-    publication by name and version, the submission by place, name and
-    version, and where the run's two checkouts are. The CI's answer clones
-    from them, and the envelope carries the submission and the checkouts.
+class PipelineStepSpec:
+    """One Woodpecker step of a pipeline: its name, its image by digest, its
+    settings, the steps it waits for, whether it takes the org's cache,
+    the user its container runs as, none for a step that runs as its image
+    says, and whether it runs whatever the steps it waits for ended with,
+    as the report step does.
     """
 
-    task: Mapping[str, str]
-    publication: Mapping[str, str]
-    submission: Mapping[str, str]
-    checkouts: Mapping[str, str]
+    name: str
+    image: str
+    settings: Mapping[str, Any]
+    depends_on: tuple[str, ...] = ()
+    cache: bool = False
+    user: int | None = None
+    always: bool = False
 
 
-def _secret(key: bytes, info: bytes, purpose: bytes, grading: uuid.UUID) -> str:
-    derived = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=info).derive(key)
-    message = b":".join((purpose, str(grading).encode()))
+@dataclass(frozen=True, slots=True)
+class PipelineSpec:
+    """What a pipeline runs, read from the platform's records as it is
+    started: the image its checkout of the submission is made with, its
+    steps in order, the report's last, the labels of the machines that may
+    take it, and whether it checks the submission out at all, which it
+    does only when one of its steps reads an entrant input.
+    """
+
+    clone_image: str
+    steps: tuple[PipelineStepSpec, ...]
+    labels: tuple[str, ...]
+    clones: bool
+
+
+PipelineLookup = Callable[[str | None, OrgId], Awaitable[tuple[PipelineRun, PipelineSpec]]]
+"""How an implementation whose CI asks what a pipeline is finds it: by the
+grading id the pipeline names, as it was given, and the org whose dispatch
+repository the CI asks about. It answers only for a grading whose pipeline
+is being started, and refuses anything else, so what runs comes from the
+platform's records and never from the request."""
+
+
+def step_token(key: bytes, grading: uuid.UUID, attempt: int, step: str) -> str:
+    """The token one Woodpecker step of a task's grading asks its door
+    with: `base64url(HMAC-SHA256(k, "step:<grading>:<attempt>:<step>"))`,
+    `k` derived from the key by HKDF-SHA256 under `STEP_INFO`, so it names
+    the row, the attempt and the step, and no other step's door takes it.
+    """
+    derived = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=STEP_INFO).derive(key)
+    message = b":".join((b"step", str(grading).encode(), str(attempt).encode(), step.encode()))
     mac = hmac.new(derived, message, hashlib.sha256).digest()
     return base64.urlsafe_b64encode(mac).decode().rstrip("=")
 
 
-def callback_token(key: bytes, grading: uuid.UUID) -> str:
-    """The token the grading's run reports back with."""
-    return _secret(key, CALLBACK_INFO, b"callback", grading)
-
-
-def envelope_key(key: bytes, grading: uuid.UUID) -> str:
-    """The key the URL of the envelope of the grading's run carries."""
-    return _secret(key, ENVELOPE_INFO, b"envelope", grading)
-
-
 def token_hash(token: str) -> bytes:
-    """What a grading's row keeps of its callback token."""
+    """What a step's row keeps of its step token."""
     return hashlib.sha256(token.encode()).digest()
 
 
-def log_key(grading: uuid.UUID, attempt: int) -> str:
-    """Where a grading's run log is kept in the results store."""
-    return f"logs/{grading}/{attempt}.log"
-
-
-RUN_LOG_MAX = 9 * 1024 * 1024
-"""The largest run log read back for an organiser. The harness cuts the log
-it writes to 8 MiB and a line saying what it left out; the URL it writes
-with takes any length, so the read is where the bound holds."""
-
-
-def wall_seconds(plan: Plan) -> int:
-    """How long the harness may take over the plan: every step's time limit
-    summed, which for a batch is already its tests' together, with a margin
-    for each container and one for the run. A save refuses a plan for which
-    this is more than `WALL_CEILING`.
+def wall_of(time_ms: Collection[int]) -> int:
+    """How long a run of containers with these time limits may take, in
+    seconds: the limits summed, with a margin for each container and one for
+    the run. A task's plan works it out per pipeline.
     """
-    steps = sum(step.limits.time_ms for step in plan.steps) / 1000
-    margin = BASE_WALL + STEP_OVERHEAD * len(plan.steps)
-    return max(1, math.ceil(steps + margin.total_seconds()))
+    margin = BASE_WALL + STEP_OVERHEAD * len(time_ms)
+    return max(1, math.ceil(sum(time_ms) / 1000 + margin.total_seconds()))
 
 
-def run_deadline(fetched_at: datetime, wall: int) -> datetime:
-    """The deadline of a run whose harness fetched its envelope at
-    `fetched_at` with `wall` seconds to grade: its callback token is refused
-    after it.
+def run_deadline(began_at: datetime, wall: int) -> datetime:
+    """The deadline of a pipeline whose first step asked for its job at
+    `began_at` with `wall` seconds to grade.
     """
-    return fetched_at + timedelta(seconds=wall) + REPORT_ALLOWANCE
+    return began_at + timedelta(seconds=wall) + REPORT_ALLOWANCE

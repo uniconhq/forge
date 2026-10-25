@@ -4,19 +4,19 @@ manager's key.
 
 - **Removed**, while nobody has submitted to it: its entry leaves `tasks`,
   so the letters after it move up, and the task itself goes as a failed
-  `create` is undone: its activation at the CI, then its place at the forge
-  with its roles, and its name, so the name may be taken again. What still
+  `create` is undone: its place at the forge with its roles, and its name,
+  so the name may be taken again. What still
   named it goes with it: an entrant's extension that names it no longer
   does, an invite to one of its roles still waiting is withdrawn, and each
   entrant's place to submit it goes with any upload waiting there. A
-  leaderboard that names it in its `tasks` refuses it
-  (`take_out_refused`): taking it out of the board is the organisers' call.
+  leaderboard with a column reading its results refuses it
+  (`take_out_refused`): taking it out of the leaderboard is the organisers' call.
 - **Withdrawn**, once anyone has: its entry stays, marked `withdrawn: true`,
   so it keeps its place and its letter, and every reader of the contest's
   tasks skips it for entrants (`forge.domain.release`): they no longer see
   it, its statement, its announcements or their own submissions to it, and
-  a submit to it is refused as `task_withdrawn`; no leaderboard counts it,
-  so the totals drop its points (`board_checks.covered_tasks`). Its
+  a submit to it is refused as `task_withdrawn`; its results on every
+  leaderboard are empty (SIMPLER-CORE.md 10.2, rule 8). Its
   submissions, gradings and history stay for the organisers, who see it in
   their task list as withdrawn and can **put it back** (`put_back`), after
   which it scores exactly as before. Putting back is a save of the
@@ -44,27 +44,35 @@ from sqlalchemy import delete, func, select, update
 
 from forge.db.tables import Entrant, Grading, Name, Upload
 from forge.db.tables import Invite as InviteRow
+from forge.db.tables.gradings import FRONT
 from forge.domain.content import File
 from forge.domain.contest_entries import NoEntry, Unlisted, with_withdrawn, without_entry
 from forge.domain.definitions import CONTEST_FILE, parse_contest
 from forge.domain.errors import (
     Conflict,
-    Forbidden,
     NotFound,
     PortError,
     TakeOutChanged,
     TakeOutRefused,
 )
-from forge.domain.identity import PLATFORM, AsOrgAccount
-from forge.domain.ids import ContestId, OrgId, TaskId
+from forge.domain.identity import PLATFORM
+from forge.domain.ids import ContestId, TaskId
 from forge.domain.invites import InviteStatus
+from forge.domain.leaderboard_task_check import leaderboards_of
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, contest_id_of, contest_scope, task_scope
-from forge.domain.yaml_models import InvalidDefinition
+from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, making, names, org_accounts, places, published, timelines
+from forge.services import (
+    entrant_view,
+    leaderboards,
+    making,
+    names,
+    places,
+    timelines,
+)
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -86,7 +94,7 @@ def take_out_of(submissions: int) -> TakeOut:
 
 @dataclass(frozen=True, slots=True)
 class PutBack:
-    """A withdrawn task put back: what each board reports of its tasks now,
+    """A withdrawn task put back: what each leaderboard reports of its tasks now,
     as a save of the contest's settings reports it.
     """
 
@@ -101,7 +109,7 @@ async def submission_counts(ctx: Context, tasks: list[TaskId]) -> dict[TaskId, i
         return {}
     made = (
         select(Grading.task_id, Grading.workspace_id, Grading.submission_number)
-        .where(Grading.task_id.in_(tasks))
+        .where(Grading.task_id.in_(tasks), FRONT)
         .distinct()
         .subquery()
     )
@@ -143,7 +151,10 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
     """Put a withdrawn task back in its contest, as a save of the contest's
     settings taking `withdrawn` out of its entry would, checked the same
     way: `InvalidDefinition` naming `contest.yaml` with what a leaderboard
-    or a timeline refuses. Needs the manager role at the contest.
+    or a timeline refuses. Only what the edit brings is refused, so a file
+    stored with what a save now refuses but a read ignores, old
+    leaderboards among them (stage 5 section 6, item 73), takes it as
+    withdrawing did. Needs the manager role at the contest.
     `TakeOutRefused` when the entry cannot be edited line by line. A task
     not withdrawn changes nothing.
     """
@@ -155,9 +166,14 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
     updated = _edited(name, lambda: with_withdrawn(found.content, name, False))
     if updated is None:
         return PutBack(())
-    before, after = parse_contest(found.content), parse_contest(updated, saved=True)
-    problems = await timelines.check_contest(ctx, contest, before, after)
-    checked = await boards.check_contest(ctx, contest, after)
+    before, after = parse_contest(found.content), parse_contest(updated)
+    problems = [
+        problem
+        for problem in _saved_problems(updated)
+        if problem not in _saved_problems(found.content)
+    ]
+    problems += await timelines.check_contest(ctx, contest, before, after)
+    checked = await leaderboards.check_contest(ctx, contest, before, after)
     problems += checked.problems
     if problems:
         raise InvalidDefinition(CONTEST_FILE, problems)
@@ -165,6 +181,16 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
     places.ahead_at(ctx, task)
     log.info("tasks.put_back", task=task, user_id=organiser.user.id)
     return PutBack(tuple(checked.notes))
+
+
+def _saved_problems(text: bytes | str) -> list[Problem]:
+    """What a save of the contest's settings in `text` is refused for at
+    the parse (`parse_contest`'s `saved`)."""
+    try:
+        parse_contest(text, saved=True)
+    except InvalidDefinition as refused:
+        return refused.errors
+    return []
 
 
 async def _name(ctx: Context, task: TaskId) -> str:
@@ -230,7 +256,7 @@ async def _write(
         expected=found.token,
         author=author,
     )
-    published.forget_contests(ctx)
+    entrant_view.forget_contests(ctx)
     places.forget_tasks(ctx, contest)
 
 
@@ -248,16 +274,17 @@ async def _remove(
     before a step that fails is put back, as `create` undoes a try.
     """
     settings = parse_contest(found.content)
+    keys = leaderboards_of(settings).reading(name)
     naming = [
-        board.name
-        for board in settings.leaderboards
-        if board.tasks is not None and name in board.tasks
+        leaderboard.title_or(key)
+        for key, leaderboard in settings.leaderboards.items()
+        if key in keys
     ]
     if naming:
         raise TakeOutRefused(
-            f"The leaderboard {naming[0]} counts {name} by name. Take {name} out of that "
-            "leaderboard first, then remove the task.",
-            boards=naming,
+            f"The leaderboard {naming[0]} reads the results of {name}. Take {name} out of that "
+            "leaderboard's columns first, then remove the task.",
+            leaderboards=naming,
         )
     made = making.undo_on_rollback(ctx, "tasks", task=task)
     try:
@@ -265,13 +292,6 @@ async def _remove(
         if updated is not None:
             await _write(ctx, contest, found, updated, f"Remove {name} from the contest", author)
             made.add("contest_entry", contest, _restore(ctx, contest, found, updated, author))
-        account = await org_accounts.identity(ctx, OrgId(contest_scope(contest).org))
-        account = await _deactivate(ctx, account, task)
-
-        async def reactivate() -> None:
-            await ctx.forge.grading.activate(account, task)
-
-        made.add("activation", task, reactivate)
         await _forget(ctx, contest, task, name)
         await _drop_places(ctx, contest, task, name)
         await ctx.forge.content.delete_place(task)
@@ -299,15 +319,6 @@ async def _drop_places(ctx: Context, contest: ContestId, task: TaskId, name: str
     await ctx.db.execute(delete(Upload).where(Upload.task_id == task))
 
 
-async def _deactivate(ctx: Context, account: AsOrgAccount, task: TaskId) -> AsOrgAccount:
-    try:
-        await ctx.forge.grading.deactivate(account, task)
-    except Forbidden:
-        account = await org_accounts.renew(ctx, account)
-        await ctx.forge.grading.deactivate(account, task)
-    return account
-
-
 def _restore(
     ctx: Context, contest: ContestId, found: File, updated: bytes, author: int
 ) -> making.Removal:
@@ -328,7 +339,7 @@ def _restore(
             expected=now.token,
             author=author,
         )
-        published.forget_contests(ctx)
+        entrant_view.forget_contests(ctx)
 
     return restore
 

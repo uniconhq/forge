@@ -1,12 +1,13 @@
 """What the organiser-path tests share: the org acme made with ada as its
 admin and its service account made, the built-in
-workflow `unicon/classic@v2` public at the fake as bootstrap makes it, a
+workflow `unicon/classic@v3` public at the fake as bootstrap makes it, a
 contest and a task made the way an organiser makes them, a checked
 `Organiser` for anyone, and what the fake holds, to compare before and after
 a create that failed. For the contestant's side: a session for anyone,
 the contest's settings written as a test needs them, a task made and one
-published by a save of its starter, a contestant entered alone in a running
-contest, and a file uploaded as a browser uploads one. A test that moves
+published by a save of its starter, its save's runs checked, a contestant
+entered alone in a running contest, and a file uploaded as a browser
+uploads one. A test that moves
 the clock on by more than a credential lives and then calls an action as
 someone passes the guard first, `identity.current`, as every request does.
 """
@@ -18,9 +19,12 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from sqlalchemy import update
 
 from forge.adapters.fakes import FakeForge
+from forge.db.tables import Grading
 from forge.domain.content import Edit
+from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.names import EntrantOwner
@@ -33,13 +37,14 @@ from forge.services import (
     entrants,
     identity,
     orgs,
-    publications,
+    pipelines,
     sessions,
+    task_save,
     tasks,
     uploads,
 )
 from forge.services.access import Organiser
-from forge.services.publications import Published
+from forge.services.task_save import Published
 from forge.testing import seed_classic
 
 ACME = OrgId("acme")
@@ -120,11 +125,12 @@ async def make_task(setup: Setup, acme: Acme, name: str) -> TaskId:
 
 async def publish(setup: Setup, acme: Acme, task: TaskId, extra: bytes = b"") -> Published:
     """The task published by ada's save of its `task.yaml` with `extra` after
-    it, confirmed, since a save asks first once the contest has started.
+    it, confirmed, since a save asks first once the contest has started, and
+    the runs its save grades checked.
     """
     head = await acme.fake.content.list_files(PLATFORM, task)
     current = await acme.fake.content.read_file(PLATFORM, task, "task.yaml")
-    result = await publications.save(
+    result = await task_save.save(
         setup,
         acme.ada,
         task,
@@ -132,7 +138,23 @@ async def publish(setup: Setup, acme: Acme, task: TaskId, extra: bytes = b"") ->
         confirm=True,
     )
     assert isinstance(result, Published), result
+    await checked(setup, task)
     return result
+
+
+async def checked(setup: Setup, task: TaskId) -> None:
+    """Each save row of `task` ended `done` with every run accepted, as its
+    save pipeline would, and the publications it checks taken over, a
+    change to how the task grades grading its submissions again."""
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Grading)
+            .where(Grading.task_id == task, Grading.pipeline == "save")
+            .values(status=GradingStatus.DONE, result={"schema_version": 6, "runs": []})
+        )
+    async with setup.unit_of_work() as ctx:
+        await pipelines.take_over(ctx, task)
+    await setup.settle()
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,7 +221,7 @@ async def upload(
     task: TaskId,
     content: bytes,
     *,
-    input: str = "submission",
+    input: str = "code",
     filename: str = "main.py",
 ) -> uploads.Upload:
     """A file uploaded the way a browser does: a slot, the bytes sent

@@ -1,6 +1,6 @@
 """Workflows as things at the forge: making one, reading it, editing its
 `workflow.yaml`, freezing it under a version, who reads it, checking a
-definition on its own, copying one and combining several.
+definition on its own, and copying one.
 
 Who may change a workflow. Anyone signed in may make one under their own
 name, or under an org where they hold the manager role or above; an
@@ -33,50 +33,75 @@ public.
 
 The forge makes the place and the person writes its first commit, a
 `workflow.yaml` that is valid as written
-(`forge.domain.workflow_definition.starter_workflow`). A new workflow, a
-copy and a combination are private. A copy is the source's files at a
-version, with nothing written about where they came from; a combination is
-its sources inlined into one definition
-(`forge.domain.workflow_combine`). A draft with problems saves, so work can
+(`forge.domain.workflow_definition.starter_workflow`). A new workflow and a
+copy are private. A copy is the source's files at a version, with nothing
+written about where they came from. A draft with problems saves, so work can
 stop half done; a version is made only of a draft that passes every check a
 version must (TASK-FORMAT.md section 1.3), and a version never changes.
 """
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from decimal import Decimal
 
-from forge.domain.content import ConflictToken
-from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, PortError, Rejected
-from forge.domain.identity import AsUser, Identity, User
-from forge.domain.ids import OrgId, WorkflowId
-from forge.domain.names import validate_name
-from forge.domain.plans import (
-    check_workflow,
-    natural,
-    reserved_inputs,
-    stray_report_units,
-    stray_units,
+from forge.domain.content import (
+    ConflictToken,
+    Edit,
+    EntryKind,
+    File,
+    TreeEntry,
+    Uploaded,
+    WrittenEdit,
+    check_path,
 )
-from forge.domain.primitives import PrimitiveDeclaration
+from forge.domain.errors import (
+    Conflict,
+    Forbidden,
+    InvalidInputs,
+    InvalidName,
+    NotFound,
+    PortError,
+    Rejected,
+    UploadNotReady,
+)
+from forge.domain.identity import AsUser, Identity, User
+from forge.domain.ids import OrgId, VersionId, WorkflowId
+from forge.domain.names import validate_name
+from forge.domain.port_values import natural, stray_units
+from forge.domain.primitives import Port
 from forge.domain.roles import Role, Scope, holds
+from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.sessions import Session
-from forge.domain.workflow_combine import combine_workflows
+from forge.domain.types import Type
+from forge.domain.uploads import (
+    UploadStatus,
+    filename_problem,
+    may_be_pointer,
+    pointer_text,
+    refuse_pointer,
+    upload_info,
+)
+from forge.domain.workflow_boxes import placed
 from forge.domain.workflow_definition import (
     WORKFLOW_FILE,
-    WorkflowDefinition,
+    RunInput,
+    RunOutput,
+    RunWorkflow,
     WorkflowRef,
-    parse_workflow,
+    parse_run_workflow,
     parse_workflow_ref,
     starter_workflow,
     validate_version,
     version_number,
 )
 from forge.domain.workflows import Visibility
-from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
+from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
+from forge.port.uploads import WorkflowPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import access, making, names, primitives, sessions
+from forge.services import access, making, names, sessions, uploads, workflow_boxes
 
 log = get_logger(__name__)
 
@@ -121,6 +146,7 @@ class Draft:
 
     text: str
     token: ConflictToken | None
+    revision: VersionId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +158,51 @@ class WorkflowView:
     summary: WorkflowSummary
     draft: Draft | None = None
     readers: tuple[User, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class BoxInput:
+    """One input of a run workflow drawn as a box: its name, its type, the
+    options an enum takes, whether a task may leave it out, and the form's
+    title and unit.
+    """
+
+    name: str
+    type: str
+    options: tuple[str, ...] | None
+    optional: bool
+    title: str | None
+    unit: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class BoxOutput:
+    """One output of a run workflow drawn as a box, the port it resolves to.
+    `type` and the number's meaning are none while that port is not known,
+    as an output of a manifest the task gives is not. `title` and `unit` are
+    the words the workflow gave the output, and a unit only on a number.
+    """
+
+    name: str
+    type: str | None
+    title: str | None
+    unit: str | None
+    better: str | None
+    at_least: int | Decimal | None
+    at_most: int | Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class Box:
+    """A workflow version as a box: whether it is a run workflow, always so
+    now, its inputs and outputs, and a later numbered version when it has
+    one.
+    """
+
+    run: bool
+    inputs: tuple[BoxInput, ...]
+    outputs: tuple[BoxOutput, ...]
+    newer_version: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,10 +284,10 @@ async def view(ctx: Context, session: Session, owner: str, name: str) -> Workflo
     if writer is None:
         return WorkflowView(summary)
     try:
-        _, file = await ctx.forge.workflows.read_workflow_draft(
+        head, file = await ctx.forge.workflows.read_workflow_draft(
             writer.identity, workflow, WORKFLOW_FILE
         )
-        draft = Draft(file.content.decode("utf-8", errors="replace"), file.token)
+        draft = Draft(file.content.decode("utf-8", errors="replace"), file.token, head)
     except NotFound:
         draft = Draft("", None)
     readers = await ctx.forge.workflows.workflow_readers(writer.identity, workflow)
@@ -237,7 +308,14 @@ async def read_version(ctx: Context, session: Session, ref: str) -> str:
 
 @action
 async def save(
-    ctx: Context, session: Session, owner: str, name: str, text: str, token: ConflictToken | None
+    ctx: Context,
+    session: Session,
+    owner: str,
+    name: str,
+    text: str,
+    token: ConflictToken | None,
+    *,
+    changes: Mapping[str, Edit] | None = None,
 ) -> Draft:
     """Write `text` as the workflow's `workflow.yaml`, as the caller, with
     the token it was read with. Whatever it holds saves, problems and all,
@@ -248,8 +326,16 @@ async def save(
     content = _sized(text)
     workflow = await _place(ctx, owner, name)
     try:
-        file = await ctx.forge.workflows.write_workflow_file(
-            writer.identity, workflow, WORKFLOW_FILE, content, expected=token, message=EDIT_MESSAGE
+        resolved = await _file_edits(ctx, writer.identity, workflow, changes or {})
+        resolved[WORKFLOW_FILE] = WrittenEdit(content, token)
+        revision = await ctx.forge.workflows.write_workflow_files(
+            writer.identity,
+            workflow,
+            resolved,
+            message="Edit workflow files" if changes else EDIT_MESSAGE,
+        )
+        file = await ctx.forge.workflows.read_workflow_at(
+            writer.identity, workflow, revision, WORKFLOW_FILE
         )
     except Conflict:
         raise Conflict(
@@ -257,7 +343,7 @@ async def save(
             "then make your changes again."
         ) from None
     log.info("workflows.saved", workflow=workflow, user_id=session.user_id)
-    return Draft(text, file.token)
+    return Draft(text, file.token, revision)
 
 
 @action
@@ -268,6 +354,8 @@ async def create_version(
     name: str,
     version: str,
     token: ConflictToken | None = None,
+    *,
+    revision: VersionId | None = None,
 ) -> str:
     """Freeze the workflow's saved `workflow.yaml` under `version`, once it
     passes every check a version must, against the primitives its steps use
@@ -283,13 +371,14 @@ async def create_version(
     head, file = await ctx.forge.workflows.read_workflow_draft(
         writer.identity, workflow, WORKFLOW_FILE
     )
-    if token is not None and file.token != token:
+    if (token is not None and file.token != token) or (revision is not None and head != revision):
         raise Conflict(
             f"The workflow {writer.label}/{name} has been saved again since your save. Reload "
             "it before making a version of it."
         )
-    definition = parse_workflow(file.content)
-    problems = await _problems(ctx, writer.identity, definition)
+    definition = parse_run_workflow(file.content)
+    files = await workflow_boxes.files_at(ctx, writer.identity, workflow, head, definition)
+    problems = await _problems(ctx, writer.identity, definition, files, own=workflow)
     if problems:
         raise InvalidDefinition(WORKFLOW_FILE, problems)
     try:
@@ -305,18 +394,34 @@ async def create_version(
 
 
 @action
-async def check(ctx: Context, session: Session, text: str) -> tuple[Problem, ...]:
+async def check(
+    ctx: Context,
+    session: Session,
+    text: str,
+    *,
+    workflow: str | None = None,
+    owner: str | None = None,
+    name: str | None = None,
+) -> tuple[Problem, ...]:
     """Every problem a version of `text` would be refused for, each at its
     YAML path, checked against the primitives its steps use as the person
     reads them. Nothing is written, no version is made and no plan is
-    produced; none means it would make a version.
+    produced; none means it would make a version. A workflow's own files
+    are the version's, so here a `${{ workflow.<path> }}` is checked
+    only for its form, and the reports of a `program.yaml` among them only
+    when a version is made. `workflow`, the id of the workflow this text
+    is a draft of, is put first on the path a box is refused for holding.
+    `owner` and `name` name that workflow when the id is not given.
     """
     definition_text = _sized(text)
     try:
-        definition = parse_workflow(definition_text)
+        definition = parse_run_workflow(definition_text)
     except InvalidDefinition as invalid:
         return tuple(invalid.errors)
-    return tuple(await _problems(ctx, await _as_user(ctx, session), definition))
+    own = WorkflowId(workflow) if workflow is not None else None
+    if own is None and owner is not None and name is not None:
+        own = await names.workflow_place(ctx, owner, name)
+    return tuple(await _problems(ctx, await _as_user(ctx, session), definition, own=own))
 
 
 @action
@@ -399,42 +504,6 @@ async def copy(ctx: Context, session: Session, source: str, owner: str, name: st
     return NewWorkflow(workflow, writer.label, name)
 
 
-@action
-async def combine(
-    ctx: Context, session: Session, sources: Sequence[str], owner: str, name: str
-) -> NewWorkflow:
-    """A new private workflow `name` under `owner` that inlines every source,
-    each `<owner>/<name>@<version>` the caller reads, into one definition
-    (`forge.domain.workflow_combine`). `Rejected` for fewer than two
-    sources or one in a format no longer read; `NotFound` for one the
-    caller may not read; otherwise refused as `create` refuses.
-    """
-    if len(sources) < 2:
-        raise Rejected("Combining needs two workflows or more. To start from one, copy it instead.")
-    refs = [parse_workflow_ref(source) for source in sources]
-    writer = await _writer(ctx, session, owner)
-    validate_name(name)
-    definitions: list[WorkflowDefinition] = []
-    for ref in refs:
-        text = await _read_at(ctx, writer.identity, ref)
-        try:
-            definitions.append(parse_workflow(text))
-        except InvalidDefinition as invalid:
-            raise Rejected(
-                f"{ref} is written in an older form that Unicon no longer reads, so it cannot be "
-                f"combined. {invalid.detail}"
-            ) from None
-    files = {WORKFLOW_FILE: combine_workflows(definitions).encode()}
-    workflow = await _make(ctx, writer, name, files)
-    log.info(
-        "workflows.combined",
-        workflow=workflow,
-        sources=[str(ref) for ref in refs],
-        user_id=session.user_id,
-    )
-    return NewWorkflow(workflow, writer.label, name)
-
-
 async def newer_version(ctx: Context, as_: Identity, ref: WorkflowRef) -> str | None:
     """The workflow's version with the largest number when it is larger than
     the one `ref` names, read as `as_`, or none: when there is no larger
@@ -461,40 +530,115 @@ async def newer_version(ctx: Context, as_: Identity, ref: WorkflowRef) -> str | 
     return numbered[max(numbered)]
 
 
+@action
+async def box(ctx: Context, session: Session, ref: str) -> Box:
+    """The version `ref`, `<owner>/<name>@<version>`, as a box the editor
+    draws: its inputs, and each output as the port it resolves to, checked
+    as the caller. `NotFound`, in the same words as reading the version,
+    when there is no such version or the caller may not read it.
+    """
+    found = parse_workflow_ref(ref)
+    as_ = await _as_user(ctx, session)
+    definition = parse_run_workflow(await _read_at(ctx, as_, found))
+    newer = await newer_version(ctx, as_, found)
+    workflow = await names.workflow_id(ctx, found)
+    expanded = await workflow_boxes.expand(ctx, as_, definition, own=workflow)
+    outputs: dict[str, BoxOutput] = {}
+    if expanded.flat is not None:
+        at = await ctx.forge.workflows.workflow_version(as_, workflow, found.version)
+        files = await workflow_boxes.files_at(ctx, as_, workflow, at, definition)
+        checked = check_run_workflow(
+            expanded.flat.workflow,
+            expanded.primitives,
+            files,
+            inner_files=expanded.inner_files,
+            boxes=expanded.flat.boxes,
+            flat=bool(expanded.flat.boxes),
+        )
+        resolved = placed(checked, expanded.flat) if expanded.flat.boxes else checked
+        outputs = {
+            name: _box_output(name, output.port, output.title, output.unit)
+            for name, output in resolved.outputs.items()
+        }
+    return Box(
+        True,
+        tuple(_box_input(name, declared) for name, declared in definition.inputs.items()),
+        tuple(
+            outputs.get(name, _box_output(name, None, *_output_words(entry)))
+            for name, entry in definition.outputs.items()
+        ),
+        newer,
+    )
+
+
+def _box_input(name: str, declared: RunInput) -> BoxInput:
+    options = declared.options
+    return BoxInput(
+        name,
+        declared.type.value,
+        None if options is None else tuple(options),
+        declared.optional,
+        declared.title,
+        declared.unit,
+    )
+
+
+def _output_words(entry: str | RunOutput) -> tuple[str | None, str | None]:
+    if isinstance(entry, RunOutput):
+        return entry.title, entry.unit
+    return None, None
+
+
+def _box_output(name: str, port: Port | None, title: str | None, unit: str | None) -> BoxOutput:
+    if port is None:
+        return BoxOutput(name, None, title, unit, None, None, None)
+    number = port.type is Type.NUMBER
+    return BoxOutput(
+        name,
+        port.type.value,
+        title,
+        unit if number else None,
+        None if port.better is None else port.better.value,
+        port.at_least,
+        port.at_most,
+    )
+
+
 # Building blocks
 
 
-async def _problems(ctx: Context, as_: Identity, definition: WorkflowDefinition) -> list[Problem]:
-    """Every problem a version of the definition would be refused for: an
-    input named as a folder the task format reserves (`reserved_inputs`), a
-    unit on an input or a reported value that is not a number
-    (`stray_units`, `stray_report_units`), each `use:` that cannot be read
-    as a primitive at its own path, then what `check_workflow` finds
-    against the ones that can.
+async def _problems(
+    ctx: Context,
+    as_: Identity,
+    definition: RunWorkflow,
+    files: WorkflowFiles | None = None,
+    *,
+    own: WorkflowId | None = None,
+) -> list[Problem]:
+    """Every problem a version of the definition would be refused for: a
+    unit on an input that is not a number (`stray_units`), then what the
+    workflow expanded (`workflow_boxes.expand`), boxes and all, finds, and
+    what `check_run_workflow` finds of the flat list against `files`, its
+    own at the version's commit. `own` is that workflow, first on the path
+    a box is refused for holding.
     """
-    found: dict[str, PrimitiveDeclaration] = {}
-    read: dict[str, str | None] = {}
-    unread: list[Problem] = []
-    for index, step in enumerate(definition.steps):
-        use = str(step.use)
-        if use not in read:
-            declaration, problem = await primitives.declaration(ctx, as_, step.use)
-            read[use] = problem
-            if declaration is not None:
-                found[use] = declaration
-        problem = read[use]
-        if problem is not None:
-            unread.append(Problem(path=path_text(("steps", index, "use")), message=problem))
-    said = {problem["path"] for problem in unread}
-    checked = [
-        problem for problem in check_workflow(definition, found) if problem["path"] not in said
-    ]
+    expanded = await workflow_boxes.expand(ctx, as_, definition, own=own)
+    if expanded.flat is None:
+        return [*stray_units(definition), *expanded.problems]
+    checked = check_run_workflow(
+        expanded.flat.workflow,
+        expanded.primitives,
+        files,
+        inner_files=expanded.inner_files,
+        boxes=expanded.flat.boxes,
+        flat=bool(expanded.flat.boxes),
+    )
+    found = placed(checked, expanded.flat).problems if expanded.flat.boxes else checked.problems
+    said = {problem["path"] for problem in expanded.problems}
     return [
-        *reserved_inputs(definition),
         *stray_units(definition),
-        *stray_report_units(definition, found),
-        *unread,
-        *checked,
+        *expanded.problems,
+        *(problem for problem in found if problem["path"] not in said),
     ]
 
 
@@ -601,3 +745,140 @@ def _own_label(username: str) -> str:
             "characters other than lower case letters, digits, hyphens and underscores. Make "
             "the workflow under an org instead."
         ) from None
+
+
+@action
+async def file_slot(
+    ctx: Context,
+    session: Session,
+    owner: str,
+    name: str,
+    *,
+    path: str,
+    size: int,
+    sha256: str,
+    content_type: str | None = None,
+) -> uploads.Slot:
+    writer = await _writer(ctx, session, owner)
+    workflow = await _place(ctx, owner, name)
+    await ctx.forge.workflows.describe_workflow(writer.identity, workflow)
+    _file_path(path)
+    return await uploads.workflow_file_slot(
+        ctx,
+        writer.identity,
+        workflow,
+        path=path,
+        size=size,
+        sha256=sha256,
+        content_type=content_type,
+    )
+
+
+@action
+async def complete_file(
+    ctx: Context, session: Session, owner: str, name: str, upload: uuid.UUID
+) -> uploads.Upload:
+    return await uploads.complete_workflow(ctx, session, await _place(ctx, owner, name), upload)
+
+
+@action
+async def read_file(ctx: Context, session: Session, owner: str, name: str, path: str) -> File:
+    as_, workflow, head = await _files_head(ctx, session, owner, name)
+    file = await ctx.forge.workflows.read_workflow_at(as_, workflow, head, check_path(path))
+    return replace(file, upload=upload_info(file.content), version=head)
+
+
+async def _files_head(
+    ctx: Context, session: Session, owner: str, name: str
+) -> tuple[AsUser, WorkflowId, VersionId]:
+    as_ = await _as_user(ctx, session)
+    workflow = await _place(ctx, owner, name)
+    try:
+        await ctx.forge.workflows.describe_workflow(as_, workflow)
+    except NotFound, Forbidden:
+        raise _not_readable(owner, name) from None
+    writer = await _writer(ctx, session, owner)
+    head, _ = await ctx.forge.workflows.read_workflow_draft(
+        writer.identity, workflow, WORKFLOW_FILE
+    )
+    return writer.identity, workflow, head
+
+
+@action
+async def files(
+    ctx: Context, session: Session, owner: str, name: str, path: str = ""
+) -> tuple[TreeEntry, ...]:
+    as_, workflow, head = await _files_head(ctx, session, owner, name)
+    folder = check_path(path) + "/" if path else ""
+    listed = await ctx.forge.workflows.workflow_files(as_, workflow, head)
+    entries: dict[str, TreeEntry] = {}
+    for held, token in sorted(listed.tokens.items()):
+        if not held.startswith(folder):
+            continue
+        rest = held[len(folder) :]
+        if "/" in rest:
+            directory = folder + rest.split("/", 1)[0]
+            entries[directory] = TreeEntry(directory, EntryKind.DIRECTORY)
+        else:
+            info = None
+            if may_be_pointer(listed.sizes.get(held)):
+                read = await ctx.forge.workflows.read_workflow_at(as_, workflow, head, held)
+                info = upload_info(read.content)
+            entries[held] = TreeEntry(
+                held,
+                EntryKind.FILE,
+                size=listed.sizes.get(held),
+                token=str(token),
+                upload=info,
+                version=head,
+            )
+    return tuple(entries.values())
+
+
+def _file_path(path: str) -> None:
+    check_path(path)
+    if path == WORKFLOW_FILE:
+        raise InvalidInputs("Change workflow.yaml in the workflow editor.")
+    for part in path.split("/"):
+        if problem := filename_problem(part):
+            raise InvalidInputs(problem, errors=[{"input": path, "message": problem}])
+
+
+async def _file_edits(
+    ctx: Context, as_: AsUser, workflow: WorkflowId, changes: Mapping[str, Edit]
+) -> dict[str, WrittenEdit]:
+    rows = await uploads.workflow_uploads(
+        ctx,
+        as_.user_id,
+        workflow,
+        {edit.content.upload for edit in changes.values() if isinstance(edit.content, Uploaded)},
+    )
+    resolved: dict[str, WrittenEdit] = {}
+    for path, edit in changes.items():
+        _file_path(path)
+        content = edit.content
+        if content is None and edit.token is None:
+            raise InvalidInputs("Removing a file needs the token it was read with.")
+        if isinstance(content, Uploaded):
+            row = rows.get(content.upload)
+            if (
+                row is None
+                or row.repo_path != path
+                or row.status not in (UploadStatus.WAITING, UploadStatus.VERIFIED)
+            ):
+                raise InvalidInputs(
+                    "There is no such upload for this workflow and path.",
+                    errors=[{"input": path, "message": "There is no such upload."}],
+                )
+            if not await uploads.holds(ctx, WorkflowPlace(workflow), as_, row):
+                raise UploadNotReady(
+                    "The file has not finished uploading. Save again once it has.",
+                    uploads=[str(row.id)],
+                )
+            row.status = UploadStatus.CONSUMED
+            content = pointer_text(row.digest, row.size)
+        elif content is not None:
+            refuse_pointer(path, content)
+        resolved[path] = WrittenEdit(content, edit.token)
+    await ctx.db.flush()
+    return resolved

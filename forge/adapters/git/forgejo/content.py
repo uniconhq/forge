@@ -18,6 +18,8 @@ from forge.adapters.git.forgejo.teams import Teams
 from forge.adapters.git.forgejo.users import Users
 from forge.adapters.ids import (
     CONTEST,
+    DISPATCH_FILES,
+    DISPATCH_REPO,
     PUBLISHED_PREFIX,
     TASK,
     ContestRef,
@@ -27,7 +29,7 @@ from forge.adapters.ids import (
     parse_task,
 )
 from forge.domain.content import Change, ConflictToken, File, Files, FileSet, TreeEntry
-from forge.domain.errors import PortError
+from forge.domain.errors import Conflict, PortError
 from forge.domain.identity import PLATFORM, Identity, User
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
 from forge.domain.roles import Scope
@@ -51,6 +53,12 @@ class ForgejoContent:
         ref = TaskRef(parent.org, parent.contest, key)
         await self._repos.create(PLATFORM, parent.org, ref.repo, files, private=True)
         return ref.id
+
+    async def create_dispatch(self, org: OrgId) -> None:
+        try:
+            await self._repos.create(PLATFORM, org, DISPATCH_REPO, DISPATCH_FILES, private=True)
+        except Conflict:
+            return
 
     async def secure(self, place: ContentPlace) -> int:
         owner, name = location(place)

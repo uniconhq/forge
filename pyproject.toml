@@ -1,6 +1,6 @@
 [project]
 name = "unicon-forge"
-version = "0.26.0"
+version = "0.27.0"
 description = "The Unicon contest API as a Python package: domain, services, tables, and the forge port with its implementations"
 readme = "README.md"
 license = "MIT"
@@ -158,3 +158,14 @@ name = "domain imports nothing else in the package"
 type = "forbidden"
 source_modules = ["forge.domain"]
 forbidden_modules = ["forge.services", "forge.db", "forge.port", "forge.adapters", "forge.log"]
+
+[[tool.importlinter.contracts]]
+name = "Services import each other in no new ring"
+type = "acyclic_siblings"
+ancestors = ["forge.services"]
+ignore_imports = [
+  "forge.services.entries -> forge.services.leaderboards",
+  "forge.services.invites -> forge.services.entrants",
+  "forge.services.pipelines -> forge.services.gradings",
+  "forge.services.pipelines -> forge.services.steps",
+]

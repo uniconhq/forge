@@ -24,7 +24,7 @@ from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.sessions import Session
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import entrants, invites, published, roles, timelines
+from forge.services import entrant_view, invites, member_lookup, roles, timelines
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,8 +51,8 @@ async def of_task(ctx: Context, session: Session, task: TaskId) -> TaskRelease:
     try:
         settings, person = await seen(ctx, session, contest_id_of(task_scope(task)))
     except NotFound as exc:
-        raise NotFound(published.NO_SUCH_TASK) from exc
-    found = await published.task(ctx, task, settings)
+        raise NotFound(entrant_view.NO_SUCH_TASK) from exc
+    found = await entrant_view.task(ctx, task, settings)
     if found is None:
         return NOT_RELEASED
     extension = row_extension(person)
@@ -97,7 +97,7 @@ async def reader(ctx: Context, session: Session, contest: ContestId) -> Reader:
     """The signed-in person as the contest's reads see them, their roles read
     once.
     """
-    entrant = await entrants.of_person(ctx, contest, session.user_id)
+    entrant = await member_lookup.of_person(ctx, contest, session.user_id)
     invited = entrant is None and await invites.accepted_place(ctx, contest, session.user_id)
     await ctx.let_go()
     return Reader(
@@ -114,11 +114,11 @@ async def seen(
     contest is one they see. `NotFound` otherwise, the same as for a contest
     that is not there.
     """
-    settings = await published.contest(ctx, contest)
+    settings = await entrant_view.contest(ctx, contest)
     person = await reader(ctx, session, contest)
     await ctx.let_go()
     if not sees(settings, person):
-        raise NotFound(published.NO_SUCH_CONTEST)
+        raise NotFound(entrant_view.NO_SUCH_CONTEST)
     return settings, person
 
 

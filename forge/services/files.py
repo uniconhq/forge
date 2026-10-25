@@ -11,15 +11,15 @@ needs the observer role at the place and writing the manager role.
 Every write carries the token the file was read with, and a file that has
 moved since is `Conflict`, with nothing written. A write to a contest's
 `contest.yaml` is validated first and refused whole when it is not valid,
-or when it moves a task's timeline behind what rows already did, puts a
-worth or a due on a task that gives no points, or opens the contest while a
-task it lists is not published or its statement is not written
-(`timelines.check_contest`),
-or when a board asks what a covered task's latest publication does not give
-or a task's marks fall below what a row holds (`boards.check_contest`),
-and a manager's change to one of its admin-only keys is refused naming each.
-One that is written answers with what C4 reports of its boards beside the
-version, as a task's save answers T9's (`Written`). A
+or when it moves a task's timeline behind what rows already did, or opens
+the contest while a task it lists is not published or its statement is not
+written (`timelines.check_contest`),
+or when a leaderboard breaks the leaderboard check, reads what a task it reads does not
+give, or chooses by a mark, the hold's `from` leaves the contest or is set
+to a time passed, or a task's marks fall below what a row holds
+(`leaderboards.check_contest`), and a manager's change to one of its
+admin-only keys is refused naming each. One that is written answers with
+what the check notes beside the version (`Written`). A
 write to a task is a save of the task, which publishes it when it is valid
 (`publications.save`). A rollback is not an undo: the file as it was at the
 chosen version is written back as a new change through the same write, so a
@@ -51,7 +51,6 @@ from forge.domain.content import (
 )
 from forge.domain.definitions import (
     CONTEST_FILE,
-    PUBLIC_FOLDER,
     ContestDefinition,
     admin_only_changes,
     admin_only_refusal,
@@ -66,9 +65,9 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, places, publications, published, timelines
+from forge.services import entrant_view, leaderboards, places, task_save, timelines
 from forge.services.access import Organiser, require
-from forge.services.publications import Draft, Published
+from forge.services.task_save import Draft, Published
 
 log = get_logger(__name__)
 
@@ -80,8 +79,8 @@ NO_SUCH_VERSION = "The task has no such version."
 @dataclass(frozen=True, slots=True)
 class Written:
     """A contest's file written: the version the change made, and, for
-    `contest.yaml`, each board's notes on the tasks it covers, such as one
-    that counts nothing from a task; the organisers' reading of the boards
+    `contest.yaml`, each leaderboard's notes on the tasks it covers, such as one
+    that counts nothing from a task; the organisers' reading of the leaderboards
     carries the same notes beside each.
     """
 
@@ -137,21 +136,10 @@ async def tree(
     its start, and gives a typed one's start when it is text. A larger file
     is never read, and nor is a pointer-sized one the batch did not answer
     for, which is read alone to tell (`uploads.may_be_pointer`).
-
-    A task's `public/` lists empty while it holds nothing: git keeps no empty
-    folder, so it is there once its first file is (M60), and a listing of it
-    before that is not a missing folder but an empty one.
     """
     require(organiser, scope_of_place(place), Role.OBSERVER)
     folder = check_path(path) if path else ""
-    try:
-        entries = await ctx.forge.content.list_tree(organiser.identity, place, folder)
-    except NotFound:
-        at_task = scope_of_place(place).kind is ScopeKind.TASK
-        public = at_task and f"{folder.rstrip('/')}/" == PUBLIC_FOLDER
-        if public and await ctx.forge.content.exists(place):
-            return ()
-        raise
+    entries = await ctx.forge.content.list_tree(organiser.identity, place, folder)
     small = {
         ConflictToken(entry.token)
         for entry in entries
@@ -240,14 +228,14 @@ async def write(
 ) -> Written | Published | Draft:
     """Write one file, `expected` being the token it was read with or none
     for a new file. A contest's file comes back as the version written, with
-    its boards' notes; a task's as the save's publication or draft,
+    its leaderboards' notes; a task's as the save's publication or draft,
     `confirm`, `asked` and `keep_as_draft` doing what they do for a save.
     """
     scope = scope_of_place(place)
     require(organiser, scope, Role.MANAGER)
     check_path(path)
     if scope.kind is ScopeKind.TASK:
-        return await publications.save(
+        return await task_save.save(
             ctx,
             organiser,
             TaskId(place),
@@ -271,7 +259,7 @@ async def write(
         await timelines.hold_rules(ctx, contest)
         standing = await _last_read(ctx, organiser, contest, before)
         problems = await timelines.check_contest(ctx, contest, standing, after)
-        checked = await boards.check_contest(ctx, contest, after)
+        checked = await leaderboards.check_contest(ctx, contest, standing, after)
         problems += checked.problems
         notes = checked.notes
         if problems:
@@ -286,7 +274,7 @@ async def write(
         author=organiser.user.id,
     )
     if path == CONTEST_FILE:
-        published.forget_contests(ctx)
+        entrant_view.forget_contests(ctx)
         # A task put back by hand gets its places as `put_back` makes them.
         for entry in after.tasks:
             old = standing.entry(entry.id) if standing is not None else None
@@ -405,7 +393,7 @@ async def write_upload(
     """
     require(organiser, task_scope(task), Role.MANAGER)
     check_path(path)
-    return await publications.save(
+    return await task_save.save(
         ctx,
         organiser,
         task,

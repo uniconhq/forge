@@ -3,11 +3,16 @@ Forgejo, object store and image settings are required only when Forgejo is
 chosen, and cookies are secure whenever the platform is served over https.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
+from forge.domain.grading import Slot
 from forge.settings import (
     FAKE_IMAGES,
+    FAKE_SLOT_SIZES,
     ForgejoSettings,
     S3Settings,
     Settings,
@@ -30,9 +35,14 @@ COMPLETE = {
     "UNICON_S3_ENDPOINT": "http://garage:3900",
     "UNICON_S3_ACCESS_KEY": "GK-test",
     "UNICON_S3_SECRET_KEY": "s3-secret",
-    "UNICON_HARNESS_IMAGE": "ghcr.io/uniconhq/harness@sha256:" + "1" * 64,
-    "UNICON_CLONE_IMAGE": "ghcr.io/uniconhq/clone@sha256:" + "2" * 64,
+    "UNICON_S3_LFS_ACCESS_KEY": "GK-lfs",
+    "UNICON_S3_LFS_SECRET_KEY": "lfs-secret",
+    "UNICON_PLUGIN_GIT_IMAGE": "docker.io/woodpeckerci/plugin-git@sha256:" + "1" * 64,
+    "UNICON_SLOT_SIZES": "small:1:2048,big:2:8192",
 }
+DEPLOY_SLOTS = Path(__file__).resolve().parents[2] / "deploy" / "machine" / "slots.json"
+"""Deploy's one table of slot sizes, which its bootstrap passes the forge
+and its machine setup reads."""
 
 
 @pytest.fixture
@@ -50,6 +60,7 @@ def environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "UNICON_MACHINE_URL",
         "UNICON_S3_REGION",
         "UNICON_S3_RESULTS_BUCKET",
+        "UNICON_S3_LFS_BUCKET",
     ]:
         monkeypatch.delenv(name, raising=False)
     for name, value in COMPLETE.items():
@@ -238,7 +249,13 @@ def test_forgejo_without_the_object_store_names_its_variables(
 
 
 def test_the_fake_needs_no_object_store(environment: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("UNICON_S3_ENDPOINT", "UNICON_S3_ACCESS_KEY", "UNICON_S3_SECRET_KEY"):
+    for name in (
+        "UNICON_S3_ENDPOINT",
+        "UNICON_S3_ACCESS_KEY",
+        "UNICON_S3_SECRET_KEY",
+        "UNICON_S3_LFS_ACCESS_KEY",
+        "UNICON_S3_LFS_SECRET_KEY",
+    ):
         monkeypatch.delenv(name)
     monkeypatch.setenv("UNICON_FORGE", "fake")
     assert load_settings().forgejo is None
@@ -252,24 +269,30 @@ def test_the_machine_url_follows_the_public_url_unless_given(
     assert str(load_settings().machine_url) == "http://proxy/"
 
 
-def test_forgejo_needs_both_images(
-    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("given", [None, ""])
+def test_forgejo_needs_the_clone_plugins_image(
+    environment: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    given: str | None,
 ) -> None:
-    monkeypatch.delenv("UNICON_HARNESS_IMAGE")
-    monkeypatch.delenv("UNICON_CLONE_IMAGE")
+    if given is None:
+        monkeypatch.delenv("UNICON_PLUGIN_GIT_IMAGE")
+    else:
+        monkeypatch.setenv("UNICON_PLUGIN_GIT_IMAGE", given)
 
     with pytest.raises(SystemExit):
         load_settings()
 
     lines = capsys.readouterr().err
-    assert "UNICON_FORGE=forgejo needs UNICON_HARNESS_IMAGE, UNICON_CLONE_IMAGE" in lines
+    assert "UNICON_FORGE=forgejo needs UNICON_PLUGIN_GIT_IMAGE" in lines
 
 
 @pytest.mark.parametrize(
     ("variable", "field", "tagged"),
     [
-        ("UNICON_HARNESS_IMAGE", "harness_image", "ghcr.io/uniconhq/harness:latest"),
-        ("UNICON_CLONE_IMAGE", "clone_image", "ghcr.io/uniconhq/clone:v1"),
+        ("UNICON_PRIMITIVE_BASE_IMAGE", "primitive_base_image", "ghcr.io/uniconhq/base:v1"),
+        ("UNICON_PLUGIN_GIT_IMAGE", "plugin_git_image", "woodpeckerci/plugin-git:2.10.1"),
     ],
 )
 def test_an_image_is_the_one_given_and_always_by_digest(
@@ -290,21 +313,28 @@ def test_an_image_is_the_one_given_and_always_by_digest(
     assert f"{variable}: Value error, is not an image by digest" in capsys.readouterr().err
 
 
+def test_the_base_image_is_none_while_left_empty(
+    environment: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UNICON_PRIMITIVE_BASE_IMAGE", "")
+
+    assert load_settings().primitive_base_image is None
+
+
 def test_the_fake_names_placeholder_images_unless_given(
     environment: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("UNICON_FORGE", "fake")
-    monkeypatch.delenv("UNICON_HARNESS_IMAGE")
-    monkeypatch.delenv("UNICON_CLONE_IMAGE")
+    monkeypatch.delenv("UNICON_PLUGIN_GIT_IMAGE")
 
     settings = load_settings()
-    assert (settings.harness_image, settings.clone_image) == (
-        FAKE_IMAGES["harness_image"],
-        FAKE_IMAGES["clone_image"],
+    assert (settings.primitive_base_image, settings.plugin_git_image) == (
+        FAKE_IMAGES["primitive_base_image"],
+        FAKE_IMAGES["plugin_git_image"],
     )
-    assert Settings.for_tests().harness_image == FAKE_IMAGES["harness_image"]
-    monkeypatch.setenv("UNICON_HARNESS_IMAGE", COMPLETE["UNICON_HARNESS_IMAGE"])
-    assert load_settings().harness_image == COMPLETE["UNICON_HARNESS_IMAGE"]
+    assert Settings.for_tests().plugin_git_image == FAKE_IMAGES["plugin_git_image"]
+    monkeypatch.setenv("UNICON_PLUGIN_GIT_IMAGE", COMPLETE["UNICON_PLUGIN_GIT_IMAGE"])
+    assert load_settings().plugin_git_image == COMPLETE["UNICON_PLUGIN_GIT_IMAGE"]
 
 
 def test_there_is_no_mail_server_while_its_address_is_empty(
@@ -368,8 +398,7 @@ def test_forgejo_settings_given_whole_still_need_the_cis() -> None:
         Settings.for_tests(
             forge="forgejo",
             forge_public_url="http://forge.test",
-            harness_image=FAKE_IMAGES["harness_image"].replace("0", "1"),
-            clone_image=FAKE_IMAGES["clone_image"].replace("0", "1"),
+            plugin_git_image=FAKE_IMAGES["plugin_git_image"].replace("0", "1"),
             forgejo=ForgejoSettings(
                 internal_url="http://forgejo:3000",
                 admin_token="admin",
@@ -377,5 +406,85 @@ def test_forgejo_settings_given_whole_still_need_the_cis() -> None:
                 oauth_client_secret="secret",
                 platform_account="platform",
             ),
-            s3=S3Settings(endpoint="http://garage:3900", access_key="key", secret_key="secret"),
+            s3=S3Settings(
+                endpoint="http://garage:3900",
+                access_key="key",
+                secret_key="secret",
+                lfs_access_key="lfs-key",
+                lfs_secret_key="lfs-secret",
+            ),
         )
+
+
+def test_withdrawn_images_are_listed_by_digest_comma_separated(
+    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    first = "ghcr.io/uniconhq/primitive-exec@sha256:" + "a" * 64
+    second = "ghcr.io/uniconhq/primitive-compile@sha256:" + "b" * 64
+    assert load_settings().withdrawn_images == frozenset()
+    monkeypatch.setenv("UNICON_WITHDRAWN_IMAGES", "")
+    assert load_settings().withdrawn_images == frozenset()
+    monkeypatch.setenv("UNICON_WITHDRAWN_IMAGES", f"{first}, {second}")
+    assert load_settings().withdrawn_images == {first, second}
+    assert load_settings().withdraws("mirror.example/exec:v2@sha256:" + "a" * 64)
+    assert not load_settings().withdraws("ghcr.io/uniconhq/primitive-exec@sha256:" + "c" * 64)
+    assert not load_settings().withdraws("ghcr.io/uniconhq/primitive-exec:v2")
+
+    monkeypatch.setenv("UNICON_WITHDRAWN_IMAGES", "ghcr.io/uniconhq/primitive-exec:v1")
+    with pytest.raises(SystemExit):
+        load_settings()
+    assert "is not an image by digest" in capsys.readouterr().err
+
+
+def test_forgejo_needs_the_slot_sizes(
+    environment: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("UNICON_SLOT_SIZES")
+
+    with pytest.raises(SystemExit):
+        load_settings()
+
+    assert "UNICON_FORGE=forgejo needs UNICON_SLOT_SIZES" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("given", "told"),
+    [
+        ("small", "is not a slot's name, its cores and its memory in MB"),
+        ("small:2048", "is not a slot's name, its cores and its memory in MB"),
+        ("small:1:8g", "is not a slot's name, its cores and its memory in MB"),
+        ("small:1:0", "is not a slot's name, its cores and its memory in MB"),
+        ("small:0:2048", "is not a slot's name, its cores and its memory in MB"),
+        ("a b:1:1024", "is not a slot's name, its cores and its memory in MB"),
+        ("small:1:1024,small:2:2048", "names a slot twice"),
+        (",", "names no slot"),
+        (" , ", "names no slot"),
+    ],
+)
+def test_the_slot_sizes_are_names_and_memory_comma_separated(
+    environment: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    given: str,
+    told: str,
+) -> None:
+    assert load_settings().slot_sizes == (Slot("small", 1, 2048), Slot("big", 2, 8192))
+    monkeypatch.setenv("UNICON_SLOT_SIZES", given)
+
+    with pytest.raises(SystemExit):
+        load_settings()
+
+    assert told in capsys.readouterr().err
+
+
+def test_the_fake_plans_with_deploys_slot_sizes() -> None:
+    """The fake's slot sizes are deploy's table, as bootstrap passes it:
+    skipped without a deploy checkout beside this one."""
+    assert Settings.for_tests().slot_sizes == (Slot("small", 1, 2048), Slot("big", 2, 8192))
+    if not DEPLOY_SLOTS.is_file():
+        pytest.skip("no deploy checkout beside this one")
+    table = json.loads(DEPLOY_SLOTS.read_text())
+    assert (
+        ",".join(f"{name}:{size['cores']}:{size['memory_mb']}" for name, size in table.items())
+        == FAKE_SLOT_SIZES
+    )

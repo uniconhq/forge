@@ -16,11 +16,10 @@ from forge.services.gradings import (
     Submitter,
     cancel,
     feed,
-    list,
+    list_gradings,
     queue_depth,
     rejudge,
     retry,
-    run_log,
     task_of,
 )
 
@@ -33,10 +32,9 @@ __all__ = [
     "Submitter",
     "cancel",
     "feed",
-    "list",
+    "list_gradings",
     "queue_depth",
     "rejudge",
     "retry",
-    "run_log",
     "task_of",
 ]

@@ -1,29 +1,28 @@
 """Grading runs at the CI: setting an org up there and keeping what it holds
-fresh, activating a task once, then starting runs as the org account the
-caller hands in, finding where a run is and cancelling it, and, for a CI
-that asks the platform what a run is as it starts one, the answer. What the
-org account holds at the CI is a `CiState` the implementation alone reads;
-the platform stores it, encrypted, and locks it while it is refreshed.
+fresh, activating the org's dispatch place once, then starting grading runs
+on it as the org account the caller hands in, finding where a run is and
+cancelling it, and, for a CI that asks the platform what a run is as it
+starts one, the answer. What the org account holds at the CI is a `CiState`
+the implementation alone reads; the platform stores it, encrypted, and
+locks it while it is refreshed.
 
-A run is described to the port as a `GradingRun`, in the platform's words,
-with a `RunSpec` of what it runs; the implementation writes them in the
-CI's words, and says where the run's checkouts are (`run_places`).
+A grading's run is described to the port as a `PipelineRun`, in the
+platform's words, with a `PipelineSpec` of its steps (phase 4.9); the
+implementation writes them in the CI's words.
 """
 
 from datetime import datetime
 from typing import Protocol
 
 from forge.domain.grading import (
-    GradingRun,
     InboundAnswer,
     InboundRequest,
-    RunLookup,
-    RunPlaces,
-    RunSpec,
+    PipelineLookup,
+    PipelineRun,
     RunState,
 )
 from forge.domain.identity import AsOrgAccount, CiState, OrgAccountRef
-from forge.domain.ids import OrgId, RunId, TaskId
+from forge.domain.ids import OrgId, RunId
 
 
 class GradingPort(Protocol):
@@ -53,28 +52,22 @@ class GradingPort(Protocol):
         """
         ...
 
-    async def activate(self, as_: AsOrgAccount, task: TaskId) -> bool:
-        """Switch the CI on for the task, as the task's org account, so it can
-        be graded, and say whether the CI did not know the task before.
+    async def activate_dispatch(self, as_: AsOrgAccount, org: OrgId) -> bool:
+        """Switch the CI on for the org's dispatch place, which the content
+        port made, as the org's account, so a task's grading runs can
+        start on it, and say whether the CI did not know it before.
         Activating twice changes nothing. `Forbidden` when `as_` is another
         org's account.
         """
         ...
 
-    async def deactivate(self, as_: AsOrgAccount, task: TaskId) -> None:
-        """Switch the CI off for the task and have it forget the task, as the
-        task's org account. A task the CI does not know changes nothing.
+    async def start_pipeline(self, as_: AsOrgAccount, run: PipelineRun) -> RunId:
+        """Start a task's grading run on the org's dispatch place as
+        the org's account, with its variables. The steps are not sent: a CI
+        that asks is answered from the platform's records. `Rejected` when
+        the CI answers without a run; `Unavailable` when no answer came
+        back; `NotFound` when the dispatch place is not activated;
         `Forbidden` when `as_` is another org's account.
-        """
-        ...
-
-    async def start_run(self, as_: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
-        """Start `run` at the CI as the task's org account, with its variables,
-        pinned to the machines carrying its label, to run what `spec` says.
-        `Rejected` when the CI
-        answers without a run; `Unavailable` when no answer came back;
-        `NotFound` when the task is not activated at the CI; `Forbidden` when
-        `as_` is another org's account.
         """
         ...
 
@@ -91,26 +84,19 @@ class GradingPort(Protocol):
         ...
 
     async def answer(
-        self, request: InboundRequest, lookup: RunLookup, *, now: datetime
+        self, request: InboundRequest, lookup: PipelineLookup, *, now: datetime
     ) -> InboundAnswer:
-        """For a CI that asks the platform what a run is as it starts one: the
-        answer to `request`, once it is found to be the CI's own and fresh at
-        `now`, for the run `lookup` gives, and only when that run was started
-        with exactly the variables the implementation starts it with. The
-        answer checks the task out at the version its publication froze and
-        the submission at its version, each with its large files, both with
-        the spec's clone image, and runs the spec's harness image as the
-        runner's machine contract says, on a machine carrying the run's
-        label; the same every time for the same run. `Forbidden` for a
-        request the CI did not sign, one changed since or a stale one;
-        `Rejected` for one that is no such question, or names other
-        variables; whatever `lookup` raises; and `NotFound` from a CI that is
-        handed every run whole and never asks.
-        """
-        ...
-
-    def run_places(self, run: GradingRun) -> RunPlaces:
-        """Where the run is at the forge and on the machine, which the CI's
-        answer and the envelope are made from. No call is made.
+        """For a CI that asks the platform what a run is as it starts one:
+        the answer to `request`, once it is found to be the CI's own and
+        fresh at `now`, for the grading run on an org's dispatch place
+        `lookup` gives, and only when it was started with exactly the
+        variables the implementation starts it with. The answer is its
+        steps: the submission checked out by the spec's clone image unless
+        it is a save, then each step with its settings, and the report's
+        last, on a machine carrying the run's labels; the same every time
+        for the same run. `Forbidden` for a request the CI did not sign, one
+        changed since or a stale one; `Rejected` for one that is no such
+        question, or names other variables; whatever `lookup` raises; and
+        `NotFound` from a CI that is handed every run whole and never asks.
         """
         ...

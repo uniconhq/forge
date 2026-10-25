@@ -14,6 +14,7 @@ done as the platform once the forge has said, to the person's own
 credential, that they may write the workflow.
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from forge.adapters.git.forgejo.repos import DEFAULT_BRANCH, Repos
@@ -25,10 +26,10 @@ from forge.adapters.ids import (
     WorkflowRef,
     parse_workflow,
 )
-from forge.domain.content import ConflictToken, File, Files
+from forge.domain.content import ConflictToken, File, Files, FileSet, WrittenEdit
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, Identity, Platform, User
-from forge.domain.ids import VersionId, WorkflowId
+from forge.domain.ids import VersionId, WorkflowId, is_commit
 from forge.domain.workflows import Visibility, Workflow
 
 READ = "read"
@@ -115,6 +116,27 @@ class ForgejoWorkflows:
         head = await self._repos.head(as_, ref.owner, ref.repo)
         return VersionId(head), await self._repos.read_file(as_, ref.owner, ref.repo, path, at=head)
 
+    async def workflow_files(self, as_: Identity, workflow: WorkflowId, at: VersionId) -> FileSet:
+        ref = parse_workflow(workflow)
+        await self._require_mark(as_, ref)
+        _require_commit(at)
+        return await self._repos.file_set(as_, ref.owner, ref.repo, str(at), links=False)
+
+    async def workflow_version(
+        self, as_: Identity, workflow: WorkflowId, version: str
+    ) -> VersionId:
+        ref = parse_workflow(workflow)
+        await self._require_mark(as_, ref)
+        return VersionId(await self._repos.require_version(as_, ref.owner, ref.repo, version))
+
+    async def read_workflow_at(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str
+    ) -> File:
+        ref = parse_workflow(workflow)
+        await self._require_mark(as_, ref)
+        _require_commit(at)
+        return await self._repos.read_file(as_, ref.owner, ref.repo, path, at=str(at))
+
     async def write_workflow_file(
         self,
         as_: Identity,
@@ -131,6 +153,35 @@ class ForgejoWorkflows:
             as_, ref.owner, ref.repo, {path: content}, expected={path: expected}, message=message
         )
         return await self._repos.read_file(as_, ref.owner, ref.repo, path, at=str(version))
+
+    async def write_workflow_files(
+        self,
+        as_: Identity,
+        workflow: WorkflowId,
+        changes: Mapping[str, WrittenEdit],
+        *,
+        message: str,
+    ) -> VersionId:
+        ref = parse_workflow(workflow)
+        await self._require_mark(as_, ref)
+        return await self._repos.commit_files(
+            as_,
+            ref.owner,
+            ref.repo,
+            {path: edit.content for path, edit in changes.items()},
+            expected={path: edit.token for path, edit in changes.items()},
+            message=message,
+        )
+
+    async def read_workflow_media(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str, *, max_size: int
+    ) -> bytes:
+        ref = parse_workflow(workflow)
+        await self._require_mark(as_, ref)
+        _require_commit(at)
+        return await self._repos.read_raw(
+            as_, ref.owner, ref.repo, path, at=str(at), max_size=max_size
+        )
 
     async def read_workflow_file(
         self, as_: Identity, workflow: WorkflowId, version: str, path: str
@@ -244,6 +295,14 @@ class ForgejoWorkflows:
             return Visibility.PUBLIC
         readers = await self._repos.collaborators(str(repo["owner"]["login"]), str(repo["name"]))
         return Visibility.SHARED if readers else Visibility.PRIVATE
+
+
+def _require_commit(at: VersionId) -> None:
+    """`NotFound` for anything but a commit's id: Forgejo would read a tag's
+    or a branch's name too, which can move, where the caller pins a commit.
+    """
+    if not is_commit(str(at)):
+        raise NotFound(f"{at} is not a commit")
 
 
 def _is_workflow(repo: dict[str, Any]) -> bool:

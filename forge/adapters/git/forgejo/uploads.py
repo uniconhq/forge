@@ -39,11 +39,11 @@ import base64
 from typing import Any
 
 from forge.adapters.git.forgejo.http import Http, json_of, segment
-from forge.adapters.ids import MalformedId, parse_task, parse_workspace
+from forge.adapters.ids import MalformedId, parse_task, parse_workflow, parse_workspace
 from forge.domain.errors import Forbidden, Unavailable
 from forge.domain.identity import AsUser, Identity
 from forge.domain.uploads import Door
-from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace
+from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace, WorkflowPlace
 
 LFS_MEDIA_TYPE = "application/vnd.git-lfs+json"
 
@@ -100,6 +100,9 @@ def _holds(answered: dict[str, Any], digest: str) -> bool:
 def _repo_of(place: UploadPlace) -> tuple[str, str]:
     """The owner and name of the repository an upload's bytes belong to."""
     match place:
+        case WorkflowPlace(workflow=workflow):
+            ref = parse_workflow(workflow)
+            return ref.owner, ref.repo
         case SubmissionPlace(workspace=workspace, task=task):
             workspace_ref = parse_workspace(workspace)
             return workspace_ref.org, workspace_ref.submission_repo(parse_task(task).task)

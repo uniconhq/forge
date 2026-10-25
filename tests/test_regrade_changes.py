@@ -1,100 +1,38 @@
 """What a regrade did to one submission, without a database (#448,
-TASK-FORMAT.md section 3.5): its points went up or down, it now stops
-before its tests, or nothing changed; on a task that gives no points, the
-share of its tests accepted and then its values with a direction decide,
-any value worse reading as down; with nothing to compare, it is newly
-graded.
+TASK-FORMAT.md section 3.5): a finished result beside an earlier one is
+unchanged, and with nothing to compare it is newly graded; what changed is
+said by its values and its runs' verdicts.
 """
 
 from datetime import UTC, datetime
-from fractions import Fraction
+from types import SimpleNamespace
+from typing import cast
 
-from forge.domain.definitions import Fold
 from forge.domain.ids import PublicationId, VersionId
-from forge.domain.publications import Publication
+from forge.domain.publication_record import Publication
 from forge.domain.regrades import (
+    VERDICTS_SHOWN,
     ChangeKind,
     RegradeCause,
-    Side,
+    VerdictChange,
     change_of,
     counted,
     counted_under,
+    run_changes,
 )
-from forge.domain.scoring import Better
+from forge.domain.run_results import Worked
 
 
-def _points(points: int, *, stopped: str | None = None) -> Side:
-    return Side(1, Fraction(points), 1 if points else 0, 1, stopped)
-
-
-def _valued(accepted: int, tests: int, **values: tuple[str, Better]) -> Side:
-    return Side(
-        1,
-        None,
-        accepted,
-        tests,
-        values={(name, Fold.MAX): Fraction(value) for name, (value, _) in values.items()},
-        better={name: better for name, (_, better) in values.items()},
-    )
-
-
-def test_points_say_up_down_or_unchanged() -> None:
-    assert change_of(_points(40), _points(100)) is ChangeKind.UP
-    assert change_of(_points(100), _points(40)) is ChangeKind.DOWN
-    assert change_of(_points(100), _points(100)) is ChangeKind.UNCHANGED
-
-
-def test_a_run_now_stopped_before_its_tests_is_told_apart_whatever_its_points() -> None:
-    assert change_of(_points(0), _points(0, stopped="compile_error")) is ChangeKind.STOPPED
-    assert change_of(_points(100), _points(0, stopped="compile_error")) is ChangeKind.STOPPED
-    # Stopped before and after is read by its points.
-    assert (
-        change_of(_points(0, stopped="compile_error"), _points(0, stopped="compile_error"))
-        is ChangeKind.UNCHANGED
-    )
-    assert change_of(_points(0, stopped="compile_error"), _points(100)) is ChangeKind.UP
-
-
-def test_with_nothing_to_compare_it_is_newly_graded() -> None:
-    assert change_of(None, _points(100)) is ChangeKind.NEW
-    assert change_of(_points(100), None) is ChangeKind.NEW
-
-
-def test_with_no_points_the_share_accepted_decides_first() -> None:
-    assert change_of(_valued(8, 10), _valued(9, 12)) is ChangeKind.DOWN
-    assert change_of(_valued(1, 2), _valued(3, 4)) is ChangeKind.UP
-
-
-def test_with_the_same_share_any_value_worse_is_down() -> None:
-    lower, higher = Better.LOWER, Better.HIGHER
-    before = _valued(2, 2, time_ms=("100", lower), score=("7", higher))
-
-    assert change_of(before, _valued(2, 2, time_ms=("90", lower), score=("7", higher))) is (
-        ChangeKind.UP
-    )
-    assert change_of(before, _valued(2, 2, time_ms=("90", lower), score=("6", higher))) is (
-        ChangeKind.DOWN
-    )
-    assert change_of(before, _valued(2, 2, time_ms=("100", lower), score=("7", higher))) is (
-        ChangeKind.UNCHANGED
-    )
-
-
-def test_a_value_on_one_side_only_reads_as_worst_where_it_is_missing() -> None:
-    # A board reads a missing value as the worst (#441): losing one is
-    # worse, even beside one that improved; gaining one is better.
-    lower, higher = Better.LOWER, Better.HIGHER
-    both = _valued(2, 2, time_ms=("100", lower), score=("7", higher))
-
-    assert change_of(both, _valued(2, 2, score=("8", higher))) is ChangeKind.DOWN
-    assert change_of(_valued(2, 2, score=("7", higher)), both) is ChangeKind.UP
+def test_a_finished_result_is_unchanged_beside_an_earlier_one_and_new_without() -> None:
+    assert change_of(1) is ChangeKind.REGRADED
+    assert change_of(None) is ChangeKind.NEW
 
 
 def test_every_change_is_counted_zero_where_none() -> None:
-    found = counted([ChangeKind.UP, ChangeKind.UP, ChangeKind.FAILED])
+    found = counted([ChangeKind.NEW, ChangeKind.NEW, ChangeKind.FAILED])
 
-    assert found[ChangeKind.UP] == 2 and found[ChangeKind.FAILED] == 1
-    assert set(found) == set(ChangeKind) and found[ChangeKind.DOWN] == 0
+    assert found[ChangeKind.NEW] == 2 and found[ChangeKind.FAILED] == 1
+    assert set(found) == set(ChangeKind) and found[ChangeKind.REGRADED] == 0
 
 
 def _publication(number: int) -> Publication:
@@ -119,3 +57,24 @@ def test_a_result_counted_under_the_latest_publication_before_the_regrade() -> N
     assert counted_under(RegradeCause.SAVE, PublicationId("acme/spring/sum#1"), every) == (
         "acme/spring/sum#1"
     )
+
+
+def _worked(verdicts: dict[str, str]) -> Worked:
+    """A grading worked out with no value, each run getting its verdict."""
+    read = {run: SimpleNamespace(verdict=verdict) for run, verdict in verdicts.items()}
+    return cast(Worked, SimpleNamespace(outcomes={}, grading=SimpleNamespace(read=read)))
+
+
+def test_every_run_changing_alike_is_one_line_and_many_runs_are_counted() -> None:
+    every = {f"r{n}": "accepted" for n in range(1, 1001)}
+    alike = run_changes(_worked(every), _worked(dict.fromkeys(every, "compile_error")))
+    some = run_changes(
+        _worked(every), _worked({**every, **{f"r{n}": "wrong_answer" for n in range(2, 60, 2)}})
+    )
+    one = run_changes(_worked({"r1": "accepted"}), _worked({"r1": "wrong_answer"}))
+
+    assert alike.verdicts == (VerdictChange(None, "accepted", "compile_error", 1000),)
+    assert alike.more_verdicts == 0
+    assert [each.run for each in some.verdicts] == [f"r{n}" for n in range(2, 42, 2)]
+    assert len(some.verdicts) == VERDICTS_SHOWN and some.more_verdicts == 9
+    assert one.verdicts == (VerdictChange("r1", "accepted", "wrong_answer"),)

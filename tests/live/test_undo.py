@@ -5,7 +5,7 @@ teams and hook once it holds no repository, and an org's address never
 reaches a person; a contest or a task goes with its own teams and leaves the
 contest's. Then the whole thing over a `Setup`: an org whose commit fails
 after every step leaves no org, account or CI user behind, and a task whose
-commit fails leaves no repository, team or activation, and its contest's
+commit fails leaves no repository or team, and its contest's
 `contest.yaml` as it was. Everything made is removed afterwards.
 """
 
@@ -189,10 +189,9 @@ async def test_an_org_whose_commit_fails_leaves_nothing_at_the_forge_or_the_ci(
 
 
 @needs_ci
-async def test_a_task_whose_commit_fails_leaves_no_place_team_or_activation(
+async def test_a_task_whose_commit_fails_leaves_no_place_or_team(
     live_setup: Setup,
     admin: httpx.Client,
-    ci: httpx.Client,
     made_org: str,
     person: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
@@ -213,7 +212,6 @@ async def test_a_task_whose_commit_fails_leaves_no_place_team_or_activation(
     assert _team_names(admin, made_org) & {f"{made_org}.spring.sum-{role}" for role in ROLES} == (
         set()
     )
-    assert ci.get(f"/api/repos/lookup/{made_org}/spring.sum.task").status_code == 404
     after = await live_setup.forge.content.read_file(PLATFORM, contest, "contest.yaml")
     assert after.content == before.content
 

@@ -109,7 +109,7 @@ async def test_a_contestants_whole_path_to_a_graded_submission(
         one,
         await guard(),
         entered.task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=len(SOURCE),
         sha256=hashlib.sha256(SOURCE).hexdigest(),
@@ -123,14 +123,17 @@ async def test_a_contestants_whole_path_to_a_graded_submission(
         await guard(),
         entered.task,
         {
-            "submission": SubmittedInput(uploads=(slot.id,)),
+            "code": SubmittedInput(uploads=(slot.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key="one-connection",
     )
     [read] = await submissions.mine(one, await guard(), entered.task)
     assert read.number == made.number
-    assert acme.fake.calls_to("start_run")
+    assert any(
+        call.arguments["variables"]["UNICON_PIPELINE"] == "early"
+        for call in acme.fake.calls_to("start_pipeline")
+    )
 
 
 async def test_an_organiser_reads_the_gradings_of_a_task(
@@ -139,7 +142,7 @@ async def test_an_organiser_reads_the_gradings_of_a_task(
     session = await identity.current((await _ada(one, acme)).id, setup=one)
     manager = await access.organiser_at(one, session, Role.MANAGER, "acme", "spring", "sum")
 
-    assert await gradings.list(one, manager, entered.task) is not None
+    assert await gradings.list_gradings(one, manager, entered.task) is not None
 
 
 async def test_a_credential_the_forge_refuses_ends_the_session_on_one_connection(
@@ -193,7 +196,7 @@ async def test_a_first_slot_holds_no_connection_while_the_forge_makes_the_place(
         one,
         session,
         entered.task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=len(SOURCE),
         sha256=hashlib.sha256(SOURCE).hexdigest(),

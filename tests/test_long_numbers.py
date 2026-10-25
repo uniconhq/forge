@@ -7,8 +7,8 @@ from decimal import Decimal
 from fractions import Fraction
 
 from forge.domain import exact_json
-from forge.domain.plans import spelled
-from forge.domain.scoring import written
+from forge.domain.blocks.numbers import written
+from forge.domain.port_values import scalar_to_text
 from forge.domain.yaml_models import load_yaml
 
 NINES = "9" * 5000
@@ -31,10 +31,10 @@ def test_a_whole_number_of_any_length_in_a_file_is_read() -> None:
 
 
 def test_a_value_spelled_into_text_keeps_every_digit() -> None:
-    assert spelled(Decimal("12345678901234567890123456789.5")) == (
+    assert scalar_to_text(Decimal("12345678901234567890123456789.5")) == (
         "12345678901234567890123456789.5"
     )
-    assert spelled(Decimal("1E+5000")) == "1" + "0" * 5000
-    assert spelled(10**5000) == "1" + "0" * 5000
-    assert spelled(Decimal("5.00")) == "5"
-    assert spelled(Decimal("-0.0")) == "0"
+    assert scalar_to_text(Decimal("1E+5000")) == "1" + "0" * 5000
+    assert scalar_to_text(10**5000) == "1" + "0" * 5000
+    assert scalar_to_text(Decimal("5.00")) == "5"
+    assert scalar_to_text(Decimal("-0.0")) == "0"

@@ -13,15 +13,18 @@ a `FileSet` is every file of a place at one version, by path, with its
 token. A file that is an upload carries its `UploadInfo`, read from the
 pointer its commit holds (`forge.domain.uploads.upload_info`). `check_path`
 is the rule every path a person names passes before it reaches the port:
-plain segments joined by `/`, relative to the place. `has_path` is how a
-path ending in `/` names a folder, there when some file is under it.
+plain segments joined by `/`, relative to the place; `path_problem` says
+what is wrong with a path written into a task or a workflow, to the person
+who wrote it. `has_path` is how a path ending in `/` names a folder, there
+when some file is under it.
 """
 
 import uuid
-from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from collections.abc import Collection, Iterable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from forge.domain.errors import InvalidPath
 from forge.domain.ids import VersionId
@@ -50,6 +53,39 @@ def check_path(path: str) -> str:
     return path
 
 
+_EXAMPLES = {"task": "data/ or checker/checker.cpp", "workflow": "diff/ or diff/program.yaml"}
+
+
+def path_problem(
+    value: object,
+    *,
+    folder: bool | None,
+    of: Literal["task", "workflow"] = "task",
+) -> str | None:
+    """What is wrong with `value` as the path of a file or folder of a task
+    or workflow, if anything, said to the person who wrote it: a relative
+    path of named parts, none `.` or `..`, none starting or ending with a
+    space, and no backslash or control character. A folder's path ends in
+    `/` and a file's does not; `folder` none takes either.
+    """
+    if not isinstance(value, str) or not value:
+        return f"Give the path of a file or folder in the {of}, such as {_EXAMPLES[of]}."
+    if value.startswith("/") or "\\" in value:
+        return f"Give the path from the top of the {of}'s files, with forward slashes (/)."
+    parts = value.removesuffix("/").split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return "The path cannot have empty, . or .. parts."
+    if any(part != part.strip(" ") for part in parts):
+        return "No part of the path can start or end with a space."
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        return "The path cannot hold a control character, such as a tab or a new line."
+    if folder is True and not value.endswith("/"):
+        return "This is a folder, so its path ends with /, such as data/."
+    if folder is False and value.endswith("/"):
+        return "This is one file, so its path does not end with /."
+    return None
+
+
 def has_path(paths: Collection[str], path: str) -> bool:
     """Whether `path` is among `paths`, or for a path ending in `/`, whether
     some path is under that folder.
@@ -57,6 +93,18 @@ def has_path(paths: Collection[str], path: str) -> bool:
     if path.endswith("/"):
         return any(name.startswith(path) for name in paths)
     return path in paths
+
+
+def names_path(entry: str, path: str) -> bool:
+    """Whether `entry` names the file at `path`: it is that path, or a
+    folder, ending in `/`, that the file is under.
+    """
+    return entry == path or (entry.endswith("/") and path.startswith(entry))
+
+
+def named_by(paths: Iterable[str], entry: str) -> set[str]:
+    """The paths among `paths` that `entry` names, by `names_path`."""
+    return {path for path in paths if names_path(entry, path)}
 
 
 class ConflictToken(str):
@@ -196,12 +244,14 @@ class WrittenEdit:
 
 @dataclass(frozen=True, slots=True)
 class FileSet:
-    """Every file of a place at one version, by path, each with its token. A
-    folder is there exactly when some file is under it.
+    """Every file of a place at one version, by path, each with its token,
+    and the size in bytes of each the forge gave one for. A folder is there
+    exactly when some file is under it.
     """
 
     version: VersionId
     tokens: Mapping[str, ConflictToken]
+    sizes: Mapping[str, int] = field(default_factory=dict)
 
     def has(self, path: str) -> bool:
         """Whether the file is there, or for a path ending in `/`, whether

@@ -1,5 +1,5 @@
 """An org's service account, `unicon-ci-<org>`: the one account that
-activates the org's tasks at the CI and starts their runs. It is a user at
+activates the org's dispatch place at the CI and starts its runs. It is a user at
 the forge, a member of the org account's place in the org and nothing else,
 and whatever the CI's implementation sets up for it there. The
 `org_accounts` row holds its forge credential, what it holds at the CI and
