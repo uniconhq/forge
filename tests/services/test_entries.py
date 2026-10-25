@@ -306,7 +306,7 @@ async def test_the_shared_scoring_works_out_what_reads_a_mark_for_every_reader(
         scored = await scores.run_scored(ctx, current, settings, Extension(), early, late)
 
     assert scored.whole.outcomes["review"].number == 6
-    assert scored.early.outcomes["reviewed"].number == 7
+    assert scored.early().outcomes["reviewed"].number == 7
 
 
 GRADEBOOK = LIVE + (

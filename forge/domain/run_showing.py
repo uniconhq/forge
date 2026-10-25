@@ -57,7 +57,7 @@ publication dropped after them marked `dropped`, everything done once,
 and the facts.
 """
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any, NamedTuple
@@ -143,7 +143,7 @@ def shown(
     runs: Sequence[Run],
     files: Collection[str],
     whole: Worked,
-    early: Worked,
+    early: Callable[[], Worked],
     self_reported: Collection[str],
     *,
     revealed: bool,
@@ -152,7 +152,8 @@ def shown(
 ) -> Shown:
     """What a reader sees of a grading now: `scoring`, `runs` and `files` the
     task's live publication's, `whole` the grading worked out from both its
-    rows and `early` from its early row alone, and `self_reported` the
+    rows and `early` giving it from its early row alone, called only before
+    the reveal and the release, and `self_reported` the
     values reading a column the entrant could set; for an entrant, whether
     the task has revealed and whether its results are released; with
     `everything`, as organisers read it. Texts are as stored: `bare` takes
@@ -165,8 +166,8 @@ def shown(
     held = _held(scoring, runs, whole.grading, files, times)
     view = whole
     if not (revealed or released or {name for name, _ in held} - whole.grading.early):
-        view = early
-        held = _held(scoring, runs, early.grading, files, times)
+        view = early()
+        held = _held(scoring, runs, view.grading, files, times)
     grading = view.grading
     seen = {name for name, _ in held}
     values: list[ValueShown] = []

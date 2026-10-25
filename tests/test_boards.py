@@ -1248,6 +1248,23 @@ def test_best_each_works_the_value_out_again_from_the_best_of_each_it_reads() ->
     assert runs[("p", "c")].number is None
 
 
+def test_a_missing_input_makes_best_each_missing_unless_its_missing_says_otherwise() -> None:
+    # Item 127: submission 1 has no st2, so the best of st2 is unknown.
+    tree = best_each("total")
+    listed = {"a": [sub(1, st1=1), sub(2, st1=0, st2=1)]}
+
+    def cell(given: dict[str, object]) -> Cell:
+        boards = {"p": Leaderboard.model_validate({"columns": {"c": given}})}
+        found = check_boards(boards, ["a"])
+        return work_out_row(boards, found, listed, {"a": ISLANDS_VALUES})[("p", "c")]
+
+    missing = cell(tree)
+    assert (missing.number, missing.counted) == (None, frozenset({("a", 1)}))
+    assert cell({**tree, "missing": "skip"}).number == 100
+    # 40 * 1 + 60 * 5, the missing st2 counted as 5.
+    assert cell({**tree, "missing": 5}).number == 340
+
+
 def test_otherwise_and_sum_best_and_missing_spreading() -> None:
     listed = {"a": [sub(1, score=4)], "b": [sub(1)]}
     a = {"block": "max", "over": results("a"), "of": read("a", "score")}
@@ -1342,6 +1359,9 @@ COUNT = {"block": "count", "over": results("a")}
         ({"n": COUNT}, {"display": ["m"]}, "leaderboards.s.display.0"),
         # sum_best's k a whole number written out.
         ({"c": {"block": "sum_best", "k": 0, "of": [1]}}, {}, "leaderboards.s.columns.c.k"),
+        # missing neither skip nor a number.
+        ({"c": {**COUNT, "missing": "foo"}}, {}, "leaderboards.s.columns.c.missing"),
+        ({"p": {**PICK, "missing": True}}, {}, "leaderboards.s.columns.p.missing"),
         # best_each's directions.
         (
             {
@@ -1520,6 +1540,21 @@ def test_a_division_by_bounds_holding_0_and_a_fold_over_results_by_submissions()
     assert bounds[("s", "n")] == (Fraction(0), Fraction(3))
     assert bounds[("s", "sm")] == (Fraction(0), Fraction(6))
     assert bounds[("s", "d")] is None
+
+
+def test_a_folds_bounds_over_results_widen_by_its_missing_number() -> None:
+    fold = {"block": "max", "over": results("a"), "of": read("a", "score")}
+    settings = contest(
+        board({"wide": {**fold, "missing": 5}, "low": {**fold, "missing": -1}, "plain": fold})
+    )
+    found = checked(settings)
+    bounds = column_bounds(
+        settings.leaderboards, found, {"a": {"score": (Fraction(0), Fraction(2))}}, {"a": 3}
+    )
+
+    assert bounds[("s", "wide")] == (Fraction(0), Fraction(5))
+    assert bounds[("s", "low")] == (Fraction(-1), Fraction(2))
+    assert bounds[("s", "plain")] == (Fraction(0), Fraction(2))
 
 
 def test_a_column_over_two_tasks_names_the_one_value_that_is_self_reported() -> None:

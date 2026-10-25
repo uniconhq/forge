@@ -21,7 +21,7 @@ it then counts on no board.
 """
 
 import uuid
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from fractions import Fraction
@@ -187,13 +187,14 @@ class RunScored:
     """A run task's grading worked out on read: the live publication's runs
     and plan, the grading from both its rows, every value, as organisers
     read it, and from its early row alone, which `run_showing.shown`
-    serves an entrant from, and the values reading a column the entrant
-    could set.
+    serves an entrant from before the reveal, worked out only when called
+    (stage 5 section 6, item 129), and the values reading a column the
+    entrant could set.
     """
 
     held: RunsHeld
     whole: Worked
-    early: Worked
+    early: Callable[[], Worked]
     self_reported: frozenset[str]
 
 
@@ -294,23 +295,38 @@ async def run_scored(
         outcomes = worked_out(scoring, held.runs, grading, facts, held.columns, marks)
         return Worked(grading, outcomes, facts)
 
-    whole = run_grading(
-        held.runs,
-        early.result,
-        late_result,
-        waiting=waits_early | waits_late,
-        compiling=held.compiling,
-        programs_waiting=programs_early | programs_late,
+    whole = work(
+        run_grading(
+            held.runs,
+            early.result,
+            late_result,
+            waiting=waits_early | waits_late,
+            compiling=held.compiling,
+            programs_waiting=programs_early | programs_late,
+        )
     )
-    alone = run_grading(
-        held.runs,
-        early.result,
-        None,
-        waiting=waits_early,
-        compiling=held.compiling,
-        programs_waiting=programs_early,
-    )
-    return RunScored(held, work(whole), work(alone), held.self_reported)
+    if late_result is None and not waits_late and not programs_late:
+        # The early row alone is all there is, so it works out the same.
+        return RunScored(held, whole, lambda: whole, held.self_reported)
+    kept: list[Worked] = []
+
+    def alone() -> Worked:
+        if not kept:
+            kept.append(
+                work(
+                    run_grading(
+                        held.runs,
+                        early.result,
+                        None,
+                        waiting=waits_early,
+                        compiling=held.compiling,
+                        programs_waiting=programs_early,
+                    )
+                )
+            )
+        return kept[0]
+
+    return RunScored(held, whole, alone, held.self_reported)
 
 
 async def _planned(

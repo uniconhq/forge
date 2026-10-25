@@ -1,7 +1,8 @@
 """Staff releasing a run task's results and taking a release back
 (SIMPLER-CORE.md 9.4, stage 5 section 6 items 2 and 10): what `on_release`
 lists is shown to entrants, its values, runs and files, only while the
-results are released; a take-back warns before it hides; each action is a
+results are released, and an entrant reads the early row alone until the
+reveal but while released; a take-back warns before it hides; each action is a
 row with who and when, added only when it changes the state; gradings
 made while released take the split that runs `on_release` early, and a
 grading keeps the split it was made with; an extension, or a later close,
@@ -110,6 +111,31 @@ async def test_what_on_release_lists_is_shown_only_while_the_results_are_release
     assert await seen() == (hidden, samples, None)
     await _release(setup, acme, islands.task)
     assert await seen() == ({**hidden, "st2": 1}, shown, b"4\n")
+
+
+async def test_an_entrant_reads_the_early_row_alone_until_the_reveal_or_while_released(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, session = await _graded_both(setup, acme, RELEASING)
+    # st1 moved to now runs r3 early for new gradings; this one ran it late.
+    sooner = RELEASING.replace("samples/]", "samples/, st1]").replace(
+        "after_close: [st1, all]", "after_close: [all]"
+    )
+    assert isinstance(await _try_save(setup, acme, islands.task, sooner), Published)
+    await setup.settle()
+
+    async def st1() -> Any:
+        return _values(await _grading(setup, session, islands))["st1"]
+
+    # From the early row alone r3 never ran, so st1 is 0; from both, 1.
+    assert await st1() == 0
+    await _release(setup, acme, islands.task)
+    assert await st1() == 1
+    await _hide(setup, acme, islands.task)
+    assert await st1() == 0
+    clock.set(AFTER_CLOSE)
+    assert await st1() == 1
 
 
 async def test_each_action_asks_first_and_changes_nothing_unconfirmed(

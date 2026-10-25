@@ -2,11 +2,12 @@
 10.2, the leaderboards note's 6.3): a visitor and an entrant read a board
 for everyone with each row's values as that row's entrant is shown them,
 and only their own row of the gradebook; a withdrawn task's columns are
-listed to no entrant; the hold keeps every row but the viewer's own as it
-stood at its `from`, counting the rest held, until its `until` or a
-manager of the contest ends it early, asked first, the end kept with who
-and when, a hold written again with a later `from` holding afresh; and the
-contest home shows an entrant their own row of each board they read.
+listed to no entrant, and a header tells a task's bounds only once it is
+released; the hold keeps every row but the viewer's own as it stood at
+its `from`, counting the rest held, until its `until` or a manager of the
+contest ends it early, asked first, the end kept with who and when, a
+hold written again with a later `from` holding afresh; and the contest
+home shows an entrant their own row of each board they read.
 """
 
 import uuid
@@ -27,6 +28,7 @@ from forge.runtime.setup import Setup
 from forge.services import boards, contest_home, submissions
 from forge.testing import FakeClock
 from tests.services.conftest import SPRING, Acme, organiser, signed_in, upload, write_contest
+from tests.services.test_examples import BASE, _judged, _task, _workflows
 from tests.services.test_pipelines import (
     ACCEPTED_EARLY,
     ACCEPTED_LATE,
@@ -218,6 +220,56 @@ async def test_a_header_gives_anyone_but_staff_only_the_bounds_of_what_they_are_
     assert bounds(await _standings(setup, staff))[1] == total
     clock.set(AFTER_CLOSE)
     assert bounds(await _standings(setup, None))[1] == total
+
+
+MIXED = """\
+tasks:
+  - id: a
+  - {id: b, release_at: 2026-09-26T13:00:00Z}
+leaderboards:
+  both:
+    audience: {who: everyone}
+    columns:
+      tries:
+        block: add
+        of: [{block: count, over: {results: a}}, {block: count, over: {results: b}}]
+      best:
+        block: add
+        of:
+          - {block: max, over: {results: a}, of: {value: [a, score]}}
+          - {block: max, over: {results: b}, of: {value: [b, score]}}
+    display: [tries, best]
+"""
+"""A board whose columns each read a task released at the start and one
+released at 13:00."""
+
+
+async def test_a_task_not_yet_released_gives_a_header_no_bounds_but_to_staff(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    # Item 126: neither b's submissions.max nor its values' bounds are
+    # told before its release, so a column reading it has none.
+    clock.set(at(12, 0))
+    await _workflows(acme)
+    await write_contest(acme.fake, BASE + MIXED)
+    shown = _judged(
+        "Task",
+        "    score: {block: max, over: {runs: all}, of: {run: [all, score]}}\n",
+        "    now: [score, all]\n",
+    )
+    await _task(setup, acme, "a", shown)
+    await _task(setup, acme, "b", shown)
+    staff = await _staff(setup, acme)
+
+    async def bounds(session: Any) -> list[tuple[str, Fraction | None, Fraction | None]]:
+        [board] = await boards.seen(setup, session, SPRING, "both")
+        return [(each.name, each.at_least, each.at_most) for each in board.headers]
+
+    every = [("tries", Fraction(0), Fraction(100)), ("best", Fraction(0), Fraction(2))]
+    assert await bounds(None) == [("tries", None, None), ("best", None, None)]
+    assert await bounds(staff) == every
+    clock.set(at(13, 0))
+    assert await bounds(None) == every
 
 
 async def _held_contest(setup: Setup, acme: Acme, clock: FakeClock, contest: str) -> Any:

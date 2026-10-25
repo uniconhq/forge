@@ -157,7 +157,7 @@ def _seen(
         runs,
         files,
         scored.whole,
-        scored.alone,
+        lambda: scored.alone,
         self_reported,
         revealed=revealed,
         everything=everything,
