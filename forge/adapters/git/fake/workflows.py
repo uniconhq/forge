@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 from forge.adapters.git.fake.state import Repo, State, token_of
+from forge.adapters.git.fake.uploads import FakeUploads
 from forge.adapters.ids import (
     PLATFORM_ORG,
     PRIMITIVE,
@@ -11,8 +12,8 @@ from forge.adapters.ids import (
     parse_workflow,
     primitive_repo,
 )
-from forge.domain.content import ConflictToken, File, Files, FileSet
-from forge.domain.errors import Conflict, Forbidden, NotFound
+from forge.domain.content import ConflictToken, File, Files, FileSet, WrittenEdit
+from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected
 from forge.domain.identity import PLATFORM, Identity, User
 from forge.domain.ids import PrimitiveId, VersionId, WorkflowId
 from forge.domain.roles import Role, Scope
@@ -22,8 +23,9 @@ DECLARATION = "primitive.yaml"
 
 
 class FakeWorkflows:
-    def __init__(self, state: State) -> None:
+    def __init__(self, state: State, uploads: FakeUploads) -> None:
         self._state = state
+        self._uploads = uploads
 
     async def create_workflow(
         self, as_: Identity, owner: str, name: str, files: Files, visibility: Visibility
@@ -154,6 +156,40 @@ class FakeWorkflows:
             raise Conflict(f"{path} in {workflow} has changed since it was read")
         self._state.commit(repo, {path: content}, message, self._state.author(as_))
         return File(path=path, content=content, token=repo.tokens[path])
+
+    async def write_workflow_files(
+        self,
+        as_: Identity,
+        workflow: WorkflowId,
+        changes: Mapping[str, WrittenEdit],
+        *,
+        message: str,
+    ) -> VersionId:
+        self._state.record("write_workflow_files", as_, workflow=workflow)
+        self._state.check_up()
+        repo = self._repo(workflow)
+        self._state.require_write(as_, repo)
+        for path, edit in changes.items():
+            if repo.tokens.get(path) != edit.token:
+                raise Conflict(f"{path} in {workflow} has changed since it was read")
+        return VersionId(
+            self._state.commit(
+                repo,
+                {path: edit.content for path, edit in changes.items()},
+                message,
+                self._state.author(as_),
+            )
+        )
+
+    async def read_workflow_media(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str, *, max_size: int
+    ) -> bytes:
+        file = await self.read_workflow_at(as_, workflow, at, path)
+        ref = parse_workflow(workflow)
+        content = self._uploads.resolve(f"{ref.owner}/{ref.repo}", file.content)
+        if len(content) > max_size:
+            raise Rejected(f"{path} is larger than {max_size} bytes")
+        return content
 
     async def read_workflow_file(
         self, as_: Identity, workflow: WorkflowId, version: str, path: str

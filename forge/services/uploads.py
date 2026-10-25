@@ -62,13 +62,13 @@ from forge.domain.errors import (
     UploadNotReady,
 )
 from forge.domain.identity import AsUser
-from forge.domain.ids import TaskId, new_id
+from forge.domain.ids import TaskId, WorkflowId, new_id
 from forge.domain.roles import Role, task_scope
 from forge.domain.sessions import Session
 from forge.domain.submissions import Field, path_problem
 from forge.domain.uploads import Door, UploadPurpose, UploadStatus
 from forge.log import get_logger
-from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace
+from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace, WorkflowPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import entrant_view, sessions, submitters
@@ -456,13 +456,14 @@ async def _record(
     as_: AsUser,
     purpose: UploadPurpose,
     user_id: int,
-    task: TaskId,
+    task: TaskId | None,
     input_id: str | None,
     filename: str,
     content_type: str | None,
     size: int,
     digest: str,
     repo_path: str | None = None,
+    workflow: WorkflowId | None = None,
 ) -> Slot:
     """Write the upload's row and answer with its slot. A place that already
     holds the object needs no upload, and the row is written checked.
@@ -473,6 +474,7 @@ async def _record(
         owner_user_id=user_id,
         purpose=purpose,
         task_id=task,
+        workflow_id=workflow,
         input_id=input_id,
         repo_path=repo_path,
         filename=filename,
@@ -512,6 +514,8 @@ async def _place_of(ctx: Context, row: UploadRow, user_id: int) -> UploadPlace:
     task of the entrant the person is in, or the task itself for an
     organiser's file. `NotFound` for a person in no entrant now.
     """
+    if row.purpose == UploadPurpose.WORKFLOW_FILE:
+        return WorkflowPlace(WorkflowId(row.workflow_id or ""))
     task = TaskId(row.task_id or "")
     if row.purpose == UploadPurpose.TASK_FILE:
         return TaskPlace(task)
@@ -580,7 +584,7 @@ async def _asked_before(
 async def _refuse_open(
     ctx: Context,
     user_id: int,
-    task: TaskId,
+    task: TaskId | WorkflowId,
     size: int,
     most_bytes: int,
     purpose: UploadPurpose = UploadPurpose.SUBMISSION,
@@ -597,6 +601,7 @@ async def _refuse_open(
         text("SELECT pg_advisory_xact_lock(:space, hashtext(:target))"),
         {"space": UPLOAD_LOCK, "target": f"{user_id}|{task}|{purpose}"},
     )
+    target = UploadRow.workflow_id if purpose == UploadPurpose.WORKFLOW_FILE else UploadRow.task_id
     open_statuses = [status.value for status in rules.OPEN]
     count, summed = (
         await ctx.db.execute(
@@ -607,7 +612,7 @@ async def _refuse_open(
                 ),
             ).where(
                 UploadRow.owner_user_id == user_id,
-                UploadRow.task_id == task,
+                target == task,
                 UploadRow.purpose == purpose,
             )
         )
@@ -678,3 +683,90 @@ def _refuse_file(
         problem = "A content type is at most 255 characters."
     if problem is not None:
         raise InvalidInputs(problem, errors=[{"input": entry.id, "message": problem}])
+
+
+async def workflow_file_slot(
+    ctx: Context,
+    as_: AsUser,
+    workflow: WorkflowId,
+    *,
+    path: str,
+    size: int,
+    sha256: str,
+    content_type: str | None = None,
+) -> Slot:
+    checked = check_path(path)
+    problem = next(
+        (found for part in checked.split("/") if (found := rules.filename_problem(part))), None
+    )
+    problem = problem or rules.digest_problem(sha256)
+    if problem is None and (
+        isinstance(size, bool) or not isinstance(size, int) or size < 1 or size > FILE_CEILING
+    ):
+        problem = f"A file is from 1 to {FILE_CEILING} bytes."
+    if problem is not None:
+        raise InvalidInputs(problem, errors=[{"input": path, "message": problem}])
+    await _clear_lapsed(ctx, as_.user_id, UploadPurpose.WORKFLOW_FILE)
+    await _refuse_open(
+        ctx,
+        as_.user_id,
+        workflow,
+        size,
+        rules.open_bytes(SUBMISSION_CEILING),
+        UploadPurpose.WORKFLOW_FILE,
+    )
+    return await _record(
+        ctx,
+        place=WorkflowPlace(workflow),
+        as_=as_,
+        purpose=UploadPurpose.WORKFLOW_FILE,
+        user_id=as_.user_id,
+        task=None,
+        workflow=workflow,
+        input_id=None,
+        filename=checked.rsplit("/", 1)[-1],
+        content_type=content_type,
+        size=size,
+        digest=sha256,
+        repo_path=checked,
+    )
+
+
+async def workflow_uploads(
+    ctx: Context, user_id: int, workflow: WorkflowId, ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, UploadRow]:
+    if not ids:
+        return {}
+    rows = (
+        await ctx.db.execute(
+            select(UploadRow)
+            .where(
+                UploadRow.id.in_(list(ids)),
+                UploadRow.owner_user_id == user_id,
+                UploadRow.workflow_id == workflow,
+                UploadRow.purpose == UploadPurpose.WORKFLOW_FILE,
+            )
+            .order_by(UploadRow.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars()
+    return {row.id: row for row in rows}
+
+
+async def complete_workflow(
+    ctx: Context, session: Session, workflow: WorkflowId, upload: uuid.UUID
+) -> Upload:
+    fresh = await sessions.authenticate(ctx, session.id)
+    row = (await workflow_uploads(ctx, fresh.user_id, workflow, [upload])).get(upload)
+    if row is None:
+        raise NotFound(NO_SUCH_UPLOAD)
+    if row.status == UploadStatus.WAITING:
+        as_ = AsUser(fresh.user_id, await sessions.credential_for(ctx, session.id))
+        if not await holds(ctx, WorkflowPlace(workflow), as_, row):
+            raise UploadNotReady(
+                "The file has not finished uploading. Try again once it has.", uploads=[str(upload)]
+            )
+        row.status = UploadStatus.VERIFIED
+        await ctx.db.flush()
+    return view(row)

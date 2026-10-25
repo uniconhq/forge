@@ -10,9 +10,10 @@ underneath. Who may read it is changed as the platform, once the host has
 said the person may write it.
 """
 
+from collections.abc import Mapping
 from typing import Protocol
 
-from forge.domain.content import ConflictToken, File, Files, FileSet
+from forge.domain.content import ConflictToken, File, Files, FileSet, WrittenEdit
 from forge.domain.identity import Identity, User
 from forge.domain.ids import VersionId, WorkflowId
 from forge.domain.workflows import Visibility, Workflow
@@ -122,6 +123,25 @@ class WorkflowPort(Protocol):
         when none was expected; `Forbidden` when the identity
         may not write the workflow.
         """
+        ...
+
+    async def write_workflow_files(
+        self,
+        as_: Identity,
+        workflow: WorkflowId,
+        changes: Mapping[str, WrittenEdit],
+        *,
+        message: str,
+    ) -> VersionId:
+        """Write every change in one commit, checking every token before writing anything.
+        A missing token creates a file; a removal must name the token read.
+        """
+        ...
+
+    async def read_workflow_media(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str, *, max_size: int
+    ) -> bytes:
+        """Read the file's bytes, resolving an upload, refusing more than max_size."""
         ...
 
     async def read_workflow_file(

@@ -10,12 +10,13 @@ whole expansion, and flattens what it read into primitive steps.
 
 from dataclasses import dataclass
 
-from forge.domain.errors import Forbidden, NotFound
+from forge.domain.errors import Forbidden, NotFound, Rejected
 from forge.domain.identity import Identity
 from forge.domain.ids import VersionId, WorkflowId
 from forge.domain.primitives import PrimitiveDeclaration
 from forge.domain.program_manifest import MAX_MANIFEST
 from forge.domain.run_workflow import WorkflowFiles, manifest_paths
+from forge.domain.uploads import upload_info
 from forge.domain.workflow_boxes import FlatWorkflow, flatten, over_cap
 from forge.domain.workflow_definition import (
     MAX_USES,
@@ -90,6 +91,7 @@ async def files_at(
     paths = set(listed.tokens)
     manifests: dict[str, bytes] = {}
     oversized: set[str] = set()
+    sizes = dict(listed.sizes)
     for path in sorted(manifest_paths(definition) & paths):
         if listed.sizes.get(path, 0) > MAX_MANIFEST:
             oversized.add(path)
@@ -99,8 +101,21 @@ async def files_at(
         except NotFound:
             paths.discard(path)
             continue
-        manifests[path] = read.content
-    sizes = {path: size for path, size in listed.sizes.items() if path in paths}
+        content = read.content
+        if info := upload_info(content):
+            sizes[path] = info.size
+            if info.size > MAX_MANIFEST:
+                oversized.add(path)
+                continue
+            try:
+                content = await ctx.forge.workflows.read_workflow_media(
+                    as_, workflow, at, path, max_size=MAX_MANIFEST
+                )
+            except Rejected:
+                oversized.add(path)
+                continue
+        manifests[path] = content
+    sizes = {path: size for path, size in sizes.items() if path in paths}
     return WorkflowFiles(frozenset(paths), manifests, frozenset(oversized), sizes)
 
 

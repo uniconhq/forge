@@ -86,6 +86,7 @@ class UploadPurpose(StrEnum):
 
     SUBMISSION = "submission"
     TASK_FILE = "task_file"
+    WORKFLOW_FILE = "workflow_file"
 
 
 def open_bytes(submission_limit: int) -> int:

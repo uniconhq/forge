@@ -40,13 +40,33 @@ stop half done; a version is made only of a draft that passes every check a
 version must (TASK-FORMAT.md section 1.3), and a version never changes.
 """
 
-from dataclasses import dataclass
+import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
-from forge.domain.content import ConflictToken
-from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, PortError, Rejected
+from forge.domain.content import (
+    ConflictToken,
+    Edit,
+    EntryKind,
+    File,
+    TreeEntry,
+    Uploaded,
+    WrittenEdit,
+    check_path,
+)
+from forge.domain.errors import (
+    Conflict,
+    Forbidden,
+    InvalidInputs,
+    InvalidName,
+    NotFound,
+    PortError,
+    Rejected,
+    UploadNotReady,
+)
 from forge.domain.identity import AsUser, Identity, User
-from forge.domain.ids import OrgId, WorkflowId
+from forge.domain.ids import OrgId, VersionId, WorkflowId
 from forge.domain.names import validate_name
 from forge.domain.port_values import natural, stray_units
 from forge.domain.primitives import Port
@@ -54,6 +74,14 @@ from forge.domain.roles import Role, Scope, holds
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.sessions import Session
 from forge.domain.types import Type
+from forge.domain.uploads import (
+    UploadStatus,
+    filename_problem,
+    may_be_pointer,
+    pointer_text,
+    refuse_pointer,
+    upload_info,
+)
 from forge.domain.workflow_boxes import placed
 from forge.domain.workflow_definition import (
     WORKFLOW_FILE,
@@ -70,9 +98,10 @@ from forge.domain.workflow_definition import (
 from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
+from forge.port.uploads import WorkflowPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import access, making, names, sessions, workflow_boxes
+from forge.services import access, making, names, sessions, uploads, workflow_boxes
 
 log = get_logger(__name__)
 
@@ -117,6 +146,7 @@ class Draft:
 
     text: str
     token: ConflictToken | None
+    revision: VersionId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,10 +284,10 @@ async def view(ctx: Context, session: Session, owner: str, name: str) -> Workflo
     if writer is None:
         return WorkflowView(summary)
     try:
-        _, file = await ctx.forge.workflows.read_workflow_draft(
+        head, file = await ctx.forge.workflows.read_workflow_draft(
             writer.identity, workflow, WORKFLOW_FILE
         )
-        draft = Draft(file.content.decode("utf-8", errors="replace"), file.token)
+        draft = Draft(file.content.decode("utf-8", errors="replace"), file.token, head)
     except NotFound:
         draft = Draft("", None)
     readers = await ctx.forge.workflows.workflow_readers(writer.identity, workflow)
@@ -278,7 +308,14 @@ async def read_version(ctx: Context, session: Session, ref: str) -> str:
 
 @action
 async def save(
-    ctx: Context, session: Session, owner: str, name: str, text: str, token: ConflictToken | None
+    ctx: Context,
+    session: Session,
+    owner: str,
+    name: str,
+    text: str,
+    token: ConflictToken | None,
+    *,
+    changes: Mapping[str, Edit] | None = None,
 ) -> Draft:
     """Write `text` as the workflow's `workflow.yaml`, as the caller, with
     the token it was read with. Whatever it holds saves, problems and all,
@@ -289,8 +326,16 @@ async def save(
     content = _sized(text)
     workflow = await _place(ctx, owner, name)
     try:
-        file = await ctx.forge.workflows.write_workflow_file(
-            writer.identity, workflow, WORKFLOW_FILE, content, expected=token, message=EDIT_MESSAGE
+        resolved = await _file_edits(ctx, writer.identity, workflow, changes or {})
+        resolved[WORKFLOW_FILE] = WrittenEdit(content, token)
+        revision = await ctx.forge.workflows.write_workflow_files(
+            writer.identity,
+            workflow,
+            resolved,
+            message="Edit workflow files" if changes else EDIT_MESSAGE,
+        )
+        file = await ctx.forge.workflows.read_workflow_at(
+            writer.identity, workflow, revision, WORKFLOW_FILE
         )
     except Conflict:
         raise Conflict(
@@ -298,7 +343,7 @@ async def save(
             "then make your changes again."
         ) from None
     log.info("workflows.saved", workflow=workflow, user_id=session.user_id)
-    return Draft(text, file.token)
+    return Draft(text, file.token, revision)
 
 
 @action
@@ -309,6 +354,8 @@ async def create_version(
     name: str,
     version: str,
     token: ConflictToken | None = None,
+    *,
+    revision: VersionId | None = None,
 ) -> str:
     """Freeze the workflow's saved `workflow.yaml` under `version`, once it
     passes every check a version must, against the primitives its steps use
@@ -324,7 +371,7 @@ async def create_version(
     head, file = await ctx.forge.workflows.read_workflow_draft(
         writer.identity, workflow, WORKFLOW_FILE
     )
-    if token is not None and file.token != token:
+    if (token is not None and file.token != token) or (revision is not None and head != revision):
         raise Conflict(
             f"The workflow {writer.label}/{name} has been saved again since your save. Reload "
             "it before making a version of it."
@@ -698,3 +745,140 @@ def _own_label(username: str) -> str:
             "characters other than lower case letters, digits, hyphens and underscores. Make "
             "the workflow under an org instead."
         ) from None
+
+
+@action
+async def file_slot(
+    ctx: Context,
+    session: Session,
+    owner: str,
+    name: str,
+    *,
+    path: str,
+    size: int,
+    sha256: str,
+    content_type: str | None = None,
+) -> uploads.Slot:
+    writer = await _writer(ctx, session, owner)
+    workflow = await _place(ctx, owner, name)
+    await ctx.forge.workflows.describe_workflow(writer.identity, workflow)
+    _file_path(path)
+    return await uploads.workflow_file_slot(
+        ctx,
+        writer.identity,
+        workflow,
+        path=path,
+        size=size,
+        sha256=sha256,
+        content_type=content_type,
+    )
+
+
+@action
+async def complete_file(
+    ctx: Context, session: Session, owner: str, name: str, upload: uuid.UUID
+) -> uploads.Upload:
+    return await uploads.complete_workflow(ctx, session, await _place(ctx, owner, name), upload)
+
+
+@action
+async def read_file(ctx: Context, session: Session, owner: str, name: str, path: str) -> File:
+    as_, workflow, head = await _files_head(ctx, session, owner, name)
+    file = await ctx.forge.workflows.read_workflow_at(as_, workflow, head, check_path(path))
+    return replace(file, upload=upload_info(file.content), version=head)
+
+
+async def _files_head(
+    ctx: Context, session: Session, owner: str, name: str
+) -> tuple[AsUser, WorkflowId, VersionId]:
+    as_ = await _as_user(ctx, session)
+    workflow = await _place(ctx, owner, name)
+    try:
+        await ctx.forge.workflows.describe_workflow(as_, workflow)
+    except NotFound, Forbidden:
+        raise _not_readable(owner, name) from None
+    writer = await _writer(ctx, session, owner)
+    head, _ = await ctx.forge.workflows.read_workflow_draft(
+        writer.identity, workflow, WORKFLOW_FILE
+    )
+    return writer.identity, workflow, head
+
+
+@action
+async def files(
+    ctx: Context, session: Session, owner: str, name: str, path: str = ""
+) -> tuple[TreeEntry, ...]:
+    as_, workflow, head = await _files_head(ctx, session, owner, name)
+    folder = check_path(path) + "/" if path else ""
+    listed = await ctx.forge.workflows.workflow_files(as_, workflow, head)
+    entries: dict[str, TreeEntry] = {}
+    for held, token in sorted(listed.tokens.items()):
+        if not held.startswith(folder):
+            continue
+        rest = held[len(folder) :]
+        if "/" in rest:
+            directory = folder + rest.split("/", 1)[0]
+            entries[directory] = TreeEntry(directory, EntryKind.DIRECTORY)
+        else:
+            info = None
+            if may_be_pointer(listed.sizes.get(held)):
+                read = await ctx.forge.workflows.read_workflow_at(as_, workflow, head, held)
+                info = upload_info(read.content)
+            entries[held] = TreeEntry(
+                held,
+                EntryKind.FILE,
+                size=listed.sizes.get(held),
+                token=str(token),
+                upload=info,
+                version=head,
+            )
+    return tuple(entries.values())
+
+
+def _file_path(path: str) -> None:
+    check_path(path)
+    if path == WORKFLOW_FILE:
+        raise InvalidInputs("Change workflow.yaml in the workflow editor.")
+    for part in path.split("/"):
+        if problem := filename_problem(part):
+            raise InvalidInputs(problem, errors=[{"input": path, "message": problem}])
+
+
+async def _file_edits(
+    ctx: Context, as_: AsUser, workflow: WorkflowId, changes: Mapping[str, Edit]
+) -> dict[str, WrittenEdit]:
+    rows = await uploads.workflow_uploads(
+        ctx,
+        as_.user_id,
+        workflow,
+        {edit.content.upload for edit in changes.values() if isinstance(edit.content, Uploaded)},
+    )
+    resolved: dict[str, WrittenEdit] = {}
+    for path, edit in changes.items():
+        _file_path(path)
+        content = edit.content
+        if content is None and edit.token is None:
+            raise InvalidInputs("Removing a file needs the token it was read with.")
+        if isinstance(content, Uploaded):
+            row = rows.get(content.upload)
+            if (
+                row is None
+                or row.repo_path != path
+                or row.status not in (UploadStatus.WAITING, UploadStatus.VERIFIED)
+            ):
+                raise InvalidInputs(
+                    "There is no such upload for this workflow and path.",
+                    errors=[{"input": path, "message": "There is no such upload."}],
+                )
+            if not await uploads.holds(ctx, WorkflowPlace(workflow), as_, row):
+                raise UploadNotReady(
+                    "The file has not finished uploading. Save again once it has.",
+                    uploads=[str(row.id)],
+                )
+            row.status = UploadStatus.CONSUMED
+            content = pointer_text(row.digest, row.size)
+        elif content is not None:
+            refuse_pointer(path, content)
+        resolved[path] = WrittenEdit(content, edit.token)
+    await ctx.db.flush()
+    return resolved
