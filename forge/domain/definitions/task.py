@@ -62,7 +62,7 @@ class Form(Model):
 
 
 ENTRANT = "entrant"
-"""What makes an input the entrant's in a run task's `inputs`, alone or as
+"""What makes an input the entrant's in a task's `inputs`, alone or as
 the key of its form details, and what stands for the entrant's value in a
 tuple of `repeat`."""
 
@@ -111,7 +111,7 @@ def _size_problem(value: object) -> str | None:
 
 
 class Axis(Model):
-    """One axis of a run task's `repeat` (SIMPLER-CORE.md 8.2): the workflow
+    """One axis of a task's `repeat` (SIMPLER-CORE.md 8.2): the workflow
     inputs that move together, and one row per tuple, written as a list in
     the order of `inputs`, as the value alone when the axis repeats one
     input, or as a mapping of each input to its value, so no two get
@@ -253,7 +253,7 @@ class Axis(Model):
 
 
 class ShowTimes(Model):
-    """A run task's `show` (SIMPLER-CORE.md 9.4): the values, groups and
+    """A task's `show` (SIMPLER-CORE.md 9.4): the values, groups and
     task files entrants see as soon as a grading ends, at the reveal, and
     once staff release the task's results.
     """
@@ -268,7 +268,7 @@ class ShowTimes(Model):
 
 
 class Scoring(Model):
-    """A run task's `scoring` (SIMPLER-CORE.md 9): its groups of runs, each
+    """A task's `scoring` (SIMPLER-CORE.md 9): its groups of runs, each
     picked by repeated input values; its values, each a tree of blocks
     (`forge.domain.blocks`); and what entrants see when. What each reads is
     checked against the task's runs and the workflow's columns at the save
@@ -281,7 +281,7 @@ class Scoring(Model):
 
 
 class Check(Model):
-    """One of a run task's `checks` (SIMPLER-CORE.md 9.6): a made-up
+    """One of a task's `checks` (SIMPLER-CORE.md 9.6): a made-up
     submission, `submit`, giving each entrant input by its name, a task
     path for a file or folder, a list of them in tuple order for one given
     in parts, a value otherwise; and what it must get, `expect`: a

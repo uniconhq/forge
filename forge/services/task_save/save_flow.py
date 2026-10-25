@@ -79,6 +79,7 @@ async def save(
     if checked.errors:
         version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, checked.errors, ())
+    assert checked.definition is not None
 
     # A publication still checked, or refused, is not the task's,
     # so a save says what it changes against the one entrants are graded on.
@@ -106,11 +107,10 @@ async def save(
             # again for it (stage 5 section 6 item 44).
             changed = tuple(each for each in changed if each != RELEASE_MOVED)
         rerun = steps_run_again(before, after)
-        scoring = checked.definition.scoring if checked.definition is not None else None
+        scoring = checked.definition.scoring
         read = ReadChanges(
             statement=STATEMENT_FILE in differ,
-            public=scoring is not None
-            and any(file_time(scoring, path) is not None for path in differ),
+            public=any(file_time(scoring, path) is not None for path in differ),
         )
         anew = bool(differ) or any(
             before.plans.get(path) != content for path, content in checked.plan_files().items()
@@ -118,7 +118,6 @@ async def save(
     if keep_as_draft:
         version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, (), changed)
-    assert checked.definition is not None
     basis = f"{head.version}:{latest.id if latest is not None else ''}"
     # What the organiser confirmed is the latest publication's, taken over
     # or not.
@@ -252,7 +251,9 @@ async def save(
         checked_first=_checked_first(checked),
         programs=_programs_again(checked, rerun),
     )
-    if newest is None:
+    if latest is None and not _checked_first(checked):
+        # The task's first live publication; one checked first goes live,
+        # and starts this, when its check is taken over (`pipelines.take_over`).
         places.ahead_at(ctx, task)
     log.info(
         "publications.published",

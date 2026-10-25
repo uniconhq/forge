@@ -1,4 +1,4 @@
-"""Releasing a run task's results and taking a release back, for its
+"""Releasing a task's results and taking a release back, for its
 managers and admins, where they stand for its observers, and the types
 they come back as.
 """

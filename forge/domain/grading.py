@@ -86,11 +86,11 @@ PLATFORM_POOL = "pool:platform"
 """The label every run is pinned to until orgs bring machines of their own:
 only a machine the platform controls declares it."""
 BOXED_SHAPE = "shape:rootless"
-"""The label a run task's pipeline holding an `exec` step
+"""The label a task's pipeline holding an `exec` step
 carries beside its pool's, so only a machine of the shape phase 4.1 picked
 takes it: Woodpecker's labels pick a machine for a whole pipeline."""
 SIZE_LABEL = "size"
-"""The label naming the slot a run task's pipeline needs, `size:<slot>`."""
+"""The label naming the slot a task's pipeline needs, `size:<slot>`."""
 
 RUN_TIMEOUT = timedelta(minutes=30)
 CHECKOUT_ALLOWANCE = timedelta(minutes=4)
@@ -126,8 +126,8 @@ class Slot:
 @dataclass(frozen=True, slots=True)
 class Machine:
     """The most one step may ask of a machine: memory in megabytes, GPU
-    devices, and whether it may reach the network; and for a run task, the
-    sizes of the slots its pipelines run in, smallest first.
+    devices, and whether it may reach the network; and the sizes of the
+    slots a task's pipelines run in, smallest first.
     """
 
     memory_mb: int
@@ -142,7 +142,7 @@ are known: 16 GB of memory, no GPU and no network."""
 
 
 def run_machine(slots: Collection[Slot]) -> Machine:
-    """What a run task's step may take on the platform's machines: the
+    """What a task's step may take on the platform's machines: the
     biggest slot's memory, no GPU and no network, with every slot, smallest
     first, for the planner to fit each pipeline in one."""
     ordered = tuple(sorted(slots, key=lambda slot: slot.memory_mb))
@@ -325,7 +325,7 @@ class InboundAnswer:
 
 @dataclass(frozen=True, slots=True)
 class PipelineRun:
-    """One pipeline of a run task's grading (phase 4.9), in the platform's
+    """One pipeline of a task's grading (phase 4.9), in the platform's
     words: the grading's row and which of its pipelines, `save`, `early` or
     `late`, the org on whose dispatch repository it runs, the commit the
     publication froze, the submission with the version its files went in
@@ -383,7 +383,7 @@ platform's records and never from the request."""
 
 
 def step_token(key: bytes, grading: uuid.UUID, attempt: int, step: str) -> str:
-    """The token one Woodpecker step of a run task's grading asks its door
+    """The token one Woodpecker step of a task's grading asks its door
     with: `base64url(HMAC-SHA256(k, "step:<grading>:<attempt>:<step>"))`,
     `k` derived from the key by HKDF-SHA256 under `STEP_INFO`, so it names
     the row, the attempt and the step, and no other step's door takes it.
@@ -399,20 +399,10 @@ def token_hash(token: str) -> bytes:
     return hashlib.sha256(token.encode()).digest()
 
 
-def log_key(grading: uuid.UUID, attempt: int) -> str:
-    """Where a grading's run log is kept in the results store."""
-    return f"logs/{grading}/{attempt}.log"
-
-
-RUN_LOG_MAX = 9 * 1024 * 1024
-"""The largest run log read back for an organiser: the read is where the
-bound holds."""
-
-
 def wall_of(time_ms: Collection[int]) -> int:
     """How long a run of containers with these time limits may take, in
     seconds: the limits summed, with a margin for each container and one for
-    the run. A run task's plan works it out per pipeline.
+    the run. A task's plan works it out per pipeline.
     """
     margin = BASE_WALL + STEP_OVERHEAD * len(time_ms)
     return max(1, math.ceil(sum(time_ms) / 1000 + margin.total_seconds()))

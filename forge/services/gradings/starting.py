@@ -25,9 +25,9 @@ from forge.services.credentials import CannotDecrypt
 from forge.services.gradings.lookups import changed, find, finish, org_of
 from forge.services.gradings.records import (
     ACCOUNT_NOT_READY,
+    DISPATCH_UNKNOWN,
     NO_ANSWER,
     NO_RUN,
-    NOT_ACTIVATED,
     PUBLICATION_GONE,
     REFUSED,
 )
@@ -64,7 +64,7 @@ def new_row(
     attempt before it, and `regrade` naming the regrade of many it belongs
     to. With `over_limit`, the task's `submissions.max` its entrant has no
     room left under, it is ended `over_limit` at once instead, and nothing
-    runs. A run task's late row names the `early` row it follows, and a
+    runs. A task's late row names the `early` row it follows, and a
     save row has no submission. `released_split` when the grading takes
     its plan's released split, fixed for the row (`RunPlan.for_split`).
     """
@@ -259,7 +259,7 @@ def _start_failure(exc: PortError) -> str:
         case Rejected():
             return NO_RUN
         case NotFound():
-            return NOT_ACTIVATED
+            return DISPATCH_UNKNOWN
     return NO_ANSWER
 
 

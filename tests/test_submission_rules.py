@@ -20,6 +20,7 @@ from forge.domain.run_plan.models import EntrantEntry
 from forge.domain.run_task import Part, Run
 from forge.domain.submissions import (
     Field,
+    FieldPart,
     SubmittedInput,
     UploadedFile,
     key_is_valid,
@@ -433,6 +434,24 @@ TOUR_RUNS = [
 ]
 
 
+def test_an_input_given_in_untitled_parts_is_served_one_part_each() -> None:
+    """A plan names part titles and sizes only when a part has its own; the
+    page still needs one place per part."""
+    fields = run_fields_of(
+        {
+            "route": EntrantEntry(type=Type.FILE, parts=3, max_size=1000),
+            "guess": EntrantEntry(type=Type.NUMBER, parts=2),
+            "code": EntrantEntry(type=Type.FILE, max_size=1000),
+        },
+        {},
+    )
+
+    parts = {field.id: field.parts for field in fields}
+    assert parts["route"] == (FieldPart(None, 1000),) * 3
+    assert parts["guess"] == (FieldPart(None, DEFAULT_MAX_SIZE),) * 2
+    assert parts["code"] is None
+
+
 def test_a_run_submission_lays_out_each_part_under_its_number() -> None:
     given = {
         "code": SubmittedInput(uploads=(CODE,)),
@@ -476,6 +495,24 @@ def test_a_part_left_out_skips_the_runs_made_from_its_tuple() -> None:
     layout = lay_out_runs(RUN_FIELDS, PARTS, given, RUN_UPLOADS)
 
     assert skipped(TOUR_RUNS, layout.inputs) == {"r2", "r3"}
+
+
+def test_a_folder_part_is_held_to_its_own_size_not_the_largest_parts() -> None:
+    small = (FieldPart(title="Small", max_size=15), FieldPart(title="Big", max_size=100))
+    maps = Field(id="maps", type=Type.FOLDER, label="maps", max_size=100, parts=small)
+    a, b = uuid.uuid4(), uuid.uuid4()
+    files = {
+        a: UploadedFile(a, "maps", "maps/a.txt", 10),
+        b: UploadedFile(b, "maps", "maps/b.txt", 10),
+    }
+
+    def given(number: int) -> dict[str, SubmittedInput]:
+        return {"maps": SubmittedInput(parts={number: SubmittedInput(uploads=(a, b))})}
+
+    with pytest.raises(InvalidInputs, match=r"Part 1: .*more than the 15 bytes"):
+        lay_out_runs((maps,), {"maps": 2}, given(1), files)
+    laid = lay_out_runs((maps,), {"maps": 2}, given(2), files)
+    assert sorted(laid.files) == ["files/maps/2/maps/a.txt", "files/maps/2/maps/b.txt"]
 
 
 @pytest.mark.parametrize(

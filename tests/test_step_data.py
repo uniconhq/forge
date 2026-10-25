@@ -1,4 +1,4 @@
-"""What a run task's step is handed and hands back, without its door: the
+"""What a task's step is handed and hands back, without its door: the
 upload list a step may send, what its `outputs.json` must be, an item's
 key, the pipeline left once stored steps are taken out, result version 6
 built from a fake set of outputs, a step's token, the name Forgejo keeps a

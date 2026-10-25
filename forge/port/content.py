@@ -32,7 +32,7 @@ class ContentPort(Protocol):
 
     async def create_dispatch(self, org: OrgId) -> None:
         """Make the org's dispatch place, private, with one first commit,
-        as the platform: where a run task's grading runs start at the CI
+        as the platform: where a task's grading runs start at the CI
         (phase 4.9). One made already changes nothing.
         """
         ...

@@ -317,8 +317,8 @@ async def test_many_readers_finding_one_failure_together_start_one_retry(
 
 
 READERS = ["task's gradings", "queue depth"]
-"""A classic task's readers; a leaderboard reads run tasks alone, and starts the
-retry of a run task's failure it finds (`tests.services.test_pipelines`)."""
+"""A task's readers; a leaderboard reads them too, and starts the retry of
+a failure it finds (`tests.services.test_pipelines`)."""
 
 
 async def _read(setup: Setup, acme: Acme, entered: Entered, reader: str) -> None:

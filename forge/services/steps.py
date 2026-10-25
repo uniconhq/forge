@@ -1,4 +1,4 @@
-"""The door a run task's Woodpecker steps ask for their work through, and
+"""The door a task's Woodpecker steps ask for their work through, and
 the store of what they did (SIMPLER-CORE.md 11.6, 11.9, phase 4.8): each
 step's job, the links it uploads by, its done, the pipeline's report, and
 the files the forge serves a step itself.
@@ -594,7 +594,7 @@ async def _checked(
         if entry["error"] is not None:
             faulted = faulted or f"Check {index}: {entry['error']}"
             entry["failing"] = [f"Its grading faulted: {entry['error']}"[:ERROR_LIMIT]]
-        elif scoring is None or not expect:
+        elif not expect:
             entry["failing"] = [CHECKS_UNREAD]
         else:
             failing = check_failing(scoring, runs, columns, compilers(plan), entry, expect)
@@ -832,7 +832,7 @@ class _Reader:
             except (NotFound, Rejected, ValueError) as exc:
                 raise Misconfigured(f"The submission does not read: {type(exc).__name__}") from None
         if not isinstance(document, dict) or document.get("schema_version") != 6:
-            raise Misconfigured("The submission is not a run task's.")
+            raise Misconfigured("The submission is not written against version 6.")
         reader = cls(ctx, row, pipeline, plan, document.get("inputs") or {}, from_scratch)
         for grading in (row.id, row.early_id):
             if grading is None:

@@ -6,7 +6,6 @@ first.
 """
 
 import json
-import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -19,14 +18,11 @@ from forge.domain.grading import (
     STEP_OVERHEAD,
     WALL_CEILING,
     Place,
-    log_key,
     room,
     run_deadline,
     wall_of,
 )
 from tests.conftest import sibling
-
-GRADING = uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31")
 
 
 @pytest.mark.parametrize("contract", CONTRACTS)
@@ -76,10 +72,6 @@ def test_the_wall_clock_is_the_steps_limits_with_a_margin_for_each() -> None:
 def test_a_runs_deadline_is_its_wall_clock_and_the_time_kept_for_reporting() -> None:
     fetched = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
     assert run_deadline(fetched, 100) == fetched + timedelta(seconds=100) + REPORT_ALLOWANCE
-
-
-def test_a_log_is_kept_by_grading_and_attempt() -> None:
-    assert log_key(GRADING, 2) == f"logs/{GRADING}/2.log"
 
 
 HOLDS, DELAYED, NONE = Place.HOLDS, Place.DELAYED, Place.NONE

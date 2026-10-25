@@ -1,4 +1,4 @@
-"""A run task's plan (SIMPLER-CORE.md 11.1 to 11.4, 15.4 and 15.5): islands
+"""A task's plan (SIMPLER-CORE.md 11.1 to 11.4, 15.4 and 15.5): islands
 reads step by step as written; each step is placed by what it reads; a
 grading is an early and a late pipeline, never mixed; taint follows a
 hidden file into the steps that run the entrant's code beside it, and the

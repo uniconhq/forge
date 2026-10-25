@@ -9,8 +9,6 @@ from forge.domain.ids import PublicationId, TaskId, WorkspaceId
 from forge.domain.regrades import Compared
 
 NO_SUCH_GRADING = "There is no such grading."
-NO_LOG = "This grading has no log."
-LOG_STORE_UNAVAILABLE = "The grading's log could not be read. Try again in a moment."
 LIST_LIMIT = 500
 RUN_STATE_KEPT = timedelta(seconds=15)
 """How long this process keeps the CI's answer about where one run is, so a
@@ -27,7 +25,7 @@ grading, so a crowd of readers finding the failure together starts it once;
 a retry that never ran is started by the next read after this."""
 
 ACCOUNT_NOT_READY = "The org's grading account is not ready."
-NOT_ACTIVATED = "The task is not set up for grading yet."
+DISPATCH_UNKNOWN = "The org's grading place could not be found at the CI."
 REFUSED = "The grading service refused the org's grading account."
 NO_RUN = "The grading service answered without starting the grading."
 NO_ANSWER = "The grading service did not answer."
@@ -49,8 +47,7 @@ class GradingRecord:
     that is the submission's latest attempt, the one staff act on,
     against which publication, where it stands, why when it is a system
     error, the sentence staff cancelled it with, the result as it came
-    back, whether its log was written, the last progress its run reported,
-    its times, and whether the platform made it by itself, retrying the
+    back, its times, and whether the platform made it by itself, retrying the
     attempt before it (`automatic`).
 
     On a latest attempt that has not finished with a result, still being
@@ -80,8 +77,6 @@ class GradingRecord:
     status: GradingStatus
     error: str | None
     result: dict[str, Any] | None
-    log: bool
-    progress: dict[str, Any] | None
     queued_at: datetime
     dispatched_at: datetime | None
     started_at: datetime | None

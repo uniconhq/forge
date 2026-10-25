@@ -250,6 +250,12 @@ class _Row:
             return self.node(inputs[1], scope, through, hides).having(first)
         got = [self.node(each, scope) for each in inputs]
         read = _MISSING.having(*got)
+        if block.name in ("eq", "ne") and any(each.text is not None for each in got):
+            # Text compares to text only, as in a task's values.
+            if any(each.text is None or each.number is not None for each in got):
+                return read
+            same = got[0].text == got[1].text
+            return Cell(Fraction(1 if same == (block.name == "eq") else 0)).having(read)
         if any(each.number is None for each in got):
             return read
         numbers = [each.number for each in got if each.number is not None]

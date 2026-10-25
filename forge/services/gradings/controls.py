@@ -124,7 +124,7 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
 
 
 async def free_user(ctx: Context, user: int) -> bool:
-    """Free `user`, a run task's row's (`pipelines`), from the row not
+    """Free `user`, a row's (`pipelines`), from the row not
     finished that holds it when that row is past what its state may take
     (`overdue_of`): it is written as a system error, with why, and its run
     stopped once the unit of work commits, as a retry or a cancel settles

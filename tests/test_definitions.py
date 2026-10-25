@@ -733,7 +733,7 @@ def test_the_starter_task_is_the_formats() -> None:
     assert files["statement.md"] == b"Write the statement entrants read here.\n"
     assert [axis.rows for axis in task.repeat] == [[("tests/1.in", "tests/1.ans")]]
     assert list(task.scoring.values) == ["score"]
-    assert task.scoring.show.now == ["score", "all"]
+    assert task.scoring.show.now == ["score", "all", "public/"]
     assert set(files) == {"task.yaml", "statement.md", "tests/1.in", "tests/1.ans"}
     assert files["tests/1.in"] == b"1 2\n"
     assert files["tests/1.ans"] == b"3\n"

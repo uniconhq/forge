@@ -14,7 +14,6 @@ from forge.domain.regrades import (
     VERDICTS_SHOWN,
     ChangeKind,
     RegradeCause,
-    Side,
     VerdictChange,
     change_of,
     counted,
@@ -25,7 +24,7 @@ from forge.domain.run_results import Worked
 
 
 def test_a_finished_result_is_unchanged_beside_an_earlier_one_and_new_without() -> None:
-    assert change_of(Side(1)) is ChangeKind.UNCHANGED
+    assert change_of(1) is ChangeKind.REGRADED
     assert change_of(None) is ChangeKind.NEW
 
 
@@ -33,7 +32,7 @@ def test_every_change_is_counted_zero_where_none() -> None:
     found = counted([ChangeKind.NEW, ChangeKind.NEW, ChangeKind.FAILED])
 
     assert found[ChangeKind.NEW] == 2 and found[ChangeKind.FAILED] == 1
-    assert set(found) == set(ChangeKind) and found[ChangeKind.UNCHANGED] == 0
+    assert set(found) == set(ChangeKind) and found[ChangeKind.REGRADED] == 0
 
 
 def _publication(number: int) -> Publication:

@@ -29,8 +29,8 @@ the check a save of the contest's settings runs over them.
   read, 1 the oldest; `seconds` and `seconds_late` are from the contest's
   start and the row's due on the task, its extension included; `marked`
   is 1 for a submission the row marked; `compiled` is the grading's.
-- **Tasks.** A leaderboard reads a run task's results; a task graded test by
-  test, a withdrawn one, or one with no publication gives none (item 70).
+- **Tasks.** A leaderboard reads a task's results; a withdrawn task, or
+  one with no publication, gives none (item 70).
 - **The hold** holds from its `from` until its `until`, or until a manager
   or admin of the contest ends it early (`end_hold`), a `hold_ends` row
   naming the hold by its `from`.
@@ -366,7 +366,7 @@ async def _results(
     released: bool,
     notice: bool = False,
 ) -> dict[WorkspaceOwner, list[Loaded]]:
-    """Each row's submissions to a run task, oldest first, each with when
+    """Each row's submissions to a task, oldest first, each with when
     it was made: as staff read them, every value, or for anyone else as
     the row's own entrant is shown them now, a value reading a mark by
     `show` alone, since a cell reading one counted its submission (stage 5

@@ -1,4 +1,4 @@
-"""Staff releasing a run task's results, and taking a release back
+"""Staff releasing a task's results, and taking a release back
 (SIMPLER-CORE.md 9.4, stage 5 section 6 items 2 and 10).
 
 A release shows every entrant what the task's `show` lists under

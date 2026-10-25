@@ -1,4 +1,4 @@
-"""Staff releasing a run task's results and taking a release back
+"""Staff releasing a task's results and taking a release back
 (SIMPLER-CORE.md 9.4, stage 5 section 6 items 2 and 10): what `on_release`
 lists is shown to entrants, its values, runs and files, only while the
 results are released, and an entrant reads the early row alone until the

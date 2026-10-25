@@ -5,8 +5,7 @@ that account's sign-in at the CI included; as the org's admin they ask for a
 contest and a task and the poller makes those; they save the starter
 `task.yaml` with one change and the statement written, and it is
 published, its plan committed in the
-same commit, and the task is activated at the CI trusted for `volumes` and
-nothing else with no webhook left on its repository; a bad save is a draft
+same commit; a bad save is a draft
 with its errors and no new tag. Then the contest is published and running,
 a second person registers and is approved, the poller opens their desk and a
 place for the published task that they write, they read the contest's home
@@ -45,7 +44,6 @@ from forge.services import (
 )
 from forge.services.task_save import Draft, Published
 from tests.live.conftest import (
-    CI_PUBLIC_URL,
     LIVE,
     credential_of,
     delete_org,
@@ -64,10 +62,9 @@ def org(admin: httpx.Client, ci: httpx.Client, stamp: str) -> Iterator[str]:
     """
     name = f"live-path-{stamp}"
     yield name
-    for task in ("sum", "later"):
-        found = ci.get(f"/api/repos/lookup/{name}/spring.{task}.task")
-        if found.status_code == 200:
-            ci.delete(f"/api/repos/{found.json()['id']}", params={"remove": "true"})
+    found = ci.get(f"/api/repos/lookup/{name}/unicon-dispatch")
+    if found.status_code == 200:
+        ci.delete(f"/api/repos/{found.json()['id']}", params={"remove": "true"})
     found = ci.get(f"/api/orgs/lookup/{name}")
     if found.status_code == 200 and found.json().get("id"):
         ci.delete(f"/api/orgs/{found.json()['id']}")
@@ -122,7 +119,6 @@ def _permission(admin: httpx.Client, org: str, repo: str, login: str) -> str:
 async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publishes(
     live_setup: Setup,
     admin: httpx.Client,
-    ci: httpx.Client,
     org: str,
     person: dict[str, Any],
     contestant: dict[str, Any],
@@ -167,14 +163,6 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     ]
     plan = admin.get(f"{repo}/contents/plans/plan.json").json()
     assert plan["last_commit_sha"] == tags["published/1"]["commit"]["sha"]
-
-    activated = ci.get(f"/api/repos/lookup/{org}/spring.sum.task")
-    assert activated.status_code == 200, activated.text
-    assert activated.json()["trusted"] == {"network": False, "volumes": True, "security": False}
-    assert activated.json()["active"] is True
-    assert CI_PUBLIC_URL
-    hooks = admin.get(f"{repo}/hooks").json()
-    assert [hook for hook in hooks if hook["config"]["url"].startswith(CI_PUBLIC_URL)] == []
 
     current = await files.read(live_setup, organiser, task, "task.yaml")
     broken = await files.write(

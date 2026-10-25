@@ -1145,6 +1145,24 @@ def test_a_text_column_is_shown_and_not_sorted_folded_or_given_places() -> None:
     assert "is text" in folded
 
 
+def test_a_leaderboard_compares_a_text_value_to_text() -> None:
+    medal = {"value": [{"block": "latest", "from": {"results": "a"}}, "medal"]}
+
+    def gold(name: str, texts: dict[str, str]) -> Cell:
+        tree = {
+            "block": "if",
+            "test": {"block": name, "of": [medal, {"text": "gold"}]},
+            "then": 1,
+            "else": 0,
+        }
+        return column("p", "gold", {"a": [Submitted(1, texts=texts)]}, tree)
+
+    assert gold("eq", {"medal": "gold"}).number == 1
+    assert gold("eq", {"medal": "silver"}).number == 0
+    assert gold("ne", {"medal": "silver"}).number == 1
+    assert gold("eq", {}).nothing
+
+
 # Each leaderboard block
 
 

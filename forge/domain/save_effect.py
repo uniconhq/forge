@@ -14,8 +14,9 @@ publishes (#449), and answer a save that published (M66).
   wait for the save's check when it has one.
 - **Scores:** each group and value added, removed or changed, a value
   changed with what it reads, and each entry `show` shows at another time,
-  then each leaderboard counted again with it; a value is named, never
-  written out, since the editor shows its tree.
+  then each leaderboard counted again with it, then the submission limit
+  and rate when they change; a value is named, never written out, since
+  the editor shows its tree.
 - **What entrants read:** whether the statement, the task's title or the
   files beside the statement change, and each task file or folder `show`
   lists at another time, never one only a check names.
@@ -31,7 +32,7 @@ from dataclasses import dataclass
 from forge.domain.blocks.leaderboard_shape_check import LeaderboardsCheck, check_leaderboards
 from forge.domain.blocks.tree_reads import reached
 from forge.domain.checks import check_only
-from forge.domain.definitions import ContestDefinition, Scoring, TaskDefinition
+from forge.domain.definitions import ContestDefinition, Rate, Scoring, TaskDefinition
 from forge.domain.run_task import SHOWN_WORDS, show_names, shown_times
 from forge.domain.yaml_models import joined
 
@@ -204,7 +205,11 @@ def _scores(
     leaderboards = _titles(contest, checked, checked.reading(task)) if checked is not None else []
     if before is None and unread:
         return [UNREAD_SCORES, _scored_again(leaderboards)], True
-    return _run_scores(task, before, after.scoring, contest, checked)
+    found, moves = _run_scores(task, before, after.scoring, contest, checked)
+    if before is None:
+        return found, moves
+    # What an entrant may still submit moves no result.
+    return [*found, *_submissions(before, after)], moves
 
 
 def _titles(
@@ -368,6 +373,29 @@ def _file_moves(before: TaskDefinition | None, after: TaskDefinition) -> list[st
         for entry, was in then.items()
         if entry not in now
     ]
+    return found
+
+
+def _rate_words(rate: Rate) -> str:
+    seconds = rate.per
+    if seconds % 3600 == 0:
+        unit, count = "hour", seconds // 3600
+    elif seconds % 60 == 0:
+        unit, count = "minute", seconds // 60
+    else:
+        unit, count = "second", seconds
+    window = f"every {unit}" if count == 1 else f"every {count} {unit}s"
+    return f"{rate.count} {window}"
+
+
+def _submissions(before: TaskDefinition, after: TaskDefinition) -> list[str]:
+    """The submission limit and rate a save changes, in words."""
+    then, now = before.submissions, after.submissions
+    found = []
+    if then.max != now.max:
+        found.append(f"Submission limit: {now.max} per entrant (was {then.max}).")
+    if (then.rate.count, then.rate.per) != (now.rate.count, now.rate.per):
+        found.append(f"Submission rate: {_rate_words(now.rate)} (was {_rate_words(then.rate)}).")
     return found
 
 

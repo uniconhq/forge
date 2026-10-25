@@ -10,7 +10,7 @@ from forge.domain.run_plan.records import RELEASE_MOVED
 
 
 def run_plan_changes(before: Snapshot | None, after: Snapshot) -> tuple[str, ...]:
-    """What changed in a run task's plan between the previous publication and
+    """What changed in a task's plan between the previous publication and
     this one, in words a person reads, for the save's summary only: the
     workflow's version and files, each step added, removed or given other
     inputs, a release moving a primitive's image in place, runs added or

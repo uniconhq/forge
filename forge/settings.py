@@ -157,7 +157,7 @@ class S3Settings(BaseModel):
     is the store's internal address; the region is `garage` and the bucket
     `unicon-results` unless given. `lfs_access_key` and `lfs_secret_key` are
     a second key, one that may only read the forge's large-file bucket,
-    `forgejo-lfs` unless given, which a run task's step is handed links
+    `forgejo-lfs` unless given, which a task's step is handed links
     into the task's files with. What people upload goes into the forge's
     own store and is none of this (`port/uploads.py`).
     """
@@ -271,8 +271,8 @@ class Settings(BaseSettings):
     `plugin_git_image`, Woodpecker's clone plugin, which checks a submission
     out, required with `forgejo`, and `primitive_base_image`, the step
     wrapper's base image its report step runs, optional until the release
-    manifest names it (phase 4.10). A grading started without one it needs
-    ends in `system_error` saying which. The fake runs none and names a
+    manifest names it (phase 4.10). A grading started without the base image
+    ends in `system_error` saying so. The fake runs none and names a
     placeholder for each unless given. `withdrawn_images`, by digest and
     comma separated, are images no step may run any more, such as an `exec`
     image found with a fault in its walls, dropped at once rather than kept
@@ -330,7 +330,7 @@ class Settings(BaseSettings):
     s3: S3Settings | None = None
     mail: MailSettings | None = None
     primitive_base_image: str | None = None
-    plugin_git_image: str | None = None
+    plugin_git_image: str
     withdrawn_images: Annotated[frozenset[str], NoDecode] = frozenset()
     slot_sizes: Annotated[tuple[Slot, ...], NoDecode] = ()
 
@@ -386,7 +386,7 @@ class Settings(BaseSettings):
         if not isinstance(data, dict):
             return data
         if data.get("forge", "forgejo") != "forgejo":
-            images = {name: image for name, image in FAKE_IMAGES.items() if data.get(name) is None}
+            images = {name: image for name, image in FAKE_IMAGES.items() if not data.get(name)}
             slots = {} if data.get("slot_sizes") else {"slot_sizes": FAKE_SLOT_SIZES}
             return {**data, **images, **slots, "forgejo": None, "woodpecker": None}
         given = data.get("forgejo")
@@ -428,7 +428,7 @@ class Settings(BaseSettings):
             values["internal_url"] = data["forge_public_url"]
         return {**data, "forgejo": values, "woodpecker": ci_values}
 
-    @field_validator("primitive_base_image", "plugin_git_image", mode="before")
+    @field_validator("primitive_base_image", mode="before")
     @classmethod
     def _none_while_empty(cls, value: object) -> object:
         """An optional image left empty, as a deployment's environment

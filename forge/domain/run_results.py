@@ -1,4 +1,4 @@
-"""A run task's grading worked out (SIMPLER-CORE.md 9.2, 9.3 and 11.3):
+"""A task's grading worked out (SIMPLER-CORE.md 9.2, 9.3 and 11.3):
 its runs, read from both its rows, its facts, and its values.
 
 A submission's grading is its early row and, when its plan has late runs,

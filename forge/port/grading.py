@@ -54,7 +54,7 @@ class GradingPort(Protocol):
 
     async def activate_dispatch(self, as_: AsOrgAccount, org: OrgId) -> bool:
         """Switch the CI on for the org's dispatch place, which the content
-        port made, as the org's account, so a run task's grading runs can
+        port made, as the org's account, so a task's grading runs can
         start on it, and say whether the CI did not know it before.
         Activating twice changes nothing. `Forbidden` when `as_` is another
         org's account.
@@ -62,7 +62,7 @@ class GradingPort(Protocol):
         ...
 
     async def start_pipeline(self, as_: AsOrgAccount, run: PipelineRun) -> RunId:
-        """Start a run task's grading run on the org's dispatch place as
+        """Start a task's grading run on the org's dispatch place as
         the org's account, with its variables. The steps are not sent: a CI
         that asks is answered from the platform's records. `Rejected` when
         the CI answers without a run; `Unavailable` when no answer came

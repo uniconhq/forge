@@ -1,4 +1,4 @@
-"""A run task's result (SIMPLER-CORE.md 9.2 to 9.4, 15 and 17): islands
+"""A task's result (SIMPLER-CORE.md 9.2 to 9.4, 15 and 17): islands
 scores a correct, a wrong and a slow submission as 9 writes them, a wrong
 sample leaving `sample_time` missing; cartpole shows `reward` at once and
 `windy` and its runs only after the close, though every run is early; a

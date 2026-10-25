@@ -43,8 +43,6 @@ def record(
         status=status,
         error=late or row.error,
         result=row.result,
-        log=row.log_key is not None,
-        progress=row.progress,
         queued_at=row.queued_at,
         dispatched_at=row.dispatched_at,
         started_at=row.started_at,

@@ -1,4 +1,4 @@
-"""A run task's gradings as pipelines on the org's dispatch repository
+"""A task's gradings as pipelines on the org's dispatch repository
 (SIMPLER-CORE.md 11.3, 11.7, 11.8), against the fake CI, which asks the
 platform what each pipeline is as it starts it, as Woodpecker does:
 islands' early pipeline holds the compile and the sample runs, its late
@@ -32,7 +32,7 @@ whose work never ran is finished by the next read; and the platform
 answers a pipeline only while its row starts, and only for the variables
 it was started with; a save's checks are graded by its own pipeline, and
 one that does not get what it expects refuses the save, saying why; and
-a run task's regrade is summed up by each value and verdict it changed,
+a task's regrade is summed up by each value and verdict it changed,
 for a manager of the task, a save moving the pin asking first.
 """
 
@@ -1019,7 +1019,7 @@ async def test_a_row_with_nothing_to_run_ends_without_the_platforms_images(
     [late] = await _rows(setup, "late")
     assert (late.status, late.error) == (
         GradingStatus.SYSTEM_ERROR,
-        "The platform names no image for a run task's report step.",
+        "The platform names no image for a task's report step.",
     )
 
 
@@ -1163,7 +1163,7 @@ async def test_a_save_whose_checker_does_not_compile_is_refused_and_the_old_vers
 
 
 async def _held_back_then_checked(setup: Setup, acme: Acme, islands: Islands) -> None:
-    """A run task's save that failed once its publication was made: the
+    """A task's save that failed once its publication was made: the
     task stays as the publication before froze it, shown to its organisers
     as unchecked, until a save of the same files queues its check, which
     lets it take over once it passes."""
@@ -1687,7 +1687,7 @@ async def test_checks_at_a_publication_whose_settings_do_not_read_fail_saying_so
     assert current is not None and current.publication.id == islands.publication
 
 
-# A run task's regrade summary
+# A task's regrade summary
 
 
 RUNS = {

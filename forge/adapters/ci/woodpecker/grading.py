@@ -479,7 +479,7 @@ def _configs(workflow: Mapping[str, Any]) -> InboundAnswer:
 
 
 def _step(step: PipelineStepSpec, cache: str) -> dict[str, Any]:
-    """One step of a run task's pipeline, as a plugin: no `commands`,
+    """One step of a task's pipeline, as a plugin: no `commands`,
     `entrypoint` or `environment`."""
     found: dict[str, Any] = {
         "name": step.name,

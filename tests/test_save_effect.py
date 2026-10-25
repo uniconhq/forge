@@ -83,8 +83,10 @@ def test_a_removed_step_is_said_and_the_submission_limits_move_no_result() -> No
         "No submission runs again: there are none yet.",
         "The step diff was removed.",
     )
-    assert (rate.results_change, rate.scores) == (False, ("No score changes.",))
-    assert (limit.results_change, limit.scores) == (False, ("No score changes.",))
+    assert rate.scores == ("Submission rate: 2 every hour (was 1 every 30 seconds).",)
+    assert rate.results_change is False
+    assert limit.scores == ("Submission limit: 10 per entrant (was 50).",)
+    assert limit.results_change is False
 
 
 @pytest.mark.parametrize(
@@ -221,7 +223,7 @@ def test_a_values_program_running_again_says_its_cost(regrades: int, said: str) 
     ).runs_again == ("No submission runs again: the tests and how they run are the same.",)
 
 
-# Run tasks
+# Tasks
 
 
 def _run(text: str) -> TaskDefinition:

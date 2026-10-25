@@ -158,17 +158,17 @@ async def test_a_rejudge_is_one_regrade_and_says_what_it_changed(
     )
     assert (summary.started_by, summary.started_by_name) == (7, "ada")
     assert (summary.total, summary.graded, summary.running) == (5, 4, True)
-    assert _counts(summary) == {ChangeKind.UNCHANGED: 4, ChangeKind.RUNNING: 1}
+    assert _counts(summary) == {ChangeKind.REGRADED: 4, ChangeKind.RUNNING: 1}
 
     graded = await regrades.gradings_of(
-        setup, observer, SPRING, kept.id, change=ChangeKind.UNCHANGED
+        setup, observer, SPRING, kept.id, change=ChangeKind.REGRADED
     )
     first = next(entry for entry in graded if entry.grading.submission_number == 1)
     change = first.grading.change
     assert change is not None and change.earlier is not None and change.now is not None
     assert (first.grading.attempt, first.label) == (2, "A")
-    assert (change.change, change.earlier.attempt, change.now.attempt) == (
-        ChangeKind.UNCHANGED,
+    assert (change.change, change.earlier, change.now) == (
+        ChangeKind.REGRADED,
         1,
         2,
     )
@@ -202,7 +202,7 @@ async def test_a_retry_of_a_regrades_attempt_belongs_to_it(
     assert _counts(summary) == {ChangeKind.RUNNING: 1}
     await _stands(setup, 1, **WRONG)
     (summary,) = await regrades.latest(setup, manager, SPRING)
-    assert _counts(summary) == {ChangeKind.UNCHANGED: 1}
+    assert _counts(summary) == {ChangeKind.REGRADED: 1}
     # Retried again, it is still the regrade's; a retry of an attempt of no
     # regrade belongs to none.
     again = await gradings.retry(setup, manager, retried.id)
@@ -279,8 +279,8 @@ async def test_each_side_of_a_saves_regrade_is_an_attempt_and_its_verdicts_are_c
 
     change = entry.grading.change
     assert change is not None and change.earlier is not None and change.now is not None
-    assert (change.earlier.attempt, change.now.attempt) == (1, 2)
-    assert _counts(summary) == {ChangeKind.UNCHANGED: 1}
+    assert (change.earlier, change.now) == (1, 2)
+    assert _counts(summary) == {ChangeKind.REGRADED: 1}
     assert (await regrades.run_summary(setup, manager, entered.task, summary.id)).changed == ()
     await _stands(setup, 1, **WRONG)
     (changed,) = (await regrades.run_summary(setup, manager, entered.task, summary.id)).changed
@@ -313,11 +313,11 @@ async def test_a_finished_regrade_reads_the_same_after_a_later_save(
 
     assert not raised.grading_changed
     (summary,) = await regrades.latest(setup, manager, SPRING)
-    assert (summary.id, _counts(summary)) == (rejudged.regrade, {ChangeKind.UNCHANGED: 1})
+    assert (summary.id, _counts(summary)) == (rejudged.regrade, {ChangeKind.REGRADED: 1})
     (entry,) = await regrades.gradings_of(setup, manager, SPRING, rejudged.regrade)
     change = entry.grading.change
     assert change is not None and change.earlier is not None and change.now is not None
-    assert (change.earlier.attempt, change.now.attempt) == (1, 2)
+    assert (change.earlier, change.now) == (1, 2)
 
 
 async def test_a_manager_dismisses_a_regrade_for_everyone(

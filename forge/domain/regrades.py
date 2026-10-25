@@ -4,10 +4,11 @@ A rejudge of a task and the regrade every submission to it gets when a save
 publishes a change to how it grades are each one regrade, by what started
 it (`RegradeCause`). Each submission's latest attempt of it is set beside
 the result that counted for that submission when the regrade began, the
-latest earlier attempt that finished with one (`Side`), and where it
-stands is one `ChangeKind`:
+latest earlier attempt that finished with one, and where it stands is one
+`ChangeKind`:
 
-- `unchanged`, it finished with a result and had one before;
+- `regraded`, it finished with a result and had one before, whatever its
+  values did, which `run_changes` says;
 - `new`, it finished with a result and had none to compare with;
 - `running`, still being graded; `failed`, no result yet, its latest
   attempt a system error or cancelled; and `over_limit`, ended without
@@ -52,34 +53,27 @@ class RegradeCause(StrEnum):
 class ChangeKind(StrEnum):
     """What a regrade did to one submission, as the module says."""
 
-    UNCHANGED = "unchanged"
+    REGRADED = "regraded"
     NEW = "new"
     RUNNING = "running"
     FAILED = "failed"
     OVER_LIMIT = "over_limit"
 
 
-GRADED = (ChangeKind.UNCHANGED, ChangeKind.NEW)
+GRADED = (ChangeKind.REGRADED, ChangeKind.NEW)
 """The changes of a submission whose regrade finished with a result."""
 
 
 @dataclass(frozen=True, slots=True)
-class Side:
-    """One result a regrade sets beside another: its attempt."""
-
-    attempt: int
-
-
-@dataclass(frozen=True, slots=True)
 class Compared:
-    """What a regrade did to one submission: the change, the result it
-    replaced, none when there was none, and its own, none while it has
-    none.
+    """What a regrade did to one submission: the change, the attempt whose
+    result it replaced, none when there was none, and its own attempt, none
+    while it has no result.
     """
 
     change: ChangeKind
-    earlier: Side | None
-    now: Side | None
+    earlier: int | None
+    now: int | None
 
 
 def counted_under(
@@ -98,12 +92,12 @@ def counted_under(
     return max(before, key=lambda each: each.number).id if before else against
 
 
-def change_of(earlier: Side | None) -> ChangeKind:
-    """Where a regrade's finished result stands beside `earlier`, the result
-    it replaced: `new` when there is none. Only a finished result is asked
-    about here.
+def change_of(earlier: int | None) -> ChangeKind:
+    """Where a regrade's finished result stands beside `earlier`, the
+    attempt whose result it replaced: `new` when there is none. Only a
+    finished result is asked about here.
     """
-    return ChangeKind.NEW if earlier is None else ChangeKind.UNCHANGED
+    return ChangeKind.NEW if earlier is None else ChangeKind.REGRADED
 
 
 def counted(changes: Iterable[ChangeKind]) -> dict[ChangeKind, int]:
@@ -116,7 +110,7 @@ def counted(changes: Iterable[ChangeKind]) -> dict[ChangeKind, int]:
 
 @dataclass(frozen=True, slots=True)
 class ValueChange:
-    """One value of a run task's submission that a regrade changed: its
+    """One value of a task's submission that a regrade changed: its
     name, its number before and after, none where it had none or waits,
     and whether it waits after, for a run or for staff."""
 

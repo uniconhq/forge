@@ -1,4 +1,4 @@
-"""A run task checked against its run workflow, as its save checks it.
+"""A task checked against its run workflow, as its save checks it.
 
 `binder` fills each input and numbers the runs, `show_rules` says what is
 shown when, and `task_check` reports what does not fit. See SIMPLER-CORE.md

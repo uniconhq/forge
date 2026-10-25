@@ -377,7 +377,7 @@ async def test_a_managers_save_of_everything_else_publishes(
         sum_task,
         {
             "task.yaml": task_yaml.replace(b"time_limit: 2", b"time_limit: 3").replace(
-                b"now: [score, all]", b"now: [score]"
+                b"now: [score, all, public/]", b"now: [score, public/]"
             ),
             "statement.md": statement,
             "tests/2.in": b"2 2\n",
@@ -731,7 +731,9 @@ async def test_scoring_changes_never_change_grading_and_a_test_or_a_limit_does(
     await _published(setup, acme, sum_task)
 
     text = await _save(setup, acme, sum_task, {"statement.md": b"Clearer.\n"})
-    rules = await _save(setup, acme, sum_task, _with(acme, b"now: [score, all]", b"now: [score]"))
+    rules = await _save(
+        setup, acme, sum_task, _with(acme, b"now: [score, all, public/]", b"now: [score, public/]")
+    )
     caps = await _save(
         setup,
         acme,
@@ -855,7 +857,10 @@ async def test_a_confirmation_stands_only_for_the_files_and_publication_it_was_a
     [
         (
             (b"scoring:", b"submissions: {max: 3, rate: {count: 2, per: 600}}\nscoring:"),
-            ["No score changes."],
+            [
+                "Submission limit: 3 per entrant (was 50).",
+                "Submission rate: 2 every 10 minutes (was 1 every 30 seconds).",
+            ],
             ["Nothing entrants read changes."],
         ),
         (

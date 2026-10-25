@@ -1,6 +1,6 @@
 """What a regrade of many changed, for the organisers of a contest: each
 task's latest regrade summed up, taking one off the contest's page, and a
-regrade's gradings each with what it did to its submission, a run task's
+regrade's gradings each with what it did to its submission, a task's
 regrade by the values and verdicts it changed; and the types they come
 back as.
 """
@@ -12,7 +12,6 @@ from forge.domain.regrades import (
     LeaderboardDiff,
     RegradeCause,
     RowDiff,
-    Side,
     ValueChange,
     VerdictChange,
 )
@@ -34,7 +33,6 @@ __all__ = [
     "RegradeCause",
     "RowDiff",
     "RunSummary",
-    "Side",
     "SubmissionChange",
     "Summary",
     "ValueChange",

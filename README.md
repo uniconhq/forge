@@ -142,12 +142,12 @@ forge/api/
   blocks.py     CATALOGUE, every block a value may use, LEAVES, TASK_FACTS
                 and SKIP, and the Block, Form, BlockInput and Kind it is
                 made of
-  gradings.py   cancel, retry, rejudge, list, run_log, task_of, feed,
+  gradings.py   cancel, retry, rejudge, list, task_of, feed,
                 queue_depth, and the GradingRecord, Rejudged, FeedEntry,
                 Submitter, QueueDepth and GradingStatus they return; list
                 and feed both give FeedEntry
   regrades.py   latest, dismiss, gradings_of, and the Summary, ChangeKind,
-                Compared, Side and RegradeCause they return
+                Compared and RegradeCause they return
   runs.py       config, the InboundRequest it takes and the InboundAnswer it
                 returns, a step's doors (step_job, step_uploads, step_file,
                 step_admits, step_done, step_report), GradingStatus, and
@@ -557,7 +557,7 @@ choice, from its image manifest; the fake runs none and names a placeholder
 digest unless given.
 `UNICON_SLOT_SIZES` is the grading machines' slot sizes, `name:cores:MB`
 comma separated, at least one, which deploy writes from its
-`machine/slots.json`: a run task's pipeline is planned into the smallest
+`machine/slots.json`: a task's pipeline is planned into the smallest
 slot that holds it, its stages running no more boxes at once than the
 slot's cores, and labelled with that size, and a save whose step needs more
 than the biggest is refused. It is required when `UNICON_FORGE=forgejo`;
@@ -612,7 +612,7 @@ hosting process calls are actions, marked `@action` from
 | `submissions` | `submit`, `mine`, `one`, `organised`, `files`, `download` |
 | `leaderboards` | `seen`, `organised` |
 | `marks` | `held`, `mark`, `unmark` |
-| `gradings` | `cancel`, `retry`, `rejudge`, `list`, `run_log`, `task_of`, `feed`, `queue_depth` |
+| `gradings` | `cancel`, `retry`, `rejudge`, `list`, `task_of`, `feed`, `queue_depth` |
 | `regrades` | `latest`, `dismiss`, `gradings_of` |
 | `runs` | `config`, `step_job`, `step_uploads`, `step_file`, `step_admits`, `step_done`, `step_report` |
 | `workflows` | `create`, `listing`, `view`, `read_version`, `save`, `create_version`, `check`, `set_visibility`, `share`, `unshare`, `copy`, `box` |
@@ -1115,7 +1115,9 @@ digest and its limits, the pipelines each step runs in (`early`, `late`
 and `save`) and the reports. `forge/domain/run_workflow.py` checks a
 workflow as a version (`check_run_workflow`), needing only the primitives
 its steps use. The plan is the same bytes every time for the same state. A
-new task's starter carries one test, so its first save publishes.
+new task's starter carries one test, so its first save publishes, and
+shows `public/` at once, where the statement editor puts its pictures,
+since `show` is the only way a file reaches an entrant.
 
 `release.of_task(session, task)` says whether the signed-in person sees the
 task and may submit to it now: released, visible and open, and why not. It
@@ -1259,7 +1261,8 @@ since it is made holding no lock; every repository of a workspace also
 sheds anyone not a member now whenever it is opened. With
 `UNICON_PLACES_AHEAD` on, the default, approving an entrant starts making
 its place to submit every task the contest has published, and a task's
-first publication starts making it for every approved entrant, each once
+first live publication, at its save or, checked first, at the take-over
+of its passed check, starts making it for every approved entrant, each once
 the request has committed and without the request waiting
 (`services/places.py`); the work takes two turns in a process, apart from
 the four the first uploads take, and a contest archived or over gets none.
@@ -1460,7 +1463,7 @@ have been missed.
 A unit of work nudges with `ctx.nudge(...)`, and the setup publishes every
 nudge the unit of work left in one `pg_notify` on its own transaction, just
 before the commit, so Postgres delivers them with it and never for a unit
-of work that rolls back. Every write of a grading's status or progress
+of work that rolls back. Every write of a grading's status
 nudges its entrant's members and its task's organisers (`gradings.changed`, from
 `new_row`, the start, a pipeline's first step and `finish`),
 which is what moves a submissions list while its owner watches. Its scope
@@ -1698,7 +1701,7 @@ the CI said in the log: the org's account is not ready
 (`PUBLICATION_GONE`), the CI did not answer (`NO_ANSWER`), refused the
 org's account (`REFUSED`), answered without a pipeline (`NO_RUN`), which is
 how Woodpecker answers a start, with an empty 204, when the extension
-refused it, or still did not know the dispatch place (`NOT_ACTIVATED`).
+refused it, or still did not know the dispatch place (`DISPATCH_UNKNOWN`).
 Whoever reads it sees that at once and tries again, a contestant by
 submitting, an organiser with `retry`.
 
@@ -1859,11 +1862,7 @@ to anyone observing the task, each a `FeedEntry` as the feed gives it
 reads, from `list`, the feed, a cancel or a retry, has the result whole and
 `latest`, whether it is its submission's latest attempt, worked out over
 every attempt of the submission whatever the page holds: the latest is the
-one to cancel or retry. `gradings.run_log(grading)` gives
-the grading's run log to anyone observing its task, read from the store up
-to `RUN_LOG_MAX`, 9 MiB, and refused above as `LogTooLarge`; a grading with
-no log is `NotFound`, and a store that fails is `Unavailable` in fixed
-words, with what it said in the log. A route that names only the grading
+one to cancel or retry. A route that names only the grading
 checks the organiser at the task `gradings.task_of(grading)` gives.
 
 **A contest's gradings.** `gradings.feed(contest, task=, user=, entrant=,
@@ -1918,8 +1917,8 @@ compared with the result that counted for the submission when the regrade
 began, the latest earlier attempt that finished with one, the earlier one
 under the publication then the latest (the regrade's own for a rejudge,
 the one before the save's for a save's, `counted_under`). Where each stands
-(`forge.domain.regrades.change_of`) is `unchanged`, graded again with a
-result before; `new`, no earlier result; `running`; `failed`, no result
+(`forge.domain.regrades.change_of`) is `regraded`, graded again with a
+result before, whatever its values did; `new`, no earlier result; `running`; `failed`, no result
 yet, its latest attempt a system error or cancelled; and `over_limit`.
 What it changed is summed up by the leaderboard diff and the values and
 verdicts it changed (`regrades.run_summary`), with no direction, since up
@@ -1932,14 +1931,14 @@ newer regrade of the task replaces it or a manager of the task dismisses it
 would hide a broken checker from an organiser who was away.
 `regrades.gradings_of(contest, regrade, change=, user=, entrant=, limit=)`
 gives its gradings as the feed does, one per submission, each with
-`change`, a `Compared` holding the change and both results as `Side`s,
-each its attempt. Nothing stores a
+`change`, a `Compared` holding the change and the attempt of each result,
+the earlier and its own. Nothing stores a
 comparison: each read works it out again. Migration 0021 adds the table and the column.
 
 ## Scores and leaderboards
 
 Nothing scored is stored. A result keeps the run's raw facts, and every read
-works a run task's values out again from its `scoring` blocks
+works a task's values out again from its `scoring` blocks
 (`scores.run_scored`, `forge/domain/blocks/`, SIMPLER-CORE.md 9), all as
 exact rationals, a value written `0.1` read as one tenth: the runs, an
 `exec` block's number kept in the step store, and the marks staff enter
@@ -2004,7 +2003,6 @@ structured members in `extra`:
 | `UploadNotReady` | `upload_not_ready` | `uploads`, each id refused |
 | `UploadLimit` | `upload_limit` | `limit`, the open uploads one person may hold for a task, and `bytes`, what they may declare together |
 | `InvalidInputs` | `invalid_inputs` | `errors`, each `{"input", "message"}` |
-| `LogTooLarge` | `log_too_large` | `limit`, the most of a run log read, in bytes |
 | `PublicFileTooLarge` | `public_file_too_large` | `limit`, the most of a public file served, in bytes |
 | `MarkLimit` | `mark_limit` | `limit`, the marks a row may hold on the task |
 | `EntrantFull` | `entrant_full` | `limit`, the most people in an entrant, invites waiting counted |

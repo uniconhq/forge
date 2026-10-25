@@ -148,7 +148,7 @@ async def live(
     ctx: Context, task: TaskId, made: Sequence[Publication] | None = None
 ) -> list[Publication]:
     """The task's publications that are its own, oldest first, from `made`
-    when the caller has listed them: every one but a run task's that its
+    when the caller has listed them: every one but one that its
     save row has not let take over, its latest attempt not `done` with every
     run accepted, told in the query; and one its note says is checked first
     (`Publication.checked_first`) is held back until such a row passed,
@@ -212,7 +212,7 @@ changes, so the time only bounds what is held."""
 
 @dataclass(frozen=True, slots=True)
 class RunsHeld:
-    """A run task's latest publication as its entrants' results read it:
+    """A task's latest publication as its entrants' results read it:
     its runs in the task's order, every file it holds, each report's
     column as its plan gives it, the steps whose compile error `compiled`
     reads (`run_results.compilers`), and the values that read a column the
@@ -228,7 +228,7 @@ class RunsHeld:
 
 
 async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
-    """The runs, files and plan of a run task's latest publication, read
+    """The runs, files and plan of a task's latest publication, read
     once, since a publication never changes. A publication's runs file and
     plan always read, as its save wrote them, so one that does not fails
     loudly.
@@ -255,7 +255,7 @@ async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
 
 
 async def plan_at(ctx: Context, task: TaskId, version: VersionId) -> RunPlan:
-    """The plan of a run task's publication at `version`, read once, since
+    """The plan of a task's publication at `version`, read once, since
     a publication never changes."""
 
     async def read() -> RunPlan:

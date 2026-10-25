@@ -648,6 +648,7 @@ async def _chosen(
                 "Choose a smaller file.",
                 limit=limit,
                 input=entry.id,
+                part=number,
             )
     return rows
 
@@ -662,7 +663,7 @@ def _part_limit(entry: Field, part: int | None) -> int:
 
 
 def _uploads_of(inputs: Mapping[str, SubmittedInput]) -> list[uuid.UUID]:
-    """Every upload the submit names, a run task's parts' among them."""
+    """Every upload the submit names, a task's parts' among them."""
     return [
         upload
         for given in inputs.values()
@@ -1194,14 +1195,15 @@ async def _file(ctx: Context, user: AsUser, submission: SubmissionId, path: str)
 
 
 def _paths(document: Mapping[str, Any]) -> set[str]:
-    """The path of every file a submission's inputs name."""
-    return {
-        name
-        for given in document.values()
-        if isinstance(given, dict)
-        for name in given.get("files") or ()
-        if isinstance(name, str)
-    }
+    """The path of every file a submission's inputs name, an input given in
+    parts by each of its parts.
+    """
+    entries = [given for given in document.values() if isinstance(given, dict)]
+    for given in list(entries):
+        parts = given.get("parts")
+        if isinstance(parts, dict):
+            entries.extend(part for part in parts.values() if isinstance(part, dict))
+    return {name for given in entries for name in given.get("files") or () if isinstance(name, str)}
 
 
 def _document(content: bytes) -> dict[str, Any]:

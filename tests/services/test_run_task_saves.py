@@ -1,4 +1,4 @@
-"""A run task's save (SIMPLER-CORE.md 8, 9 and 11): the islands, cartpole
+"""A task's save (SIMPLER-CORE.md 8, 9 and 11): the islands, cartpole
 and tour tasks publish their runs file and their plan, version 6, pinned to
 the one commit the workflow's version stood at, every workflow file read
 there; a save again says what its plan changed and grades nothing again; a
@@ -7,8 +7,9 @@ runs file that does not read refuses the save, and so does an empty
 until that question is answered; what was shown is not hidden again; the
 files `show` lists are served from their time on, and no other, the
 reveal's from its instant and a release's not yet; the contest gives a
-run task a due and a leaderboard, and a stored worth or late share is ignored;
-and an entrant submits to one in parts.
+task a due and a leaderboard, and a stored worth or late share is ignored;
+and an entrant submits to one in parts, each part's files downloaded and,
+when the submit's answer was lost, its uploads used up.
 """
 
 import hashlib
@@ -21,10 +22,18 @@ from sqlalchemy import select
 
 from forge.db.tables import Grading, Upload
 from forge.domain.content import Edit
-from forge.domain.errors import ConfirmationRequired, InvalidInputs, NotFound, TooLarge
+from forge.domain.errors import (
+    ConfirmationRequired,
+    InvalidInputs,
+    NotFound,
+    TooLarge,
+    Unavailable,
+)
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
+from forge.domain.names import EntrantOwner
 from forge.domain.plan_basics import PLAN_PATH
+from forge.domain.roles import Role, Scope
 from forge.domain.run_plan import FileFact, RunPlan
 from forge.domain.run_task import RUNS_PATH, RunsFile
 from forge.domain.submissions import SubmittedInput
@@ -47,6 +56,7 @@ from tests.services.conftest import (
     SPRING,
     Acme,
     checked,
+    organiser,
     signed_in,
     upload,
     write_contest,
@@ -120,7 +130,7 @@ async def _ready(acme: Acme, which: str, contest: str = DRAFT) -> str:
 async def _published(
     setup: Setup, acme: Acme, task: TaskId, which: str, contest: str = DRAFT, text: str = ""
 ) -> Published:
-    """The run task `which` saved over `task` and published, each question
+    """The task `which` saved over `task` and published, each question
     the save asks answered.
     """
     written = await _ready(acme, which, contest)
@@ -277,8 +287,8 @@ async def test_a_part_over_its_own_size_is_refused_at_the_slot_and_at_submit(
             sha256=digest,
             part=1,
         )
-    assert part_two.value.extra["limit"] == 50 * 1024 * 1024
-    assert part_one.value.extra["limit"] == 10 * 1024 * 1024
+    assert (part_two.value.extra["limit"], part_two.value.extra["part"]) == (50 * 1024 * 1024, 2)
+    assert (part_one.value.extra["limit"], part_one.value.extra["part"]) == (10 * 1024 * 1024, 1)
 
     large = await upload(
         setup, acme.fake, bob, sum_task, b"x" * 20, input="route", filename="route.txt"
@@ -289,7 +299,7 @@ async def test_a_part_over_its_own_size_is_refused_at_the_slot_and_at_submit(
         row = await ctx.db.get(Upload, large.id)
         assert row is not None
         row.size = 20 * 1024 * 1024
-    with pytest.raises(TooLarge, match="part 1"):
+    with pytest.raises(TooLarge, match="part 1") as at_submit:
         await submissions.submit(
             setup,
             bob,
@@ -297,6 +307,7 @@ async def test_a_part_over_its_own_size_is_refused_at_the_slot_and_at_submit(
             {"route": SubmittedInput(parts={1: SubmittedInput(uploads=(large.id,))})},
             idempotency_key="sized-part",
         )
+    assert (at_submit.value.extra["input"], at_submit.value.extra["part"]) == ("route", 1)
     bigger = await upload(
         setup, acme.fake, bob, sum_task, b"y" * 20, input="route", filename="other.txt"
     )
@@ -524,7 +535,7 @@ async def test_a_contest_gives_a_run_task_a_due_and_a_leaderboard_but_no_worth_o
                 setup, acme.ada, SPRING, "contest.yaml", content.encode(), current.token
             )
         assert [error["path"] for error in refused.value.errors] == [path]
-    # seconds_late reads a due, so a run task may have one.
+    # seconds_late reads a due, so a task may have one.
     due = DRAFT + "    due: 2026-09-26T14:00:00Z\n"
     assert await files.write(setup, acme.ada, SPRING, "contest.yaml", due.encode(), current.token)
 
@@ -562,6 +573,41 @@ async def test_an_entrant_submits_to_a_run_task_and_its_early_row_is_queued(
     assert [(row.pipeline, row.submission_number) for row in rows if row.pipeline != "save"] == [
         ("early", made.number)
     ]
+
+
+async def test_a_part_file_is_downloaded_and_a_recovered_parts_submission_uses_its_uploads(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _published(setup, acme, sum_task, "tour", RUNNING.format(visibility="everyone"))
+    entrant = await register_entrant(setup, SPRING, 8)
+    bob = await signed_in(setup, acme.fake, 8)
+    first, second = [
+        await upload(setup, acme.fake, bob, sum_task, route, input="route", filename="route.txt")
+        for route in (b"1 2 3\n", b"3 2 1\n")
+    ]
+    given = {
+        "route": SubmittedInput(
+            parts={1: SubmittedInput(uploads=(first.id,)), 2: SubmittedInput(uploads=(second.id,))}
+        )
+    }
+    acme.fake.lose_submission_answer = True
+    with pytest.raises(Unavailable):
+        await submissions.submit(setup, bob, sum_task, given, idempotency_key="parts-lost")
+
+    made = await submissions.submit(setup, bob, sum_task, given, idempotency_key="parts-lost")
+
+    async with setup.unit_of_work() as ctx:
+        rows = (await ctx.db.scalars(select(Upload))).all()
+    assert {row.id: row.status for row in rows} == {first.id: "consumed", second.id: "consumed"}
+    door = await submissions.download(setup, bob, sum_task, made.number, "files/route/1/route.txt")
+    assert await acme.fake.workspaces.fetch(door) == b"1 2 3\n"
+    acme.fake.add_user(41, "eve")
+    await acme.fake.orgs.grant_role(41, Scope("acme", "spring", "sum"), Role.OBSERVER)
+    eve = await organiser(setup, acme.fake, 41, Scope("acme", "spring", "sum"))
+    staff = await submissions.organised_download(
+        setup, eve, sum_task, EntrantOwner(entrant), made.number, "files/route/2/route.txt"
+    )
+    assert await acme.fake.workspaces.fetch(staff) == b"3 2 1\n"
 
 
 async def test_asking_before_a_save_counts_the_regrade_its_check_waits_for(

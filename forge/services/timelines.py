@@ -12,7 +12,7 @@ A contest save is checked against every row's submissions, read from the
 gradings, one per submission, at the moment it was taken:
 
 - C1 across files: every entry of `tasks` names a task of the contest. Any
-  task may have a `due`, which a run task's values read as
+  task may have a `due`, which a task's values read as
   `seconds_late`.
 - C2, for what happened: a task released under the settings saved before,
   its contest published and past its start and its `release_at` passed,
@@ -297,8 +297,8 @@ async def _not_ready(
     ctx: Context, after: ContestDefinition, tasks: Mapping[str, TaskId]
 ) -> list[Problem]:
     """C5, for the save that opens the contest: each task it lists, but a
-    withdrawn one, that has no publication it is graded on, a run task's
-    still checked or refused not counted (`published.live`), or whose
+    withdrawn one, that has no publication it is graded on, one still
+    checked or refused not counted (`published.live`), or whose
     latest such publication's statement is not written (M57), at the
     `state` line, named by its letter and name as the opening checklist
     names it.

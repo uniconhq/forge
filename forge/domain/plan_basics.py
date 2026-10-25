@@ -44,7 +44,7 @@ class StepLimits(Model):
 
 class ReportEntry(Model):
     """One name a plan reports: the step and output it reads, and, for a
-    number of a run task's plan, which way is better and its bounds, so a
+    number of a task's plan, which way is better and its bounds, so a
     missing report's worst bound is read from the plan alone.
     """
 

@@ -41,7 +41,7 @@ from forge.services.entrant_view import PublishedTask, RunsHeld
 log = get_logger(__name__)
 
 FINISHED_WITH_RESULT = (GradingStatus.DONE, GradingStatus.SYSTEM_ERROR)
-"""Where a run task's row stands when its result is read: done, or failed
+"""Where a task's row stands when its result is read: done, or failed
 with the runs it gave, its faulted ones waiting for staff."""
 
 
@@ -89,7 +89,7 @@ def usable(ctx: Context, rows: Sequence[Grading], lost: Collection[uuid.UUID]) -
 
 @dataclass(frozen=True, slots=True)
 class RunScored:
-    """A run task's grading worked out on read: the live publication's runs
+    """A task's grading worked out on read: the live publication's runs
     and plan, the grading from both its rows, every value, as organisers
     read it, and from its early row alone, which `run_showing.shown`
     serves an entrant from before the reveal, worked out only when called
@@ -146,7 +146,7 @@ async def run_scored(
     late: Grading | None,
     marks: Mapping[str, Fraction] | None = None,
 ) -> RunScored:
-    """The values of a run task's submission (SIMPLER-CORE.md 9.2): the live
+    """The values of a task's submission (SIMPLER-CORE.md 9.2): the live
     publication's `scoring` over the runs of its early row, done or failed
     with a result, and of its late row's attempt that counts, `late`, once
     that is done or failed with a result, matched by run id, with the facts

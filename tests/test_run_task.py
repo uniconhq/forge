@@ -1,4 +1,4 @@
-"""A run task (SIMPLER-CORE.md 8 and 9): the islands, cartpole and tour
+"""A task (SIMPLER-CORE.md 8 and 9): the islands, cartpole and tour
 tasks parse into their runs, keys and early runs; repeat crosses its axes,
 first outermost, keeps each tuple's values together and keys a run an
 entrant fills by its part; each refusal of 8.5 and 9.5 names its path; a
@@ -1172,7 +1172,7 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "already listed under now",
         ),
         ("samples/]", "samples/, samples/]", "scoring.show.now[4]", "already listed above"),
-        ("samples/]", "examples/]", "scoring.show.now[3]", "no files in examples/"),
+        ("samples/]", "examples/1.in]", "scoring.show.now[3]", "no file examples/1.in"),
         ("samples/]", "plans/plan.json]", "scoring.show.now[3]", "serves none"),
         ("samples/]", "task.yaml]", "scoring.show.now[3]", "task.yaml names the task's hidden"),
         (
@@ -1180,12 +1180,6 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "[st1, st2, total, all, samples/2.ans]",
             "scoring.show.after_close[4]",
             "samples/2.ans is in samples/, which is shown as soon as a grading ends",
-        ),
-        (
-            "[st1, st2, total, all]",
-            "[st1, st2, total, all, samples/1/]",
-            "scoring.show.after_close[4]",
-            "no files in samples/1/",
         ),
         (
             "[st1, st2, total, all]",
@@ -1202,6 +1196,13 @@ def test_each_scoring_refusal_names_its_path(
     found = islands(primitives, ISLANDS.replace(old, new, 1))
 
     assert any(words in message for message in at(found, path)), found.problems
+
+
+def test_a_folder_shown_may_hold_no_files_yet(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    """Such as `public/` before the statement has a picture."""
+    ok(islands(primitives, ISLANDS.replace("samples/]", "samples/, pictures/]", 1)))
 
 
 def test_a_number_is_one_key_however_it_is_written(
@@ -1440,6 +1441,22 @@ def test_a_shown_file_is_compared_by_path_whichever_entry_lists_it() -> None:
             "they have been shown cannot be hidden again. List it as soon as before.",
         }
     ]
+
+
+def test_an_empty_folder_shown_is_no_name_and_its_files_once_added_are_shown() -> None:
+    """Such as `public/` before and after the statement's first picture."""
+    text = ISLANDS.replace("samples/]", "samples/, pictures/]")
+    before = shown_under(_scoring(text), ISLANDS_PATHS)
+
+    assert "pictures/" not in before.names
+    assert hidden_again(before, _scoring(text), ISLANDS_PATHS | {"pictures/a.png"}) == []
+    assert hidden_again(before, _scoring(ISLANDS), ISLANDS_PATHS) == []
+    shown = shown_under(_scoring(text), ISLANDS_PATHS | {"pictures/a.png"})
+    assert shown.files["pictures/a.png"] == ("now", "pictures/")
+    assert [
+        problem["message"].split(",")[0]
+        for problem in hidden_again(shown, _scoring(ISLANDS), ISLANDS_PATHS | {"pictures/a.png"})
+    ] == ["Entrants have been shown pictures/ as soon as a grading ends"]
 
 
 def test_what_was_shown_is_the_soonest_any_publication_showed_it() -> None:

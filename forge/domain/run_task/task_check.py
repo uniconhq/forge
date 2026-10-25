@@ -3,7 +3,7 @@ from collections.abc import Collection, Iterable, Mapping
 from forge.domain.blocks.catalogue import EXEC
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.checks import check_checks
-from forge.domain.definitions import ENTRANT, ShowTimes, TaskDefinition
+from forge.domain.definitions import ENTRANT, TaskDefinition
 from forge.domain.grading import Machine
 from forge.domain.program_manifest import PROGRAM_FILE
 from forge.domain.run_task.binder import _Binder, manifest_inputs
@@ -56,7 +56,7 @@ def manifest_files(definition: TaskDefinition, checked: RunWorkflowCheck) -> set
     """
     wanted = manifest_inputs(checked)
     found: set[str] = set()
-    for tree in (definition.scoring.values if definition.scoring is not None else {}).values():
+    for tree in definition.scoring.values.values():
         for node in blocks_in(tree, EXEC):
             folder = node.get("program")
             if isinstance(folder, str) and folder.endswith("/"):
@@ -87,7 +87,7 @@ def check_run_task(
     secrets: Collection[str],
     machine: Machine,
 ) -> RunTaskCheck:
-    """Check the run task `definition` against its workflow, as
+    """Check the task `definition` against its workflow, as
     `check_run_workflow` resolved it at its version, `paths` the task's
     files and `manifests` the content of each task file a manifest input is
     filled with (`manifest_files`) that is there. `previous` is the latest
@@ -100,10 +100,9 @@ def check_run_task(
     groups = binder.groups(runs)
     values = binder.scoring(runs, manifests)
     binder.show(manifests)
-    if values is not None and definition.scoring is not None:
-        for at, message in read_later(definition.scoring, values):
-            binder.refuse(at, message)
-    programs = binder.programs(groups, manifests, values) if values is not None else {}
+    for at, message in read_later(definition.scoring, values):
+        binder.refuse(at, message)
+    programs = binder.programs(groups, manifests, values)
     binder.limits(runs)
     binder.manifests(runs, manifests)
     binder.manifest_types(manifests)
@@ -114,18 +113,17 @@ def check_run_task(
         definition.checks,
         binder.entrant,
         paths,
-        definition.scoring.values if definition.scoring is not None else {},
-        values.kinds if values is not None else {},
+        definition.scoring.values,
+        values.kinds,
     )
     binder.problems += refused
     if binder.problems:
         return RunTaskCheck(binder.problems, None)
-    assert values is not None, "a task with no scoring is refused at `scoring`"
     task = RunTask(
         tuple(runs),
         groups,
         values,
-        definition.scoring.show if definition.scoring is not None else ShowTimes(),
+        definition.scoring.show,
         binder.entrant,
         binder.settings,
         marks,

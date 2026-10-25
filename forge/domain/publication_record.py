@@ -28,7 +28,7 @@ import yaml
 from forge.domain.ids import PublicationId, VersionId
 
 Check = Literal["checking", "refused", "replaced", "unchecked"]
-"""Where a run task's publication stands while its save row has not let it
+"""Where a task's publication stands while its save row has not let it
 take over: still `checking`; `refused`, its checking ended without every
 run accepted and every check given what it expects; `unchecked`, its
 checking never began, since its save failed after publishing; or
@@ -100,7 +100,7 @@ def failed_checks(result: Mapping[str, object] | None) -> tuple[FailedCheck, ...
 class Publication:
     """One publication: its id, its number among the task's publications,
     the version it froze, what its note says and when it was made; and for
-    an organiser, `check`, where a run task's one stands while it has not
+    an organiser, `check`, where a task's one stands while it has not
     taken over, none once it has or when it needs no checking;
     `checked_first` when it is not the task's until a save row passes; and
     when its check is `refused`, each of the task's checks that failed it.

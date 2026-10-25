@@ -121,7 +121,7 @@ class _Ask:
 
 
 def pipeline_variables(run: PipelineRun) -> dict[str, str]:
-    """The variables the fake CI starts a run task's pipeline with."""
+    """The variables the fake CI starts a task's pipeline with."""
     variables = {
         GRADING_VARIABLE: str(run.grading),
         "UNICON_PIPELINE": run.pipeline,

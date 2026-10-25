@@ -1,4 +1,4 @@
-"""A run task's steps through their door, and the store of what they did
+"""A task's steps through their door, and the store of what they did
 (SIMPLER-CORE.md 11.6, 11.9): islands graded step by step as a machine
 would, each job checked against runner's `job.schema.json`; a run an
 earlier step did not accept left out, and a step left with nothing to do

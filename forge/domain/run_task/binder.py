@@ -309,8 +309,6 @@ class _Binder:
     def groups(self, runs: Sequence[Run]) -> dict[str, tuple[str, ...]]:
         found: dict[str, tuple[str, ...]] = {ALL: tuple(run.id for run in runs)}
         scoring = self.task.scoring
-        if scoring is None:
-            return found
         for name, picks in scoring.groups.items():
             at: Path = ("scoring", "groups", name)
             if not picks:
@@ -358,11 +356,8 @@ class _Binder:
 
     # 9.2 and 9.5: names and values
 
-    def scoring(self, runs: Sequence[Run], manifests: Mapping[str, bytes]) -> ValuesCheck | None:
+    def scoring(self, runs: Sequence[Run], manifests: Mapping[str, bytes]) -> ValuesCheck:
         scoring = self.task.scoring
-        if scoring is None:
-            self.refuse(("scoring",), "This is required.")
-            return None
         for path, message in check_names(scoring.groups, scoring.values):
             self.refuse(("scoring", *path), message)
         for kind, names in (("groups", scoring.groups), ("values", scoring.values)):
@@ -456,7 +451,7 @@ class _Binder:
         scoring = self.task.scoring
         refused = {path[1] for path, _ in values.problems if len(path) > 1 and path[0] == "values"}
         found: dict[str, ProgramValue] = {}
-        for name, tree in (scoring.values if scoring is not None else {}).items():
+        for name, tree in scoring.values.items():
             nodes = blocks_in(tree, EXEC)
             if name in refused or len(nodes) != 1:
                 continue
@@ -523,8 +518,6 @@ class _Binder:
 
     def show(self, manifests: Mapping[str, bytes]) -> None:
         scoring = self.task.scoring
-        if scoring is None:
-            return
         names = show_names(scoring)
         seen: dict[str, str] = {}
         for time, entries in scoring.show.lists().items():
@@ -582,10 +575,10 @@ class _Binder:
                 f"{TASK_FILE} names the task's hidden files and gives its settings, so it is "
                 "never served. Remove it."
             )
-        if not has_path(self.paths, entry):
-            return (
-                f"The task has no files in {entry}." if folder else f"The task has no file {entry}."
-            )
+        # A folder may hold nothing yet, such as `public/` before the
+        # statement has a picture: it serves what it holds when it is shown.
+        if not folder and not has_path(self.paths, entry):
+            return f"The task has no file {entry}."
         return None
 
     # 8.1, kept: limits, secrets, manifests

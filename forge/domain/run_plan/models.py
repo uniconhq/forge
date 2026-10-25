@@ -190,7 +190,7 @@ class FilesRead:
 
 
 class RunPlan(Model):
-    """A run task's plan, in the shape of the runner's plan schema
+    """A task's plan, in the shape of the runner's plan schema
     version 6.
     """
 
@@ -327,7 +327,7 @@ class RunPlan(Model):
 
 @dataclass(frozen=True, slots=True)
 class RunPlanCheck:
-    """Every problem a run task's plan is refused for, each at its path in
+    """Every problem a task's plan is refused for, each at its path in
     `task.yaml`, and the plan when there is none.
     """
 

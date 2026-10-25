@@ -1,7 +1,7 @@
-"""A run task's gradings as Woodpecker pipelines (SIMPLER-CORE.md 11.3,
+"""A task's gradings as Woodpecker pipelines (SIMPLER-CORE.md 11.3,
 11.7, 11.8, phase 4.9).
 
-A run task's grading is a row per pipeline (`forge.services.gradings`). Its
+A task's grading is a row per pipeline (`forge.services.gradings`). Its
 `early` row runs the steps of the runs shown during the contest, and once it
 ends `done` its `late` row runs the rest (`gradings.follow`); a plan with
 nothing early has an early row with nothing to run, which ends `done` at
@@ -65,7 +65,7 @@ import uuid
 from collections.abc import Collection, Sequence
 from typing import cast
 
-from sqlalchemy import exists, func, select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from forge.db.tables import Grading, GradingStep
@@ -100,7 +100,7 @@ USER_LAST = 19_999
 USER_TRIES = 32
 NO_USER = "No user is free for a grading's steps. Try again in a moment."
 REFUSED = "The platform does not answer this request."
-NO_IMAGE = "The platform names no image for a run task's {name} step."
+NO_IMAGE = "The platform names no image for a task's {name} step."
 REPORT_MODE = "report"
 
 
@@ -111,7 +111,7 @@ WITHDRAWN = (
 
 
 class NoImage(Misconfigured):
-    """The platform names no image a run task's pipeline needs."""
+    """The platform names no image a task's pipeline needs."""
 
 
 class ImageWithdrawn(Misconfigured):
@@ -119,12 +119,12 @@ class ImageWithdrawn(Misconfigured):
 
 
 async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
-    """The pipeline to start for a `queued` run task's row, its steps
+    """The pipeline to start for a `queued` row, its steps
     minted and a user taken for it, or none once the row is concluded at
     once since nothing is left to run. `Misconfigured` for a row whose plan
     does not read, `NotFound` when its publication is gone, and
     `Unavailable` when no user is free, `NoImage` when the platform names
-    no image for the report or the clone, and `ImageWithdrawn` when a step
+    no image for the report step, and `ImageWithdrawn` when a step
     left to run names an image the platform has withdrawn. A late row
     reuses, or runs everything again, as its early row's steps were minted
     to.
@@ -139,10 +139,8 @@ async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
             await concluded(ctx, held)
             log.info("pipelines.nothing_to_run", grading=str(row.id), pipeline=pipeline)
         return None
-    images = {"report": ctx.settings.primitive_base_image, "clone": ctx.settings.plugin_git_image}
-    for name, image in images.items():
-        if image is None:
-            raise NoImage(NO_IMAGE.format(name=name))
+    if ctx.settings.primitive_base_image is None:
+        raise NoImage(NO_IMAGE.format(name=REPORT_STEP))
     plan, _ = await steps.plan_of(ctx, row)
     for held_step in left:
         image = plan.steps[held_step.step].image
@@ -157,7 +155,7 @@ async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
 
 async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[PipelineRun, PipelineSpec]:
     """The platform's half of what decides a pipeline: the pipeline and its
-    steps, for a run task's row of `org` whose pipeline is being started.
+    steps, for a row of `org` whose pipeline is being started.
     `CiRequestRefused` for any other, and `Unavailable` when the forge does
     not answer.
     """
@@ -210,8 +208,7 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
             )
         )
     report = ctx.settings.primitive_base_image
-    clone = ctx.settings.plugin_git_image
-    if report is None or clone is None:
+    if report is None:
         log.warning("pipelines.config_refused", reason="images", grading=grading)
         raise CiRequestRefused(REFUSED)
     found.append(
@@ -239,7 +236,9 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
     # A step reads the submission from the checkout only through an entrant
     # input, so a pipeline of compares alone clones nothing.
     clones = any(plan.files_read(each).entrant for each in left)
-    return run, PipelineSpec(clone_image=clone, steps=tuple(found), labels=labels, clones=clones)
+    return run, PipelineSpec(
+        clone_image=ctx.settings.plugin_git_image, steps=tuple(found), labels=labels, clones=clones
+    )
 
 
 async def concluded(ctx: Context, row: Grading) -> None:
@@ -303,7 +302,7 @@ def accepted(row: Grading) -> bool:
 async def queue_save(
     ctx: Context, task: TaskId, publication: PublicationId, plan: RunPlan, by: int | None
 ) -> Grading | None:
-    """The save row that checks a run task's new `publication` before it
+    """The save row that checks a task's new `publication` before it
     takes over, none when its plan holds no step done at the save. Every
     save row of the task still unfinished is cancelled first, since a later
     save replaces what it checked. Called under the task's hold.
@@ -465,9 +464,11 @@ async def take_over(ctx: Context, task: TaskId) -> None:
     passed and is not marked taken over. The task is graded again against
     its publication when that is still the task's and changed how it
     grades, then the row is marked, in one unit of work under the task's
-    hold, so a take-over is done once. The task's first take-over starts
-    making its places ahead, as a first publication that needs no check
-    does when it is saved (`places.ahead_at`).
+    hold, so a take-over is done once. A take-over that makes the task's
+    first live publication starts making its places ahead, as a save does
+    that makes one live at once (`places.ahead_at`); one after a
+    publication live already, such as one that needed no check while an
+    earlier one waited for its own, makes none again.
     """
     await timelines.hold_task(ctx, task)
     waiting = (
@@ -488,23 +489,16 @@ async def take_over(ctx: Context, task: TaskId) -> None:
     )
     if not waiting:
         return
-    first = not await ctx.db.scalar(
-        select(
-            exists().where(
-                Grading.task_id == task,
-                Grading.pipeline == SAVE,
-                Grading.taken_over_at.is_not(None),
-            )
-        )
-    )
     current = await entrant_view.task(ctx, task)
+    taking = {row.publication_id for row in waiting}
+    if current is not None and all(each.id in taking for each in current.publications):
+        # No publication was live before this take-over.
+        places.ahead_at(ctx, task)
     for row in waiting:
         row.taken_over_at = ctx.now
         if current is None or current.publication.id != row.publication_id:
             continue
         log.info("pipelines.took_over", task=task, publication=row.publication_id)
-        if first:
-            places.ahead_at(ctx, task)
         if current.publication.grading_changed:
             await gradings.regrade(
                 ctx,

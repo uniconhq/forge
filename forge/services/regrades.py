@@ -55,7 +55,6 @@ from forge.domain.regrades import (
     Compared,
     LeaderboardDiff,
     RegradeCause,
-    Side,
     ValueChange,
     VerdictChange,
     change_of,
@@ -116,7 +115,7 @@ class Summary:
 
 @dataclass(frozen=True, slots=True)
 class SubmissionChange:
-    """One submission a run task's regrade changed: its latest attempt of
+    """One submission a task's regrade changed: its latest attempt of
     the regrade, the submission by id and number, its workspace, and each
     value and verdict the regrade changed."""
 
@@ -131,7 +130,7 @@ class SubmissionChange:
 
 @dataclass(frozen=True, slots=True)
 class RunSummary:
-    """A run task's regrade by what it changed: its id, task, cause and the
+    """A task's regrade by what it changed: its id, task, cause and the
     publication it grades against; how many submissions it took, how many
     are still running, how many ended with no result, and how many it
     cannot compare since the publication their result counted under no
@@ -153,7 +152,7 @@ class RunSummary:
 
 
 CHANGED_SHOWN = 100
-"""The most submissions a run task's regrade summary lists; the rest it
+"""The most submissions a task's regrade summary lists; the rest it
 changed are counted."""
 
 
@@ -303,7 +302,7 @@ async def gradings_of(
 async def run_summary(
     ctx: Context, organiser: Organiser, task: TaskId, regrade: uuid.UUID
 ) -> RunSummary:
-    """What a run task's regrade changed (SIMPLER-CORE.md 11.8), for a
+    """What a task's regrade changed (SIMPLER-CORE.md 11.8), for a
     manager of the task: each submission whose values or verdicts its
     latest attempt changed against the attempt that counted when the
     regrade began, the latest earlier one that finished with a result,
@@ -518,7 +517,7 @@ async def _read(ctx: Context, regrade: Regrade) -> list[_Read]:
             each for each in attempts[submission] if each.attempt < first
         )
         status = gradings.status_of(ctx, row, gone)
-        before = Side(earlier.attempt) if earlier is not None else None
+        before = earlier.attempt if earlier is not None else None
         if status in UNFINISHED:
             compared = Compared(ChangeKind.RUNNING, before, None)
         elif status is GradingStatus.OVER_LIMIT:
@@ -526,7 +525,7 @@ async def _read(ctx: Context, regrade: Regrade) -> list[_Read]:
         elif not gradings.has_result(row):
             compared = Compared(ChangeKind.FAILED, before, None)
         else:
-            compared = Compared(change_of(before), before, Side(row.attempt))
+            compared = Compared(change_of(before), before, row.attempt)
         found.append(_Read(row, compared))
     return found
 

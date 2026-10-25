@@ -1,4 +1,4 @@
-"""A run task's checks (SIMPLER-CORE.md 9.6, phase 5.4): made-up
+"""A task's checks (SIMPLER-CORE.md 9.6, phase 5.4): made-up
 submissions graded at the task's save, each with what it must get.
 
 A check's `submit` gives every input the entrant gives, by the same name: a

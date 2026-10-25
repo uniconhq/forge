@@ -80,7 +80,7 @@ async def files_at(
     ctx: Context, as_: Identity, workflow: WorkflowId, at: VersionId, definition: RunWorkflow
 ) -> WorkflowFiles:
     """The workflow's files at the commit `at`, read as `as_`, as making a
-    version checks them and a run task's save checks them again: every
+    version checks them and a task's save checks them again: every
     path with its size, and each one wired into a manifest port that is
     there. One listed that does not read as a file is left out, so the
     check refuses it as missing at the manifest port; one listed as over

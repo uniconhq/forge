@@ -57,7 +57,7 @@ def plan_runs(
     inner_workflows: tuple[PinnedWorkflow, ...] = (),
     programs: Mapping[str, PrimitiveDeclaration] | None = None,
 ) -> RunPlanCheck:
-    """The plan of the run task `definition`, as `check_run_task` checked it
+    """The plan of the task `definition`, as `check_run_task` checked it
     (`task`) against its workflow resolved at `commit` (`checked`).
     `task_files` and `workflow_files` hold the facts of every file
     `files_named` names, each folder's files each by itself; `machine` is

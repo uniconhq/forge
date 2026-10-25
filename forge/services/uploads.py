@@ -153,6 +153,7 @@ async def slot(
             f"The file is larger than the {limit} bytes allowed. Choose a smaller file.",
             limit=limit,
             input=entry.id,
+            part=part,
         )
     if not await _asked_before(
         ctx, person.session.user_id, task, UploadPurpose.SUBMISSION, since=person.since

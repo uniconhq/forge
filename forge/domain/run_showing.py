@@ -1,4 +1,4 @@
-"""What each reader sees of a run task's result, and when (SIMPLER-CORE.md
+"""What each reader sees of a task's result, and when (SIMPLER-CORE.md
 9.3, 9.4, 15 and 17): the one function every path that serves one reads
 (`shown`), so there is one place to get it wrong.
 
@@ -113,7 +113,7 @@ class ValueShown:
 
 @dataclass(frozen=True, slots=True)
 class Shown:
-    """A run task's grading as one reader sees it now: its values, its runs
+    """A task's grading as one reader sees it now: its values, its runs
     by group, what the steps done once reported (`reports` and `texts`),
     `compiled`, none while not shown or while it waits, and whether nothing
     of the task is shown before its reveal. Organisers also read the facts.

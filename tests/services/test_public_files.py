@@ -40,7 +40,6 @@ LATER = RUNNING + "  - {{id: later, release_at: 2026-09-26T13:00:00Z}}\n"
 FIGURE = b"\x89PNG\r\n\x1a\n a figure"
 NOTES = b"Read the input with care.\n"
 DATA = b"a dataset, pretend it is large\n" * 32
-SHOWN = b"now: [score, all, public/]"
 
 
 async def _save(setup: Setup, acme: Acme, task: TaskId, files: dict[str, bytes]) -> None:
@@ -59,28 +58,16 @@ async def _save(setup: Setup, acme: Acme, task: TaskId, files: dict[str, bytes])
     await checked(setup, task)
 
 
-async def _showing_public(acme: Acme, task: TaskId) -> dict[str, bytes]:
-    """The task's `task.yaml` with `public/` added to what it shows now."""
-    found = await acme.fake.content.read_file(PLATFORM, task, "task.yaml")
-    return {"task.yaml": found.content.replace(b"now: [score, all]", SHOWN)}
-
-
 @pytest.fixture
 async def public(setup: Setup, acme: Acme, sum_task: TaskId) -> TaskId:
     """acme/spring for everyone and running, its task sum published with a
-    figure and notes under `public/`, which it shows, and a task `later`
-    published with a figure of its own and released only later.
+    figure and notes under `public/`, which its starter shows, and a task
+    `later` published with a figure of its own and released only later.
     """
     later = await make_task(setup, acme, "later")
     await write_contest(acme.fake, LATER.format(visibility="everyone"))
-    shown = await _showing_public(acme, sum_task)
-    await _save(
-        setup,
-        acme,
-        sum_task,
-        {**shown, "public/figure.png": FIGURE, "public/a/notes.txt": NOTES},
-    )
-    await _save(setup, acme, later, {**shown, "public/figure.png": FIGURE})
+    await _save(setup, acme, sum_task, {"public/figure.png": FIGURE, "public/a/notes.txt": NOTES})
+    await _save(setup, acme, later, {"public/figure.png": FIGURE})
     acme.fake.reset_calls()
     return sum_task
 
@@ -94,6 +81,20 @@ async def test_a_visitor_reads_a_public_file_of_a_released_task_of_a_contest_for
     assert (figure.path, figure.content) == ("public/figure.png", FIGURE)
     assert notes.content == NOTES
     assert {call.identity for call in acme.fake.calls} == {PLATFORM}
+
+
+async def test_a_picture_added_under_public_after_the_starter_published_is_served(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    """The starter shows `public/` while it holds nothing, and a later save
+    adding the statement's first picture there publishes it."""
+    await write_contest(acme.fake, LATER.format(visibility="everyone"))
+    await _save(setup, acme, sum_task, {"statement.md": b"Add two numbers.\n"})
+
+    await _save(setup, acme, sum_task, {"public/figure.png": FIGURE})
+
+    found = await landing.public_file(setup, sum_task, "public/figure.png")
+    assert found.content == FIGURE
 
 
 async def test_a_visitor_reads_nothing_of_a_task_not_released_or_a_contest_not_for_everyone(
@@ -175,17 +176,8 @@ async def test_an_organiser_reads_a_task_never_published_as_its_head_holds_it(
     setup: Setup, acme: Acme, public: TaskId
 ) -> None:
     unsaved = await make_task(setup, acme, "unsaved")
-    head = await acme.fake.content.list_files(PLATFORM, unsaved)
-    (shown,) = (await _showing_public(acme, unsaved)).values()
     draft = await task_save.save(
-        setup,
-        acme.ada,
-        unsaved,
-        {
-            "task.yaml": Edit(shown, head.tokens["task.yaml"]),
-            "public/figure.png": Edit(FIGURE),
-        },
-        keep_as_draft=True,
+        setup, acme.ada, unsaved, {"public/figure.png": Edit(FIGURE)}, keep_as_draft=True
     )
     assert isinstance(draft, task_save.Draft), draft
     ada = await signed_in(setup, acme.fake, 7)

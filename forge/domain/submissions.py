@@ -105,6 +105,7 @@ def run_fields_of(entrant: Mapping[str, Any], inputs: Mapping[str, Any]) -> tupl
         given = inputs.get(name)
         details = given.get(ENTRANT) if isinstance(given, dict) else None
         form = Form.model_validate(details) if isinstance(details, dict) else Form()
+        max_size = declared.max_size or form.max_size or DEFAULT_MAX_SIZE
         found.append(
             Field(
                 id=name,
@@ -114,19 +115,25 @@ def run_fields_of(entrant: Mapping[str, Any], inputs: Mapping[str, Any]) -> tupl
                 default=form.default,
                 min=form.min,
                 max=form.max,
-                max_size=declared.max_size or form.max_size or DEFAULT_MAX_SIZE,
-                parts=_field_parts(declared),
+                max_size=max_size,
+                parts=_field_parts(declared, max_size),
             )
         )
     return tuple(found)
 
 
-def _field_parts(declared: Any) -> tuple[FieldPart, ...] | None:
-    """A plan entry's part titles and sizes, or none when it has none."""
+def _field_parts(declared: Any, max_size: int) -> tuple[FieldPart, ...] | None:
+    """A plan entry's parts, one each, or none when it is given once. A
+    plan names a part's title and size only when some part has its own;
+    otherwise each part is untitled and holds `max_size`, the input's.
+    """
     raw = getattr(declared, "part_details", None)
-    if not raw:
+    if raw:
+        return tuple(FieldPart(title=part.title, max_size=part.max_size) for part in raw)
+    count = getattr(declared, "parts", None)
+    if not count:
         return None
-    return tuple(FieldPart(title=part.title, max_size=part.max_size) for part in raw)
+    return tuple(FieldPart(title=None, max_size=max_size) for _ in range(count))
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,7 +261,7 @@ def lay_out_runs(
             if submitted is not None and submitted.parts:
                 found = "This input is given once, not in parts."
             else:
-                found = _one(entry, submitted, uploads, files)
+                found = _one(entry, submitted, uploads, files, entry.max_size)
         else:
             found = _parts(entry, count, submitted, uploads, files)
         if isinstance(found, str):
@@ -297,7 +304,7 @@ def _parts(
         if part.parts:
             return f"Part {number} is one part, with no parts of its own."
         laid: dict[str, uuid.UUID] = {}
-        each = _one(entry, part, uploads, laid)
+        each = _one(entry, part, uploads, laid, _part_size(entry, number))
         if isinstance(each, str):
             return f"Part {number}: {each}"
         assert each is not None
@@ -308,6 +315,15 @@ def _parts(
             )
         found[str(number)] = each
     return {"parts": found}
+
+
+def _part_size(entry: Field, number: int) -> int:
+    """The most part `number` of `entry` may hold: its own size, as the plan
+    budgets its box, or the input's when the plan gives parts none.
+    """
+    if entry.parts is not None and 1 <= number <= len(entry.parts):
+        return entry.parts[number - 1].max_size
+    return entry.max_size
 
 
 def _in_part(path: str, input_id: str, number: int) -> str:
@@ -355,12 +371,13 @@ def _one(
     given: SubmittedInput | None,
     uploads: Mapping[uuid.UUID, UploadedFile],
     files: dict[str, uuid.UUID],
+    max_size: int,
 ) -> dict[str, Any] | str | None:
     """The input's entry in `submission.json`, or a sentence saying what is
-    wrong.
+    wrong. Its files come to at most `max_size` bytes.
     """
     if entry.files:
-        return _files(entry, given, uploads, files)
+        return _files(entry, given, uploads, files, max_size)
     if given is None or given.value is None:
         if given is not None and given.uploads:
             return "Give this input a value, not files."
@@ -383,6 +400,7 @@ def _files(
     given: SubmittedInput | None,
     uploads: Mapping[uuid.UUID, UploadedFile],
     files: dict[str, uuid.UUID],
+    max_size: int,
 ) -> dict[str, Any] | str:
     if given is None or not given.uploads:
         return (
@@ -413,9 +431,9 @@ def _files(
         if problem is not None:
             return f"There is a problem with the file {name}: {problem}"
     total = sum(upload.size for upload in chosen)
-    if total > entry.max_size:
+    if total > max_size:
         return (
-            f"The files of this input come to more than the {entry.max_size} bytes allowed. "
+            f"The files of this input come to more than the {max_size} bytes allowed. "
             "Make them smaller."
         )
     paths = []

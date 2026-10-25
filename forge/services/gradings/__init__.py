@@ -12,7 +12,6 @@ from forge.services.gradings.controls import cancel, free_user, rejudge, retry
 from forge.services.gradings.following import behind, follow, stop
 from forge.services.gradings.listing import (
     _is_latest,
-    _log_failure,
     _settings,
     _submitters,
     _workspace,
@@ -23,7 +22,6 @@ from forge.services.gradings.listing import (
     narrowed,
     observed_tasks,
     queue_depth,
-    run_log,
 )
 from forge.services.gradings.lookups import (
     changed,
@@ -37,13 +35,11 @@ from forge.services.gradings.lookups import (
 from forge.services.gradings.records import (
     ACCOUNT_NOT_READY,
     CI_CONFIG_PATH,
+    DISPATCH_UNKNOWN,
     LIST_LIMIT,
-    LOG_STORE_UNAVAILABLE,
     NO_ANSWER,
-    NO_LOG,
     NO_RUN,
     NO_SUCH_GRADING,
-    NOT_ACTIVATED,
     NOTICED_KEPT,
     PUBLICATION_GONE,
     REFUSED,
@@ -112,13 +108,11 @@ from forge.services.gradings.watchdog import (
 __all__ = [
     "ACCOUNT_NOT_READY",
     "CI_CONFIG_PATH",
+    "DISPATCH_UNKNOWN",
     "HAS_RESULT",
     "LIST_LIMIT",
-    "LOG_STORE_UNAVAILABLE",
     "NOTICED_KEPT",
-    "NOT_ACTIVATED",
     "NO_ANSWER",
-    "NO_LOG",
     "NO_RUN",
     "NO_SUCH_GRADING",
     "PUBLICATION_GONE",
@@ -137,7 +131,6 @@ __all__ = [
     "_follows_an_earlier_attempt",
     "_is_latest",
     "_line",
-    "_log_failure",
     "_managed",
     "_may_read_as",
     "_next_attempt",
@@ -193,7 +186,6 @@ __all__ = [
     "retry",
     "retry_by_itself",
     "retry_limits",
-    "run_log",
     "staff_cancelled",
     "start",
     "start_waits",

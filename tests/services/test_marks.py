@@ -126,7 +126,10 @@ async def _passed_after_close(setup: Setup, acme: Acme, task: TaskId) -> Publish
     current = (
         (await _task_yaml(acme, task))
         .replace(b"  values:\n", b"  values:\n" + PASSED)
-        .replace(b"    now: [score, all]\n", b"    now: [score, all]\n    after_close: [passed]\n")
+        .replace(
+            b"    now: [score, all, public/]\n",
+            b"    now: [score, all, public/]\n    after_close: [passed]\n",
+        )
     )
     saved = await _save(setup, acme, task, {"task.yaml": current})
     assert isinstance(saved, Published), saved

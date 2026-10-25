@@ -76,7 +76,7 @@ async def regrade(
     over the limit with none is left as it is. Every attempt made belongs to
     one regrade of many recorded for it, none when it makes none.
 
-    A run task is graded again on its early rows alone: each new early row
+    A task is graded again on its early rows alone: each new early row
     makes its late row when it ends `done`, and the store runs again only
     what changed (11.6, 11.8). A late row still unfinished is stopped when
     its submission is graded again or it grades against another
@@ -105,7 +105,7 @@ async def regrade(
         .scalars()
         .all()
     )
-    # A run task's late rows are held after its early rows, as `follow` holds
+    # A task's late rows are held after its early rows, as `follow` holds
     # them after the early row it follows.
     lates = (
         (

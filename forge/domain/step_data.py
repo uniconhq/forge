@@ -1,4 +1,4 @@
-"""What a run task's Woodpecker step is handed and hands back through its
+"""What a task's Woodpecker step is handed and hands back through its
 door (SIMPLER-CORE.md 11.6, 11.9, runner's `job.schema.json`), in the words
 the services build it with: the names and limits a job keeps to, where a
 step's uploads go, an item's key, what an `outputs.json` must be, the
@@ -83,9 +83,9 @@ from forge.domain.run_workflow import STAFF_OUTPUTS
 JOB_VERSION = 1
 """The job shape the door answers, runner's `job.schema.json`."""
 CONTRACT_VERSION = 6
-"""The primitive contract every run task's step speaks."""
+"""The primitive contract every task's step speaks."""
 RESULT_VERSION = 6
-"""The result a run task's pipeline makes, `result.schema.json`'s version 6."""
+"""The result a task's pipeline makes, `result.schema.json`'s version 6."""
 NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 """One segment of a path the job places a file at."""
 UPLOAD_PATH = re.compile(r"outputs\.json|out(/(?!\.\.?(/|$))[^/\x00-\x1f\x7f]+)+")
@@ -341,8 +341,6 @@ def read_outputs(
     broken = violation(document, "primitive", "outputs_file")
     if broken is not None:
         raise Fault(f"outputs.json does not keep the contract {broken}")
-    if document["schema_version"] != CONTRACT_VERSION:
-        raise Fault(f"outputs.json is not written against version {CONTRACT_VERSION}.")
     if "error" in document:
         raise Fault(f"The step failed: {document['error']}")
     if batch:

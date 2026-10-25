@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from forge.domain.plan_basics import PLANS_FOLDER
 
 RUNS_PATH = f"{PLANS_FOLDER}runs.json"
-"""Where a run task's publication keeps its runs and what its next version
+"""Where a task's publication keeps its runs and what its next version
 reads back: each key's id, the entrant's inputs and the self-reported
 columns."""
 MOST_RUNS = 1000

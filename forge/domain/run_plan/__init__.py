@@ -1,4 +1,4 @@
-"""The plan a run task's save writes, and what a later save compares.
+"""The plan a task's save writes, and what a later save compares.
 
 `planner` places each step and builds plan schema version 6, `plan` reads
 one back, and `changes` says what a save changed. See SIMPLER-CORE.md 11.1
