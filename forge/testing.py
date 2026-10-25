@@ -30,6 +30,9 @@ built-in workflow `unicon/classic@v2` at the fake the way deploy's bootstrap
 puts it at a real forge, from `CLASSIC`, a copy of that file,
 `deploy/workflows/classic/v2/workflow.yaml`. The package's own tests check the
 two agree when the deploy repo is checked out beside this one.
+`RUN_WORKFLOWS` names the folder in deploy's checkout of each built-in
+workflow without a test block, by its reference, for a test that reads
+one with its own files.
 """
 
 import hashlib
@@ -67,6 +70,7 @@ __all__ = [
     "FORGE_URL",
     "PLACEHOLDER_DIGEST",
     "PRIMITIVES",
+    "RUN_WORKFLOWS",
     "AsUser",
     "FakeClock",
     "FakeForge",
@@ -160,6 +164,16 @@ report:
     from: ${{ steps.compile.compile_log }}
     title: Compile log
 """
+
+RUN_WORKFLOWS = {
+    "unicon/classic@v3": "workflows-next/classic/v3",
+    "unicon/interactive@v1": "workflows-next/interactive/v1",
+}
+"""Where deploy keeps each built-in run workflow, by the reference it is to
+have at the forge: a folder holding its `workflow.yaml` and the files it
+reads, under deploy's top. Bootstrap does not seed them yet, so a test reads
+them from deploy's checkout through this, and they move under `workflows/`
+when today's format goes."""
 
 PLACEHOLDER_DIGEST = "sha256:" + "0" * 64
 """The digest the fake's primitives name. Bootstrap writes each primitive's

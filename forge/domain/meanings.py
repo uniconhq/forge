@@ -8,10 +8,16 @@ per-test number means, in the order the workflow reports the values, so a
 result, a board or a form never reads the workflow again. A publication
 made before they were frozen lists its per-test numbers by name alone, and
 a page names each by its key.
+
+A workflow without a test block names a report the same way, but a
+report there adds only a title and a unit: which way is better and its
+bounds come from the `primitive.yaml` or `program.yaml` that gives the
+value, and `ReportMeaning` says which one that was.
 """
 
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 
 from forge.domain.scoring import Better, Measure
 from forge.domain.workflow_definition import Fold
@@ -40,6 +46,25 @@ class ValueMeaning:
         if self.unit is not None:
             found["unit"] = self.unit
         return found
+
+
+@dataclass(frozen=True, slots=True)
+class ReportMeaning:
+    """One report of a run workflow (SIMPLER-CORE.md 7.3) as a page names it
+    and what its number means: its `title` and `unit`, the unit on a number
+    only, which the report gives, and which way is better and its bounds,
+    which only the `primitive.yaml` or `program.yaml` that made the number
+    says, and nothing after it restates. `made_by` names that file:
+    `unicon/exec@v1`, or `diff/program.yaml`.
+    """
+
+    name: str
+    made_by: str
+    title: str | None = None
+    unit: str | None = None
+    better: Better | None = None
+    at_least: int | Decimal | None = None
+    at_most: int | Decimal | None = None
 
 
 def in_sentence(title: str) -> str:
@@ -105,4 +130,11 @@ def meanings_noted(value: object) -> tuple[ValueMeaning, ...]:
     return tuple(found)
 
 
-__all__ = ["ValueMeaning", "in_sentence", "meanings_noted", "shown_meanings", "with_measures"]
+__all__ = [
+    "ReportMeaning",
+    "ValueMeaning",
+    "in_sentence",
+    "meanings_noted",
+    "shown_meanings",
+    "with_measures",
+]

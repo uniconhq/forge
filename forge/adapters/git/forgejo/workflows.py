@@ -25,7 +25,7 @@ from forge.adapters.ids import (
     WorkflowRef,
     parse_workflow,
 )
-from forge.domain.content import ConflictToken, File, Files
+from forge.domain.content import ConflictToken, File, Files, FileSet
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, Identity, Platform, User
 from forge.domain.ids import VersionId, WorkflowId
@@ -114,6 +114,18 @@ class ForgejoWorkflows:
         await self._require_mark(as_, ref)
         head = await self._repos.head(as_, ref.owner, ref.repo)
         return VersionId(head), await self._repos.read_file(as_, ref.owner, ref.repo, path, at=head)
+
+    async def workflow_files(self, as_: Identity, workflow: WorkflowId, at: VersionId) -> FileSet:
+        ref = parse_workflow(workflow)
+        await self._require_mark(as_, ref)
+        return await self._repos.file_set(as_, ref.owner, ref.repo, str(at), links=False)
+
+    async def read_workflow_at(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str
+    ) -> File:
+        ref = parse_workflow(workflow)
+        await self._require_mark(as_, ref)
+        return await self._repos.read_file(as_, ref.owner, ref.repo, path, at=str(at))
 
     async def write_workflow_file(
         self,

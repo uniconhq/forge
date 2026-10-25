@@ -47,8 +47,10 @@ step's outputs is worked out per step, since it depends on what is wired in:
   cache.
 """
 
+import math
 import re
 from collections.abc import Mapping
+from decimal import Decimal
 from typing import Annotated, Literal
 
 from pydantic import BeforeValidator, Field, PlainValidator, model_validator
@@ -66,6 +68,7 @@ from forge.domain.yaml_models import (
     Problems,
     Retired,
     already_listed,
+    exact_number,
     load_mapping,
     validate,
 )
@@ -83,6 +86,17 @@ PROGRAM_INPUT = re.compile(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*")
 `max` reads."""
 PROGRAMS = "programs"
 """The name a programs port has, and the `outputs_from` that comes with it."""
+MANIFEST = "manifest"
+"""The file input a program's `program.yaml` is given on, under either
+`outputs_from`."""
+PROGRAM_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+"""A program's name in a programs value, the contract's `program_name`."""
+WALL_CLOCK = "wall_clock"
+"""What `stopped_by` says of the wall clock, so no program's name."""
+MAX_PROGRAMS = 8
+LINK = re.compile(f"({PROGRAM_NAME.pattern}) -> ({PROGRAM_NAME.pattern})")
+"""One link of a links value, `<from> -> <to>`."""
+MAX_LINKS = 56
 LIMIT_NAMES = ("time_ms", "cpu_ms", "memory_mb", "pids", "output_mb", "gpus")
 STEP_OUTCOMES = (
     "accepted",
@@ -267,6 +281,14 @@ class LimitFrom(Model):
     scale: Number = 1
     add: Number = 0
 
+    @property
+    def program_input(self) -> str | None:
+        """The input of each program a `sum` or `max` reads, none for an
+        `input`.
+        """
+        over = self.sum if self.sum is not None else self.max
+        return over.partition(".")[2] if over is not None else None
+
     @model_validator(mode="after")
     def _check(self) -> LimitFrom:
         problems = Problems()
@@ -302,6 +324,39 @@ class PrimitiveDeclaration(Model):
     outputs_from: Literal["manifest", "programs"] | None = None
     inputs: dict[str, Declared] = Field(default_factory=dict)
     outputs: dict[str, Declared] = Field(default_factory=dict)
+
+    def item_limits(
+        self,
+        numbers: Mapping[str, int | Decimal],
+        programs: Mapping[str, Mapping[str, int | Decimal]] | None = None,
+    ) -> dict[str, int]:
+        """One run's limits, or one batch item's, each raised by
+        `limits_from` to `n * scale + add`, rounded up, when that is more:
+        `n` the number `numbers` gives the `input`, or the sum or the
+        largest of the number each of `programs` gives the input a `sum` or
+        `max` names, `{<program>: {<input>: <number>}}`. A number not given
+        raises nothing. A batch's time is the sum of its items', which the
+        planner adds up (`BATCH_SCALED`).
+        """
+        limits = self.limits.as_mapping()
+        for name, source in self.limits_from.items():
+            key = source.program_input
+            if source.input is not None:
+                n = numbers.get(source.input)
+            elif key is not None:
+                given = [
+                    exact_number(each[key]) for each in (programs or {}).values() if key in each
+                ]
+                if not given:
+                    continue
+                n = sum(given) if source.sum is not None else max(given)
+            else:
+                continue
+            if n is None:
+                continue
+            wanted = exact_number(n) * source.scale + source.add
+            limits[name] = max(limits[name], math.ceil(wanted))
+        return limits
 
     @model_validator(mode="after")
     def _check(self) -> PrimitiveDeclaration:

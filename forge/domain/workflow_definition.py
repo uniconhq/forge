@@ -6,6 +6,16 @@ the repo is the name and the tag the version. A reference to a workflow or a
 primitive is `owner/name@version`, and is the one way a task or a step names
 one.
 
+A file with no `test` block is a run workflow instead (SIMPLER-CORE.md 7,
+`RunWorkflow`): it describes one run, so it has no test fields and nothing
+runs per test, no input says who gives it, and its `reports` add only a
+title and a unit, since what a number means is the primitive's or the
+program's that made it. It reads its own files, `${{ workflow.<path> }}`, a
+trailing `/` naming a folder, and an `interact` step's outputs per program,
+`${{ steps.<id>.<program>.<output> }}`. Testing for `test` and not for
+`reports` tells the two apart, since a run workflow that reports only its
+verdict has no `reports` either. `read_workflow` reads either.
+
 What this module checks needs nothing but the file: ids and names unique and
 well formed, each declaration's keys fitting its type, every once step
 before every per-test step, and the report's own rules (W1, W3 to W5). What
@@ -13,11 +23,13 @@ needs the primitives its steps use, every port, type and reference, is the
 compiler's (`forge.domain.plans.check_workflow`).
 
 A value in a step's `with` or in the report may be or hold a reference,
-`${{ inputs.<id> }}`, `${{ test.<field> }}` or `${{ steps.<id>.<output> }}`;
-`references` finds them in a string.
+`${{ inputs.<id> }}`, `${{ test.<field> }}`, `${{ steps.<id>.<output> }}`,
+or in a run workflow `${{ workflow.<path> }}` and
+`${{ steps.<id>.<program>.<output> }}`; `references` finds them in a string.
 """
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -52,6 +64,11 @@ by the wider `VERSION`, and is never newer than a numbered one."""
 HANDLE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 REPORT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 RESERVED_NAMES = ("outcome", "points", "penalty")
+RUN_NAMES = ("verdict", "passed")
+"""What Unicon gives every run itself: its verdict, and `passed`, 1 when the
+verdict is `accepted`, else 0 (SIMPLER-CORE.md 7.3). A run workflow names no
+input or report with one, nor with one of `RESERVED_NAMES`; today's format
+leaves them free."""
 MAX_USES = 32
 """The most distinct `use:` references one definition holds; each costs a
 read at every check."""
@@ -359,13 +376,7 @@ class WorkflowDefinition(Model):
                 )
             )
         if name in RESERVED_NAMES:
-            found.append(
-                (
-                    (),
-                    f"{name} is a name Unicon uses itself, for what a leaderboard ranks. "
-                    "Report this value under another name.",
-                )
-            )
+            found.append(((), reserved_message(name)))
         if isinstance(entry, Meaning):
             if entry.better is not None and entry.better not in ("higher", "lower"):
                 problem = self._better_problem(entry.better)
@@ -412,13 +423,30 @@ _LIST_OPTIONS = "List the options to choose from."
 _ONLY_ENUM = "Only an enum has options. Remove them."
 
 
+def reserved_message(name: str) -> str:
+    """Why a value cannot be called `name`, one of `RESERVED_NAMES` or
+    `RUN_NAMES`.
+    """
+    if name in RUN_NAMES:
+        return (
+            f"{name} is a name Unicon uses itself, for what it gives every run. Report this "
+            "value under another name."
+        )
+    return (
+        f"{name} is a name Unicon uses itself, for what a leaderboard ranks. Report this "
+        "value under another name."
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Reference:
-    """One `${{ ... }}`: `inputs.<id>`, `test.<field>` or
-    `steps.<id>.<output>`.
+    """One `${{ ... }}`: `inputs.<id>`, `test.<field>`, `steps.<id>.<output>`,
+    or `workflow.<path>`, the path its `name`. An `interact` step's output
+    for one program, `steps.<id>.<program>.<output>`, has the output
+    `<program>.<output>`, the name the primitive gives it.
     """
 
-    kind: Literal["inputs", "test", "steps"]
+    kind: Literal["inputs", "test", "steps", "workflow"]
     name: str
     output: str | None = None
 
@@ -439,6 +467,12 @@ def parse_reference(expression: str) -> Reference:
     """The reference inside `${{ ... }}`. `BadReference` saying what a
     reference may be.
     """
+    head, dot, path = expression.partition(".")
+    if head == "workflow" and dot:
+        problem = path_problem(path)
+        if problem is not None:
+            raise BadReference(f"Unicon cannot read ${{{{ {expression} }}}}: {problem}")
+        return Reference("workflow", path)
     parts = expression.split(".")
     match parts:
         case ["inputs", name] if name:
@@ -447,10 +481,32 @@ def parse_reference(expression: str) -> Reference:
             return Reference("test", field)
         case ["steps", step, output] if step and output:
             return Reference("steps", step, output)
+        case ["steps", step, program, output] if step and program and output:
+            return Reference("steps", step, f"{program}.{output}")
     raise BadReference(
-        f"Unicon cannot read ${{{{ {expression} }}}}. Write "
-        "${{ inputs.<id> }}, ${{ test.<field> }} or ${{ steps.<id>.<output> }}."
+        f"Unicon cannot read ${{{{ {expression} }}}}. Write ${{{{ inputs.<id> }}}}, "
+        "${{ steps.<id>.<output> }}, ${{ steps.<id>.<program>.<output> }}, "
+        "${{ workflow.<path> }} or ${{ test.<field> }}."
     )
+
+
+def path_problem(path: str) -> str | None:
+    """What is wrong with `path` as a file of a workflow, or a folder when
+    it ends in `/`: none when it is a relative path of named parts, no part
+    `.` or `..`, none starting or ending in a space, and no backslash or
+    control character.
+    """
+    parts = path.removesuffix("/").split("/")
+    if (
+        any(part in ("", ".", "..") or part != part.strip() for part in parts)
+        or "\\" in path
+        or any(ord(char) < 32 or ord(char) == 127 for char in path)
+    ):
+        return (
+            "give a file of the workflow by its path from the workflow's top, such as "
+            "diff/program.yaml, or a folder with a / at its end, such as diff/."
+        )
+    return None
 
 
 def whole_reference(text: str) -> Reference | None:
@@ -478,15 +534,12 @@ def _list_of_inputs(value: object) -> bool:
     return isinstance(value, list)
 
 
-RETIRED = (
+_FILE_KEYS = (
     Retired(("name",), "A workflow's name is the name it was made under. Remove this."),
     Retired(("version",), "A workflow's version is set when the version is made. Remove this."),
     Retired(("copied_from",), "A workflow does not record where it was copied from. Remove this."),
-    Retired(
-        ("outputs",),
-        "This is now called report: each value the workflow reports, named, with the step "
-        "output it reads, such as ${{ steps.<id>.<output> }}. Move these there.",
-    ),
+)
+_OLD_INPUTS = (
     Retired(
         ("inputs",),
         "Inputs are now listed by name, each with its type, such as `submission: {type: file, "
@@ -494,6 +547,15 @@ RETIRED = (
         _list_of_inputs,
     ),
     Retired(("inputs", ANY), retired_type_message, retired_type),
+)
+RETIRED = (
+    *_FILE_KEYS,
+    Retired(
+        ("outputs",),
+        "This is now called report: each value the workflow reports, named, with the step "
+        "output it reads, such as ${{ steps.<id>.<output> }}. Move these there.",
+    ),
+    *_OLD_INPUTS,
     Retired(("test", ANY), retired_type_message, retired_type),
     Retired(
         ("steps", ANY, "foreach"),
@@ -507,6 +569,202 @@ def parse_workflow(text: bytes | str) -> WorkflowDefinition:
     problem with its YAML path.
     """
     return validate(WorkflowDefinition, WORKFLOW_FILE, load_mapping(WORKFLOW_FILE, text), RETIRED)
+
+
+# The run workflow (SIMPLER-CORE.md 7)
+
+
+class RunInput(Model):
+    """One input of a run workflow (SIMPLER-CORE.md 7.1): its type, `options`
+    on an enum, `optional` on an input a task may leave out, and the task
+    form's `title`, `help` and `unit`. Who gives it, and whether it repeats,
+    are the task's.
+    """
+
+    type: ValueType
+    options: Options | None = None
+    optional: Flag = False
+    title: Line | None = None
+    help: Line | None = None
+    unit: Line | None = None
+
+    @model_validator(mode="after")
+    def _check(self) -> RunInput:
+        problems = Problems()
+        if self.type is Type.ENUM and self.options is None:
+            problems.add(("options",), _LIST_OPTIONS)
+        if self.type is not Type.ENUM and self.options is not None:
+            problems.add(("options",), _ONLY_ENUM)
+        problems.raise_any()
+        return self
+
+
+class RunStep(Model):
+    """One step of a run workflow: the primitive it uses and what each of
+    its ports is given. A `named_files` port takes a mapping of names to
+    files, a `programs` port a mapping of program names to each program's
+    ports, and a `links` port a list of `"<from> -> <to>"`.
+    """
+
+    id: Annotated[str, PlainValidator(_handle)]
+    use: Ref
+    with_: dict[str, Any] = Field(default_factory=dict, alias="with")
+
+
+class RunReport(Model):
+    """A report with the words a page names it by: `from` the step output it
+    reads, its `title`, and its `unit`, on a number only. Which way is
+    better and its bounds are the primitive's or the program's that made
+    the number, never the report's.
+    """
+
+    from_: str = Field(alias="from")
+    title: Line | None = None
+    unit: Line | None = None
+
+
+RunDeclared = Annotated[RunInput, BeforeValidator(declared)]
+
+
+def _run_report(value: object) -> str | RunReport:
+    if isinstance(value, dict):
+        return RunReport.model_validate(value)
+    if not isinstance(value, str):
+        raise ValueError(
+            "Give the step output this reports, as ${{ steps.<id>.<output> }}, or that "
+            "output with the words a page names it by: from, title and unit."
+        )
+    return value
+
+
+_RunReportEntry = Annotated[str | RunReport, PlainValidator(_run_report)]
+
+SELF_REPORTED = "self_reported"
+"""The port a primitive is told on that the program it runs given a manifest
+runs the entrant's code, which Unicon sets from the task, never a workflow."""
+SELF_REPORTED_GIVEN = (
+    "Unicon gives this itself, from which inputs the task makes the entrant's, once the "
+    "organiser confirms the reports as self-reported. Remove it."
+)
+
+
+class RunWorkflow(Model):
+    """A run workflow's `workflow.yaml`: one run's inputs, its steps, at
+    least one, and the reports it gives beside the `verdict` and `passed`
+    every run has. Report names and input names are one set of columns.
+    """
+
+    inputs: dict[str, RunDeclared] = Field(default_factory=dict)
+    steps: tuple[RunStep, ...] = Field(min_length=1)
+    reports: dict[str, _RunReportEntry] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check(self) -> RunWorkflow:
+        problems = Problems()
+        for key in self.inputs:
+            if not REPORT_NAME.match(key):
+                problems.add(
+                    ("inputs", key),
+                    "An input's name may use only lower case letters, digits and underscores "
+                    "(_), starting with a letter, since a formula names it as a column of the "
+                    "run.",
+                )
+            elif key in RESERVED_NAMES or key in RUN_NAMES:
+                problems.add(("inputs", key), reserved_message(key))
+        problems.duplicates([step.id for step in self.steps], ("steps",))
+        if len({str(step.use) for step in self.steps}) > MAX_USES:
+            problems.add(
+                ("steps",),
+                f"A workflow can use at most {MAX_USES} different primitive versions. Use fewer.",
+            )
+        for index, step in enumerate(self.steps):
+            if SELF_REPORTED in step.with_:
+                problems.add(("steps", index, "with", SELF_REPORTED), SELF_REPORTED_GIVEN)
+        for name in self.reports:
+            at = ("reports", name)
+            if not REPORT_NAME.match(name):
+                problems.add(
+                    at,
+                    "A report's name may use only lower case letters, digits and underscores "
+                    "(_), starting with a letter.",
+                )
+            elif name in RESERVED_NAMES or name in RUN_NAMES:
+                problems.add(at, reserved_message(name))
+            elif name in self.inputs:
+                problems.add(
+                    at,
+                    f"{name} is an input of the workflow, and a report and an input are columns "
+                    "of the same run. Report this under another name.",
+                )
+        problems.raise_any()
+        return self
+
+
+_MEANT_BY_MAKER = (
+    "What a number means comes from the primitive.yaml or program.yaml that made it, and a "
+    "report adds only a title and a unit. Remove this."
+)
+RUN_RETIRED = (
+    *_FILE_KEYS,
+    Retired(
+        ("outputs",),
+        "This is now called reports: each value a run reports, named, with the step output "
+        "it reads, such as ${{ steps.<id>.<output> }}. Move these there.",
+    ),
+    Retired(
+        ("report",),
+        "A workflow without a test block, which describes one run, names this reports, and a "
+        "report there gives only from, title and unit. Rename it reports.",
+    ),
+    *_OLD_INPUTS,
+    Retired(
+        ("inputs", ANY, "contestant"),
+        "The task decides who gives an input, in its own inputs. Remove this.",
+    ),
+    Retired(
+        ("inputs", ANY, "per_test"),
+        "A workflow without a test block describes one run, and the task says which inputs "
+        "repeat. Remove this.",
+    ),
+    Retired(
+        ("steps", ANY, "per_test"),
+        "A workflow without a test block describes one run, so every step runs once in it, "
+        "and the task says what repeats. Remove this.",
+    ),
+    Retired(("steps", ANY, "foreach"), "The task says what repeats. Remove this."),
+    Retired(
+        ("reports", ANY, "fold"),
+        "How runs add up is the task's scoring, not the workflow's. Remove this.",
+    ),
+    Retired(("reports", ANY, "better"), _MEANT_BY_MAKER),
+    Retired(("reports", ANY, "at_least"), _MEANT_BY_MAKER),
+    Retired(("reports", ANY, "at_most"), _MEANT_BY_MAKER),
+)
+
+
+def is_run_workflow(document: Mapping[str, object]) -> bool:
+    """Whether a `workflow.yaml`'s document is a run workflow: one with no
+    `test` block.
+    """
+    return "test" not in document
+
+
+def parse_run_workflow(text: bytes | str) -> RunWorkflow:
+    """The run workflow in `text`. Raises `InvalidDefinition` listing every
+    problem with its YAML path.
+    """
+    return validate(RunWorkflow, WORKFLOW_FILE, load_mapping(WORKFLOW_FILE, text), RUN_RETIRED)
+
+
+def read_workflow(text: bytes | str) -> WorkflowDefinition | RunWorkflow:
+    """The `workflow.yaml` in `text` in its own format: a `RunWorkflow` when
+    it has no `test` block, a `WorkflowDefinition` otherwise. Raises
+    `InvalidDefinition` as each format's parse does.
+    """
+    document = load_mapping(WORKFLOW_FILE, text)
+    if is_run_workflow(document):
+        return validate(RunWorkflow, WORKFLOW_FILE, document, RUN_RETIRED)
+    return validate(WorkflowDefinition, WORKFLOW_FILE, document, RETIRED)
 
 
 def starter_workflow(owner: str, name: str) -> dict[str, bytes]:
@@ -593,20 +851,32 @@ report:
 
 __all__ = [
     "RESERVED_NAMES",
+    "RUN_NAMES",
+    "SELF_REPORTED",
+    "SELF_REPORTED_GIVEN",
     "WORKFLOW_FILE",
     "BadReference",
     "Fold",
     "Meaning",
     "Reference",
+    "RunInput",
+    "RunReport",
+    "RunStep",
+    "RunWorkflow",
     "TestField",
     "WorkflowDefinition",
     "WorkflowInput",
     "WorkflowRef",
     "WorkflowStep",
+    "is_run_workflow",
     "parse_reference",
+    "parse_run_workflow",
     "parse_workflow",
     "parse_workflow_ref",
+    "path_problem",
+    "read_workflow",
     "references",
+    "reserved_message",
     "starter_workflow",
     "validate_version",
     "version_number",

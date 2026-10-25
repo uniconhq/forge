@@ -229,6 +229,35 @@ async def test_a_persons_workflow_is_theirs_to_read_name_a_version_of_and_share(
     assert (await fake.workflows.read_workflow_file(eve, workflow, "v1", "workflow.yaml")).content
 
 
+async def test_a_workflows_files_are_listed_and_read_at_one_commit(fake: FakeForge) -> None:
+    ada, bob = _as(fake, 7), _as(fake, 8)
+    workflow = await fake.workflows.create_workflow(
+        ada,
+        "ada",
+        "own",
+        {"workflow.yaml": b"steps: []", "diff/diff.py": b"old"},
+        Visibility.PRIVATE,
+    )
+    repo = fake.state.repo("ada", "own.workflow")
+    first = VersionId(repo.head)
+    fake.state.commit(repo, {"diff/diff.py": b"new", "diff/program.yaml": b"{}"}, "edit", 7)
+
+    listed = await fake.workflows.workflow_files(ada, workflow, first)
+    read = await fake.workflows.read_workflow_at(ada, workflow, first, "diff/diff.py")
+
+    assert (listed.version, set(listed.tokens)) == (first, {"workflow.yaml", "diff/diff.py"})
+    assert listed.has("diff/") and not listed.has("diff/program.yaml")
+    assert read.content == b"old"
+    with pytest.raises(NotFound):
+        await fake.workflows.read_workflow_at(ada, workflow, first, "diff/program.yaml")
+    for refused in (
+        fake.workflows.workflow_files(bob, workflow, first),
+        fake.workflows.read_workflow_at(bob, workflow, first, "workflow.yaml"),
+    ):
+        with pytest.raises(Forbidden):
+            await refused
+
+
 async def test_an_org_workflow_reaches_the_org_roles_and_nobody_else(fake: FakeForge) -> None:
     await fake.orgs.create_org(OrgId("acme"), description="Acme")
     fake.add_user(9, "eve")

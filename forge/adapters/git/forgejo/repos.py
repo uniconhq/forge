@@ -47,6 +47,8 @@ DEFAULT_BRANCH = "main"
 CREATE_MESSAGE = "Create"
 TREE_PAGE = 1000
 MAX_TREE_PAGES = 100
+SYMLINK = "120000"
+"""The mode a tree gives a symbolic link."""
 BLOBS_URL_BUDGET = 1900
 """The most characters of blob shas, commas included, one read of several
 blobs names: Forgejo asks a `GetBlobs` URL to stay within about 2,083."""
@@ -299,12 +301,16 @@ class Repos:
         )
         return VersionId(str(json_of(written)["commit"]["sha"]))
 
-    async def file_set(self, as_: Identity, owner: str, name: str, at: str | None) -> FileSet:
+    async def file_set(
+        self, as_: Identity, owner: str, name: str, at: str | None, *, links: bool = True
+    ) -> FileSet:
         """Every file at a version, or at the head of the default branch, with
-        the commit that is and each file's blob.
+        the commit that is and each file's blob; without `links`, a symbolic
+        link is left out, which the tree lists as a blob but which reads as no
+        file.
         """
         version = at or await self.head(as_, owner, name)
-        blobs = await self._blobs(as_, owner, name, version)
+        blobs = await self._blobs(as_, owner, name, version, links=links)
         return FileSet(
             version=VersionId(version),
             tokens={path: ConflictToken(blob) for path, blob in blobs.items()},
@@ -735,9 +741,12 @@ class Repos:
             return None
         return await self._blobs(as_, owner, name, DEFAULT_BRANCH)
 
-    async def _blobs(self, as_: Identity, owner: str, name: str, at: str) -> dict[str, str]:
+    async def _blobs(
+        self, as_: Identity, owner: str, name: str, at: str, *, links: bool = True
+    ) -> dict[str, str]:
         """The blob of every file at a version, read page by page while the
-        host says the listing was cut short.
+        host says the listing was cut short; a symbolic link's too, unless
+        not `links`.
         """
         blobs: dict[str, str] = {}
         for page in range(1, MAX_TREE_PAGES + 1):
@@ -752,7 +761,7 @@ class Repos:
             blobs.update(
                 (str(entry["path"]), str(entry["sha"]))
                 for entry in tree.get("tree") or []
-                if entry.get("type") == "blob"
+                if entry.get("type") == "blob" and (links or entry.get("mode") != SYMLINK)
             )
             if not tree.get("truncated"):
                 return blobs

@@ -11,15 +11,21 @@ Each reference in a renamed source follows its rename. The once steps of
 every source come first, in the sources' order, then their per-test steps,
 since a once step comes before every per-test step and no source reads
 another's.
+
+A run workflow, one without a test block, has no once and per-test steps to
+merge, so it is refused (`combinable`); whether combining stays at all is
+left for when today's format goes.
 """
 
 import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from forge.domain.errors import Rejected
 from forge.domain.workflow_definition import (
     Meaning,
     Reference,
+    RunWorkflow,
     TestField,
     WorkflowDefinition,
     WorkflowInput,
@@ -30,6 +36,18 @@ from forge.domain.workflow_definition import (
 from forge.domain.yaml_models import one_line
 
 _MAX_ID = 40
+
+
+def combinable(ref: str, definition: WorkflowDefinition | RunWorkflow) -> WorkflowDefinition:
+    """`definition`, the workflow `ref`, when it can be combined; `Rejected`
+    naming it for a run workflow.
+    """
+    if isinstance(definition, RunWorkflow):
+        raise Rejected(
+            f"{ref} has no test block, so it describes one run, and only workflows with a test "
+            "block can be combined."
+        )
+    return definition
 
 
 def combine_workflows(sources: Sequence[WorkflowDefinition]) -> str:

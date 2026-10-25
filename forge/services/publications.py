@@ -158,10 +158,11 @@ from forge.domain.uploads import (
 )
 from forge.domain.workflow_definition import (
     WORKFLOW_FILE,
+    RunWorkflow,
     WorkflowDefinition,
     WorkflowRef,
-    parse_workflow,
     parse_workflow_ref,
+    read_workflow,
 )
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_mapping
 from forge.log import get_logger
@@ -788,13 +789,20 @@ async def _workflow(
         )
         return None, {}, [Problem(path="workflow", message=message)]
     try:
-        return parse_workflow(file.content), pins, []
+        definition = read_workflow(file.content)
     except InvalidDefinition as invalid:
         message = (
             f"The workflow {ref} is written in an older form that Unicon no longer reads, so "
             f"its owner needs to make a new version of it. {invalid.detail}"
         )
         return None, pins, [Problem(path="workflow", message=message)]
+    if isinstance(definition, RunWorkflow):
+        message = (
+            f"The workflow {ref} has no test block, so it describes one run, and a task cannot "
+            "use such a workflow yet. Choose a version with a test block."
+        )
+        return None, pins, [Problem(path="workflow", message=message)]
+    return definition, pins, []
 
 
 async def _moved_workflows(

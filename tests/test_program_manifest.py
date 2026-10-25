@@ -20,6 +20,7 @@ from forge.domain import exact_json
 from forge.domain.program_manifest import (
     EXEC_OWN_NAMES,
     INTERACT_OWN_NAMES,
+    MAX_MANIFEST,
     REPORT_NAME,
     Report,
     parse_program,
@@ -179,6 +180,19 @@ def test_a_name_interact_gives_is_refused_only_under_interact() -> None:
         "reports.ended",
         "reports.facts",
     ]
+
+
+def test_a_manifest_over_the_size_is_refused_unread() -> None:
+    padded = b"reports: {}\n" + b"#" * MAX_MANIFEST
+
+    with pytest.raises(InvalidDefinition) as raised:
+        parse_program(padded, "diff/program.yaml", own_names=EXEC_OWN_NAMES)
+
+    assert raised.value.errors == [
+        Problem(path="", message="A program.yaml can be at most 256 KB. Make it smaller.")
+    ]
+    fits = b"reports: {}\n" + b"#" * (MAX_MANIFEST - 12)
+    assert parse_program(fits, "diff/program.yaml", own_names=EXEC_OWN_NAMES).reports == {}
 
 
 def test_every_problem_is_listed_together() -> None:

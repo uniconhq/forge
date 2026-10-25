@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from forge.domain.content import ConflictToken
 from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, PortError, Rejected
 from forge.domain.identity import AsUser, Identity, User
-from forge.domain.ids import OrgId, WorkflowId
+from forge.domain.ids import OrgId, VersionId, WorkflowId
 from forge.domain.names import validate_name
 from forge.domain.plans import (
     check_workflow,
@@ -59,14 +59,16 @@ from forge.domain.plans import (
 )
 from forge.domain.primitives import PrimitiveDeclaration
 from forge.domain.roles import Role, Scope, holds
+from forge.domain.run_workflow import WorkflowFiles, check_run_workflow, manifest_paths
 from forge.domain.sessions import Session
-from forge.domain.workflow_combine import combine_workflows
+from forge.domain.workflow_combine import combinable, combine_workflows
 from forge.domain.workflow_definition import (
     WORKFLOW_FILE,
+    RunWorkflow,
     WorkflowDefinition,
     WorkflowRef,
-    parse_workflow,
     parse_workflow_ref,
+    read_workflow,
     starter_workflow,
     validate_version,
     version_number,
@@ -288,8 +290,13 @@ async def create_version(
             f"The workflow {writer.label}/{name} has been saved again since your save. Reload "
             "it before making a version of it."
         )
-    definition = parse_workflow(file.content)
-    problems = await _problems(ctx, writer.identity, definition)
+    definition = read_workflow(file.content)
+    files = (
+        await _files(ctx, writer.identity, workflow, head, definition)
+        if isinstance(definition, RunWorkflow)
+        else None
+    )
+    problems = await _problems(ctx, writer.identity, definition, files)
     if problems:
         raise InvalidDefinition(WORKFLOW_FILE, problems)
     try:
@@ -309,11 +316,14 @@ async def check(ctx: Context, session: Session, text: str) -> tuple[Problem, ...
     """Every problem a version of `text` would be refused for, each at its
     YAML path, checked against the primitives its steps use as the person
     reads them. Nothing is written, no version is made and no plan is
-    produced; none means it would make a version.
+    produced; none means it would make a version. A run workflow's own
+    files are the version's, so here a `${{ workflow.<path> }}` is checked
+    only for its form, and the reports of a `program.yaml` among them only
+    when a version is made.
     """
     definition_text = _sized(text)
     try:
-        definition = parse_workflow(definition_text)
+        definition = read_workflow(definition_text)
     except InvalidDefinition as invalid:
         return tuple(invalid.errors)
     return tuple(await _problems(ctx, await _as_user(ctx, session), definition))
@@ -406,8 +416,8 @@ async def combine(
     """A new private workflow `name` under `owner` that inlines every source,
     each `<owner>/<name>@<version>` the caller reads, into one definition
     (`forge.domain.workflow_combine`). `Rejected` for fewer than two
-    sources or one in a format no longer read; `NotFound` for one the
-    caller may not read; otherwise refused as `create` refuses.
+    sources, one in a format no longer read, or a run workflow; `NotFound`
+    for one the caller may not read; otherwise refused as `create` refuses.
     """
     if len(sources) < 2:
         raise Rejected("Combining needs two workflows or more. To start from one, copy it instead.")
@@ -418,7 +428,7 @@ async def combine(
     for ref in refs:
         text = await _read_at(ctx, writer.identity, ref)
         try:
-            definitions.append(parse_workflow(text))
+            definitions.append(combinable(str(ref), read_workflow(text)))
         except InvalidDefinition as invalid:
             raise Rejected(
                 f"{ref} is written in an older form that Unicon no longer reads, so it cannot be "
@@ -464,21 +474,29 @@ async def newer_version(ctx: Context, as_: Identity, ref: WorkflowRef) -> str | 
 # Building blocks
 
 
-async def _problems(ctx: Context, as_: Identity, definition: WorkflowDefinition) -> list[Problem]:
+async def _problems(
+    ctx: Context,
+    as_: Identity,
+    definition: WorkflowDefinition | RunWorkflow,
+    files: WorkflowFiles | None = None,
+) -> list[Problem]:
     """Every problem a version of the definition would be refused for: an
     input named as a folder the task format reserves (`reserved_inputs`), a
     unit on an input or a reported value that is not a number
     (`stray_units`, `stray_report_units`), each `use:` that cannot be read
     as a primitive at its own path, then what `check_workflow` finds
-    against the ones that can.
+    against the ones that can. A run workflow has no folders reserved, and
+    `check_run_workflow` checks it, against `files`, its own at the
+    version's commit.
     """
     found: dict[str, PrimitiveDeclaration] = {}
     read: dict[str, str | None] = {}
     unread: list[Problem] = []
-    for index, step in enumerate(definition.steps):
-        use = str(step.use)
+    uses = [step.use for step in definition.steps]
+    for index, ref in enumerate(uses):
+        use = str(ref)
         if use not in read:
-            declaration, problem = await primitives.declaration(ctx, as_, step.use)
+            declaration, problem = await primitives.declaration(ctx, as_, ref)
             read[use] = problem
             if declaration is not None:
                 found[use] = declaration
@@ -486,6 +504,13 @@ async def _problems(ctx: Context, as_: Identity, definition: WorkflowDefinition)
         if problem is not None:
             unread.append(Problem(path=path_text(("steps", index, "use")), message=problem))
     said = {problem["path"] for problem in unread}
+    if isinstance(definition, RunWorkflow):
+        run = check_run_workflow(definition, found, files).problems
+        return [
+            *stray_units(definition),
+            *unread,
+            *(problem for problem in run if problem["path"] not in said),
+        ]
     checked = [
         problem for problem in check_workflow(definition, found) if problem["path"] not in said
     ]
@@ -496,6 +521,27 @@ async def _problems(ctx: Context, as_: Identity, definition: WorkflowDefinition)
         *unread,
         *checked,
     ]
+
+
+async def _files(
+    ctx: Context, as_: Identity, workflow: WorkflowId, at: VersionId, definition: RunWorkflow
+) -> WorkflowFiles:
+    """The workflow's files at the commit `at`, read as `as_`: every path,
+    and each one wired into a manifest port that is there. One listed that
+    does not read as a file is left out, so the check refuses it as missing
+    at the manifest port.
+    """
+    listed = await ctx.forge.workflows.workflow_files(as_, workflow, at)
+    paths = set(listed.tokens)
+    manifests: dict[str, bytes] = {}
+    for path in sorted(manifest_paths(definition) & paths):
+        try:
+            read = await ctx.forge.workflows.read_workflow_at(as_, workflow, at, path)
+        except NotFound:
+            paths.discard(path)
+            continue
+        manifests[path] = read.content
+    return WorkflowFiles(frozenset(paths), manifests)
 
 
 async def _make(ctx: Context, writer: _Writer, name: str, files: dict[str, bytes]) -> WorkflowId:

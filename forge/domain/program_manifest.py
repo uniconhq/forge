@@ -40,6 +40,8 @@ from forge.domain.yaml_models import (
 )
 
 PROGRAM_FILE = "program.yaml"
+MAX_MANIFEST = 256 * 1024
+"""The most bytes a `program.yaml` may hold, as a `workflow.yaml` may."""
 REPORT_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 """A report's name, as `exec` and `interact` take it."""
 EXEC_OWN_NAMES = frozenset(
@@ -186,8 +188,11 @@ def parse_program(text: bytes | str, path: str, *, own_names: Collection[str]) -
     listing every problem at its YAML path, a report's under
     `reports.<name>`, each naming the report. A report whose name is not
     text, a number say, is refused for its name alone: its settings are
-    checked once it has one.
+    checked once it has one. One over `MAX_MANIFEST` is refused unread.
     """
+    if len(text.encode() if isinstance(text, str) else text) > MAX_MANIFEST:
+        message = f"A program.yaml can be at most {MAX_MANIFEST // 1024} KB. Make it smaller."
+        raise InvalidDefinition(path, [Problem(path="", message=message)])
     document = load_mapping(path, text)
     reports = document.get("reports")
     named = _name_problems(reports, own_names)

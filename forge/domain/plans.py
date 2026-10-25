@@ -73,6 +73,7 @@ from forge.domain.workflow_definition import (
     BadReference,
     Meaning,
     Reference,
+    RunWorkflow,
     WorkflowDefinition,
     WorkflowInput,
     references,
@@ -611,11 +612,13 @@ class Kind:
 
     type: Type
     options: frozenset[str] | None = None
-    source: Literal["literal", "input", "contestant", "test", "step", "text"] = "literal"
+    source: Literal["literal", "input", "contestant", "test", "step", "text", "workflow"] = (
+        "literal"
+    )
     optional: bool = False
 
 
-def stray_units(workflow: WorkflowDefinition) -> list[Problem]:
+def stray_units(workflow: WorkflowDefinition | RunWorkflow) -> list[Problem]:
     """A unit on an input that is not a number, refused where a version is
     made or checked, naming the input and its type in words. A version
     made with one before is read with it dropped (`shown_unit`), and a task
@@ -625,7 +628,7 @@ def stray_units(workflow: WorkflowDefinition) -> list[Problem]:
     problems: list[Problem] = []
     for key, declared in workflow.inputs.items():
         if declared.unit is not None and declared.type is not Type.NUMBER:
-            kind = "one of a list" if declared.type is Type.ENUM else _a(declared.type)
+            kind = "one of a list" if declared.type is Type.ENUM else a_type(declared.type)
             problems.append(
                 Problem(
                     path=path_text(("inputs", key, "unit")),
@@ -655,7 +658,7 @@ def stray_report_units(
             problems.append(
                 Problem(
                     path=path_text(("report", name, "unit")),
-                    message=f"Only a number takes a unit, and {name} is {_a(port.type)}. "
+                    message=f"Only a number takes a unit, and {name} is {a_type(port.type)}. "
                     "Remove the unit.",
                 )
             )
@@ -758,7 +761,7 @@ def check_workflow(
                 continue
             try:
                 _check_value(workflow, outputs, step.per_test, raw, given, name in raised)
-            except _Refused as refused:
+            except Refused as refused:
                 problems.append(
                     Problem(path=path_text((*where, "with", name)), message=str(refused))
                 )
@@ -766,13 +769,15 @@ def check_workflow(
     for name, entry in workflow.report.items():
         try:
             _check_report(entry, outputs)
-        except _Refused as refused:
+        except Refused as refused:
             problems.append(Problem(path=path_text(("report", name)), message=str(refused)))
     return problems
 
 
-class _Refused(Exception):
-    """One problem with a value, said in a sentence."""
+class Refused(Exception):
+    """One problem with a value, said in a sentence; the run workflow's
+    checks (`forge.domain.run_workflow`) say theirs with it too.
+    """
 
 
 def _kind_of(
@@ -785,9 +790,9 @@ def _kind_of(
         case "inputs":
             declared = workflow.inputs.get(found.name)
             if declared is None:
-                raise _Refused(f"The workflow has no input called {found.name}.")
+                raise Refused(f"The workflow has no input called {found.name}.")
             if declared.per_test and not per_test:
-                raise _Refused(
+                raise Refused(
                     f"{found.name} is given once for each test, so only a step that runs for "
                     "each test can read it."
                 )
@@ -799,25 +804,30 @@ def _kind_of(
         case "test":
             field_ = workflow.test.get(found.name)
             if field_ is None:
-                raise _Refused(f"{found.name} is not one of the workflow's test fields.")
+                raise Refused(f"{found.name} is not one of the workflow's test fields.")
             if not per_test:
-                raise _Refused("Only a step that runs for each test can read a test's fields.")
+                raise Refused("Only a step that runs for each test can read a test's fields.")
             options = frozenset(field_.options) if field_.options else None
             return Kind(field_.type, options, "test")
+        case "workflow":
+            raise Refused(
+                "Only a workflow without a test block, which describes one run, reads its own "
+                "files. Give this file as an input or a test field instead."
+            )
     assert found.output is not None
     known = outputs.get(found.name)
     if known is None:
-        raise _Refused(f"There is no step called {found.name} before this one.")
+        raise Refused(f"There is no step called {found.name} before this one.")
     declaration, step_per_test = known
     port = declaration.outputs.get(found.output)
     if port is None:
-        raise _Refused(f"The step {found.name} has no output called {found.output}.")
+        raise Refused(f"The step {found.name} has no output called {found.output}.")
     if step_per_test and not per_test:
-        raise _Refused(
+        raise Refused(
             f"The step {found.name} runs for each test, so a step that runs once cannot read it."
         )
     if port.type is Type.OUTCOME:
-        raise _Refused(
+        raise Refused(
             "A step's outcome is read by Unicon itself, and cannot be given to another step."
         )
     options = frozenset(port.options) if port.options else None
@@ -835,15 +845,15 @@ def _check_value(
     kind = _raw_kind(workflow, outputs, per_test, raw)
     if raises_limit and kind.source in ("contestant", "step", "text"):
         if kind.source == "contestant":
-            raise _Refused("This value raises a limit, so the task must give it, not the entrant.")
-        raise _Refused("This value raises a limit, so it must be known when the task is saved.")
+            raise Refused("This value raises a limit, so the task must give it, not the entrant.")
+        raise Refused("This value raises a limit, so it must be known when the task is saved.")
     if kind.optional and not port.optional:
         if kind.source == "step":
-            raise _Refused(
+            raise Refused(
                 "That output may be missing, so it can be given only to an optional port."
             )
-        raise _Refused("That input is optional, so it can be given only to an optional port.")
-    _fits(kind, port, raw)
+        raise Refused("That input is optional, so it can be given only to an optional port.")
+    fits(kind, port, raw)
 
 
 def _raw_kind(
@@ -857,39 +867,39 @@ def _raw_kind(
     if is_number(raw):
         return Kind(Type.NUMBER)
     if raw is None or isinstance(raw, list | dict):
-        raise _Refused(
+        raise Refused(
             "Give text, a number, true or false, or a ${{ }} reference, not a list, a set "
             "of settings or nothing."
         )
     if not isinstance(raw, str):
-        raise _Refused("Give text, a number, true or false, or a ${{ }} reference.")
+        raise Refused("Give text, a number, true or false, or a ${{ }} reference.")
     try:
         whole = whole_reference(raw)
         written = references(raw) if whole is None else []
     except BadReference as bad:
-        raise _Refused(str(bad)) from None
+        raise Refused(str(bad)) from None
     if whole is not None:
         return _kind_of(workflow, outputs, per_test, whole)
     if not written:
         return Kind(Type.TEXT)
     for _, found in written:
         if found.kind == "steps":
-            raise _Refused("A step's output can be given only whole, not written into text.")
+            raise Refused("A step's output can be given only whole, not written into text.")
         kind = _kind_of(workflow, outputs, per_test, found)
         if kind.type not in SCALARS:
-            raise _Refused(
-                f"{found} is {_a(kind.type)}, and only text, a number, true or false or an enum "
-                "can be written into text."
+            raise Refused(
+                f"{found} is {a_type(kind.type)}, and only text, a number, true or false or an "
+                "enum can be written into text."
             )
         if kind.optional:
-            raise _Refused(
+            raise Refused(
                 f"{found} is optional, so it can be given only whole, to an optional port, not "
                 "written into text."
             )
     return Kind(Type.TEXT, source="text")
 
 
-def _fits(kind: Kind, port: Port, raw: object) -> None:
+def fits(kind: Kind, port: Port, raw: object) -> None:
     """Refuse a value of `kind` given to `port`, under the two widenings: a
     scalar fits a text port, and a file fits a folder port.
     """
@@ -903,20 +913,20 @@ def _fits(kind: Kind, port: Port, raw: object) -> None:
         if kind.type is Type.TEXT and kind.source == "literal":
             if raw in allowed:
                 return
-            raise _Refused(f"This takes one of {', '.join(port.options or ())}.")
+            raise Refused(f"This takes one of {', '.join(port.options or ())}.")
         if kind.type is Type.ENUM and kind.options is not None:
             extra = sorted(kind.options - allowed)
             if not extra:
                 return
-            raise _Refused(
+            raise Refused(
                 f"This takes one of {', '.join(port.options or ())}, not {', '.join(extra)}."
             )
-        raise _Refused(f"This takes one of {', '.join(port.options or ())}.")
+        raise Refused(f"This takes one of {', '.join(port.options or ())}.")
     if kind.type is not wanted:
-        raise _Refused(f"This takes {_a(wanted)}, not {_a(kind.type)}.")
+        raise Refused(f"This takes {a_type(wanted)}, not {a_type(kind.type)}.")
 
 
-def _a(kind: Type) -> str:
+def a_type(kind: Type) -> str:
     """A type as a sentence names one value of it."""
     return {
         Type.TEXT: "text",
@@ -936,27 +946,27 @@ def _check_report(
     try:
         found = whole_reference(raw)
     except BadReference as bad:
-        raise _Refused(str(bad)) from None
+        raise Refused(str(bad)) from None
     if found is None or found.kind != "steps" or found.output is None:
-        raise _Refused("Give the step output this reports, as ${{ steps.<id>.<output> }}.")
+        raise Refused("Give the step output this reports, as ${{ steps.<id>.<output> }}.")
     known = outputs.get(found.name)
     port = known[0].outputs.get(found.output) if known is not None else None
     if known is None or port is None:
-        raise _Refused(f"steps.{found.name}.{found.output} is not the output of any step.")
+        raise Refused(f"steps.{found.name}.{found.output} is not the output of any step.")
     if port.type not in (Type.TEXT, Type.NUMBER):
-        raise _Refused(
-            f"steps.{found.name}.{found.output} is {_a(port.type)}, and only text or a number "
+        raise Refused(
+            f"steps.{found.name}.{found.output} is {a_type(port.type)}, and only text or a number "
             "can be reported."
         )
     if isinstance(entry, Meaning):
         if port.type is not Type.NUMBER and any(
             value is not None for value in (entry.fold, entry.better, entry.at_least, entry.at_most)
         ):
-            raise _Refused(
+            raise Refused(
                 "fold, better, at_least and at_most apply only to a number, and this is text."
             )
         if not known[1] and (entry.fold is not None or entry.better is not None):
-            raise _Refused(
+            raise Refused(
                 "fold and better apply only to a number reported for each test, and this "
                 "step runs once."
             )

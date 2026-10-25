@@ -785,6 +785,48 @@ async def test_a_workflow_in_an_old_format_is_refused_at_its_line_for_its_owner_
     assert acme.fake.calls_to("publish") == []
 
 
+async def test_a_workflow_without_a_test_block_is_refused_at_its_line_for_now(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _workflow(acme, "run", b"steps:\n  - {id: a, use: unicon/compile@v3}\n")
+
+    draft = await _save(
+        setup,
+        acme,
+        sum_task,
+        _with(acme, b"workflow: unicon/classic@v2", b"workflow: unicon/run@v1"),
+    )
+
+    assert isinstance(draft, Draft)
+    assert draft.errors == (
+        {
+            "path": "workflow",
+            "message": "The workflow unicon/run@v1 has no test block, so it describes one run, "
+            "and a task cannot use such a workflow yet. Choose a version with a test block.",
+        },
+    )
+    assert acme.fake.calls_to("publish") == []
+
+
+async def test_a_workflow_of_todays_format_reporting_passed_still_publishes(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _workflow(
+        acme,
+        "passing",
+        CLASSIC.replace(b"  log:\n", b"  passed:\n    from: ${{ steps.run.time_ms }}\n  log:\n"),
+    )
+
+    result = await _save(
+        setup,
+        acme,
+        sum_task,
+        _with(acme, b"workflow: unicon/classic@v2", b"workflow: unicon/passing@v1"),
+    )
+
+    assert not isinstance(result, Draft), result.errors
+
+
 async def test_a_workflow_that_does_not_check_as_a_version_is_refused_at_its_line(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
@@ -1732,6 +1774,19 @@ async def test_a_workflow_in_an_old_format_gives_the_form_its_reason(
     )
     with pytest.raises(Forbidden):
         await publications.workflow_form(setup, stranger, sum_task)
+
+
+async def test_a_workflow_without_a_test_block_gives_the_form_its_reason(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _workflow(acme, "run", b"steps:\n  - {id: a, use: unicon/compile@v3}\n")
+    await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v2", b"unicon/run@v1"))
+
+    form = await publications.workflow_form(setup, acme.ada, sum_task)
+
+    assert form.workflow == "unicon/run@v1"
+    assert form.problem is not None
+    assert "has no test block, so it describes one run" in form.problem
 
 
 async def test_a_submit_in_flight_while_a_grading_change_publishes_is_graded_against_it(

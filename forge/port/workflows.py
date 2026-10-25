@@ -12,7 +12,7 @@ said the person may write it.
 
 from typing import Protocol
 
-from forge.domain.content import ConflictToken, File, Files
+from forge.domain.content import ConflictToken, File, Files, FileSet
 from forge.domain.identity import Identity, User
 from forge.domain.ids import VersionId, WorkflowId
 from forge.domain.workflows import Visibility, Workflow
@@ -73,6 +73,24 @@ class WorkflowPort(Protocol):
         """One file as the workflow holds it now, at the head of its main
         line, and the commit that head is. `NotFound` when there is no such
         file; `Forbidden` when the identity may not read the workflow.
+        """
+        ...
+
+    async def workflow_files(self, as_: Identity, workflow: WorkflowId, at: VersionId) -> FileSet:
+        """Every file of the workflow at the commit `at`, as
+        `read_workflow_draft` names one, with its token, read as `as_`; a
+        symbolic link is no file, so it is left out. `NotFound` when there
+        is no such commit; `Forbidden` when the identity may not read the
+        workflow.
+        """
+        ...
+
+    async def read_workflow_at(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str
+    ) -> File:
+        """One file at the commit `at`, as `read_workflow_draft` names one.
+        `NotFound` when there is no such commit or file; `Forbidden` when the
+        identity may not read the workflow.
         """
         ...
 

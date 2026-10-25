@@ -11,7 +11,7 @@ from forge.adapters.ids import (
     parse_workflow,
     primitive_repo,
 )
-from forge.domain.content import ConflictToken, File, Files
+from forge.domain.content import ConflictToken, File, Files, FileSet
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, Identity, User
 from forge.domain.ids import PrimitiveId, VersionId, WorkflowId
@@ -103,6 +103,26 @@ class FakeWorkflows:
             raise NotFound(f"{path} is not in {workflow}")
         content = repo.files[path]
         return VersionId(repo.head), File(path=path, content=content, token=repo.tokens[path])
+
+    async def workflow_files(self, as_: Identity, workflow: WorkflowId, at: VersionId) -> FileSet:
+        self._state.record("workflow_files", as_, workflow=workflow, at=at)
+        repo = self._repo(workflow)
+        self._state.require_read(as_, repo)
+        files = self._state.files_at(repo, at)
+        return FileSet(
+            version=at, tokens={path: token_of(content) for path, content in files.items()}
+        )
+
+    async def read_workflow_at(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str
+    ) -> File:
+        self._state.record("read_workflow_at", as_, workflow=workflow, at=at, path=path)
+        repo = self._repo(workflow)
+        self._state.require_read(as_, repo)
+        files = self._state.files_at(repo, at)
+        if path not in files:
+            raise NotFound(f"{path} at {at} is not in {workflow}")
+        return File(path=path, content=files[path], token=token_of(files[path]))
 
     async def write_workflow_file(
         self,
@@ -230,11 +250,14 @@ class FakePrimitives:
 
     def add(self, name: str, versions: Mapping[str, bytes]) -> None:
         """Seed a primitive the way bootstrap does, one declaration per
-        version.
+        version, beside the versions it holds already.
         """
-        repo = self._state.create_repo(
-            PLATFORM, PLATFORM_ORG, primitive_repo(PrimitiveId(name)), {}, marked=PRIMITIVE
-        )
+        try:
+            repo = self._state.create_repo(
+                PLATFORM, PLATFORM_ORG, primitive_repo(PrimitiveId(name)), {}, marked=PRIMITIVE
+            )
+        except Conflict:
+            repo = self._state.repo(PLATFORM_ORG, primitive_repo(PrimitiveId(name)))
         repo.private = False
         for version, declaration in versions.items():
             self._state.commit(repo, {DECLARATION: declaration}, version, None)
